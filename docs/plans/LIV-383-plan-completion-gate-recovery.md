@@ -70,8 +70,16 @@ Sixth, cover the behavior with focused helper, workflow, handoff, and runbook te
 
 - [x] (2026-05-18 00:00Z) Drafted the human-reviewable ExecPlan v2 review document for LIV-383.
 - [x] (2026-05-18 00:00Z) Incorporated plan review feedback by deciding the final pre-publish gate is diagnostic-only, defining the full-workflow retry path, and spelling out the two-attempt repair budget.
-- [ ] Implementation pack materialized into a follow-up implementation task.
-- [ ] Recovery branch implemented and validated.
+- [x] (2026-05-18 20:55Z) Materialized the implementation pack into workflow/prompt/helper/handoff/runbook changes for LIV-385.
+- [x] (2026-05-18 21:05Z) Implemented and validated the late pre-review recovery branch, exhausted/final diagnostic recovery artifacts, and operator-facing retry guidance.
+- [x] (2026-05-18 21:20Z) Added workflow-run execution coverage proving a fail-fast recovery finalizer stops downstream review/publish steps even when the upstream gate used `on_failure: continue`.
+
+## Surprises & Discoveries
+
+- Observation: The continued-failure wiring is only needed on the gate commands; the recovery classifier and finalizer steps themselves must remain fail-fast or the workflow would continue into review/publish after exhausted recovery.
+  Evidence: The workflow now sets `on_failure: continue` on `gate_plan_completion`, `gate_plan_completion_after_late_repair`, and `final_plan_completion_gate`, while the recovery commands stay fail-fast.
+- Observation: Recovery diagnostics should identify the retention marker relative to the retained run root rather than serializing the absolute host path.
+  Evidence: Review updated the plan-completion recovery payload and tests to report `.scherzo-keep-workspace` as the marker display value while still writing the marker at the run root.
 
 ## Decision Log
 
@@ -99,13 +107,17 @@ Sixth, cover the behavior with focused helper, workflow, handoff, and runbook te
   Rationale: The incident and current artifact contract are specific to the late gate receiving structured blocking findings.
   Date: 2026-05-18
 
+- Decision: Recovery classifier and finalizer commands fail fast; only the gate commands continue on failure.
+  Rationale: Continued finalizer failures would allow exhausted recovery to flow into native review or publish, which violates the retained-workspace stop behavior.
+  Date: 2026-05-18
+
 ## Validation and Acceptance
 
 Acceptance is behavioral. A fresh fail verdict at the pre-review `gate_plan_completion` with blocking findings should cause exactly one late repair attempt, a new verifier pass, and a second pre-review gate before native code review can start. If the second pre-review gate passes, the workflow continues normally. If it fails again, the workspace is retained and the failure report names the unmet requirements, recovery artifact, failure phase, and `scherzoctl retry <issue>` retry path.
 
 A fresh fail verdict at the final pre-publish plan-completion gate should not start another repair prompt. It should retain the workspace, write the recovery artifact, fail before publish, and report the same supported next action.
 
-Negative validation must prove that missing, malformed, and stale verdicts are not repairable and keep their terminal command/config failure behavior. Budget validation must prove that daemon recovery or workflow replay of the same run cannot grant a third automatic repair attempt. Handoff validation must show that Linear-facing comments and session summaries contain concise unmet-plan, phase, retention, artifact-path, and next-action text for exhausted plan-completion recovery.
+Negative validation must prove that missing, malformed, and stale verdicts are not repairable and keep their terminal command/config failure behavior. Budget validation must prove that daemon recovery or workflow replay of the same run cannot grant a third automatic repair attempt. Handoff validation must show that Linear-facing comments and session summaries contain concise unmet-plan, phase, retention, artifact-path, and next-action text for exhausted plan-completion recovery. Workflow-run validation must also prove that a fail-fast recovery finalizer blocks downstream review or publish steps even when the preceding gate step continued after failure.
 
 ## Rollout, Recovery, and Idempotence
 
@@ -114,6 +126,12 @@ The rollout is additive to the execplan implementation workflow. Passing verdict
 If the new recovery code causes trouble, it can be rolled back by restoring the pre-review and final gates to fail-fast behavior and removing the late recovery steps. Runs stopped by exhausted or final-gate recovery are safe to inspect because the existing retention marker keeps the workspace and the new recovery artifact records the verdict, findings, phase, and suggested full-workflow retry action.
 
 A normal full retry is intentionally a new run with a new automatic repair budget. The retained failed run remains available for inspection and manual salvage, but this MVP does not promise same-run resumption from the exhausted plan-completion point.
+
+## Outcomes & Retrospective
+
+The implementation now gives execplan implementation runs one bounded late pre-review plan-completion repair pass, preserves the two-attempt budget explicitly in the static DAG, and writes retained-workspace recovery artifacts when the late or final gates still fail. Handoff comments and the operator runbook now point operators at the recovery artifact and the supported full-workflow retry path instead of leaving `plan_completion_failed` as an opaque terminal command failure. The recovery artifact reports the retention marker as the run-root-relative `.scherzo-keep-workspace` display value. Workflow-run regression coverage now also proves that an exhausted recovery finalizer halts downstream steps rather than leaking into review or publish.
+
+Validation covered Python syntax, the contract suite, the full Gleam test suite, formatting, the production lint gates, and a focused workflow-run regression test for the fail-fast finalizer behavior. The lint commands still report the repository's existing warning inventory without introducing new errors.
 
 ## Open Questions and Clarifications Needed
 

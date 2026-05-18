@@ -15,6 +15,12 @@ Post-plan-feedback change analysis output:
 Plan-completion gate output:
 {{ steps.gate_plan_completion.stdout }}
 
+Late recovery finalizer output:
+{{ steps.finalize_plan_completion_gate_recovery.stdout }}
+
+Latest plan-completion verifier response:
+{{ steps.verify_plan_completion_after_late_repair.final_response }}
+
 Review summary:
 {{ steps.review_changes.final_response }}
 

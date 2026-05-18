@@ -19,6 +19,7 @@ running final validation, and publishing a GitHub PR.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import html
 import json
@@ -36,6 +37,8 @@ CANONICAL_METADATA_RELATIVE_PATH = Path("state") / "implementation" / "metadata.
 ANALYSIS_PATH = TMP_DIR / "scherzo-implementation-analysis.json"
 PLAN_COMPLETION_CONTEXT_PATH = TMP_DIR / "scherzo-plan-completion-context.json"
 PLAN_COMPLETION_VERDICT_PATH = TMP_DIR / "scherzo-plan-completion-verdict.json"
+PLAN_COMPLETION_RECOVERY_PATH = TMP_DIR / "scherzo-plan-completion-recovery.json"
+PLAN_COMPLETION_RECOVERY_SUMMARY_PATH = TMP_DIR / "scherzo-plan-completion-recovery.md"
 VALIDATION_PATH = TMP_DIR / "scherzo-implementation-validation.json"
 PUBLISH_PATH = TMP_DIR / "scherzo-implementation-publish.json"
 TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
@@ -67,7 +70,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|refresh-base|analyze|plan-completion-context|gate-plan-completion|validate|publish|plan-brief|extract-plan|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|analyze|plan-completion-context|gate-plan-completion|plan-completion-recovery|validate|publish|plan-brief|extract-plan|languages|ticket-brief>
 
 Run from a Scherzo jj workflow workspace root.
 
@@ -94,6 +97,11 @@ gate-plan-completion [--final]
               Fail closed unless tmp/scherzo-plan-completion-verdict.json is
               a fresh, well-formed passing verdict for the current ExecPlan
               implementation patch.
+plan-completion-recovery --phase before-late-repair|after-late-repair|final --attempt INT --max-attempts INT
+              Classify the current plan-completion verdict for late recovery,
+              write tmp/scherzo-plan-completion-recovery.{json,md}, and either
+              authorize one bounded late repair pass or fail with retained
+              workspace diagnostics.
 refresh-base --stage <stage>
               Fetch SCHERZO_PR_REMOTE/SCHERZO_PR_BASE, rebase @ when needed,
               and write structured base-refresh JSON under tmp/.
@@ -1957,9 +1965,7 @@ def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str,
             "verified_diff_fingerprint must be a lowercase SHA-256 hex digest",
             failure_code="plan_completion_verdict_malformed",
         )
-    changed_files = verdict.get("changed_files", [])
-    if changed_files != []:
-        string_list_field(verdict, "changed_files")
+    changed_files = string_list_field(verdict, "changed_files")
     return {
         "verdict": raw_verdict,
         "blocking_findings": blocking_findings,
@@ -1969,16 +1975,15 @@ def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str,
         "verified_base_change_id": verified_base_change_id,
         "verified_change_id": verified_change_id,
         "verified_diff_fingerprint": verified_diff_fingerprint,
+        "changed_files": changed_files,
     }
 
 
-def gate_plan_completion_command(args: list[str]) -> None:
-    if args != [] and args != ["--final"]:
-        usage()
-        sys.exit(2)
-    final_gate = args == ["--final"]
-    gate_label = "final plan-completion gate" if final_gate else "plan-completion gate"
-    metadata = load_implementation_metadata()
+def current_plan_completion_verdict(
+    metadata: dict[str, Any],
+    *,
+    gate_label: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     current_plan_path, _current_base_change_id = require_execplan_metadata(metadata)
     verdict = validate_plan_completion_verdict_shape(load_plan_completion_verdict())
     if not workspace_driver_available():
@@ -2005,6 +2010,177 @@ def gate_plan_completion_command(args: list[str]) -> None:
             f"{gate_label} found a stale verdict fingerprint; rerun plan-completion verification after the latest implementation changes",
             failure_code="plan_completion_verdict_stale",
         )
+    return verdict, current
+
+
+def plan_completion_retry_command(metadata: dict[str, Any]) -> str:
+    issue_identifier = str(metadata.get("issue_identifier") or "").strip()
+    if issue_identifier:
+        return f"scherzoctl retry {issue_identifier}"
+    return "scherzoctl retry <issue>"
+
+
+def plan_completion_recovery_summary_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Plan-completion recovery summary",
+        "",
+        f"- Status: `{payload['status']}`",
+        f"- Phase: `{payload['phase']}`",
+        f"- Attempt: `{payload['attempt']}` of `{payload['max_attempts']}`",
+        f"- Verdict artifact: `{payload['verdict_path']}`",
+        f"- Recovery JSON: `{PLAN_COMPLETION_RECOVERY_PATH}`",
+    ]
+    if payload.get("recovery_summary_path"):
+        lines.append(f"- Recovery summary: `{payload['recovery_summary_path']}`")
+    if payload.get("plan_path"):
+        lines.append(f"- Review doc: `{payload['plan_path']}`")
+    if payload.get("retention_marker"):
+        lines.append(f"- Retention marker: `{payload['retention_marker']}`")
+    if payload.get("retry_command"):
+        lines.append(f"- Retry command: `{payload['retry_command']}`")
+    lines.extend(["", "## Blocking findings", ""])
+    blocking_findings = payload.get("blocking_findings") or []
+    if blocking_findings:
+        lines.extend(f"- {finding}" for finding in blocking_findings)
+    else:
+        lines.append("- None")
+    lines.extend([
+        "",
+        "## Next action",
+        "",
+        str(payload.get("next_action") or "None."),
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def write_plan_completion_recovery_artifacts(payload: dict[str, Any]) -> None:
+    write_json(PLAN_COMPLETION_RECOVERY_PATH, payload)
+    PLAN_COMPLETION_RECOVERY_SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PLAN_COMPLETION_RECOVERY_SUMMARY_PATH.write_text(
+        plan_completion_recovery_summary_markdown(payload),
+        encoding="utf-8",
+    )
+
+
+def print_plan_completion_recovery_summary(payload: dict[str, Any]) -> None:
+    print(f"PLAN_COMPLETION_RECOVERY_STATUS={payload['status']}")
+    print(f"PLAN_COMPLETION_RECOVERY_PHASE={payload['phase']}")
+    print(f"PLAN_COMPLETION_RECOVERY_ATTEMPT={payload['attempt']}")
+    print(f"PLAN_COMPLETION_RECOVERY_MAX_ATTEMPTS={payload['max_attempts']}")
+    print(f"PLAN_COMPLETION_VERDICT={payload['verdict']}")
+    print(f"PLAN_COMPLETION_VERDICT_PATH={payload['verdict_path']}")
+    print(f"PLAN_COMPLETION_RECOVERY_PATH={PLAN_COMPLETION_RECOVERY_PATH}")
+    print(
+        "PLAN_COMPLETION_RECOVERY_SUMMARY_PATH="
+        + str(PLAN_COMPLETION_RECOVERY_SUMMARY_PATH)
+    )
+    print(f"PLAN_COMPLETION_PLAN_PATH={payload['plan_path']}")
+    print(
+        "PLAN_COMPLETION_DIFF_FINGERPRINT="
+        + str(payload["verified_diff_fingerprint"])
+    )
+    if payload.get("retry_command"):
+        print(f"PLAN_COMPLETION_RETRY_COMMAND={payload['retry_command']}")
+    if payload.get("retention_marker"):
+        print(f"PLAN_COMPLETION_RETENTION_MARKER={payload['retention_marker']}")
+    print_list("PLAN_COMPLETION_BLOCKING_FINDINGS", payload["blocking_findings"])
+
+
+def parse_plan_completion_recovery_args(args: list[str]) -> tuple[str, int, int]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--phase",
+        required=True,
+        choices=["before-late-repair", "after-late-repair", "final"],
+    )
+    parser.add_argument("--attempt", required=True, type=int)
+    parser.add_argument("--max-attempts", required=True, type=int)
+    try:
+        parsed = parser.parse_args(args)
+    except SystemExit:
+        usage()
+        sys.exit(2)
+    return str(parsed.phase), int(parsed.attempt), int(parsed.max_attempts)
+
+
+def plan_completion_recovery_command(args: list[str]) -> None:
+    phase, attempt, max_attempts = parse_plan_completion_recovery_args(args)
+    metadata = load_implementation_metadata()
+    verdict, current = current_plan_completion_verdict(
+        metadata,
+        gate_label="plan-completion recovery",
+    )
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "status": "not_needed",
+        "phase": phase,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "verdict": verdict["verdict"],
+        "verdict_path": str(PLAN_COMPLETION_VERDICT_PATH),
+        "recovery_summary_path": str(PLAN_COMPLETION_RECOVERY_SUMMARY_PATH),
+        "plan_path": str(current["plan_path"]),
+        "verified_diff_fingerprint": str(current["verified_diff_fingerprint"]),
+        "changed_files": verdict["changed_files"],
+        "blocking_findings": verdict["blocking_findings"],
+        "checked_acceptance_criteria": verdict["checked_acceptance_criteria"],
+        "evidence": verdict["evidence"],
+    }
+    if verdict["verdict"] == "pass":
+        payload["next_action"] = "No late plan-completion repair is needed."
+        write_plan_completion_recovery_artifacts(payload)
+        print_plan_completion_recovery_summary(payload)
+        return
+
+    repair_budget_description = (
+        "attempt 1 is apply_plan_completion_feedback; attempt 2 is the late pre-review repair"
+    )
+    retry_command = plan_completion_retry_command(metadata)
+    issue_identifier = str(metadata.get("issue_identifier") or "").strip()
+    source_ref = issue_identifier or str(current["plan_path"])
+
+    if phase == "before-late-repair" and attempt <= max_attempts:
+        payload.update(
+            {
+                "status": "repair_needed",
+                "retryable": True,
+                "repair_budget_description": repair_budget_description,
+                "next_action": "run late plan-completion repair step",
+            }
+        )
+        write_plan_completion_recovery_artifacts(payload)
+        print_plan_completion_recovery_summary(payload)
+        return
+
+    write_retention_marker("execplan", source_ref)
+    payload.update(
+        {
+            "status": "exhausted",
+            "retryable": False,
+            "repair_budget_description": repair_budget_description,
+            "failure_code": "plan_completion_recovery_exhausted",
+            "retention_marker": RETENTION_MARKER,
+            "retry_command": retry_command,
+            "next_action": "Inspect or salvage from the retained workspace, then use the normal full workflow retry command when safe: "
+            + retry_command,
+        }
+    )
+    write_plan_completion_recovery_artifacts(payload)
+    print_plan_completion_recovery_summary(payload)
+    fail(
+        "plan-completion recovery exhausted; inspect the retained workspace and recovery summary before retrying the full workflow",
+        failure_code="plan_completion_recovery_exhausted",
+    )
+
+
+def gate_plan_completion_command(args: list[str]) -> None:
+    if args != [] and args != ["--final"]:
+        usage()
+        sys.exit(2)
+    final_gate = args == ["--final"]
+    gate_label = "final plan-completion gate" if final_gate else "plan-completion gate"
+    metadata = load_implementation_metadata()
+    verdict, current = current_plan_completion_verdict(metadata, gate_label=gate_label)
 
     print(f"PLAN_COMPLETION_GATE_MODE={'final' if final_gate else 'pre_review'}")
     print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
@@ -2686,6 +2862,8 @@ def main(argv: list[str]) -> None:
         plan_completion_context_command(args)
     elif command == "gate-plan-completion":
         gate_plan_completion_command(args)
+    elif command == "plan-completion-recovery":
+        plan_completion_recovery_command(args)
     elif command == "validate" and not args:
         validate_command()
     elif command == "publish" and not args:

@@ -906,6 +906,183 @@ pub fn plan_completion_gate_blocks_stale_verdict_test() {
   assert string.contains(artifact.stderr, "stale verdict fingerprint")
 }
 
+pub fn plan_completion_recovery_reports_repair_needed_for_fresh_fail_test() {
+  let dir = "test/tmp/plan-completion-recovery-repair-needed"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(
+    dir,
+    "fail",
+    fingerprint,
+    "[\"Acceptance criterion remains unchecked.\"]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_RECOVERY_STATUS=repair_needed",
+  )
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_RECOVERY_ATTEMPT=2")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_RECOVERY_MAX_ATTEMPTS=2",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "Acceptance criterion remains unchecked.",
+  )
+  let assert Ok(recovery_json) =
+    simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.json")
+  assert string.contains(recovery_json, "\"status\": \"repair_needed\"")
+  assert string.contains(recovery_json, "\"attempt\": 2")
+  assert string.contains(recovery_json, "\"max_attempts\": 2")
+  let assert Ok(recovery_md) =
+    simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.md")
+  assert string.contains(recovery_md, "Acceptance criterion remains unchecked.")
+}
+
+pub fn plan_completion_recovery_reports_not_needed_for_fresh_pass_test() {
+  let dir = "test/tmp/plan-completion-recovery-not-needed"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(dir, "pass", fingerprint, "[]")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_RECOVERY_STATUS=not_needed",
+  )
+  let assert Ok(recovery_json) =
+    simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.json")
+  assert string.contains(recovery_json, "\"status\": \"not_needed\"")
+  let assert Error(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+}
+
+pub fn plan_completion_recovery_preserves_terminal_verdict_failures_test() {
+  let dir = "test/tmp/plan-completion-recovery-malformed"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-plan-completion-verdict.json",
+      "{not json}\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("plan_completion_verdict_malformed")
+}
+
+pub fn plan_completion_recovery_exhausts_after_late_repair_test() {
+  let dir = "test/tmp/plan-completion-recovery-exhausted"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(
+    dir,
+    "fail",
+    fingerprint,
+    "[\"Acceptance criterion remains unchecked.\"]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_recovery_exhausted")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_RETENTION_MARKER=.scherzo-keep-workspace",
+  )
+  let assert Ok(marker) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+  assert string.contains(marker, "Source kind: execplan")
+  let assert Ok(recovery_json) =
+    simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.json")
+  assert string.contains(recovery_json, "\"status\": \"exhausted\"")
+  assert string.contains(
+    recovery_json,
+    "\"failure_code\": \"plan_completion_recovery_exhausted\"",
+  )
+  assert string.contains(
+    recovery_json,
+    "\"retention_marker\": \".scherzo-keep-workspace\"",
+  )
+  assert !string.contains(recovery_json, "/.scherzo-keep-workspace")
+  let assert Ok(recovery_md) =
+    simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.md")
+  assert string.contains(recovery_md, "Acceptance criterion remains unchecked.")
+  assert string.contains(
+    recovery_md,
+    "Retention marker: `.scherzo-keep-workspace`",
+  )
+  assert string.contains(recovery_md, "scherzoctl retry LIV-128")
+}
+
+pub fn plan_completion_recovery_exhausts_at_final_gate_test() {
+  let dir = "test/tmp/plan-completion-recovery-final"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(
+    dir,
+    "fail",
+    fingerprint,
+    "[\"Acceptance criterion remains unchecked.\"]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase final --attempt 2 --max-attempts 2",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("plan_completion_recovery_exhausted")
+  assert !string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_RECOVERY_STATUS=repair_needed",
+  )
+  let assert Ok(recovery_json) =
+    simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.json")
+  assert string.contains(recovery_json, "\"phase\": \"final\"")
+}
+
+pub fn plan_completion_recovery_rejects_over_budget_before_late_repair_test() {
+  let dir = "test/tmp/plan-completion-recovery-over-budget"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(
+    dir,
+    "fail",
+    fingerprint,
+    "[\"Acceptance criterion remains unchecked.\"]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 3 --max-attempts 2",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("plan_completion_recovery_exhausted")
+}
+
 pub fn jj_workspace_driver_prefers_configured_remote_base_for_new_root_workspaces_test() {
   let assert Ok(script) = simplifile.read("scripts/scherzo-workspace-jj")
   assert string.contains(script, "SCHERZO_JJ_WORKSPACE_BASE")
@@ -1702,6 +1879,8 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     ".scherzo/workflows/prompts/execplan-implementation-review.md",
     ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
     ".scherzo/workflows/prompts/execplan-implementation-repair-base-drift.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
     ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
   ]
 
@@ -1719,6 +1898,8 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
       ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
       ".scherzo/workflows/prompts/execplan-implementation-review.md",
       ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
       ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
     ],
     fn(path) {
@@ -1801,7 +1982,14 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
     "apply_review_feedback",
     "prompts/execplan-implementation-repair-base-drift.md",
     "verify_plan_completion_before_final_validation",
-    "final_plan_completion_gate",
+    "finalize_final_plan_completion_gate",
+  )
+  assert string.contains(execplan, "- id: final_plan_completion_gate")
+  assert string.contains(execplan, "on_failure: continue")
+  assert string.contains(execplan, "- id: finalize_final_plan_completion_gate")
+  assert string.contains(
+    execplan,
+    "plan-completion-recovery --phase final --attempt 2 --max-attempts 2",
   )
 }
 
@@ -1836,8 +2024,62 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
     "depends_on: [verify_plan_completion_after_feedback]",
   )
   assert string.contains(workflow, "gate-plan-completion")
-  assert string.contains(workflow, "- id: review_changes")
+  assert string.contains(workflow, "- id: classify_plan_completion_gate")
   assert string.contains(workflow, "depends_on: [gate_plan_completion]")
+  assert string.contains(
+    workflow,
+    "plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+  )
+  assert string.contains(workflow, "- id: apply_late_plan_completion_feedback")
+  assert string.contains(
+    workflow,
+    "depends_on: [classify_plan_completion_gate]",
+  )
+  assert string.contains(
+    workflow,
+    "prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
+  )
+  assert string.contains(
+    workflow,
+    "- id: analyze_changes_after_late_plan_feedback",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [apply_late_plan_completion_feedback]",
+  )
+  assert string.contains(
+    workflow,
+    "- id: verify_plan_completion_after_late_repair",
+  )
+  assert string.contains(
+    workflow,
+    "prompts/execplan-implementation-verify-completion-after-late-repair.md",
+  )
+  assert string.contains(
+    workflow,
+    "- id: gate_plan_completion_after_late_repair",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [verify_plan_completion_after_late_repair]",
+  )
+  assert string.contains(
+    workflow,
+    "- id: finalize_plan_completion_gate_recovery",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [gate_plan_completion_after_late_repair]",
+  )
+  assert string.contains(
+    workflow,
+    "plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2",
+  )
+  assert string.contains(workflow, "- id: review_changes")
+  assert string.contains(
+    workflow,
+    "depends_on: [finalize_plan_completion_gate_recovery]",
+  )
   assert string.contains(
     workflow,
     "- id: verify_plan_completion_before_final_validation",
@@ -1855,8 +2097,20 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   assert string.contains(workflow, "- id: final_plan_completion_gate")
   assert string.contains(workflow, "depends_on: [final_validate]")
   assert string.contains(workflow, "gate-plan-completion --final")
+  assert string.contains(workflow, "- id: finalize_final_plan_completion_gate")
+  assert string.contains(
+    workflow,
+    "plan-completion-recovery --phase final --attempt 2 --max-attempts 2",
+  )
+  assert !string.contains(
+    workflow,
+    "- id: apply_final_plan_completion_feedback",
+  )
   assert string.contains(workflow, "- id: publish_pr")
-  assert string.contains(workflow, "depends_on: [final_plan_completion_gate]")
+  assert string.contains(
+    workflow,
+    "depends_on: [finalize_final_plan_completion_gate]",
+  )
 }
 
 fn assert_workflow_refresh_ordering(

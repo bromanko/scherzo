@@ -125,6 +125,21 @@ scripts/scherzoctl state reinitialize --root <workspace-root> --yes
 
 Discard is not reversible. It deletes unsupported active ledger state. It refuses current, missing, archived, corrupt, or malformed state.
 
+## Execplan plan-completion recovery
+
+`workflow:execplan-implementation` can stop with `plan_completion_recovery_exhausted` either after the bounded automatic late repair budget is spent at the pre-review gate or when the final pre-publish diagnostic gate still reports unmet promised plan behavior.
+
+When that happens, inspect these retained-workspace artifacts first:
+
+```sh
+tmp/scherzo-plan-completion-recovery.md
+tmp/scherzo-plan-completion-verdict.json
+```
+
+The recovery summary names the failure phase, blocking findings, retention status, and the recommended full-workflow retry command. Inspect or salvage the retained workspace manually if needed, then use the retry command shown in the artifact — normally `scherzoctl retry <issue>` — when it is safe to rerun the full workflow.
+
+Missing, malformed, or stale plan-completion verdict failures are not repairable through this path; they remain terminal verifier or workflow-state failures. Same-run resume from exhausted plan-completion recovery is intentionally out of scope for this MVP.
+
 ## Sensitive-data handling
 
 Treat pi transcripts, raw event payloads, prompts, tool inputs, tool outputs, and tracker excerpts as sensitive. Scherzo recovery output uses bounded redacted text for recovery messages, cleanup warnings, old-state reasons, and structured logs, but operators should still avoid pasting full prompts, API tokens, raw tool payloads, or full Linear comment bodies into task comments or public logs.
