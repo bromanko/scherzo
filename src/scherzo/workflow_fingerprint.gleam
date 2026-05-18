@@ -12,6 +12,7 @@ import scherzo/workflow_contract
 import scherzo/workflow_dag
 import scherzo/workspace_driver_env
 import scherzo/workspace_profile
+import scherzo/workstream/phase_metadata
 import simplifile
 
 pub type FingerprintError {
@@ -267,6 +268,13 @@ fn dag_to_json_with_schema_root(
     Some(contract) ->
       list.append(fields, [
         #("contract", workflow_contract.contract_to_canonical_json(contract)),
+      ])
+  }
+  let fields = case dag.workstream_phase {
+    None -> fields
+    Some(metadata) ->
+      list.append(fields, [
+        #("workstream_phase", phase_metadata.to_canonical_json(metadata)),
       ])
   }
   json.object(fields)

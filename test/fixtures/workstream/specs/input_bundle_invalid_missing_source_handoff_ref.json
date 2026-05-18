@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "artifact_type": "scherzo.input_bundle.v1",
+  "artifact_id": "input-bundle-linear-liv-370-next",
+  "workstream_id": "linear:LIV-370",
+  "workflow_id": "execplan-implementation",
+  "inputs": [
+    {
+      "name": "exec_plan_bundle",
+      "contract_type": "exec_plan_bundle",
+      "value_ref": "workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json"
+    }
+  ]
+}

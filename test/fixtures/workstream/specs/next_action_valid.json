@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "artifact_type": "scherzo.next_action.v1",
+  "artifact_id": "next-action-linear-liv-370-review",
+  "workstream_id": "linear:LIV-370",
+  "action_id": "review-fixtures",
+  "workflow_id": "execplan-revision",
+  "state": "available",
+  "priority": 10,
+  "inputs": [
+    "implementation_pack",
+    "exec_plan_bundle"
+  ],
+  "auto_enqueue": false,
+  "requires_gate": "human_review"
+}

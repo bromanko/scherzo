@@ -65,6 +65,14 @@ The final milestone runs the targeted fixture tests plus the standard format, te
 - [x] (2026-05-18 00:00Z) Drafted this concise review document for human review.
 - [x] (2026-05-18 00:00Z) Prepared the structured implementation-pack content for Scherzo capture.
 - [x] (2026-05-18 00:00Z) Incorporated review feedback by adding an artifact taxonomy and tightening fixture and fingerprint acceptance criteria.
+- [x] (2026-05-18 20:45Z) Added `test/workstream_spec_test.gleam` with red round-trip and stable-error expectations for all six artifact families.
+- [x] (2026-05-18 20:47Z) Confirmed the intended red phase: `direnv exec . gleam test` failed only for the missing workstream spec modules and fixtures.
+- [x] (2026-05-18 21:20Z) Added typed workstream artifact modules, fixture JSON files, and JSON Schema files for workstream, handoff, decision, input bundle, assignment, and next action artifacts.
+- [x] (2026-05-18 21:35Z) Extended validator-foundation coverage so handoff and decision fixtures validate through the existing structured-output seam.
+- [x] (2026-05-18 22:05Z) Implemented optional `workstream_phase` parsing, workflow compatibility tests, and fingerprint coverage for absent versus present metadata.
+- [x] (2026-05-18 22:15Z) Ran format, test, lint, review-doc validation, and scope-guardrail commands for the completed spec-only slice.
+- [x] (2026-05-19 01:10Z) Review tightened decoder/schema parity for required fields, terminal parent paths, snapshot hash consistency, and wrong-typed optional metadata.
+- [x] (2026-05-19 01:25Z) Added broader fingerprint regression coverage for optional `workstream_phase` fields and reran the full repository validation gates.
 
 ## Decision Log
 
@@ -83,6 +91,14 @@ The final milestone runs the targeted fixture tests plus the standard format, te
 - Decision: Review acceptance should explicitly name every artifact type and the fingerprint behavior under test.
   Rationale: The implementation issue should not be able to satisfy Ticket 1 with partial fixture coverage or metadata parsing that is invisible to workflow fingerprints.
   Date: 2026-05-18.
+
+- Decision: Keep artifact decoding and JSON construction split between `src/scherzo/workstream/artifacts.gleam` and `src/scherzo/workstream/artifact_values.gleam`.
+  Rationale: The spec slice added enough artifact families that a single new module would have tripped the source-guardrail size limit.
+  Date: 2026-05-18.
+
+- Decision: The typed decoders should enforce the same required-field and path invariants as the JSON Schemas rather than relying on a separate validation step to reject malformed artifacts.
+  Rationale: Later runtime callers may use the typed decoders directly, so schema/decoder drift would weaken the stable artifact contract.
+  Date: 2026-05-19.
 
 ## Validation and Acceptance
 
