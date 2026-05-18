@@ -1,7 +1,22 @@
 {
   description = "Scherzo Linear/pi orchestration daemon";
 
+  # The devenv shell includes pi from numtide/llm-agents.nix. Trust Numtide's
+  # cache so CI can substitute pi instead of source-building its npm package.
+  nixConfig = {
+    extra-substituters = [
+      "https://cache.numtide.com"
+    ];
+    extra-trusted-public-keys = [
+      "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+    ];
+  };
+
   inputs = {
+    # Linux CI depends on substituting aarch64-linux pkgs.gleam from
+    # cache.nixos.org. Only bump this nixpkgs-unstable lock to revisions where
+    # that output is cached; otherwise CI may compile deno/rusty-v8 and OOM
+    # before Scherzo's derivation runs.
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
