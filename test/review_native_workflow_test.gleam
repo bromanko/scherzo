@@ -16,9 +16,9 @@ fn implementation_dag() -> workflow_dag.WorkflowDag {
   dag
 }
 
-fn execplan_implementation_v2_dag() -> workflow_dag.WorkflowDag {
+fn execplan_implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
-    simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
+    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
   let assert Ok(dag) = workflow_dag.parse(contents)
   dag
 }
@@ -165,12 +165,12 @@ fn provider_schema_files() -> List(String) {
 fn provider_review_workflow_paths() -> List(String) {
   [
     ".scherzo/workflows/implementation.yaml",
-    ".scherzo/workflows/execplan-implementation-v2.yaml",
+    ".scherzo/workflows/execplan-implementation.yaml",
   ]
 }
 
 fn routed_review_dags() -> List(workflow_dag.WorkflowDag) {
-  [implementation_dag(), execplan_implementation_v2_dag()]
+  [implementation_dag(), execplan_implementation_dag()]
 }
 
 fn validate_result(

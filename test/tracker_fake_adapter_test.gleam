@@ -11,7 +11,7 @@ fn search_request() -> adapter.TaskSearchRequest {
     active_states: ["Todo", "In Progress"],
     dispatch_states: ["Todo"],
     terminal_states: ["Done", "Canceled"],
-    workflow_labels: ["workflow:execplan-v2"],
+    workflow_labels: ["workflow:execplan"],
     limit: 10,
   )
 }
@@ -59,7 +59,7 @@ pub fn fake_adapter_fetches_refreshes_and_looks_up_non_linear_task_test() {
   assert candidate.ref.remote_id == "card-1"
   assert candidate.ref.key == Some("CARD-1")
   assert candidate.title == "Fake non-Linear card"
-  assert task.label_names(candidate) == ["workflow:execplan-v2", "kind:test"]
+  assert task.label_names(candidate) == ["workflow:execplan", "kind:test"]
 
   let assert Ok([refreshed]) =
     tracker.task_source.refresh_by_refs([candidate.ref])

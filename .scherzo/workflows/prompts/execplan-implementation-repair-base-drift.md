@@ -1,4 +1,4 @@
-Repair base drift for Scherzo's `workflow:execplan-implementation-v2` workflow on task {{ issue.identifier }}: {{ issue.title }}.
+Repair base drift for Scherzo's `workflow:execplan-implementation` workflow on task {{ issue.identifier }}: {{ issue.title }}.
 
 Task URL:
 {{ issue.url }}

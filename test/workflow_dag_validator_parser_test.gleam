@@ -252,24 +252,28 @@ pub fn legacy_review_validator_lowers_to_command_validator_test() {
     ]
 }
 
-pub fn v2_execplan_workflows_parse_before_routing_test() {
+pub fn canonical_execplan_workflows_parse_before_routing_test() {
   let workflow_paths = [
-    ".scherzo/workflows/execplan-v2.yaml",
-    ".scherzo/workflows/execplan-revision-v2.yaml",
-    ".scherzo/workflows/execplan-implementation-v2.yaml",
+    #(".scherzo/workflows/execplan.yaml", "execplan"),
+    #(".scherzo/workflows/execplan-revision.yaml", "execplan-revision"),
+    #(
+      ".scherzo/workflows/execplan-implementation.yaml",
+      "execplan-implementation",
+    ),
   ]
 
-  list.each(workflow_paths, fn(path) {
+  list.each(workflow_paths, fn(workflow_path) {
+    let #(path, expected_id) = workflow_path
     let assert Ok(source) = simplifile.read(path)
     let dag = parse_ok(source)
-    assert string.contains(dag.id, "v2")
+    assert dag.id == expected_id
     assert !string.contains(source, "docs/schemas/")
     assert string.contains(source, ".scherzo/workflows/schemas/")
-      || path == ".scherzo/workflows/execplan-implementation-v2.yaml"
+      || path == ".scherzo/workflows/execplan-implementation.yaml"
   })
 
   let assert Ok(implementation_source) =
-    simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
+    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
   let implementation = parse_ok(implementation_source)
   let implementation_step_ids =
     list.map(implementation.steps, fn(step) { step.id })
@@ -292,7 +296,7 @@ pub fn v2_execplan_workflows_parse_before_routing_test() {
   )
 
   let assert Ok(drafting_source) =
-    simplifile.read(".scherzo/workflows/execplan-v2.yaml")
+    simplifile.read(".scherzo/workflows/execplan.yaml")
   let drafting = parse_ok(drafting_source)
   let assert Some(contract) = drafting.contract
   let assert [implementation_pack, exec_plan_bundle] = contract.outputs

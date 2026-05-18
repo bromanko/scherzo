@@ -1,4 +1,4 @@
-Apply plan-completion feedback for Scherzo's `workflow:execplan-implementation-v2` workflow on task {{ issue.identifier }}: {{ issue.title }}.
+Apply plan-completion feedback for Scherzo's `workflow:execplan-implementation` workflow on task {{ issue.identifier }}: {{ issue.title }}.
 
 Task URL:
 {{ issue.url }}
@@ -23,8 +23,8 @@ Feedback contract:
 - Read `tmp/scherzo-plan-completion-verdict.json` first.
 - If the verdict is `pass`, make no tracked-file edits. Report that no plan-completion feedback was required.
 - If the verdict is `fail`, this is the workflow's single automatic repair chance before code review. Complete only the missing required behavior described in `blocking_findings`.
-- Read `tmp/scherzo-implementation.json`, `tmp/execplan-v2-bundle.json`, `tmp/execplan-v2-review-doc.md`, and `tmp/execplan-v2-implementation-pack.json` before making a repair.
-- Treat the checked-in review doc named by `tmp/scherzo-implementation.json` `plan_path` (or `review_doc.path` in the bundle) as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat `tmp/execplan-v2-review-doc.md` as the prepared bundle baseline. Treat the implementation pack as the authoritative mechanical handoff only when it does not conflict with review-doc intent, scope, acceptance, or safety.
+- Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json` before making a repair.
+- Treat the checked-in review doc named by `tmp/scherzo-implementation.json` `plan_path` (or `review_doc.path` in the bundle) as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat `tmp/execplan-review-doc.md` as the prepared bundle baseline. Treat the implementation pack as the authoritative mechanical handoff only when it does not conflict with review-doc intent, scope, acceptance, or safety.
 - Keep the checked-in review doc's living-document sections current when your changes affect Progress, Validation and Acceptance, Surprises/Discoveries, Decisions, or Outcomes.
 - Do not broaden scope, start optional/stretch work, or perform code-review cleanup unrelated to the blocking plan-completion findings.
 

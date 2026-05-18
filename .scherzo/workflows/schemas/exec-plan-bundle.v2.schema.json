@@ -86,7 +86,7 @@
       "properties": {
         "issue_identifier": { "$ref": "#/$defs/non_empty_string" },
         "issue_url": { "type": "string", "format": "uri" },
-        "workflow_label": { "const": "workflow:execplan-implementation-v2" },
+        "workflow_label": { "const": "workflow:execplan-implementation" },
         "bundle_ref": { "$ref": "#/$defs/artifact_ref" }
       }
     },

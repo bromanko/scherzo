@@ -15,7 +15,7 @@ run_step "glinter" direnv exec . gleam run -m glinter
 run_step "scherzo custom lint" direnv exec . gleam run -m scherzo_lint
 run_step "structured output contract" direnv exec . scripts/scherzo-structured-output-contract check-workflows --output-dir tmp/scherzo-structured-output-contract/selfci
 run_step "review lane contract offline (implementation)" direnv exec . scripts/scherzo-review-lane-contract offline --workflow .scherzo/workflows/implementation.yaml --fixtures test/fixtures/review-lane-contract --output-dir tmp/scherzo-review-lane-contract/selfci/implementation
-run_step "review lane contract offline (execplan implementation v2)" direnv exec . scripts/scherzo-review-lane-contract offline --workflow .scherzo/workflows/execplan-implementation-v2.yaml --fixtures test/fixtures/review-lane-contract --output-dir tmp/scherzo-review-lane-contract/selfci/execplan-implementation-v2
+run_step "review lane contract offline (execplan implementation)" direnv exec . scripts/scherzo-review-lane-contract offline --workflow .scherzo/workflows/execplan-implementation.yaml --fixtures test/fixtures/review-lane-contract --output-dir tmp/scherzo-review-lane-contract/selfci/execplan-implementation
 run_step "clean test/tmp" rm -rf test/tmp
 run_step "gleam unit test" direnv exec . scherzo-test-unit
 run_step "gleam contract test" direnv exec . scherzo-test-contract

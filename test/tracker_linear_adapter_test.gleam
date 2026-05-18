@@ -55,7 +55,7 @@ fn task_search_request() -> tracker_adapter.TaskSearchRequest {
     active_states: ["Todo", "In Progress"],
     dispatch_states: ["Todo"],
     terminal_states: ["Done"],
-    workflow_labels: ["workflow:execplan-v2"],
+    workflow_labels: ["workflow:execplan"],
     limit: 10,
   )
 }
@@ -91,7 +91,7 @@ pub fn linear_adapter_fetch_candidates_matches_linear_parser_test() {
   assert candidate.state
     == task.TaskState(id: None, name: "Todo", category: task.Unknown)
   assert candidate.branch_hint == Some("liv-266-refresh")
-  assert task.label_names(candidate) == ["workflow:execplan-v2"]
+  assert task.label_names(candidate) == ["workflow:execplan"]
   assert candidate.blockers == []
   assert candidate.blockers_complete == True
 }
@@ -258,7 +258,7 @@ fn scheduled_failure_backend(
 }
 
 fn candidate_response() -> String {
-  "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-1\",\"identifier\":\"LIV-266\",\"title\":\"Refresh architecture\",\"description\":\"body\",\"priority\":2,\"branchName\":\"liv-266-refresh\",\"url\":\"https://linear.app/living-systems/issue/LIV-266\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan-v2\"}]},\"inverseRelations\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-1\",\"identifier\":\"LIV-266\",\"title\":\"Refresh architecture\",\"description\":\"body\",\"priority\":2,\"branchName\":\"liv-266-refresh\",\"url\":\"https://linear.app/living-systems/issue/LIV-266\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan\"}]},\"inverseRelations\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
 }
 
 fn comment_create_response(comment_id: String) -> String {

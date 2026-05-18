@@ -38,7 +38,7 @@ The single milestone is to validate the review document, validate the pack, and 
 
 ## Validation and Acceptance
 
-Run `scripts/scherzo-execplan-v2 validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md` and expect a zero exit code.
+Run `scripts/scherzo-execplan validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md` and expect a zero exit code.
 
 ## Rollout, Recovery, and Idempotence
 

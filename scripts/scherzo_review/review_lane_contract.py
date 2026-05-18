@@ -649,6 +649,19 @@ def check_all_provider_schemas() -> dict[str, Any]:
     return {"status": "passed" if not errors else "failed", "lanes": lanes, "errors": errors}
 
 
+def resolve_workflow_path(workflow_path: Path) -> Path:
+    if workflow_path.exists():
+        return workflow_path
+    if workflow_path.name.startswith("execplan") and workflow_path.name.endswith(
+        "-v2.yaml"
+    ):
+        alias_name = workflow_path.name.removesuffix("-v2.yaml") + ".yaml"
+        alias_path = workflow_path.with_name(alias_name)
+        if alias_path.exists():
+            return alias_path
+    return workflow_path
+
+
 def generic_workflow_contract(workflow_path: Path, output_dir: Path) -> dict[str, Any]:
     generic_dir = output_dir / "generic-structured-output-contract"
     proc = subprocess.run(
@@ -683,6 +696,7 @@ def generic_workflow_contract(workflow_path: Path, output_dir: Path) -> dict[str
 
 def offline_report(workflow_path: Path, fixtures_dir: Path, output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    workflow_path = resolve_workflow_path(workflow_path)
     generic_contract = generic_workflow_contract(workflow_path, output_dir)
     schema_status = check_all_provider_schemas()
     workflow_status = check_workflow_migration(workflow_path)

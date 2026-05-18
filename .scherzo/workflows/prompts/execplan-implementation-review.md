@@ -1,4 +1,4 @@
-You are reviewing the implementation produced by Scherzo's `workflow:execplan-implementation-v2` workflow for task {{ issue.identifier }}: {{ issue.title }}.
+You are reviewing the implementation produced by Scherzo's `workflow:execplan-implementation` workflow for task {{ issue.identifier }}: {{ issue.title }}.
 
 Task URL:
 {{ issue.url }}
@@ -70,7 +70,7 @@ Review contract:
 - You are in the same dedicated workflow workspace prepared by Scherzo as the implementation.
 - Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - Use `$SCHERZO_WORKSPACE_DRIVER status --human` and `$SCHERZO_WORKSPACE_DRIVER diff --human` only for orientation; the analysis output above is authoritative for changed files across the workflow run.
-- Read `tmp/scherzo-implementation.json`, `tmp/execplan-v2-bundle.json`, `tmp/execplan-v2-review-doc.md`, and `tmp/execplan-v2-implementation-pack.json` for v2 handoff context.
+- Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json` for ExecPlan handoff context.
 - Determine the checked-in review doc path from `tmp/scherzo-implementation.json` field `plan_path`, falling back to `review_doc.path` in the bundle. Treat that checked-in review doc as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat the implementation pack as mechanical context only when it does not conflict with the review doc.
 - If `REVIEW_BRIEF_PATH=...` is present in the native preparation output, read that local artifact for orientation. It is additive context only; do not post the artifact to PRs or Linear.
 - Read each normalized native `ReviewLaneResult` referenced by `REVIEW_LANE_RESULT_PATH=...` in the normalization outputs, plus its retained evidence ledger/log/analysis artifacts. Treat lane findings as normalized review input: fix or report blocking findings, preserve non-blocking suspicions as feedback, and do not discard empty-finding lane logs.

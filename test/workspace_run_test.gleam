@@ -459,7 +459,7 @@ pub fn cleanup_retention_marker_skips_delete_until_removed_test() {
   let assert Ok(main) =
     workspace_run.prepare_step(
       issue(),
-      "execplan-implementation-v2",
+      "execplan-implementation",
       "run-retained",
       "prepare_plan",
       workflow_dag.WorkspaceRef(name: "main", from: None),

@@ -1,6 +1,6 @@
 version: 1
-id: execplan-implementation-v2
-description: Validate an ExecPlan v2 bundle, implement from the prepared review doc and implementation pack, run plan-completion and native review gates, publish a PR, and emit a code_change_bundle.
+id: execplan-implementation
+description: Validate an ExecPlan bundle, implement from the prepared review doc and implementation pack, run plan-completion and native review gates, publish a PR, and emit a code_change_bundle.
 workspace_profile: dogfood-jj
 workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]
 max_parallel_steps: 1
@@ -16,11 +16,11 @@ contract:
       type: code_change_bundle
       source:
         step: materialize_code_change_bundle
-        path: tmp/execplan-v2-code-change-bundle.json
+        path: tmp/execplan-code-change-bundle.json
 steps:
   - id: prepare_bundle
     kind: command
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" implementation-prepare --from-issue-context'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" implementation-prepare --from-issue-context'
     timeout_ms: 300000
     workspace: main
 
@@ -34,7 +34,7 @@ steps:
   - id: implement_plan
     kind: agent
     depends_on: [refresh_base_before_implementation]
-    prompt: prompts/execplan-implementation-v2-implement.md
+    prompt: prompts/execplan-implementation-implement.md
     model: openai-codex/gpt-5.4
     thinking: medium
     workspace: main
@@ -42,7 +42,7 @@ steps:
   - id: gate_no_conflict
     kind: command
     depends_on: [implement_plan]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" gate-no-conflict'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" gate-no-conflict'
     workspace: main
 
   - id: analyze_changes
@@ -54,13 +54,13 @@ steps:
   - id: verify_plan_completion
     kind: agent
     depends_on: [analyze_changes]
-    prompt: prompts/execplan-implementation-v2-verify-completion.md
+    prompt: prompts/execplan-implementation-verify-completion.md
     workspace: main
 
   - id: apply_plan_completion_feedback
     kind: agent
     depends_on: [verify_plan_completion]
-    prompt: prompts/execplan-implementation-v2-apply-plan-completion-feedback.md
+    prompt: prompts/execplan-implementation-apply-plan-completion-feedback.md
     model: openai-codex/gpt-5.4
     thinking: medium
     workspace: main
@@ -74,7 +74,7 @@ steps:
   - id: verify_plan_completion_after_feedback
     kind: agent
     depends_on: [analyze_changes_after_plan_feedback]
-    prompt: prompts/execplan-implementation-v2-verify-completion-after-feedback.md
+    prompt: prompts/execplan-implementation-verify-completion-after-feedback.md
     workspace: main
 
   - id: gate_plan_completion
@@ -92,7 +92,7 @@ steps:
   - id: prepare_review
     kind: command
     depends_on: [assert_native_review_cutover]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$repo_root/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "execplan-implementation-v2-native"; else "$repo_root/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "execplan-implementation-v2-native"; fi'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$repo_root/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "execplan-implementation-native"; else "$repo_root/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "execplan-implementation-native"; fi'
     timeout_ms: 300000
     workspace: main
 
@@ -356,13 +356,13 @@ steps:
   - id: review_changes
     kind: agent
     depends_on: [validate_native_review_artifacts]
-    prompt: prompts/execplan-implementation-v2-review.md
+    prompt: prompts/execplan-implementation-review.md
     workspace: main
 
   - id: apply_review_feedback
     kind: agent
     depends_on: [review_changes]
-    prompt: prompts/execplan-implementation-v2-apply-feedback.md
+    prompt: prompts/execplan-implementation-apply-feedback.md
     model: openai-codex/gpt-5.4
     thinking: medium
     workspace: main
@@ -386,13 +386,13 @@ steps:
   - id: repair_base_drift
     kind: agent
     depends_on: [validate_after_refresh]
-    prompt: prompts/execplan-implementation-v2-repair-base-drift.md
+    prompt: prompts/execplan-implementation-repair-base-drift.md
     workspace: main
 
   - id: verify_plan_completion_before_final_validation
     kind: agent
     depends_on: [repair_base_drift]
-    prompt: prompts/execplan-implementation-v2-verify-completion-before-final-validation.md
+    prompt: prompts/execplan-implementation-verify-completion-before-final-validation.md
     workspace: main
 
   - id: final_validate
@@ -418,5 +418,5 @@ steps:
   - id: materialize_code_change_bundle
     kind: command
     depends_on: [publish_pr]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" materialize-code-change-bundle --bundle tmp/execplan-v2-bundle.json --output tmp/execplan-v2-code-change-bundle.json'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" materialize-code-change-bundle --bundle tmp/execplan-bundle.json --output tmp/execplan-code-change-bundle.json'
     workspace: main

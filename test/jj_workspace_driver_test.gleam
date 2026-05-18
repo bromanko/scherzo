@@ -812,7 +812,7 @@ pub fn jj_driver_publish_accepts_workflow_kind_tokens_test() {
   let artifact =
     run_jj(
       "jj_driver_publish_kind_token",
-      "publish-change --kind execplan-v2 --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-change --kind execplan --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),

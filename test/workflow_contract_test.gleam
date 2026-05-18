@@ -136,7 +136,7 @@ pub fn rejects_invalid_input_context_sources_test() {
 pub fn parses_output_sources_test() {
   let contract =
     parse_contract(minimal_contract(
-      "  outputs:\n    stdout_doc:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft_execplan\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\n    bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        path: tmp/execplan-v2-bundle.json\n    pack:\n      type: implementation_pack\n      source:\n        step: materialize_pack\n        path: tmp/execplan-v2-implementation-pack.json\n    code_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize_code_change_bundle\n        path: tmp/execplan-v2-code-change-bundle.json\n    pr:\n      type: url\n      source:\n        type: url\n        value: https://example.invalid/pr/1\n    branch:\n      type: git_ref\n      source:\n        type: git_ref\n        value: feature/liv-292\n",
+      "  outputs:\n    stdout_doc:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft_execplan\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\n    bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        path: tmp/execplan-bundle.json\n    pack:\n      type: implementation_pack\n      source:\n        step: materialize_pack\n        path: tmp/execplan-implementation-pack.json\n    code_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize_code_change_bundle\n        path: tmp/execplan-code-change-bundle.json\n    pr:\n      type: url\n      source:\n        type: url\n        value: https://example.invalid/pr/1\n    branch:\n      type: git_ref\n      source:\n        type: git_ref\n        value: feature/liv-292\n",
     ))
   let assert [
     stdout_doc,
@@ -169,17 +169,17 @@ pub fn parses_output_sources_test() {
   assert bundle.source
     == Some(workflow_contract.StepFile(
       "materialize_bundle",
-      "tmp/execplan-v2-bundle.json",
+      "tmp/execplan-bundle.json",
     ))
   assert pack.source
     == Some(workflow_contract.StepFile(
       "materialize_pack",
-      "tmp/execplan-v2-implementation-pack.json",
+      "tmp/execplan-implementation-pack.json",
     ))
   assert code_bundle.source
     == Some(workflow_contract.StepFile(
       "materialize_code_change_bundle",
-      "tmp/execplan-v2-code-change-bundle.json",
+      "tmp/execplan-code-change-bundle.json",
     ))
   assert pr.source
     == Some(workflow_contract.StaticUrl("https://example.invalid/pr/1"))

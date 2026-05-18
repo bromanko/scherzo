@@ -9,7 +9,7 @@
     ],
     "diff": {
       "bytes": 47,
-      "ref": "runs/run-2/execplan-v2/code-change/diff.patch",
+      "ref": "runs/run-2/execplan/code-change/diff.patch",
       "sha256": "03d60b35e28eedda292f897cf3df901b767016d1d4b5ecbc934ebf2bd8ad78cb"
     }
   },
@@ -19,7 +19,7 @@
   },
   "plan_completion": {
     "bytes": 62,
-    "ref": "runs/run-2/execplan-v2/code-change/plan-completion.json",
+    "ref": "runs/run-2/execplan/code-change/plan-completion.json",
     "sha256": "4cd32a5c9e69d8e96d2fc76382fe3dc73c1cb34f92bb43509efa7d9bfc27f0bb",
     "verdict": "complete"
   },
@@ -33,7 +33,7 @@
     {
       "bytes": 43,
       "name": "final-review",
-      "ref": "runs/run-2/execplan-v2/code-change/review/final-review.json",
+      "ref": "runs/run-2/execplan/code-change/review/final-review.json",
       "sha256": "901c63d7d00aa05be77f85b488662475ee888b1ce79414f4d60f515898faa0df"
     }
   ],
@@ -52,7 +52,7 @@
     {
       "bytes": 45,
       "name": "selfci",
-      "ref": "runs/run-2/execplan-v2/code-change/validation/selfci.json",
+      "ref": "runs/run-2/execplan/code-change/validation/selfci.json",
       "sha256": "b81b7f38f5afb508039afea118728dee0b5a846e1cd28fa26a67ed13e483071a"
     }
   ]
