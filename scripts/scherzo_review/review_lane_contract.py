@@ -119,6 +119,45 @@ FORBIDDEN_RAW_VALIDATOR_NAMES = {
     "review_lane_draft",
 }
 
+PROVIDER_SCHEMA_ALLOWED_KEYWORDS = {
+    "type",
+    "description",
+    "required",
+    "properties",
+    "items",
+    "additionalProperties",
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems",
+    "minimum",
+    "maximum",
+    "pattern",
+}
+
+PROVIDER_SCHEMA_DISALLOWED_KEYWORDS = {
+    "$defs",
+    "$id",
+    "$ref",
+    "$schema",
+    "allOf",
+    "anyOf",
+    "const",
+    "default",
+    "dependentRequired",
+    "dependentSchemas",
+    "else",
+    "enum",
+    "format",
+    "if",
+    "not",
+    "oneOf",
+    "patternProperties",
+    "then",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+}
+
 
 class ContractError(Exception):
     """Classified review-lane contract failure."""
@@ -221,23 +260,7 @@ def load_provider_schema(schema_path: Path) -> dict[str, Any]:
 
 def check_provider_schema(schema_path: Path) -> dict[str, Any]:
     schema = load_provider_schema(schema_path)
-    proc = subprocess.run(
-        [
-            "direnv",
-            "exec",
-            ".",
-            "scripts/scherzo-structured-output-contract",
-            "check-schema",
-            "--schema",
-            str(schema_path),
-        ],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if proc.returncode != 0:
-        message = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        raise ContractError("structured_output_tool_spec_provider_incompatible_schema", message)
+    validate_provider_safe_schema(schema, schema_path)
     check_jsonschema_available()
     try:
         Draft202012Validator.check_schema(schema)  # type: ignore[union-attr]
@@ -247,6 +270,47 @@ def check_provider_schema(schema_path: Path) -> dict[str, Any]:
             f"provider schema {schema_path} is not a valid JSON Schema: {exc}",
         ) from exc
     return schema
+
+
+def validate_provider_safe_schema(schema: dict[str, Any], schema_path: Path) -> None:
+    """Reject schema features that are unsafe for structured-output providers.
+
+    Review-lane materialization runs in consuming repositories such as
+    scherzo-ui, so this compatibility check must stay local and Python-only.
+    It intentionally enforces the small JSON Schema subset used by the lane
+    provider schemas instead of delegating to Scherzo Core's Gleam toolchain.
+    """
+    validate_provider_safe_schema_node(schema, schema_path, [])
+
+
+def validate_provider_safe_schema_node(value: Any, schema_path: Path, path: list[str]) -> None:
+    if not isinstance(value, dict):
+        raise_provider_schema_error(schema_path, path, "schema nodes must be JSON objects")
+
+    for key, child in value.items():
+        if key in PROVIDER_SCHEMA_DISALLOWED_KEYWORDS or key.startswith("$"):
+            raise_provider_schema_error(schema_path, path + [key], f"contains disallowed keyword {key}")
+        if key not in PROVIDER_SCHEMA_ALLOWED_KEYWORDS:
+            raise_provider_schema_error(schema_path, path + [key], f"contains unsupported keyword {key}")
+
+        if key == "properties":
+            if not isinstance(child, dict):
+                raise_provider_schema_error(schema_path, path + [key], "properties must be an object")
+            for property_name, property_schema in child.items():
+                validate_provider_safe_schema_node(property_schema, schema_path, path + [key, str(property_name)])
+        elif key == "items":
+            validate_provider_safe_schema_node(child, schema_path, path + [key])
+        elif key == "additionalProperties":
+            if not isinstance(child, bool):
+                validate_provider_safe_schema_node(child, schema_path, path + [key])
+
+
+def raise_provider_schema_error(schema_path: Path, path: list[str], detail: str) -> None:
+    pointer = "/".join(path) if path else "/"
+    raise ContractError(
+        "structured_output_tool_spec_provider_incompatible_schema",
+        f"provider schema {schema_path} {detail} at {pointer}",
+    )
 
 
 def validate_submission_against_provider_schema(submission: dict[str, Any], lane_id: str) -> None:
