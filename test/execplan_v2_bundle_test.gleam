@@ -990,7 +990,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
 
   let revision =
     run_shell(
-      "env SCHERZO_RUN_ID=run-revision scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -1057,7 +1057,7 @@ pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
 
   let revision =
     run_shell(
-      "env SCHERZO_RUN_ID=run-revision-pack-source scripts/scherzo-execplan materialize-revision --previous-bundle "
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision-pack-source scripts/scherzo-execplan materialize-revision --previous-bundle "
       <> shell_quote(previous_bundle)
       <> " --review-doc-path-file "
       <> shell_quote(path_file)
@@ -1081,6 +1081,85 @@ pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
     "\"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"",
   )
   assert !string.contains(bundle, "Untitled source task")
+}
+
+pub fn materialize_revision_updates_existing_handoff_issue_test() {
+  let dir = "test/tmp/execplan-v2-revision-handoff-update"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let log = dir <> "/linear.log"
+  let update_desc = dir <> "/updated-description.md"
+  let linear = dir <> "/bin/linear"
+  let assert Ok(Nil) =
+    simplifile.write(
+      linear,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> shell_quote(log)
+        <> "\n"
+        <> "if [ \"$1 $2 $3\" = 'issue update LIV-315' ]; then\n"
+        <> "  desc=''\n"
+        <> "  prev=''\n"
+        <> "  for arg in \"$@\"; do if [ \"$prev\" = --description-file ]; then desc=$arg; fi; prev=$arg; done\n"
+        <> "  if [ -z \"$desc\" ]; then echo 'missing description file' >&2; exit 2; fi\n"
+        <> "  cp \"$desc\" "
+        <> shell_quote(update_desc)
+        <> "\n"
+        <> "  grep -q '^Bundle ref: runs/run-revision-update/outputs/exec_plan_bundle.json$' \"$desc\" || { echo 'missing revised bundle ref' >&2; exit 3; }\n"
+        <> "  grep -Eq '^Bundle sha256: [a-f0-9]{64}$' \"$desc\" || { echo 'missing revised bundle sha' >&2; exit 4; }\n"
+        <> "  grep -q '^Bundle sha256: pending$' \"$desc\" && { echo 'pending bundle sha' >&2; exit 5; }\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1 $2 $3 $4\" = 'issue comment add LIV-315' ]; then exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  let chmod = run_shell("chmod +x " <> shell_quote(linear))
+  assert chmod.status == step_artifact.StepSucceeded
+
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let output = dir <> "/bundle.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      context_path,
+      "{\n"
+        <> "  \"artifact_type\": \"execplan_v2_publish_context\",\n"
+        <> "  \"source_issue\": {\"identifier\": \"LIV-314\", \"title\": \"Fixture v2 ExecPlan bundle\", \"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"},\n"
+        <> "  \"pr\": {\"url\": \"https://github.com/living-systems/scherzo/pull/314\", \"branch\": \"execplan/liv-314\", \"head_revision\": \"reused\"},\n"
+        <> "  \"review_surface\": {\"status\": \"reused\", \"source_bundle_ref\": \"runs/run-1/outputs/exec_plan_bundle.json\", \"head_revision\": \"reused\"}\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_shell(
+      "env PATH="
+      <> shell_quote(dir <> "/bin")
+      <> ":$PATH SCHERZO_RUN_ID=run-revision-update scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
+      <> shell_quote(context_path)
+      <> " --status auto --output "
+      <> shell_quote(output),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(linear_log) = simplifile.read(log)
+  assert string.contains(linear_log, "issue update LIV-315")
+  assert string.contains(linear_log, "issue comment add LIV-315")
+  let assert Ok(updated_description) = simplifile.read(update_desc)
+  assert string.contains(
+    updated_description,
+    "Bundle ref: runs/run-revision-update/outputs/exec_plan_bundle.json",
+  )
+  assert !string.contains(
+    updated_description,
+    "Bundle ref: runs/run-1/outputs/exec_plan_bundle.json",
+  )
 }
 
 pub fn materialize_code_change_bundle_emits_retained_refs_test() {

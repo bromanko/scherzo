@@ -1951,7 +1951,19 @@ def materialize_revision(args: list[str]) -> None:
     }
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA)
     write_json(Path(ns.output), bundle)
-    sys.stdout.write(canonical_json(bundle))
+    final_text = canonical_json(bundle)
+    final_sha = sha256_bytes(final_text.encode("utf-8"))
+    handoff = bundle["implementation_handoff"]
+    update_handoff_issue_description(
+        handoff,
+        bundle["source_issue"],
+        bundle_ref,
+        final_sha,
+        pack_meta["sha256"],
+        review_meta["path"],
+    )
+    annotate_handoff_issue(handoff, bundle_ref, final_sha, pack_meta["sha256"], review_meta["path"])
+    sys.stdout.write(final_text)
 
 
 def command_implementation_prepare(args: list[str]) -> None:
