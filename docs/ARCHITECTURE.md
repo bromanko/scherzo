@@ -215,7 +215,8 @@ and add tests that exercise the public Gleam wrapper, not just the Erlang helper
 ## Schema-change checklist
 
 Use this checklist for ledger, projection snapshot, artifact, control protocol,
-config, workflow YAML, tracker task shape, or Linear payload shape changes.
+config, workflow YAML, tracker task shape, or Linear payload shape changes. Breaking
+changes must also follow the upgrade policy in [docs/runbooks/upgrades.md](runbooks/upgrades.md): detect old shapes at safe boundaries, fail fast with stable diagnostics, add `doctor` coverage when static, and require explicit operator actions for unsupported durable state.
 
 1. Identify the owning module:
    - Ledger records: `src/scherzo/state/record.gleam`.
@@ -234,7 +235,8 @@ config, workflow YAML, tracker task shape, or Linear payload shape changes.
    field that is never written.
 3. Decide compatibility explicitly. Unsupported local state should fail clearly
    and be handled by `scherzoctl state ...` or documented reset steps; do not
-   silently reinterpret old records.
+   silently reinterpret old records. Link diagnostics to the relevant upgrade
+   runbook and include affected paths/fields when safe.
 4. Keep persisted strings bounded/redacted. Add or adjust redaction tests when a
    new persisted field may contain user, Linear, command, or pi text.
 5. Update recovery behavior and operator surface if the new schema affects

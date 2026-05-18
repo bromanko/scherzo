@@ -49,6 +49,7 @@ When working from this source checkout, run the same entrypoints through devenv,
 | --- | --- |
 | End-to-end adoption path | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
 | Repository architecture and change checklist | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Breaking-change upgrade policy | [docs/runbooks/upgrades.md](docs/runbooks/upgrades.md) |
 | Workspace driver contract | [docs/specs/WORKSPACE_DRIVER_SPEC.md](docs/specs/WORKSPACE_DRIVER_SPEC.md) |
 | Structured output and validators | [docs/specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md](docs/specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md) |
 | Workspace driver migration notes | [docs/runbooks/workspace-driver-migration.md](docs/runbooks/workspace-driver-migration.md) |

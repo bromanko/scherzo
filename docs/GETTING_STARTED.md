@@ -640,6 +640,7 @@ Common doctor failures:
 | Multiple workflow labels | `require_exactly_one_workflow_label: true` and task has more than one | Leave exactly one `workflow:*` label on the task |
 | Workspace driver discovery fails | Driver not on `PATH`, not executable, or invalid `describe --json` | Fix the profile command or implement the driver spec |
 | Workspace lifecycle fails | Driver cannot create/remove scratch workspace or selected jj base is unavailable | Fix driver env, VCS state, base branch, or local permissions |
+| Legacy or unsupported shape | Config, workflow, driver, tracker, or local state uses an old shape | Read the diagnostic path/code and the [upgrade policy](runbooks/upgrades.md) or linked specific runbook |
 | Pi probe fails | `pi` missing, provider credentials missing, or command incompatible | Run `pi --mode rpc --no-session` manually and fix credentials/config |
 | Prompt/schema path missing | Paths are relative to different roots | Check workflow-relative prompt paths and repository-relative schema paths |
 
@@ -740,6 +741,7 @@ Use `ps --json` and `session --json` when scripting or when an agent is acting a
 | Unsure if the tracker board matches config | `scherzo doctor --check tracker-contract .scherzo/scherzo.yaml` | Requires API key and configured project slug |
 | No tasks dispatch | `scherzo doctor --check tracker-smoke .scherzo/scherzo.yaml` | Check project, dispatch state, active state, terminal state, and workflow labels |
 | Driver problem | `<driver> describe --json` | Then run the relevant driver lifecycle/capability command by hand |
+| Upgrade or breaking-change diagnostic | `scherzo doctor .scherzo/scherzo.yaml` or `scherzoctl state status --root <workspace-root>` | Follow the [upgrade policy](runbooks/upgrades.md) and any specific runbook named by the diagnostic |
 | jj workspace problem | `jj status` and driver env review | Verify base, remote, fetch policy, and publish remote before daemon mode |
 | Agent cannot start | `pi --mode rpc --no-session` | Fix `pi` install, model/provider credentials, or `pi.command` |
 | Structured output rejected | Read retained step diagnostics and schema validator stderr | Final-response source must be one JSON document; command validators should print concise stderr |
