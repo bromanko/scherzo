@@ -2,6 +2,10 @@
   description = "Scherzo Linear/pi orchestration daemon";
 
   inputs = {
+    # Linux CI depends on substituting aarch64-linux pkgs.gleam from
+    # cache.nixos.org. Only bump this nixpkgs-unstable lock to revisions where
+    # that output is cached; otherwise CI may compile deno/rusty-v8 and OOM
+    # before Scherzo's derivation runs.
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
