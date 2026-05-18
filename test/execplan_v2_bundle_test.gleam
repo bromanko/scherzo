@@ -2,6 +2,7 @@ import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
 import scherzo/config/types as config_types
+import scherzo/hash
 import scherzo/step_artifact
 import simplifile
 import workflow_context_test_support
@@ -94,6 +95,51 @@ fn pack_submission(title: String) -> String {
   <> "}\n"
 }
 
+fn write_revision_bundle_with_surface(
+  dir: String,
+  review_path: String,
+  branch: String,
+  head_revision: String,
+) -> #(String, String) {
+  let bundle_ref = "runs/run-prepare/outputs/exec_plan_bundle.json"
+  let bundle_dir =
+    dir <> "/repo/.scherzo-state/artifacts/runs/run-prepare/outputs"
+  let assert Ok(Nil) = simplifile.create_directory_all(bundle_dir)
+  let assert Ok(source) =
+    simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+  let with_path =
+    string.replace(
+      source,
+      each: "test/fixtures/execplan_v2/review-doc.valid.md",
+      with: review_path,
+    )
+  let with_branch =
+    string.replace(
+      with_path,
+      each: "    \"branch\": \"execplan/liv-314\",\n",
+      with: "    \"branch\": \""
+        <> branch
+        <> "\",\n    \"head_revision\": \""
+        <> head_revision
+        <> "\",\n",
+    )
+  let bundle_path = bundle_dir <> "/exec_plan_bundle.json"
+  let assert Ok(Nil) = simplifile.write(bundle_path, with_branch)
+  #(bundle_ref, hash.sha256_hex(with_branch))
+}
+
+fn write_revision_bundle(
+  dir: String,
+  review_path: String,
+) -> #(String, String) {
+  write_revision_bundle_with_surface(
+    dir,
+    review_path,
+    "execplan/liv-314-unmerged",
+    "ca667773c9a6d31bb64676c103b3f1f14c3bcced",
+  )
+}
+
 pub fn validate_bundle_accepts_valid_fixture_test() {
   let artifact =
     run_helper(
@@ -136,6 +182,216 @@ pub fn validate_bundle_rejects_missing_review_doc_test() {
     artifact.stderr,
     "SCHERZO_FAILURE_CODE=execplan_v2_review_doc_missing",
   )
+}
+
+pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
+  let dir = "test/tmp/execplan-prepare-revision-branch"
+  reset_dir(dir)
+  let review_path = dir <> "/docs/plans/unmerged.md"
+  let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
+  let driver = dir <> "/workspace-driver"
+  let log = dir <> "/workspace-driver.log"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> shell_quote(log)
+        <> "\n"
+        <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = ca667773c9a6d31bb64676c103b3f1f14c3bcced ]; then\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"head not local\"}'\n"
+        <> "  exit 1\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = execplan/liv-314-unmerged@origin ]; then\n"
+        <> "  mkdir -p "
+        <> shell_quote(dir <> "/docs/plans")
+        <> "\n"
+        <> "  cp test/fixtures/execplan_v2/review-doc.valid.md "
+        <> shell_quote(review_path)
+        <> "\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\",\"stage\":\"prepare_revision\",\"base_ref\":\"execplan/liv-314-unmerged@origin\",\"base_revision\":\"execplan/liv-314-unmerged@origin\",\"before_revision\":\"main\",\"after_revision\":\"branch\",\"conflict_files\":[]}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"missing revision base\"}'\n"
+        <> "exit 1\n",
+    )
+  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  assert chmod.status == step_artifact.StepSucceeded
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> shell_quote(dir <> "/repo")
+      <> " SCHERZO_WORKSPACE_DRIVER="
+      <> shell_quote(driver)
+      <> " SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_ISSUE_CONTEXT="
+      <> shell_quote(issue_context)
+      <> " scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PREPARE_REVISION_STATUS=ok")
+  let assert Ok(path_contents) = simplifile.read(dir <> "/review.path")
+  assert path_contents == review_path <> "\n"
+  let assert Ok(review_doc) = simplifile.read(review_path)
+  assert string.contains(review_doc, "Purpose / Big Picture")
+  let assert Ok(driver_log) = simplifile.read(log)
+  assert string.contains(
+    driver_log,
+    "refresh-base --stage prepare_revision --target ca667773c9a6d31bb64676c103b3f1f14c3bcced --json",
+  )
+  assert string.contains(
+    driver_log,
+    "refresh-base --stage prepare_revision --target execplan/liv-314-unmerged@origin --json",
+  )
+}
+
+pub fn prepare_revision_reports_revision_base_missing_when_branch_unresolved_test() {
+  let dir = "test/tmp/execplan-prepare-revision-base-missing"
+  reset_dir(dir)
+  let review_path = dir <> "/docs/plans/unmerged.md"
+  let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
+  let driver = dir <> "/workspace-driver"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"missing revision base\"}'\n"
+        <> "exit 1\n",
+    )
+  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  assert chmod.status == step_artifact.StepSucceeded
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> shell_quote(dir <> "/repo")
+      <> " SCHERZO_WORKSPACE_DRIVER="
+      <> shell_quote(driver)
+      <> " SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_ISSUE_CONTEXT="
+      <> shell_quote(issue_context)
+      <> " scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_revision_base_missing",
+  )
+  assert !string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_review_doc_missing",
+  )
+}
+
+pub fn prepare_revision_refresh_base_timeout_test() {
+  let dir = "test/tmp/execplan-prepare-revision-refresh-timeout"
+  reset_dir(dir)
+  let review_path = dir <> "/docs/plans/unmerged.md"
+  let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
+  let driver = dir <> "/workspace-driver"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver,
+      "#!/usr/bin/env python3\nimport time\ntime.sleep(5)\n",
+    )
+  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  assert chmod.status == step_artifact.StepSucceeded
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> shell_quote(dir <> "/repo")
+      <> " SCHERZO_WORKSPACE_DRIVER="
+      <> shell_quote(driver)
+      <> " SCHERZO_EXECPLAN_REVISION_REFRESH_TIMEOUT_SECONDS=0.1 SCHERZO_ISSUE_CONTEXT="
+      <> shell_quote(issue_context)
+      <> " scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_revision_base_missing",
+  )
+  assert string.contains(artifact.stderr, "timed out after 0.1s")
+}
+
+pub fn prepare_revision_rejects_unsafe_review_surface_targets_before_refresh_test() {
+  let dir = "test/tmp/execplan-prepare-revision-unsafe-target"
+  reset_dir(dir)
+  let review_path = dir <> "/docs/plans/unmerged.md"
+  let #(bundle_ref, bundle_sha) =
+    write_revision_bundle_with_surface(
+      dir,
+      review_path,
+      "execplan/liv-314@unexpected-remote",
+      "--not-a-commit",
+    )
+  let driver = dir <> "/workspace-driver"
+  let log = dir <> "/workspace-driver.log"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> shell_quote(log)
+        <> "\n"
+        <> "printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\"}'\n",
+    )
+  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  assert chmod.status == step_artifact.StepSucceeded
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> shell_quote(dir <> "/repo")
+      <> " SCHERZO_WORKSPACE_DRIVER="
+      <> shell_quote(driver)
+      <> " SCHERZO_ISSUE_CONTEXT="
+      <> shell_quote(issue_context)
+      <> " scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_revision_base_missing",
+  )
+  assert string.contains(artifact.stderr, "no safe review_surface branch/head")
+  let assert Error(_) = simplifile.read(log)
 }
 
 pub fn validate_bundle_rejects_review_doc_hash_mismatch_test() {
@@ -359,6 +615,7 @@ pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
   reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
+  let output = dir <> "/bundle.json"
   let title_file = "tmp/execplan-pr-title.txt"
   let _ = simplifile.delete(title_file)
   let assert Ok(Nil) =
@@ -387,6 +644,19 @@ pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
     context,
     "\"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"",
   )
+
+  let bundle_artifact =
+    run_shell(
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-publish-pack-source scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
+      <> shell_quote(context_path)
+      <> " --output "
+      <> shell_quote(output),
+    )
+  assert bundle_artifact.status == step_artifact.StepSucceeded
+  let assert Ok(bundle) = simplifile.read(output)
+  assert string.contains(bundle, "\"head_revision\": \"offline-head\"")
 }
 
 pub fn publish_review_doc_rejects_pack_review_doc_hash_mismatch_test() {
@@ -680,6 +950,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
     bundle,
     "\"sha256\": \"e4117164704e943de716797a83f98cd4927833dc0f3b4a179c78c657b25334ec\"",
   )
+  assert string.contains(bundle, "\"head_revision\": \"reused\"")
 }
 
 pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {

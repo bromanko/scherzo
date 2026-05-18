@@ -76,7 +76,8 @@
         "status": { "enum": ["published", "reused", "not_applicable"] },
         "pr_url": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
         "branch": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/non_empty_string" }] },
-        "source_bundle_ref": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/artifact_ref" }] }
+        "source_bundle_ref": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/artifact_ref" }] },
+        "head_revision": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/non_empty_string" }] }
       }
     },
     "implementation_handoff": {

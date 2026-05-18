@@ -59,6 +59,11 @@ LINEAR_ISSUE_IDENTIFIER_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
 FAILURE_PREFIX = "SCHERZO_FAILURE_CODE="
 CANONICAL_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation"
 LEGACY_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation-v2"
+REVISION_HEAD_RE = re.compile(r"^[a-f0-9]{12,64}$")
+REVISION_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+REVISION_REMOTE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+DEFAULT_REVISION_REFRESH_TIMEOUT_SECONDS = 120.0
+MAX_WORKSPACE_DRIVER_DETAIL_CHARS = 4000
 
 
 def usage() -> None:
@@ -250,8 +255,43 @@ def workspace_driver_command() -> str | None:
     return value or None
 
 
-def run_proc(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+def subprocess_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def format_seconds(value: float) -> str:
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return str(number)
+
+
+def run_proc(
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = subprocess_text(exc.stdout)
+        stderr = subprocess_text(exc.stderr).strip()
+        timeout_text = format_seconds(timeout or 0.0)
+        message = f"command timed out after {timeout_text}s"
+        detail = (stderr + "\n" + message).strip() if stderr else message
+        return subprocess.CompletedProcess(args, 124, stdout, detail)
 
 
 def run(args: list[str], *, check: bool = True) -> str:
@@ -572,7 +612,7 @@ def canonicalize_execplan_bundle(bundle: Any) -> Any:
     return bundle
 
 
-def load_and_validate_bundle(bundle_path: Path, *, bundle_sha256: str | None = None, artifact_root: str | None = None, repo_root_arg: str | None = None) -> tuple[dict[str, Any], dict[str, Any], Path]:
+def load_bundle_json(bundle_path: Path, *, bundle_sha256: str | None = None, repo_root_arg: str | None = None) -> dict[str, Any]:
     bundle_data = path_bytes(bundle_path, code="execplan_v2_bundle_missing")
     actual_bundle_sha = sha256_bytes(bundle_data)
     if bundle_sha256 and actual_bundle_sha != bundle_sha256:
@@ -586,11 +626,20 @@ def load_and_validate_bundle(bundle_path: Path, *, bundle_sha256: str | None = N
     reject_bundle_self_hash(bundle)
     canonicalize_execplan_bundle(bundle)
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA, root=repo_root(repo_root_arg))
+    return bundle
+
+
+def review_doc_meta_for_bundle(bundle: dict[str, Any], *, repo_root_arg: str | None = None, missing_code: str = "execplan_v2_review_doc_missing") -> dict[str, Any]:
     review_doc = bundle["review_doc"]
     review_path = review_doc_filesystem_path(review_doc["path"], repo_root(repo_root_arg))
-    review_meta = file_meta(review_path, code="execplan_v2_review_doc_missing")
+    review_meta = file_meta(review_path, code=missing_code)
     if review_meta["sha256"] != review_doc["sha256"] or review_meta["bytes"] != review_doc["bytes"]:
         fail("review doc bytes do not match exec_plan_bundle.review_doc", code="execplan_v2_review_doc_hash_mismatch")
+    return review_meta
+
+
+def load_bundle_pack(bundle: dict[str, Any], *, artifact_root: str | None = None, repo_root_arg: str | None = None) -> tuple[dict[str, Any], Path]:
+    review_doc = bundle["review_doc"]
     pack_ref = bundle["implementation_pack"]["ref"]
     pack_path = resolve_artifact_ref(
         pack_ref,
@@ -614,6 +663,13 @@ def load_and_validate_bundle(bundle_path: Path, *, bundle_sha256: str | None = N
         fail("bundle implementation_pack.derived_from_review_doc_sha256 is stale", code="execplan_v2_stale_implementation_pack")
     if pack.get("review_doc", {}).get("sha256") != review_doc["sha256"]:
         fail("implementation pack review_doc hash does not match bundle", code="execplan_v2_stale_implementation_pack")
+    return pack, pack_path
+
+
+def load_and_validate_bundle(bundle_path: Path, *, bundle_sha256: str | None = None, artifact_root: str | None = None, repo_root_arg: str | None = None) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    bundle = load_bundle_json(bundle_path, bundle_sha256=bundle_sha256, repo_root_arg=repo_root_arg)
+    review_doc_meta_for_bundle(bundle, repo_root_arg=repo_root_arg)
+    pack, pack_path = load_bundle_pack(bundle, artifact_root=artifact_root, repo_root_arg=repo_root_arg)
     return bundle, pack, pack_path
 
 
@@ -753,7 +809,7 @@ def publish_review_doc(args: list[str]) -> None:
             "url": surface.get("pr_url"),
             "branch": surface.get("branch"),
             "base_revision": "reused",
-            "head_revision": "reused",
+            "head_revision": surface.get("head_revision") or "reused",
         }
         context = write_publish_context(
             Path(ns.publish_context),
@@ -763,6 +819,7 @@ def publish_review_doc(args: list[str]) -> None:
             review_surface={
                 "status": "reused",
                 "source_bundle_ref": previous.get("implementation_handoff", {}).get("bundle_ref"),
+                "head_revision": surface.get("head_revision"),
             },
         )
         print("PUBLISH_REVIEW_DOC_STATUS=reused")
@@ -1102,6 +1159,7 @@ def materialize_bundle(args: list[str]) -> None:
             "pr_url": publish_context["pr"]["url"],
             "branch": publish_context["pr"]["branch"],
             "source_bundle_ref": publish_context["review_surface"].get("source_bundle_ref"),
+            "head_revision": publish_context["review_surface"].get("head_revision") or publish_context["pr"].get("head_revision"),
         },
         "implementation_handoff": {
             "issue_identifier": "pending",
@@ -1147,11 +1205,197 @@ def parse_bundle_ref_and_sha(text: str) -> tuple[str, str]:
     return ref_match.group(1).rstrip(".,;"), sha_match.group(1)
 
 
-def load_bundle_from_context() -> tuple[dict[str, Any], dict[str, Any], Path, str, str]:
+def load_bundle_payload_from_context() -> tuple[dict[str, Any], Path, str, str]:
     ref, sha = parse_bundle_ref_and_sha(issue_context_text())
     bundle_path = resolve_artifact_ref(ref, code="execplan_v2_bundle_missing")
-    bundle, pack, pack_path = load_and_validate_bundle(bundle_path, bundle_sha256=sha, artifact_root=None, repo_root_arg=str(Path.cwd()))
+    bundle = load_bundle_json(bundle_path, bundle_sha256=sha, repo_root_arg=str(Path.cwd()))
+    return bundle, bundle_path, ref, sha
+
+
+def load_bundle_from_context() -> tuple[dict[str, Any], dict[str, Any], Path, str, str]:
+    bundle, _bundle_path, ref, sha = load_bundle_payload_from_context()
+    review_doc_meta_for_bundle(bundle, repo_root_arg=str(Path.cwd()))
+    pack, pack_path = load_bundle_pack(bundle, artifact_root=None, repo_root_arg=str(Path.cwd()))
     return bundle, pack, pack_path, ref, sha
+
+
+def review_doc_state_for_bundle(bundle: dict[str, Any], *, repo_root_arg: str | None = None) -> tuple[str, dict[str, Any] | None, str]:
+    review_doc = bundle["review_doc"]
+    review_path = review_doc_filesystem_path(review_doc["path"], repo_root(repo_root_arg))
+    try:
+        data = review_path.read_bytes()
+    except FileNotFoundError:
+        return "missing", None, str(review_path)
+    except OSError as exc:
+        fail(f"could not read {review_path}: {exc}", code="execplan_v2_review_doc_missing")
+    meta = {"sha256": sha256_bytes(data), "bytes": len(data)}
+    if meta["sha256"] == review_doc["sha256"] and meta["bytes"] == review_doc["bytes"]:
+        return "ok", meta, str(review_path)
+    return "mismatch", meta, str(review_path)
+
+
+def truncate_driver_detail(value: str) -> str:
+    text = ANSI_ESCAPE_RE.sub("", value).strip()
+    if len(text) <= MAX_WORKSPACE_DRIVER_DETAIL_CHARS:
+        return text
+    return text[:MAX_WORKSPACE_DRIVER_DETAIL_CHARS] + "... [truncated]"
+
+
+def revision_refresh_timeout_seconds() -> float:
+    raw = env_value("SCHERZO_EXECPLAN_REVISION_REFRESH_TIMEOUT_SECONDS")
+    if not raw:
+        return DEFAULT_REVISION_REFRESH_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        fail(
+            "SCHERZO_EXECPLAN_REVISION_REFRESH_TIMEOUT_SECONDS must be a positive number",
+            code="execplan_revision_base_missing",
+        )
+    if value <= 0:
+        fail(
+            "SCHERZO_EXECPLAN_REVISION_REFRESH_TIMEOUT_SECONDS must be greater than zero",
+            code="execplan_revision_base_missing",
+        )
+    return value
+
+
+def safe_revision_head(value: str) -> bool:
+    return bool(REVISION_HEAD_RE.fullmatch(value))
+
+
+def safe_revision_branch(value: str) -> bool:
+    if not REVISION_BRANCH_RE.fullmatch(value):
+        return False
+    if value.endswith(("/", ".", ".lock")):
+        return False
+    if ".." in value or "@{" in value or "//" in value:
+        return False
+    parts = value.split("/")
+    return all(
+        part not in {"", ".", ".."} and not part.startswith(".") and not part.endswith(".lock")
+        for part in parts
+    )
+
+
+def safe_revision_remote(value: str) -> bool:
+    return bool(REVISION_REMOTE_RE.fullmatch(value))
+
+
+def revision_remote() -> str:
+    remote = env_value("SCHERZO_JJ_WORKSPACE_REMOTE") or env_value("SCHERZO_PR_REMOTE") or "origin"
+    if not safe_revision_remote(remote):
+        fail(
+            f"revision remote {remote!r} is not a safe remote name for refresh-base",
+            code="execplan_revision_base_missing",
+        )
+    return remote
+
+
+def revision_base_candidates(bundle: dict[str, Any]) -> list[str]:
+    surface = bundle.get("review_surface") if isinstance(bundle.get("review_surface"), dict) else {}
+    head = str(surface.get("head_revision") or "").strip() if isinstance(surface, dict) else ""
+    branch = str(surface.get("branch") or "").strip() if isinstance(surface, dict) else ""
+    values: list[str] = []
+    rejected: list[str] = []
+    if head and head not in {"head", "reused"}:
+        if safe_revision_head(head):
+            values.append(head)
+        else:
+            rejected.append("review_surface.head_revision is not a hex commit id")
+    if branch and branch != "reused":
+        if safe_revision_branch(branch):
+            remote = revision_remote()
+            values.append(f"{branch}@{remote}")
+            values.append(branch)
+        else:
+            rejected.append("review_surface.branch contains unsupported revision-ref characters")
+    if rejected and not values:
+        fail(
+            "previous exec_plan_bundle records no safe review_surface branch/head to resolve: "
+            + "; ".join(rejected),
+            code="execplan_revision_base_missing",
+        )
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value not in seen:
+            unique.append(value)
+            seen.add(value)
+    return unique
+
+
+def refresh_revision_base(target: str) -> tuple[bool, str]:
+    driver = workspace_driver_command()
+    if not driver:
+        return False, "SCHERZO_WORKSPACE_DRIVER is not set"
+    timeout = revision_refresh_timeout_seconds()
+    proc = run_proc(
+        [driver, "refresh-base", "--stage", "prepare_revision", "--target", target, "--json"],
+        timeout=timeout,
+    )
+    payload: dict[str, Any] = {}
+    if proc.stdout.strip():
+        try:
+            parsed = json.loads(proc.stdout)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+    detail = truncate_driver_detail(
+        str(
+            payload.get("message")
+            or proc.stderr.strip()
+            or proc.stdout.strip()
+            or f"exit {proc.returncode}"
+        )
+    )
+    if proc.returncode != 0:
+        return False, detail
+    if payload.get("version") != 1:
+        return False, "workspace driver returned malformed refresh-base JSON"
+    status = str(payload.get("status") or "")
+    if status in {"fresh", "rebased_clean"}:
+        return True, status
+    return False, detail or f"refresh-base returned status {status!r}"
+
+
+def ensure_revision_review_doc_available(bundle: dict[str, Any], *, repo_root_arg: str | None = None) -> None:
+    state, _meta, review_path = review_doc_state_for_bundle(bundle, repo_root_arg=repo_root_arg)
+    if state == "ok":
+        return
+    candidates = revision_base_candidates(bundle)
+    if not candidates:
+        fail(
+            f"review doc {review_path} is {state}, and the previous exec_plan_bundle does not record a review_surface branch/head to resolve",
+            code="execplan_revision_base_missing",
+        )
+    attempts: list[str] = []
+    mismatch_details: list[str] = []
+    for target in candidates:
+        refreshed, message = refresh_revision_base(target)
+        if not refreshed:
+            attempts.append(f"{target}: {message}")
+            continue
+        resolved_state, resolved_meta, _ = review_doc_state_for_bundle(bundle, repo_root_arg=repo_root_arg)
+        if resolved_state == "ok":
+            return
+        if resolved_state == "mismatch" and resolved_meta is not None:
+            mismatch_details.append(
+                f"{target}: resolved review doc hash {resolved_meta['sha256']} bytes {resolved_meta['bytes']} did not match bundle"
+            )
+        else:
+            attempts.append(f"{target}: review doc still missing after refresh-base")
+    if mismatch_details:
+        fail(
+            "resolved previous ExecPlan review surface, but review doc bytes do not match exec_plan_bundle.review_doc: "
+            + "; ".join(mismatch_details),
+            code="execplan_v2_review_doc_hash_mismatch",
+        )
+    fail(
+        "could not resolve previous ExecPlan review surface for revision; tried " + "; ".join(attempts),
+        code="execplan_revision_base_missing",
+    )
 
 
 def command_prepare_revision(args: list[str]) -> None:
@@ -1161,7 +1405,10 @@ def command_prepare_revision(args: list[str]) -> None:
     parser.add_argument("--write-review-doc-path", required=True)
     parser.add_argument("--write-pack", required=True)
     ns = parser.parse_args(args)
-    bundle, _pack, pack_path, _ref, _sha = load_bundle_from_context()
+    bundle, _bundle_path, _ref, _sha = load_bundle_payload_from_context()
+    ensure_revision_review_doc_available(bundle, repo_root_arg=str(Path.cwd()))
+    review_doc_meta_for_bundle(bundle, repo_root_arg=str(Path.cwd()), missing_code="execplan_revision_base_missing")
+    _pack, pack_path = load_bundle_pack(bundle, artifact_root=None, repo_root_arg=str(Path.cwd()))
     write_json(Path(ns.write_bundle), bundle)
     shutil.copyfile(pack_path, ns.write_pack)
     Path(ns.write_review_doc_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1235,6 +1482,7 @@ def materialize_revision(args: list[str]) -> None:
             "pr_url": publish_context["pr"]["url"],
             "branch": publish_context["pr"]["branch"],
             "source_bundle_ref": publish_context["review_surface"].get("source_bundle_ref"),
+            "head_revision": publish_context["review_surface"].get("head_revision") or publish_context["pr"].get("head_revision"),
         },
         "implementation_handoff": {
             **previous["implementation_handoff"],
