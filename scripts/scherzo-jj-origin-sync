@@ -11,6 +11,8 @@ classify_fetch_stderr() {
   saw_signing_failure=false
   saw_agent_communication=false
   saw_agent_refused=false
+  saw_public_identity_invalid_format=false
+  saw_publickey_denied=false
   line=
 
   while IFS= read -r line || [ -n "$line" ]; do
@@ -30,12 +32,27 @@ classify_fetch_stderr() {
         saw_agent_refused=true
         ;;
     esac
+
+    # 1Password's SSH agent commonly uses IdentityFile entries that point at
+    # public key files. If the agent is locked/unavailable, OpenSSH may fall
+    # back to loading that public key path as a private key, yielding this
+    # pair instead of a sign_and_send_pubkey error.
+    case "$line" in
+      *'Load key "'*'.pub": invalid format'*)
+        saw_public_identity_invalid_format=true
+        ;;
+      *'Permission denied (publickey)'*)
+        saw_publickey_denied=true
+        ;;
+    esac
   done
 
   if [ "$saw_signing_failure" = true ] && [ "$saw_agent_communication" = true ]; then
     printf 'ssh_agent_communication_failed\n' >"$transient_kind_file"
   elif [ "$saw_signing_failure" = true ] && [ "$saw_agent_refused" = true ]; then
     printf 'ssh_agent_refused_operation\n' >"$transient_kind_file"
+  elif [ "$saw_public_identity_invalid_format" = true ] && [ "$saw_publickey_denied" = true ]; then
+    printf 'ssh_public_identity_invalid_format\n' >"$transient_kind_file"
   fi
 }
 

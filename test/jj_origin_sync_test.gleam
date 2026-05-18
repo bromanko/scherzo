@@ -162,6 +162,12 @@ pub fn origin_sync_skips_known_transient_ssh_agent_fetch_failures_test() {
     "agent refused operation",
     "ssh_agent_refused_operation",
   )
+  assert_origin_sync_skips_transient_ssh_failure(
+    "test/tmp/jj-origin-sync-fetch-public-identity-invalid-format",
+    "public_identity_invalid_format",
+    "Load key \"/Users/bromanko/.ssh/github-bromanko.pub\": invalid format",
+    "ssh_public_identity_invalid_format",
+  )
 }
 
 pub fn origin_sync_reports_bare_publickey_denied_fetch_failure_test() {
@@ -247,6 +253,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  case \"${SCHERZO_FAKE_ORIGIN_SYNC_FETCH_SSH_AGENT_FAIL:-}\" in\n"
         <> "    communication) echo 'sign_and_send_pubkey: signing failed for ED25519 SHA256:fake from agent: communication with agent failed' >&2; echo 'git@github.com: Permission denied (publickey).' >&2; exit 1 ;;\n"
         <> "    refused) echo 'sign_and_send_pubkey: signing failed for ED25519 SHA256:fake from agent: agent refused operation' >&2; echo 'git@github.com: Permission denied (publickey).' >&2; exit 1 ;;\n"
+        <> "    public_identity_invalid_format) echo 'git: Load key \"/Users/bromanko/.ssh/github-bromanko.pub\": invalid format' >&2; echo 'git: git@github.com: Permission denied (publickey).' >&2; exit 1 ;;\n"
         <> "    permission_denied) echo 'git@github.com: Permission denied (publickey).' >&2; exit 1 ;;\n"
         <> "    '') ;;\n"
         <> "    *) echo unexpected fake SSH agent failure kind >&2; exit 1 ;;\n"
