@@ -104,6 +104,7 @@ pub fn contract_test_files() -> List(String) {
     "review_artifacts_test.gleam",
     "workspace_driver_contract_test.gleam",
     "workspace_driver_discovery_test.gleam",
+    "workspace_cleanup_helper_test.gleam",
     "workspace_driver_lifecycle_test.gleam",
   ]
 }

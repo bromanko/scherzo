@@ -1,0 +1,564 @@
+#!/bin/sh
+exec python3 - "$@" <<'PY'
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass, field
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+from typing import Any
+
+NOOP_MARKER = ".scherzo-workspace-driver-noop"
+RETENTION_MARKER = ".scherzo-keep-workspace"
+PORTABLE_BRIDGE_NAME = "scherzo"
+DEFAULT_MIN_AGE_SECONDS = 24 * 60 * 60
+ACTIVE_START_KINDS = {"workflow_run_started", "scheduled_run_started"}
+ACTIVE_TERMINAL_KINDS = {
+    "workflow_run_finished",
+    "scheduled_run_succeeded",
+    "scheduled_run_failed",
+    "scheduled_run_retry_cancelled",
+    "scheduled_run_pending_cancelled",
+}
+
+
+@dataclass
+class RunInspection:
+    removable: bool
+    reason: str
+    details: list[str] = field(default_factory=list)
+    jj_workspaces: list[Path] = field(default_factory=list)
+
+
+@dataclass
+class Decision:
+    path: str
+    action: str
+    reason: str
+    details: list[str] = field(default_factory=list)
+
+
+def fail(message: str, exit_code: int = 2) -> None:
+    print(f"scherzo-workspace-cleanup: {message}", file=sys.stderr)
+    raise SystemExit(exit_code)
+
+
+def env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        fail(f"{name} must be an integer number of seconds")
+    if value < 0:
+        fail(f"{name} must not be negative")
+    return value
+
+
+def default_workspace_root() -> str:
+    for name in ["SCHERZO_WORKSPACE_CLEANUP_ROOT", "SCHERZO_WORKSPACE_ROOT"]:
+        raw = os.environ.get(name, "").strip()
+        if raw:
+            return raw
+    config_dir = os.environ.get("SCHERZO_CONFIG_DIR", "").strip()
+    if config_dir:
+        return str(Path(config_dir) / "workspaces")
+    return ".scherzo/workspaces"
+
+
+def resolve_path(raw: str) -> Path:
+    try:
+        return Path(raw).expanduser().resolve(strict=False)
+    except OSError as exc:
+        fail(f"could not resolve path {raw!r}: {exc}")
+
+
+def contained_by(child: Path, parent: Path) -> bool:
+    try:
+        child_text = str(child.resolve(strict=False))
+        parent_text = str(parent.resolve(strict=False))
+        return (
+            child_text != parent_text
+            and os.path.commonpath([child_text, parent_text]) == parent_text
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def validate_workspace_root(root: Path) -> None:
+    if root.parent == root:
+        fail("refusing filesystem root as workspace root")
+    if root.exists() and not root.is_dir():
+        fail(f"workspace root is not a directory: {root}")
+
+
+def record_run_id(record: dict[str, Any]) -> str | None:
+    value = record.get("run_id")
+    return value if isinstance(value, str) and value else None
+
+
+def active_runs_from_ledger(workspace_root: Path) -> tuple[set[str], set[str]]:
+    ledger = workspace_root / ".scherzo-state" / "ledger" / "current.jsonl"
+    active: dict[str, str] = {}
+    if ledger.is_file():
+        try:
+            lines = ledger.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            fail(f"could not read ledger for active-run protection: {ledger}: {exc}", 1)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            kind = record.get("kind")
+            run_id = record_run_id(record)
+            if run_id is None:
+                continue
+            if kind in ACTIVE_START_KINDS:
+                run_root = record.get("run_root")
+                active[run_id] = run_root if isinstance(run_root, str) else ""
+            elif kind in ACTIVE_TERMINAL_KINDS:
+                active.pop(run_id, None)
+
+    active_ids = set(active.keys())
+    active_roots = {
+        str(resolve_path(path))
+        for path in active.values()
+        if isinstance(path, str) and path.strip()
+    }
+    return active_ids, active_roots
+
+
+def current_run_roots_from_env() -> set[str]:
+    current_run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if not current_run_root:
+        return set()
+    return {str(resolve_path(current_run_root))}
+
+
+def find_candidate_run_roots(workspace_root: Path) -> list[Path]:
+    if not workspace_root.is_dir():
+        return []
+    candidates: list[Path] = []
+    for dirpath, dirnames, _filenames in os.walk(workspace_root):
+        base = Path(dirpath)
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in {".scherzo-state", ".jj", ".git", ".direnv"}
+        ]
+        if base == workspace_root:
+            continue
+        if (base / "workspaces").is_dir():
+            candidates.append(base.resolve(strict=False))
+            dirnames[:] = []
+    return sorted(candidates, key=lambda path: str(path))
+
+
+def run_age_seconds(run_root: Path, now: float) -> int:
+    try:
+        return max(0, int(now - run_root.stat().st_mtime))
+    except OSError:
+        return 0
+
+
+def run_jj(workspace: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["jj", *args],
+            cwd=str(workspace),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(["jj", *args], 127, "", "jj executable not found")
+
+
+def short_command_error(proc: subprocess.CompletedProcess[str]) -> str:
+    text = (proc.stderr or proc.stdout or "jj command failed").strip()
+    if len(text) > 400:
+        return text[:400] + "..."
+    return text
+
+
+def jj_workspace_already_forgotten(proc: subprocess.CompletedProcess[str]) -> bool:
+    text = (proc.stderr + "\n" + proc.stdout).lower()
+    return (
+        "doesn't have a working-copy commit" in text
+        or "does not have a working-copy commit" in text
+        or "no working-copy commit" in text
+    )
+
+
+def inspect_jj_workspace(workspace: Path) -> RunInspection:
+    root_proc = run_jj(workspace, ["root"])
+    if root_proc.returncode != 0:
+        return RunInspection(
+            removable=False,
+            reason="jj_root_failed",
+            details=[f"{workspace}: {short_command_error(root_proc)}"],
+        )
+    if root_proc.stdout.strip() != str(workspace):
+        return RunInspection(
+            removable=False,
+            reason="jj_root_mismatch",
+            details=[f"{workspace}: jj root is {root_proc.stdout.strip()!r}"],
+        )
+
+    diff_proc = run_jj(workspace, ["diff", "--name-only", "--color=never"])
+    if diff_proc.returncode != 0:
+        if jj_workspace_already_forgotten(diff_proc):
+            return RunInspection(
+                removable=True,
+                reason="jj_workspace_already_forgotten",
+                details=[f"{workspace}: {short_command_error(diff_proc)}"],
+                jj_workspaces=[workspace],
+            )
+        return RunInspection(
+            removable=False,
+            reason="jj_diff_failed",
+            details=[f"{workspace}: {short_command_error(diff_proc)}"],
+        )
+    changed_files = [line for line in diff_proc.stdout.splitlines() if line.strip()]
+    if changed_files:
+        preview = ", ".join(changed_files[:5])
+        suffix = "" if len(changed_files) <= 5 else f", +{len(changed_files) - 5} more"
+        return RunInspection(
+            removable=False,
+            reason="workspace_has_file_changes",
+            details=[f"{workspace}: {preview}{suffix}"],
+        )
+
+    stack_proc = run_jj(
+        workspace,
+        [
+            "log",
+            "-r",
+            "ancestors(@) & mutable() & ~empty()",
+            "--no-graph",
+            "-T",
+            "commit_id ++ \"\\n\"",
+            "--color=never",
+        ],
+    )
+    if stack_proc.returncode != 0:
+        return RunInspection(
+            removable=False,
+            reason="jj_stack_inspection_failed",
+            details=[f"{workspace}: {short_command_error(stack_proc)}"],
+        )
+    revisions = [line for line in stack_proc.stdout.splitlines() if line.strip()]
+    if revisions:
+        return RunInspection(
+            removable=False,
+            reason="workspace_has_mutable_commits",
+            details=[f"{workspace}: {len(revisions)} non-empty mutable revision(s)"],
+        )
+
+    return RunInspection(
+        removable=True,
+        reason="jj_workspace_empty",
+        details=[f"{workspace}: no file changes or non-empty mutable ancestors"],
+        jj_workspaces=[workspace],
+    )
+
+
+def plain_workspace_files(workspace: Path) -> list[str]:
+    files: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(workspace):
+        base = Path(dirpath)
+        kept_dirs: list[str] = []
+        for name in dirnames:
+            if name == ".scherzo":
+                continue
+            full = base / name
+            if full.is_symlink():
+                try:
+                    rel = full.relative_to(workspace).as_posix()
+                except ValueError:
+                    rel = str(full)
+                files.append(rel)
+            else:
+                kept_dirs.append(name)
+        dirnames[:] = kept_dirs
+        for name in filenames:
+            full = base / name
+            try:
+                rel = full.relative_to(workspace).as_posix()
+            except ValueError:
+                rel = str(full)
+            if rel == NOOP_MARKER:
+                continue
+            files.append(rel)
+    return sorted(files)
+
+
+def inspect_plain_workspace(workspace: Path) -> RunInspection:
+    files = plain_workspace_files(workspace)
+    if files:
+        preview = ", ".join(files[:5])
+        suffix = "" if len(files) <= 5 else f", +{len(files) - 5} more"
+        return RunInspection(
+            removable=False,
+            reason="plain_workspace_has_files",
+            details=[f"{workspace}: {preview}{suffix}"],
+        )
+    return RunInspection(
+        removable=True,
+        reason="plain_workspace_empty",
+        details=[f"{workspace}: no files except no-op marker"],
+    )
+
+
+def workspace_entries(workspaces_dir: Path) -> list[Path]:
+    entries: list[Path] = []
+    try:
+        children = list(workspaces_dir.iterdir())
+    except OSError as exc:
+        return [workspaces_dir / f"__unreadable__:{exc}"]
+    for child in sorted(children, key=lambda path: path.name):
+        if child.name == PORTABLE_BRIDGE_NAME and child.is_symlink():
+            continue
+        entries.append(child)
+    return entries
+
+
+def inspect_run_root(run_root: Path) -> RunInspection:
+    workspaces_dir = run_root / "workspaces"
+    if not workspaces_dir.is_dir():
+        return RunInspection(False, "missing_workspaces_dir", [str(workspaces_dir)])
+
+    details: list[str] = []
+    jj_workspaces: list[Path] = []
+    if (run_root / RETENTION_MARKER).is_file():
+        details.append("retention marker present but no work was found")
+
+    entries = workspace_entries(workspaces_dir)
+    if not entries:
+        return RunInspection(True, "no_workspace_entries", details)
+
+    for entry in entries:
+        if entry.name.startswith("__unreadable__:"):
+            return RunInspection(False, "workspaces_dir_unreadable", [entry.name])
+        if entry.is_symlink():
+            return RunInspection(False, "unexpected_workspace_symlink", [str(entry)])
+        if not entry.is_dir():
+            return RunInspection(False, "unexpected_workspace_entry", [str(entry)])
+        if (entry / ".jj").exists():
+            inspection = inspect_jj_workspace(entry)
+        else:
+            inspection = inspect_plain_workspace(entry)
+        details.extend(inspection.details)
+        jj_workspaces.extend(inspection.jj_workspaces)
+        if not inspection.removable:
+            return RunInspection(False, inspection.reason, details, jj_workspaces)
+
+    return RunInspection(True, "no_commits_or_work", details, jj_workspaces)
+
+
+def forget_jj_workspace(workspace: Path) -> str | None:
+    proc = run_jj(workspace, ["workspace", "forget"])
+    if proc.returncode != 0:
+        if jj_workspace_already_forgotten(proc):
+            return None
+        return f"{workspace}: {short_command_error(proc)}"
+    return None
+
+
+def prune_empty_parents(start: Path, workspace_root: Path) -> list[str]:
+    removed: list[str] = []
+    parent = start.parent
+    while contained_by(parent, workspace_root):
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        removed.append(str(parent))
+        parent = parent.parent
+    return removed
+
+
+def remove_run_root(run_root: Path, inspection: RunInspection, workspace_root: Path) -> list[str]:
+    for workspace in inspection.jj_workspaces:
+        error = forget_jj_workspace(workspace)
+        if error is not None:
+            raise RuntimeError("could not forget jj workspace: " + error)
+    shutil.rmtree(run_root)
+    return prune_empty_parents(run_root, workspace_root)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Remove inactive Scherzo run workspaces only when they contain no "
+            "jj file changes, no non-empty mutable jj commits, and no no-op "
+            "workspace files. Defaults to dry-run; pass --apply to delete."
+        )
+    )
+    parser.add_argument("--workspace-root", default=default_workspace_root())
+    parser.add_argument(
+        "--min-age-seconds",
+        type=int,
+        default=env_int("SCHERZO_WORKSPACE_CLEANUP_MIN_AGE_SECONDS", DEFAULT_MIN_AGE_SECONDS),
+    )
+    parser.add_argument(
+        "--active-grace-seconds",
+        type=int,
+        default=env_int(
+            "SCHERZO_WORKSPACE_CLEANUP_ACTIVE_GRACE_SECONDS",
+            DEFAULT_MIN_AGE_SECONDS,
+        ),
+        help=(
+            "treat ledger-active runs older than this as stale; defaults to "
+            "SCHERZO_WORKSPACE_CLEANUP_ACTIVE_GRACE_SECONDS or 24 hours. "
+            "The current SCHERZO_RUN_ROOT is always protected."
+        ),
+    )
+    parser.add_argument("--apply", action="store_true", help="delete eligible run roots")
+    parser.add_argument("--json", action="store_true", help="print a machine-readable summary")
+    args = parser.parse_args(argv)
+    if args.min_age_seconds < 0:
+        fail("--min-age-seconds must not be negative")
+    if args.active_grace_seconds < 0:
+        fail("--active-grace-seconds must not be negative")
+    return args
+
+
+def decision_to_json(decision: Decision) -> dict[str, Any]:
+    return {
+        "path": decision.path,
+        "action": decision.action,
+        "reason": decision.reason,
+        "details": decision.details,
+    }
+
+
+def print_text_summary(summary: dict[str, Any]) -> None:
+    mode = "apply" if summary["apply"] else "dry-run"
+    print(
+        "scherzo-workspace-cleanup: "
+        f"mode={mode} examined={summary['examined']} "
+        f"removed={summary['removed_count']} would_remove={summary['would_remove_count']} "
+        f"kept={summary['kept_count']} errors={summary['error_count']}"
+    )
+    for section in ["removed", "would_remove", "kept", "errors"]:
+        items = summary[section]
+        if not items:
+            continue
+        print(f"{section}:")
+        for item in items:
+            print(f"  - {item['path']} ({item['reason']})")
+            for detail in item.get("details", [])[:3]:
+                print(f"      {detail}")
+
+
+def main(argv: list[str]) -> None:
+    args = parse_args(argv)
+    workspace_root = resolve_path(args.workspace_root)
+    validate_workspace_root(workspace_root)
+
+    active_ids, active_roots = active_runs_from_ledger(workspace_root)
+    current_run_roots = current_run_roots_from_env()
+    candidates = find_candidate_run_roots(workspace_root)
+    now = time.time()
+
+    removed: list[Decision] = []
+    would_remove: list[Decision] = []
+    kept: list[Decision] = []
+    errors: list[Decision] = []
+
+    for run_root in candidates:
+        run_root = run_root.resolve(strict=False)
+        if not contained_by(run_root, workspace_root):
+            errors.append(Decision(str(run_root), "error", "candidate_outside_workspace_root"))
+            continue
+        age = run_age_seconds(run_root, now)
+        if str(run_root) in current_run_roots:
+            kept.append(Decision(str(run_root), "kept", "active_run"))
+            continue
+        if (run_root.name in active_ids or str(run_root) in active_roots) and age < args.active_grace_seconds:
+            kept.append(
+                Decision(
+                    str(run_root),
+                    "kept",
+                    "active_run",
+                    [
+                        f"age_seconds={age}; active_grace_seconds={args.active_grace_seconds}"
+                    ],
+                )
+            )
+            continue
+        if age < args.min_age_seconds:
+            kept.append(
+                Decision(
+                    str(run_root),
+                    "kept",
+                    "too_recent",
+                    [f"age_seconds={age}; min_age_seconds={args.min_age_seconds}"],
+                )
+            )
+            continue
+
+        inspection = inspect_run_root(run_root)
+        if not inspection.removable:
+            kept.append(Decision(str(run_root), "kept", inspection.reason, inspection.details))
+            continue
+
+        if not args.apply:
+            would_remove.append(
+                Decision(str(run_root), "would_remove", inspection.reason, inspection.details)
+            )
+            continue
+
+        try:
+            pruned = remove_run_root(run_root, inspection, workspace_root)
+        except (OSError, RuntimeError) as exc:
+            errors.append(Decision(str(run_root), "error", "remove_failed", [str(exc)]))
+            continue
+        details = list(inspection.details)
+        if pruned:
+            details.append("pruned empty parents: " + ", ".join(pruned))
+        removed.append(Decision(str(run_root), "removed", inspection.reason, details))
+
+    summary = {
+        "version": 1,
+        "workspace_root": str(workspace_root),
+        "apply": args.apply,
+        "min_age_seconds": args.min_age_seconds,
+        "active_grace_seconds": args.active_grace_seconds,
+        "active_run_ids": sorted(active_ids),
+        "examined": len(candidates),
+        "removed_count": len(removed),
+        "would_remove_count": len(would_remove),
+        "kept_count": len(kept),
+        "error_count": len(errors),
+        "removed": [decision_to_json(item) for item in removed],
+        "would_remove": [decision_to_json(item) for item in would_remove],
+        "kept": [decision_to_json(item) for item in kept],
+        "errors": [decision_to_json(item) for item in errors],
+    }
+
+    if args.json:
+        print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+    else:
+        print_text_summary(summary)
+    if errors:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+PY
