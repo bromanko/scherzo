@@ -1,6 +1,5 @@
 import gleam/bit_array
 import gleam/int
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -8,6 +7,7 @@ import scherzo/hash
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/structured_output_metadata
@@ -413,17 +413,34 @@ pub fn ledger_writer_with_artifact_store(
       use existing <- result.try(existing_output_record(workspace_root, run_id))
       case existing {
         Some(artifact) -> Ok(artifact)
-        None ->
-          case reusable_output_manifest(store, run_id, contents) {
+        None -> {
+          use repair_generation <- result.try(current_repair_generation(
+            workspace_root,
+            run_id,
+          ))
+          case
+            reusable_output_manifest(
+              store,
+              output_manifest_ref(run_id, repair_generation),
+              repair_generation,
+              contents,
+            )
+          {
             Ok(Some(artifact)) -> Ok(artifact)
             Ok(None) ->
-              artifact_store.write_output_manifest(store, run_id, contents)
+              artifact_store.write_output_manifest_for_generation(
+                store,
+                run_id,
+                repair_generation,
+                contents,
+              )
               |> result.map(artifact_ref_to_written)
               |> result.map_error(fn(error) {
                 CheckpointArtifactFailed(describe_artifact_error(error))
               })
             Error(error) -> Error(error)
           }
+        }
       }
     },
     workflow_outputs_recorded: fn(recorded) {
@@ -449,11 +466,16 @@ pub fn ledger_writer_with_artifact_store(
       }
     },
     write_workflow_output_blob: fn(write) {
-      artifact_store.write_output_blob(
+      use repair_generation <- result.try(current_repair_generation(
+        workspace_root,
+        write.run_id,
+      ))
+      artifact_store.write_output_blob_for_generation(
         store,
         write.run_id,
         write.output_name,
         write.extension,
+        repair_generation,
         write.contents,
       )
       |> result.map(artifact_ref_to_written)
@@ -552,102 +574,58 @@ fn existing_input_record(
   workspace_root: String,
   run_id: String,
 ) -> Result(Option(ArtifactWritten), CheckpointError) {
-  existing_manifest_record(workspace_root, run_id, input_record_artifact)
+  use projection_state <- result.try(load_projection(workspace_root))
+  Ok(case projection.workflow_input_manifest(projection_state, run_id) {
+    Some(manifest) -> Some(manifest_ref_to_written(manifest))
+    None -> None
+  })
 }
 
 fn existing_output_record(
   workspace_root: String,
   run_id: String,
 ) -> Result(Option(ArtifactWritten), CheckpointError) {
-  use ledger_path <- result.try(
-    ledger.path_for_workspace_root(workspace_root)
-    |> result.map_error(fn(error) {
-      CheckpointAppendFailed(describe_ledger_error(error))
-    }),
-  )
-  use read <- result.try(
-    ledger.read_records(ledger_path)
-    |> result.map_error(fn(error) {
-      CheckpointAppendFailed(describe_ledger_error(error))
-    }),
-  )
-  Ok(
-    list.fold(read.records, None, fn(found, ledger_record) {
-      case ledger_record.body {
-        record.WorkflowRepairRequested(run_id: repaired_run_id, ..)
-          if repaired_run_id == run_id
-        -> None
-        _ ->
-          case output_record_artifact(ledger_record.body, run_id) {
-            Some(artifact) -> Some(artifact)
-            None -> found
-          }
-      }
-    }),
-  )
+  use projection_state <- result.try(load_projection(workspace_root))
+  Ok(case projection.workflow_output_manifest(projection_state, run_id) {
+    Some(manifest) -> Some(manifest_ref_to_written(manifest))
+    None -> None
+  })
 }
 
-fn existing_manifest_record(
+fn current_repair_generation(
   workspace_root: String,
   run_id: String,
-  selector: fn(record.RecordBody, String) -> Option(ArtifactWritten),
-) -> Result(Option(ArtifactWritten), CheckpointError) {
+) -> Result(Int, CheckpointError) {
+  use projection_state <- result.try(load_projection(workspace_root))
+  Ok(case projection.latest_workflow_repair(projection_state, run_id) {
+    Some(repair) -> repair.generation
+    None -> 0
+  })
+}
+
+fn load_projection(
+  workspace_root: String,
+) -> Result(projection.Projection, CheckpointError) {
   use ledger_path <- result.try(
     ledger.path_for_workspace_root(workspace_root)
     |> result.map_error(fn(error) {
       CheckpointAppendFailed(describe_ledger_error(error))
     }),
   )
-  use read <- result.try(
-    ledger.read_records(ledger_path)
-    |> result.map_error(fn(error) {
-      CheckpointAppendFailed(describe_ledger_error(error))
-    }),
-  )
-  Ok(
-    list.fold(read.records, None, fn(found, ledger_record) {
-      case selector(ledger_record.body, run_id) {
-        Some(artifact) -> Some(artifact)
-        None -> found
-      }
-    }),
-  )
+  ledger.load_projection(ledger_path)
+  |> result.map_error(fn(error) {
+    CheckpointAppendFailed(describe_ledger_error(error))
+  })
 }
 
-fn input_record_artifact(
-  body: record.RecordBody,
-  run_id: String,
-) -> Option(ArtifactWritten) {
-  case body {
-    record.WorkflowRunInputsRecorded(
-      run_id: recorded_run_id,
-      artifact_ref: ref,
-      artifact_sha256: sha,
-      artifact_bytes: bytes,
-      ..,
-    )
-      if recorded_run_id == run_id
-    -> Some(ArtifactWritten(ref: ref, sha256: sha, bytes: bytes))
-    _ -> None
-  }
-}
-
-fn output_record_artifact(
-  body: record.RecordBody,
-  run_id: String,
-) -> Option(ArtifactWritten) {
-  case body {
-    record.WorkflowRunOutputsRecorded(
-      run_id: recorded_run_id,
-      artifact_ref: ref,
-      artifact_sha256: sha,
-      artifact_bytes: bytes,
-      ..,
-    )
-      if recorded_run_id == run_id
-    -> Some(ArtifactWritten(ref: ref, sha256: sha, bytes: bytes))
-    _ -> None
-  }
+fn manifest_ref_to_written(
+  manifest: projection.WorkflowContractManifestRef,
+) -> ArtifactWritten {
+  ArtifactWritten(
+    ref: manifest.artifact_ref,
+    sha256: manifest.artifact_sha256,
+    bytes: manifest.artifact_bytes,
+  )
 }
 
 fn reusable_input_manifest(
@@ -683,12 +661,23 @@ fn reusable_input_manifest(
   }
 }
 
+fn output_manifest_ref(run_id: String, repair_generation: Int) -> String {
+  artifact_store.output_manifest_ref_for_generation(run_id, repair_generation)
+}
+
+fn output_manifest_mismatch_code(repair_generation: Int) -> String {
+  case repair_generation > 0 {
+    True -> "existing_repaired_output_manifest_mismatch"
+    False -> "existing_output_manifest_mismatch"
+  }
+}
+
 fn reusable_output_manifest(
   store: artifact_store.Store,
-  run_id: String,
+  ref: String,
+  repair_generation: Int,
   desired: String,
 ) -> Result(Option(ArtifactWritten), CheckpointError) {
-  let ref = artifact_store.output_manifest_ref(run_id)
   case artifact_store.read_artifact_unverified(store, ref) {
     Error(artifact_store.MissingStepArtifact(_)) -> Ok(None)
     Error(error) ->
@@ -709,7 +698,7 @@ fn reusable_output_manifest(
         -> Ok(Some(artifact_from_contents(ref, existing)))
         _, _ ->
           Error(CheckpointArtifactFailed(
-            "existing_output_manifest_mismatch:" <> ref,
+            output_manifest_mismatch_code(repair_generation) <> ":" <> ref,
           ))
       }
     }

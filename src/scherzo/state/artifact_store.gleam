@@ -289,9 +289,25 @@ pub fn input_manifest_ref(run_id: String) -> String {
 }
 
 pub fn output_manifest_ref(run_id: String) -> String {
-  "runs/"
-  <> workflow_identity.safe_component(run_id, "run")
-  <> "/outputs.v1.json"
+  output_manifest_ref_for_generation(run_id, 0)
+}
+
+pub fn output_manifest_ref_for_generation(
+  run_id: String,
+  repair_generation: Int,
+) -> String {
+  case repair_generation <= 0 {
+    True ->
+      "runs/"
+      <> workflow_identity.safe_component(run_id, "run")
+      <> "/outputs.v1.json"
+    False ->
+      "runs/"
+      <> workflow_identity.safe_component(run_id, "run")
+      <> "/repairs/"
+      <> int.to_string(repair_generation)
+      <> "/outputs.v1.json"
+  }
 }
 
 pub fn output_blob_ref(
@@ -299,11 +315,31 @@ pub fn output_blob_ref(
   output_name: String,
   extension: String,
 ) -> String {
-  "runs/"
-  <> workflow_identity.safe_component(run_id, "run")
-  <> "/outputs/"
-  <> workflow_identity.safe_component(output_name, "output")
-  <> extension
+  output_blob_ref_for_generation(run_id, output_name, extension, 0)
+}
+
+pub fn output_blob_ref_for_generation(
+  run_id: String,
+  output_name: String,
+  extension: String,
+  repair_generation: Int,
+) -> String {
+  case repair_generation <= 0 {
+    True ->
+      "runs/"
+      <> workflow_identity.safe_component(run_id, "run")
+      <> "/outputs/"
+      <> workflow_identity.safe_component(output_name, "output")
+      <> extension
+    False ->
+      "runs/"
+      <> workflow_identity.safe_component(run_id, "run")
+      <> "/repairs/"
+      <> int.to_string(repair_generation)
+      <> "/outputs/"
+      <> workflow_identity.safe_component(output_name, "output")
+      <> extension
+  }
 }
 
 pub fn write_input_manifest(
@@ -319,7 +355,20 @@ pub fn write_output_manifest(
   run_id: String,
   contents: String,
 ) -> Result(ArtifactRef, ArtifactError) {
-  write_ref(store, output_manifest_ref(run_id), contents)
+  write_output_manifest_for_generation(store, run_id, 0, contents)
+}
+
+pub fn write_output_manifest_for_generation(
+  store: Store,
+  run_id: String,
+  repair_generation: Int,
+  contents: String,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref(
+    store,
+    output_manifest_ref_for_generation(run_id, repair_generation),
+    contents,
+  )
 }
 
 pub fn write_output_blob(
@@ -329,7 +378,34 @@ pub fn write_output_blob(
   extension: String,
   contents: String,
 ) -> Result(ArtifactRef, ArtifactError) {
-  write_ref(store, output_blob_ref(run_id, output_name, extension), contents)
+  write_output_blob_for_generation(
+    store,
+    run_id,
+    output_name,
+    extension,
+    0,
+    contents,
+  )
+}
+
+pub fn write_output_blob_for_generation(
+  store: Store,
+  run_id: String,
+  output_name: String,
+  extension: String,
+  repair_generation: Int,
+  contents: String,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref(
+    store,
+    output_blob_ref_for_generation(
+      run_id,
+      output_name,
+      extension,
+      repair_generation,
+    ),
+    contents,
+  )
 }
 
 pub fn context_recovery_artifact_ref(
