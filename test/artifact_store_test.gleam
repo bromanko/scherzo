@@ -56,6 +56,22 @@ fn hidden_local_path_store(root: String) -> artifact_store.Store {
           }
         })
       },
+      write_immutable_bytes: fn(ref, contents) {
+        artifact_store.write_immutable(store_root <> "/" <> ref, contents)
+        |> result.map_error(fn(error) {
+          artifact_store.ArtifactWriteFailed(error)
+        })
+      },
+      read_bytes: fn(ref) {
+        artifact_store.read_file_bytes(store_root <> "/" <> ref)
+        |> result.map_error(fn(error) {
+          case error {
+            artifact_store.MissingStepArtifact(_) ->
+              artifact_store.MissingStepArtifact(ref)
+            _ -> error
+          }
+        })
+      },
       locate: fn(ref) {
         Ok(artifact_store.ArtifactLocation(
           ref: ref,
