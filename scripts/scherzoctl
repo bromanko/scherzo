@@ -2,5 +2,7 @@
 # Development wrapper for the local Scherzo control CLI. Packaged releases may
 # replace this with a compiled executable that invokes the same ctl mode.
 set -eu
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+ROOT=$(dirname -- "$SCRIPT_DIR")
+cd "$ROOT"
 exec direnv exec "$ROOT" gleam run -- ctl "$@"

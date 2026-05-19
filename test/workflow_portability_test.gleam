@@ -416,7 +416,7 @@ pub fn workflow_portability_harness_writes_report_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "WORKFLOW_PORTABILITY=ok")
-  assert string.contains(artifact.stdout, "WORKFLOW_PORTABILITY_WORKFLOWS=8")
+  assert string.contains(artifact.stdout, "WORKFLOW_PORTABILITY_WORKFLOWS=9")
 
   let report = read_file(output_dir <> "/workflow-portability-report.v1.json")
   let invocation = read_file(call_log)
@@ -433,6 +433,7 @@ pub fn workflow_portability_harness_writes_report_test() {
   assert_contains(report, ".scherzo/workflows/github-pr-conflict-scout.yaml")
   assert_contains(report, ".scherzo/workflows/merge-conflict-resolution.yaml")
   assert_contains(report, ".scherzo/workflows/origin-sync.yaml")
+  assert_contains(report, ".scherzo/workflows/workspace-cleanup.yaml")
   assert_contains(report, "exercise helper scherzo-review")
   assert_contains(
     report,

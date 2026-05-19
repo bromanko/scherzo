@@ -1,0 +1,38 @@
+version: 1
+id: workspace-cleanup
+description: Clean up eligible Scherzo local artifacts under the configured workspace root.
+workspace_profile: noop
+max_parallel_steps: 1
+steps:
+  - id: cleanup
+    kind: command
+    run: |
+      set -eu
+
+      config_dir=$(cd "$SCHERZO_CONFIG_DIR" && pwd -P)
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$config_dir/.." && pwd -P)}
+      workspace_root=${SCHERZO_CLEANUP_WORKSPACE_ROOT:-${SCHERZO_WORKSPACE_CLEANUP_ROOT:-}}
+      if test -z "$workspace_root"; then
+        workspace_root="$config_dir/workspaces"
+      fi
+
+      run_scherzoctl() {
+        if test -n "${SCHERZO_CTL:-}"; then
+          "$SCHERZO_CTL" "$@"
+          return
+        fi
+        if command -v scherzoctl >/dev/null 2>&1; then
+          scherzoctl "$@"
+          return
+        fi
+        if test -x "$repo_root/scripts/scherzoctl"; then
+          "$repo_root/scripts/scherzoctl" "$@"
+          return
+        fi
+        echo "scherzoctl not found; set SCHERZO_CTL or add scherzoctl to PATH" >&2
+        exit 127
+      }
+
+      run_scherzoctl cleanup --root "$workspace_root" --json --yes
+    timeout_ms: 300000
+    workspace: main

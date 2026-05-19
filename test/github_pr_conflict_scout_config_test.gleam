@@ -119,6 +119,40 @@ pub fn checked_in_origin_sync_schedule_loads_test() {
   assert job.catch_up == False
 }
 
+pub fn checked_in_workspace_cleanup_schedule_loads_test() {
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
+
+  assert dict.has_key(
+    bundle.orchestrator.routing.workflows,
+    "workspace-cleanup",
+  )
+  let assert Ok(dag) = dict.get(bundle.workflows, "workspace-cleanup")
+  assert dag.id == "workspace-cleanup"
+  assert dag.workspace_profile == Some("noop")
+  let assert [step] = dag.steps
+  assert step.id == "cleanup"
+  assert step.workspace.name == "main"
+  let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
+  assert timeout_ms == Some(300_000)
+  assert_contains(run, "SCHERZO_CLEANUP_WORKSPACE_ROOT")
+  assert_contains(run, "SCHERZO_WORKSPACE_CLEANUP_ROOT")
+  assert_contains(run, "command -v scherzoctl")
+  assert_contains(run, "$repo_root/scripts/scherzoctl")
+  assert_contains(run, "scherzoctl cleanup --root")
+  assert_not_contains(run, "direnv exec")
+  assert_not_contains(run, "gleam run -- ctl")
+
+  let assert Ok(job) =
+    list.find(bundle.orchestrator.scheduled_jobs, fn(job) {
+      job.id == "workspace-cleanup"
+    })
+  assert job.workflow == "workspace-cleanup"
+  assert job.enabled == True
+  assert job.every_ms == 3_600_000
+  assert job.catch_up == False
+}
+
 pub fn public_example_conflict_scout_schedule_loads_test() {
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some("examples/scherzo.yaml"), env)

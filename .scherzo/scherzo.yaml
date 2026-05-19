@@ -107,6 +107,9 @@ handoff:
       origin-sync:
         produces_reviewable_artifacts: false
         requires_review: false
+      workspace-cleanup:
+        produces_reviewable_artifacts: false
+        requires_review: false
 routing:
   workflow_label_prefix: "workflow:"
   require_exactly_one_workflow_label: true
@@ -119,6 +122,7 @@ routing:
     merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
     github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
     origin-sync: workflows/origin-sync.yaml
+    workspace-cleanup: workflows/workspace-cleanup.yaml
 scheduled_jobs:
   - id: github-pr-conflict-scout
     workflow: github-pr-conflict-scout
@@ -135,6 +139,17 @@ scheduled_jobs:
     workflow: origin-sync
     enabled: true
     every: 15m
+    overlap: skip
+    catch_up: false
+    on_failure:
+      linear:
+        enabled: true
+        state: Triage
+        dedupe: open_issue_per_job
+  - id: workspace-cleanup
+    workflow: workspace-cleanup
+    enabled: true
+    every: 1h
     overlap: skip
     catch_up: false
     on_failure:

@@ -65,6 +65,10 @@ export SCHERZO_REPO_ROOT=$(pwd)
 # Optional. Defaults for the scheduled origin-sync job.
 export SCHERZO_ORIGIN_SYNC_REMOTE=origin
 export SCHERZO_ORIGIN_SYNC_BRANCH=main
+# Optional. Defaults for the scheduled workspace-cleanup job.
+export SCHERZO_CLEANUP_WORKSPACE_ROOT="$SCHERZO_REPO_ROOT/.scherzo/workspaces"
+# Legacy alias also accepted by the workflow.
+export SCHERZO_WORKSPACE_CLEANUP_ROOT="$SCHERZO_REPO_ROOT/.scherzo/workspaces"
 ```
 
 The checked-in `tracker.linear.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository. The `dogfood-jj` driver profile can infer the repository root from `.scherzo/scherzo.yaml`, while setting `SCHERZO_REPO_ROOT` makes the driver command independent of the current directory layout.
@@ -176,6 +180,7 @@ The checked-in workflows are:
 - `workflow:execplan-implementation` — validates a retained ExecPlan bundle from task context, implements from the prepared review document plus implementation pack, fails closed if they conflict, publishes a PR, and emits a retained `code_change_bundle` artifact.
 - `workflow:merge-conflict-resolution` — manually resolves merge conflicts for one same-repository GitHub PR or branch referenced by a Linear-backed task. The task should include an unambiguous target such as `Resolve conflicts for PR #51`, `scherzo-systems/scherzo#51`, a full GitHub PR URL, or `Branch: feature/name`. The workflow creates a merge commit from the target branch and the configured base branch, lets the agent edit only files that jj reports as conflicted, fails if non-conflicted tracked files change or ambiguity requires a behavior choice, validates through direnv, and fast-forwards the target branch only after validation passes.
 - scheduled `origin-sync` — every 15 minutes, runs `scripts/scherzo-jj-origin-sync` from the repository root. It always fetches `origin`, rebases the local root stack onto `main@origin` only when the working-copy change `@` has no file changes, skips successfully when `@` is dirty, and fails for existing or newly-created jj conflicts so the scheduled failure reporter can surface manual attention.
+- scheduled `workspace-cleanup` — every hour, runs `scherzoctl cleanup --root <workspace-root> --json --yes` from a no-op scratch workspace. It defaults to `.scherzo/workspaces`, honors `SCHERZO_CLEANUP_WORKSPACE_ROOT` and the legacy `SCHERZO_WORKSPACE_CLEANUP_ROOT` override, and resolves `scherzoctl` through `SCHERZO_CTL`, `PATH`, or the repository `scripts/scherzoctl` wrapper so it does not depend on the step workspace current directory.
 
 Use the research workflow for the first supervised run:
 
