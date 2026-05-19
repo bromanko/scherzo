@@ -21,6 +21,9 @@ pub type StoreCallbacks {
   StoreCallbacks(
     write: fn(String, String) -> Result(Nil, ArtifactError),
     read: fn(String) -> Result(String, ArtifactError),
+    write_immutable_bytes: fn(String, BitArray) ->
+      Result(ImmutableWriteResult, ArtifactError),
+    read_bytes: fn(String) -> Result(BitArray, ArtifactError),
     locate: fn(String) -> Result(ArtifactLocation, ArtifactError),
   )
 }
@@ -115,6 +118,10 @@ pub fn filesystem(workspace_root: String) -> Store {
     StoreCallbacks(
       write: fn(ref, contents) { filesystem_write(root, ref, contents) },
       read: fn(ref) { filesystem_read(root, ref) },
+      write_immutable_bytes: fn(ref, contents) {
+        filesystem_write_immutable_bytes(root, ref, contents)
+      },
+      read_bytes: fn(ref) { filesystem_read_bytes(root, ref) },
       locate: fn(ref) { Ok(filesystem_location(root, ref)) },
     ),
   )
@@ -138,6 +145,36 @@ pub fn read_artifact_unverified(
 ) -> Result(String, ArtifactError) {
   use valid_ref <- result.try(validated_ref(ref))
   store.callbacks.read(valid_ref)
+}
+
+pub fn read_artifact_bytes_unverified(
+  store: Store,
+  ref: String,
+) -> Result(BitArray, ArtifactError) {
+  use valid_ref <- result.try(validated_ref(ref))
+  store.callbacks.read_bytes(valid_ref)
+}
+
+pub fn write_immutable_artifact_bytes(
+  store: Store,
+  ref: String,
+  contents: BitArray,
+) -> Result(ImmutableWriteResult, ArtifactError) {
+  use valid_ref <- result.try(validated_ref(ref))
+  use write_result <- result.try(store.callbacks.write_immutable_bytes(
+    valid_ref,
+    contents,
+  ))
+  case write_result {
+    ImmutableConflict -> Ok(ImmutableConflict)
+    ImmutableExisting | ImmutableWritten -> {
+      use final <- result.try(store.callbacks.read_bytes(valid_ref))
+      case final == contents {
+        True -> Ok(write_result)
+        False -> Ok(ImmutableConflict)
+      }
+    }
+  }
 }
 
 pub fn write_step_artifact(
@@ -649,6 +686,30 @@ fn filesystem_read(root: String, ref: String) -> Result(String, ArtifactError) {
     case error {
       simplifile.Enoent -> MissingStepArtifact(ref)
       _ -> ArtifactIo("read artifact: " <> simplifile.describe_error(error))
+    }
+  })
+}
+
+fn filesystem_write_immutable_bytes(
+  root: String,
+  ref: String,
+  contents: BitArray,
+) -> Result(ImmutableWriteResult, ArtifactError) {
+  let final_path = path.join(root, ref)
+  write_immutable(final_path, contents)
+  |> result.map_error(fn(error) { ArtifactWriteFailed(error) })
+}
+
+fn filesystem_read_bytes(
+  root: String,
+  ref: String,
+) -> Result(BitArray, ArtifactError) {
+  let final_path = path.join(root, ref)
+  read_file_bytes(final_path)
+  |> result.map_error(fn(error) {
+    case error {
+      MissingStepArtifact(_) -> MissingStepArtifact(ref)
+      _ -> error
     }
   })
 }

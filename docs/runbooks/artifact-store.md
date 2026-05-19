@@ -47,20 +47,25 @@ Compatibility expectations:
 
 A custom store provides `StoreCallbacks` for:
 
-- `write(ref, contents)`
-- `read(ref)`
+- `write(ref, contents)` for UTF-8/text artifacts
+- `read(ref)` for UTF-8/text artifacts
+- `write_immutable_bytes(ref, contents)` for content-addressed byte artifacts
+- `read_bytes(ref)` for exact byte reads
 - `locate(ref)`
 
 Implementation checklist:
 
 1. Keep refs stable and relative. Do not reinterpret them as absolute paths.
 2. Accept that Scherzo validates refs before callbacks run.
-3. Make `read` return exact bytes previously written for the ref.
-4. Make `locate` return a stable `uri` and useful `display_path`.
-5. Return `local_path: None` when the backend does not expose a local file.
-6. Preserve checksum and byte-count behavior by letting Scherzo hash the exact
+3. Make `read` return the text previously written for the ref.
+4. Make `read_bytes` return exact bytes previously written for the ref.
+5. Make `write_immutable_bytes` idempotent for identical bytes and report a
+   conflict for a pre-existing ref with different bytes.
+6. Make `locate` return a stable `uri` and useful `display_path`.
+7. Return `local_path: None` when the backend does not expose a local file.
+8. Preserve checksum and byte-count behavior by letting Scherzo hash the exact
    stored bytes.
-7. Add focused tests proving step-artifact round trips and inline structured-output
+9. Add focused tests proving step-artifact round trips and inline structured-output
    reads work without a local path.
 
 ## Known filesystem-only compatibility surfaces
