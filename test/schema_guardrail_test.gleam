@@ -1137,6 +1137,98 @@ fn ledger_examples() -> List(LedgerExample) {
         ),
       ),
     ),
+    LedgerExample(
+      "WorkstreamCreated",
+      "workstream_created",
+      record.with_id(
+        "record-workstream-created",
+        1041,
+        record.WorkstreamCreated(
+          workstream_id: "linear:LIV-393",
+          task_ref: record.linear_task_ref_fields(
+            "issue-393",
+            Some("LIV-393"),
+            Some("https://linear.app/living-systems/issue/LIV-393"),
+          ),
+          idempotency_key: "ws-create-1",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "WorkstreamAssigned",
+      "workstream_assigned",
+      record.with_id(
+        "record-workstream-assigned",
+        1042,
+        record.WorkstreamAssigned(
+          workstream_id: "linear:LIV-393",
+          assignment_id: "assignment-1",
+          workflow_id: "execplan-implementation",
+          playbook_id: Some("playbook-1"),
+          reason: "manual_claim",
+          idempotency_key: "ws-assign-1",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "WorkstreamArtifactRecorded",
+      "workstream_artifact_recorded",
+      record.with_id(
+        "record-workstream-artifact-recorded",
+        1043,
+        record.WorkstreamArtifactRecorded(
+          workstream_id: "linear:LIV-393",
+          artifact_id: "artifact-1",
+          artifact_type: "scherzo.workstream.v1",
+          snapshot_ref: "workstream-artifacts/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+          snapshot_sha256: string.repeat("a", times: 64),
+          snapshot_bytes: 123,
+          original_path: "docs/plan.md",
+          contract_type: "handoff",
+          media_type: "application/json",
+          producer_workflow_id: "execplan",
+          producer_run_id: "run-1",
+          producer_step_id: "step-1",
+          idempotency_key: "ws-artifact-1",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "WorkstreamHandoffRecorded",
+      "workstream_handoff_recorded",
+      record.with_id(
+        "record-workstream-handoff-recorded",
+        1044,
+        record.WorkstreamHandoffRecorded(
+          workstream_id: "linear:LIV-393",
+          handoff_id: "handoff-1",
+          handoff_ref: "workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
+          handoff_sha256: string.repeat("b", times: 64),
+          handoff_bytes: 456,
+          source_workflow_id: "execplan",
+          source_run_id: "run-1",
+          idempotency_key: "ws-handoff-1",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "WorkstreamPhaseRunQueued",
+      "workstream_phase_run_queued",
+      record.with_id(
+        "record-workstream-phase-run-queued",
+        1045,
+        record.WorkstreamPhaseRunQueued(
+          workstream_id: "linear:LIV-393",
+          phase_run_id: "phase-run-1",
+          action_id: "action-1",
+          workflow_id: "execplan-implementation",
+          input_bundle_ref: "workstream-artifacts/sha256/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.json",
+          input_bundle_sha256: string.repeat("c", times: 64),
+          input_bundle_bytes: 789,
+          idempotency_key: "ws-phase-1",
+        ),
+      ),
+    ),
   ]
 }
 
@@ -1394,6 +1486,78 @@ fn projection_fixture_projection() -> projection.Projection {
           issue_identifier: "LIV-1",
           workspace_path: ".scherzo/workspaces/LIV-1",
           recorded_at_ms: 1017,
+        ),
+      ),
+    ]),
+    workstreams: dict.from_list([
+      #(
+        "linear:LIV-393",
+        projection.WorkstreamStatus(
+          workstream_id: "linear:LIV-393",
+          task_ref: Some(record.linear_task_ref_fields(
+            "issue-393",
+            Some("LIV-393"),
+            None,
+          )),
+          created_at_ms: Some(1041),
+          latest_assignment: Some(projection.WorkstreamAssignment(
+            assignment_id: "assignment-1",
+            workflow_id: "execplan-implementation",
+            playbook_id: Some("playbook-1"),
+            reason: "manual_claim",
+            idempotency_key: "ws-assign-1",
+            assigned_at_ms: 1042,
+          )),
+          artifacts: dict.from_list([
+            #(
+              "workstream-artifacts/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+              projection.WorkstreamArtifactSnapshot(
+                artifact_id: "artifact-1",
+                artifact_type: "scherzo.workstream.v1",
+                snapshot_ref: "workstream-artifacts/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+                snapshot_sha256: string.repeat("a", times: 64),
+                snapshot_bytes: 123,
+                original_path: "docs/plan.md",
+                contract_type: "handoff",
+                media_type: "application/json",
+                producer_workflow_id: "execplan",
+                producer_run_id: "run-1",
+                producer_step_id: "step-1",
+                idempotency_key: "ws-artifact-1",
+                recorded_at_ms: 1043,
+              ),
+            ),
+          ]),
+          handoffs: dict.from_list([
+            #(
+              "workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
+              projection.WorkstreamHandoffSnapshot(
+                handoff_id: "handoff-1",
+                handoff_ref: "workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
+                handoff_sha256: string.repeat("b", times: 64),
+                handoff_bytes: 456,
+                source_workflow_id: "execplan",
+                source_run_id: "run-1",
+                idempotency_key: "ws-handoff-1",
+                recorded_at_ms: 1044,
+              ),
+            ),
+          ]),
+          queued_phase_runs: dict.from_list([
+            #(
+              "phase-run-1",
+              projection.WorkstreamPhaseRun(
+                phase_run_id: "phase-run-1",
+                action_id: "action-1",
+                workflow_id: "execplan-implementation",
+                input_bundle_ref: "workstream-artifacts/sha256/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.json",
+                input_bundle_sha256: string.repeat("c", times: 64),
+                input_bundle_bytes: 789,
+                idempotency_key: "ws-phase-1",
+                queued_at_ms: 1045,
+              ),
+            ),
+          ]),
         ),
       ),
     ]),

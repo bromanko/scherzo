@@ -28,6 +28,7 @@ pub type Projection {
     outbox: Dict(String, OutboxStatus),
     issue_counters: Dict(String, IssueCounterStatus),
     known_workspaces: Dict(String, KnownWorkspace),
+    workstreams: Dict(String, WorkstreamStatus),
     scheduled_jobs: Dict(String, ScheduledJobStatus),
   )
 }
@@ -374,6 +375,73 @@ pub type ScheduledJobStatus {
   )
 }
 
+pub type WorkstreamStatus {
+  WorkstreamStatus(
+    workstream_id: String,
+    task_ref: Option(record.TaskRefFields),
+    created_at_ms: Option(Int),
+    latest_assignment: Option(WorkstreamAssignment),
+    artifacts: Dict(String, WorkstreamArtifactSnapshot),
+    handoffs: Dict(String, WorkstreamHandoffSnapshot),
+    queued_phase_runs: Dict(String, WorkstreamPhaseRun),
+  )
+}
+
+pub type WorkstreamAssignment {
+  WorkstreamAssignment(
+    assignment_id: String,
+    workflow_id: String,
+    playbook_id: Option(String),
+    reason: String,
+    idempotency_key: String,
+    assigned_at_ms: Int,
+  )
+}
+
+pub type WorkstreamArtifactSnapshot {
+  WorkstreamArtifactSnapshot(
+    artifact_id: String,
+    artifact_type: String,
+    snapshot_ref: String,
+    snapshot_sha256: String,
+    snapshot_bytes: Int,
+    original_path: String,
+    contract_type: String,
+    media_type: String,
+    producer_workflow_id: String,
+    producer_run_id: String,
+    producer_step_id: String,
+    idempotency_key: String,
+    recorded_at_ms: Int,
+  )
+}
+
+pub type WorkstreamHandoffSnapshot {
+  WorkstreamHandoffSnapshot(
+    handoff_id: String,
+    handoff_ref: String,
+    handoff_sha256: String,
+    handoff_bytes: Int,
+    source_workflow_id: String,
+    source_run_id: String,
+    idempotency_key: String,
+    recorded_at_ms: Int,
+  )
+}
+
+pub type WorkstreamPhaseRun {
+  WorkstreamPhaseRun(
+    phase_run_id: String,
+    action_id: String,
+    workflow_id: String,
+    input_bundle_ref: String,
+    input_bundle_sha256: String,
+    input_bundle_bytes: Int,
+    idempotency_key: String,
+    queued_at_ms: Int,
+  )
+}
+
 pub type OutboxReplay {
   OutboxReplay(
     outbox_id: String,
@@ -459,8 +527,13 @@ type SnapshotFields {
     outbox: List(OutboxSnapshot),
     issue_counters: List(IssueCounterSnapshot),
     known_workspaces: List(KnownWorkspaceSnapshot),
+    workstreams: List(WorkstreamSnapshot),
     scheduled_jobs: List(ScheduledJobSnapshot),
   )
+}
+
+type WorkstreamSnapshot {
+  WorkstreamSnapshot(workstream_id: String, status: WorkstreamStatus)
 }
 
 // Snapshot support for scheduled projection is intentionally lightweight in the
@@ -485,6 +558,7 @@ pub fn new() -> Projection {
     outbox: dict.new(),
     issue_counters: dict.new(),
     known_workspaces: dict.new(),
+    workstreams: dict.new(),
     scheduled_jobs: dict.new(),
   )
 }
@@ -1740,6 +1814,170 @@ pub fn apply(
           OutboxFailed(issue_id, outbox_kind, error_code, at_ms),
         ),
       )
+    record.WorkstreamCreated(workstream_id, task_ref, _) ->
+      update_workstream(projection, workstream_id, fn(status) {
+        WorkstreamStatus(
+          ..status,
+          task_ref: Some(task_ref),
+          created_at_ms: first_some_int(status.created_at_ms, at_ms),
+        )
+      })
+    record.WorkstreamAssigned(
+      workstream_id,
+      assignment_id,
+      workflow_id,
+      playbook_id,
+      reason,
+      idempotency_key,
+    ) ->
+      update_workstream(projection, workstream_id, fn(status) {
+        WorkstreamStatus(
+          ..status,
+          latest_assignment: Some(WorkstreamAssignment(
+            assignment_id: assignment_id,
+            workflow_id: workflow_id,
+            playbook_id: playbook_id,
+            reason: reason,
+            idempotency_key: idempotency_key,
+            assigned_at_ms: at_ms,
+          )),
+        )
+      })
+    record.WorkstreamArtifactRecorded(
+      workstream_id,
+      artifact_id,
+      artifact_type,
+      snapshot_ref,
+      snapshot_sha256,
+      snapshot_bytes,
+      original_path,
+      contract_type,
+      media_type,
+      producer_workflow_id,
+      producer_run_id,
+      producer_step_id,
+      idempotency_key,
+    ) ->
+      update_workstream(projection, workstream_id, fn(status) {
+        WorkstreamStatus(
+          ..status,
+          artifacts: dict.insert(
+            status.artifacts,
+            snapshot_ref,
+            WorkstreamArtifactSnapshot(
+              artifact_id: artifact_id,
+              artifact_type: artifact_type,
+              snapshot_ref: snapshot_ref,
+              snapshot_sha256: snapshot_sha256,
+              snapshot_bytes: snapshot_bytes,
+              original_path: original_path,
+              contract_type: contract_type,
+              media_type: media_type,
+              producer_workflow_id: producer_workflow_id,
+              producer_run_id: producer_run_id,
+              producer_step_id: producer_step_id,
+              idempotency_key: idempotency_key,
+              recorded_at_ms: at_ms,
+            ),
+          ),
+        )
+      })
+    record.WorkstreamHandoffRecorded(
+      workstream_id,
+      handoff_id,
+      handoff_ref,
+      handoff_sha256,
+      handoff_bytes,
+      source_workflow_id,
+      source_run_id,
+      idempotency_key,
+    ) ->
+      update_workstream(projection, workstream_id, fn(status) {
+        WorkstreamStatus(
+          ..status,
+          handoffs: dict.insert(
+            status.handoffs,
+            handoff_ref,
+            WorkstreamHandoffSnapshot(
+              handoff_id: handoff_id,
+              handoff_ref: handoff_ref,
+              handoff_sha256: handoff_sha256,
+              handoff_bytes: handoff_bytes,
+              source_workflow_id: source_workflow_id,
+              source_run_id: source_run_id,
+              idempotency_key: idempotency_key,
+              recorded_at_ms: at_ms,
+            ),
+          ),
+        )
+      })
+    record.WorkstreamPhaseRunQueued(
+      workstream_id,
+      phase_run_id,
+      action_id,
+      workflow_id,
+      input_bundle_ref,
+      input_bundle_sha256,
+      input_bundle_bytes,
+      idempotency_key,
+    ) ->
+      update_workstream(projection, workstream_id, fn(status) {
+        WorkstreamStatus(
+          ..status,
+          queued_phase_runs: dict.insert(
+            status.queued_phase_runs,
+            phase_run_id,
+            WorkstreamPhaseRun(
+              phase_run_id: phase_run_id,
+              action_id: action_id,
+              workflow_id: workflow_id,
+              input_bundle_ref: input_bundle_ref,
+              input_bundle_sha256: input_bundle_sha256,
+              input_bundle_bytes: input_bundle_bytes,
+              idempotency_key: idempotency_key,
+              queued_at_ms: at_ms,
+            ),
+          ),
+        )
+      })
+  }
+}
+
+fn update_workstream(
+  projection: Projection,
+  workstream_id: String,
+  update: fn(WorkstreamStatus) -> WorkstreamStatus,
+) -> Projection {
+  let current = case dict.get(projection.workstreams, workstream_id) {
+    Ok(status) -> status
+    Error(_) -> empty_workstream_status(workstream_id)
+  }
+  Projection(
+    ..projection,
+    workstreams: dict.insert(
+      projection.workstreams,
+      workstream_id,
+      update(current),
+    ),
+  )
+}
+
+fn empty_workstream_status(workstream_id: String) -> WorkstreamStatus {
+  WorkstreamStatus(
+    workstream_id: workstream_id,
+    task_ref: None,
+    created_at_ms: None,
+    latest_assignment: None,
+    artifacts: dict.new(),
+    handoffs: dict.new(),
+    queued_phase_runs: dict.new(),
+  )
+}
+
+fn first_some_int(existing: Option(Int), fallback: Int) -> Option(Int) {
+  case existing {
+    Some(value) -> Some(value)
+    None -> Some(fallback)
   }
 }
 
@@ -2900,6 +3138,13 @@ pub fn to_json(projection: Projection) -> json.Json {
       ),
     ),
     #(
+      "workstreams",
+      json.array(
+        dict.to_list(projection.workstreams),
+        of: workstream_entry_to_json,
+      ),
+    ),
+    #(
       "scheduled_jobs",
       json.array(
         dict.to_list(projection.scheduled_jobs),
@@ -3007,6 +3252,12 @@ fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
           |> list.map(fn(entry) {
             let KnownWorkspaceSnapshot(issue_id, workspace) = entry
             #(issue_id, workspace)
+          })
+          |> dict.from_list,
+        workstreams: fields.workstreams
+          |> list.map(fn(entry) {
+            let WorkstreamSnapshot(workstream_id, status) = entry
+            #(workstream_id, status)
           })
           |> dict.from_list,
         scheduled_jobs: fields.scheduled_jobs
@@ -3610,6 +3861,153 @@ fn known_workspace_entry_to_json(
   ])
 }
 
+fn workstream_entry_to_json(entry: #(String, WorkstreamStatus)) -> json.Json {
+  let #(workstream_id, status) = entry
+  json.object([
+    #("workstream_id", json.string(workstream_id)),
+    #(
+      "task_backend_kind",
+      option_task_ref_string(status.task_ref, fn(task_ref) {
+        task_ref.task_backend_kind
+      }),
+    ),
+    #(
+      "task_remote_id",
+      option_task_ref_string(status.task_ref, fn(task_ref) {
+        task_ref.task_remote_id
+      }),
+    ),
+    #(
+      "task_key",
+      option_task_ref_option_string(status.task_ref, fn(task_ref) {
+        task_ref.task_key
+      }),
+    ),
+    #(
+      "task_url",
+      option_task_ref_option_string(status.task_ref, fn(task_ref) {
+        task_ref.task_url
+      }),
+    ),
+    #("created_at_ms", option_int_to_json(status.created_at_ms)),
+    #(
+      "latest_assignment",
+      option_workstream_assignment_to_json(status.latest_assignment),
+    ),
+    #(
+      "artifacts",
+      json.array(
+        dict.to_list(status.artifacts),
+        of: workstream_artifact_entry_to_json,
+      ),
+    ),
+    #(
+      "handoffs",
+      json.array(
+        dict.to_list(status.handoffs),
+        of: workstream_handoff_entry_to_json,
+      ),
+    ),
+    #(
+      "queued_phase_runs",
+      json.array(
+        dict.to_list(status.queued_phase_runs),
+        of: workstream_phase_run_entry_to_json,
+      ),
+    ),
+  ])
+}
+
+fn option_task_ref_string(
+  task_ref: Option(record.TaskRefFields),
+  select: fn(record.TaskRefFields) -> String,
+) -> json.Json {
+  case task_ref {
+    Some(task_ref) -> json.string(select(task_ref))
+    None -> json.null()
+  }
+}
+
+fn option_task_ref_option_string(
+  task_ref: Option(record.TaskRefFields),
+  select: fn(record.TaskRefFields) -> Option(String),
+) -> json.Json {
+  case task_ref {
+    Some(task_ref) -> option_string_to_json(select(task_ref))
+    None -> json.null()
+  }
+}
+
+fn option_workstream_assignment_to_json(
+  value: Option(WorkstreamAssignment),
+) -> json.Json {
+  case value {
+    None -> json.null()
+    Some(assignment) ->
+      json.object([
+        #("assignment_id", json.string(assignment.assignment_id)),
+        #("workflow_id", json.string(assignment.workflow_id)),
+        #("playbook_id", option_string_to_json(assignment.playbook_id)),
+        #("reason", json.string(assignment.reason)),
+        #("idempotency_key", json.string(assignment.idempotency_key)),
+        #("assigned_at_ms", json.int(assignment.assigned_at_ms)),
+      ])
+  }
+}
+
+fn workstream_artifact_entry_to_json(
+  entry: #(String, WorkstreamArtifactSnapshot),
+) -> json.Json {
+  let #(_, artifact) = entry
+  json.object([
+    #("snapshot_ref", json.string(artifact.snapshot_ref)),
+    #("artifact_id", json.string(artifact.artifact_id)),
+    #("artifact_type", json.string(artifact.artifact_type)),
+    #("snapshot_sha256", json.string(artifact.snapshot_sha256)),
+    #("snapshot_bytes", json.int(artifact.snapshot_bytes)),
+    #("original_path", json.string(artifact.original_path)),
+    #("contract_type", json.string(artifact.contract_type)),
+    #("media_type", json.string(artifact.media_type)),
+    #("producer_workflow_id", json.string(artifact.producer_workflow_id)),
+    #("producer_run_id", json.string(artifact.producer_run_id)),
+    #("producer_step_id", json.string(artifact.producer_step_id)),
+    #("idempotency_key", json.string(artifact.idempotency_key)),
+    #("recorded_at_ms", json.int(artifact.recorded_at_ms)),
+  ])
+}
+
+fn workstream_handoff_entry_to_json(
+  entry: #(String, WorkstreamHandoffSnapshot),
+) -> json.Json {
+  let #(_, handoff) = entry
+  json.object([
+    #("handoff_ref", json.string(handoff.handoff_ref)),
+    #("handoff_id", json.string(handoff.handoff_id)),
+    #("handoff_sha256", json.string(handoff.handoff_sha256)),
+    #("handoff_bytes", json.int(handoff.handoff_bytes)),
+    #("source_workflow_id", json.string(handoff.source_workflow_id)),
+    #("source_run_id", json.string(handoff.source_run_id)),
+    #("idempotency_key", json.string(handoff.idempotency_key)),
+    #("recorded_at_ms", json.int(handoff.recorded_at_ms)),
+  ])
+}
+
+fn workstream_phase_run_entry_to_json(
+  entry: #(String, WorkstreamPhaseRun),
+) -> json.Json {
+  let #(_, phase_run) = entry
+  json.object([
+    #("phase_run_id", json.string(phase_run.phase_run_id)),
+    #("action_id", json.string(phase_run.action_id)),
+    #("workflow_id", json.string(phase_run.workflow_id)),
+    #("input_bundle_ref", json.string(phase_run.input_bundle_ref)),
+    #("input_bundle_sha256", json.string(phase_run.input_bundle_sha256)),
+    #("input_bundle_bytes", json.int(phase_run.input_bundle_bytes)),
+    #("idempotency_key", json.string(phase_run.idempotency_key)),
+    #("queued_at_ms", json.int(phase_run.queued_at_ms)),
+  ])
+}
+
 fn scheduled_job_entry_to_json(
   entry: #(String, ScheduledJobStatus),
 ) -> json.Json {
@@ -3767,6 +4165,11 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: known_workspace_snapshot_decoder()),
   )
+  use workstreams <- decode.optional_field(
+    "workstreams",
+    [],
+    decode.list(of: workstream_snapshot_decoder()),
+  )
   use scheduled_jobs <- decode.optional_field(
     "scheduled_jobs",
     [],
@@ -3791,11 +4194,13 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         outbox,
         issue_counters,
         known_workspaces,
+        workstreams,
         scheduled_jobs,
       ))
     False ->
       decode.failure(
         SnapshotFields(
+          [],
           [],
           [],
           [],
@@ -4647,6 +5052,218 @@ fn scheduled_report_retry_decoder() -> decode.Decoder(ScheduledReportRetry) {
     error_message: error_message,
     next_retry_at_ms: next_retry_at_ms,
     generation: generation,
+  ))
+}
+
+fn workstream_snapshot_decoder() -> decode.Decoder(WorkstreamSnapshot) {
+  use workstream_id <- decode.field("workstream_id", decode.string)
+  use task_backend_kind <- decode.optional_field(
+    "task_backend_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_remote_id <- decode.optional_field(
+    "task_remote_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_key <- decode.optional_field(
+    "task_key",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_url <- decode.optional_field(
+    "task_url",
+    None,
+    decode.optional(decode.string),
+  )
+  use created_at_ms <- decode.optional_field(
+    "created_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use latest_assignment <- decode.optional_field(
+    "latest_assignment",
+    None,
+    decode.optional(workstream_assignment_decoder()),
+  )
+  use artifacts <- decode.optional_field(
+    "artifacts",
+    [],
+    decode.list(of: workstream_artifact_snapshot_decoder()),
+  )
+  use handoffs <- decode.optional_field(
+    "handoffs",
+    [],
+    decode.list(of: workstream_handoff_snapshot_decoder()),
+  )
+  use queued_phase_runs <- decode.optional_field(
+    "queued_phase_runs",
+    [],
+    decode.list(of: workstream_phase_run_snapshot_decoder()),
+  )
+  case
+    task_ref_from_snapshot(
+      task_backend_kind,
+      task_remote_id,
+      task_key,
+      task_url,
+    )
+  {
+    Ok(task_ref) ->
+      decode.success(WorkstreamSnapshot(
+        workstream_id: workstream_id,
+        status: WorkstreamStatus(
+          workstream_id: workstream_id,
+          task_ref: task_ref,
+          created_at_ms: created_at_ms,
+          latest_assignment: latest_assignment,
+          artifacts: artifacts
+            |> list.map(fn(entry) { #(entry.snapshot_ref, entry) })
+            |> dict.from_list,
+          handoffs: handoffs
+            |> list.map(fn(entry) { #(entry.handoff_ref, entry) })
+            |> dict.from_list,
+          queued_phase_runs: queued_phase_runs
+            |> list.map(fn(entry) { #(entry.phase_run_id, entry) })
+            |> dict.from_list,
+        ),
+      ))
+    Error(Nil) ->
+      decode.failure(
+        empty_workstream_snapshot(),
+        expected: "complete workstream task ref fields",
+      )
+  }
+}
+
+fn task_ref_from_snapshot(
+  backend_kind: Option(String),
+  remote_id: Option(String),
+  task_key: Option(String),
+  task_url: Option(String),
+) -> Result(Option(record.TaskRefFields), Nil) {
+  case backend_kind, remote_id {
+    None, None -> Ok(None)
+    Some(kind), Some(id) ->
+      Ok(Some(record.TaskRefFields(kind, id, task_key, task_url)))
+    _, _ -> Error(Nil)
+  }
+}
+
+fn empty_workstream_snapshot() -> WorkstreamSnapshot {
+  WorkstreamSnapshot(
+    "",
+    WorkstreamStatus(
+      workstream_id: "",
+      task_ref: None,
+      created_at_ms: None,
+      latest_assignment: None,
+      artifacts: dict.new(),
+      handoffs: dict.new(),
+      queued_phase_runs: dict.new(),
+    ),
+  )
+}
+
+fn workstream_assignment_decoder() -> decode.Decoder(WorkstreamAssignment) {
+  use assignment_id <- decode.field("assignment_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use playbook_id <- decode.optional_field(
+    "playbook_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use reason <- decode.field("reason", decode.string)
+  use idempotency_key <- decode.field("idempotency_key", decode.string)
+  use assigned_at_ms <- decode.field("assigned_at_ms", decode.int)
+  decode.success(WorkstreamAssignment(
+    assignment_id: assignment_id,
+    workflow_id: workflow_id,
+    playbook_id: playbook_id,
+    reason: reason,
+    idempotency_key: idempotency_key,
+    assigned_at_ms: assigned_at_ms,
+  ))
+}
+
+fn workstream_artifact_snapshot_decoder() -> decode.Decoder(
+  WorkstreamArtifactSnapshot,
+) {
+  use artifact_id <- decode.field("artifact_id", decode.string)
+  use artifact_type <- decode.field("artifact_type", decode.string)
+  use snapshot_ref <- decode.field("snapshot_ref", decode.string)
+  use snapshot_sha256 <- decode.field("snapshot_sha256", decode.string)
+  use snapshot_bytes <- decode.field("snapshot_bytes", decode.int)
+  use original_path <- decode.field("original_path", decode.string)
+  use contract_type <- decode.field("contract_type", decode.string)
+  use media_type <- decode.field("media_type", decode.string)
+  use producer_workflow_id <- decode.field(
+    "producer_workflow_id",
+    decode.string,
+  )
+  use producer_run_id <- decode.field("producer_run_id", decode.string)
+  use producer_step_id <- decode.field("producer_step_id", decode.string)
+  use idempotency_key <- decode.field("idempotency_key", decode.string)
+  use recorded_at_ms <- decode.field("recorded_at_ms", decode.int)
+  decode.success(WorkstreamArtifactSnapshot(
+    artifact_id: artifact_id,
+    artifact_type: artifact_type,
+    snapshot_ref: snapshot_ref,
+    snapshot_sha256: snapshot_sha256,
+    snapshot_bytes: snapshot_bytes,
+    original_path: original_path,
+    contract_type: contract_type,
+    media_type: media_type,
+    producer_workflow_id: producer_workflow_id,
+    producer_run_id: producer_run_id,
+    producer_step_id: producer_step_id,
+    idempotency_key: idempotency_key,
+    recorded_at_ms: recorded_at_ms,
+  ))
+}
+
+fn workstream_handoff_snapshot_decoder() -> decode.Decoder(
+  WorkstreamHandoffSnapshot,
+) {
+  use handoff_id <- decode.field("handoff_id", decode.string)
+  use handoff_ref <- decode.field("handoff_ref", decode.string)
+  use handoff_sha256 <- decode.field("handoff_sha256", decode.string)
+  use handoff_bytes <- decode.field("handoff_bytes", decode.int)
+  use source_workflow_id <- decode.field("source_workflow_id", decode.string)
+  use source_run_id <- decode.field("source_run_id", decode.string)
+  use idempotency_key <- decode.field("idempotency_key", decode.string)
+  use recorded_at_ms <- decode.field("recorded_at_ms", decode.int)
+  decode.success(WorkstreamHandoffSnapshot(
+    handoff_id: handoff_id,
+    handoff_ref: handoff_ref,
+    handoff_sha256: handoff_sha256,
+    handoff_bytes: handoff_bytes,
+    source_workflow_id: source_workflow_id,
+    source_run_id: source_run_id,
+    idempotency_key: idempotency_key,
+    recorded_at_ms: recorded_at_ms,
+  ))
+}
+
+fn workstream_phase_run_snapshot_decoder() -> decode.Decoder(WorkstreamPhaseRun) {
+  use phase_run_id <- decode.field("phase_run_id", decode.string)
+  use action_id <- decode.field("action_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use input_bundle_ref <- decode.field("input_bundle_ref", decode.string)
+  use input_bundle_sha256 <- decode.field("input_bundle_sha256", decode.string)
+  use input_bundle_bytes <- decode.field("input_bundle_bytes", decode.int)
+  use idempotency_key <- decode.field("idempotency_key", decode.string)
+  use queued_at_ms <- decode.field("queued_at_ms", decode.int)
+  decode.success(WorkstreamPhaseRun(
+    phase_run_id: phase_run_id,
+    action_id: action_id,
+    workflow_id: workflow_id,
+    input_bundle_ref: input_bundle_ref,
+    input_bundle_sha256: input_bundle_sha256,
+    input_bundle_bytes: input_bundle_bytes,
+    idempotency_key: idempotency_key,
+    queued_at_ms: queued_at_ms,
   ))
 }
 

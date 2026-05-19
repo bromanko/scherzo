@@ -78,6 +78,12 @@ pub type ArtifactWriteError {
   UnexpectedFfiFailure(function: String, detail: String)
 }
 
+pub type ImmutableWriteResult {
+  ImmutableWritten
+  ImmutableExisting
+  ImmutableConflict
+}
+
 pub type ArtifactError {
   ArtifactIo(String)
   ArtifactWriteFailed(ArtifactWriteError)
@@ -760,6 +766,37 @@ pub fn write_atomic(
   |> result.map_error(fn(error) { raw_write_error("write_atomic", error) })
 }
 
+pub fn read_file_bytes(path: String) -> Result(BitArray, ArtifactError) {
+  ffi_read_file(path)
+  |> result.map_error(fn(error) {
+    case split_tag(error) {
+      #("read", "enoent") -> MissingStepArtifact(path)
+      #(tag, detail) ->
+        case detail != "" {
+          True -> ArtifactIo("read file: " <> detail)
+          False -> ArtifactIo("read file: " <> tag)
+        }
+    }
+  })
+}
+
+pub fn write_immutable(
+  final_path: String,
+  contents: BitArray,
+) -> Result(ImmutableWriteResult, ArtifactWriteError) {
+  case ffi_write_immutable(final_path, contents) {
+    Ok("written") -> Ok(ImmutableWritten)
+    Ok("existing") -> Ok(ImmutableExisting)
+    Ok("conflict") -> Ok(ImmutableConflict)
+    Ok(status) ->
+      Error(UnexpectedFfiFailure(
+        "write_immutable",
+        "unexpected status: " <> status,
+      ))
+    Error(error) -> Error(raw_write_error("write_immutable", error))
+  }
+}
+
 pub fn artifact_write_error_to_string(error: ArtifactWriteError) -> String {
   case error {
     InvalidPath(reason) -> "invalid artifact path: " <> reason
@@ -800,3 +837,12 @@ fn split_tag(error: String) -> #(String, String) {
 
 @external(erlang, "scherzo_artifact_store_ffi", "write_atomic")
 fn ffi_write_atomic(final_path: String, contents: String) -> Result(Nil, String)
+
+@external(erlang, "scherzo_artifact_store_ffi", "read_file")
+fn ffi_read_file(path: String) -> Result(BitArray, String)
+
+@external(erlang, "scherzo_artifact_store_ffi", "write_immutable")
+fn ffi_write_immutable(
+  final_path: String,
+  contents: BitArray,
+) -> Result(String, String)

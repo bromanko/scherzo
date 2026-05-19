@@ -428,6 +428,54 @@ pub type RecordBody {
     outbox_kind: String,
     error_code: String,
   )
+  WorkstreamCreated(
+    workstream_id: String,
+    task_ref: TaskRefFields,
+    idempotency_key: String,
+  )
+  WorkstreamAssigned(
+    workstream_id: String,
+    assignment_id: String,
+    workflow_id: String,
+    playbook_id: Option(String),
+    reason: String,
+    idempotency_key: String,
+  )
+  WorkstreamArtifactRecorded(
+    workstream_id: String,
+    artifact_id: String,
+    artifact_type: String,
+    snapshot_ref: String,
+    snapshot_sha256: String,
+    snapshot_bytes: Int,
+    original_path: String,
+    contract_type: String,
+    media_type: String,
+    producer_workflow_id: String,
+    producer_run_id: String,
+    producer_step_id: String,
+    idempotency_key: String,
+  )
+  WorkstreamHandoffRecorded(
+    workstream_id: String,
+    handoff_id: String,
+    handoff_ref: String,
+    handoff_sha256: String,
+    handoff_bytes: Int,
+    source_workflow_id: String,
+    source_run_id: String,
+    idempotency_key: String,
+  )
+  WorkstreamPhaseRunQueued(
+    workstream_id: String,
+    phase_run_id: String,
+    action_id: String,
+    workflow_id: String,
+    input_bundle_ref: String,
+    input_bundle_sha256: String,
+    input_bundle_bytes: Int,
+    idempotency_key: String,
+  )
 }
 
 pub type DecodeError {
@@ -516,6 +564,31 @@ type RecordFields {
     action: Option(String),
     error_message: Option(String),
     next_retry_at_ms: Option(Int),
+    workstream_id: Option(String),
+    assignment_id: Option(String),
+    playbook_id: Option(String),
+    idempotency_key: Option(String),
+    artifact_id: Option(String),
+    artifact_type: Option(String),
+    snapshot_ref: Option(String),
+    snapshot_sha256: Option(String),
+    snapshot_bytes: Option(Int),
+    original_path: Option(String),
+    contract_type: Option(String),
+    media_type: Option(String),
+    producer_workflow_id: Option(String),
+    producer_run_id: Option(String),
+    producer_step_id: Option(String),
+    handoff_id: Option(String),
+    handoff_ref: Option(String),
+    handoff_sha256: Option(String),
+    handoff_bytes: Option(Int),
+    source_workflow_id: Option(String),
+    phase_run_id: Option(String),
+    action_id: Option(String),
+    input_bundle_ref: Option(String),
+    input_bundle_sha256: Option(String),
+    input_bundle_bytes: Option(Int),
   )
 }
 
@@ -593,6 +666,11 @@ pub fn kind(body: RecordBody) -> String {
     OutboxPendingV2(..) -> "outbox_pending_v2"
     OutboxCompleted(..) -> "outbox_completed"
     OutboxFailed(..) -> "outbox_failed"
+    WorkstreamCreated(..) -> "workstream_created"
+    WorkstreamAssigned(..) -> "workstream_assigned"
+    WorkstreamArtifactRecorded(..) -> "workstream_artifact_recorded"
+    WorkstreamHandoffRecorded(..) -> "workstream_handoff_recorded"
+    WorkstreamPhaseRunQueued(..) -> "workstream_phase_run_queued"
   }
 }
 
@@ -1277,6 +1355,94 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("issue_id", json.string(issue_id)),
       #("outbox_kind", json.string(outbox_kind)),
       #("error_code", json.string(error_code)),
+    ]
+    WorkstreamCreated(workstream_id, task_ref, idempotency_key) ->
+      [#("workstream_id", json.string(workstream_id))]
+      |> append_json_entries(task_ref_entries(task_ref))
+      |> append_json_entries([
+        #("idempotency_key", json.string(idempotency_key)),
+      ])
+    WorkstreamAssigned(
+      workstream_id,
+      assignment_id,
+      workflow_id,
+      playbook_id,
+      reason,
+      idempotency_key,
+    ) -> [
+      #("workstream_id", json.string(workstream_id)),
+      #("assignment_id", json.string(assignment_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("playbook_id", option_string_to_json(playbook_id)),
+      #("reason", json.string(reason)),
+      #("idempotency_key", json.string(idempotency_key)),
+    ]
+    WorkstreamArtifactRecorded(
+      workstream_id,
+      artifact_id,
+      artifact_type,
+      snapshot_ref,
+      snapshot_sha256,
+      snapshot_bytes,
+      original_path,
+      contract_type,
+      media_type,
+      producer_workflow_id,
+      producer_run_id,
+      producer_step_id,
+      idempotency_key,
+    ) -> [
+      #("workstream_id", json.string(workstream_id)),
+      #("artifact_id", json.string(artifact_id)),
+      #("artifact_type", json.string(artifact_type)),
+      #("snapshot_ref", json.string(snapshot_ref)),
+      #("snapshot_sha256", json.string(snapshot_sha256)),
+      #("snapshot_bytes", json.int(snapshot_bytes)),
+      #("original_path", json.string(original_path)),
+      #("contract_type", json.string(contract_type)),
+      #("media_type", json.string(media_type)),
+      #("producer_workflow_id", json.string(producer_workflow_id)),
+      #("producer_run_id", json.string(producer_run_id)),
+      #("producer_step_id", json.string(producer_step_id)),
+      #("idempotency_key", json.string(idempotency_key)),
+    ]
+    WorkstreamHandoffRecorded(
+      workstream_id,
+      handoff_id,
+      handoff_ref,
+      handoff_sha256,
+      handoff_bytes,
+      source_workflow_id,
+      source_run_id,
+      idempotency_key,
+    ) -> [
+      #("workstream_id", json.string(workstream_id)),
+      #("handoff_id", json.string(handoff_id)),
+      #("handoff_ref", json.string(handoff_ref)),
+      #("handoff_sha256", json.string(handoff_sha256)),
+      #("handoff_bytes", json.int(handoff_bytes)),
+      #("source_workflow_id", json.string(source_workflow_id)),
+      #("source_run_id", json.string(source_run_id)),
+      #("idempotency_key", json.string(idempotency_key)),
+    ]
+    WorkstreamPhaseRunQueued(
+      workstream_id,
+      phase_run_id,
+      action_id,
+      workflow_id,
+      input_bundle_ref,
+      input_bundle_sha256,
+      input_bundle_bytes,
+      idempotency_key,
+    ) -> [
+      #("workstream_id", json.string(workstream_id)),
+      #("phase_run_id", json.string(phase_run_id)),
+      #("action_id", json.string(action_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("input_bundle_ref", json.string(input_bundle_ref)),
+      #("input_bundle_sha256", json.string(input_bundle_sha256)),
+      #("input_bundle_bytes", json.int(input_bundle_bytes)),
+      #("idempotency_key", json.string(idempotency_key)),
     ]
   }
 }
@@ -2335,6 +2501,199 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       ))
       Ok(OutboxFailed(outbox_id, issue_id, outbox_kind, error_code))
     }
+    "workstream_created" -> {
+      use workstream_id <- result.try(required_string(
+        fields.workstream_id,
+        "workstream_id",
+      ))
+      use task_ref <- result.try(required_task_ref_fields(fields))
+      use idempotency_key <- result.try(required_string(
+        fields.idempotency_key,
+        "idempotency_key",
+      ))
+      Ok(WorkstreamCreated(workstream_id, task_ref, idempotency_key))
+    }
+    "workstream_assigned" -> {
+      use workstream_id <- result.try(required_string(
+        fields.workstream_id,
+        "workstream_id",
+      ))
+      use assignment_id <- result.try(required_string(
+        fields.assignment_id,
+        "assignment_id",
+      ))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      use idempotency_key <- result.try(required_string(
+        fields.idempotency_key,
+        "idempotency_key",
+      ))
+      Ok(WorkstreamAssigned(
+        workstream_id,
+        assignment_id,
+        workflow_id,
+        fields.playbook_id,
+        reason,
+        idempotency_key,
+      ))
+    }
+    "workstream_artifact_recorded" -> {
+      use workstream_id <- result.try(required_string(
+        fields.workstream_id,
+        "workstream_id",
+      ))
+      use artifact_id <- result.try(required_string(
+        fields.artifact_id,
+        "artifact_id",
+      ))
+      use artifact_type <- result.try(required_string(
+        fields.artifact_type,
+        "artifact_type",
+      ))
+      use snapshot_ref <- result.try(required_string(
+        fields.snapshot_ref,
+        "snapshot_ref",
+      ))
+      use snapshot_sha256 <- result.try(required_string(
+        fields.snapshot_sha256,
+        "snapshot_sha256",
+      ))
+      use snapshot_bytes <- result.try(required_int(
+        fields.snapshot_bytes,
+        "snapshot_bytes",
+      ))
+      use original_path <- result.try(required_string(
+        fields.original_path,
+        "original_path",
+      ))
+      use contract_type <- result.try(required_string(
+        fields.contract_type,
+        "contract_type",
+      ))
+      use media_type <- result.try(required_string(
+        fields.media_type,
+        "media_type",
+      ))
+      use producer_workflow_id <- result.try(required_string(
+        fields.producer_workflow_id,
+        "producer_workflow_id",
+      ))
+      use producer_run_id <- result.try(required_string(
+        fields.producer_run_id,
+        "producer_run_id",
+      ))
+      use producer_step_id <- result.try(required_string(
+        fields.producer_step_id,
+        "producer_step_id",
+      ))
+      use idempotency_key <- result.try(required_string(
+        fields.idempotency_key,
+        "idempotency_key",
+      ))
+      Ok(WorkstreamArtifactRecorded(
+        workstream_id,
+        artifact_id,
+        artifact_type,
+        snapshot_ref,
+        snapshot_sha256,
+        snapshot_bytes,
+        original_path,
+        contract_type,
+        media_type,
+        producer_workflow_id,
+        producer_run_id,
+        producer_step_id,
+        idempotency_key,
+      ))
+    }
+    "workstream_handoff_recorded" -> {
+      use workstream_id <- result.try(required_string(
+        fields.workstream_id,
+        "workstream_id",
+      ))
+      use handoff_id <- result.try(required_string(
+        fields.handoff_id,
+        "handoff_id",
+      ))
+      use handoff_ref <- result.try(required_string(
+        fields.handoff_ref,
+        "handoff_ref",
+      ))
+      use handoff_sha256 <- result.try(required_string(
+        fields.handoff_sha256,
+        "handoff_sha256",
+      ))
+      use handoff_bytes <- result.try(required_int(
+        fields.handoff_bytes,
+        "handoff_bytes",
+      ))
+      use source_workflow_id <- result.try(required_string(
+        fields.source_workflow_id,
+        "source_workflow_id",
+      ))
+      use source_run_id <- result.try(required_string(
+        fields.source_run_id,
+        "source_run_id",
+      ))
+      use idempotency_key <- result.try(required_string(
+        fields.idempotency_key,
+        "idempotency_key",
+      ))
+      Ok(WorkstreamHandoffRecorded(
+        workstream_id,
+        handoff_id,
+        handoff_ref,
+        handoff_sha256,
+        handoff_bytes,
+        source_workflow_id,
+        source_run_id,
+        idempotency_key,
+      ))
+    }
+    "workstream_phase_run_queued" -> {
+      use workstream_id <- result.try(required_string(
+        fields.workstream_id,
+        "workstream_id",
+      ))
+      use phase_run_id <- result.try(required_string(
+        fields.phase_run_id,
+        "phase_run_id",
+      ))
+      use action_id <- result.try(required_string(fields.action_id, "action_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use input_bundle_ref <- result.try(required_string(
+        fields.input_bundle_ref,
+        "input_bundle_ref",
+      ))
+      use input_bundle_sha256 <- result.try(required_string(
+        fields.input_bundle_sha256,
+        "input_bundle_sha256",
+      ))
+      use input_bundle_bytes <- result.try(required_int(
+        fields.input_bundle_bytes,
+        "input_bundle_bytes",
+      ))
+      use idempotency_key <- result.try(required_string(
+        fields.idempotency_key,
+        "idempotency_key",
+      ))
+      Ok(WorkstreamPhaseRunQueued(
+        workstream_id,
+        phase_run_id,
+        action_id,
+        workflow_id,
+        input_bundle_ref,
+        input_bundle_sha256,
+        input_bundle_bytes,
+        idempotency_key,
+      ))
+    }
     other -> Error(UnknownKind(other))
   }
 }
@@ -2705,6 +3064,131 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.int),
   )
+  use workstream_id <- decode.optional_field(
+    "workstream_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use assignment_id <- decode.optional_field(
+    "assignment_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use playbook_id <- decode.optional_field(
+    "playbook_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use idempotency_key <- decode.optional_field(
+    "idempotency_key",
+    None,
+    decode.optional(decode.string),
+  )
+  use artifact_id <- decode.optional_field(
+    "artifact_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use artifact_type <- decode.optional_field(
+    "artifact_type",
+    None,
+    decode.optional(decode.string),
+  )
+  use snapshot_ref <- decode.optional_field(
+    "snapshot_ref",
+    None,
+    decode.optional(decode.string),
+  )
+  use snapshot_sha256 <- decode.optional_field(
+    "snapshot_sha256",
+    None,
+    decode.optional(decode.string),
+  )
+  use snapshot_bytes <- decode.optional_field(
+    "snapshot_bytes",
+    None,
+    decode.optional(decode.int),
+  )
+  use original_path <- decode.optional_field(
+    "original_path",
+    None,
+    decode.optional(decode.string),
+  )
+  use contract_type <- decode.optional_field(
+    "contract_type",
+    None,
+    decode.optional(decode.string),
+  )
+  use media_type <- decode.optional_field(
+    "media_type",
+    None,
+    decode.optional(decode.string),
+  )
+  use producer_workflow_id <- decode.optional_field(
+    "producer_workflow_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use producer_run_id <- decode.optional_field(
+    "producer_run_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use producer_step_id <- decode.optional_field(
+    "producer_step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use handoff_id <- decode.optional_field(
+    "handoff_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use handoff_ref <- decode.optional_field(
+    "handoff_ref",
+    None,
+    decode.optional(decode.string),
+  )
+  use handoff_sha256 <- decode.optional_field(
+    "handoff_sha256",
+    None,
+    decode.optional(decode.string),
+  )
+  use handoff_bytes <- decode.optional_field(
+    "handoff_bytes",
+    None,
+    decode.optional(decode.int),
+  )
+  use source_workflow_id <- decode.optional_field(
+    "source_workflow_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use phase_run_id <- decode.optional_field(
+    "phase_run_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use action_id <- decode.optional_field(
+    "action_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use input_bundle_ref <- decode.optional_field(
+    "input_bundle_ref",
+    None,
+    decode.optional(decode.string),
+  )
+  use input_bundle_sha256 <- decode.optional_field(
+    "input_bundle_sha256",
+    None,
+    decode.optional(decode.string),
+  )
+  use input_bundle_bytes <- decode.optional_field(
+    "input_bundle_bytes",
+    None,
+    decode.optional(decode.int),
+  )
   decode.success(RecordFields(
     schema_version: schema_version,
     record_id: record_id,
@@ -2783,6 +3267,31 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     action: action,
     error_message: error_message,
     next_retry_at_ms: next_retry_at_ms,
+    workstream_id: workstream_id,
+    assignment_id: assignment_id,
+    playbook_id: playbook_id,
+    idempotency_key: idempotency_key,
+    artifact_id: artifact_id,
+    artifact_type: artifact_type,
+    snapshot_ref: snapshot_ref,
+    snapshot_sha256: snapshot_sha256,
+    snapshot_bytes: snapshot_bytes,
+    original_path: original_path,
+    contract_type: contract_type,
+    media_type: media_type,
+    producer_workflow_id: producer_workflow_id,
+    producer_run_id: producer_run_id,
+    producer_step_id: producer_step_id,
+    handoff_id: handoff_id,
+    handoff_ref: handoff_ref,
+    handoff_sha256: handoff_sha256,
+    handoff_bytes: handoff_bytes,
+    source_workflow_id: source_workflow_id,
+    phase_run_id: phase_run_id,
+    action_id: action_id,
+    input_bundle_ref: input_bundle_ref,
+    input_bundle_sha256: input_bundle_sha256,
+    input_bundle_bytes: input_bundle_bytes,
   ))
 }
 
@@ -2806,6 +3315,16 @@ fn optional_task_ref_fields(
       }
     None, Some(_) -> Error(InvalidRecord("missing task_backend_kind"))
     Some(_), None -> Error(InvalidRecord("missing task_remote_id"))
+  }
+}
+
+fn required_task_ref_fields(
+  fields: RecordFields,
+) -> Result(TaskRefFields, DecodeError) {
+  use task_ref <- result.try(optional_task_ref_fields(fields))
+  case task_ref {
+    Some(task_ref) -> Ok(task_ref)
+    None -> Error(InvalidRecord("missing task_backend_kind"))
   }
 }
 
