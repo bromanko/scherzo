@@ -23,7 +23,7 @@ Verification contract:
 - Compare the implementation summary and changed files/tests against the checked-in review doc and implementation pack. Inspect the smallest useful set of changed files and tests when the summary is not enough.
 - Explicitly return `fail` when required Progress checklist items are still unchecked, required milestones/acceptance criteria are undelivered, or outcomes promised by the review doc are not observable.
 - Do not fail for imperfect wording, formatting, or optional/stretch work that is clearly marked optional, stretch, deferred, or out of scope.
-- Before writing the verdict, run `repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" plan-completion-context` from the repository root and copy its context values exactly into the JSON artifact.
+- Before writing the verdict, run `bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-context` from the repository root and copy its context values exactly into the JSON artifact.
 - The subsequent command gate will fail closed if the JSON is missing, malformed, has verdict `fail`, or has stale context values.
 
 Required verdict artifact:
@@ -52,7 +52,7 @@ Process:
 1. Read `tmp/scherzo-implementation.json`, the checked-in review doc, `tmp/execplan-review-doc.md`, `tmp/execplan-implementation-pack.json`, and `tmp/execplan-bundle.json`.
 2. Read the implementation response and change analysis above.
 3. Inspect changed files/tests only as needed to verify promised behavior and acceptance criteria.
-4. Run `repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" plan-completion-context` and copy the context values exactly.
+4. Run `bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-context` and copy the context values exactly.
 5. Write `tmp/scherzo-plan-completion-verdict.json`.
 6. Finish with a concise summary of the verdict and the most important evidence/findings.
 

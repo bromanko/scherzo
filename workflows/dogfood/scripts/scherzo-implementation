@@ -1424,7 +1424,7 @@ def is_review_relevant(file: str) -> bool:
 
 
 def review_commands(_languages: list[str]) -> list[str]:
-    # Review is performed by repo-local staged `scripts/scherzo-review` lanes in
+    # Review is performed by repo-local staged `.scherzo/workflows/scripts/scherzo-review` lanes in
     # the workflow DAG. Keep this compatibility field empty so prompts do not
     # depend on a local pi `/review` command or language-specific local skills.
     return []
@@ -2236,6 +2236,7 @@ def validation_env() -> dict[str, str]:
         "SCHERZO_RUN_ID",
         "SCHERZO_RUN_ROOT",
         "SCHERZO_SOURCE_WORKSPACE_PATH",
+        "SCHERZO_WORKFLOW_BUNDLE_DIR",
         "SCHERZO_WORKFLOW_ID",
         "SCHERZO_WORKSPACE_CAPABILITIES",
         "SCHERZO_WORKSPACE_DRIVER",
@@ -2269,6 +2270,41 @@ def final_validation_base_revision(*, failure_code: str | None = None) -> str:
     return fallback_validation_base_revision()
 
 
+SELFCI_CONFIG_PATH = Path(".config/selfci/ci.yaml")
+SELFCI_BASE_CONFIG_COMMAND = "$SELFCI_BASE_DIR/.config/selfci/ci.sh"
+SELFCI_CANDIDATE_CONFIG_COMMAND = "$SELFCI_CANDIDATE_DIR/.config/selfci/ci.sh"
+
+
+def file_text_at_revision(revision: str, path: str) -> str | None:
+    try:
+        proc = run_proc(["jj", "file", "show", "-r", revision, path])
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def selfci_validation_base_revision(base_revision: str) -> tuple[str, bool]:
+    if not SELFCI_CONFIG_PATH.exists():
+        return base_revision, False
+    try:
+        candidate_config = SELFCI_CONFIG_PATH.read_text()
+    except OSError:
+        return base_revision, False
+    if SELFCI_CANDIDATE_CONFIG_COMMAND not in candidate_config:
+        return base_revision, False
+
+    base_config = file_text_at_revision(base_revision, str(SELFCI_CONFIG_PATH))
+    if (
+        base_config is not None
+        and SELFCI_BASE_CONFIG_COMMAND in base_config
+        and SELFCI_CANDIDATE_CONFIG_COMMAND not in base_config
+    ):
+        return "@", True
+    return base_revision, False
+
+
 def selfci_validation_command(base_revision: str) -> list[str]:
     return [
         "direnv",
@@ -2297,6 +2333,8 @@ def write_validation_result(
     exit_code: int | None = None,
     stdout: str = "",
     stderr: str = "",
+    selfci_base_revision: str | None = None,
+    selfci_config_bootstrap: bool = False,
 ) -> None:
     result: dict[str, Any] = {
         "base_revision": base_revision,
@@ -2305,6 +2343,16 @@ def write_validation_result(
         "status": status,
         "validator": "selfci",
     }
+    if selfci_base_revision is not None and selfci_base_revision != base_revision:
+        result["selfci_base_revision"] = selfci_base_revision
+    if selfci_config_bootstrap:
+        result["selfci_config_bootstrap"] = True
+        result["selfci_config_bootstrap_reason"] = (
+            "candidate updates SelfCI to execute the candidate CI script, but the "
+            "configured base still executes the base CI script; validation used the "
+            "candidate revision as SelfCI's config base so the full candidate CI script "
+            "runs without restoring removed root workflow helper wrappers"
+        )
     if exit_code is not None:
         result["exit_code"] = exit_code
     if status != "passed":
@@ -2380,11 +2428,21 @@ def validate_command(*, failure_code: str | None = None) -> None:
         )
     require_command("direnv")
     base_revision = final_validation_base_revision(failure_code=failure_code)
+    selfci_base_revision, selfci_config_bootstrap = selfci_validation_base_revision(
+        base_revision
+    )
     setup_commands = [["direnv", "allow", "."]]
-    validation_command = selfci_validation_command(base_revision)
+    validation_command = selfci_validation_command(selfci_base_revision)
     env = validation_env()
     for command in setup_commands:
         run_and_print(command, failure_code=failure_code, env=env)
+    if selfci_config_bootstrap:
+        print(
+            "SelfCI config bootstrap: base CI config still points at "
+            "$SELFCI_BASE_DIR, so validation is using the candidate revision "
+            "as SelfCI's config base while preserving the publish base metadata.",
+            flush=True,
+        )
     print("$ " + " ".join(shell_display(arg) for arg in validation_command), flush=True)
     proc = run_proc(validation_command, env=env)
     print_process_output(proc)
@@ -2397,6 +2455,8 @@ def validate_command(*, failure_code: str | None = None) -> None:
             exit_code=proc.returncode,
             stdout=proc.stdout,
             stderr=proc.stderr,
+            selfci_base_revision=selfci_base_revision,
+            selfci_config_bootstrap=selfci_config_bootstrap,
         )
         print("FINAL_VALIDATION=failed")
         print(f"VALIDATION_RESULT_PATH={VALIDATION_PATH}")
@@ -2412,6 +2472,8 @@ def validate_command(*, failure_code: str | None = None) -> None:
         setup_commands=setup_commands,
         validation_command=validation_command,
         status="passed",
+        selfci_base_revision=selfci_base_revision,
+        selfci_config_bootstrap=selfci_config_bootstrap,
     )
     print("FINAL_VALIDATION=passed")
 

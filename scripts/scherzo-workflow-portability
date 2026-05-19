@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
 
     check = subparsers.add_parser("check", help="run the portability check")
     check.add_argument("--repo-root", required=True)
+    check.add_argument("--bundle-root")
     check.add_argument("--scherzo", required=True)
     check.add_argument("--output-dir", required=True)
     return parser.parse_args()
@@ -60,8 +61,8 @@ def write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def discover_workflows(repo_root: Path) -> list[Path]:
-    return sorted((repo_root / ".scherzo" / "workflows").glob("*.yaml"))
+def discover_workflows(bundle_root: Path) -> list[Path]:
+    return sorted(bundle_root.glob("*.yaml"))
 
 
 def helper_names(contents: str) -> list[str]:
@@ -251,10 +252,10 @@ def driver_checks(fake_bin: Path, env: dict[str, str], stage_root: Path) -> list
     return checks
 
 
-def workflow_entries(workflows: list[Path], repo_root: Path) -> list[dict[str, object]]:
+def workflow_entries(workflows: list[Path], bundle_root: Path) -> list[dict[str, object]]:
     entries = []
     for workflow in workflows:
-        relative = workflow.relative_to(repo_root)
+        relative = Path(".scherzo/workflows") / workflow.relative_to(bundle_root)
         contents = read_text(workflow)
         expansion = [f"exercise helper {name}" for name in helper_names(contents)]
         if needs_agent_fixture(contents):
@@ -300,12 +301,14 @@ def main() -> int:
         shutil.rmtree(stage_root)
     stage_root.mkdir(parents=True)
 
-    workflows = discover_workflows(repo_root)
+    bundle_root = Path(args.bundle_root).resolve() if args.bundle_root else (repo_root / ".scherzo" / "workflows").resolve()
+    workflows = discover_workflows(bundle_root)
     if not workflows:
-        print("no workflows found under .scherzo/workflows", file=sys.stderr)
+        print(f"no workflows found under {bundle_root}", file=sys.stderr)
         return 1
 
-    shutil.copytree(repo_root / ".scherzo" / "workflows", stage_root / ".scherzo" / "workflows", dirs_exist_ok=True)
+    (stage_root / ".scherzo").mkdir(parents=True, exist_ok=True)
+    os.symlink(bundle_root, stage_root / ".scherzo" / "workflows", target_is_directory=True)
     config_path = rewrite_config(repo_root, stage_root)
     runtime = install_fake_runtime(stage_root, output_dir)
     fake_bin = Path(runtime["bin_dir"])
@@ -331,7 +334,7 @@ def main() -> int:
         stage_root,
     )
     checks = driver_checks(fake_bin, child_env, stage_root)
-    workflow_report = workflow_entries(workflows, repo_root)
+    workflow_report = workflow_entries(workflows, bundle_root)
 
     failures = []
     if doctor.returncode != 0:
@@ -352,6 +355,7 @@ def main() -> int:
         "status": "passed" if not failures else "failed",
         "packaged_cli": True,
         "repo_root": str(repo_root),
+        "bundle_root": str(bundle_root),
         "staged_config": str(config_path.relative_to(output_dir)),
         "tool_resolution": {
             "scherzo": scherzo_command,

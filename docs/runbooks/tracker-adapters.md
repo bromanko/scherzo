@@ -20,7 +20,7 @@ These Linear names remain compatibility aliases or Linear-only surfaces:
 - `linear-contract` and `--linear-contract-check` are compatibility aliases for tracker contract checks.
 - `linear_contract` and `linear_commands` are current config sections for Linear board validation and Linear comment commands.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_ID`, `SCHERZO_ISSUE_IDENTIFIER`, and issue-shaped ledger fields remain compatibility aliases until the runtime task context is fully migrated.
-- `--linear-attach-comment-file`, `scripts/scherzo-execplan`, and `scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today.
+- `--linear-attach-comment-file`, `.scherzo/workflows/scripts/scherzo-execplan`, and `.scherzo/workflows/scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today.
 
 ## Preferred Linear tracker config
 
@@ -68,7 +68,7 @@ Linear-specific modules are expected inside Linear adapter internals, Linear com
 
 - `src/scherzo/orchestrator/service.gleam` still imports Linear contract, smoke, attachment, and transport modules for doctor and CLI compatibility checks.
 - `src/scherzo/template.gleam` still exposes `issue.*` variables only; prompts can describe the source as a task while rendering through the compatibility variables.
-- `scripts/scherzo-implementation` currently fetches workflow source context from Linear, so its fetch errors and fixture helper remain Linear-specific even when its operator summaries say task.
+- `.scherzo/workflows/scripts/scherzo-implementation` currently fetches workflow source context from Linear, so its fetch errors and fixture helper remain Linear-specific even when its operator summaries say task.
 
 These are compatibility surfaces, not new backend contracts. Future Jira or Trello implementation should add production adapters and then move any remaining generic service paths behind adapter capabilities before advertising support.
 

@@ -7,7 +7,7 @@ max_parallel_steps: 1
 steps:
   - id: prepare_target
     kind: command
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" prepare'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" prepare'
     timeout_ms: 300000
     workspace: main
 
@@ -22,7 +22,7 @@ steps:
   - id: validate_resolution
     kind: command
     depends_on: [resolve_conflicts]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" validate'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" validate'
     timeout_ms: 300000
     workspace:
       name: main
@@ -33,6 +33,10 @@ steps:
     depends_on: [validate_resolution]
     run: |
       set -eu
+      bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
+      if [ -z "$bundle_dir" ]; then
+        bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
+      fi
       repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
       # Replace the example validation command with repo-local validation such as
       # `npm test`, `cargo test`, or a project script. The generic helper has
@@ -44,7 +48,7 @@ steps:
         echo "or set SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND for this example bundle" >&2
         exit 64
       fi
-      "$repo_root/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c "$SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND"
+      "$bundle_dir/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c "$SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND"
     timeout_ms: 1200000
     workspace:
       name: main
@@ -53,7 +57,7 @@ steps:
   - id: publish_resolution
     kind: command
     depends_on: [project_validation]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" publish'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" publish'
     timeout_ms: 300000
     workspace:
       name: main

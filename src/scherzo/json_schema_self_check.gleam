@@ -44,6 +44,7 @@ pub fn run(
       repository_root,
       path.join(repository_root, "tmp/scherzo-json-schema-self-check"),
       "json_schema_self_check",
+      "",
       "install-check",
       "json_schema_self_check",
       0,

@@ -187,7 +187,7 @@ pub fn tracker_adapter_runbook_documents_capability_matrix_test() {
   assert_contains(path, runbook, "Linear issue")
   assert_contains(path, runbook, "tracker-smoke")
   assert_contains(path, runbook, "linear-smoke")
-  assert_contains(path, runbook, "scripts/scherzo-execplan")
+  assert_contains(path, runbook, ".scherzo/workflows/scripts/scherzo-execplan")
   assert_contains(path, runbook, "scheduled_failures")
   assert_contains(path, runbook, "remote_commands")
   assert_contains(path, runbook, "| Linear | Production |")

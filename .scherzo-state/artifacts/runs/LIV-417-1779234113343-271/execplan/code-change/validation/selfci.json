@@ -1,0 +1,14 @@
+{
+  "base_revision": "main@scherzo-agent",
+  "commands": [
+    "direnv exec . selfci check --base @ --candidate @ --print-output"
+  ],
+  "selfci_base_revision": "@",
+  "selfci_config_bootstrap": true,
+  "selfci_config_bootstrap_reason": "candidate updates SelfCI to execute the candidate CI script, but the configured base still executes the base CI script; validation used the candidate revision as SelfCI's config base so the full candidate CI script runs without restoring removed root workflow helper wrappers",
+  "setup_commands": [
+    "direnv allow ."
+  ],
+  "status": "passed",
+  "validator": "selfci"
+}

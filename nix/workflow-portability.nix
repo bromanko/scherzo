@@ -1,6 +1,7 @@
 {
   pkgs,
   repoRoot,
+  bundleRoot ? null,
   scherzo,
 }:
 let
@@ -35,7 +36,14 @@ in
       output_dir="$TMPDIR/workflow-portability"
       python3 "$src/scripts/scherzo-workflow-portability" check \
         --repo-root "$src" \
-        --scherzo "${scherzo}/bin/scherzo" \
+        ${
+          if bundleRoot == null then
+            ""
+          else
+            ''
+              --bundle-root "${bundleRoot}" \
+            ''
+        }--scherzo "${scherzo}/bin/scherzo" \
         --output-dir "$output_dir"
 
       mkdir -p "$out"

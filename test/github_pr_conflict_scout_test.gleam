@@ -32,7 +32,7 @@ fn write_fixture(dir: String, body: String) -> String {
 fn run_scout(command: String) -> step_artifact.StepArtifact {
   command_step.run(
     "github-pr-conflict-scout",
-    "scripts/scherzo-github-pr-conflict-scout "
+    ".scherzo/workflows/scripts/scherzo-github-pr-conflict-scout "
       <> command
       <> " --repo scherzo-systems/scherzo --linear-project-slug test-project",
     ".",
@@ -223,7 +223,7 @@ pub fn scout_uses_environment_configuration_when_flags_are_omitted_test() {
     run_scout_raw(
       "env SCHERZO_GITHUB_REPO=scherzo-systems/scherzo "
       <> "SCHERZO_LINEAR_PROJECT_SLUG=test-project "
-      <> "scripts/scherzo-github-pr-conflict-scout scan-fixture "
+      <> ".scherzo/workflows/scripts/scherzo-github-pr-conflict-scout scan-fixture "
       <> fixture
       <> " --json-summary",
     )
@@ -249,7 +249,7 @@ pub fn scout_requires_repo_configuration_when_flags_and_env_are_missing_test() {
     run_scout_raw(
       "env -u SCHERZO_GITHUB_REPO -u GITHUB_REPOSITORY "
       <> "-u SCHERZO_LINEAR_PROJECT_SLUG -u LINEAR_PROJECT_SLUG "
-      <> "scripts/scherzo-github-pr-conflict-scout scan-fixture "
+      <> ".scherzo/workflows/scripts/scherzo-github-pr-conflict-scout scan-fixture "
       <> fixture
       <> " --linear-project-slug test-project",
     )
@@ -273,7 +273,7 @@ pub fn scout_requires_project_slug_configuration_when_flags_and_env_are_missing_
     run_scout_raw(
       "env -u SCHERZO_GITHUB_REPO -u GITHUB_REPOSITORY "
       <> "-u SCHERZO_LINEAR_PROJECT_SLUG -u LINEAR_PROJECT_SLUG "
-      <> "scripts/scherzo-github-pr-conflict-scout scan-fixture "
+      <> ".scherzo/workflows/scripts/scherzo-github-pr-conflict-scout scan-fixture "
       <> fixture
       <> " --repo scherzo-systems/scherzo",
     )

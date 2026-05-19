@@ -85,7 +85,7 @@ fn legacy_review_lane_draft_validator() -> ParsedValidator {
     name: "review_lane_draft_compat",
     argv: [
       "python3",
-      "scripts/scherzo-review",
+      ".scherzo/workflows/scripts/scherzo-review",
       "validate-structured-output",
       "--validator",
       "review_lane_draft",

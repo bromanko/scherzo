@@ -24,7 +24,7 @@ fn run_helper(command: String) -> step_artifact.StepArtifact {
   command_step.run(
     "helper",
     workflow_context_test_support.without_workflow_context(
-      "scripts/scherzo-merge-conflict " <> command,
+      ".scherzo/workflows/scripts/scherzo-merge-conflict " <> command,
     ),
     ".",
     5000,
@@ -138,7 +138,7 @@ pub fn validate_rejects_non_conflicted_file_changes_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate --skip-project-validation",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate --skip-project-validation",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -167,7 +167,7 @@ pub fn validate_accepts_manifested_mechanical_non_conflicted_file_change_test() 
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate --skip-project-validation",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate --skip-project-validation",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -186,7 +186,7 @@ pub fn validate_accepts_resolved_conflicts_when_only_conflicted_files_changed_te
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate --skip-project-validation",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate --skip-project-validation",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -208,7 +208,7 @@ pub fn validate_does_not_run_repo_specific_project_validation_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -227,14 +227,14 @@ pub fn record_project_validation_marks_external_validation_passed_test() {
   let validate =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
     )
   assert validate.status == step_artifact.StepSucceeded
 
   let record =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict record-project-validation",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict record-project-validation",
     )
 
   assert record.status == step_artifact.StepSucceeded
@@ -256,7 +256,7 @@ pub fn run_project_validation_scrubs_outer_workflow_context_test() {
   let validate =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
     )
   assert validate.status == step_artifact.StepSucceeded
 
@@ -265,7 +265,7 @@ pub fn run_project_validation_scrubs_outer_workflow_context_test() {
       dir,
       outer_workflow_context_env()
         <> "PATH=\"$PWD/bin:$PATH\" "
-        <> "../../../scripts/scherzo-merge-conflict run-project-validation -- ./bin/project-validation",
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict run-project-validation -- ./bin/project-validation",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -286,14 +286,14 @@ pub fn validation_status_reports_validated_resolution_state_test() {
   let validate =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
     )
   assert validate.status == step_artifact.StepSucceeded
 
   let status =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validation-status",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validation-status",
     )
 
   assert status.status == step_artifact.StepSucceeded
@@ -308,7 +308,7 @@ pub fn project_validation_wrapper_skips_command_when_no_conflicts_test() {
   let validate =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
     )
   assert validate.status == step_artifact.StepSucceeded
   assert string.contains(validate.stdout, "RESOLUTION_STATUS=no_conflicts")
@@ -316,7 +316,7 @@ pub fn project_validation_wrapper_skips_command_when_no_conflicts_test() {
   let status =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validation-status",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validation-status",
     )
   assert status.status == step_artifact.StepSucceeded
   assert status.stdout == "no_conflicts\n"
@@ -324,7 +324,7 @@ pub fn project_validation_wrapper_skips_command_when_no_conflicts_test() {
   let wrapper =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict run-project-validation -- ./bin/should-not-run",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict run-project-validation -- ./bin/should-not-run",
     )
 
   assert wrapper.status == step_artifact.StepSucceeded
@@ -341,7 +341,7 @@ pub fn publish_requires_recorded_project_validation_test() {
   let validate =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
     )
   assert validate.status == step_artifact.StepSucceeded
 
@@ -350,7 +350,7 @@ pub fn publish_requires_recorded_project_validation_test() {
       dir,
       "SCHERZO_WORKSPACE_DRIVER=./bin/workspace-driver "
         <> "PATH=\"$PWD/bin:$PATH\" "
-        <> "../../../scripts/scherzo-merge-conflict publish",
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict publish",
     )
 
   assert blocked.status == step_artifact.StepFailed
@@ -364,7 +364,7 @@ pub fn publish_requires_recorded_project_validation_test() {
   let record =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict record-project-validation",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict record-project-validation",
     )
   assert record.status == step_artifact.StepSucceeded
 
@@ -373,7 +373,7 @@ pub fn publish_requires_recorded_project_validation_test() {
       dir,
       "SCHERZO_WORKSPACE_DRIVER=./bin/workspace-driver "
         <> "PATH=\"$PWD/bin:$PATH\" "
-        <> "../../../scripts/scherzo-merge-conflict publish",
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict publish",
     )
 
   assert published.status == step_artifact.StepSucceeded
@@ -408,7 +408,7 @@ pub fn validate_accepts_prepare_metadata_with_jj_conflict_status_suffix_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate --skip-project-validation",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate --skip-project-validation",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -425,7 +425,7 @@ pub fn validate_reports_unresolved_conflict_path_without_jj_status_suffix_test()
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate --skip-project-validation",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate --skip-project-validation",
     )
 
   assert artifact.status == step_artifact.StepFailed

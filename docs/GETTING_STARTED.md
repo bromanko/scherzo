@@ -113,6 +113,9 @@ Create the repo-local Scherzo directory:
 
 ```sh
 mkdir -p .scherzo/workflows/prompts schemas scripts
+# Or consume Scherzo's packaged dogfood workflows:
+# bundle=$(nix build --no-link --print-out-paths github:scherzo-systems/scherzo#scherzo-dogfood-workflows)
+# ln -sfn "$bundle" .scherzo/workflows
 ```
 
 Start with a minimal no-op workspace profile. This is useful for research, planning, and artifact-only workflows because it does not require a VCS-backed implementation workspace.

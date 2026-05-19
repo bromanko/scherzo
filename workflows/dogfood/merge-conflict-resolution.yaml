@@ -7,7 +7,7 @@ max_parallel_steps: 1
 steps:
   - id: prepare_target
     kind: command
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" prepare'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" prepare'
     timeout_ms: 300000
     workspace: main
 
@@ -22,7 +22,7 @@ steps:
   - id: validate_resolution
     kind: command
     depends_on: [resolve_conflicts]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" validate'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" validate'
     timeout_ms: 300000
     workspace:
       name: main
@@ -37,7 +37,7 @@ steps:
       # Repo-local validation for Scherzo dogfood. The helper runs the command
       # with workflow-run-scoped Scherzo variables scrubbed, then records the
       # successful project-validation marker for publish.
-      "$repo_root/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c '
+      "$bundle_dir/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c '
         direnv allow .
         rm -rf test/tmp
         direnv exec . gleam format --check src test
@@ -51,7 +51,7 @@ steps:
   - id: publish_resolution
     kind: command
     depends_on: [project_validation]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" publish'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" publish'
     timeout_ms: 300000
     workspace:
       name: main

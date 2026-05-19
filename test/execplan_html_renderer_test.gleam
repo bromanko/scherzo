@@ -51,7 +51,7 @@ fn render_plan(dir: String, markdown: String) -> String {
   let artifact =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/sample.html docs/plans/sample.html",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/sample.html docs/plans/sample.html",
     )
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
@@ -239,12 +239,12 @@ pub fn renderer_uses_deterministic_unique_heading_ids_test() {
   let first =
     run_in(
       "test/tmp/execplan-html-renderer-deterministic",
-      "python3 ../../../scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/first.html docs/plans/sample.html",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/first.html docs/plans/sample.html",
     )
   let second =
     run_in(
       "test/tmp/execplan-html-renderer-deterministic",
-      "python3 ../../../scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/second.html docs/plans/sample.html",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/second.html docs/plans/sample.html",
     )
   assert first.status == step_artifact.StepSucceeded
   assert second.status == step_artifact.StepSucceeded
@@ -270,7 +270,7 @@ pub fn extract_md_recovers_readable_markdown_from_html_test() {
   let artifact =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html extract-md docs/plans/sample.html",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html extract-md docs/plans/sample.html",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -296,7 +296,7 @@ pub fn section_extracts_named_section_without_neighbor_sections_test() {
   let artifact =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html section docs/plans/sample.html \"Concrete Steps\"",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html section docs/plans/sample.html \"Concrete Steps\"",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -321,7 +321,7 @@ pub fn section_reports_available_headings_for_missing_or_ambiguous_match_test() 
   let missing =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html section docs/plans/sample.html Missing",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html section docs/plans/sample.html Missing",
     )
   assert missing.status == step_artifact.StepFailed
   assert string.contains(missing.stderr, "section not found")
@@ -331,7 +331,7 @@ pub fn section_reports_available_headings_for_missing_or_ambiguous_match_test() 
   let ambiguous =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html section docs/plans/sample.html Retry",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html section docs/plans/sample.html Retry",
     )
   assert ambiguous.status == step_artifact.StepFailed
   assert string.contains(ambiguous.stderr, "ambiguous section")
@@ -346,7 +346,7 @@ pub fn extract_text_omits_html_shell_but_keeps_plan_words_test() {
   let artifact =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html extract-text docs/plans/sample.html",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html extract-text docs/plans/sample.html",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -369,7 +369,7 @@ pub fn brief_writes_markdown_and_json_with_source_hash_and_critical_sections_tes
   let artifact =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html brief docs/plans/sample.html tmp/brief.md tmp/index.json",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html brief docs/plans/sample.html tmp/brief.md tmp/index.json",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -387,7 +387,7 @@ pub fn brief_writes_markdown_and_json_with_source_hash_and_critical_sections_tes
   assert string.contains(brief, "- [x] Drafted the renderer.")
   assert string.contains(
     brief,
-    "scripts/scherzo-execplan-html section docs/plans/sample.html \"Validation and Acceptance\"",
+    ".scherzo/workflows/scripts/scherzo-execplan-html section docs/plans/sample.html \"Validation and Acceptance\"",
   )
   assert string.contains(index, "\"schema_version\": 1")
   assert string.contains(index, "\"source_sha256\":")
@@ -413,7 +413,7 @@ pub fn brief_truncates_oversized_sections_with_visible_fallback_test() {
   let artifact =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html brief docs/plans/sample.html tmp/brief.md tmp/index.json",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html brief docs/plans/sample.html tmp/brief.md tmp/index.json",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -422,7 +422,7 @@ pub fn brief_truncates_oversized_sections_with_visible_fallback_test() {
   assert string.contains(brief, "TRUNCATED SECTION: Concrete Steps")
   assert string.contains(
     brief,
-    "scripts/scherzo-execplan-html section docs/plans/sample.html \"Concrete Steps\"",
+    ".scherzo/workflows/scripts/scherzo-execplan-html section docs/plans/sample.html \"Concrete Steps\"",
   )
   assert string.contains(brief, "Validation command should pass.")
   assert string.contains(index, "\"truncated_sections\": [")
@@ -439,7 +439,10 @@ pub fn render_includes_short_non_visible_extraction_hint_comment_test() {
     )
 
   assert string.contains(html, "<!-- Scherzo ExecPlan HTML artifact:")
-  assert string.contains(html, "scripts/scherzo-execplan-html extract-md")
+  assert string.contains(
+    html,
+    ".scherzo/workflows/scripts/scherzo-execplan-html extract-md",
+  )
   assert string.contains(html, "section for token-efficient agent reads")
   assert !string.contains(html, "comment-hint")
   assert !string.contains(html, "Stable DOM targets")
@@ -454,7 +457,7 @@ pub fn legacy_markdown_and_old_html_plan_helpers_remain_compatible_test() {
   let legacy_extract =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html extract-md docs/plans/legacy.md",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html extract-md docs/plans/legacy.md",
     )
   assert legacy_extract.status == step_artifact.StepSucceeded
   assert string.contains(legacy_extract.stdout, "# Sample ExecPlan")
@@ -462,7 +465,7 @@ pub fn legacy_markdown_and_old_html_plan_helpers_remain_compatible_test() {
   let legacy_section =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html section docs/plans/legacy.md Progress",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html section docs/plans/legacy.md Progress",
     )
   assert legacy_section.status == step_artifact.StepSucceeded
   assert string.contains(legacy_section.stdout, "## Progress")
@@ -470,7 +473,7 @@ pub fn legacy_markdown_and_old_html_plan_helpers_remain_compatible_test() {
   let old_extract =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html extract-md docs/plans/old.html",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html extract-md docs/plans/old.html",
     )
   assert old_extract.status == step_artifact.StepSucceeded
   assert string.contains(old_extract.stdout, "# Old HTML Plan")
@@ -479,7 +482,7 @@ pub fn legacy_markdown_and_old_html_plan_helpers_remain_compatible_test() {
   let old_brief =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html brief docs/plans/old.html tmp/old-brief.md tmp/old-index.json",
+      "python3 ../../../.scherzo/workflows/scripts/scherzo-execplan-html brief docs/plans/old.html tmp/old-brief.md tmp/old-index.json",
     )
   assert old_brief.status == step_artifact.StepSucceeded
   let assert Ok(old_index) = simplifile.read(dir <> "/tmp/old-index.json")

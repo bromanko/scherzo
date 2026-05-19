@@ -1,0 +1,11 @@
+version: 1
+id: origin-sync
+description: Fetch origin and auto-rebase the root jj stack when the working-copy change is empty.
+workspace_profile: noop
+max_parallel_steps: 1
+steps:
+  - id: sync_origin
+    kind: command
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-jj-origin-sync"'
+    timeout_ms: 300000
+    workspace: main

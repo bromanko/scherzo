@@ -206,6 +206,7 @@ fn generated_env(
     #("SCHERZO_CONFIG_DIR", context.config_dir),
     #("SCHERZO_REPO_ROOT", context.repository_root),
     #("SCHERZO_RUN_ROOT", context.run_root),
+    #("SCHERZO_WORKFLOW_BUNDLE_DIR", context.workflow_bundle_dir),
     #("SCHERZO_WORKFLOW_ID", context.workflow_id),
     #("SCHERZO_RUN_ID", context.run_id),
     #("SCHERZO_STEP_ID", context.step_id),
