@@ -71,6 +71,21 @@ pub fn parse_args_default_explicit_and_help_test() {
         native_review_scenario: Some("pr-80"),
       )),
     )
+  assert main.parse_args([
+      "tracker-conformance",
+      "run",
+      "manifest.json",
+      "--report",
+      "report.json",
+    ])
+    == Ok(
+      main.TrackerConformance([
+        "run",
+        "manifest.json",
+        "--report",
+        "report.json",
+      ]),
+    )
   assert main.parse_args(["ctl", "ps"]) == Ok(main.Control(["ps"]))
   assert main.parse_args(["ctl", "events", "ABC-123"])
     == Ok(main.Control(["events", "ABC-123"]))
@@ -137,9 +152,17 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "scherzo --version")
   assert string.contains(usage, "doctor [options]")
   assert string.contains(usage, "workflow run <workflow.yml>")
+  assert string.contains(
+    usage,
+    "tracker-conformance run <manifest.json> --report <report.json>",
+  )
   assert string.contains(usage, "doctor --check <name>")
   assert string.contains(usage, "doctor --list-checks")
   assert string.contains(usage, "doctor --logfmt")
+  assert string.contains(
+    usage,
+    "tracker-conformance run Run the black-box tracker adapter conformance MVP",
+  )
   assert string.contains(
     usage,
     "workflow-config, tracker-contract, tracker-smoke",

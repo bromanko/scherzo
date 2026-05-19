@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "adapter_kind": "test-memory",
+  "driver": {
+    "transport": "cli",
+    "command": {
+      "executable": "test/fixtures/tracker_conformance/fake_task_source_driver.sh",
+      "args": ["--mode", "serve", "--scenario", "unstable-identity"],
+      "cwd": ".",
+      "env": []
+    },
+    "timeout_ms": 5000
+  },
+  "profile": {
+    "name": "task_source",
+    "capabilities": ["task_source"],
+    "adapter_operations": [
+      "task_source.fetch_candidates",
+      "task_source.refresh_by_refs",
+      "task_source.lookup_by_operator_ref"
+    ]
+  },
+  "fixtures": {
+    "task_file": "test/fixtures/tracker_conformance/task-source-fetch.response.json"
+  },
+  "probes": [],
+  "hooks": {},
+  "report": { "redact": [] }
+}

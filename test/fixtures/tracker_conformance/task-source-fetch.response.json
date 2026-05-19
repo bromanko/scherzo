@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "request_id": "req-fetch-1",
+  "ok": true,
+  "result": {
+    "tasks": [
+      {
+        "ref": {
+          "backend_kind": "test-memory",
+          "remote_id": "card-1",
+          "key": "CARD-1",
+          "url": "https://tracker.example/tasks/CARD-1"
+        },
+        "title": "Fake card",
+        "description": "Fixture task",
+        "priority": 2,
+        "state": {
+          "id": "todo",
+          "name": "Todo",
+          "category": "ready"
+        },
+        "branch_hint": "card-1-fake",
+        "labels": [
+          { "id": null, "name": "workflow:execplan" }
+        ],
+        "blockers": [],
+        "blockers_complete": true,
+        "created_at": null,
+        "updated_at": null
+      }
+    ]
+  }
+}

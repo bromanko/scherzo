@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scherzo.local/workflows/schemas/tracker-conformance-report.v1.schema.json",
+  "title": "Tracker conformance report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapter_kind",
+    "profile",
+    "passed",
+    "failed",
+    "skipped",
+    "setup_failed",
+    "probe_failed",
+    "cleanup_failed",
+    "case_results",
+    "hook_results",
+    "probe_results"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "adapter_kind": { "type": "string", "minLength": 1 },
+    "profile": { "const": "task_source" },
+    "passed": { "type": "integer", "minimum": 0 },
+    "failed": { "type": "integer", "minimum": 0 },
+    "skipped": { "type": "integer", "minimum": 0 },
+    "setup_failed": { "type": "integer", "minimum": 0 },
+    "probe_failed": { "type": "integer", "minimum": 0 },
+    "cleanup_failed": { "type": "integer", "minimum": 0 },
+    "case_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/case_result" }
+    },
+    "hook_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/hook_result" }
+    },
+    "probe_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/probe_result" }
+    }
+  },
+  "$defs": {
+    "status": {
+      "enum": [
+        "passed",
+        "failed",
+        "skipped",
+        "setup_failed",
+        "probe_failed",
+        "cleanup_failed"
+      ]
+    },
+    "case_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operation", "status", "request_id", "message", "diagnostics"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "operation": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/status" },
+        "request_id": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" },
+        "diagnostics": { "type": "string" }
+      }
+    },
+    "hook_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "status", "message", "diagnostics"],
+      "properties": {
+        "phase": { "enum": ["setup", "cleanup"] },
+        "status": { "$ref": "#/$defs/status" },
+        "message": { "type": "string" },
+        "diagnostics": { "type": "string" }
+      }
+    },
+    "probe_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "message", "diagnostics"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/status" },
+        "message": { "type": "string" },
+        "diagnostics": { "type": "string" }
+      }
+    }
+  }
+}

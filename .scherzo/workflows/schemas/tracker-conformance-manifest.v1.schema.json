@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scherzo.local/workflows/schemas/tracker-conformance-manifest.v1.schema.json",
+  "title": "Tracker conformance manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapter_kind",
+    "driver",
+    "profile",
+    "fixtures"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "adapter_kind": { "$ref": "#/$defs/non_empty_string" },
+    "driver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "command", "timeout_ms"],
+      "properties": {
+        "transport": { "const": "cli" },
+        "command": { "$ref": "#/$defs/command" },
+        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "capabilities", "adapter_operations"],
+      "properties": {
+        "name": { "const": "task_source" },
+        "capabilities": {
+          "type": "array",
+          "items": { "const": "task_source" },
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true
+        },
+        "adapter_operations": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "task_source.fetch_candidates",
+              "task_source.refresh_by_refs",
+              "task_source.lookup_by_operator_ref"
+            ]
+          },
+          "allOf": [
+            { "contains": { "const": "task_source.fetch_candidates" } },
+            { "contains": { "const": "task_source.refresh_by_refs" } },
+            { "contains": { "const": "task_source.lookup_by_operator_ref" } }
+          ]
+        }
+      }
+    },
+    "fixtures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_file"],
+      "properties": {
+        "task_file": { "$ref": "#/$defs/repo_path" }
+      }
+    },
+    "probes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "command"],
+        "properties": {
+          "name": { "$ref": "#/$defs/non_empty_string" },
+          "command": { "$ref": "#/$defs/hook_command" }
+        }
+      },
+      "default": []
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "setup": { "$ref": "#/$defs/hook_command" },
+        "cleanup": { "$ref": "#/$defs/hook_command" }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "redact": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/non_empty_string" },
+          "default": []
+        }
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?![A-Za-z]:[\\\\/])[^\\u0000]+$"
+    },
+    "env_var": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "$ref": "#/$defs/non_empty_string" },
+        "value": { "type": "string" }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable"],
+      "properties": {
+        "executable": { "$ref": "#/$defs/non_empty_string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "cwd": { "type": "string", "default": "." },
+        "env": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/env_var" },
+          "default": []
+        }
+      }
+    },
+    "hook_command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable"],
+      "properties": {
+        "executable": { "$ref": "#/$defs/non_empty_string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "cwd": { "type": "string", "default": "." }
+      }
+    }
+  }
+}

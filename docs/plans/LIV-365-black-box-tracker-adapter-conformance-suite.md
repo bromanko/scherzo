@@ -68,6 +68,14 @@ The fifth milestone should split optional capability packs into their own implem
 
 ## Progress
 
+- [x] (2026-05-19 16:40Z) LIV-406 milestone 1 landed the conformance protocol foundation: typed manifest/request/response/report modules, JSON encoders/decoders, schema files, protocol fixtures, and protocol round-trip tests.
+- [x] (2026-05-19 16:40Z) Added `docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md` with the MVP manifest, CLI driver envelope, and report skeleton.
+- [x] (2026-05-19 18:45Z) LIV-406 milestone 2 landed the CLI driver transport harness, failure classification, and fake out-of-process driver fixtures.
+- [x] (2026-05-19 18:45Z) LIV-406 milestone 3 landed the minimal `task_source` conformance pack with passing and intentionally defective fake-driver manifests.
+- [x] (2026-05-19 18:45Z) LIV-406 milestone 4 separated setup, cleanup, probes, and report classification, including redacted report output.
+- [x] (2026-05-19 18:45Z) LIV-406 milestone 5 added the local `scherzo tracker-conformance run` command, CLI tests, and adapter-author runbook updates.
+- [x] (2026-05-20 01:10Z) Review pass tightened driver response-envelope correlation, manifest timeout and operation validation, and negative coverage for cleanup, stale responses, and task-source failure branches.
+- [x] (2026-05-20 01:35Z) Feedback follow-up capped captured external-process diagnostics and tightened fixture-path validation for Windows-style drive and backslash escape forms.
 - [x] (2026-05-19 00:00Z) Read the ExecPlan authoring guidance and the LIV-365 task brief.
 - [x] (2026-05-19 00:00Z) Inspected the current tracker adapter specification, task model, adapter capability types, and review-doc validation rules.
 - [x] (2026-05-19 00:00Z) Drafted this concise review document for human review.
@@ -75,6 +83,22 @@ The fifth milestone should split optional capability packs into their own implem
 - [x] (2026-05-19 00:00Z) Validated this review document with `scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-365-black-box-tracker-adapter-conformance-suite.md`.
 
 ## Decision Log
+
+- Decision: The manifest foundation stores fixture provenance as a repository-relative `fixtures.task_file` path and rejects fixture/probe/hook namespaces inside `profile.adapter_operations`.
+  Rationale: The first milestone needed one concrete fixture path shape and a hard boundary that prevents privileged support operations from being mistaken for adapter conformance operations.
+  Date: 2026-05-19.
+
+- Decision: The MVP protocol modules use typed Gleam representations for manifests, request envelopes, response envelopes, normalized driver errors, and the first report skeleton, plus matching JSON Schema files under `.scherzo/workflows/schemas/`.
+  Rationale: LIV-406 milestone 1 is the schema foundation milestone, so the repository now has both executable decoders and portable schema artifacts for future external drivers.
+  Date: 2026-05-19.
+
+- Decision: The CLI driver accepts a response only when it uses schema version 1 and echoes the outbound request id; manifest driver timeouts are capped at 60 seconds.
+  Rationale: Request correlation is part of the black-box protocol contract, and bounded per-operation timeouts prevent malformed manifests from hanging local conformance runs indefinitely.
+  Date: 2026-05-20.
+
+- Decision: Captured stderr diagnostics from drivers, hooks, and probes are truncated before entering reports, and manifest fixture paths reject Windows-style drive or backslash escape forms before runtime realpath confinement checks.
+  Rationale: Review feedback identified unbounded external-process diagnostics and narrower-than-documented fixture-path validation as avoidable operator risks that could be tightened without changing the MVP protocol surface.
+  Date: 2026-05-20.
 
 - Decision: The conformance suite boundary is an external adapter driver protocol, not in-process module imports.
   Rationale: Future adapters may be HTTP services, CLI tools, containers, or proprietary integrations; Scherzo should verify only the public normalized contract.
@@ -92,6 +116,10 @@ The fifth milestone should split optional capability packs into their own implem
   Rationale: Comments, state moves, routing, remote commands, handoff, and scheduled failures have different fixtures, side effects, retry semantics, and cleanup risks.
   Date: 2026-05-19.
 
+- Decision: The MVP runner should treat setup hooks, adapter-under-test cases, probes, and cleanup hooks as separately counted report paths rather than flattening every failure into case failures.
+  Rationale: The verifier feedback required observable separation between privileged fixture/probe failures and public adapter operation failures, and distinct counters make that separation visible in both JSON reports and CLI summaries.
+  Date: 2026-05-19.
+
 ## Validation and Acceptance
 
 This planning issue is accepted when this Markdown review document exists under `docs/plans/`, `scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-365-black-box-tracker-adapter-conformance-suite.md` accepts it, and Scherzo captures the structured implementation-pack submission.
@@ -99,6 +127,14 @@ This planning issue is accepted when this Markdown review document exists under 
 The later MVP implementation is accepted only when a conformance manifest can declare a CLI driver, the `task_source` profile, pre-provisioned task fixtures, and optional probes; a fake out-of-process driver can pass the `task_source` pack; intentional fake-driver defects produce clear failures; and the report distinguishes adapter operation failures from fixture or probe failures.
 
 The later optional-pack implementations are accepted only when they explicitly test the idempotency and recovery semantics relevant to the claimed capability: stable task identity, comment update fallback behavior, remote command acknowledgement retry behavior, handoff retry visibility, and scheduled failure dedupe by key.
+
+## Outcomes & Retrospective
+
+LIV-406 now reaches the planned MVP boundary. Scherzo can spawn an external CLI driver, send normalized `task_source` requests over stdin, classify malformed JSON, response-envelope mismatches, missing stdout, timeout, and non-zero exit as driver failures, and execute a minimal `task_source` pack that proves backend-kind preservation, stable refresh identity, wrong-backend handling, empty operator-ref lookup, and known operator-ref lookup.
+
+The repository now also distinguishes setup, probe, and cleanup failures from adapter operation failures in machine-readable reports and CLI summaries. The local `scherzo tracker-conformance run <manifest.json> --report <report.json>` command makes acceptance observable without importing adapter implementation code, and the fake-driver fixtures give the suite both a passing out-of-process adapter and intentional failing variants for clear negative coverage.
+
+The post-review follow-up also reduced two operator risks without widening scope: external-process diagnostics are now truncated before reports or summaries capture them, and fixture-path validation now rejects Windows-style drive and backslash escape forms before runtime repository-confinement checks resolve the fixture path.
 
 ## Rollout, Recovery, and Idempotence
 

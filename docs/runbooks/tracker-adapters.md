@@ -81,3 +81,15 @@ Before enabling a new production adapter, verify these facts with tests and oper
 3. Handoff, scheduled failure publication, and remote command acknowledgements are either implemented through capabilities or disabled in config.
 4. Readiness and smoke checks have backend-neutral operator names and Linear aliases only where they are truly compatibility aliases.
 5. Prompt examples use task language while explicitly documenting any remaining `issue.*` compatibility variables.
+
+## Black-box conformance MVP
+
+The repository now includes a black-box tracker adapter conformance runner for external adapters that expose the MVP CLI driver protocol described in `docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md`.
+
+Run the local MVP suite from the repository root with:
+
+```sh
+direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/task-source-pass.manifest.json --report test/tmp/tracker-conformance/task-source-pass.report.json
+```
+
+The command exits `0` only when the selected profile passes and setup, probe, and cleanup counters remain zero. Report JSON distinguishes adapter case failures from `setup_failed`, `probe_failed`, and `cleanup_failed` support-path failures, configured redaction strings are replaced with `[REDACTED]` before Scherzo writes the report or prints the CLI summary, and captured driver or hook diagnostics are truncated before reporting.

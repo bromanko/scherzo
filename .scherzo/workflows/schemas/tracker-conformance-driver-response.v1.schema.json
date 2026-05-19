@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scherzo.local/workflows/schemas/tracker-conformance-driver-response.v1.schema.json",
+  "title": "Tracker conformance driver response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "ok"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "request_id": { "type": "string", "minLength": 1 },
+    "ok": { "type": "boolean" },
+    "result": { "type": "object" },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "message"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "unauthorized",
+            "not_found",
+            "transient",
+            "permanent",
+            "unsupported_capability",
+            "decode_failed"
+          ]
+        },
+        "message": { "type": "string" },
+        "ref": { "type": ["object", "null"] },
+        "capability": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "ok": { "const": true } } },
+      "then": { "required": ["result"] }
+    },
+    {
+      "if": { "properties": { "ok": { "const": false } } },
+      "then": { "required": ["error"] }
+    }
+  ]
+}
