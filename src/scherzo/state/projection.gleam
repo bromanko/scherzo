@@ -110,6 +110,7 @@ pub type WorkflowRepairStatus {
     next_attempt_index: Int,
     reason: String,
     requested_at_ms: Int,
+    generation: Int,
   )
 }
 
@@ -815,6 +816,10 @@ pub fn apply(
             next_attempt_index: next_attempt_index,
             reason: reason,
             requested_at_ms: at_ms,
+            generation: case latest_workflow_repair(projection, run_id) {
+              Some(previous) -> previous.generation + 1
+              None -> 1
+            },
           ),
         ),
       )
@@ -2819,30 +2824,21 @@ pub fn workflow_input_manifest(
   projection: Projection,
   run_id: String,
 ) -> Option(WorkflowContractManifestRef) {
-  case dict.get(projection.workflow_input_manifests, run_id) {
-    Ok(manifest) -> Some(manifest)
-    Error(Nil) -> None
-  }
+  dict.get(projection.workflow_input_manifests, run_id) |> option.from_result
 }
 
 pub fn workflow_output_manifest(
   projection: Projection,
   run_id: String,
 ) -> Option(WorkflowContractManifestRef) {
-  case dict.get(projection.workflow_output_manifests, run_id) {
-    Ok(manifest) -> Some(manifest)
-    Error(Nil) -> None
-  }
+  dict.get(projection.workflow_output_manifests, run_id) |> option.from_result
 }
 
 pub fn latest_workflow_repair(
   projection: Projection,
   run_id: String,
 ) -> Option(WorkflowRepairStatus) {
-  case dict.get(projection.workflow_repairs, run_id) {
-    Ok(repair) -> Some(repair)
-    Error(Nil) -> None
-  }
+  dict.get(projection.workflow_repairs, run_id) |> option.from_result
 }
 
 fn latest_finished_workspace(
@@ -3429,6 +3425,7 @@ fn workflow_repair_entry_to_json(
     #("next_attempt_index", json.int(repair.next_attempt_index)),
     #("reason", json.string(repair.reason)),
     #("requested_at_ms", json.int(repair.requested_at_ms)),
+    #("generation", json.int(repair.generation)),
   ])
 }
 
@@ -4431,6 +4428,7 @@ fn workflow_repair_snapshot_decoder() -> decode.Decoder(WorkflowRepairSnapshot) 
   use next_attempt_index <- decode.field("next_attempt_index", decode.int)
   use reason <- decode.field("reason", decode.string)
   use requested_at_ms <- decode.field("requested_at_ms", decode.int)
+  use generation <- decode.optional_field("generation", 1, decode.int)
   decode.success(WorkflowRepairSnapshot(
     run_id,
     WorkflowRepairStatus(
@@ -4444,6 +4442,7 @@ fn workflow_repair_snapshot_decoder() -> decode.Decoder(WorkflowRepairSnapshot) 
       next_attempt_index: next_attempt_index,
       reason: reason,
       requested_at_ms: requested_at_ms,
+      generation: generation,
     ),
   ))
 }
