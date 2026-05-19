@@ -1,0 +1,37 @@
+{
+  "artifact_type": "scherzo.handoff.v1",
+  "artifact_id": "handoff-linear-liv-370-phase-1",
+  "workstream_id": "linear:LIV-370",
+  "phase_id": "artifact-specs",
+  "summary": "Ticket 1 fixtures are ready for downstream review.",
+  "outputs": [
+    {
+      "name": "code_change_bundle",
+      "snapshot": {
+        "ref": "workstream-artifacts/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 123,
+        "media_type": "application/json",
+        "original_path": "artifacts/review/handoff.json",
+        "contract_type": "code_change_bundle",
+        "producer": {
+          "workflow_id": "execplan-implementation",
+          "run_id": "run-1",
+          "step_id": "implement_plan"
+        },
+        "validation": {
+          "status": "accepted",
+          "validator": "handoff_shape",
+          "checked_at": "2026-05-18T20:30:00Z"
+        },
+        "summary": "Validated code change bundle."
+      }
+    }
+  ],
+  "recommended_next_actions": [
+    "run_foundation_validation"
+  ],
+  "open_questions": [
+    "Should follow-up workflows auto-enqueue?"
+  ]
+}

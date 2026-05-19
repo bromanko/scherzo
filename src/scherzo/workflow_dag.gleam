@@ -9,6 +9,7 @@ import scherzo/model_config
 import scherzo/structured_output_source
 import scherzo/workflow_contract
 import scherzo/workflow_dag_validator_parser
+import scherzo/workstream/phase_metadata
 import yay
 
 pub type WorkflowDag {
@@ -20,6 +21,7 @@ pub type WorkflowDag {
     max_parallel_steps: Int,
     steps: List(WorkflowStep),
     contract: Option(workflow_contract.Contract),
+    workstream_phase: Option(phase_metadata.PhaseMetadata),
   )
 }
 
@@ -113,6 +115,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
       use max_parallel_steps <- result.try(read_max_parallel_steps(root))
       use steps <- result.try(read_steps(root))
       use contract <- result.try(read_contract(root))
+      use workstream_phase <- result.try(read_workstream_phase(root, contract))
       let dag =
         WorkflowDag(
           id: id,
@@ -122,6 +125,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
           max_parallel_steps: max_parallel_steps,
           steps: steps,
           contract: contract,
+          workstream_phase: workstream_phase,
         )
       validate(dag)
     }
@@ -320,6 +324,19 @@ fn read_contract(
   |> result.map_error(fn(error) {
     let workflow_contract.ContractError(code, message) = error
     DagError(code, message)
+  })
+}
+
+fn read_workstream_phase(
+  root: yay.Node,
+  contract: Option(workflow_contract.Contract),
+) -> Result(Option(phase_metadata.PhaseMetadata), DagError) {
+  phase_metadata.parse(root, contract)
+  |> result.map_error(fn(error) {
+    DagError(
+      phase_metadata.error_code(error),
+      phase_metadata.error_message(error),
+    )
   })
 }
 

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "artifact_type": "scherzo.workstream.v1",
+  "artifact_id": "workstream-linear-liv-370",
+  "workstream_id": "linear:LIV-370",
+  "issue": {
+    "id": "LIV-370"
+  },
+  "status": "in_progress",
+  "summary": "Composable workstream specs are defined.",
+  "produced_artifacts": [
+    {
+      "ref": "workstream-artifacts/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 123,
+      "media_type": "application/json",
+      "original_path": "artifacts/review/handoff.json",
+      "contract_type": "code_change_bundle",
+      "producer": {
+        "workflow_id": "execplan-implementation",
+        "run_id": "run-1",
+        "step_id": "implement_plan"
+      },
+      "validation": {
+        "status": "accepted",
+        "validator": "handoff_shape",
+        "checked_at": "2026-05-18T20:30:00Z"
+      },
+      "summary": "Validated code change bundle."
+    }
+  ],
+  "next_actions": [
+    "review_spec_fixture_matrix"
+  ]
+}

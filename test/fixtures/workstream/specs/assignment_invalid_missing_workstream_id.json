@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "artifact_type": "scherzo.assignment.v1",
+  "artifact_id": "assignment-linear-liv-370",
+  "workflow_id": "execplan-implementation",
+  "reason": "Implementation issue owns the spec follow-through.",
+  "playbook_id": "ticket-1-specs"
+}

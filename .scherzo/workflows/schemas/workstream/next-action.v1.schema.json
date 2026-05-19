@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "artifact_id",
+    "workstream_id",
+    "action_id",
+    "workflow_id",
+    "state",
+    "priority",
+    "inputs",
+    "auto_enqueue"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "artifact_type": {
+      "const": "scherzo.next_action.v1"
+    },
+    "artifact_id": {
+      "type": "string"
+    },
+    "workstream_id": {
+      "type": "string"
+    },
+    "action_id": {
+      "type": "string"
+    },
+    "workflow_id": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "suggested",
+        "available",
+        "blocked"
+      ]
+    },
+    "priority": {
+      "type": "integer"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "auto_enqueue": {
+      "type": "boolean"
+    },
+    "requires_gate": {
+      "type": "string"
+    }
+  }
+}

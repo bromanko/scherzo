@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "artifact_id",
+    "workstream_id",
+    "issue",
+    "status",
+    "summary",
+    "produced_artifacts",
+    "next_actions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "artifact_type": {
+      "const": "scherzo.workstream.v1"
+    },
+    "artifact_id": {
+      "type": "string"
+    },
+    "workstream_id": {
+      "type": "string"
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      }
+    },
+    "status": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "produced_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "sha256",
+          "bytes",
+          "media_type",
+          "original_path",
+          "contract_type",
+          "producer",
+          "validation",
+          "summary"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^workstream-artifacts/sha256/[0-9a-f]{64}\\.json$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "original_path": {
+            "type": "string",
+            "pattern": "^(?!/)(?!\\.\\.($|/))(?!.*(/\\.\\.)(/|$)).+$"
+          },
+          "contract_type": {
+            "type": "string"
+          },
+          "producer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "workflow_id",
+              "run_id",
+              "step_id"
+            ],
+            "properties": {
+              "workflow_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "step_id": {
+                "type": "string"
+              }
+            }
+          },
+          "validation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "validator",
+              "checked_at"
+            ],
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "validator": {
+                "type": "string"
+              },
+              "checked_at": {
+                "type": "string"
+              }
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "next_actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

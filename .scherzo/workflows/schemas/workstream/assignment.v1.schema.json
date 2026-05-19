@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "artifact_id",
+    "workstream_id",
+    "workflow_id",
+    "reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "artifact_type": {
+      "const": "scherzo.assignment.v1"
+    },
+    "artifact_id": {
+      "type": "string"
+    },
+    "workstream_id": {
+      "type": "string"
+    },
+    "workflow_id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "playbook_id": {
+      "type": "string"
+    }
+  }
+}
