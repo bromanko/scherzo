@@ -48,6 +48,22 @@ pub type ReplayResult {
   )
 }
 
+pub type AppendIdempotentResult {
+  Appended
+  AlreadyRecorded(existing_record: record.LedgerRecord)
+}
+
+pub type AppendIdempotentError {
+  AppendLedgerError(LedgerError)
+  RecordIdConflict(record_id: String)
+}
+
+type LockedAppendDecision {
+  LockedAppendAppended
+  LockedAppendAlreadyRecorded(existing_record: record.LedgerRecord)
+  LockedAppendConflict(record_id: String)
+}
+
 type JsonlFold(value) {
   JsonlFold(value: value, error: Option(LedgerError), truncated_tail: Bool)
 }
@@ -97,6 +113,40 @@ pub fn append_many(
       with_ledger_lock(ledger_path.ledger_dir, fn() {
         append_prepared(ledger_path.current_path, records, fsync)
       })
+  }
+}
+
+pub fn append_idempotent(
+  ledger_path: LedgerPath,
+  ledger_record: record.LedgerRecord,
+  fsync: Bool,
+) -> Result(AppendIdempotentResult, AppendIdempotentError) {
+  use Nil <- result.try(
+    ensure_layout(ledger_path)
+    |> result.map_error(AppendLedgerError),
+  )
+  case
+    with_ledger_lock(ledger_path.ledger_dir, fn() {
+      use existing <- result.try(find_record_by_id_unlocked(
+        ledger_path,
+        ledger_record.record_id,
+      ))
+      case existing {
+        Some(existing_record) ->
+          case existing_record.body == ledger_record.body {
+            True -> Ok(LockedAppendAlreadyRecorded(existing_record))
+            False -> Ok(LockedAppendConflict(ledger_record.record_id))
+          }
+        None ->
+          append_prepared(ledger_path.current_path, [ledger_record], fsync)
+          |> result.map(fn(_) { LockedAppendAppended })
+      }
+    })
+  {
+    Error(error) -> Error(AppendLedgerError(error))
+    Ok(LockedAppendAppended) -> Ok(Appended)
+    Ok(LockedAppendAlreadyRecorded(existing)) -> Ok(AlreadyRecorded(existing))
+    Ok(LockedAppendConflict(record_id)) -> Error(RecordIdConflict(record_id))
   }
 }
 
@@ -161,6 +211,120 @@ fn ensure_layout(ledger_path: LedgerPath) -> Result(Nil, LedgerError) {
   case simplifile.create_directory_all(ledger_path.archive_dir) {
     Ok(Nil) -> Ok(Nil)
     Error(error) -> Error(Io(file_error("create ledger directories", error)))
+  }
+}
+
+fn find_record_by_id_unlocked(
+  ledger_path: LedgerPath,
+  record_id: String,
+) -> Result(Option(record.LedgerRecord), LedgerError) {
+  use current <- result.try(find_record_by_id_in_segment(
+    ledger_path.current_path,
+    record_id,
+  ))
+  case current {
+    Some(_) -> Ok(current)
+    None -> {
+      use archive_paths <- result.try(archive_segment_paths(ledger_path))
+      find_record_by_id_in_segments(archive_paths, record_id)
+    }
+  }
+}
+
+fn find_record_by_id_in_segments(
+  paths: List(String),
+  record_id: String,
+) -> Result(Option(record.LedgerRecord), LedgerError) {
+  case paths {
+    [] -> Ok(None)
+    [segment_path, ..rest] -> {
+      use found <- result.try(find_record_by_id_in_segment(
+        segment_path,
+        record_id,
+      ))
+      case found {
+        Some(_) -> Ok(found)
+        None -> find_record_by_id_in_segments(rest, record_id)
+      }
+    }
+  }
+}
+
+fn archive_segment_paths(
+  ledger_path: LedgerPath,
+) -> Result(List(String), LedgerError) {
+  case simplifile.read_directory(ledger_path.archive_dir) {
+    Ok(entries) ->
+      entries
+      |> list.filter(fn(entry) {
+        string.starts_with(entry, "segment-")
+        && string.ends_with(entry, ".jsonl")
+      })
+      |> list.sort(by: string.compare)
+      |> list.map(fn(entry) { path.join(ledger_path.archive_dir, entry) })
+      |> Ok
+    Error(error) ->
+      Error(Io(file_error("read ledger archive directory", error)))
+  }
+}
+
+fn find_record_by_id_in_segment(
+  segment_path: String,
+  record_id: String,
+) -> Result(Option(record.LedgerRecord), LedgerError) {
+  let initial = JsonlFold(value: None, error: None, truncated_tail: False)
+  case fold_lines(segment_path, initial, record_id_lookup_step(record_id)) {
+    Ok(JsonlFold(value: found, error: None, truncated_tail: _)) -> Ok(found)
+    Ok(JsonlFold(value: _, error: Some(error), truncated_tail: _)) ->
+      Error(error)
+    Error(OpenFailed("enoent")) -> Ok(None)
+    Error(error) -> Error(LedgerFfiFailed(error))
+  }
+}
+
+fn record_id_lookup_step(
+  record_id: String,
+) -> fn(JsonlFold(Option(record.LedgerRecord)), String, Int, Bool) ->
+  JsonlFold(Option(record.LedgerRecord)) {
+  fn(
+    state: JsonlFold(Option(record.LedgerRecord)),
+    line: String,
+    line_number: Int,
+    is_last: Bool,
+  ) {
+    case state.error {
+      Some(_) -> state
+      None ->
+        case parse_jsonl_line(line, line_number, is_last) {
+          Ok(ParsedRecord(ledger_record)) ->
+            JsonlFold(
+              value: select_found_record(state.value, ledger_record, record_id),
+              error: None,
+              truncated_tail: state.truncated_tail,
+            )
+          Ok(EmptyTrailingLine) -> state
+          Ok(TruncatedTail) ->
+            JsonlFold(value: state.value, error: None, truncated_tail: True)
+          Error(error) ->
+            JsonlFold(
+              value: state.value,
+              error: Some(error),
+              truncated_tail: state.truncated_tail,
+            )
+        }
+    }
+  }
+}
+
+fn select_found_record(
+  existing: Option(record.LedgerRecord),
+  ledger_record: record.LedgerRecord,
+  record_id: String,
+) -> Option(record.LedgerRecord) {
+  case existing, ledger_record.record_id == record_id {
+    Some(_), _ -> existing
+    None, True -> Some(ledger_record)
+    None, False -> None
   }
 }
 

@@ -69,6 +69,21 @@ The final milestone runs the standard test, format, and lint gates, validates th
 - [x] (2026-05-19 00:00Z) Drafted this concise review document for human review.
 - [x] (2026-05-19 00:00Z) Prepared the structured implementation-pack content for Scherzo capture.
 - [x] (2026-05-19 04:03Z) Incorporated review feedback requiring existing contract-output and run-local artifact refs to be snapshot-tested for exact bytes, idempotency, and fail-closed missing or mismatch behavior.
+- [x] (2026-05-19 04:40Z) Revalidated the checked-in review document and baseline suite before implementation; no intent, scope, acceptance, or safety conflict was found between the review doc and implementation pack.
+- [x] (2026-05-19 05:00Z) Implemented stable Linear-backed workstream IDs, deterministic record-ID helpers, and the five minimal workstream ledger record variants with round-trip tests and schema fixtures.
+- [x] (2026-05-19 06:10Z) Added the locked generic idempotent append helper with duplicate/coalesce and conflict tests.
+- [x] (2026-05-19 06:25Z) Added immutable workstream snapshot storage for repository-relative files and existing retained artifact refs, including duplicate-write and fail-closed mismatch coverage.
+- [x] (2026-05-19 06:40Z) Folded minimal workstream state into projection replay, updated projection/schema golden fixtures, refreshed the source guardrail baseline, and reran format, test, lint, and review-doc validation gates.
+- [x] (2026-05-19 15:45Z) Applied staged-review fixes for compacted-ledger idempotency, canonical snapshot-read validation, read-side corruption coverage, partial workstream task-ref snapshot decoding, and immutable-write status handling; reran `gleam check` and `gleam test unit`.
+- [x] (2026-05-19 15:45Z) Reran the full final validation gates after review feedback: `gleam format --check`, `gleam check`, `gleam test unit`, `gleam run -m glinter`, `gleam run -m scherzo_lint`, and review-doc validation all completed successfully with the pre-existing warning inventory unchanged.
+
+## Surprises & Discoveries
+
+- Observation: The projection slice fit the existing additive snapshot pattern cleanly; adding an optional `workstreams` field preserved decode compatibility for older projection snapshots without a schema bump.
+  Evidence: `legacy_projection_snapshot_without_workstreams_decodes_test` passes while the updated `projection_snapshot_v2.json` fixture round-trips unchanged apart from the new optional field.
+
+- Observation: The workstream snapshot store needed a distinct immutable-write path rather than the existing atomic overwrite helper so corrupt same-ref contents could fail visibly instead of being silently replaced.
+  Evidence: `snapshot_store_detects_corrupt_existing_ref_test` now fails closed with `SnapshotWriteConflict`.
 
 ## Decision Log
 
@@ -92,6 +107,14 @@ The final milestone runs the standard test, format, and lint gates, validates th
   Rationale: Future handoffs and approvals may start from artifacts already retained in `.scherzo-state/artifacts`, so Ticket 2 must prove those refs preserve exact bytes and fail without partial writes when refs are missing, malformed, unresolvable, or mismatched.
   Date: 2026-05-19.
 
+- Decision: Use record IDs shaped as `<kind>:<workstream_id>:<12-char sha256 prefix>` over stable payload discriminators.
+  Rationale: The IDs stay deterministic and readable while avoiding very long record IDs when snapshot refs or bundle hashes appear in the payload discriminator.
+  Date: 2026-05-19.
+
+- Decision: Keep workstream snapshots as exact bytes at the content-addressed path even though the public ref suffix is `.json`.
+  Rationale: Ticket 1 fixed the ref shape, but Ticket 2 must preserve exact source bytes for future handoffs and approvals instead of introducing a wrapper format.
+  Date: 2026-05-19.
+
 ## Validation and Acceptance
 
 This planning issue is accepted when this Markdown review document exists under `docs/plans/`, `scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-393-composable-workstreams-ticket-2-minimal-ledger-snapshot-store.md` accepts it, and Scherzo captures the structured implementation-pack submission.
@@ -103,6 +126,12 @@ The later implementation issue is accepted only when tests prove repository-rela
 The planning change is additive. If review rejects this document, revise or remove only `docs/plans/LIV-393-composable-workstreams-ticket-2-minimal-ledger-snapshot-store.md` and resubmit the structured pack.
 
 The later implementation should also be additive. It introduces new record kinds and snapshot files but does not change existing workflow dispatch. If a repository-file or existing-artifact-ref snapshot write is retried with the same bytes, it should return the same ref. If an existing artifact ref cannot be resolved or does not match its expected hash and byte count, it should fail visibly and leave no partial workstream snapshot. If a ledger append is retried with the same stable record ID and body, it should return an already-recorded result. If the same stable ID has different content, it should fail visibly and write nothing. Rollback before production use is removing the new modules and record variants; retained local snapshots can remain as inert audit files.
+
+## Outcomes & Retrospective
+
+Ticket 2 now delivers the planned durable substrate without broadening into operator UX. The ledger can distinguish exact retries from same-ID conflicts under the existing lock, the workstream snapshot store can preserve exact bytes for both repository files and already-retained run artifacts, and projection replay now reconstructs minimal workstream state after restart while older snapshots still decode.
+
+The main remaining gaps are intentionally deferred to later tickets: no handoff emitter, start-from-handoff tooling, inspection CLI, or decision/playbook behavior was added here. The implementation stayed additive, and the rerun full validation gates completed with only the pre-existing warning inventory from `glinter` and `scherzo_lint`.
 
 ## Open Questions and Clarifications Needed
 

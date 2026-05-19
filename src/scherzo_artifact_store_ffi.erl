@@ -1,5 +1,5 @@
 -module(scherzo_artifact_store_ffi).
--export([write_atomic/2]).
+-export([write_atomic/2, read_file/1, write_immutable/2]).
 
 write_atomic(FinalPath, Contents) ->
     try
@@ -8,7 +8,32 @@ write_atomic(FinalPath, Contents) ->
             {error, Error} -> {error, Error}
         end
     catch
-        Class:Reason -> {error, tagged_error(unexpected_ffi_failure, format_error(Class, Reason))}
+        CatchClass:CatchReason -> {error, tagged_error(unexpected_ffi_failure, format_error(CatchClass, CatchReason))}
+    end.
+
+read_file(Path) ->
+    try
+        case safe_to_list(Path) of
+            {ok, ""} -> {error, tagged_error(read, <<"enoent">>)};
+            {ok, SafePath} ->
+                case file:read_file(SafePath) of
+                    {ok, Contents} -> {ok, Contents};
+                    {error, Reason} -> {error, tagged_error(read, reason_to_binary(Reason))}
+                end;
+            error -> {error, tagged_error(read, <<"invalid_path">>)}
+        end
+    catch
+        CatchClass:CatchReason -> {error, tagged_error(unexpected_ffi_failure, format_error(CatchClass, CatchReason))}
+    end.
+
+write_immutable(FinalPath, Contents) ->
+    try
+        case validate_final_path(FinalPath) of
+            {ok, Final} -> write_immutable_checked(Final, to_binary(Contents));
+            {error, Error} -> {error, Error}
+        end
+    catch
+        CatchClass:CatchReason -> {error, tagged_error(unexpected_ffi_failure, format_error(CatchClass, CatchReason))}
     end.
 
 write_atomic_checked(Final, Bytes) ->
@@ -17,6 +42,49 @@ write_atomic_checked(Final, Bytes) ->
         {ok, IoDevice} -> write_sync_close_rename(Final, Temp, IoDevice, Bytes);
         {error, eexist} -> write_atomic_checked(Final, Bytes);
         {error, Reason} -> {error, tagged_error(open_temp, reason_to_binary(Reason))}
+    end.
+
+write_immutable_checked(Final, Bytes) ->
+    ensure_parent_dir(Final),
+    case file:read_file(Final) of
+        {ok, Existing} when Existing =:= Bytes -> {ok, <<"existing">>};
+        {ok, _Different} -> {ok, <<"conflict">>};
+        {error, enoent} -> write_immutable_once(Final, Bytes);
+        {error, Reason} -> {error, tagged_error(read, reason_to_binary(Reason))}
+    end.
+
+write_immutable_once(Final, Bytes) ->
+    case file:open(Final, [write, binary, exclusive]) of
+        {ok, IoDevice} ->
+            case write_sync_close_keep(IoDevice, Bytes) of
+                ok ->
+                    case sync_parent_dir(Final) of
+                        ok -> {ok, <<"written">>};
+                        {error, Reason} -> {error, tagged_error(sync_parent, reason_to_binary(Reason))}
+                    end;
+                {error, Error} -> {error, Error}
+            end;
+        {error, eexist} ->
+            case file:read_file(Final) of
+                {ok, Existing} when Existing =:= Bytes -> {ok, <<"existing">>};
+                {ok, _Different} -> {ok, <<"conflict">>};
+                {error, Reason} -> {error, tagged_error(read, reason_to_binary(Reason))}
+            end;
+        {error, Reason} -> {error, tagged_error(open_temp, reason_to_binary(Reason))}
+    end.
+
+write_sync_close_keep(IoDevice, Bytes) ->
+    Write = file:write(IoDevice, Bytes),
+    Sync = case Write of
+        ok -> file:sync(IoDevice);
+        {error, _} -> skipped
+    end,
+    Close = file:close(IoDevice),
+    case {Write, Sync, Close} of
+        {ok, ok, ok} -> ok;
+        {{error, Reason}, _, _} -> {error, tagged_error(write_temp, reason_to_binary(Reason))};
+        {_, {error, Reason}, _} -> {error, tagged_error(sync_temp, reason_to_binary(Reason))};
+        {_, _, {error, Reason}} -> {error, tagged_error(close_temp, reason_to_binary(Reason))}
     end.
 
 write_sync_close_rename(Final, Temp, IoDevice, Bytes) ->
@@ -59,6 +127,10 @@ sync_parent_dir(Final) ->
             Result;
         {error, _Unsupported} -> ok
     end.
+
+ensure_parent_dir(Final) ->
+    _ = filelib:ensure_dir(Final),
+    ok.
 
 validate_final_path(FinalPath) ->
     case safe_to_list(FinalPath) of

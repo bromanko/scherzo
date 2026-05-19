@@ -206,6 +206,21 @@ pub fn projection_records_workflow_contract_manifest_refs_test() {
   assert output_ref.recorded_at_ms == 3000
 }
 
+pub fn legacy_projection_snapshot_without_workstreams_decodes_test() {
+  let legacy_snapshot =
+    "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}"
+
+  let assert Ok(decoded) = projection.decode_string(legacy_snapshot)
+  assert decoded.workstreams == dict.new()
+}
+
+pub fn projection_snapshot_with_partial_workstream_task_ref_fails_test() {
+  let malformed_snapshot =
+    "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[],\"workstreams\":[{\"workstream_id\":\"linear:LIV-393\",\"task_backend_kind\":\"linear\"}]}"
+
+  let assert Error(_) = projection.decode_string(malformed_snapshot)
+}
+
 pub fn known_issue_ids_omits_blank_issue_ids_test() {
   let folded =
     projection.fold([
