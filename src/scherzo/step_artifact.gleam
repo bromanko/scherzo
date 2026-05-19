@@ -56,6 +56,9 @@ pub type StructuredOutputMetadata {
     format: String,
     ref: String,
     path: String,
+    uri: String,
+    display_path: String,
+    local_path: Option(String),
     sha256: String,
     bytes: Int,
     schema_status: String,
@@ -282,6 +285,9 @@ fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
         #("format", json.string(metadata.format)),
         #("ref", json.string(metadata.ref)),
         #("path", json.string(metadata.path)),
+        #("uri", json.string(metadata.uri)),
+        #("display_path", json.string(metadata.display_path)),
+        #("local_path", option_string_to_json(metadata.local_path)),
         #("sha256", json.string(metadata.sha256)),
         #("bytes", json.int(metadata.bytes)),
         #("schema_status", json.string(metadata.schema_status)),
@@ -389,6 +395,17 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
       use format <- decode.field("format", decode.string)
       use ref <- decode.field("ref", decode.string)
       use path <- decode.field("path", decode.string)
+      use uri <- decode.optional_field("uri", path, decode.string)
+      use display_path <- decode.optional_field(
+        "display_path",
+        path,
+        decode.string,
+      )
+      use local_path <- decode.optional_field(
+        "local_path",
+        Some(path),
+        decode.optional(decode.string),
+      )
       use sha256 <- decode.field("sha256", decode.string)
       use bytes <- decode.field("bytes", decode.int)
       use schema_status <- decode.field("schema_status", decode.string)
@@ -438,6 +455,9 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
           format: format,
           ref: ref,
           path: path,
+          uri: uri,
+          display_path: display_path,
+          local_path: local_path,
           sha256: sha256,
           bytes: bytes,
           schema_status: schema_status,
@@ -1243,68 +1263,114 @@ fn structured_output_locals(
   case outcome {
     Some(StructuredOutputValid(metadata)) ->
       list.append(
-        [
-          #(prefix <> "status", template.VString("valid")),
-          #(prefix <> "artifact_name", template.VString(metadata.artifact_name)),
-          #(prefix <> "format", template.VString(metadata.format)),
-          #(prefix <> "ref", template.VString(metadata.ref)),
-          #(prefix <> "path", template.VString(metadata.path)),
-          #(prefix <> "sha256", template.VString(metadata.sha256)),
-          #(prefix <> "bytes", template.VInt(metadata.bytes)),
-          #(prefix <> "schema_status", template.VString(metadata.schema_status)),
-          #(prefix <> "error", template.VNil),
-        ],
+        list.append(
+          [
+            #(prefix <> "status", template.VString("valid")),
+            #(
+              prefix <> "artifact_name",
+              template.VString(metadata.artifact_name),
+            ),
+            #(prefix <> "format", template.VString(metadata.format)),
+            #(prefix <> "ref", template.VString(metadata.ref)),
+            #(prefix <> "sha256", template.VString(metadata.sha256)),
+            #(prefix <> "bytes", template.VInt(metadata.bytes)),
+            #(
+              prefix <> "schema_status",
+              template.VString(metadata.schema_status),
+            ),
+            #(prefix <> "error", template.VNil),
+          ],
+          structured_output_location_locals(
+            prefix,
+            metadata.path,
+            metadata.uri,
+            metadata.display_path,
+            option_string_value(metadata.local_path),
+          ),
+        ),
         retry_info_locals(prefix, metadata.retry),
       )
     Some(StructuredOutputAbsent(artifact_name, format, schema_status)) ->
       list.append(
-        [
-          #(prefix <> "status", template.VString("absent")),
-          #(prefix <> "artifact_name", template.VString(artifact_name)),
-          #(prefix <> "format", template.VString(format)),
-          #(prefix <> "ref", template.VNil),
-          #(prefix <> "path", template.VNil),
-          #(prefix <> "sha256", template.VNil),
-          #(prefix <> "bytes", template.VNil),
-          #(prefix <> "schema_status", template.VString(schema_status)),
-          #(prefix <> "error", template.VNil),
-        ],
+        list.append(
+          [
+            #(prefix <> "status", template.VString("absent")),
+            #(prefix <> "artifact_name", template.VString(artifact_name)),
+            #(prefix <> "format", template.VString(format)),
+            #(prefix <> "ref", template.VNil),
+            #(prefix <> "sha256", template.VNil),
+            #(prefix <> "bytes", template.VNil),
+            #(prefix <> "schema_status", template.VString(schema_status)),
+            #(prefix <> "error", template.VNil),
+          ],
+          structured_output_nil_location_locals(prefix),
+        ),
         retry_info_locals(prefix, None),
       )
     Some(StructuredOutputError(artifact_name, format, message, details, retry)) ->
       list.append(
         list.append(
-          [
-            #(prefix <> "status", template.VString("error")),
-            #(prefix <> "artifact_name", template.VString(artifact_name)),
-            #(prefix <> "format", template.VString(format)),
-            #(prefix <> "ref", template.VNil),
-            #(prefix <> "path", template.VNil),
-            #(prefix <> "sha256", template.VNil),
-            #(prefix <> "bytes", template.VNil),
-            #(prefix <> "schema_status", template.VNil),
-            #(prefix <> "error", template.VString(message)),
-          ],
+          list.append(
+            [
+              #(prefix <> "status", template.VString("error")),
+              #(prefix <> "artifact_name", template.VString(artifact_name)),
+              #(prefix <> "format", template.VString(format)),
+              #(prefix <> "ref", template.VNil),
+              #(prefix <> "sha256", template.VNil),
+              #(prefix <> "bytes", template.VNil),
+              #(prefix <> "schema_status", template.VNil),
+              #(prefix <> "error", template.VString(message)),
+            ],
+            structured_output_nil_location_locals(prefix),
+          ),
           error_details_locals(prefix, details),
         ),
         retry_info_locals(prefix, retry),
       )
     None ->
       list.append(
-        [
-          #(prefix <> "status", template.VString("not_configured")),
-          #(prefix <> "artifact_name", template.VNil),
-          #(prefix <> "format", template.VNil),
-          #(prefix <> "ref", template.VNil),
-          #(prefix <> "path", template.VNil),
-          #(prefix <> "sha256", template.VNil),
-          #(prefix <> "bytes", template.VNil),
-          #(prefix <> "schema_status", template.VNil),
-          #(prefix <> "error", template.VNil),
-        ],
+        list.append(
+          [
+            #(prefix <> "status", template.VString("not_configured")),
+            #(prefix <> "artifact_name", template.VNil),
+            #(prefix <> "format", template.VNil),
+            #(prefix <> "ref", template.VNil),
+            #(prefix <> "sha256", template.VNil),
+            #(prefix <> "bytes", template.VNil),
+            #(prefix <> "schema_status", template.VNil),
+            #(prefix <> "error", template.VNil),
+          ],
+          structured_output_nil_location_locals(prefix),
+        ),
         retry_info_locals(prefix, None),
       )
   }
+}
+
+fn structured_output_location_locals(
+  prefix: String,
+  path: String,
+  uri: String,
+  display_path: String,
+  local_path: template.Value,
+) -> List(#(String, template.Value)) {
+  [
+    #(prefix <> "path", template.VString(path)),
+    #(prefix <> "uri", template.VString(uri)),
+    #(prefix <> "display_path", template.VString(display_path)),
+    #(prefix <> "local_path", local_path),
+  ]
+}
+
+fn structured_output_nil_location_locals(
+  prefix: String,
+) -> List(#(String, template.Value)) {
+  [
+    #(prefix <> "path", template.VNil),
+    #(prefix <> "uri", template.VNil),
+    #(prefix <> "display_path", template.VNil),
+    #(prefix <> "local_path", template.VNil),
+  ]
 }
 
 fn error_details_locals(

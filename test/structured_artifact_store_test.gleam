@@ -44,6 +44,9 @@ pub fn structured_output_artifact_store_writes_wrapped_json_test() {
   assert ref.ref
     == "runs/run-1/review_json/attempt-0/structured/review_result.json"
   assert string.ends_with(ref.path, ".scherzo-state/artifacts/" <> ref.ref)
+  assert ref.display_path == ".scherzo-state/artifacts/" <> ref.ref
+  assert ref.local_path == Some(ref.path)
+  assert string.starts_with(ref.uri, "file://")
   let assert Ok(contents) = simplifile.read(ref.path)
   assert ref.bytes == bit_array.byte_size(bit_array.from_string(contents))
   assert ref.sha256 != ""

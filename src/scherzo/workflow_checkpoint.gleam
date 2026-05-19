@@ -46,6 +46,9 @@ pub type StructuredArtifactWritten {
   StructuredArtifactWritten(
     ref: String,
     path: String,
+    uri: String,
+    display_path: String,
+    local_path: Option(String),
     sha256: String,
     bytes: Int,
   )
@@ -114,6 +117,9 @@ pub type Writer {
       Result(ArtifactWritten, CheckpointError),
     write_structured_output_artifact: fn(StructuredOutputWrite) ->
       Result(StructuredArtifactWritten, CheckpointError),
+    read_artifact: fn(String) -> Result(String, CheckpointError),
+    artifact_location: fn(String) ->
+      Result(artifact_store.ArtifactLocation, CheckpointError),
     write_workflow_inputs_manifest: fn(String, String) ->
       Result(ArtifactWritten, CheckpointError),
     workflow_inputs_recorded: fn(WorkflowContractManifestRecorded) ->
@@ -159,8 +165,22 @@ pub fn noop_writer() -> Writer {
           <> workflow_identity.safe_component(write.artifact_name, "artifact")
           <> ".json",
         path: "noop-structured-output-artifact.json",
+        uri: "artifact://noop/structured-output",
+        display_path: "noop-structured-output-artifact.json",
+        local_path: Some("noop-structured-output-artifact.json"),
         sha256: "noop",
         bytes: 0,
+      ))
+    },
+    read_artifact: fn(_) {
+      Error(CheckpointArtifactFailed("noop_read_artifact"))
+    },
+    artifact_location: fn(ref) {
+      Ok(artifact_store.ArtifactLocation(
+        ref: ref,
+        uri: "artifact://noop/" <> ref,
+        display_path: ref,
+        local_path: None,
       ))
     },
     write_workflow_inputs_manifest: fn(run_id, _contents) {
@@ -196,7 +216,18 @@ pub fn noop_writer() -> Writer {
 }
 
 pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
-  let store = artifact_store.new(workspace_root)
+  ledger_writer_with_artifact_store(
+    workspace_root,
+    now_ms,
+    artifact_store.new(workspace_root),
+  )
+}
+
+pub fn ledger_writer_with_artifact_store(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+  store: artifact_store.Store,
+) -> Writer {
   Writer(
     workflow_finished: fn(finished) {
       append_body(workspace_root, now_ms, workflow_finished_body(finished))
@@ -316,10 +347,25 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
         StructuredArtifactWritten(
           ref: ref.ref,
           path: ref.path,
+          uri: ref.uri,
+          display_path: ref.display_path,
+          local_path: ref.local_path,
           sha256: ref.sha256,
           bytes: ref.bytes,
         )
       })
+      |> result.map_error(fn(error) {
+        CheckpointArtifactFailed(describe_artifact_error(error))
+      })
+    },
+    read_artifact: fn(ref) {
+      artifact_store.read_artifact_unverified(store, ref)
+      |> result.map_error(fn(error) {
+        CheckpointArtifactFailed(describe_artifact_error(error))
+      })
+    },
+    artifact_location: fn(ref) {
+      artifact_store.location(store, ref)
       |> result.map_error(fn(error) {
         CheckpointArtifactFailed(describe_artifact_error(error))
       })

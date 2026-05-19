@@ -1,9 +1,11 @@
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/context_exhaustion
 import scherzo/agent/context_recovery_artifact
 import scherzo/agent/context_recovery_prompt
 import scherzo/error
+import scherzo/path
 import scherzo/pi/protocol
 import scherzo/state/artifact_store
 import simplifile
@@ -12,6 +14,50 @@ fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir)
   Nil
+}
+
+fn artifact_root(root: String) -> String {
+  root <> "/.scherzo-state/artifacts"
+}
+
+fn hidden_local_path_store(root: String) -> artifact_store.Store {
+  let store_root = artifact_root(root)
+  artifact_store.custom(
+    "hidden-local-path",
+    artifact_store.StoreCallbacks(
+      write: fn(ref, contents) {
+        let final_path = store_root <> "/" <> ref
+        let parent = path.dirname(final_path) |> result.unwrap(final_path)
+        use Nil <- result.try(
+          simplifile.create_directory_all(parent)
+          |> result.map_error(fn(error) {
+            artifact_store.ArtifactIo(simplifile.describe_error(error))
+          }),
+        )
+        artifact_store.write_atomic(final_path, contents)
+        |> result.map_error(fn(error) {
+          artifact_store.ArtifactWriteFailed(error)
+        })
+      },
+      read: fn(ref) {
+        simplifile.read(store_root <> "/" <> ref)
+        |> result.map_error(fn(error) {
+          case error {
+            simplifile.Enoent -> artifact_store.MissingStepArtifact(ref)
+            _ -> artifact_store.ArtifactIo(simplifile.describe_error(error))
+          }
+        })
+      },
+      locate: fn(ref) {
+        Ok(artifact_store.ArtifactLocation(
+          ref: ref,
+          uri: "artifact://hidden-local-path/" <> ref,
+          display_path: "artifacts://" <> ref,
+          local_path: None,
+        ))
+      },
+    ),
+  )
 }
 
 pub fn writes_redacted_bounded_context_recovery_artifacts_test() {
@@ -56,6 +102,54 @@ pub fn writes_redacted_bounded_context_recovery_artifacts_test() {
     artifact_store.read_artifact_unverified(store, artifacts.error_ref)
   assert string.contains(error_contents, "pi_context_window_exhausted")
   assert !string.contains(error_contents, "SECRET_VALUE")
+}
+
+pub fn context_recovery_artifacts_use_store_display_paths_test() {
+  let root = "test/tmp/context-recovery-artifacts-display-path"
+  reset_dir(root)
+  let store = hidden_local_path_store(root)
+  let input =
+    context_recovery_artifact.RecoveryArtifactInput(
+      store: store,
+      run_id: "run 1",
+      workflow_id: "execplan-implementation",
+      step_id: "implement plan!",
+      step_attempt_index: 1,
+      pi_attempt: 1,
+      context: context_exhaustion.ContextExhaustion(
+        provider: Some("openai"),
+        provider_code: Some("context_length_exceeded"),
+        message: "Your input exceeds the context window.",
+      ),
+      original_prompt: "prompt",
+      secrets: [],
+      workspace_path: "/workspace",
+      recovery_attempted: True,
+      recovery_exhausted: False,
+      recovery_method: context_recovery_prompt.PiRpcCompact,
+    )
+  let assert Ok(artifacts) = context_recovery_artifact.write_initial(input)
+
+  assert artifacts.prompt_excerpt_display_path
+    == "artifacts://" <> artifacts.prompt_excerpt_ref
+  assert artifacts.error_display_path == "artifacts://" <> artifacts.error_ref
+
+  let assert Ok(result_ref) =
+    context_recovery_artifact.write_result(
+      store,
+      "run 1",
+      "workflow",
+      "step!",
+      2,
+      "failed",
+      context_recovery_prompt.FreshSession,
+      False,
+      ["manual"],
+      context_recovery_artifact.compaction_succeeded(["manual"], 1),
+      None,
+    )
+  assert result_ref.local_path == None
+  assert result_ref.display_path == "artifacts://" <> result_ref.ref
 }
 
 pub fn writes_compact_failure_fallback_diagnostics_test() {

@@ -1,8 +1,11 @@
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/path
 import scherzo/state/artifact_store
 import scherzo/step_artifact
 import simplifile
@@ -19,6 +22,50 @@ fn reset_dir(path: String) -> Nil {
   let _ = simplifile.delete(path)
   let assert Ok(Nil) = simplifile.create_directory_all(path)
   Nil
+}
+
+fn artifact_root(root: String) -> String {
+  root <> "/.scherzo-state/artifacts"
+}
+
+fn hidden_local_path_store(root: String) -> artifact_store.Store {
+  let store_root = artifact_root(root)
+  artifact_store.custom(
+    "hidden-local-path",
+    artifact_store.StoreCallbacks(
+      write: fn(ref, contents) {
+        let final_path = store_root <> "/" <> ref
+        let parent = path.dirname(final_path) |> result.unwrap(final_path)
+        use Nil <- result.try(
+          simplifile.create_directory_all(parent)
+          |> result.map_error(fn(error) {
+            artifact_store.ArtifactIo(simplifile.describe_error(error))
+          }),
+        )
+        artifact_store.write_atomic(final_path, contents)
+        |> result.map_error(fn(error) {
+          artifact_store.ArtifactWriteFailed(error)
+        })
+      },
+      read: fn(ref) {
+        simplifile.read(store_root <> "/" <> ref)
+        |> result.map_error(fn(error) {
+          case error {
+            simplifile.Enoent -> artifact_store.MissingStepArtifact(ref)
+            _ -> artifact_store.ArtifactIo(simplifile.describe_error(error))
+          }
+        })
+      },
+      locate: fn(ref) {
+        Ok(artifact_store.ArtifactLocation(
+          ref: ref,
+          uri: "artifact://hidden-local-path/" <> ref,
+          display_path: "artifacts://" <> ref,
+          local_path: None,
+        ))
+      },
+    ),
+  )
 }
 
 pub fn artifact_store_writes_relative_hash_verified_artifacts_test() {
@@ -47,10 +94,45 @@ pub fn artifact_store_writes_relative_hash_verified_artifacts_test() {
     )
   assert !string.starts_with(ref.ref, "/")
   assert string.contains(ref.ref, "build_step-")
-  let full_path = root <> "/.scherzo-state/artifacts/" <> ref.ref
+  let full_path = artifact_root(root) <> "/" <> ref.ref
   let assert Ok(stored_contents) = simplifile.read(full_path)
   assert ref.bytes
     == bit_array.byte_size(bit_array.from_string(stored_contents))
+  let assert Ok(location) = artifact_store.location(store, ref.ref)
+  assert location.display_path == ".scherzo-state/artifacts/" <> ref.ref
+  assert location.local_path == Some(full_path)
+  let assert Ok(decoded) =
+    artifact_store.read_step_artifact(store, ref.ref, ref.sha256)
+  assert decoded == artifact
+}
+
+pub fn custom_store_round_trips_without_local_path_test() {
+  let root = "test/tmp/artifact-store/custom-no-local-path"
+  reset_dir(root)
+  let store = hidden_local_path_store(root)
+  let artifact =
+    step_artifact.from_command_result(
+      "build",
+      0,
+      "stdout",
+      "stderr",
+      False,
+      [],
+      limits(),
+    )
+
+  let assert Ok(ref) =
+    artifact_store.write_step_artifact(
+      store,
+      "run-1",
+      "workflow-alpha",
+      "build",
+      1,
+      artifact,
+    )
+  let assert Ok(location) = artifact_store.location(store, ref.ref)
+  assert location.local_path == None
+  assert location.display_path == "artifacts://" <> ref.ref
   let assert Ok(decoded) =
     artifact_store.read_step_artifact(store, ref.ref, ref.sha256)
   assert decoded == artifact
@@ -79,13 +161,40 @@ pub fn artifact_store_fails_closed_for_missing_and_corrupt_artifacts_test() {
       1,
       artifact,
     )
-  let full_path = root <> "/.scherzo-state/artifacts/" <> ref.ref
+  let full_path = artifact_root(root) <> "/" <> ref.ref
   let assert Ok(Nil) = simplifile.write(full_path, "corrupt")
   let assert Error(artifact_store.CorruptStepArtifact(_)) =
     artifact_store.read_step_artifact(store, ref.ref, ref.sha256)
   let assert Ok(Nil) = simplifile.delete_file(at: full_path)
   let assert Error(artifact_store.MissingStepArtifact(_)) =
     artifact_store.read_step_artifact(store, ref.ref, ref.sha256)
+}
+
+pub fn artifact_store_rejects_unsafe_refs_test() {
+  let root = "test/tmp/artifact-store/invalid-ref"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+
+  let assert Error(artifact_store.InvalidArtifactRef(_)) =
+    artifact_store.read_artifact_unverified(store, "")
+  let assert Error(artifact_store.InvalidArtifactRef(_)) =
+    artifact_store.read_artifact_unverified(store, "/absolute")
+  let assert Error(artifact_store.InvalidArtifactRef(_)) =
+    artifact_store.read_artifact_unverified(store, "../escape")
+}
+
+pub fn filesystem_uri_escapes_spaces_in_workspace_path_test() {
+  let root = "test/tmp/artifact-store/uri with spaces"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+
+  let assert Ok(ref) =
+    artifact_store.write_output_blob(store, "run-1", "notes", ".txt", "hello")
+  let assert Ok(location) = artifact_store.location(store, ref.ref)
+
+  assert string.starts_with(location.uri, "file://")
+  assert string.contains(location.uri, "uri%20with%20spaces")
+  assert !string.contains(location.uri, "uri with spaces")
 }
 
 pub fn write_atomic_uses_unique_temp_and_leaves_no_success_temp_test() {

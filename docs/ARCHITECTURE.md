@@ -66,7 +66,7 @@ scripts/scherzoctl / scherzo ctl
 | Orchestrator | `src/scherzo/orchestrator/daemon.gleam`, `core.gleam`, `state.gleam`, `effect_runner.gleam`, `worker_registry.gleam`, `workflow_reloader.gleam`, `control_command_handler.gleam` | Daemon actor owns polling, retry timers, claims, running sessions, reload, side-effect queue, and local controls. `core.gleam` is the pure policy layer. |
 | Agent/pi execution | `src/scherzo/agent/run_attempt.gleam`, `turn_loop.gleam`, `operator_control.gleam`, `worker_command.gleam`, `src/scherzo/pi/client.gleam`, `protocol.gleam`, `command.gleam` | Launch pi RPC, send prompts/abort/UI responses, stream turn records, record token/session observations. |
 | Command execution | `src/scherzo/command_step.gleam`, `src/scherzo/step_artifact.gleam`, `src/scherzo/template.gleam` | Run shell command steps in prepared workspaces, cap/redact artifacts, expose `steps.*` fields to downstream prompts. |
-| Durable state/recovery | `src/scherzo/state/record.gleam`, `ledger.gleam`, `projection.gleam`, `recovery.gleam`, `artifact_store.gleam`, `local_artifacts.gleam`, `src/scherzo/workflow_checkpoint.gleam` | Append-only ledger, projection snapshots, artifact storage, startup recovery, cleanup/retention. |
+| Durable state/recovery | `src/scherzo/state/record.gleam`, `ledger.gleam`, `projection.gleam`, `recovery.gleam`, `artifact_store.gleam`, `local_artifacts.gleam`, `src/scherzo/workflow_checkpoint.gleam` | Append-only ledger, projection snapshots, port-backed artifact storage with a default filesystem implementation, startup recovery, cleanup/retention. |
 | Control API/CLI | `src/scherzo/control/*`, `src/scherzo/ctl.gleam`, `scripts/scherzoctl`, `src/scherzo/session/*`, `src/scherzo/terminal/*` | Local loopback control protocol, EventHub queries, attach rendering, mutating operator commands, offline state commands. |
 | FFI | `src/*_ffi.erl` plus `@external` declarations in Gleam files | Erlang boundaries for ports, TCP, filesystem sync/locking, signals, terminal, hashing, paths/env, shutdown, time. See `docs/ffi.md` for the contract every FFI export and wrapper must preserve. |
 | Examples/docs | `.scherzo/scherzo.yaml`, `.scherzo/workflows/*.yaml`, `examples/`, `README.md`, `docs/specs/`, `docs/runbooks/`, `docs/plans/` | Dogfood workflows and reusable examples must track user-visible config/schema changes. |
@@ -151,9 +151,13 @@ scripts/scherzoctl / scherzo ctl
   truncated trailing line and rejects malformed middle records or unsupported
   schema versions.
 - Projection snapshots use the same schema version as ledger records.
-- Durable step artifacts live under `.scherzo-state/artifacts/runs/...` via
-  `state/artifact_store.gleam`; step-finished ledger records reference the
-  artifact ref and sha256.
+- `state/artifact_store.gleam` is the artifact-store abstraction seam. The
+  default implementation is a filesystem store, so durable step artifacts still
+  live under `.scherzo-state/artifacts/runs/...`; step-finished ledger records
+  reference the artifact ref and sha256.
+- Artifact locations now distinguish durable `ref` from operator-facing `uri`,
+  `display_path`, and optional `local_path`. Core reads and inline structured
+  output access must work by ref even when `local_path` is absent.
 - Ledger data is operational state only: identifiers, statuses, counters,
   bounded excerpts, bounded/redacted outbox payloads, artifact refs, and
   recovery facts. Do not store API keys, raw pi JSON, full prompts, or full
