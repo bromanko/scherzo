@@ -2,8 +2,9 @@
 """Local helpers for reviewing Scherzo ExecPlan PR artifacts.
 
 The default command is intentionally read-only: given a PR number for the
-current GitHub repository, find the changed ExecPlan source file under
-``docs/plans/``, download the PR-head version into ``tmp/``, render Markdown
+current GitHub repository, find the changed ExecPlan Markdown source file at
+its repository-relative path (``docs/plans/`` by default, or a custom requested
+planning directory), download the PR-head version into ``tmp/``, render Markdown
 sources to a temporary HTML viewer when needed, and open the local preview in a
 browser. Markdown plans are the primary checked-in artifact; rendered HTML lives
 under ``tmp/scherzo-execplan-review/`` and is safe to recreate.
@@ -41,7 +42,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-PLAN_RE = re.compile(r"^docs/plans/[^/]+\.(?:html|md)$", re.IGNORECASE)
+PLAN_RE = re.compile(
+    r"^(?!(?:/|.*(?:^|/)\.\.(?:/|$)|[A-Za-z]:[\\/]))"
+    r"(?:(?:[^/\\\x00]+/)*docs/plans/[^/\\\x00]+\.md|docs/plans/[^/\\\x00]+\.html)$",
+    re.IGNORECASE,
+)
 DEFAULT_OUTPUT_DIR = Path("tmp") / "scherzo-execplan-review"
 SERVER_HOST = "127.0.0.1"
 MAX_DRAFT_BODY_CHARS = 16_000
@@ -248,10 +253,10 @@ def find_plan_file(files: list[dict[str, Any]]) -> str:
             details = "; removed plan files are not previewable: " + ", ".join(
                 sorted(set(removed_candidates))
             )
-        fail(f"expected exactly one changed docs/plans/*.html or *.md plan file, found 0{details}")
+        fail(f"expected exactly one changed ExecPlan Markdown source file or legacy docs/plans/*.html file, found 0{details}")
 
     fail(
-        "expected exactly one changed docs/plans/*.html or *.md plan file, found "
+        "expected exactly one changed ExecPlan Markdown source file or legacy docs/plans/*.html file, found "
         f"{len(unique_candidates)}: "
         + ", ".join(unique_candidates)
         + "; review a Markdown-only PR or remove any generated HTML plan artifact"
@@ -305,10 +310,23 @@ def safe_local_path(root: Path, repo_path: str) -> Path:
     return root.joinpath(*parts)
 
 
+def execplan_html_renderer() -> Path:
+    script_path = Path(__file__).resolve()
+    repo_root = script_path.parent.parent
+    candidates = [
+        script_path.with_name("scherzo-execplan-html"),
+        repo_root / "workflows" / "dogfood" / "scripts" / "scherzo-execplan-html",
+        repo_root / ".scherzo" / "workflows" / "scripts" / "scherzo-execplan-html",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    fail(f"missing ExecPlan HTML renderer; checked: {checked}")
+
+
 def render_markdown(source_path: Path, preview_path: Path, display_path: str) -> None:
-    renderer = Path(__file__).resolve().with_name("scherzo-execplan-html")
-    if not renderer.exists():
-        fail(f"missing ExecPlan HTML renderer: {renderer}")
+    renderer = execplan_html_renderer()
 
     proc = subprocess.run(
         [sys.executable, str(renderer), "render", str(source_path), str(preview_path), display_path],
@@ -353,8 +371,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "[--output-dir DIR] [--no-open] [--port PORT]"
         ),
         description=(
-            "Download the single docs/plans ExecPlan source changed by a GitHub PR "
-            "for this repository and open a local browser preview. Markdown is "
+            "Download the single ExecPlan Markdown source changed by a GitHub PR "
+            "for this repository, whether it is under docs/plans or a custom requested destination, and open a local browser preview. Markdown is "
             "the source of truth; temporary HTML previews are rendered under "
             "tmp/scherzo-execplan-review/. Use the explicit review subcommand "
             "for interactive feedback capture. Legacy HTML plan PRs remain supported."
