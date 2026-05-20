@@ -44,7 +44,11 @@ pub fn cli_driver_classifies_malformed_json_exit_and_timeout_failures_test() {
       timeout_ms: 5000,
     )
   let timeout_manifest =
-    fixture_manifest(executable: "sh", args: ["-c", "sleep 1"], timeout_ms: 10)
+    fixture_manifest(
+      executable: "sh",
+      args: ["-c", "while :; do :; done"],
+      timeout_ms: 10,
+    )
   let no_stdout_manifest =
     fixture_manifest(executable: "sh", args: ["-c", "exit 0"], timeout_ms: 5000)
   let request = fetch_request("req-driver-failure")
