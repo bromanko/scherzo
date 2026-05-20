@@ -24,14 +24,20 @@ def command_check_schema(args: argparse.Namespace) -> int:
 
 
 def command_materialize(args: argparse.Namespace) -> int:
+    submission_path = contract.resolve_submission_path(
+        lane_id=args.lane,
+        submission_path=Path(args.submission) if args.submission else None,
+        artifact_dir=Path(args.artifact_dir) if args.artifact_dir else None,
+    )
     artifact = contract.materialize_submission(
         lane_id=args.lane,
-        submission_path=Path(args.submission),
+        submission_path=submission_path,
         prepare_dir=Path(args.prepare_dir),
         output_path=Path(args.output),
     )
     print_kv("REVIEW_LANE_MATERIALIZE", "ok")
     print_kv("REVIEW_LANE", args.lane)
+    print_kv("REVIEW_LANE_SUBMISSION_PATH", str(submission_path))
     print_kv("REVIEW_LANE_DRAFT_PATH", args.output)
     print_kv("REVIEW_REMOTE_MUTATIONS", str(artifact.get("remote_mutations", "none")))
     return 0
@@ -88,7 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     materialize = subparsers.add_parser("materialize", help="Materialize one captured provider submission or Scherzo structured-output artifact into a canonical ReviewLaneDraft.")
     materialize.add_argument("--lane", required=True, choices=contract.lane_ids())
-    materialize.add_argument("--submission", required=True)
+    materialize.add_argument("--submission", help="Explicit captured provider submission path. Kept for direct/offline use.")
+    materialize.add_argument("--artifact-dir", help="Run artifact directory used to resolve the latest successful native lane attempt.")
     materialize.add_argument("--prepare-dir", required=True)
     materialize.add_argument("--output", required=True)
     materialize.set_defaults(func=command_materialize)

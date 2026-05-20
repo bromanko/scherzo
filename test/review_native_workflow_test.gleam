@@ -173,6 +173,37 @@ fn routed_review_dags() -> List(workflow_dag.WorkflowDag) {
   [implementation_dag(), execplan_implementation_dag()]
 }
 
+fn command_step_run(dag: workflow_dag.WorkflowDag, step_id: String) -> String {
+  let assert Ok(step) = workflow_dag.step_by_id(dag, step_id)
+  let assert workflow_dag.CommandStep(run, _) = step.kind
+  run
+}
+
+fn assert_native_review_downstream_steps_resolve_attempts(
+  dag: workflow_dag.WorkflowDag,
+) -> Nil {
+  let lanes = [
+    "correctness",
+    "test_quality",
+    "idioms_maintainability",
+    "security_performance",
+  ]
+  list.each(lanes, fn(lane) {
+    let materialize_run = command_step_run(dag, "materialize_" <> lane)
+    assert_contains(materialize_run, "--artifact-dir")
+    assert_not_contains(materialize_run, "attempt-1/structured")
+    assert_not_contains(materialize_run, "--submission \"$submission_path\"")
+
+    let normalize_run = command_step_run(dag, "normalize_" <> lane)
+    assert_contains(normalize_run, "--agent-artifact-dir")
+    assert_not_contains(normalize_run, "attempt-1.json")
+    assert_not_contains(
+      normalize_run,
+      "--agent-step-metadata \"$step_artifact\"",
+    )
+  })
+}
+
 fn validate_result(
   spec: workflow_dag.StructuredOutputSpec,
   result: result_artifact.ResultArtifact,
@@ -275,6 +306,13 @@ pub fn routed_review_lane_steps_use_provider_schema_shape_validator_test() {
       lane_schema_path("lane_security_performance"),
     )
   })
+}
+
+pub fn native_review_downstream_steps_resolve_successful_lane_attempts_test() {
+  list.each(
+    routed_review_dags(),
+    assert_native_review_downstream_steps_resolve_attempts,
+  )
 }
 
 pub fn native_review_prompts_and_tool_guidance_use_relative_input_ref_examples_test() {

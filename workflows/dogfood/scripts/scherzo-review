@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from scherzo_review import agent_lane_harness
+from scherzo_review import review_lane_contract as lane_contract
 
 SCHEMA_VERSION = 1
 CONTRACT_SCHEMA_REF = ".scherzo/workflows/schemas/review-artifacts.v1.schema.json"
@@ -2340,6 +2341,24 @@ def inferred_native_agent_step_metadata_path(
     )
 
 
+def latest_native_agent_step_metadata_path(
+    *,
+    artifact_dir: Path,
+    lane_id: str,
+) -> Path | None:
+    candidates = lane_contract.native_lane_metadata_paths(artifact_dir, lane_id)
+    for attempt_index, metadata_path in candidates:
+        structured_path = lane_contract.structured_output_path_from_step_metadata(
+            metadata_path,
+            lane_id,
+            artifact_dir,
+            attempt_index,
+        )
+        if structured_path is not None:
+            return metadata_path
+    return candidates[0][1] if candidates else None
+
+
 def load_metadata_object(metadata_path: Path) -> dict[str, Any] | None:
     if not metadata_path.exists() or not metadata_path.is_file():
         return None
@@ -2347,7 +2366,9 @@ def load_metadata_object(metadata_path: Path) -> dict[str, Any] | None:
         metadata = load_json(metadata_path)
     except Exception:
         return None
-    return metadata if isinstance(metadata, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+    return lane_contract.step_artifact_payload(metadata)
 
 
 def native_structured_output(metadata_path: Path) -> dict[str, Any] | None:
@@ -2844,18 +2865,28 @@ def verify_evidence_command(args: argparse.Namespace) -> None:
     if lane_id not in SPECIALIST_LANES:
         raise ReviewError(f"unknown lane: {lane_id}")
     metadata_arg = str(getattr(args, "agent_step_metadata", "") or "")
+    artifact_dir_arg = str(getattr(args, "agent_artifact_dir", "") or "")
     metadata_path = (
-        resolve_native_agent_step_metadata_path(
-            metadata_path=Path(metadata_arg),
+        latest_native_agent_step_metadata_path(
+            artifact_dir=Path(artifact_dir_arg),
             lane_id=lane_id,
-            draft_path=draft_path,
         )
-        if metadata_arg
-        else inferred_native_agent_step_metadata_path(
-            lane_id=lane_id,
-            draft_path=draft_path,
-        )
+        if artifact_dir_arg
+        else None
     )
+    if metadata_path is None:
+        metadata_path = (
+            resolve_native_agent_step_metadata_path(
+                metadata_path=Path(metadata_arg),
+                lane_id=lane_id,
+                draft_path=draft_path,
+            )
+            if metadata_arg
+            else inferred_native_agent_step_metadata_path(
+                lane_id=lane_id,
+                draft_path=draft_path,
+            )
+        )
     draft, draft_error = safe_load_review_lane_draft_or_error(draft_path)
     if draft_error is None and draft is not None:
         try:
@@ -3133,11 +3164,22 @@ def normalize_lane_result_command(args: argparse.Namespace) -> None:
         raise ReviewError(f"unknown lane: {lane_id}")
     draft_path = Path(args.draft)
     ledger_path = Path(args.evidence_ledger)
-    metadata_path = resolve_native_agent_step_metadata_path(
-        metadata_path=Path(args.agent_step_metadata),
-        lane_id=lane_id,
-        draft_path=draft_path,
+    metadata_arg = str(getattr(args, "agent_step_metadata", "") or "")
+    artifact_dir_arg = str(getattr(args, "agent_artifact_dir", "") or "")
+    metadata_path = (
+        latest_native_agent_step_metadata_path(
+            artifact_dir=Path(artifact_dir_arg),
+            lane_id=lane_id,
+        )
+        if artifact_dir_arg
+        else None
     )
+    if metadata_path is None:
+        metadata_path = resolve_native_agent_step_metadata_path(
+            metadata_path=Path(metadata_arg),
+            lane_id=lane_id,
+            draft_path=draft_path,
+        ) if metadata_arg else Path("")
     brief_path = Path(args.brief)
     started_at = now_utc()
     ensure_agent_step_metadata_from_args(
@@ -6918,6 +6960,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_evidence.add_argument("--validation-status", required=True, help="Validation-status artifact path.")
     verify_evidence.add_argument("--context-manifest", required=True, help="Context-manifest artifact path.")
     verify_evidence.add_argument("--agent-step-metadata", default="", help="Optional native lane step artifact path used to preserve structured-output failure diagnostics when the draft is absent.")
+    verify_evidence.add_argument("--agent-artifact-dir", default="", help="Optional run artifact directory used to resolve the latest successful native lane step artifact.")
     verify_evidence.add_argument("--output-dir", required=True, help="Directory for evidence-ledger artifacts.")
     verify_evidence.set_defaults(func=verify_evidence_command)
 
@@ -6928,7 +6971,8 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_lane.add_argument("--lane", required=True, choices=sorted(SPECIALIST_LANES.keys()))
     normalize_lane.add_argument("--draft", required=True, help="ReviewLaneDraft path, or missing/malformed draft path to diagnose.")
     normalize_lane.add_argument("--evidence-ledger", required=True, help="EvidenceLedger path.")
-    normalize_lane.add_argument("--agent-step-metadata", required=True, help="Native agent step metadata path.")
+    normalize_lane.add_argument("--agent-step-metadata", default="", help="Native agent step metadata path.")
+    normalize_lane.add_argument("--agent-artifact-dir", default="", help="Optional run artifact directory used to resolve the latest successful native lane step artifact.")
     normalize_lane.add_argument("--agent-step-status", default="", help="Native agent step status from Scherzo artifact template locals.")
     normalize_lane.add_argument("--agent-step-failure-code", default="", help="Native agent step failure code from Scherzo artifact template locals.")
     normalize_lane.add_argument("--structured-output-status", default="", help="Native structured-output status from Scherzo artifact template locals.")
