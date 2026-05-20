@@ -36,6 +36,7 @@ workflows/dogfood/
   merge-conflict-resolution.yaml
   github-pr-conflict-scout.yaml
   origin-sync.yaml
+  workspace-cleanup.yaml
   prompts/
   schemas/
   scripts/
@@ -98,7 +99,12 @@ Milestone 4 updates documentation and rollout guidance. Reviewers should see cle
 - [x] (2026-05-19) Submitted the mechanical implementation pack through Scherzo structured output.
 - [x] (2026-05-19) Resolved the structured-output extension packaging question: keep it outside `workflows/dogfood` as a runtime/project-loaded Pi extension, with `pi -e` only allowed in the configured launcher or wrapper.
 - [x] (2026-05-19) Resolved the root-wrapper question: remove moved workflow-private helpers from the repository root in this plan instead of keeping compatibility wrappers.
-- [ ] Implementation follow-up has not started; bundle refs and hashes will be created by Scherzo after this workflow run.
+- [x] (2026-05-19 23:43Z) Completed the milestone-1 boundary move: `workflows/dogfood` is now the canonical checked-in bundle tree, `.scherzo/workflows` is a tracked symlink to `../workflows/dogfood`, and the dogfood-private helper implementations moved under `workflows/dogfood/scripts` with no retained root copies.
+- [x] (2026-05-20 01:32Z) Completed milestone 2: Scherzo now exports `SCHERZO_WORKFLOW_BUNDLE_DIR` to workflow steps, structured-output validators, and workspace hooks, and routed dogfood workflows/prompts now call moved helpers through `$bundle_dir/scripts/...` with a `.scherzo/workflows` fallback.
+- [x] (2026-05-20 01:32Z) Completed milestone 3: `flake.nix` now exposes `scherzo-dogfood-workflows`, the Nix package output is directly symlinkable as `.scherzo/workflows`, and the workflow-portability check stages that package output instead of copying source files.
+- [x] (2026-05-20 01:32Z) Completed milestone 4: local docs/examples/tests now use bundle-local helper paths, and the reusable bundle passed format, unit, workflow-config, package, and workflow-portability validation.
+- [x] (2026-05-20 02:06Z) Applied late plan-completion repair for the remaining stale root-helper references in `test/execplan_implementation_helper_test.gleam`, `test/merge_conflict_helper_test.gleam`, and `docs/runbooks/scheduled-jobs.md` so milestone 4 matches the checked-in boundary.
+- [x] (2026-05-20 02:47Z) Applied code-review cleanup: command-validator and final-validation tests now assert `SCHERZO_WORKFLOW_BUNDLE_DIR` propagation/scrubbing, and `workflow_identity` delegates bundle-directory resolution to the shared `workflow_bundle` module.
 
 ## Decision Log
 
@@ -122,9 +128,19 @@ Milestone 4 updates documentation and rollout guidance. Reviewers should see cle
   Rationale: The migration should make `workflows/dogfood` the only checked-in location for dogfood-private helper code. Keeping root wrappers would preserve the old split ownership and let stale `$SCHERZO_REPO_ROOT/scripts` assumptions survive instead of forcing workflows, local commands, docs, and validation to converge on the bundle boundary.
   Date: 2026-05-19.
 
+- Decision: Keep the existing checked-in `workspace-cleanup.yaml` inside `workflows/dogfood` during the boundary move.
+  Rationale: The live tree already included that scheduled workflow alongside the eight interactive dogfood workflows, so the canonical bundle move should carry the whole checked-in workflow directory rather than silently pruning a routed workflow asset mid-migration.
+  Date: 2026-05-19.
+
+- Decision: Keep canonical schema-path strings in retained ExecPlan bundle artifacts as `.scherzo/workflows/schemas/...` even when helper code resolves schema files from the bundle root.
+  Rationale: That preserves existing retained-artifact contracts and lets source checkouts plus Nix-built bundle consumers share the same schema namespace through the `.scherzo/workflows` symlink.
+  Date: 2026-05-20.
+
 ## Validation and Acceptance
 
 Acceptance requires reviewers to be able to identify the exact bundle layout, the root-script split, the new bundle-dir environment contract, the runtime structured-output extension prerequisite, and the package output name from this document and the retained implementation pack. Implementation acceptance requires source dogfood workflows to keep passing their normal lint, unit, workflow-config, and portability gates, and requires a Nix-built bundle to validate when consumed through a `.scherzo/workflows` symlink.
+
+This implementation now validates with `direnv exec . gleam format --check src test`, `direnv exec . gleam test -- --suite unit`, `LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml`, `nix build "path:$PWD#scherzo-dogfood-workflows" --no-link`, and `nix build "path:$PWD#checks.$(nix eval --raw --impure --expr builtins.currentSystem).workflow-portability" --no-link`. The late repair pass additionally re-ran `direnv exec . gleam test -- test/execplan_implementation_helper_test.gleam test/merge_conflict_helper_test.gleam` to prove the contract tests now invoke bundle-local helpers. The code-review cleanup pass re-ran `direnv exec . gleam format --check src/scherzo/workflow_identity.gleam test/structured_output_command_validator_test.gleam test/execplan_implementation_helper_test.gleam` and `direnv exec . gleam test -- --suite unit`. The repository warning inventory from `glinter`/`scherzo_lint` remains unchanged by this slice.
 
 A successful package validation should prove that workflow YAML loads from the symlinked bundle, prompts and schemas resolve, moved scripts are executable with their dependencies, the consumer Pi launcher loads the structured-output extension from outside `workflows/dogfood`, no moved workflow command still depends on `SCHERZO_REPO_ROOT/scripts` for dogfood-private helpers, and no root compatibility wrapper remains for those moved helpers.
 

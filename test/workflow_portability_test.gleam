@@ -72,9 +72,9 @@ fn workflow_runner_probe_command() -> String {
   "python3 -c '"
   <> "import json,sys; "
   <> "from importlib.machinery import SourceFileLoader; "
-  <> "sys.path.insert(0,\"scripts\"); "
+  <> "sys.path.insert(0,\".scherzo/workflows/scripts\"); "
   <> "mod=SourceFileLoader("
-  <> "\"scherzo_review_script\",\"scripts/scherzo-review\").load_module(); "
+  <> "\"scherzo_review_script\",\".scherzo/workflows/scripts/scherzo-review\").load_module(); "
   <> "print(json.dumps(mod.workflow_runner_command()))"
   <> "'"
 }
@@ -133,7 +133,7 @@ fn retired_v2_suffix_paths() -> List(String) {
     ".scherzo/workflows/prompts/execplan-implementation-v2-apply-feedback.md",
     ".scherzo/workflows/prompts/execplan-implementation-v2-repair-base-drift.md",
     ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
-    "scripts/scherzo-execplan-v2",
+    ".scherzo/workflows/scripts/scherzo-execplan-v2",
   ]
 }
 
@@ -144,7 +144,7 @@ pub fn execplan_v2_suffix_workflow_files_are_retired_test() {
 }
 
 pub fn review_runner_uses_packaged_scherzo_cli_test() {
-  let script = read_file("scripts/scherzo-review")
+  let script = read_file(".scherzo/workflows/scripts/scherzo-review")
 
   assert_contains(script, "SCHERZO_WORKFLOW_RUNNER")
   assert_contains(script, "return [\"scherzo\"]")
@@ -187,11 +187,22 @@ pub fn execplan_workflows_resolve_helpers_from_repo_root_test() {
     ],
     fn(path) {
       let workflow = read_file(path)
-      assert_contains(workflow, "repo_root=${SCHERZO_REPO_ROOT:-$(cd")
-      assert_contains(workflow, "\"$repo_root/scripts/scherzo-execplan\"")
-      assert_not_contains(workflow, "run: scripts/scherzo-execplan")
+      assert_contains(workflow, "bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}")
+      assert_contains(workflow, "\"$bundle_dir/scripts/scherzo-execplan\"")
+      assert_not_contains(
+        workflow,
+        "run: .scherzo/workflows/scripts/scherzo-execplan",
+      )
     },
   )
+}
+
+pub fn execplan_html_fallback_commands_use_bundle_helper_test() {
+  let script = read_file(".scherzo/workflows/scripts/scherzo-execplan-html")
+
+  assert_contains(script, ".scherzo/workflows/scripts/scherzo-execplan-html")
+  assert_not_contains(script, "return f'scripts/scherzo-execplan-html")
+  assert_not_contains(script, "use scripts/scherzo-execplan-html")
 }
 
 pub fn execplan_family_prompts_do_not_reference_repo_local_skill_files_test() {
@@ -231,17 +242,17 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
       assert_contains(workflow, "submit_review_lane_draft")
       assert_contains(workflow, "prepare-native")
       assert_contains(workflow, "synthesize_review")
-      assert_contains(workflow, "scripts/scherzo-review")
+      assert_contains(workflow, "$bundle_dir/scripts/scherzo-review")
       assert_not_contains(workflow, "run-lane --lane")
     },
   )
 
   list.each([implementation_prompt, execplan_prompt], fn(prompt) {
     assert_contains(prompt, "REVIEW_FINAL_ARTIFACT_PATH")
-    assert_contains(prompt, "\"$repo_root/scripts/scherzo-review\"")
+    assert_contains(prompt, "\"$bundle_dir/scripts/scherzo-review\"")
     assert_contains(prompt, "Do not invoke local pi slash commands")
     assert_not_contains(prompt, "`/review")
-    assert_not_contains(prompt, "`scripts/scherzo-review")
+    assert_not_contains(prompt, "`.scherzo/workflows/scripts/scherzo-review")
     assert_not_contains(prompt, ".pi/skills/gleam")
     assert_not_contains(prompt, "gleam-review")
   })
@@ -343,11 +354,11 @@ pub fn workflow_docs_explain_canonical_execplan_routing_and_validation_test() {
   assert_contains(docs, "## Workflow-packaged guidance and portability")
   assert_contains(docs, "Bundle-based ExecPlan workflows")
   assert_contains(docs, ".scherzo/workflows/schemas/")
-  assert_contains(docs, "repo_root=${SCHERZO_REPO_ROOT:-$(cd")
-  assert_contains(docs, "\"$repo_root/scripts/scherzo-execplan\"")
+  assert_contains(docs, "bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}")
+  assert_contains(docs, "\"$bundle_dir/scripts/scherzo-execplan\"")
   assert_contains(docs, "workflow portability validation")
   assert_contains(docs, "doctor --check workflow-config")
-  assert_contains(docs, "scripts/scherzo-review")
+  assert_contains(docs, ".scherzo/workflows/scripts/scherzo-review")
   assert_contains(docs, "workflow:execplan")
   assert_contains(docs, "workflow:execplan-revision")
   assert_contains(docs, "workflow:execplan-implementation")
@@ -372,7 +383,7 @@ pub fn active_operator_guidance_uses_canonical_execplan_names_test() {
       docs,
       ".scherzo/workflows/execplan-implementation-v2.yaml",
     )
-    assert_not_contains(docs, "scripts/scherzo-execplan-v2")
+    assert_not_contains(docs, ".scherzo/workflows/scripts/scherzo-execplan-v2")
     assert_not_contains(docs, "execplan-v2:")
     assert_not_contains(docs, "execplan-revision-v2")
     assert_not_contains(docs, "execplan-implementation-v2")

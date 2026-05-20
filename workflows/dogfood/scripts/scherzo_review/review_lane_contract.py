@@ -34,6 +34,8 @@ CONTRACT_SCHEMA_REF = ".scherzo/workflows/schemas/review-artifacts.v1.schema.jso
 CANONICAL_DRAFT_SCHEMA = Path(
     ".scherzo/workflows/schemas/review-lane-draft.v1.schema.json"
 )
+BUNDLE_ROOT = Path(os.environ.get("SCHERZO_WORKFLOW_BUNDLE_DIR", "")).resolve() if os.environ.get("SCHERZO_WORKFLOW_BUNDLE_DIR", "").strip() else Path(__file__).resolve().parents[2]
+BUNDLE_SCRIPTS_DIR = BUNDLE_ROOT / "scripts"
 CHECKER_VERSION = "review-lane-contract-v1"
 
 RUNNER_METADATA_FIELDS = {
@@ -448,21 +450,23 @@ def validate_canonical_artifact(artifact: dict[str, Any]) -> None:
 
 
 def run_json_schema_validation(artifact: dict[str, Any]) -> None:
-    proc = subprocess.run(
-        ["python3", "scripts/scherzo-json-schema-validate", "--schema", str(CANONICAL_DRAFT_SCHEMA)],
-        input=json.dumps(artifact, separators=(",", ":")),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if proc.returncode != 0:
-        message = proc.stdout.strip() or proc.stderr.strip() or f"exit {proc.returncode}"
-        raise ContractError("review_lane_submission_canonical_validation_failed", message)
+    if Draft202012Validator is None:
+        raise ContractError("review_lane_submission_canonical_validation_failed", f"jsonschema import failed: {JSONSCHEMA_IMPORT_ERROR}")
+    schema = load_json(CANONICAL_DRAFT_SCHEMA)
+    validator = Draft202012Validator(schema)
+    errors = sorted(validator.iter_errors(artifact), key=lambda error: list(error.path))
+    if errors:
+        first = errors[0]
+        path_text = ".".join(str(part) for part in first.path) or "<root>"
+        raise ContractError(
+            "review_lane_submission_canonical_validation_failed",
+            f"{path_text}: {first.message}",
+        )
 
 
 def run_semantic_validation(artifact: dict[str, Any]) -> None:
     proc = subprocess.run(
-        ["python3", "scripts/scherzo-review", "validate-structured-output", "--validator", "review_lane_draft"],
+        ["python3", str(BUNDLE_SCRIPTS_DIR / "scherzo-review"), "validate-structured-output", "--validator", "review_lane_draft"],
         input=json.dumps(artifact, separators=(",", ":")) + "\n",
         text=True,
         stdout=subprocess.PIPE,

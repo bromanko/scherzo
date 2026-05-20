@@ -1,7 +1,7 @@
-"""Agent-lane harness for scripts/scherzo-review.
+"""Agent-lane harness for .scherzo/workflows/scripts/scherzo-review.
 
-The executable entrypoint stays in ``scripts/scherzo-review`` so existing
-manual validation commands remain stable. This module contains the helper pieces
+The executable entrypoint lives in ``.scherzo/workflows/scripts/scherzo-review`` so
+manual validation commands follow the dogfood workflow bundle boundary. This module contains the helper pieces
 used by legacy script-level lanes: input bundle retention, fixture and external
 backend execution, response normalization helpers, harness-owned evidence, and
 cutover-readiness checks. Production implementation review uses native Scherzo
@@ -1097,7 +1097,7 @@ def normalize_agent_response(
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "review_lane_result",
         "generated_at_utc": completed_at,
-        "producer": {"name": "scripts/scherzo-review", "version": "1", "mode": "run-lane"},
+        "producer": {"name": ".scherzo/workflows/scripts/scherzo-review", "version": "1", "mode": "run-lane"},
         "lane": lane_metadata,
         "execution_status": {
             "state": "succeeded",

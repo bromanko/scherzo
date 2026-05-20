@@ -25,7 +25,7 @@ fn run_helper(command: String) -> step_artifact.StepArtifact {
   command_step.run(
     "helper",
     workflow_context_test_support.without_workflow_context(
-      "scripts/scherzo-implementation " <> command,
+      ".scherzo/workflows/scripts/scherzo-implementation " <> command,
     ),
     ".",
     5000,
@@ -180,7 +180,10 @@ pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
     )
 
   let generated =
-    run_helper_in(dir, "../../../scripts/scherzo-implementation plan-brief")
+    run_helper_in(
+      dir,
+      "../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief",
+    )
 
   assert generated.status == step_artifact.StepSucceeded
   assert generated.exit_code == Some(0)
@@ -209,7 +212,7 @@ pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
   let fresh =
     run_helper_in(
       dir,
-      "../../../scripts/scherzo-implementation plan-brief --check",
+      "../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief --check",
     )
   assert fresh.status == step_artifact.StepSucceeded
   assert string.contains(fresh.stdout, "PLAN_BRIEF_STATUS=fresh")
@@ -222,7 +225,7 @@ pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
   let stale =
     run_helper_in(
       dir,
-      "../../../scripts/scherzo-implementation plan-brief --check",
+      "../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief --check",
     )
   assert stale.status == step_artifact.StepFailed
   assert stale.exit_code == Some(2)
@@ -231,14 +234,14 @@ pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
   let refreshed =
     run_helper_in(
       dir,
-      "../../../scripts/scherzo-implementation plan-brief --refresh-if-stale",
+      "../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief --refresh-if-stale",
     )
   assert refreshed.status == step_artifact.StepSucceeded
   assert string.contains(refreshed.stdout, "PLAN_BRIEF_STATUS=ok")
   let fresh_again =
     run_helper_in(
       dir,
-      "../../../scripts/scherzo-implementation plan-brief --check",
+      "../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief --check",
     )
   assert fresh_again.status == step_artifact.StepSucceeded
   assert string.contains(fresh_again.stdout, "PLAN_BRIEF_STATUS=fresh")
@@ -271,7 +274,7 @@ pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_EXECPLAN_HTML_HELPER=bin/failing-brief-helper ../../../scripts/scherzo-implementation plan-brief",
+      "SCHERZO_EXECPLAN_HTML_HELPER=bin/failing-brief-helper ../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -310,7 +313,7 @@ pub fn metadata_load_restores_tmp_cache_from_run_root_test() {
       clean_workflow_env()
         <> " "
         <> run_root_env()
-        <> " ../../../scripts/scherzo-implementation plan-brief",
+        <> " ../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -342,7 +345,7 @@ pub fn metadata_backfills_run_root_from_tmp_cache_with_diagnostic_test() {
       clean_workflow_env()
         <> " "
         <> run_root_env()
-        <> " ../../../scripts/scherzo-implementation plan-brief",
+        <> " ../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -382,7 +385,7 @@ pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
       clean_workflow_env()
         <> " "
         <> run_root_env()
-        <> " PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation analyze",
+        <> " PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation analyze",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -414,7 +417,7 @@ pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
       clean_workflow_env()
         <> " "
         <> run_root_env()
-        <> " SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-implementation",
+        <> " SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-implementation",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -446,7 +449,7 @@ pub fn metadata_missing_from_run_root_and_tmp_is_unrecoverable_test() {
       clean_workflow_env()
         <> " "
         <> run_root_env()
-        <> " ../../../scripts/scherzo-implementation analyze",
+        <> " ../../../.scherzo/workflows/scripts/scherzo-implementation analyze",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -486,7 +489,7 @@ pub fn prepare_execplan_writes_canonical_metadata_and_cache_test() {
       clean_workflow_env()
         <> " "
         <> run_root_env()
-        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-230 SCHERZO_TEST_LINEAR_GRAPHQL_JSON=linear-execplan.json PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation prepare --source execplan",
+        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-230 SCHERZO_TEST_LINEAR_GRAPHQL_JSON=linear-execplan.json PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source execplan",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -547,7 +550,7 @@ pub fn prepare_ticket_writes_canonical_metadata_and_cache_test() {
       clean_workflow_env()
         <> " "
         <> run_root_env()
-        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-254 SCHERZO_TEST_LINEAR_GRAPHQL_JSON=linear-ticket.json PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation prepare --source ticket",
+        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-254 SCHERZO_TEST_LINEAR_GRAPHQL_JSON=linear-ticket.json PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source ticket",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -696,7 +699,7 @@ pub fn prepare_execplan_failure_writes_retention_marker_before_fetch_test() {
   let artifact =
     run_helper_in(
       dir <> "/main",
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../scripts/scherzo-implementation prepare --source execplan",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source execplan",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -718,7 +721,7 @@ pub fn prepare_command_failure_reports_bounded_diagnostic_excerpt_test() {
   let artifact =
     run_helper_in(
       dir <> "/main",
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../scripts/scherzo-implementation prepare --source execplan",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source execplan",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -801,7 +804,7 @@ pub fn plan_completion_gate_passes_fresh_pass_verdict_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion --final",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --final",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -824,7 +827,7 @@ pub fn plan_completion_gate_blocks_fail_verdict_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -853,7 +856,7 @@ pub fn plan_completion_gate_blocks_malformed_verdict_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion --final",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --final",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -870,7 +873,7 @@ pub fn plan_completion_gate_blocks_missing_verdict_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion --final",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --final",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -896,7 +899,7 @@ pub fn plan_completion_gate_blocks_stale_verdict_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion --final",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --final",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -919,7 +922,7 @@ pub fn plan_completion_recovery_reports_repair_needed_for_fresh_fail_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -955,7 +958,7 @@ pub fn plan_completion_recovery_reports_not_needed_for_fresh_pass_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -982,7 +985,7 @@ pub fn plan_completion_recovery_preserves_terminal_verdict_failures_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1002,7 +1005,7 @@ pub fn plan_completion_recovery_exhausts_after_late_repair_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1049,7 +1052,7 @@ pub fn plan_completion_recovery_exhausts_at_final_gate_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase final --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase final --attempt 2 --max-attempts 2",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1076,7 +1079,7 @@ pub fn plan_completion_recovery_rejects_over_budget_before_late_repair_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 3 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 3 --max-attempts 2",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1109,7 +1112,7 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_WORKSPACE_DRIVER=/outer/driver SCHERZO_WORKSPACE_PROFILE=dogfood-jj SCHERZO_WORKSPACE_CAPABILITIES=status,diff SCHERZO_WORKSPACE_ROOT=/outer/workspaces SCHERZO_REPO_ROOT=/outer/repo SCHERZO_JJ_WORKSPACE_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_FETCH_BASE=true SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main SCHERZO_PR_REPO=example/repo SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS=1 SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS=1 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_WORKFLOW_BUNDLE_DIR=/outer/bundle SCHERZO_WORKSPACE_DRIVER=/outer/driver SCHERZO_WORKSPACE_PROFILE=dogfood-jj SCHERZO_WORKSPACE_CAPABILITIES=status,diff SCHERZO_WORKSPACE_ROOT=/outer/workspaces SCHERZO_REPO_ROOT=/outer/repo SCHERZO_JJ_WORKSPACE_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_FETCH_BASE=true SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main SCHERZO_PR_REPO=example/repo SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_FAIL_IF_WORKFLOW_BUNDLE_DIR_LEAKS=1 SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS=1 SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS=1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1150,7 +1153,7 @@ pub fn validate_uses_latest_refresh_base_revision_for_selfci_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1177,7 +1180,7 @@ pub fn validate_failure_writes_structured_failure_artifact_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1218,7 +1221,10 @@ pub fn validate_base_drift_marker_reports_previous_validation_summary_test() {
     )
 
   let artifact =
-    run_helper_in(dir, "../../../scripts/scherzo-implementation validate")
+    run_helper_in(
+      dir,
+      "../../../.scherzo/workflows/scripts/scherzo-implementation validate",
+    )
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
@@ -1252,7 +1258,7 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1342,7 +1348,7 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1396,7 +1402,7 @@ pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_JJ_REBASE_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_JJ_REBASE_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1422,7 +1428,7 @@ pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1448,7 +1454,7 @@ pub fn refresh_base_reports_fresh_base_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1481,7 +1487,7 @@ pub fn refresh_base_rebases_stale_base_and_updates_start_metadata_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-implementation",
+      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-implementation",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1515,7 +1521,7 @@ pub fn refresh_base_reports_repairable_conflicts_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1541,7 +1547,7 @@ pub fn refresh_base_fetch_failure_is_nonrepairable_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_FETCH_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+      "SCHERZO_FAKE_REFRESH_FETCH_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1565,7 +1571,7 @@ pub fn refresh_base_base_not_found_is_nonrepairable_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_BASE_MISSING=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+      "SCHERZO_FAKE_REFRESH_BASE_MISSING=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1590,7 +1596,7 @@ pub fn refresh_base_rebase_failed_without_conflicts_is_nonrepairable_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_REBASE_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+      "SCHERZO_FAKE_REFRESH_REBASE_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1613,7 +1619,7 @@ pub fn refresh_base_rejects_unsafe_stage_and_writes_latest_json_test() {
   let bad =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage ../bad",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage ../bad",
     )
   assert bad.status == step_artifact.StepFailed
   assert bad.exit_code == Some(1)
@@ -1623,7 +1629,7 @@ pub fn refresh_base_rejects_unsafe_stage_and_writes_latest_json_test() {
   let good =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
     )
   assert good.status == step_artifact.StepSucceeded
   let assert Ok(stage_json) =
@@ -1655,7 +1661,7 @@ pub fn validate_fails_on_base_drift_failure_marker_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1679,7 +1685,7 @@ pub fn validate_fails_on_unresolved_jj_conflicts_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_CONFLICT=1 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+      "SCHERZO_FAKE_REFRESH_CONFLICT=1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1702,7 +1708,7 @@ pub fn publish_time_conflicts_do_not_publish_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1738,7 +1744,7 @@ pub fn publish_time_revalidation_failure_does_not_publish_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1773,7 +1779,7 @@ pub fn publish_time_revalidation_success_may_publish_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1805,7 +1811,7 @@ pub fn publish_includes_base_drift_repair_summary_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1836,7 +1842,7 @@ pub fn publish_includes_base_drift_repair_summary_test() {
   let artifact_without =
     run_helper_in(
       dir_without,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact_without.status == step_artifact.StepSucceeded
@@ -2178,7 +2184,7 @@ fn setup_plan_completion_gate_fixture(dir: String) -> String {
   let context =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-context",
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-context",
     )
   assert context.status == step_artifact.StepSucceeded
   assert context.exit_code == Some(0)
@@ -2345,7 +2351,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then echo 'origin https://github.com/example/repo.git'; exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = diff ]; then echo 'scripts/scherzo-implementation'; exit 0; fi\n"
+        <> "if [ \"$1\" = diff ]; then echo '.scherzo/workflows/scripts/scherzo-implementation'; exit 0; fi\n"
         <> "if [ \"$1\" = rebase ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_JJ_REBASE_FAIL:-}\" = 1 ]; then echo 'simulated rebase conflict' >&2; exit 1; fi\n"
         <> "  exit 0\n"
@@ -2388,7 +2394,7 @@ fn write_fake_refresh_jj(path: String) -> Nil {
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = diff ]; then echo 'scripts/scherzo-implementation'; exit 0; fi\n"
+        <> "if [ \"$1\" = diff ]; then echo '.scherzo/workflows/scripts/scherzo-implementation'; exit 0; fi\n"
         <> "if [ \"$1\" = rebase ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE:-}\" = 1 ]; then touch .fake-conflict; echo 'simulated conflict' >&2; exit 1; fi\n"
         <> "  if [ \"${SCHERZO_FAKE_REFRESH_REBASE_FAIL:-}\" = 1 ]; then echo 'simulated rebase infrastructure failure' >&2; exit 1; fi\n"
@@ -2445,6 +2451,7 @@ fn write_fake_direnv(path: String) -> Nil {
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> direnv.log\n"
         <> "if [ \"${SCHERZO_FAIL_IF_RUN_ROOT_LEAKS:-}\" = 1 ] && [ -n \"${SCHERZO_RUN_ROOT:-}\" ]; then echo 'SCHERZO_RUN_ROOT leaked into validation' >&2; exit 1; fi\n"
+        <> "if [ \"${SCHERZO_FAIL_IF_WORKFLOW_BUNDLE_DIR_LEAKS:-}\" = 1 ] && [ -n \"${SCHERZO_WORKFLOW_BUNDLE_DIR:-}\" ]; then echo 'SCHERZO_WORKFLOW_BUNDLE_DIR leaked into validation' >&2; exit 1; fi\n"
         <> "if [ \"${SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS:-}\" = 1 ] && { [ -n \"${SCHERZO_WORKSPACE_DRIVER:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_PROFILE:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_CAPABILITIES:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_ROOT:-}\" ]; }; then echo 'SCHERZO_WORKSPACE driver context leaked into validation' >&2; exit 1; fi\n"
         <> "if [ \"${SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS:-}\" = 1 ] && env | grep -E '^(SCHERZO_JJ_WORKSPACE_BASE|SCHERZO_JJ_WORKSPACE_BASE_BRANCH|SCHERZO_JJ_WORKSPACE_FETCH_BASE|SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE|SCHERZO_JJ_WORKSPACE_REMOTE|SCHERZO_PR_BASE|SCHERZO_PR_REMOTE|SCHERZO_PR_REPO|SCHERZO_REPO_ROOT)=' >/dev/null; then echo 'SCHERZO publication environment leaked into validation' >&2; exit 1; fi\n"
         <> "case \"$*\" in\n"

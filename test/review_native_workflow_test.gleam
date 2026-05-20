@@ -189,6 +189,7 @@ fn validate_result(
         ".scherzo",
         ".",
         "review_native",
+        ".scherzo/workflows",
         "test_run",
         "lane_correctness",
         1,

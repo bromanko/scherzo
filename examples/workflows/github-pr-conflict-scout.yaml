@@ -8,6 +8,10 @@ steps:
     kind: command
     run: |
       set -eu
+      bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
+      if [ -z "$bundle_dir" ]; then
+        bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
+      fi
       repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
       : "${SCHERZO_GITHUB_REPO:?set SCHERZO_GITHUB_REPO to owner/repo, for example octo-org/octo-repo}"
       linear_project_slug=${SCHERZO_LINEAR_PROJECT_SLUG:-${LINEAR_PROJECT_SLUG:-}}
@@ -17,7 +21,7 @@ steps:
       fi
       cd "$repo_root"
       max_open_prs=${SCHERZO_CONFLICT_MAX_OPEN_PRS:-100}
-      set -- "$repo_root/scripts/scherzo-github-pr-conflict-scout" scan \
+      set -- "$bundle_dir/scripts/scherzo-github-pr-conflict-scout" scan \
         --repo "$SCHERZO_GITHUB_REPO" \
         --linear-project-slug "$linear_project_slug" \
         --create-state "${SCHERZO_CONFLICT_CREATE_STATE:-Todo}" \

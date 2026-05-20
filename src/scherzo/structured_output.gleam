@@ -150,6 +150,7 @@ pub fn default_validator_context(
   config_dir: String,
   run_root: String,
   workflow_id: String,
+  workflow_bundle_dir: String,
   run_id: String,
   step_id: String,
   attempt_index: Int,
@@ -163,6 +164,7 @@ pub fn default_validator_context(
     validator_repo_root(config_dir, workspace_path),
     run_root,
     workflow_id,
+    workflow_bundle_dir,
     run_id,
     step_id,
     attempt_index,
@@ -619,7 +621,12 @@ fn choose_validator_repo_root(candidates: List(String)) -> String {
 }
 
 fn has_scherzo_review_script(candidate: String) -> Bool {
-  case simplifile.is_file(path.join(candidate, "scripts/scherzo-review")) {
+  case
+    simplifile.is_file(path.join(
+      candidate,
+      ".scherzo/workflows/scripts/scherzo-review",
+    ))
+  {
     Ok(True) -> True
     _ -> False
   }

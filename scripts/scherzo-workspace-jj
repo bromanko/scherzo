@@ -872,6 +872,32 @@ def changed_paths(root: Path) -> list[str]:
     return sorted(clean_lines(output))
 
 
+def parse_rename_summary_paths(rest: str) -> tuple[str, str]:
+    text = rest.strip()
+    if " -> " in text:
+        old_path, new_path = text.split(" -> ", 1)
+        return old_path.strip(), new_path.strip()
+
+    brace_start = text.find("{")
+    if brace_start >= 0:
+        brace_end = text.find("}", brace_start + 1)
+        if brace_end >= 0:
+            inside = text[brace_start + 1 : brace_end]
+            if "=>" in inside:
+                old_part, new_part = inside.split("=>", 1)
+                prefix = text[:brace_start]
+                suffix = text[brace_end + 1 :]
+                old_path = prefix + old_part.strip() + suffix
+                new_path = prefix + new_part.strip() + suffix
+                return old_path.strip(), new_path.strip()
+
+    if "=>" in text:
+        old_path, new_path = text.split("=>", 1)
+        return old_path.strip("{} "), new_path.strip("{} ")
+
+    return "", text
+
+
 def parse_summary_records(summary: str) -> dict[str, dict[str, str]]:
     records: dict[str, dict[str, str]] = {}
     for raw_line in summary.splitlines():
@@ -885,14 +911,7 @@ def parse_summary_records(summary: str) -> dict[str, dict[str, str]]:
         status = STATUS_MAP.get(token[:1], "modified")
         record: dict[str, str]
         if status == "renamed":
-            old_path = ""
-            new_path = rest
-            if " -> " in rest:
-                old_path, new_path = rest.split(" -> ", 1)
-            elif "=>" in rest:
-                old_path, new_path = rest.split("=>", 1)
-                old_path = old_path.strip("{} ")
-                new_path = new_path.strip("{} ")
+            old_path, new_path = parse_rename_summary_paths(rest)
             record = {"path": new_path.strip(), "status": "renamed"}
             if old_path.strip():
                 record["old_path"] = old_path.strip()

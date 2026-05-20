@@ -1570,6 +1570,7 @@ fn run_recovered_workflow_worker(
                   workspaces: recovered_workspaces_to_prepared(
                     recovered.completed_workspaces,
                     profile.name,
+                    bundle.orchestrator,
                   ),
                   next_attempt_indexes: recovered.next_attempt_indexes,
                   run_root: Some(recovered.run_root),
@@ -1642,6 +1643,7 @@ fn recovered_workflow_identity_matches(
 fn recovered_workspaces_to_prepared(
   workspaces: Dict(String, recovery.RecoveredWorkspaceSummary),
   profile_name: String,
+  _orchestrator: config_types.OrchestratorConfig,
 ) -> Dict(String, workspace_run.PreparedStepWorkspace) {
   workspaces
   |> dict.to_list
@@ -1653,6 +1655,7 @@ fn recovered_workspaces_to_prepared(
         workflow_id: workspace.workflow_id,
         run_id: workspace.run_id,
         run_root: workspace.run_root,
+        workflow_bundle_dir: "",
         attempt_index: workspace.attempt_index,
         workspace_name: workspace.workspace_name,
         path: workspace.path,

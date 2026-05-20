@@ -149,6 +149,7 @@ fn remove_env(
     #("SCHERZO_RUN_KIND", "issue"),
     #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),
     #("SCHERZO_WORKFLOW_ID", ""),
+    #("SCHERZO_WORKFLOW_BUNDLE_DIR", ""),
     #("SCHERZO_RUN_ID", ""),
     #("SCHERZO_RUN_ROOT", run_root),
     #("SCHERZO_ISSUE_ID", ""),

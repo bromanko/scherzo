@@ -5,8 +5,8 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 ## Convention
 
 - Put the repo dogfood runtime config in `.scherzo/scherzo.yaml`.
-- Put versioned YAML workflow DAGs in `.scherzo/workflows/*.yaml`.
-- Put prompt templates referenced by YAML DAG agent steps in `.scherzo/workflows/prompts/*.md`.
+- Keep the canonical checked-in dogfood workflow bundle in `workflows/dogfood/*.yaml`, and consume it in this repository through the tracked symlink `.scherzo/workflows -> ../workflows/dogfood`.
+- Keep prompt templates referenced by dogfood workflow DAG agent steps in `workflows/dogfood/prompts/*.md` and reach them through `.scherzo/workflows/prompts/*.md`.
 - Put workflow-required agent guidance directly in checked-in prompt templates (or a workflow-owned bundled include mechanism when one exists) so consuming repositories do not have to vendor Pi skills.
 - Put runtime jj workspaces under `.scherzo/workspaces/<workflow-name>/`; they are ignored by git.
 - Config-relative paths are resolved from `.scherzo/scherzo.yaml`, so this repository uses `workspace.root: workspaces` to land at repo-root `.scherzo/workspaces`.
@@ -17,17 +17,21 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Keep machine-specific variants as `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, `.scherzo/scherzo.local.yaml`, or `.scherzo/scherzo.local.yml`; they are ignored by git.
 - Do not put secrets in workflow files. Use environment variables for secrets and deployment-specific values.
 
-The repo `.gitignore` intentionally ignores runtime `.scherzo/*` state while allowing this README, `.scherzo/scherzo.yaml`, and `.scherzo/workflows/**` to be checked in.
+The repo `.gitignore` intentionally ignores runtime `.scherzo/*` state while allowing this README, `.scherzo/scherzo.yaml`, the tracked `.scherzo/workflows` symlink, and the canonical `workflows/dogfood/**` bundle tree to be checked in.
 
 ## Workflow-packaged guidance and portability
 
-Bundle-based ExecPlan workflows must not depend on a consuming repository's personal or repo-local Pi skill installation. The draft, review, review-incorporation, revision, and implementation prompts embed the required ExecPlan authoring, adversarial review, living-document, and implementation guidance directly in the workflow prompt files under `.scherzo/workflows/prompts/`. Review-lane JSON Schemas live under `.scherzo/workflows/schemas/` with the workflow bundle, not under `docs/`, so consuming repositories can use the workflows without copying a separate schema directory. A clean consuming repository that points `.scherzo/scherzo.yaml` at this workflow bundle can therefore prepare those prompts without committing local ExecPlan skill files.
+Bundle-based ExecPlan workflows must not depend on a consuming repository's personal or repo-local Pi skill installation. The draft, review, review-incorporation, revision, and implementation prompts embed the required ExecPlan authoring, adversarial review, living-document, and implementation guidance directly in the canonical workflow prompt files under `workflows/dogfood/prompts/`, surfaced locally through `.scherzo/workflows/prompts/`. Review-lane JSON Schemas live under `workflows/dogfood/schemas/` and remain reachable at `.scherzo/workflows/schemas/`, so consuming repositories can use the workflows without copying a separate schema directory. A clean consuming repository that points `.scherzo/scherzo.yaml` at this workflow bundle can therefore prepare those prompts without committing local ExecPlan skill files.
 
 Command steps that need Scherzo helpers should resolve the configured repository root before invoking scripts, for example:
 
 ```sh
+bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
+if [ -z "$bundle_dir" ]; then
+  bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
+fi
 repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
-"$repo_root/scripts/scherzo-execplan" validate-review-doc --path docs/plans/example.md
+"$bundle_dir/scripts/scherzo-execplan" validate-review-doc --path docs/plans/example.md
 ```
 
 When updating workflow-packaged guidance or helper invocations, run the workflow portability validation through the packaged CLI and positive runtime environment:
@@ -40,7 +44,7 @@ python3 scripts/scherzo-workflow-portability check --repo-root . --scherzo scher
 
 The check writes `workflow-portability-report.v1.json` under the chosen output directory, stages the checked-in `.scherzo/workflows` bundle into a temporary runtime root, validates it with packaged `scherzo doctor --check workflow-config`, and records every checked-in workflow as either fake-executed or explicit `load-only` coverage with an expansion path. Keep nested workflow execution on packaged `scherzo workflow run`; do not restore `gleam run -- workflow run` to an active workflow path.
 
-The implementation review workflows now use repo-local staged review artifacts from `scripts/scherzo-review` instead of local `/review` pi commands or language-specific local skills. There is no remaining routed-workflow dependency on local language-specific pi review skills; LIV-115 remains the tracking issue for the broader staged code review workflow cutover, so do not add language-specific review skills as required dogfood configuration.
+The implementation review workflows now use repo-local staged review artifacts from `.scherzo/workflows/scripts/scherzo-review` instead of local `/review` pi commands or language-specific local skills. There is no remaining routed-workflow dependency on local language-specific pi review skills; LIV-115 remains the tracking issue for the broader staged code review workflow cutover, so do not add language-specific review skills as required dogfood configuration.
 
 ## Required environment
 
@@ -174,12 +178,12 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check tracker-con
 The checked-in workflows are:
 
 - `workflow:research` — investigates with `openai-codex/gpt-5.5:xhigh`, writes `research-findings.md`, verifies the file, and uses that Markdown as the inline Linear result text.
-- `workflow:implementation` — fetches Linear-backed task context directly, implements without requiring an ExecPlan, detects changed files across the full workflow diff, generates a local schema-versioned review brief under `$SCHERZO_RUN_ROOT/artifacts/review/`, runs repo-local staged review lanes through `scripts/scherzo-review`, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
+- `workflow:implementation` — fetches Linear-backed task context directly, implements without requiring an ExecPlan, detects changed files across the full workflow diff, generates a local schema-versioned review brief under `$SCHERZO_RUN_ROOT/artifacts/review/`, runs repo-local staged review lanes through `.scherzo/workflows/scripts/scherzo-review`, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
 - `workflow:execplan` — drafts a concise human-reviewable ExecPlan Markdown review document under `docs/plans/`, retains the mechanical implementation pack as a structured Scherzo artifact, publishes only the review surface for humans, and creates or reuses a Linear-backed implementation task in `Backlog` that references the retained bundle.
 - `workflow:execplan-revision` — consumes a task containing `Bundle ref:` / `Bundle sha256:` plus actionable feedback, validates the retained ExecPlan bundle, revises the review document and implementation pack only when needed, and emits a superseding retained bundle.
 - `workflow:execplan-implementation` — validates a retained ExecPlan bundle from task context, implements from the prepared review document plus implementation pack, fails closed if they conflict, publishes a PR, and emits a retained `code_change_bundle` artifact.
 - `workflow:merge-conflict-resolution` — manually resolves merge conflicts for one same-repository GitHub PR or branch referenced by a Linear-backed task. The task should include an unambiguous target such as `Resolve conflicts for PR #51`, `scherzo-systems/scherzo#51`, a full GitHub PR URL, or `Branch: feature/name`. The workflow creates a merge commit from the target branch and the configured base branch, lets the agent edit only files that jj reports as conflicted, fails if non-conflicted tracked files change or ambiguity requires a behavior choice, validates through direnv, and fast-forwards the target branch only after validation passes.
-- scheduled `origin-sync` — every 15 minutes, runs `scripts/scherzo-jj-origin-sync` from the repository root. It always fetches `origin`, rebases the local root stack onto `main@origin` only when the working-copy change `@` has no file changes, skips successfully when `@` is dirty, and fails for existing or newly-created jj conflicts so the scheduled failure reporter can surface manual attention.
+- scheduled `origin-sync` — every 15 minutes, runs `.scherzo/workflows/scripts/scherzo-jj-origin-sync` from the repository root. It always fetches `origin`, rebases the local root stack onto `main@origin` only when the working-copy change `@` has no file changes, skips successfully when `@` is dirty, and fails for existing or newly-created jj conflicts so the scheduled failure reporter can surface manual attention.
 - scheduled `workspace-cleanup` — every hour, runs `scherzoctl cleanup --root <workspace-root> --json --yes` from a no-op scratch workspace. It defaults to `.scherzo/workspaces`, honors `SCHERZO_CLEANUP_WORKSPACE_ROOT` and the legacy `SCHERZO_WORKSPACE_CLEANUP_ROOT` override, and resolves `scherzoctl` through `SCHERZO_CTL`, `PATH`, or the repository `scripts/scherzoctl` wrapper so it does not depend on the step workspace current directory.
 
 Use the research workflow for the first supervised run:

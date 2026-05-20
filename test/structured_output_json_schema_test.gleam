@@ -36,6 +36,7 @@ fn context_with_repo(
     repository_root,
     "test/tmp/run-root",
     "test_workflow",
+    ".scherzo/workflows",
     "run-1",
     "review",
     1,
