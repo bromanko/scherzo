@@ -21,6 +21,13 @@ Create exactly one concise human-reviewable ExecPlan review document at the prep
 
 Do not write the canonical bundle yourself. Submit the mechanical implementation detail through the structured output tool `submit_implementation_pack_submission` using the provider schema `.scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json`; Scherzo will validate the captured submission against the canonical implementation-pack schema after tool capture. Use the task metadata above for the schema's `source_issue` compatibility field. Put concrete steps, tests, interfaces, dependencies, and artifact notes in `sections`, not in the review doc.
 
+Completion-preflight requirements before submitting:
+- Make `Validation and Acceptance` verifiable: each required acceptance outcome needs concrete evidence such as commands, tests, observable artifacts/output, or explicit manual evidence to collect.
+- Keep `Milestones` concrete and outcome-oriented; avoid vague milestones such as "finish the work" or "address remaining items as needed".
+- Do not leave unchecked implementation or validation obligations in `Progress`; planned work belongs in `Milestones` and completed living-document updates belong in `Progress`.
+- Ensure every required behavior named by the review doc is represented in the implementation pack's `concrete_steps` and/or `testing_and_falsifiability`.
+- If acceptance requires negative/error-path coverage, idempotency, duplicate-conflict checks, manual/browser/dogfood evidence, docs/helper migration, provider-live/cache behavior, full validation, or linting, include matching pack steps and evidence requirements.
+
 After your submission, Scherzo materializes the ExecPlan bundle and creates or reuses the follow-up implementation task containing `Bundle ref:` and `Bundle sha256:` lines; do not invent those values in the review document.
 
 Final response: summarize the review doc path, using the prepared output target, and confirm the structured implementation-pack submission was made.
