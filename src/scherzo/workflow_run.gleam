@@ -19,6 +19,7 @@ import scherzo/path
 import scherzo/process_ext
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
+import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/structured_output
 import scherzo/structured_output_metadata
@@ -38,6 +39,7 @@ import scherzo/workflow_scheduler
 import scherzo/workflow_structured_retry
 import scherzo/workspace_profile
 import scherzo/workspace_run
+import scherzo/workstream/handoff_emitter
 import simplifile
 
 pub type WorkflowRunSuccess {
@@ -89,6 +91,14 @@ pub type ContractRunValues {
   ContractRunValues(
     inputs: Dict(String, contract_manifest.ManifestValue),
     context: Dict(String, contract_manifest.ManifestValue),
+  )
+}
+
+type ContractOutputsResult {
+  ContractOutputsResult(
+    missing: List(String),
+    manifest: Option(contract_manifest.ContractOutputManifest),
+    recorded: Option(workflow_checkpoint.ArtifactWritten),
   )
 }
 
@@ -1158,10 +1168,22 @@ fn record_outputs_if_contracted(
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
-) -> Result(List(String), String) {
+) -> Result(ContractOutputsResult, String) {
   case dag.contract, contract_outputs_recorded {
-    None, _ -> Ok([])
-    _, Some(_) -> Ok([])
+    None, _ -> Ok(ContractOutputsResult([], None, None))
+    Some(_), Some(recorded) -> {
+      use contents <- result.try(
+        dependencies.checkpoint.read_artifact(recorded.ref)
+        |> result.map_error(workflow_checkpoint.describe_error),
+      )
+      use manifest <- result.try(
+        contract_manifest.decode_output_manifest(contents)
+        |> result.map_error(fn(_) {
+          "workflow_output_manifest_decode_failed:" <> recorded.ref
+        }),
+      )
+      Ok(ContractOutputsResult([], Some(manifest), Some(recorded)))
+    }
     Some(contract), None -> {
       let #(values, diagnostics, missing) =
         resolve_contract_outputs(
@@ -1202,7 +1224,73 @@ fn record_outputs_if_contracted(
         )
         |> result.map_error(workflow_checkpoint.describe_error),
       )
-      Ok(list.reverse(missing))
+      Ok(ContractOutputsResult(
+        missing: list.reverse(missing),
+        manifest: Some(manifest),
+        recorded: Some(written),
+      ))
+    }
+  }
+}
+
+fn emit_workstream_handoff_if_configured(
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  run_id: String,
+  workflow_fingerprint: String,
+  outputs: ContractOutputsResult,
+  dependencies: Dependencies,
+) -> Result(Nil, String) {
+  case dag.workstream_phase {
+    None -> Ok(Nil)
+    Some(metadata) ->
+      case metadata.handoff {
+        None -> Ok(Nil)
+        Some(_) ->
+          case outputs.manifest {
+            None -> Error("workflow_workstream_handoff_missing_output_manifest")
+            Some(manifest) -> {
+              use emitted <- result.try(
+                handoff_emitter.emit(
+                  dag.id,
+                  run_id,
+                  workflow_fingerprint,
+                  issue.id,
+                  issue.identifier,
+                  issue.url,
+                  metadata,
+                  manifest,
+                  dependencies.checkpoint,
+                )
+                |> result.map_error(fn(error) {
+                  handoff_emitter.error_code(error)
+                  <> ":"
+                  <> handoff_emitter.error_message(error)
+                }),
+              )
+              case emitted {
+                handoff_emitter.NoHandoff -> Ok(Nil)
+                handoff_emitter.Emitted(records: records, ..) ->
+                  append_workstream_records(records, dependencies.checkpoint)
+              }
+            }
+          }
+      }
+  }
+}
+
+fn append_workstream_records(
+  records: List(record.LedgerRecord),
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(Nil, String) {
+  case records {
+    [] -> Ok(Nil)
+    [ledger_record, ..rest] -> {
+      use _ <- result.try(
+        checkpoint.append_workstream_record_idempotent(ledger_record)
+        |> result.map_error(workflow_checkpoint.describe_error),
+      )
+      append_workstream_records(rest, checkpoint)
     }
   }
 }
@@ -1815,52 +1903,93 @@ fn loop(
           prepared_workspaces,
         )
       {
-        Ok([]) -> {
-          use Nil <- result_try_checkpoint(
-            dependencies.checkpoint.workflow_finished(
-              workflow_checkpoint.WorkflowFinished(
-                run_id: run_id,
-                workflow_id: dag.id,
-                issue_id: issue.id,
-                task_ref: task_ref(issue),
-                outcome: "completed",
-                token_total: tokens.total,
-                turns: turns,
-              ),
-            ),
-            artifacts,
-            run_root,
-            None,
-          )
-          let cleanup_result =
-            cleanup_if_allowed(
-              run_root,
-              orchestrator,
-              profile,
+        Ok(outputs) if outputs.missing == [] ->
+          case
+            emit_workstream_handoff_if_configured(
+              issue,
+              dag,
+              run_id,
+              workflow_fingerprint,
+              outputs,
               dependencies,
-              cleanup_allowed,
             )
-          case cleanup_result {
+          {
             Ok(Nil) -> {
-              Ok(WorkflowRunSuccess(
-                worker_success: agent_types.WorkerSuccess(
-                  final_issue: Some(final_issue),
-                  final_classification: agent_types.FinalTerminal,
-                  workspace_path: workspace_path,
-                  tokens: tokens,
-                  turns: turns,
-                  result: result,
+              use Nil <- result_try_checkpoint(
+                dependencies.checkpoint.workflow_finished(
+                  workflow_checkpoint.WorkflowFinished(
+                    run_id: run_id,
+                    workflow_id: dag.id,
+                    issue_id: issue.id,
+                    task_ref: task_ref(issue),
+                    outcome: "completed",
+                    token_total: tokens.total,
+                    turns: turns,
+                  ),
                 ),
-                artifacts: artifacts,
-                run_root: workspace_path,
-              ))
+                artifacts,
+                run_root,
+                None,
+              )
+              let cleanup_result =
+                cleanup_if_allowed(
+                  run_root,
+                  orchestrator,
+                  profile,
+                  dependencies,
+                  cleanup_allowed,
+                )
+              case cleanup_result {
+                Ok(Nil) -> {
+                  Ok(WorkflowRunSuccess(
+                    worker_success: agent_types.WorkerSuccess(
+                      final_issue: Some(final_issue),
+                      final_classification: agent_types.FinalTerminal,
+                      workspace_path: workspace_path,
+                      tokens: tokens,
+                      turns: turns,
+                      result: result,
+                    ),
+                    artifacts: artifacts,
+                    run_root: workspace_path,
+                  ))
+                }
+                Error(err) -> {
+                  // Completed is checkpointed before cleanup; if cleanup fails, append
+                  // a failed terminal record so the final ledger matches the failure.
+                  let cleanup_reason =
+                    "cleanup_failed:" <> error.workspace_code(err)
+                  let terminal_result =
+                    dependencies.checkpoint.workflow_finished(
+                      workflow_checkpoint.WorkflowFinished(
+                        run_id: run_id,
+                        workflow_id: dag.id,
+                        issue_id: issue.id,
+                        task_ref: task_ref(issue),
+                        outcome: "failed_fatal",
+                        token_total: tokens.total,
+                        turns: turns,
+                      ),
+                    )
+                  let reason = case terminal_result {
+                    Ok(Nil) -> cleanup_reason
+                    Error(checkpoint_error) ->
+                      cleanup_reason
+                      <> "; checkpoint_failed:"
+                      <> workflow_checkpoint.describe_error(checkpoint_error)
+                  }
+                  Error(WorkflowRunFailure(
+                    reason: reason,
+                    agent_reason: None,
+                    artifacts: artifacts,
+                    run_root: run_root,
+                    failed_step_id: None,
+                  ))
+                }
+              }
             }
-            Error(err) -> {
-              // Completed is checkpointed before cleanup; if cleanup fails, append
-              // a failed terminal record so the final ledger matches the failure.
-              let cleanup_reason =
-                "cleanup_failed:" <> error.workspace_code(err)
-              let terminal_result =
+            Error(reason) -> {
+              use Nil <- result_try_checkpoint(
                 dependencies.checkpoint.workflow_finished(
                   workflow_checkpoint.WorkflowFinished(
                     run_id: run_id,
@@ -1871,16 +2000,23 @@ fn loop(
                     token_total: tokens.total,
                     turns: turns,
                   ),
-                )
-              let reason = case terminal_result {
-                Ok(Nil) -> cleanup_reason
-                Error(checkpoint_error) ->
-                  cleanup_reason
-                  <> "; checkpoint_failed:"
-                  <> workflow_checkpoint.describe_error(checkpoint_error)
-              }
+                ),
+                artifacts,
+                run_root,
+                None,
+              )
+              let cleanup_suffix =
+                cleanup_failure_suffix(cleanup_if_allowed(
+                  run_root,
+                  orchestrator,
+                  profile,
+                  dependencies,
+                  cleanup_allowed,
+                ))
               Error(WorkflowRunFailure(
-                reason: reason,
+                reason: "workflow_workstream_handoff_failed:"
+                  <> reason
+                  <> cleanup_suffix,
                 agent_reason: None,
                 artifacts: artifacts,
                 run_root: run_root,
@@ -1888,8 +2024,11 @@ fn loop(
               ))
             }
           }
-        }
-        Ok([missing, ..]) -> {
+        Ok(outputs) -> {
+          let missing = case outputs.missing {
+            [missing, ..] -> missing
+            [] -> "unknown"
+          }
           use Nil <- result_try_checkpoint(
             dependencies.checkpoint.workflow_finished(
               workflow_checkpoint.WorkflowFinished(

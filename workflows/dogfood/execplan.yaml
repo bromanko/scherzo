@@ -26,6 +26,21 @@ contract:
       source:
         step: materialize_bundle
         path: tmp/execplan-bundle.json
+workstream_phase:
+  phase_id: execplan
+  display_name: ExecPlan authored
+  handoff:
+    output: exec_plan_bundle
+    artifact_type: scherzo.handoff.v1
+    snapshot: required
+  next_actions:
+    - action_id: implement_exec_plan
+      workflow_id: execplan-implementation
+      state: suggested
+      priority: 0
+      inputs: [exec_plan_bundle]
+      requires_gate: human_review
+      auto_enqueue: false
 steps:
   - id: prepare_review_doc_target
     kind: command
