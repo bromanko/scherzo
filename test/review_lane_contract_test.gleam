@@ -1,3 +1,4 @@
+import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
@@ -38,24 +39,41 @@ fn run_shell(command: String) -> step_artifact.StepArtifact {
   )
 }
 
-fn valid_correctness_payload() -> String {
+fn valid_payload_with_summary(summary: String) -> String {
   "{"
   <> "\"draft_findings\":[],"
   <> "\"evidence_requests\":[],"
   <> "\"review_notes\":[],"
-  <> "\"self_check\":{\"summary\":\"Inspected the diff.\"}"
+  <> "\"self_check\":{\"summary\":\""
+  <> summary
+  <> "\"}"
   <> "}"
 }
 
-fn correctness_structured_output_artifact(payload: String) -> String {
+fn valid_correctness_payload() -> String {
+  valid_payload_with_summary("Inspected the diff.")
+}
+
+fn review_lane_structured_output_artifact(
+  step_id: String,
+  artifact_name: String,
+  attempt_index: Int,
+  payload: String,
+) -> String {
   "{"
   <> "\"schema_version\":1,"
   <> "\"artifact_type\":\"structured_output\","
   <> "\"run_id\":\"run-1\","
   <> "\"workflow_id\":\"implementation\","
-  <> "\"step_id\":\"lane_correctness\","
-  <> "\"attempt_index\":1,"
-  <> "\"artifact_name\":\"correctness_submission\","
+  <> "\"step_id\":\""
+  <> step_id
+  <> "\","
+  <> "\"attempt_index\":"
+  <> int.to_string(attempt_index)
+  <> ","
+  <> "\"artifact_name\":\""
+  <> artifact_name
+  <> "\","
   <> "\"format\":\"json\","
   <> "\"source_type\":\"pi_tool_call\","
   <> "\"source_tool_name\":\"submit_review_lane_draft\","
@@ -64,6 +82,15 @@ fn correctness_structured_output_artifact(payload: String) -> String {
   <> "\"payload\":"
   <> payload
   <> "}"
+}
+
+fn correctness_structured_output_artifact(payload: String) -> String {
+  review_lane_structured_output_artifact(
+    "lane_correctness",
+    "correctness_submission",
+    1,
+    payload,
+  )
 }
 
 pub fn review_lane_contract_materializes_structured_output_artifact_test() {
@@ -91,6 +118,275 @@ pub fn review_lane_contract_materializes_structured_output_artifact_test() {
   let assert Ok(draft) = simplifile.read(output_path)
   assert string.contains(draft, "\"artifact_type\": \"review_lane_draft\"")
   assert string.contains(draft, "\"remote_mutations\": \"none\"")
+}
+
+fn native_lane_step_metadata(
+  step_id: String,
+  artifact_name: String,
+  attempt_index: Int,
+  status: String,
+  structured_output_path: String,
+) -> String {
+  let structured_output = case status {
+    "success" ->
+      "{\"status\":\"valid\",\"artifact_name\":\""
+      <> artifact_name
+      <> "\",\"format\":\"json\",\"path\":\""
+      <> structured_output_path
+      <> "\"}"
+    _ -> "null"
+  }
+  "{"
+  <> "\"schema_version\":2,"
+  <> "\"run_id\":\"run-1\","
+  <> "\"workflow_id\":\"implementation\","
+  <> "\"step_id\":\""
+  <> step_id
+  <> "\","
+  <> "\"attempt_index\":"
+  <> int.to_string(attempt_index)
+  <> ","
+  <> "\"artifact\":{"
+  <> "\"step_id\":\""
+  <> step_id
+  <> "\","
+  <> "\"status\":\""
+  <> status
+  <> "\","
+  <> "\"failure_code\":"
+  <> case status {
+    "success" -> "null"
+    _ -> "\"operator_recovery_lane_interrupted\""
+  }
+  <> ","
+  <> "\"structured_output\":"
+  <> structured_output
+  <> "}"
+  <> "}"
+}
+
+pub fn review_lane_contract_resolves_successful_retry_attempt_test() {
+  let dir = "test/tmp/review-lane-contract-retry-attempt"
+  reset_dir(dir)
+  let artifact_dir = dir <> "/artifact-runs/run-1"
+  let stable_structured_dir =
+    artifact_dir <> "/lane_security_performance/attempt-2/structured"
+  let metadata_dir = artifact_dir <> "/lane_security_performance-abc123def456"
+  let lane_dir = dir <> "/lane"
+  let prepare_dir = "test/fixtures/review-lane-contract/prepared-review"
+  let submission_path =
+    stable_structured_dir <> "/security_performance_submission.json"
+  let draft_path = lane_dir <> "/review-lane-draft.v1.json"
+  let assert Ok(Nil) = simplifile.create_directory_all(stable_structured_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(metadata_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(lane_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      submission_path,
+      review_lane_structured_output_artifact(
+        "lane_security_performance",
+        "security_performance_submission",
+        2,
+        valid_correctness_payload(),
+      ),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_dir <> "/attempt-1.json",
+      native_lane_step_metadata(
+        "lane_security_performance",
+        "security_performance_submission",
+        1,
+        "failure",
+        "",
+      ),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_dir <> "/attempt-2.json",
+      native_lane_step_metadata(
+        "lane_security_performance",
+        "security_performance_submission",
+        2,
+        "success",
+        submission_path,
+      ),
+    )
+
+  let materialized =
+    run_contract(
+      "materialize --lane security-performance --artifact-dir "
+      <> artifact_dir
+      <> " --prepare-dir "
+      <> prepare_dir
+      <> " --output "
+      <> draft_path,
+    )
+  assert materialized.status == step_artifact.StepSucceeded
+  assert materialized.exit_code == Some(0)
+  assert string.contains(materialized.stdout, "REVIEW_LANE_MATERIALIZE=ok")
+  assert string.contains(materialized.stdout, "attempt-2")
+
+  let verified =
+    run_shell(
+      ".scherzo/workflows/scripts/scherzo-review verify-evidence --lane security-performance --draft "
+      <> draft_path
+      <> " --brief "
+      <> prepare_dir
+      <> "/review-brief.v1.json --diff-file "
+      <> prepare_dir
+      <> "/diff.patch --changed-files "
+      <> prepare_dir
+      <> "/changed-files.v1.json --validation-status "
+      <> prepare_dir
+      <> "/validation-status.v1.json --context-manifest "
+      <> prepare_dir
+      <> "/context-manifest.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert verified.status == step_artifact.StepSucceeded
+  assert verified.exit_code == Some(0)
+
+  let normalized =
+    run_shell(
+      ".scherzo/workflows/scripts/scherzo-review normalize-lane-result --lane security-performance --draft "
+      <> draft_path
+      <> " --evidence-ledger "
+      <> lane_dir
+      <> "/evidence-ledger.v1.json --agent-artifact-dir "
+      <> artifact_dir
+      <> " --brief "
+      <> prepare_dir
+      <> "/review-brief.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert normalized.status == step_artifact.StepSucceeded
+  assert normalized.exit_code == Some(0)
+  assert string.contains(normalized.stdout, "REVIEW_LANE_STATE=succeeded")
+
+  let lane_result_path = lane_dir <> "/review-lane-security-performance.v1.json"
+  let assert Ok(lane_result) = simplifile.read(lane_result_path)
+  assert string.contains(lane_result, "\"state\": \"succeeded\"")
+  assert !string.contains(lane_result, "review_infrastructure_failure")
+
+  let lane_validation =
+    run_shell(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> lane_result_path,
+    )
+  assert lane_validation.status == step_artifact.StepSucceeded
+  assert lane_validation.exit_code == Some(0)
+}
+
+pub fn review_lane_contract_falls_back_to_latest_retained_submission_without_metadata_test() {
+  let dir = "test/tmp/review-lane-contract-retry-fallback"
+  reset_dir(dir)
+  let artifact_dir = dir <> "/artifact-runs/run-1"
+  let attempt_1_structured_dir =
+    artifact_dir <> "/lane_security_performance/attempt-1/structured"
+  let attempt_2_structured_dir =
+    artifact_dir <> "/lane_security_performance/attempt-2/structured"
+  let lane_dir = dir <> "/lane"
+  let prepare_dir = "test/fixtures/review-lane-contract/prepared-review"
+  let attempt_1_submission_path =
+    attempt_1_structured_dir <> "/security_performance_submission.json"
+  let attempt_2_submission_path =
+    attempt_2_structured_dir <> "/security_performance_submission.json"
+  let draft_path = lane_dir <> "/review-lane-draft.v1.json"
+  let assert Ok(Nil) = simplifile.create_directory_all(attempt_1_structured_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(attempt_2_structured_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(lane_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      attempt_1_submission_path,
+      review_lane_structured_output_artifact(
+        "lane_security_performance",
+        "security_performance_submission",
+        1,
+        valid_payload_with_summary("attempt one summary"),
+      ),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      attempt_2_submission_path,
+      review_lane_structured_output_artifact(
+        "lane_security_performance",
+        "security_performance_submission",
+        2,
+        valid_payload_with_summary("attempt two summary"),
+      ),
+    )
+
+  let materialized =
+    run_contract(
+      "materialize --lane security-performance --artifact-dir "
+      <> artifact_dir
+      <> " --prepare-dir "
+      <> prepare_dir
+      <> " --output "
+      <> draft_path,
+    )
+  assert materialized.status == step_artifact.StepSucceeded
+  assert materialized.exit_code == Some(0)
+  assert string.contains(materialized.stdout, "REVIEW_LANE_MATERIALIZE=ok")
+  assert string.contains(materialized.stdout, "attempt-2")
+
+  let assert Ok(draft) = simplifile.read(draft_path)
+  assert string.contains(draft, "attempt two summary")
+  assert !string.contains(draft, "attempt one summary")
+}
+
+pub fn review_lane_contract_rejects_metadata_path_outside_artifact_dir_test() {
+  let dir = "test/tmp/review-lane-contract-metadata-path-outside"
+  reset_dir(dir)
+  let artifact_dir = dir <> "/artifact-runs/run-1"
+  let metadata_dir = artifact_dir <> "/lane_security_performance-abc123def456"
+  let outside_dir = dir <> "/outside"
+  let lane_dir = dir <> "/lane"
+  let prepare_dir = "test/fixtures/review-lane-contract/prepared-review"
+  let outside_submission_path =
+    outside_dir <> "/security_performance_submission.json"
+  let draft_path = lane_dir <> "/review-lane-draft.v1.json"
+  let assert Ok(Nil) = simplifile.create_directory_all(metadata_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(outside_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(lane_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      outside_submission_path,
+      review_lane_structured_output_artifact(
+        "lane_security_performance",
+        "security_performance_submission",
+        2,
+        valid_payload_with_summary("outside artifact dir summary"),
+      ),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_dir <> "/attempt-2.json",
+      native_lane_step_metadata(
+        "lane_security_performance",
+        "security_performance_submission",
+        2,
+        "success",
+        outside_submission_path,
+      ),
+    )
+
+  let materialized =
+    run_contract(
+      "materialize --lane security-performance --artifact-dir "
+      <> artifact_dir
+      <> " --prepare-dir "
+      <> prepare_dir
+      <> " --output "
+      <> draft_path,
+    )
+  assert materialized.status == step_artifact.StepFailed
+  assert materialized.exit_code == Some(2)
+  assert string.contains(
+    materialized.stderr,
+    "review_lane_submission_artifact_not_found",
+  )
 }
 
 pub fn review_lane_contract_still_rejects_metadata_inside_payload_test() {

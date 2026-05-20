@@ -341,6 +341,248 @@ def load_submission(path: Path, lane_id: str) -> dict[str, Any]:
     return unwrap_structured_output_artifact(value, lane_id)
 
 
+def maybe_load_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        value = load_json(path)
+    except ContractError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def attempt_index_from_name(name: str) -> int | None:
+    match = re.fullmatch(r"attempt-(\d+)(?:\.json)?", name)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def resolve_path_within(path: Path, root: Path) -> Path | None:
+    try:
+        root_resolved = root.resolve(strict=True)
+        path_resolved = path.resolve(strict=True)
+        path_resolved.relative_to(root_resolved)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return path_resolved
+
+
+def resolve_file_within(path: Path, root: Path) -> Path | None:
+    resolved = resolve_path_within(path, root)
+    if resolved is None or not resolved.is_file():
+        return None
+    return resolved
+
+
+def structured_output_candidate_paths(path_text: str, artifact_dir: Path) -> list[Path]:
+    candidate = Path(path_text)
+    if candidate.is_absolute():
+        return [candidate]
+    return [artifact_dir / candidate, candidate]
+
+
+def structured_output_sha_matches(path: Path, structured_output: dict[str, Any]) -> bool:
+    expected_sha = structured_output.get("sha256")
+    if not isinstance(expected_sha, str) or not expected_sha:
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha) is None:
+        return False
+    try:
+        actual_sha = sha256_file(path)
+    except OSError:
+        return False
+    return actual_sha.lower() == expected_sha.lower()
+
+
+def structured_output_ref_matches(path: Path, artifact_dir: Path, structured_output: dict[str, Any]) -> bool:
+    expected_ref = structured_output.get("ref")
+    if not isinstance(expected_ref, str) or not expected_ref:
+        return True
+    try:
+        artifact_dir_resolved = artifact_dir.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    normalized_ref = expected_ref.lstrip("./")
+    candidate_roots = [artifact_dir_resolved, artifact_dir_resolved.parent]
+    if artifact_dir_resolved.parent.name == "runs":
+        candidate_roots.append(artifact_dir_resolved.parent.parent)
+    for root in candidate_roots:
+        try:
+            if path.relative_to(root).as_posix() == normalized_ref:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def expected_structured_submission_path(
+    *,
+    artifact_dir: Path,
+    lane_id: str,
+    attempt_index: int,
+) -> Path:
+    metadata = lane_metadata(lane_id)
+    return (
+        artifact_dir
+        / metadata["step_id"]
+        / f"attempt-{attempt_index}"
+        / "structured"
+        / f"{metadata['artifact_name']}.json"
+    )
+
+
+def native_lane_metadata_paths(artifact_dir: Path, lane_id: str) -> list[tuple[int, Path]]:
+    metadata = lane_metadata(lane_id)
+    step_id = metadata["step_id"]
+    if not artifact_dir.exists() or not artifact_dir.is_dir():
+        return []
+    candidates: list[tuple[int, Path]] = []
+    try:
+        step_dirs = list(artifact_dir.iterdir())
+    except OSError:
+        return []
+    for step_dir in step_dirs:
+        if step_dir.name != step_id and not step_dir.name.startswith(step_id + "-"):
+            continue
+        resolved_step_dir = resolve_path_within(step_dir, artifact_dir)
+        if resolved_step_dir is None or not resolved_step_dir.is_dir():
+            continue
+        try:
+            attempt_files = list(resolved_step_dir.glob("attempt-*.json"))
+        except OSError:
+            continue
+        for attempt_file in attempt_files:
+            attempt_index = attempt_index_from_name(attempt_file.name)
+            resolved_attempt_file = resolve_file_within(attempt_file, artifact_dir)
+            if attempt_index is not None and resolved_attempt_file is not None:
+                candidates.append((attempt_index, resolved_attempt_file))
+    return sorted(candidates, key=lambda item: item[0], reverse=True)
+
+
+def step_artifact_payload(value: dict[str, Any]) -> dict[str, Any]:
+    artifact = value.get("artifact")
+    return artifact if isinstance(artifact, dict) else value
+
+
+def structured_output_path_from_step_metadata(
+    metadata_path: Path,
+    lane_id: str,
+    artifact_dir: Path,
+    attempt_index: int | None,
+) -> Path | None:
+    metadata = maybe_load_json_object(metadata_path)
+    if metadata is None:
+        return None
+    artifact = step_artifact_payload(metadata)
+    if artifact.get("status") != "success" and artifact.get("state") != "succeeded":
+        return None
+    structured_output = artifact.get("structured_output")
+    if not isinstance(structured_output, dict):
+        return None
+    if structured_output.get("status") != "valid":
+        return None
+    expected_artifact_name = lane_metadata(lane_id)["artifact_name"]
+    artifact_name = structured_output.get("artifact_name")
+    if isinstance(artifact_name, str) and artifact_name != expected_artifact_name:
+        return None
+    path_text = structured_output.get("path")
+    if not isinstance(path_text, str) or not path_text:
+        return None
+
+    expected_path = None
+    if attempt_index is not None:
+        expected_path = resolve_file_within(
+            expected_structured_submission_path(
+                artifact_dir=artifact_dir,
+                lane_id=lane_id,
+                attempt_index=attempt_index,
+            ),
+            artifact_dir,
+        )
+        if expected_path is None:
+            return None
+
+    for candidate in structured_output_candidate_paths(path_text, artifact_dir):
+        resolved_candidate = resolve_file_within(candidate, artifact_dir)
+        if resolved_candidate is None:
+            continue
+        if expected_path is not None and resolved_candidate != expected_path:
+            continue
+        if structured_output_ref_matches(
+            resolved_candidate,
+            artifact_dir,
+            structured_output,
+        ) and structured_output_sha_matches(resolved_candidate, structured_output):
+            return resolved_candidate
+    return None
+
+
+def structured_submission_candidates(artifact_dir: Path, lane_id: str) -> list[tuple[int, Path]]:
+    metadata = lane_metadata(lane_id)
+    step_dir = artifact_dir / metadata["step_id"]
+    resolved_step_dir = resolve_path_within(step_dir, artifact_dir)
+    if resolved_step_dir is None or not resolved_step_dir.is_dir():
+        return []
+    candidates: list[tuple[int, Path]] = []
+    try:
+        attempt_dirs = list(resolved_step_dir.iterdir())
+    except OSError:
+        return []
+    for attempt_dir in attempt_dirs:
+        if not attempt_dir.is_dir():
+            continue
+        attempt_index = attempt_index_from_name(attempt_dir.name)
+        if attempt_index is None:
+            continue
+        candidate = attempt_dir / "structured" / f"{metadata['artifact_name']}.json"
+        resolved_candidate = resolve_file_within(candidate, artifact_dir)
+        if resolved_candidate is not None:
+            candidates.append((attempt_index, resolved_candidate))
+    return sorted(candidates, key=lambda item: item[0], reverse=True)
+
+
+def resolve_submission_path(
+    *,
+    lane_id: str,
+    submission_path: Path | None = None,
+    artifact_dir: Path | None = None,
+) -> Path:
+    """Resolve the captured provider submission for a native review lane.
+
+    Workflow retries can leave an interrupted attempt-1 without structured
+    output and a later successful attempt with the retained submission. Prefer
+    the successful step artifact's recorded ``structured_output.path`` when it
+    is available, then fall back to the latest retained structured submission
+    under the stable lane step directory.
+    """
+    if submission_path is not None and submission_path.is_file():
+        return submission_path
+
+    if artifact_dir is not None:
+        for attempt_index, metadata_path in native_lane_metadata_paths(artifact_dir, lane_id):
+            resolved = structured_output_path_from_step_metadata(
+                metadata_path,
+                lane_id,
+                artifact_dir,
+                attempt_index,
+            )
+            if resolved is not None:
+                return resolved
+        candidates = structured_submission_candidates(artifact_dir, lane_id)
+        if candidates:
+            return candidates[0][1]
+
+    if submission_path is not None:
+        return submission_path
+
+    raise ContractError(
+        "review_lane_submission_artifact_not_found",
+        f"could not resolve retained structured-output submission for lane {lane_id} under {artifact_dir}",
+    )
+
+
 def unwrap_structured_output_artifact(value: dict[str, Any], lane_id: str) -> dict[str, Any]:
     """Accept Scherzo's persisted structured-output wrapper and return its payload.
 
@@ -623,6 +865,18 @@ def check_workflow_migration(workflow_path: Path) -> dict[str, Any]:
                 raise ContractError(
                     "review_lane_workflow_missing_materialization",
                     f"{materialize_id} must write review-lane-draft.v1.json",
+                )
+            if "--artifact-dir" not in materialize_block or "attempt-1/structured" in materialize_block:
+                raise ContractError(
+                    "review_lane_workflow_hardcodes_first_attempt",
+                    f"{materialize_id} must resolve the successful lane attempt from the run artifact directory",
+                )
+            normalize_id = "normalize_" + lane_id.replace("-", "_")
+            normalize_block = workflow_step_block(text, normalize_id)
+            if "--agent-artifact-dir" not in normalize_block or "attempt-1.json" in normalize_block:
+                raise ContractError(
+                    "review_lane_workflow_hardcodes_first_attempt",
+                    f"{normalize_id} must resolve the successful lane step artifact from the run artifact directory",
                 )
             lane_dir_text = f"artifacts/review/lanes/{lane_id}"
             if lane_dir_text not in text:
