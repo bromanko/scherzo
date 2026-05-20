@@ -4,6 +4,7 @@ import gleam/string
 import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/step_artifact
+import scherzo/workflow_dag
 import simplifile
 
 fn read_file(path: String) -> String {
@@ -16,6 +17,27 @@ fn assert_contains(contents: String, expected: String) -> Nil {
     True -> Nil
     False -> {
       let message = "expected text not found: " <> expected
+      panic as message
+    }
+  }
+}
+
+fn assert_step_contains(
+  path: String,
+  step_id: String,
+  contents: String,
+  expected: String,
+) -> Nil {
+  case string.contains(contents, expected) {
+    True -> Nil
+    False -> {
+      let message =
+        "expected text not found in "
+        <> path
+        <> " step "
+        <> step_id
+        <> ": "
+        <> expected
       panic as message
     }
   }
@@ -97,6 +119,54 @@ fn active_operator_guidance_paths() -> List(String) {
     ".config/selfci/ci.sh",
     ".pi/skills/scherzo-operator/references/commands.md",
   ]
+}
+
+fn workflow_paths_with_packaged_helper_commands() -> List(String) {
+  [
+    ".scherzo/workflows/execplan.yaml",
+    ".scherzo/workflows/execplan-revision.yaml",
+    ".scherzo/workflows/execplan-implementation.yaml",
+    ".scherzo/workflows/implementation.yaml",
+    ".scherzo/workflows/github-pr-conflict-scout.yaml",
+    ".scherzo/workflows/merge-conflict-resolution.yaml",
+    ".scherzo/workflows/origin-sync.yaml",
+    ".scherzo/workflows/research.yaml",
+    ".scherzo/workflows/workspace-cleanup.yaml",
+  ]
+}
+
+fn assert_bundle_dir_initialized_when_referenced(
+  path: String,
+  step: workflow_dag.WorkflowStep,
+) -> Nil {
+  case step.kind {
+    workflow_dag.CommandStep(run, _) -> {
+      case string.contains(run, "$bundle_dir") {
+        True -> {
+          assert_step_contains(
+            path,
+            step.id,
+            run,
+            "bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}",
+          )
+          assert_step_contains(
+            path,
+            step.id,
+            run,
+            "if [ -z \"$bundle_dir\" ]; then",
+          )
+          assert_step_contains(
+            path,
+            step.id,
+            run,
+            "bundle_dir=\"$(cd \"$SCHERZO_CONFIG_DIR/workflows\" && pwd -P)\"",
+          )
+        }
+        False -> Nil
+      }
+    }
+    _ -> Nil
+  }
 }
 
 fn execplan_prompt_paths() -> List(String) {
@@ -195,6 +265,16 @@ pub fn execplan_workflows_resolve_helpers_from_repo_root_test() {
       )
     },
   )
+}
+
+pub fn workflow_command_bundle_dir_references_are_initialized_test() {
+  list.each(workflow_paths_with_packaged_helper_commands(), fn(path) {
+    let assert Ok(source) = simplifile.read(path)
+    let assert Ok(dag) = workflow_dag.parse(source)
+    list.each(dag.steps, fn(step) {
+      assert_bundle_dir_initialized_when_referenced(path, step)
+    })
+  })
 }
 
 pub fn execplan_html_fallback_commands_use_bundle_helper_test() {

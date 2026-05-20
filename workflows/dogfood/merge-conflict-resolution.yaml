@@ -33,6 +33,10 @@ steps:
     depends_on: [validate_resolution]
     run: |
       set -eu
+      bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
+      if [ -z "$bundle_dir" ]; then
+        bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
+      fi
       repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
       # Repo-local validation for Scherzo dogfood. The helper runs the command
       # with workflow-run-scoped Scherzo variables scrubbed, then records the
