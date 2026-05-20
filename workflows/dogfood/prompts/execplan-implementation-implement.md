@@ -3,13 +3,20 @@ You are running Scherzo's `workflow:execplan-implementation` workflow for task {
 Task URL:
 {{ issue.url }}
 
+ExecPlan identity model:
+
+- The workflow task in this prompt is the implementation handoff issue; it owns this implementation run and should be used for Linear/GitHub linkage.
+- `tmp/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
+- `implementation_handoff.issue_identifier` may differ from `source_issue.identifier`; that split is valid and expected for handoff tasks.
+- Do not report a conflict, fail completion, or request revision solely because the handoff issue, source issue, review doc path, or implementation pack provenance reference different Linear keys. Treat only review-doc/implementation-pack disagreement in intent, scope, acceptance, safety, or source-plan provenance beyond that expected split as blocking.
+
 Use these prepared files as the complete handoff:
 
 - `tmp/execplan-review-doc.md`: human-reviewable intent, scope, risks, milestones, and acceptance.
 - `tmp/execplan-implementation-pack.json`: mechanical implementation steps, verified facts, tests, interfaces, dependencies, and artifact notes.
 - `tmp/execplan-bundle.json`: retained bundle provenance and hashes.
 
-If intent, scope, acceptance, or safety in the review doc conflicts with the implementation pack, write a concise conflict report to `tmp/execplan-conflict.md` and stop without making code changes. Otherwise implement the next required milestone, update any living-document sections in the checked-in review doc when the actual state changes, and run targeted validation when useful.
+If intent, scope, acceptance, safety, or source-plan provenance in the review doc conflicts with the implementation pack beyond the expected handoff/source identity split described above, write a concise conflict report to `tmp/execplan-conflict.md` and stop without making code changes. Otherwise implement the next required milestone, update any living-document sections in the checked-in review doc when the actual state changes, and run targeted validation when useful.
 
 Do not create commits, manage workspaces, or open a PR; the workflow publish step owns that.
 

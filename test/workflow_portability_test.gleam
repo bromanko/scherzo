@@ -423,6 +423,15 @@ pub fn execplan_prompts_describe_bundle_handoff_test() {
     implementation_prompt,
     "tmp/execplan-implementation-pack.json",
   )
+  assert_contains(
+    implementation_prompt,
+    "implementation_handoff.issue_identifier` may differ from `source_issue.identifier",
+  )
+  assert_contains(implementation_prompt, "expected for handoff tasks")
+  assert_contains(
+    implementation_prompt,
+    "source-plan provenance beyond that expected split as blocking",
+  )
   assert_contains(implementation_prompt, "tmp/execplan-conflict.md")
   assert_contains(revision_prompt, "workflow:execplan-revision")
   assert_contains(revision_prompt, "Bundle ref:")

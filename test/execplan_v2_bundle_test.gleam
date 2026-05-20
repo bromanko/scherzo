@@ -1,8 +1,11 @@
+import gleam/bit_array
+import gleam/int
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/hash
+import scherzo/path as scherzo_path
 import scherzo/step_artifact
 import simplifile
 import workflow_context_test_support
@@ -33,6 +36,17 @@ fn run_shell(command: String) -> step_artifact.StepArtifact {
     "execplan_v2_helper",
     workflow_context_test_support.without_workflow_context(command),
     ".",
+    30_000,
+    [],
+    limits(),
+  )
+}
+
+fn run_shell_in(cwd: String, command: String) -> step_artifact.StepArtifact {
+  command_step.run(
+    "execplan_v2_helper",
+    workflow_context_test_support.without_workflow_context(command),
+    cwd,
     30_000,
     [],
     limits(),
@@ -140,6 +154,77 @@ fn write_revision_bundle(
   )
 }
 
+fn text_bytes(contents: String) -> String {
+  int.to_string(bit_array.byte_size(bit_array.from_string(contents)))
+}
+
+fn write_source_handoff_split_bundle(dir: String) -> #(String, String) {
+  let run_id = "run-source-handoff-split"
+  let output_dir =
+    dir <> "/.scherzo-state/artifacts/runs/" <> run_id <> "/outputs"
+  let review_dir = dir <> "/test/fixtures/execplan_v2"
+  let assert Ok(Nil) = simplifile.create_directory_all(output_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(review_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/.scherzo")
+  let assert Ok(workflows_target) = scherzo_path.absolute("workflows/dogfood")
+  let assert Ok(Nil) =
+    scherzo_path.symlink(workflows_target, dir <> "/.scherzo/workflows")
+  let assert Ok(review_doc) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let assert Ok(Nil) =
+    simplifile.write(review_dir <> "/review-doc.valid.md", review_doc)
+
+  let assert Ok(pack_source) =
+    simplifile.read("test/fixtures/execplan_v2/implementation-pack.valid.json")
+  let pack_with_source_key =
+    string.replace(pack_source, each: "LIV-314", with: "LIV-418")
+  let pack_with_run =
+    string.replace(pack_with_source_key, each: "run-1", with: run_id)
+  let pack_text =
+    string.replace(
+      pack_with_run,
+      each: "Fixture v2 ExecPlan bundle",
+      with: "Fixture source LIV-418",
+    )
+  let pack_path = output_dir <> "/implementation_pack.json"
+  let assert Ok(Nil) = simplifile.write(pack_path, pack_text)
+  let pack_sha = hash.sha256_hex(pack_text)
+  let pack_bytes = text_bytes(pack_text)
+
+  let assert Ok(bundle_source) =
+    simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+  let bundle_with_source_key =
+    string.replace(bundle_source, each: "LIV-314", with: "LIV-418")
+  let bundle_with_source_slug =
+    string.replace(bundle_with_source_key, each: "liv-314", with: "liv-418")
+  let bundle_with_handoff_key =
+    string.replace(bundle_with_source_slug, each: "LIV-315", with: "LIV-423")
+  let bundle_with_run =
+    string.replace(bundle_with_handoff_key, each: "run-1", with: run_id)
+  let bundle_with_title =
+    string.replace(
+      bundle_with_run,
+      each: "Fixture v2 ExecPlan bundle",
+      with: "Fixture source LIV-418",
+    )
+  let bundle_with_pack_sha =
+    string.replace(
+      bundle_with_title,
+      each: "dbcb84d078e47839e8da760b1208e6b5606bce45ab3228a24a92e0b5afd21545",
+      with: pack_sha,
+    )
+  let bundle_text =
+    string.replace(
+      bundle_with_pack_sha,
+      each: "\"bytes\": 2155,",
+      with: "\"bytes\": " <> pack_bytes <> ",",
+    )
+  let bundle_path = output_dir <> "/exec_plan_bundle.json"
+  let assert Ok(Nil) = simplifile.write(bundle_path, bundle_text)
+  let bundle_ref = "runs/" <> run_id <> "/outputs/exec_plan_bundle.json"
+  #(bundle_ref, hash.sha256_hex(bundle_text))
+}
+
 pub fn validate_bundle_accepts_valid_fixture_test() {
   let artifact =
     run_helper(
@@ -172,6 +257,96 @@ pub fn implementation_prepare_failure_writes_retention_marker_test() {
     simplifile.read(run_root <> "/.scherzo-keep-workspace")
   assert string.contains(marker, "Source kind: execplan")
   assert string.contains(marker, "Source: LIV-385")
+}
+
+pub fn implementation_prepare_accepts_source_handoff_issue_split_test() {
+  let dir = "test/tmp/execplan-implementation-source-handoff-split"
+  reset_dir(dir)
+  let #(bundle_ref, bundle_sha) = write_source_handoff_split_bundle(dir)
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD"
+        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-423"
+        <> " SCHERZO_ISSUE_TITLE="
+        <> shell_quote("Implement: Fixture source LIV-418")
+        <> " SCHERZO_ISSUE_URL="
+        <> shell_quote(
+        "https://linear.app/living-systems/issue/LIV-423/implement-fixture",
+      )
+        <> " SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote(issue_context)
+        <> " "
+        <> helper
+        <> " implementation-prepare --from-issue-context && "
+        <> helper
+        <> " gate-no-conflict",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_ISSUE_IDENTIFIER=LIV-423",
+  )
+  assert string.contains(artifact.stdout, "SOURCE_ISSUE_IDENTIFIER=LIV-418")
+  assert string.contains(
+    artifact.stdout,
+    "HANDOFF_SOURCE_IDENTITY_SPLIT=expected",
+  )
+  assert string.contains(artifact.stdout, "EXECPLAN_V2_CONFLICT=none")
+  let assert Ok(metadata) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation.json")
+  assert string.contains(metadata, "\"issue_identifier\": \"LIV-423\"")
+  assert string.contains(
+    metadata,
+    "\"implementation_issue_identifier\": \"LIV-423\"",
+  )
+  assert string.contains(metadata, "\"source_issue_identifier\": \"LIV-418\"")
+  assert string.contains(
+    metadata,
+    "\"source_issue_url\": \"https://linear.app/living-systems/issue/LIV-418/fixture-v2-execplan-bundle\"",
+  )
+  let assert Ok(False) = simplifile.is_file(dir <> "/tmp/execplan-conflict.md")
+}
+
+pub fn implementation_prepare_rejects_current_handoff_issue_mismatch_test() {
+  let dir = "test/tmp/execplan-implementation-current-handoff-mismatch"
+  reset_dir(dir)
+  let #(bundle_ref, bundle_sha) = write_source_handoff_split_bundle(dir)
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD"
+        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-999"
+        <> " SCHERZO_ISSUE_TITLE="
+        <> shell_quote("Unexpected implementation handoff")
+        <> " SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote(issue_context)
+        <> " "
+        <> helper
+        <> " implementation-prepare --from-issue-context",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert artifact.failure_code
+    == Some("execplan_implementation_handoff_mismatch")
+  assert string.contains(artifact.stderr, "SCHERZO_ISSUE_IDENTIFIER=LIV-999")
+  assert string.contains(
+    artifact.stderr,
+    "implementation_handoff.issue_identifier=LIV-423",
+  )
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/tmp/scherzo-implementation.json")
 }
 
 pub fn validate_bundle_rejects_stale_pack_fixture_test() {

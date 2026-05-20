@@ -1017,6 +1017,8 @@ pub fn plan_completion_recovery_exhausts_after_late_repair_test() {
   )
   let assert Ok(marker) = simplifile.read(dir <> "/.scherzo-keep-workspace")
   assert string.contains(marker, "Source kind: execplan")
+  assert string.contains(marker, "Source: LIV-128")
+  assert !string.contains(marker, "LIV-127")
   let assert Ok(recovery_json) =
     simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.json")
   assert string.contains(recovery_json, "\"status\": \"exhausted\"")
@@ -1036,7 +1038,13 @@ pub fn plan_completion_recovery_exhausts_after_late_repair_test() {
     recovery_md,
     "Retention marker: `.scherzo-keep-workspace`",
   )
+  assert string.contains(
+    recovery_json,
+    "\"retry_command\": \"scherzoctl retry LIV-128\"",
+  )
+  assert !string.contains(recovery_json, "LIV-127")
   assert string.contains(recovery_md, "scherzoctl retry LIV-128")
+  assert !string.contains(recovery_md, "scherzoctl retry LIV-127")
 }
 
 pub fn plan_completion_recovery_exhausts_at_final_gate_test() {
@@ -1329,6 +1337,12 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
         <> "  \"issue_identifier\": \"LIV-65\",\n"
         <> "  \"issue_title\": \"Implement plan: workflow recovery operator UX and retention\",\n"
         <> "  \"issue_url\": \"https://linear.example/LIV-65\",\n"
+        <> "  \"implementation_issue_identifier\": \"LIV-65\",\n"
+        <> "  \"implementation_issue_title\": \"Implement plan: workflow recovery operator UX and retention\",\n"
+        <> "  \"implementation_issue_url\": \"https://linear.example/LIV-65\",\n"
+        <> "  \"source_issue_identifier\": \"LIV-58\",\n"
+        <> "  \"source_issue_title\": \"ExecPlan: workflow recovery operator UX and retention\",\n"
+        <> "  \"source_issue_url\": \"https://linear.example/LIV-58\",\n"
         <> "  \"plan_path\": \"docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md\",\n"
         <> "  \"base_change_id\": \"local-start\"\n"
         <> "}\n",
@@ -1378,8 +1392,13 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   )
   assert string.contains(
     body,
+    "Source ExecPlan issue: [LIV-58: ExecPlan: workflow recovery operator UX and retention](https://linear.example/LIV-58)",
+  )
+  assert string.contains(
+    body,
     "Source ExecPlan review doc: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
   )
+  assert !string.contains(body, "Task: [LIV-58")
   assert string.contains(body, "SelfCI validation completed before publication")
   assert string.contains(
     body,
@@ -1388,6 +1407,14 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   let assert Ok(publish_json) =
     simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
   assert string.contains(publish_json, "\"issue_identifier\": \"LIV-65\"")
+  assert string.contains(
+    publish_json,
+    "\"implementation_issue_identifier\": \"LIV-65\"",
+  )
+  assert string.contains(
+    publish_json,
+    "\"source_issue_identifier\": \"LIV-58\"",
+  )
 }
 
 pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
@@ -1894,6 +1921,11 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     let assert Ok(prompt) = simplifile.read(path)
     assert !string.contains(prompt, "{{ issue.description }}")
     assert string.contains(prompt, "{{ issue.url }}")
+    assert string.contains(
+      prompt,
+      "implementation_handoff.issue_identifier` may differ from `source_issue.identifier",
+    )
+    assert string.contains(prompt, "expected for handoff tasks")
   })
 
   list.each(
@@ -2174,6 +2206,12 @@ fn setup_plan_completion_gate_fixture(dir: String) -> String {
         <> "  \"issue_identifier\": \"LIV-128\",\n"
         <> "  \"issue_title\": \"Implement example plan\",\n"
         <> "  \"issue_url\": \"https://linear.example/LIV-128\",\n"
+        <> "  \"implementation_issue_identifier\": \"LIV-128\",\n"
+        <> "  \"implementation_issue_title\": \"Implement example plan\",\n"
+        <> "  \"implementation_issue_url\": \"https://linear.example/LIV-128\",\n"
+        <> "  \"source_issue_identifier\": \"LIV-127\",\n"
+        <> "  \"source_issue_title\": \"Example ExecPlan source\",\n"
+        <> "  \"source_issue_url\": \"https://linear.example/LIV-127\",\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
         <> "  \"base_change_id\": \"local-start\"\n"
         <> "}\n",
