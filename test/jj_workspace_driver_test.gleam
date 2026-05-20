@@ -1,7 +1,7 @@
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/command_step
 import scherzo/config/types as config_types
@@ -321,6 +321,33 @@ fn log_lines(log: String) -> List(String) {
     "" -> []
     trimmed -> string.split(trimmed, on: "\n")
   }
+}
+
+fn run_publish_change_with_pr_draft(
+  dir: String,
+  draft: Option(String),
+) -> #(step_artifact.StepArtifact, String) {
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+  let base_env = [
+    #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+    #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+    #("SCHERZO_PR_REPO", "example/repo"),
+  ]
+  let env = case draft {
+    Some(value) -> list.append(base_env, [#("SCHERZO_PR_DRAFT", value)])
+    None -> base_env
+  }
+  let artifact =
+    run_jj(
+      "jj_driver_publish_pr_draft",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, env),
+    )
+  #(artifact, log_text(log))
 }
 
 fn changed_path_decoder() -> decode.Decoder(String) {
@@ -823,6 +850,54 @@ pub fn jj_driver_publish_accepts_workflow_kind_tokens_test() {
   assert_exit(artifact, 0)
   assert string.contains(artifact.stdout, "\"status\":\"published\"")
   assert string.contains(log_text(log), "git push --remote origin")
+}
+
+pub fn jj_driver_pr_draft_env_controls_create_flag_test() {
+  let #(draft_artifact, draft_log) =
+    run_publish_change_with_pr_draft(
+      "test/tmp/jj-workspace-driver-pr-draft-true",
+      Some("true"),
+    )
+  assert_exit(draft_artifact, 0)
+  assert string.contains(draft_log, "gh: pr create")
+  assert string.contains(draft_log, "--draft")
+
+  let #(ready_artifact, ready_log) =
+    run_publish_change_with_pr_draft(
+      "test/tmp/jj-workspace-driver-pr-draft-false",
+      Some("false"),
+    )
+  assert_exit(ready_artifact, 0)
+  assert string.contains(ready_log, "gh: pr create")
+  assert !string.contains(ready_log, "--draft")
+
+  let #(unset_artifact, unset_log) =
+    run_publish_change_with_pr_draft(
+      "test/tmp/jj-workspace-driver-pr-draft-unset",
+      None,
+    )
+  assert_exit(unset_artifact, 0)
+  assert string.contains(unset_log, "gh: pr create")
+  assert !string.contains(unset_log, "--draft")
+}
+
+pub fn jj_driver_invalid_pr_draft_env_fails_before_publication_test() {
+  let #(artifact, logged) =
+    run_publish_change_with_pr_draft(
+      "test/tmp/jj-workspace-driver-pr-draft-invalid",
+      Some("maybe"),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"invalid_configuration\"",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "SCHERZO_PR_DRAFT must be true or false",
+  )
+  assert logged == ""
 }
 
 pub fn jj_driver_publish_rejects_invalid_kind_tokens_test() {

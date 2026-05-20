@@ -132,6 +132,7 @@ pub fn packaged_jj_example_uses_installed_command_test() {
   assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_REMOTE")
   assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
   assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE")
+  assert_contains(path, example, "SCHERZO_PR_DRAFT")
   assert_contains(
     path,
     example,
@@ -205,6 +206,7 @@ pub fn packaged_jj_docs_cover_base_fetch_and_publication_policy_test() {
   assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE")
   assert_contains(readme_path, docs, "SCHERZO_PR_REMOTE")
   assert_contains(readme_path, docs, "SCHERZO_PR_BASE")
+  assert_contains(readme_path, docs, "SCHERZO_PR_DRAFT")
   assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_BASE=@")
   assert_contains(readme_path, docs, "trunk")
   assert_contains(readme_path, docs, "upstream")

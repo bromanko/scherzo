@@ -64,6 +64,9 @@ export SCHERZO_PR_REMOTE=origin
 export SCHERZO_PR_BASE=main
 # Optional. Defaults to the owner/repo inferred from SCHERZO_PR_REMOTE.
 export SCHERZO_PR_REPO=scherzo-systems/scherzo
+# Optional. Defaults to the current non-draft PR behavior when unset.
+# Set true to create draft PRs; set false to force ready-for-review PRs.
+export SCHERZO_PR_DRAFT=false
 # Optional. Defaults to the repository root inferred from .scherzo/scherzo.yaml.
 export SCHERZO_REPO_ROOT=$(pwd)
 # Optional. Defaults for the scheduled origin-sync job.

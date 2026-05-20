@@ -1120,7 +1120,7 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_WORKFLOW_BUNDLE_DIR=/outer/bundle SCHERZO_WORKSPACE_DRIVER=/outer/driver SCHERZO_WORKSPACE_PROFILE=dogfood-jj SCHERZO_WORKSPACE_CAPABILITIES=status,diff SCHERZO_WORKSPACE_ROOT=/outer/workspaces SCHERZO_REPO_ROOT=/outer/repo SCHERZO_JJ_WORKSPACE_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_FETCH_BASE=true SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main SCHERZO_PR_REPO=example/repo SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_FAIL_IF_WORKFLOW_BUNDLE_DIR_LEAKS=1 SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS=1 SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS=1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
+      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_WORKFLOW_BUNDLE_DIR=/outer/bundle SCHERZO_WORKSPACE_DRIVER=/outer/driver SCHERZO_WORKSPACE_PROFILE=dogfood-jj SCHERZO_WORKSPACE_CAPABILITIES=status,diff SCHERZO_WORKSPACE_ROOT=/outer/workspaces SCHERZO_REPO_ROOT=/outer/repo SCHERZO_JJ_WORKSPACE_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_FETCH_BASE=true SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main SCHERZO_PR_REPO=example/repo SCHERZO_PR_DRAFT=true SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_FAIL_IF_WORKFLOW_BUNDLE_DIR_LEAKS=1 SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS=1 SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS=1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1790,6 +1790,31 @@ pub fn publish_time_revalidation_failure_does_not_publish_test() {
   assert string.contains(json, "\"status\": \"rebased_clean\"")
 }
 
+fn pr_draft_env_prefix(value: String) -> String {
+  case value {
+    "" -> ""
+    draft -> "SCHERZO_PR_DRAFT=" <> draft <> " "
+  }
+}
+
+fn run_driver_backed_publish_with_pr_draft(
+  dir: String,
+  draft: String,
+) -> step_artifact.StepArtifact {
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+
+  run_helper_in(
+    dir,
+    pr_draft_env_prefix(draft)
+      <> "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main SCHERZO_PR_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+  )
+}
+
 pub fn publish_time_revalidation_success_may_publish_test() {
   let dir = "test/tmp/implementation-helper-publish-revalidation-success"
   reset_dir(dir)
@@ -1816,7 +1841,102 @@ pub fn publish_time_revalidation_success_may_publish_test() {
   assert string.contains(jj_log, "git push --remote origin")
   let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
   assert string.contains(gh_log, "pr create")
+  assert !string.contains(gh_log, "--draft")
   let assert Error(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+}
+
+pub fn legacy_publish_pr_draft_true_adds_draft_flag_test() {
+  let dir = "test/tmp/implementation-helper-publish-draft-true"
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_PR_DRAFT=true SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
+  assert string.contains(gh_log, "pr create")
+  assert string.contains(gh_log, "--draft")
+}
+
+pub fn legacy_publish_invalid_pr_draft_fails_before_publication_test() {
+  let dir = "test/tmp/implementation-helper-publish-draft-invalid"
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_PR_DRAFT=maybe SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("invalid_configuration")
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_PR_DRAFT must be true or false",
+  )
+  assert read_or_empty(dir <> "/jj.log") == ""
+  assert read_or_empty(dir <> "/gh.log") == ""
+}
+
+pub fn driver_backed_publish_pr_draft_true_adds_draft_flag_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-draft-true"
+  let artifact = run_driver_backed_publish_with_pr_draft(dir, "true")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
+  assert string.contains(gh_log, "pr create")
+  assert string.contains(gh_log, "--draft")
+}
+
+pub fn driver_backed_publish_pr_draft_false_omits_draft_flag_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-draft-false"
+  let artifact = run_driver_backed_publish_with_pr_draft(dir, "false")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
+  assert string.contains(gh_log, "pr create")
+  assert !string.contains(gh_log, "--draft")
+}
+
+pub fn driver_backed_publish_pr_draft_unset_keeps_default_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-draft-unset"
+  let artifact = run_driver_backed_publish_with_pr_draft(dir, "")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
+  assert string.contains(gh_log, "pr create")
+  assert !string.contains(gh_log, "--draft")
+}
+
+pub fn driver_backed_publish_invalid_pr_draft_fails_before_publication_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-draft-invalid"
+  let artifact = run_driver_backed_publish_with_pr_draft(dir, "maybe")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("invalid_configuration")
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_PR_DRAFT must be true or false",
+  )
+  assert read_or_empty(dir <> "/jj.log") == ""
+  assert read_or_empty(dir <> "/gh.log") == ""
 }
 
 pub fn publish_includes_base_drift_repair_summary_test() {
@@ -2491,7 +2611,7 @@ fn write_fake_direnv(path: String) -> Nil {
         <> "if [ \"${SCHERZO_FAIL_IF_RUN_ROOT_LEAKS:-}\" = 1 ] && [ -n \"${SCHERZO_RUN_ROOT:-}\" ]; then echo 'SCHERZO_RUN_ROOT leaked into validation' >&2; exit 1; fi\n"
         <> "if [ \"${SCHERZO_FAIL_IF_WORKFLOW_BUNDLE_DIR_LEAKS:-}\" = 1 ] && [ -n \"${SCHERZO_WORKFLOW_BUNDLE_DIR:-}\" ]; then echo 'SCHERZO_WORKFLOW_BUNDLE_DIR leaked into validation' >&2; exit 1; fi\n"
         <> "if [ \"${SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS:-}\" = 1 ] && { [ -n \"${SCHERZO_WORKSPACE_DRIVER:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_PROFILE:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_CAPABILITIES:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_ROOT:-}\" ]; }; then echo 'SCHERZO_WORKSPACE driver context leaked into validation' >&2; exit 1; fi\n"
-        <> "if [ \"${SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS:-}\" = 1 ] && env | grep -E '^(SCHERZO_JJ_WORKSPACE_BASE|SCHERZO_JJ_WORKSPACE_BASE_BRANCH|SCHERZO_JJ_WORKSPACE_FETCH_BASE|SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE|SCHERZO_JJ_WORKSPACE_REMOTE|SCHERZO_PR_BASE|SCHERZO_PR_REMOTE|SCHERZO_PR_REPO|SCHERZO_REPO_ROOT)=' >/dev/null; then echo 'SCHERZO publication environment leaked into validation' >&2; exit 1; fi\n"
+        <> "if [ \"${SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS:-}\" = 1 ] && env | grep -E '^(SCHERZO_JJ_WORKSPACE_BASE|SCHERZO_JJ_WORKSPACE_BASE_BRANCH|SCHERZO_JJ_WORKSPACE_FETCH_BASE|SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE|SCHERZO_JJ_WORKSPACE_REMOTE|SCHERZO_PR_BASE|SCHERZO_PR_DRAFT|SCHERZO_PR_REMOTE|SCHERZO_PR_REPO|SCHERZO_REPO_ROOT)=' >/dev/null; then echo 'SCHERZO publication environment leaked into validation' >&2; exit 1; fi\n"
         <> "case \"$*\" in\n"
         <> "  'exec . selfci check '*) if [ \"${SCHERZO_FAKE_DIRENV_SELFCI_FAIL:-}\" = 1 ] || [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ]; then echo 'simulated SelfCI validation failure' >&2; exit 1; fi;;\n"
         <> "  'exec . gleam test') if [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ]; then echo 'simulated validation failure' >&2; exit 1; fi;;\n"
