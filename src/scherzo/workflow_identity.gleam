@@ -3,7 +3,9 @@ import gleam/list
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import scherzo/config/types as config_types
 import scherzo/hash
+import scherzo/workflow_bundle
 
 pub fn safe_component(value: String, fallback: String) -> String {
   let component =
@@ -95,4 +97,18 @@ fn is_allowed(grapheme: String) -> Bool {
 
 fn is_between(value: String, low: String, high: String) -> Bool {
   string.compare(value, low) != Lt && string.compare(value, high) != Gt
+}
+
+pub fn workflow_bundle_dir(
+  orchestrator: config_types.OrchestratorConfig,
+  workflow_id: String,
+) -> String {
+  workflow_bundle.dir(orchestrator, workflow_id)
+}
+
+pub fn bundle_dir_for_path(
+  config_dir: String,
+  workflow_path: String,
+) -> String {
+  workflow_bundle.bundle_dir_for_path(config_dir, workflow_path)
 }

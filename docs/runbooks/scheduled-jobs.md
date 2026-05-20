@@ -44,7 +44,7 @@ To adopt it in another Scherzo-managed GitHub repository:
 2. Route both workflows in `scherzo.yaml`, include `merge-conflict-resolution` in the trusted workflow labels, and schedule only `github-pr-conflict-scout`.
 3. Configure `SCHERZO_GITHUB_REPO=owner/repo` and either `SCHERZO_LINEAR_PROJECT_SLUG` or `LINEAR_PROJECT_SLUG`. Optionally set `SCHERZO_CONFLICT_CREATE_STATE`, `SCHERZO_CONFLICT_WORKFLOW_LABEL`, `SCHERZO_CONFLICT_MAX_OPEN_PRS`, and `SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT`.
 4. Use a workspace profile whose driver can publish changes (`publish-change`) back to the same repository branch. The resolver assumes it may fast-forward the PR head branch in the configured repository; fork PRs are rejected.
-5. Replace the example command passed to `scripts/scherzo-merge-conflict run-project-validation -- ...` in `merge-conflict-resolution.yaml` with repo-local validation commands. Keep it after `scripts/scherzo-merge-conflict validate`: the helper performs generic guard checks, while the workflow YAML owns project-specific checks such as `npm test`, `cargo test`, or repository scripts. The `run-project-validation` wrapper scrubs `SCHERZO_*` workflow context before running those commands and records success so the publish step and PR comment know repo-local validation passed.
+5. Replace the example command passed to `.scherzo/workflows/scripts/scherzo-merge-conflict run-project-validation -- ...` in `merge-conflict-resolution.yaml` with repo-local validation commands. Keep it after `.scherzo/workflows/scripts/scherzo-merge-conflict validate`: the helper performs generic guard checks, while the workflow YAML owns project-specific checks such as `npm test`, `cargo test`, or repository scripts. The `run-project-validation` wrapper scrubs `SCHERZO_*` workflow context before running those commands and records success so the publish step and PR comment know repo-local validation passed.
 6. Start with the scheduled job disabled until GitHub credentials, Linear credentials/project, workflow labels, and validation commands have been verified.
 
 The resolver's generic helper validates conflict-specific invariants only: unresolved conflict markers, allowed non-conflicted file drift, mechanical-edit manifests, and the required resolution summary. Project validation is deliberately outside the helper so each repository can define its own command step.
@@ -53,7 +53,7 @@ When `on_failure.linear.enabled: true`, the scheduler also applies reserved Line
 
 ## Workflow and command shape
 
-The scheduled workflow is a normal workflow DAG. Scheduled prompts and command templates may use scheduled context variables and must not reference `issue.*` because no tracker task exists for successful scheduled intervals. The conflict scout is command-only and invokes the checked-in `scripts/scherzo-github-pr-conflict-scout` helper.
+The scheduled workflow is a normal workflow DAG. Scheduled prompts and command templates may use scheduled context variables and must not reference `issue.*` because no tracker task exists for successful scheduled intervals. The conflict scout is command-only and invokes the checked-in bundle-local `.scherzo/workflows/scripts/scherzo-github-pr-conflict-scout` helper.
 
 ```yaml
 version: 1
@@ -66,6 +66,10 @@ steps:
     kind: command
     run: |
       set -eu
+      bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
+      if [ -z "$bundle_dir" ]; then
+        bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
+      fi
       repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
       : "${SCHERZO_GITHUB_REPO:?set SCHERZO_GITHUB_REPO to owner/repo}"
       linear_project_slug=${SCHERZO_LINEAR_PROJECT_SLUG:-${LINEAR_PROJECT_SLUG:-}}
@@ -75,7 +79,7 @@ steps:
       fi
       cd "$repo_root"
       max_open_prs=${SCHERZO_CONFLICT_MAX_OPEN_PRS:-100}
-      set -- "$repo_root/scripts/scherzo-github-pr-conflict-scout" scan \
+      set -- "$bundle_dir/scripts/scherzo-github-pr-conflict-scout" scan \
         --repo "$SCHERZO_GITHUB_REPO" \
         --linear-project-slug "$linear_project_slug" \
         --create-state "${SCHERZO_CONFLICT_CREATE_STATE:-Todo}" \

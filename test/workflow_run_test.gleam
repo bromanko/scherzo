@@ -567,6 +567,7 @@ fn prepare_fake_step(
     workflow_id: workflow_id,
     run_id: run_id,
     run_root: "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+    workflow_bundle_dir: ".scherzo/workflows",
     attempt_index: attempt_index,
     workspace_name: workspace_ref.name,
     path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
@@ -598,6 +599,7 @@ pub fn default_command_step_receives_profile_driver_env_test() {
       workflow_id: "workflow",
       run_id: "run",
       run_root: root <> "/run",
+      workflow_bundle_dir: ".scherzo/workflows",
       step_id: "step",
       attempt_index: 0,
       workspace_name: "main",
@@ -1413,6 +1415,7 @@ fn agent_driver_env_step_context(
     workflow_id: "workflow",
     run_id: "run-1",
     run_root: root <> "/run",
+    workflow_bundle_dir: ".scherzo/workflows",
     step_id: "implement",
     attempt_index: 0,
     workspace_name: "main",

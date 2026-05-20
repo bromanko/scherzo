@@ -167,6 +167,7 @@ fn successful_deps(
         workflow_id: workflow_id,
         run_id: run_id,
         run_root: run_root,
+        workflow_bundle_dir: "",
         attempt_index: 1,
         workspace_name: workspace_ref.name,
         path: workspace_path,

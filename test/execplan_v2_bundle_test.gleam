@@ -19,7 +19,7 @@ fn run_helper(command: String) -> step_artifact.StepArtifact {
   command_step.run(
     "execplan_v2_helper",
     workflow_context_test_support.without_workflow_context(
-      "scripts/scherzo-execplan " <> command,
+      ".scherzo/workflows/scripts/scherzo-execplan " <> command,
     ),
     ".",
     30_000,
@@ -87,7 +87,7 @@ fn pack_submission(title: String) -> String {
   <> "      \"verified_facts\": [{\"fact\": \"Fact\", \"evidence\": \"Evidence\"}],\n"
   <> "      \"concrete_steps\": [{\"title\": \"Step\", \"instructions\": \"Do it.\", \"files\": [\"docs/plans/example.md\"], \"commands\": [\"gleam test\"], \"expected_result\": \"Passes.\"}],\n"
   <> "      \"testing_and_falsifiability\": \"Run the helper tests.\",\n"
-  <> "      \"interfaces_and_dependencies\": \"Use scripts/scherzo-execplan.\",\n"
+  <> "      \"interfaces_and_dependencies\": \"Use .scherzo/workflows/scripts/scherzo-execplan.\",\n"
   <> "      \"artifacts_and_notes\": \"No extra artifacts.\"\n"
   <> "    },\n"
   <> "    \"conflict_policy\": \"Stop on review doc and pack conflicts.\"\n"
@@ -163,7 +163,7 @@ pub fn implementation_prepare_failure_writes_retention_marker_test() {
       <> shell_quote(run_root)
       <> " SCHERZO_ISSUE_IDENTIFIER=LIV-385 SCHERZO_ISSUE_CONTEXT="
       <> shell_quote("no bundle here")
-      <> " scripts/scherzo-execplan implementation-prepare --from-issue-context",
+      <> " .scherzo/workflows/scripts/scherzo-execplan implementation-prepare --from-issue-context",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -251,7 +251,7 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
       <> shell_quote(driver)
       <> " SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_ISSUE_CONTEXT="
       <> shell_quote(issue_context)
-      <> " scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
       <> shell_quote(dir <> "/previous-bundle.json")
       <> " --write-review-doc-path "
       <> shell_quote(dir <> "/review.path")
@@ -303,7 +303,7 @@ pub fn prepare_revision_reports_revision_base_missing_when_branch_unresolved_tes
       <> shell_quote(driver)
       <> " SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_ISSUE_CONTEXT="
       <> shell_quote(issue_context)
-      <> " scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
       <> shell_quote(dir <> "/previous-bundle.json")
       <> " --write-review-doc-path "
       <> shell_quote(dir <> "/review.path")
@@ -347,7 +347,7 @@ pub fn prepare_revision_refresh_base_timeout_test() {
       <> shell_quote(driver)
       <> " SCHERZO_EXECPLAN_REVISION_REFRESH_TIMEOUT_SECONDS=0.1 SCHERZO_ISSUE_CONTEXT="
       <> shell_quote(issue_context)
-      <> " scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
       <> shell_quote(dir <> "/previous-bundle.json")
       <> " --write-review-doc-path "
       <> shell_quote(dir <> "/review.path")
@@ -399,7 +399,7 @@ pub fn prepare_revision_rejects_unsafe_review_surface_targets_before_refresh_tes
       <> shell_quote(driver)
       <> " SCHERZO_ISSUE_CONTEXT="
       <> shell_quote(issue_context)
-      <> " scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
       <> shell_quote(dir <> "/previous-bundle.json")
       <> " --write-review-doc-path "
       <> shell_quote(dir <> "/review.path")
@@ -532,7 +532,7 @@ pub fn discover_changed_review_doc_rejects_zero_candidates_test() {
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-noop SCHERZO_WORKSPACE_PATH="
       <> shell_quote(dir)
-      <> " scripts/scherzo-execplan validate-review-doc --discover-changed-review-doc --write-path "
+      <> " .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --discover-changed-review-doc --write-path "
       <> shell_quote(dir <> "/review.path"),
     )
 
@@ -551,7 +551,7 @@ pub fn discover_changed_review_doc_rejects_multiple_candidates_test() {
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-noop SCHERZO_WORKSPACE_PATH="
       <> shell_quote(dir)
-      <> " scripts/scherzo-execplan validate-review-doc --discover-changed-review-doc --write-path "
+      <> " .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --discover-changed-review-doc --write-path "
       <> shell_quote(dir <> "/review.path"),
     )
 
@@ -587,7 +587,7 @@ pub fn materialize_pack_discovers_latest_structured_submission_test() {
     run_shell(
       "env SCHERZO_RUN_ID=run-structured SCHERZO_RUN_ARTIFACT_DIR="
       <> shell_quote(run_dir)
-      <> " scripts/scherzo-execplan materialize-pack --review-doc test/fixtures/execplan_v2/review-doc.valid.md --submission-step incorporate_review --submission-artifact implementation_pack_submission --output "
+      <> " .scherzo/workflows/scripts/scherzo-execplan materialize-pack --review-doc test/fixtures/execplan_v2/review-doc.valid.md --submission-step incorporate_review --submission-artifact implementation_pack_submission --output "
       <> shell_quote(output),
     )
 
@@ -612,7 +612,7 @@ pub fn publish_review_doc_writes_offline_context_test() {
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z SCHERZO_ISSUE_IDENTIFIER=LIV-900 SCHERZO_ISSUE_TITLE="
       <> shell_quote("Offline publish fixture")
-      <> " SCHERZO_ISSUE_URL=https://linear.app/living-systems/issue/LIV-900/offline-publish-fixture scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      <> " SCHERZO_ISSUE_URL=https://linear.app/living-systems/issue/LIV-900/offline-publish-fixture .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path),
@@ -670,7 +670,7 @@ pub fn publish_review_doc_revision_targets_existing_pr_test() {
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER="
       <> shell_quote(driver)
-      <> " SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      <> " SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path)
@@ -712,7 +712,7 @@ pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
 
   let artifact =
     run_shell(
-      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z SCHERZO_ISSUE_IDENTIFIER=LIV-314 scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z SCHERZO_ISSUE_IDENTIFIER=LIV-314 .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path)
@@ -733,7 +733,7 @@ pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
 
   let bundle_artifact =
     run_shell(
-      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-publish-pack-source scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-publish-pack-source .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -764,7 +764,7 @@ pub fn publish_review_doc_rejects_pack_review_doc_hash_mismatch_test() {
 
   let artifact =
     run_shell(
-      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path)
@@ -794,7 +794,7 @@ pub fn publish_review_doc_rejects_pack_source_issue_identifier_mismatch_test() {
 
   let artifact =
     run_shell(
-      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_ISSUE_IDENTIFIER=LIV-999 scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_ISSUE_IDENTIFIER=LIV-999 .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path)
@@ -834,7 +834,7 @@ pub fn materialize_bundle_prefers_pack_source_issue_over_publish_context_test() 
 
   let artifact =
     run_shell(
-      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-pack-source scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-pack-source .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -881,7 +881,7 @@ pub fn materialize_bundle_rejects_publish_context_source_issue_identifier_mismat
 
   let artifact =
     run_shell(
-      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-pack-source scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-pack-source .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -961,7 +961,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
     run_shell(
       "env PATH="
       <> shell_quote(dir <> "/bin")
-      <> ":$PATH SCHERZO_RUN_ID=run-online scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
+      <> ":$PATH SCHERZO_RUN_ID=run-online .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -1002,7 +1002,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
 
   let publish =
     run_shell(
-      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path)
@@ -1013,7 +1013,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
 
   let revision =
     run_shell(
-      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision .scherzo/workflows/scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -1059,7 +1059,7 @@ pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
 
   let publish =
     run_shell(
-      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path)
@@ -1080,7 +1080,7 @@ pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
 
   let revision =
     run_shell(
-      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision-pack-source scripts/scherzo-execplan materialize-revision --previous-bundle "
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision-pack-source .scherzo/workflows/scripts/scherzo-execplan materialize-revision --previous-bundle "
       <> shell_quote(previous_bundle)
       <> " --review-doc-path-file "
       <> shell_quote(path_file)
@@ -1162,7 +1162,7 @@ pub fn materialize_revision_updates_existing_handoff_issue_test() {
     run_shell(
       "env PATH="
       <> shell_quote(dir <> "/bin")
-      <> ":$PATH SCHERZO_RUN_ID=run-revision-update scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
+      <> ":$PATH SCHERZO_RUN_ID=run-revision-update .scherzo/workflows/scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -1218,7 +1218,7 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
     run_shell(
       "env SCHERZO_RUN_ID=run-2 SCHERZO_RUN_ARTIFACT_DIR="
       <> shell_quote(artifact_root)
-      <> " SCHERZO_EXECPLAN_DIFF_PATH=test/fixtures/execplan_v2/artifacts/runs/run-2/execplan/code-change/diff.patch scripts/scherzo-execplan materialize-code-change-bundle --bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
+      <> " SCHERZO_EXECPLAN_DIFF_PATH=test/fixtures/execplan_v2/artifacts/runs/run-2/execplan/code-change/diff.patch .scherzo/workflows/scripts/scherzo-execplan materialize-code-change-bundle --bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
       <> shell_quote(output),
     )
 

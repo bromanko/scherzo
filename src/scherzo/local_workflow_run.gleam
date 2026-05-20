@@ -298,6 +298,10 @@ fn prepare_local_step(
         workflow_id: workflow_id,
         run_id: run_id,
         run_root: run_root,
+        workflow_bundle_dir: workflow_identity.bundle_dir_for_path(
+          ".scherzo",
+          "workflows/" <> workflow_id <> ".yaml",
+        ),
         attempt_index: attempt_index,
         workspace_name: workspace_ref.name,
         path: ".",
@@ -317,6 +321,7 @@ fn local_step_env(
     #("SCHERZO_REPO_ROOT", path.absolute(".") |> result.unwrap(".")),
     #("SCHERZO_CONFIG_DIR", context.config_dir),
     #("SCHERZO_WORKFLOW_ID", context.workflow_id),
+    #("SCHERZO_WORKFLOW_BUNDLE_DIR", context.workflow_bundle_dir),
     #("SCHERZO_RUN_ID", context.run_id),
     #("SCHERZO_RUN_ROOT", context.run_root),
     #("SCHERZO_RUN_KIND", context.run_kind),
@@ -701,7 +706,9 @@ fn pr80_review_note() -> json.Json {
       "locations",
       json.array(
         [
-          json.object([#("path", json.string("scripts/scherzo-review"))]),
+          json.object([
+            #("path", json.string(".scherzo/workflows/scripts/scherzo-review")),
+          ]),
         ],
         of: identity_json,
       ),

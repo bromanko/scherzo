@@ -91,6 +91,16 @@
         in
         pkgs.callPackage ./nix/linear-cli.nix { };
 
+      dogfoodWorkflowsFor =
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        pkgs.callPackage ./nix/scherzo-dogfood-workflows.nix {
+          src = sourceFor system;
+          linearCli = linearCliFor system;
+        };
+
       workflowPortabilityFor =
         system:
         let
@@ -99,6 +109,7 @@
         import ./nix/workflow-portability.nix {
           inherit pkgs;
           repoRoot = sourceFor system;
+          bundleRoot = self.packages.${system}.scherzo-dogfood-workflows;
           scherzo = self.packages.${system}.scherzo;
         };
     in
@@ -112,6 +123,7 @@
           default = scherzo;
           linear-cli = linearCliFor system;
           scherzo = scherzo;
+          scherzo-dogfood-workflows = dogfoodWorkflowsFor system;
         }
       );
 
@@ -137,6 +149,7 @@
       checks = forAllSystems (system: {
         default = self.packages.${system}.scherzo;
         scherzo = self.packages.${system}.scherzo;
+        scherzo-dogfood-workflows = self.packages.${system}.scherzo-dogfood-workflows;
         workflow-portability = (workflowPortabilityFor system).check;
       });
 

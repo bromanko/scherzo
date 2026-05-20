@@ -39,7 +39,7 @@ fn prepare_fake_repo(dir: String) -> Nil {
 fn run_sync_in(dir: String, env_prefix: String) -> step_artifact.StepArtifact {
   let command =
     env_prefix
-    <> " SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-jj-origin-sync"
+    <> " SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-jj-origin-sync"
 
   command_step.run(
     "origin_sync",

@@ -900,6 +900,44 @@ pub fn jj_driver_changed_files_json_is_sorted_and_deduplicated_test() {
     == ["diff --name-only --color=never", "diff --summary --color=never"]
 }
 
+pub fn jj_driver_changed_files_normalizes_jj_brace_rename_summaries_test() {
+  let dir = "test/tmp/jj-workspace-driver-brace-renames"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_changed_brace_renames",
+      "changed-files --json",
+      fake_env(workspace, bin, log, [
+        #(
+          "SCHERZO_FAKE_JJ_CHANGED_FILES",
+          "workflows/dogfood/execplan.yaml\n"
+            <> "workflows/dogfood/prompts/new.md\n"
+            <> "workflows/dogfood/scripts/scherzo-review\n",
+        ),
+        #(
+          "SCHERZO_FAKE_JJ_DIFF",
+          "R {.scherzo/workflows => workflows/dogfood}/execplan.yaml\n"
+            <> "R {.scherzo/workflows/prompts/old.md => workflows/dogfood/prompts/new.md}\n"
+            <> "R {scripts => workflows/dogfood/scripts}/scherzo-review\n",
+        ),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert decode_paths(artifact.stdout)
+    == [
+      "workflows/dogfood/execplan.yaml",
+      "workflows/dogfood/prompts/new.md",
+      "workflows/dogfood/scripts/scherzo-review",
+    ]
+  assert !string.contains(artifact.stdout, "dogfood}")
+  assert !string.contains(artifact.stdout, "scripts}")
+  assert log_lines(log)
+    == ["diff --name-only --color=never", "diff --summary --color=never"]
+}
+
 pub fn jj_driver_changed_files_uses_default_current_change_diff_for_merge_revisions_test() {
   let dir = "test/tmp/jj-workspace-driver-changed-files-merge"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)

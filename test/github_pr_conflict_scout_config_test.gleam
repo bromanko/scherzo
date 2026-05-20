@@ -62,7 +62,7 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
   assert step.workspace.name == "main"
   let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
   assert timeout_ms == Some(300_000)
-  assert_contains(run, "scripts/scherzo-github-pr-conflict-scout")
+  assert_contains(run, "$bundle_dir/scripts/scherzo-github-pr-conflict-scout")
   assert_contains(run, "--repo \"$SCHERZO_GITHUB_REPO\"")
   assert_contains(run, "--linear-project-slug \"$linear_project_slug\"")
   assert_contains(run, "SCHERZO_CONFLICT_MAX_OPEN_PRS")
@@ -107,7 +107,7 @@ pub fn checked_in_origin_sync_schedule_loads_test() {
   let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
   assert timeout_ms == Some(300_000)
   assert run
-    == "repo_root=${SCHERZO_REPO_ROOT:-$(cd \"$SCHERZO_CONFIG_DIR/..\" && pwd -P)}; \"$repo_root/scripts/scherzo-jj-origin-sync\""
+    == "bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z \"$bundle_dir\" ]; then bundle_dir=\"$(cd \"$SCHERZO_CONFIG_DIR/workflows\" && pwd -P)\"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd \"$SCHERZO_CONFIG_DIR/..\" && pwd -P)}; \"$bundle_dir/scripts/scherzo-jj-origin-sync\""
 
   let assert Ok(job) =
     list.find(bundle.orchestrator.scheduled_jobs, fn(job) {
@@ -174,7 +174,7 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   assert step.workspace.name == "main"
   let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
   assert timeout_ms == Some(300_000)
-  assert_contains(run, "scripts/scherzo-github-pr-conflict-scout")
+  assert_contains(run, "$bundle_dir/scripts/scherzo-github-pr-conflict-scout")
   assert_contains(run, "--repo \"$SCHERZO_GITHUB_REPO\"")
   assert_contains(run, "--linear-project-slug \"$linear_project_slug\"")
   assert_contains(run, "cd \"$repo_root\"")
@@ -206,7 +206,7 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
       [],
       None,
       300_000,
-      "scripts/scherzo-merge-conflict\" prepare",
+      "$bundle_dir/scripts/scherzo-merge-conflict\" prepare",
     )
   assert_contains(prepare_run, "repo_root=")
 
@@ -234,7 +234,7 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
       ["resolve_conflicts"],
       Some("main"),
       300_000,
-      "scripts/scherzo-merge-conflict\" validate",
+      "$bundle_dir/scripts/scherzo-merge-conflict\" validate",
     )
   assert_contains(validate_run, "repo_root=")
 
@@ -257,7 +257,7 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
       ["project_validation"],
       Some("main"),
       300_000,
-      "scripts/scherzo-merge-conflict\" publish",
+      "$bundle_dir/scripts/scherzo-merge-conflict\" publish",
     )
   assert_contains(publish_run, "repo_root=")
 
@@ -288,5 +288,8 @@ pub fn public_examples_and_runbook_do_not_reference_removed_repair_script_test()
   assert_not_contains(scheduled_runbook, removed_script)
   assert_not_contains(scheduled_runbook, "workflows/pr-conflict-repair.yaml")
   assert_contains(scheduled_runbook, "github-pr-conflict-scout")
-  assert_contains(scheduled_runbook, "scripts/scherzo-github-pr-conflict-scout")
+  assert_contains(
+    scheduled_runbook,
+    "$bundle_dir/scripts/scherzo-github-pr-conflict-scout",
+  )
 }

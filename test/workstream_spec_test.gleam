@@ -55,6 +55,7 @@ fn validator_context() -> structured_output_validator.ValidatorContext {
     ".",
     "test/tmp/workstream-specs/run-root",
     "test_workflow",
+    ".scherzo/workflows",
     "run-1",
     "validate_workstream_artifact",
     1,

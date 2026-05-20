@@ -1020,8 +1020,11 @@ def available_heading_lines(document: PlanDocument, sections: Sequence[PlanSecti
     return "\n".join(f"- {section.title} ({section.slug})" for section in values)
 
 
+EXECPLAN_HTML_HELPER_DISPLAY = ".scherzo/workflows/scripts/scherzo-execplan-html"
+
+
 def section_fallback_command(plan_path: str, section_title: str) -> str:
-    return f'scripts/scherzo-execplan-html section {plan_path} "{section_title}"'
+    return f'{EXECPLAN_HTML_HELPER_DISPLAY} section {plan_path} "{section_title}"'
 
 
 def extract_md_command(args: Sequence[str]) -> None:
@@ -1092,7 +1095,7 @@ def build_brief(document: PlanDocument, markdown_out: Path) -> tuple[str, dict[s
     truncated_by_slug: dict[str, dict[str, Any]] = {}
     missing_sections: list[str] = []
     fallback_commands = [
-        f"scripts/scherzo-execplan-html extract-md {document.source_path}",
+        f"{EXECPLAN_HTML_HELPER_DISPLAY} extract-md {document.source_path}",
     ]
     lines = [
         f"# ExecPlanBrief for {document.title}",
@@ -1113,8 +1116,8 @@ def build_brief(document: PlanDocument, markdown_out: Path) -> tuple[str, dict[s
         "Read this brief as bounded starting context. If it is stale, missing a section, truncated, inconsistent, or ambiguous, read a named section or the full plan.",
         "",
         "Fallback commands:",
-        f"- scripts/scherzo-execplan-html section {document.source_path} \"<section title>\"",
-        f"- scripts/scherzo-execplan-html extract-md {document.source_path}",
+        f"- {EXECPLAN_HTML_HELPER_DISPLAY} section {document.source_path} \"<section title>\"",
+        f"- {EXECPLAN_HTML_HELPER_DISPLAY} extract-md {document.source_path}",
     ]
     for title in critical_titles:
         section = section_by_title(document, title)
@@ -1142,7 +1145,7 @@ def build_brief(document: PlanDocument, markdown_out: Path) -> tuple[str, dict[s
             missing_sections.append(title)
             lines.extend([
                 f"MISSING SECTION: {title}",
-                f"If this section exists under a different heading, run: scripts/scherzo-execplan-html section {document.source_path} \"{title}\"",
+                f"If this section exists under a different heading, run: {EXECPLAN_HTML_HELPER_DISPLAY} section {document.source_path} \"{title}\"",
                 "",
             ])
             continue
@@ -1433,7 +1436,7 @@ SCROLL_SPY_SCRIPT = """<script>
 
 
 HTML_TEMPLATE = """<!doctype html>
-<!-- Scherzo ExecPlan HTML artifact: use scripts/scherzo-execplan-html extract-md or section for token-efficient agent reads. -->
+<!-- Scherzo ExecPlan HTML artifact: use .scherzo/workflows/scripts/scherzo-execplan-html extract-md or section for token-efficient agent reads. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">

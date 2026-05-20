@@ -12,6 +12,7 @@ fn context(
     ".",
     "test/tmp/run-root",
     "test_workflow",
+    ".scherzo/workflows",
     "run-1",
     "review",
     1,
@@ -127,6 +128,10 @@ pub fn command_validator_uses_clean_environment_and_context_test() {
   assert string.contains(
     error.diagnostic_summary,
     "\"SCHERZO_REPO_ROOT\": \".\"",
+  )
+  assert string.contains(
+    error.diagnostic_summary,
+    "\"SCHERZO_WORKFLOW_BUNDLE_DIR\": \".scherzo/workflows\"",
   )
   assert string.contains(
     error.diagnostic_summary,

@@ -8,13 +8,15 @@ erl_crash.dump
 .env
 .env.local
 .env.*.local
-# Runtime state under .scherzo is ignored; checked-in workflows live in
-# .scherzo/workflows and are intentionally versioned.
+# Runtime state under .scherzo is ignored; checked-in workflows now live in
+# workflows/dogfood, and .scherzo/workflows is a tracked compatibility symlink.
 .scherzo/*
 !.scherzo/README.md
 !.scherzo/scherzo.yaml
-!.scherzo/workflows/
-!.scherzo/workflows/**
+!.scherzo/workflows
+workflows/dogfood/**/*.local.yaml
+workflows/dogfood/**/*.local.yml
+workflows/dogfood/**/.scherzo/
 .scherzo/scherzo.local.yaml
 .scherzo/scherzo.local.yml
 .scherzo/workflows/**/*.local.yaml

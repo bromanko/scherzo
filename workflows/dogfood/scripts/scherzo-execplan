@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - surfaced as a runtime diagnostic.
     jsonschema = None  # type: ignore[assignment]
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+BUNDLE_ROOT = Path(os.environ.get("SCHERZO_WORKFLOW_BUNDLE_DIR", "")).resolve() if os.environ.get("SCHERZO_WORKFLOW_BUNDLE_DIR", "").strip() else SCRIPT_ROOT
 SCHEMA_DIR = Path(".scherzo/workflows/schemas")
 IMPLEMENTATION_PACK_SCHEMA = SCHEMA_DIR / "implementation-pack.v2.schema.json"
 EXEC_PLAN_BUNDLE_SCHEMA = SCHEMA_DIR / "exec-plan-bundle.v2.schema.json"
@@ -167,13 +168,19 @@ def repo_root(default: str | None = None) -> Path:
 def schema_path(path: Path, root: Path | None = None) -> Path:
     if path.is_absolute():
         return path
-    return (root or SCRIPT_ROOT) / path
+    base = root or SCRIPT_ROOT
+    parts = path.parts
+    if len(parts) >= 2 and parts[0] == ".scherzo" and parts[1] == "workflows":
+        if (base / ".scherzo").exists():
+            return base / path
+        return base / Path(*parts[2:])
+    return base / path
 
 
 def validate_schema(value: Any, schema_rel: Path, *, root: Path | None = None) -> None:
     if jsonschema is None:
         fail("python jsonschema package is required")
-    schema_file = schema_path(schema_rel, root)
+    schema_file = schema_path(schema_rel, root or BUNDLE_ROOT)
     schema = load_json(schema_file)
     validator = jsonschema.Draft202012Validator(schema)
     errors = sorted(validator.iter_errors(value), key=lambda e: list(e.path))

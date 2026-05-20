@@ -22,7 +22,9 @@ fn reset_dir(path: String) -> Nil {
 }
 
 fn run_contract(command: String) -> step_artifact.StepArtifact {
-  run_shell("scripts/scherzo-review-lane-contract " <> command)
+  run_shell(
+    ".scherzo/workflows/scripts/scherzo-review-lane-contract " <> command,
+  )
 }
 
 fn run_shell(command: String) -> step_artifact.StepArtifact {
@@ -151,7 +153,7 @@ pub fn review_lane_contract_live_skips_without_credentials_test() {
 
   let artifact =
     run_shell(
-      "env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY scripts/scherzo-review-lane-contract live --workflow .scherzo/workflows/implementation.yaml --output-dir "
+      "env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY .scherzo/workflows/scripts/scherzo-review-lane-contract live --workflow .scherzo/workflows/implementation.yaml --output-dir "
       <> dir
       <> " --skip-if-missing-credentials",
     )

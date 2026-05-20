@@ -73,7 +73,7 @@ pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
 
   let artifact =
     run_command(
-      "scripts/scherzo-review dry-run --diff-file "
+      ".scherzo/workflows/scripts/scherzo-review dry-run --diff-file "
       <> diff_path
       <> " --output-dir "
       <> output_dir
@@ -113,7 +113,10 @@ pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
   assert string.contains(manifest, "review-brief.v1.json")
 
   let validation =
-    run_command("scripts/scherzo-review validate --artifact " <> brief_path)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> brief_path,
+    )
   assert validation.status == step_artifact.StepSucceeded
   assert validation.exit_code == Some(0)
   assert string.contains(validation.stdout, "REVIEW_ARTIFACT_VALID=ok")
@@ -121,7 +124,8 @@ pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
 
   let lane_validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> lane_result_path,
     )
   assert lane_validation.status == step_artifact.StepSucceeded
   assert lane_validation.exit_code == Some(0)
@@ -153,7 +157,7 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
 
   let dry_run =
     run_command(
-      "scripts/scherzo-review dry-run --diff-file "
+      ".scherzo/workflows/scripts/scherzo-review dry-run --diff-file "
       <> diff_path
       <> " --output-dir "
       <> brief_dir
@@ -167,7 +171,7 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
   let correctness_dir = dir <> "/correctness"
   let correctness =
     run_command(
-      "scripts/scherzo-review run-lane --lane correctness --brief "
+      ".scherzo/workflows/scripts/scherzo-review run-lane --lane correctness --brief "
       <> brief_path
       <> " --diff-file "
       <> diff_path
@@ -187,14 +191,15 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
   assert string.contains(correctness_result, "\"finding_type\": \"suspicion\"")
   let correctness_validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> correctness_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> correctness_result_path,
     )
   assert correctness_validation.status == step_artifact.StepSucceeded
 
   let test_quality_dir = dir <> "/test-quality"
   let test_quality =
     run_command(
-      "scripts/scherzo-review run-lane --lane test-quality --brief "
+      ".scherzo/workflows/scripts/scherzo-review run-lane --lane test-quality --brief "
       <> brief_path
       <> " --diff-file "
       <> diff_path
@@ -210,14 +215,15 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
   assert string.contains(test_quality_result, "\"proposed_tests\"")
   let test_quality_validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> test_quality_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> test_quality_result_path,
     )
   assert test_quality_validation.status == step_artifact.StepSucceeded
 
   let idioms_dir = dir <> "/idioms"
   let idioms =
     run_command(
-      "scripts/scherzo-review run-lane --lane idioms-maintainability --brief "
+      ".scherzo/workflows/scripts/scherzo-review run-lane --lane idioms-maintainability --brief "
       <> brief_path
       <> " --diff-file "
       <> diff_path
@@ -232,14 +238,15 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
   assert string.contains(idioms_result, "\"review_priority\": \"must-fix\"")
   let idioms_validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> idioms_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> idioms_result_path,
     )
   assert idioms_validation.status == step_artifact.StepSucceeded
 
   let security_dir = dir <> "/security-performance"
   let security =
     run_command(
-      "scripts/scherzo-review run-lane --lane security-performance --brief "
+      ".scherzo/workflows/scripts/scherzo-review run-lane --lane security-performance --brief "
       <> brief_path
       <> " --diff-file "
       <> diff_path
@@ -267,14 +274,15 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
   )
   let security_validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> security_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> security_result_path,
     )
   assert security_validation.status == step_artifact.StepSucceeded
 
   let synthesis_dir = dir <> "/synthesis"
   let synthesis =
     run_command(
-      "scripts/scherzo-review synthesize --brief "
+      ".scherzo/workflows/scripts/scherzo-review synthesize --brief "
       <> brief_path
       <> " --lane-result "
       <> correctness_result_path
@@ -311,7 +319,10 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
   assert string.contains(synthesis_log, "remote_mutations=none")
 
   let synthesis_validation =
-    run_command("scripts/scherzo-review validate --artifact " <> synthesis_path)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> synthesis_path,
+    )
   assert synthesis_validation.status == step_artifact.StepSucceeded
   assert string.contains(
     synthesis_validation.stdout,
@@ -319,7 +330,10 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
   )
 
   let final_validation =
-    run_command("scripts/scherzo-review validate --artifact " <> final_path)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> final_path,
+    )
   assert final_validation.status == step_artifact.StepSucceeded
   assert string.contains(
     final_validation.stdout,
@@ -348,7 +362,7 @@ pub fn security_performance_lane_uses_low_risk_lightweight_depth_test() {
 
   let dry_run =
     run_command(
-      "scripts/scherzo-review dry-run --diff-file "
+      ".scherzo/workflows/scripts/scherzo-review dry-run --diff-file "
       <> diff_path
       <> " --output-dir "
       <> brief_dir,
@@ -357,7 +371,7 @@ pub fn security_performance_lane_uses_low_risk_lightweight_depth_test() {
 
   let lane =
     run_command(
-      "scripts/scherzo-review run-lane --lane security-performance --brief "
+      ".scherzo/workflows/scripts/scherzo-review run-lane --lane security-performance --brief "
       <> brief_dir
       <> "/review-brief.v1.json --diff-file "
       <> diff_path
@@ -385,7 +399,8 @@ pub fn security_performance_lane_uses_low_risk_lightweight_depth_test() {
 
   let validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> lane_result_path,
     )
   assert validation.status == step_artifact.StepSucceeded
 }
@@ -399,10 +414,10 @@ pub fn security_performance_lane_ignores_detector_token_literals_test() {
   let assert Ok(Nil) =
     simplifile.write(
       diff_path,
-      "diff --git a/scripts/scherzo-review b/scripts/scherzo-review\n"
+      "diff --git a/.scherzo/workflows/scripts/scherzo-review b/.scherzo/workflows/scripts/scherzo-review\n"
         <> "index 1111111..2222222 100755\n"
-        <> "--- a/scripts/scherzo-review\n"
-        <> "+++ b/scripts/scherzo-review\n"
+        <> "--- a/.scherzo/workflows/scripts/scherzo-review\n"
+        <> "+++ b/.scherzo/workflows/scripts/scherzo-review\n"
         <> "@@ -1,2 +1,8 @@\n"
         <> " def existing():\n"
         <> "+CONCRETE_PROCESS_TOKENS = [\n"
@@ -416,7 +431,7 @@ pub fn security_performance_lane_ignores_detector_token_literals_test() {
 
   let dry_run =
     run_command(
-      "scripts/scherzo-review dry-run --diff-file "
+      ".scherzo/workflows/scripts/scherzo-review dry-run --diff-file "
       <> diff_path
       <> " --output-dir "
       <> brief_dir,
@@ -425,7 +440,7 @@ pub fn security_performance_lane_ignores_detector_token_literals_test() {
 
   let lane =
     run_command(
-      "scripts/scherzo-review run-lane --lane security-performance --brief "
+      ".scherzo/workflows/scripts/scherzo-review run-lane --lane security-performance --brief "
       <> brief_dir
       <> "/review-brief.v1.json --diff-file "
       <> diff_path
@@ -448,7 +463,8 @@ pub fn security_performance_lane_ignores_detector_token_literals_test() {
 
   let validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> lane_result_path,
     )
   assert validation.status == step_artifact.StepSucceeded
 }
@@ -466,7 +482,7 @@ pub fn review_lane_failure_writes_debug_artifacts_test() {
 
   let lane =
     run_command(
-      "scripts/scherzo-review run-lane --lane correctness --brief "
+      ".scherzo/workflows/scripts/scherzo-review run-lane --lane correctness --brief "
       <> brief_path
       <> " --output-dir "
       <> lane_dir,
@@ -486,7 +502,8 @@ pub fn review_lane_failure_writes_debug_artifacts_test() {
 
   let validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> lane_result_path,
     )
   assert validation.status == step_artifact.StepSucceeded
 }
@@ -513,7 +530,7 @@ pub fn agent_fixture_lane_writes_bundle_artifacts_test() {
 
   let dry_run =
     run_command(
-      "scripts/scherzo-review dry-run --diff-file "
+      ".scherzo/workflows/scripts/scherzo-review dry-run --diff-file "
       <> diff_path
       <> " --output-dir "
       <> brief_dir,
@@ -522,7 +539,7 @@ pub fn agent_fixture_lane_writes_bundle_artifacts_test() {
 
   let lane =
     run_command(
-      "scripts/scherzo-review run-lane --lane correctness --brief "
+      ".scherzo/workflows/scripts/scherzo-review run-lane --lane correctness --brief "
       <> brief_dir
       <> "/review-brief.v1.json --diff-file "
       <> diff_path
@@ -559,7 +576,8 @@ pub fn agent_fixture_lane_writes_bundle_artifacts_test() {
 
   let validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> lane_result_path,
     )
   assert validation.status == step_artifact.StepSucceeded
 }
@@ -570,7 +588,7 @@ pub fn preflight_fixture_backend_records_lane_backends_test() {
 
   let preflight =
     run_command(
-      "scripts/scherzo-review preflight --agent-backend fixture --scenario no-meaningful-findings-pr --output-dir "
+      ".scherzo/workflows/scripts/scherzo-review preflight --agent-backend fixture --scenario no-meaningful-findings-pr --output-dir "
       <> dir,
     )
 
@@ -587,7 +605,10 @@ pub fn preflight_fixture_backend_records_lane_backends_test() {
   assert string.contains(manifest, "\"remote_mutations\": \"none\"")
 
   let validation =
-    run_command("scripts/scherzo-review validate --artifact " <> manifest_path)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> manifest_path,
+    )
   assert validation.status == step_artifact.StepSucceeded
   assert string.contains(
     validation.stdout,
@@ -617,7 +638,7 @@ pub fn external_agent_missing_command_writes_failed_lane_result_test() {
 
   let dry_run =
     run_command(
-      "scripts/scherzo-review dry-run --diff-file "
+      ".scherzo/workflows/scripts/scherzo-review dry-run --diff-file "
       <> diff_path
       <> " --output-dir "
       <> brief_dir,
@@ -626,7 +647,7 @@ pub fn external_agent_missing_command_writes_failed_lane_result_test() {
 
   let lane =
     run_command(
-      "env -u SCHERZO_REVIEW_AGENT_COMMAND scripts/scherzo-review run-lane --lane correctness --brief "
+      "env -u SCHERZO_REVIEW_AGENT_COMMAND .scherzo/workflows/scripts/scherzo-review run-lane --lane correctness --brief "
       <> brief_dir
       <> "/review-brief.v1.json --diff-file "
       <> diff_path
@@ -649,7 +670,8 @@ pub fn external_agent_missing_command_writes_failed_lane_result_test() {
 
   let validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> lane_result_path,
     )
   assert validation.status == step_artifact.StepSucceeded
 }
@@ -701,7 +723,7 @@ pub fn external_agent_command_writes_successful_lane_result_test() {
 
   let dry_run =
     run_command(
-      "scripts/scherzo-review dry-run --diff-file "
+      ".scherzo/workflows/scripts/scherzo-review dry-run --diff-file "
       <> diff_path
       <> " --output-dir "
       <> brief_dir,
@@ -712,7 +734,7 @@ pub fn external_agent_command_writes_successful_lane_result_test() {
     run_command(
       "SCHERZO_REVIEW_AGENT_COMMAND='python3 "
       <> agent_path
-      <> " {raw_output_path}' scripts/scherzo-review run-lane --lane test-quality --brief "
+      <> " {raw_output_path}' .scherzo/workflows/scripts/scherzo-review run-lane --lane test-quality --brief "
       <> brief_dir
       <> "/review-brief.v1.json --diff-file "
       <> diff_path
@@ -739,14 +761,15 @@ pub fn external_agent_command_writes_successful_lane_result_test() {
 
   let validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> lane_result_path,
     )
   assert validation.status == step_artifact.StepSucceeded
 }
 
 pub fn agent_environment_sanitizer_strips_mutation_credentials_test() {
   let command =
-    "PYTHONPATH=scripts python3 -c 'from scherzo_review.agent_lane_harness import sanitize_agent_environment; env={\"PATH\":\"/bin\",\"GITHUB_TOKEN\":\"gh\",\"GH_TOKEN\":\"gh\",\"LINEAR_API_KEY\":\"lin\",\"SCHERZO_AGENT_LINEAR_API_KEY\":\"lin\",\"SSH_AUTH_SOCK\":\"sock\",\"SCHERZO_REVIEW_AGENT_READONLY_FLAG\":\"1\"}; out=sanitize_agent_environment(env); assert out[\"PATH\"] == \"/bin\"; assert out[\"SCHERZO_REVIEW_AGENT_READONLY_FLAG\"] == \"1\"; assert \"GITHUB_TOKEN\" not in out; assert \"GH_TOKEN\" not in out; assert \"LINEAR_API_KEY\" not in out; assert \"SCHERZO_AGENT_LINEAR_API_KEY\" not in out; assert \"SSH_AUTH_SOCK\" not in out; print(\"SANITIZER_OK\")'"
+    "PYTHONPATH=.scherzo/workflows/scripts python3 -c 'from scherzo_review.agent_lane_harness import sanitize_agent_environment; env={\"PATH\":\"/bin\",\"GITHUB_TOKEN\":\"gh\",\"GH_TOKEN\":\"gh\",\"LINEAR_API_KEY\":\"lin\",\"SCHERZO_AGENT_LINEAR_API_KEY\":\"lin\",\"SSH_AUTH_SOCK\":\"sock\",\"SCHERZO_REVIEW_AGENT_READONLY_FLAG\":\"1\"}; out=sanitize_agent_environment(env); assert out[\"PATH\"] == \"/bin\"; assert out[\"SCHERZO_REVIEW_AGENT_READONLY_FLAG\"] == \"1\"; assert \"GITHUB_TOKEN\" not in out; assert \"GH_TOKEN\" not in out; assert \"LINEAR_API_KEY\" not in out; assert \"SCHERZO_AGENT_LINEAR_API_KEY\" not in out; assert \"SSH_AUTH_SOCK\" not in out; print(\"SANITIZER_OK\")'"
   let result = run_command(command)
   assert result.status == step_artifact.StepSucceeded
   assert result.exit_code == Some(0)
@@ -759,7 +782,7 @@ pub fn correctness_fixture_evidence_gate_preflight_test() {
 
   let preflight =
     run_command(
-      "scripts/scherzo-review preflight --agent-backend fixture --scenario inverted-auth-control-condition --scenario auth-control-static-suspicion-without-repro --output-dir "
+      ".scherzo/workflows/scripts/scherzo-review preflight --agent-backend fixture --scenario inverted-auth-control-condition --scenario auth-control-static-suspicion-without-repro --output-dir "
       <> dir,
     )
   assert preflight.status == step_artifact.StepSucceeded
@@ -809,7 +832,7 @@ pub fn correctness_fixture_evidence_gate_preflight_test() {
 
   let readiness =
     run_command(
-      "scripts/scherzo-review validate --artifact "
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
       <> dir
       <> "/preflight-manifest.v1.json --require-cutover-ready",
     )
@@ -823,14 +846,14 @@ pub fn heuristic_preflight_is_not_cutover_ready_test() {
 
   let preflight =
     run_command(
-      "scripts/scherzo-review preflight --scenario no-meaningful-findings-pr --output-dir "
+      ".scherzo/workflows/scripts/scherzo-review preflight --scenario no-meaningful-findings-pr --output-dir "
       <> dir,
     )
   assert preflight.status == step_artifact.StepSucceeded
 
   let readiness =
     run_command(
-      "scripts/scherzo-review validate --artifact "
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
       <> dir
       <> "/preflight-manifest.v1.json --require-cutover-ready",
     )
@@ -868,7 +891,9 @@ pub fn review_preflight_runs_full_dry_run_suite_test() {
   reset_dir(dir)
 
   let preflight =
-    run_command("scripts/scherzo-review preflight --output-dir " <> dir)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review preflight --output-dir " <> dir,
+    )
 
   assert preflight.status == step_artifact.StepSucceeded
   assert preflight.exit_code == Some(0)
@@ -904,7 +929,10 @@ pub fn review_preflight_runs_full_dry_run_suite_test() {
     )
   assert string.contains(pr80_final, "\"blocking\": 0")
   assert string.contains(pr80_final, "\"review_notes\"")
-  assert string.contains(pr80_final, "scripts/scherzo-review")
+  assert string.contains(
+    pr80_final,
+    ".scherzo/workflows/scripts/scherzo-review",
+  )
   assert string.contains(pr80_final, "src/scherzo/control/review_lane.gleam")
   assert !string.contains(
     pr80_final,
@@ -959,7 +987,10 @@ pub fn review_artifact_validator_accepts_review_finding_test() {
     )
 
   let artifact =
-    run_command("scripts/scherzo-review validate --artifact " <> artifact_path)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> artifact_path,
+    )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
@@ -996,7 +1027,10 @@ pub fn review_artifact_validator_rejects_blocking_correctness_without_executable
     )
 
   let artifact =
-    run_command("scripts/scherzo-review validate --artifact " <> artifact_path)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> artifact_path,
+    )
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
@@ -1017,7 +1051,10 @@ pub fn review_artifact_validator_rejects_missing_required_brief_fields_test() {
     )
 
   let artifact =
-    run_command("scripts/scherzo-review validate --artifact " <> artifact_path)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> artifact_path,
+    )
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
@@ -1208,18 +1245,25 @@ pub fn review_lane_draft_path_safety_validation_test() {
     )
 
   let absolute =
-    run_command("scripts/scherzo-review validate --artifact " <> absolute_draft)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> absolute_draft,
+    )
   assert absolute.status == step_artifact.StepFailed
   assert absolute.exit_code == Some(1)
 
   let parent =
-    run_command("scripts/scherzo-review validate --artifact " <> parent_draft)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> parent_draft,
+    )
   assert parent.status == step_artifact.StepFailed
   assert parent.exit_code == Some(1)
 
   let env_input_ref =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> env_input_ref_draft,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> env_input_ref_draft,
     )
   assert env_input_ref.status == step_artifact.StepFailed
   assert env_input_ref.exit_code == Some(1)
@@ -1227,7 +1271,10 @@ pub fn review_lane_draft_path_safety_validation_test() {
   assert string.contains(env_input_ref.stderr, "environment-variable")
 
   let remote =
-    run_command("scripts/scherzo-review validate --artifact " <> remote_draft)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> remote_draft,
+    )
   assert remote.status == step_artifact.StepFailed
   assert remote.exit_code == Some(1)
 }
@@ -1250,7 +1297,7 @@ pub fn evidence_verdict_must_link_to_finding_test() {
 
   let normalized =
     run_command(
-      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review normalize-lane-result --lane correctness --draft "
       <> draft_path
       <> " --evidence-ledger "
       <> ledger_path
@@ -1285,7 +1332,7 @@ pub fn generic_gleam_test_does_not_verify_arbitrary_correctness_claim_test() {
 
   let verify =
     run_command(
-      "scripts/scherzo-review verify-evidence --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review verify-evidence --lane correctness --draft "
       <> draft_path
       <> " --brief "
       <> dir
@@ -1307,7 +1354,7 @@ pub fn generic_gleam_test_does_not_verify_arbitrary_correctness_claim_test() {
 
   let normalized =
     run_command(
-      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review normalize-lane-result --lane correctness --draft "
       <> draft_path
       <> " --evidence-ledger "
       <> lane_dir
@@ -1341,7 +1388,7 @@ pub fn verify_evidence_relativizes_absolute_draft_path_test() {
 
   let verify =
     run_command(
-      "scripts/scherzo-review verify-evidence --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review verify-evidence --lane correctness --draft "
       <> absolute_draft_path
       <> " --brief "
       <> dir
@@ -1386,7 +1433,7 @@ pub fn correctness_blocker_downgraded_without_verified_reproduction_test() {
 
   let normalized =
     run_command(
-      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review normalize-lane-result --lane correctness --draft "
       <> draft_path
       <> " --evidence-ledger "
       <> ledger_path
@@ -1421,7 +1468,7 @@ pub fn missing_evidence_ledger_produces_failed_lane_result_test() {
 
   let normalized =
     run_command(
-      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review normalize-lane-result --lane correctness --draft "
       <> draft_path
       <> " --evidence-ledger "
       <> dir
@@ -1457,7 +1504,7 @@ pub fn missing_draft_verify_evidence_reports_structured_output_root_cause_test()
 
   let verify =
     run_command(
-      "scripts/scherzo-review verify-evidence --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review verify-evidence --lane correctness --draft "
       <> draft_path
       <> " --brief "
       <> dir
@@ -1497,7 +1544,7 @@ pub fn missing_draft_normalize_preserves_structured_output_root_cause_test() {
 
   let normalized =
     run_command(
-      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review normalize-lane-result --lane correctness --draft "
       <> draft_path
       <> " --evidence-ledger "
       <> dir
@@ -1536,7 +1583,7 @@ pub fn all_lanes_review_infrastructure_failure_exits_42_test() {
     write_metadata(metadata_path)
     let normalized =
       run_command(
-        "scripts/scherzo-review normalize-lane-result --lane "
+        ".scherzo/workflows/scripts/scherzo-review normalize-lane-result --lane "
         <> lane
         <> " --draft "
         <> lane_dir
@@ -1567,7 +1614,7 @@ pub fn all_lanes_review_infrastructure_failure_exits_42_test() {
   let synth_dir = dir <> "/synthesis"
   let synthesized =
     run_command(
-      "scripts/scherzo-review synthesize --brief "
+      ".scherzo/workflows/scripts/scherzo-review synthesize --brief "
       <> dir
       <> "/review-brief.v1.json"
       <> lane_args
@@ -1601,7 +1648,7 @@ pub fn missing_or_malformed_draft_produces_failed_lane_result_test() {
 
   let normalized =
     run_command(
-      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      ".scherzo/workflows/scripts/scherzo-review normalize-lane-result --lane correctness --draft "
       <> draft_path
       <> " --evidence-ledger "
       <> dir
@@ -1649,7 +1696,7 @@ pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
 
   let feedback =
     run_command(
-      "scripts/scherzo-review apply-feedback --final-review "
+      ".scherzo/workflows/scripts/scherzo-review apply-feedback --final-review "
       <> final_path
       <> " --output-dir "
       <> feedback_dir,
@@ -1658,7 +1705,8 @@ pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
   let feedback_manifest = feedback_dir <> "/feedback-manifest.v1.json"
   let feedback_validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> feedback_manifest,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> feedback_manifest,
     )
   assert feedback_validation.status == step_artifact.StepSucceeded
   let assert Ok(feedback_json) = simplifile.read(feedback_manifest)
@@ -1667,7 +1715,7 @@ pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
 
   let publish =
     run_command(
-      "scripts/scherzo-review publish --final-review "
+      ".scherzo/workflows/scripts/scherzo-review publish --final-review "
       <> final_path
       <> " --mode dry-run --output-dir "
       <> publish_dir,
@@ -1676,7 +1724,8 @@ pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
   let publish_manifest = publish_dir <> "/publish-manifest.v1.json"
   let publish_validation =
     run_command(
-      "scripts/scherzo-review validate --artifact " <> publish_manifest,
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> publish_manifest,
     )
   assert publish_validation.status == step_artifact.StepSucceeded
   let assert Ok(publish_json) = simplifile.read(publish_manifest)
@@ -1685,7 +1734,7 @@ pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
 
   let invalid_publish =
     run_command(
-      "scripts/scherzo-review publish --final-review "
+      ".scherzo/workflows/scripts/scherzo-review publish --final-review "
       <> final_path
       <> " --mode live --output-dir "
       <> dir
@@ -1696,7 +1745,9 @@ pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
 
 pub fn legacy_pr_smoke_lists_curated_prs_with_rationale_test() {
   let artifact =
-    run_command("scripts/scherzo-review legacy-pr-smoke --list-curated")
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review legacy-pr-smoke --list-curated",
+    )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
@@ -1720,7 +1771,7 @@ pub fn legacy_pr_smoke_rejects_scenario_environment_test() {
   reset_dir(dir)
   let artifact =
     run_command(
-      "SCHERZO_NATIVE_REVIEW_SCENARIO=fixture scripts/scherzo-review legacy-pr-smoke --pr 116 --output-dir "
+      "SCHERZO_NATIVE_REVIEW_SCENARIO=fixture .scherzo/workflows/scripts/scherzo-review legacy-pr-smoke --pr 116 --output-dir "
       <> dir,
     )
 
@@ -1737,7 +1788,7 @@ pub fn legacy_pr_smoke_reports_retired_standalone_workflow_test() {
   reset_dir(dir)
   let artifact =
     run_command(
-      "env -u SCHERZO_NATIVE_REVIEW_SCENARIO -u SCHERZO_STAGED_REVIEW_AGENT_BACKEND -u SCHERZO_REVIEW_AGENT_BACKEND scripts/scherzo-review legacy-pr-smoke --pr 116 --output-dir "
+      "env -u SCHERZO_NATIVE_REVIEW_SCENARIO -u SCHERZO_STAGED_REVIEW_AGENT_BACKEND -u SCHERZO_REVIEW_AGENT_BACKEND .scherzo/workflows/scripts/scherzo-review legacy-pr-smoke --pr 116 --output-dir "
       <> dir,
     )
 
@@ -1748,7 +1799,7 @@ pub fn legacy_pr_smoke_reports_retired_standalone_workflow_test() {
   assert string.contains(artifact.stderr, "execplan-implementation")
   assert string.contains(
     artifact.stderr,
-    "scripts/scherzo-review-lane-contract offline",
+    ".scherzo/workflows/scripts/scherzo-review-lane-contract offline",
   )
   let assert Ok(False) =
     simplifile.is_file(dir <> "/legacy-pr-smoke-manifest.v1.json")
@@ -1758,7 +1809,10 @@ pub fn native_preflight_reports_retired_standalone_workflow_test() {
   let dir = "test/tmp/native-preflight-retired"
   reset_dir(dir)
   let artifact =
-    run_command("scripts/scherzo-review native-preflight --output-dir " <> dir)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review native-preflight --output-dir "
+      <> dir,
+    )
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
@@ -1802,7 +1856,10 @@ pub fn native_preflight_requires_runner_provenance_test() {
     )
 
   let validation =
-    run_command("scripts/scherzo-review validate --artifact " <> manifest_path)
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> manifest_path,
+    )
   assert validation.status == step_artifact.StepFailed
   assert string.contains(
     validation.stderr,

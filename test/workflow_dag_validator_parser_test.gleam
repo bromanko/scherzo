@@ -32,7 +32,7 @@ fn workflow_with_structured_output(body: String) -> String {
 pub fn parses_json_schema_and_command_validators_test() {
   let spec =
     structured_spec(workflow_with_structured_output(
-      "      artifact_name: review_lane_draft\n      required: true\n      format: json\n      schema:\n        type: object\n        required:\n          - schema_version\n          - artifact_type\n          - findings\n      validators:\n        - name: review_lane_shape\n          type: json_schema\n          path: schemas/review_lane_draft.schema.json\n          draft: \"2020-12\"\n        - name: review_lane_semantics\n          type: command\n          argv:\n            - python3\n            - scripts/scherzo-review\n            - validate-structured-output\n            - --validator\n            - review_lane_draft\n          timeout_ms: 30000\n          working_directory: repository\n      validation_retries: 1\n",
+      "      artifact_name: review_lane_draft\n      required: true\n      format: json\n      schema:\n        type: object\n        required:\n          - schema_version\n          - artifact_type\n          - findings\n      validators:\n        - name: review_lane_shape\n          type: json_schema\n          path: schemas/review_lane_draft.schema.json\n          draft: \"2020-12\"\n        - name: review_lane_semantics\n          type: command\n          argv:\n            - python3\n            - .scherzo/workflows/scripts/scherzo-review\n            - validate-structured-output\n            - --validator\n            - review_lane_draft\n          timeout_ms: 30000\n          working_directory: repository\n      validation_retries: 1\n",
     ))
 
   assert spec.format == workflow_dag.StructuredJson
@@ -63,7 +63,7 @@ pub fn parses_json_schema_and_command_validators_test() {
         name: "review_lane_semantics",
         argv: [
           "python3",
-          "scripts/scherzo-review",
+          ".scherzo/workflows/scripts/scherzo-review",
           "validate-structured-output",
           "--validator",
           "review_lane_draft",
@@ -240,7 +240,7 @@ pub fn legacy_review_validator_lowers_to_command_validator_test() {
         name: "review_lane_draft_compat",
         argv: [
           "python3",
-          "scripts/scherzo-review",
+          ".scherzo/workflows/scripts/scherzo-review",
           "validate-structured-output",
           "--validator",
           "review_lane_draft",
