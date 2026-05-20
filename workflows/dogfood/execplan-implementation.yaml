@@ -3,7 +3,7 @@ id: execplan-implementation
 description: Validate an ExecPlan bundle, implement from the prepared review doc and implementation pack, run plan-completion and native review gates, publish a PR, and emit a code_change_bundle.
 workspace_profile: dogfood-jj
 workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]
-max_parallel_steps: 1
+max_parallel_steps: 4
 contract:
   version: 1
   inputs:
