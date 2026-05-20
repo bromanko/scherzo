@@ -411,7 +411,7 @@ Optional arguments:
 | `--target-pr` | Existing hosted-review identifier to update or inspect. |
 | `--allow-no-changes` | Literal `true` or `false`; missing defaults to `false`. |
 
-`--title-file` and `--body-file` MUST be validated as safe workspace-root-relative paths before reading. Drivers MUST NOT read arbitrary absolute paths or paths containing `..` segments for these arguments.
+`--title-file` and `--body-file` MUST be validated as safe workspace-root-relative paths before reading. Drivers MUST NOT read arbitrary absolute paths or paths containing `..` segments for these arguments. Drivers that create GitHub PRs MUST honor `SCHERZO_PR_DRAFT=true|false` when present: `true` creates a draft PR, `false` creates a ready-for-review PR, and unset preserves the driver's current default PR draft behavior. Any other non-empty value MUST fail before publication with a clear configuration diagnostic.
 
 On success, the command prints exactly one JSON object followed by a newline:
 

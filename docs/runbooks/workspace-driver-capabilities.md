@@ -68,7 +68,7 @@ workspace:
           SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
 ```
 
-For local/offline work use `SCHERZO_JJ_WORKSPACE_BASE=@`; for a repository that already has the selected base locally use `SCHERZO_JJ_WORKSPACE_FETCH_BASE=false`. `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` remain legacy compatibility names. In a fork/upstream recipe, `upstream` selects the base remote while `origin` selects the publication remote. `publish-change` requires `gh`; packaged `scherzo-workspace-jj` includes it on the wrapper path, while source-tree users must provide `gh` on `PATH`.
+For local/offline work use `SCHERZO_JJ_WORKSPACE_BASE=@`; for a repository that already has the selected base locally use `SCHERZO_JJ_WORKSPACE_FETCH_BASE=false`. `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` remain legacy compatibility names. In a fork/upstream recipe, `upstream` selects the base remote while `origin` selects the publication remote. Set `SCHERZO_PR_DRAFT=true` to create draft GitHub PRs or `SCHERZO_PR_DRAFT=false` to force ready-for-review PRs; when it is unset, `publish-change` keeps the current default PR draft behavior. `publish-change` requires `gh`; packaged `scherzo-workspace-jj` includes it on the wrapper path, while source-tree users must provide `gh` on `PATH`.
 
 Workflow requirements still belong in workflow YAML:
 

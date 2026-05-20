@@ -199,6 +199,23 @@ def workspace_driver_available() -> bool:
     return workspace_driver_command() is not None
 
 
+def pr_draft_setting() -> bool | None:
+    value = os.environ.get("SCHERZO_PR_DRAFT")
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    fail(
+        "SCHERZO_PR_DRAFT must be true or false",
+        failure_code="invalid_configuration",
+    )
+
+
 def workspace_driver_missing(*, failure_code: str = "workspace_driver_unavailable") -> None:
     fail(
         "SCHERZO_WORKSPACE_DRIVER is required for this driver-backed workflow operation",
@@ -2230,6 +2247,7 @@ def validation_env() -> dict[str, str]:
         "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE",
         "SCHERZO_JJ_WORKSPACE_REMOTE",
         "SCHERZO_PR_BASE",
+        "SCHERZO_PR_DRAFT",
         "SCHERZO_PR_REMOTE",
         "SCHERZO_PR_REPO",
         "SCHERZO_REPO_ROOT",
@@ -2620,6 +2638,7 @@ def publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str, str, s
 
 
 def publish_command_legacy() -> None:
+    draft = pr_draft_setting()
     require_command("jj")
     ensure_validation_passed()
     metadata = load_implementation_metadata()
@@ -2674,7 +2693,7 @@ def publish_command_legacy() -> None:
         check=False,
     ).strip()
     if not pr_url:
-        pr_url = run([
+        create_args = [
             "gh",
             "pr",
             "create",
@@ -2688,7 +2707,10 @@ def publish_command_legacy() -> None:
             pr_title,
             "--body-file",
             str(PR_BODY_PATH),
-        ]).strip()
+        ]
+        if draft is True:
+            create_args.append("--draft")
+        pr_url = run(create_args).strip()
     if not pr_url:
         fail(f"failed to create or locate PR for branch {branch}")
 
@@ -2793,6 +2815,7 @@ def publish_command() -> None:
         publish_command_legacy()
         return
 
+    pr_draft_setting()
     ensure_validation_passed()
     metadata = load_implementation_metadata()
     base, _remote = configured_publish_base()

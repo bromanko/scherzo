@@ -93,7 +93,7 @@ This repository dogfoods the same shape under `.scherzo/` and keeps reusable exa
 
 Workspace profiles and drivers decide where workflow steps run and what isolation/publish behavior they get. The normative contract is [docs/specs/WORKSPACE_DRIVER_SPEC.md](docs/specs/WORKSPACE_DRIVER_SPEC.md); migration notes from legacy workspace.hooks configuration are in [docs/runbooks/workspace-driver-migration.md](docs/runbooks/workspace-driver-migration.md).
 
-In config, `workspace.profiles.<name>.driver.command` points at a driver such as `command: scherzo-workspace-noop` for artifact-only workflows or `command: scherzo-workspace-jj` for jj-backed implementation workflows. Workflows request `workspace_capabilities`, and Scherzo exposes driver context such as `SCHERZO_WORKSPACE_DRIVER` and `SCHERZO_WORKSPACE_CAPABILITIES` to steps. Driver-specific settings may live in `driver.env`, for example `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`, but `driver.env` is not a secret store.
+In config, `workspace.profiles.<name>.driver.command` points at a driver such as `command: scherzo-workspace-noop` for artifact-only workflows or `command: scherzo-workspace-jj` for jj-backed implementation workflows. Workflows request `workspace_capabilities`, and Scherzo exposes driver context such as `SCHERZO_WORKSPACE_DRIVER` and `SCHERZO_WORKSPACE_CAPABILITIES` to steps. Driver-specific settings may live in `driver.env`, for example `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE` or `SCHERZO_PR_DRAFT`, but `driver.env` is not a secret store. `SCHERZO_PR_DRAFT` accepts only `true` or `false`; when unset, PR publication keeps the driver's default draft behavior.
 
 ## Using pi as an operator UI
 

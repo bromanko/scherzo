@@ -140,6 +140,21 @@ def fetch_base_enabled() -> bool:
     usage_error("SCHERZO_JJ_WORKSPACE_FETCH_BASE must be true or false")
 
 
+def pr_draft_setting() -> bool | None:
+    value = env_value("SCHERZO_PR_DRAFT")
+    if value is None:
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    json_failure(
+        status="invalid_request",
+        failure_code="invalid_configuration",
+        message="SCHERZO_PR_DRAFT must be true or false",
+    )
+
+
 def unique_values(values: list[str]) -> list[str]:
     unique: list[str] = []
     for value in values:
@@ -1308,6 +1323,7 @@ def run_capture(args: list[str], root: Path) -> subprocess.CompletedProcess[str]
 
 def publish_change(root: Path, args: list[str]) -> None:
     values = parse_publish_args(args)
+    draft = pr_draft_setting()
     title = read_required_file(values["title-file"], "title-file").strip().splitlines()
     title_text = title[0].strip() if title else "Scherzo change"
     _body = read_required_file(values["body-file"], "body-file")
@@ -1385,22 +1401,25 @@ def publish_change(root: Path, args: list[str]) -> None:
             pr_url = view.stdout.strip()
     if not pr_url and not values.get("target-pr"):
         gh_base = base.split("@", 1)[0]
+        create_args = [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            repo,
+            "--base",
+            gh_base,
+            "--head",
+            branch,
+            "--title",
+            title_text,
+            "--body-file",
+            values["body-file"],
+        ]
+        if draft is True:
+            create_args.append("--draft")
         create = run_capture(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--repo",
-                repo,
-                "--base",
-                gh_base,
-                "--head",
-                branch,
-                "--title",
-                title_text,
-                "--body-file",
-                values["body-file"],
-            ],
+            create_args,
             root,
         )
         if create.returncode == 0:
