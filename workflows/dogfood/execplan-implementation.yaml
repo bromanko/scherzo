@@ -367,6 +367,10 @@ steps:
     depends_on: [synthesize_review]
     run: |
       set -eu
+      bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
+      if [ -z "$bundle_dir" ]; then
+        bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
+      fi
       repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
       synthesis="$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/review-synthesis.v1.json"
       final="$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json"
