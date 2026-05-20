@@ -3,6 +3,13 @@ Apply plan-completion feedback for Scherzo's `workflow:execplan-implementation` 
 Task URL:
 {{ issue.url }}
 
+ExecPlan identity model:
+
+- The workflow task in this prompt is the implementation handoff issue; it owns this implementation run and should be used for Linear/GitHub linkage.
+- `tmp/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
+- `implementation_handoff.issue_identifier` may differ from `source_issue.identifier`; that split is valid and expected for handoff tasks.
+- Do not report a conflict, fail completion, or request revision solely because the handoff issue, source issue, review doc path, or implementation pack provenance reference different Linear keys. Treat only review-doc/implementation-pack disagreement in intent, scope, acceptance, safety, or source-plan provenance beyond that expected split as blocking.
+
 Bundle preparation output:
 {{ steps.prepare_bundle.stdout }}
 
@@ -24,7 +31,7 @@ Feedback contract:
 - If the verdict is `pass`, make no tracked-file edits. Report that no plan-completion feedback was required.
 - If the verdict is `fail`, this is the workflow's single automatic repair chance before code review. Complete only the missing required behavior described in `blocking_findings`.
 - Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json` before making a repair.
-- Treat the checked-in review doc named by `tmp/scherzo-implementation.json` `plan_path` (or `review_doc.path` in the bundle) as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat `tmp/execplan-review-doc.md` as the prepared bundle baseline. Treat the implementation pack as the authoritative mechanical handoff only when it does not conflict with review-doc intent, scope, acceptance, or safety.
+- Treat the checked-in review doc named by `tmp/scherzo-implementation.json` `plan_path` (or `review_doc.path` in the bundle) as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat `tmp/execplan-review-doc.md` as the prepared bundle baseline. Treat the implementation pack as the authoritative mechanical handoff only when it does not conflict with review-doc intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.
 - Keep the checked-in review doc's living-document sections current when your changes affect Progress, Validation and Acceptance, Surprises/Discoveries, Decisions, or Outcomes.
 - Do not broaden scope, start optional/stretch work, or perform code-review cleanup unrelated to the blocking plan-completion findings.
 

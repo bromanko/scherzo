@@ -3,6 +3,13 @@ You are reviewing the implementation produced by Scherzo's `workflow:execplan-im
 Task URL:
 {{ issue.url }}
 
+ExecPlan identity model:
+
+- The workflow task in this prompt is the implementation handoff issue; it owns this implementation run and should be used for Linear/GitHub linkage.
+- `tmp/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
+- `implementation_handoff.issue_identifier` may differ from `source_issue.identifier`; that split is valid and expected for handoff tasks.
+- Do not report a conflict, fail completion, or request revision solely because the handoff issue, source issue, review doc path, or implementation pack provenance reference different Linear keys. Treat only review-doc/implementation-pack disagreement in intent, scope, acceptance, safety, or source-plan provenance beyond that expected split as blocking.
+
 Bundle preparation output:
 {{ steps.prepare_bundle.stdout }}
 
@@ -77,7 +84,7 @@ Review contract:
 - Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - Use `$SCHERZO_WORKSPACE_DRIVER status --human` and `$SCHERZO_WORKSPACE_DRIVER diff --human` only for orientation; the analysis output above is authoritative for changed files across the workflow run.
 - Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json` for ExecPlan handoff context.
-- Determine the checked-in review doc path from `tmp/scherzo-implementation.json` field `plan_path`, falling back to `review_doc.path` in the bundle. Treat that checked-in review doc as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat the implementation pack as mechanical context only when it does not conflict with the review doc.
+- Determine the checked-in review doc path from `tmp/scherzo-implementation.json` field `plan_path`, falling back to `review_doc.path` in the bundle. Treat that checked-in review doc as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat the implementation pack as mechanical context only when it does not conflict with review-doc intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.
 - If `REVIEW_BRIEF_PATH=...` is present in the native preparation output, read that local artifact for orientation. It is additive context only; do not post the artifact to PRs or Linear.
 - Read each normalized native `ReviewLaneResult` referenced by `REVIEW_LANE_RESULT_PATH=...` in the normalization outputs, plus its retained evidence ledger/log/analysis artifacts. Treat lane findings as normalized review input: fix or report blocking findings, preserve non-blocking suspicions as feedback, and do not discard empty-finding lane logs.
 - If synthesis output includes `REVIEW_SYNTHESIS_PATH=...` or `REVIEW_FINAL_ARTIFACT_PATH=...`, read the referenced artifacts first. Use the final artifact as the concise normalized review input, including lane failures and downgraded/unproven correctness claims, but still inspect the actual diff before applying fixes.

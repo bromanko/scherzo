@@ -2003,6 +2003,55 @@ def materialize_revision(args: list[str]) -> None:
     sys.stdout.write(final_text)
 
 
+def same_issue_identifier(left: str, right: str) -> bool:
+    return bool(
+        left.strip()
+        and right.strip()
+        and left.strip().upper() == right.strip().upper()
+    )
+
+
+def ensure_current_issue_matches_handoff(handoff_identifier: str) -> None:
+    current_identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
+    if (
+        current_identifier
+        and handoff_identifier
+        and not same_issue_identifier(current_identifier, handoff_identifier)
+    ):
+        fail(
+            "current workflow issue SCHERZO_ISSUE_IDENTIFIER="
+            f"{current_identifier} does not match "
+            "exec_plan_bundle.implementation_handoff.issue_identifier="
+            f"{handoff_identifier}; source_issue.identifier may differ from "
+            "implementation_handoff.issue_identifier, but the current workflow "
+            "issue must match the implementation handoff recorded in the bundle. "
+            "Use the correct handoff task or regenerate the bundle.",
+            code="execplan_implementation_handoff_mismatch",
+        )
+
+
+def implementation_issue_title_for_prepare(
+    handoff: dict[str, Any], source_issue: dict[str, Any]
+) -> str:
+    handoff_identifier = str(handoff.get("issue_identifier") or "").strip()
+    source_identifier = str(source_issue.get("identifier") or "").strip()
+    source_title = str(source_issue.get("title") or "").strip()
+    env_identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
+    env_title = os.environ.get("SCHERZO_ISSUE_TITLE", "").strip()
+    if env_title and (
+        not env_identifier
+        or not handoff_identifier
+        or same_issue_identifier(env_identifier, handoff_identifier)
+    ):
+        return env_title
+    explicit = str(handoff.get("issue_title") or handoff.get("title") or "").strip()
+    if explicit:
+        return explicit
+    if handoff_identifier and source_identifier and not same_issue_identifier(handoff_identifier, source_identifier):
+        return f"Implement: {source_title}" if source_title else "ExecPlan implementation handoff"
+    return source_title
+
+
 def command_implementation_prepare(args: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="scherzo-execplan implementation-prepare")
     parser.add_argument("--from-issue-context", action="store_true", required=True)
@@ -2028,11 +2077,38 @@ def command_implementation_prepare(args: list[str]) -> None:
             base_change_id = str(baseline.get("baseline_id") or baseline.get("base_revision") or base_change_id)
         except SystemExit:
             raise
+    handoff = bundle["implementation_handoff"]
+    source_issue = bundle["source_issue"]
+    source_issue_identifier = str(source_issue.get("identifier") or "").strip()
+    source_issue_title = str(source_issue.get("title") or "").strip()
+    source_issue_url = str(source_issue.get("url") or "").strip()
+    handoff_issue_identifier = str(handoff.get("issue_identifier") or "").strip()
+    current_issue_identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
+    current_issue_url = os.environ.get("SCHERZO_ISSUE_URL", "").strip()
+    ensure_current_issue_matches_handoff(handoff_issue_identifier)
+    implementation_issue_identifier = (
+        current_issue_identifier or handoff_issue_identifier or source_issue_identifier
+    )
+    implementation_issue_url = (
+        (current_issue_url if current_issue_identifier else "")
+        or str(handoff.get("issue_url") or "").strip()
+        or source_issue_url
+    )
+    implementation_issue_title = implementation_issue_title_for_prepare(handoff, source_issue)
     metadata = {
         "source_kind": "execplan",
-        "issue_identifier": bundle["implementation_handoff"].get("issue_identifier", ""),
-        "issue_title": bundle["source_issue"].get("title", ""),
-        "issue_url": bundle["implementation_handoff"].get("issue_url", ""),
+        # Backward compatibility: issue_* remains the implementation handoff issue
+        # because Linear, branch, retry, and publish linkage should target the
+        # implementation task that owns this workflow run.
+        "issue_identifier": implementation_issue_identifier,
+        "issue_title": implementation_issue_title,
+        "issue_url": implementation_issue_url,
+        "implementation_issue_identifier": implementation_issue_identifier,
+        "implementation_issue_title": implementation_issue_title,
+        "implementation_issue_url": implementation_issue_url,
+        "source_issue_identifier": source_issue_identifier,
+        "source_issue_title": source_issue_title,
+        "source_issue_url": source_issue_url,
         "plan_path": bundle["review_doc"]["path"],
         "base_change_id": base_change_id,
         "execplan_v2_bundle_path": "tmp/execplan-bundle.json",
@@ -2044,6 +2120,19 @@ def command_implementation_prepare(args: list[str]) -> None:
     print("REVIEW_DOC=tmp/execplan-review-doc.md")
     print("IMPLEMENTATION_PACK=tmp/execplan-implementation-pack.json")
     print("BUNDLE=tmp/execplan-bundle.json")
+    print(f"IMPLEMENTATION_ISSUE_IDENTIFIER={implementation_issue_identifier}")
+    print(f"SOURCE_ISSUE_IDENTIFIER={source_issue_identifier}")
+    if (
+        implementation_issue_identifier
+        and source_issue_identifier
+        and not same_issue_identifier(
+            implementation_issue_identifier,
+            source_issue_identifier,
+        )
+    ):
+        print("HANDOFF_SOURCE_IDENTITY_SPLIT=expected")
+    else:
+        print("HANDOFF_SOURCE_IDENTITY_SPLIT=same")
     if marker is not None:
         print(f"RETENTION_MARKER={marker}")
 

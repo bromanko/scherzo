@@ -3,6 +3,13 @@ Verify ExecPlan completion for Scherzo's `workflow:execplan-implementation` work
 Task URL:
 {{ issue.url }}
 
+ExecPlan identity model:
+
+- The workflow task in this prompt is the implementation handoff issue; it owns this implementation run and should be used for Linear/GitHub linkage.
+- `tmp/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
+- `implementation_handoff.issue_identifier` may differ from `source_issue.identifier`; that split is valid and expected for handoff tasks.
+- Do not report a conflict, fail completion, or request revision solely because the handoff issue, source issue, review doc path, or implementation pack provenance reference different Linear keys. Treat only review-doc/implementation-pack disagreement in intent, scope, acceptance, safety, or source-plan provenance beyond that expected split as blocking.
+
 Bundle preparation output:
 {{ steps.prepare_bundle.stdout }}
 
@@ -18,7 +25,7 @@ Verification contract:
 - Do not edit tracked source, tests, workflows, docs, or the ExecPlan review doc. Your only allowed write is the verdict artifact at `tmp/scherzo-plan-completion-verdict.json`.
 - Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json`.
 - Determine the checked-in review doc path from `tmp/scherzo-implementation.json` field `plan_path`, falling back to `review_doc.path` in `tmp/execplan-bundle.json`, and read that file. Treat the checked-in review doc as authoritative for current intent, scope, risks, milestones, progress, and acceptance. Treat `tmp/execplan-review-doc.md` as the prepared bundle baseline.
-- Treat the implementation pack as the authoritative mechanical handoff only when it does not conflict with review-doc intent, scope, acceptance, or safety.
+- Treat the implementation pack as the authoritative mechanical handoff only when it does not conflict with review-doc intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.
 - Inspect the checked-in review doc's Progress, Validation and Acceptance, Milestones, Scope Boundaries, Open Questions, and any explicit non-goals/deferred/stretch sections.
 - Compare the implementation summary and changed files/tests against the checked-in review doc and implementation pack. Inspect the smallest useful set of changed files and tests when the summary is not enough.
 - Explicitly return `fail` when required Progress checklist items are still unchecked, required milestones/acceptance criteria are undelivered, or outcomes promised by the review doc are not observable.
