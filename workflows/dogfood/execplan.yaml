@@ -27,8 +27,14 @@ contract:
         step: materialize_bundle
         path: tmp/execplan-bundle.json
 steps:
+  - id: prepare_review_doc_target
+    kind: command
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" prepare-review-doc-target --from-issue-context --write-target tmp/execplan-review-doc-target.json'
+    workspace: main
+
   - id: draft_review_doc_and_pack
     kind: agent
+    depends_on: [prepare_review_doc_target]
     prompt: prompts/execplan-draft.md
     workspace: main
     structured_output:
@@ -54,7 +60,7 @@ steps:
   - id: validate_review_doc
     kind: command
     depends_on: [draft_review_doc_and_pack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" validate-review-doc --discover-changed-review-doc --write-path tmp/execplan-review-doc.path'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" validate-review-doc --discover-changed-review-doc --target-file tmp/execplan-review-doc-target.json --write-path tmp/execplan-review-doc.path'
     workspace: main
 
   - id: review_plan

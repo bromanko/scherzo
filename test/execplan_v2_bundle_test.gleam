@@ -63,6 +63,17 @@ fn shell_quote(value: String) -> String {
   "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
 
+fn tmp_repo_path(path: String) -> String {
+  "../../../" <> path
+}
+
+fn write_valid_review_doc(path: String) -> Nil {
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let assert Ok(Nil) = simplifile.write(path, valid)
+  Nil
+}
+
 fn mutated_bundle(dir: String, each old: String, with new: String) -> String {
   reset_dir(dir)
   let assert Ok(source) =
@@ -697,6 +708,258 @@ pub fn validate_review_doc_rejects_mechanical_sections_test() {
 
   assert artifact.status == step_artifact.StepFailed
   assert string.contains(artifact.stderr, "mechanical implementation sections")
+}
+
+pub fn prepare_review_doc_target_creates_custom_directory_test() {
+  let dir = "test/tmp/execplan-target-prepare-custom"
+  reset_dir(dir)
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote("Create an execplan at doobar/docs/plans")
+        <> " "
+        <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+        <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_KIND=directory")
+  assert string.contains(
+    artifact.stdout,
+    "REVIEW_DOC_TARGET_PATH=doobar/docs/plans",
+  )
+  let assert Ok(True) = simplifile.is_directory(dir <> "/doobar/docs/plans")
+}
+
+pub fn prepare_review_doc_target_creates_custom_file_parent_test() {
+  let dir = "test/tmp/execplan-target-prepare-file"
+  reset_dir(dir)
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote("Create an execplan at doobar/docs/plans/exact.md")
+        <> " "
+        <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+        <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_KIND=file")
+  assert string.contains(
+    artifact.stdout,
+    "REVIEW_DOC_TARGET_PATH=doobar/docs/plans/exact.md",
+  )
+  let assert Ok(True) = simplifile.is_directory(dir <> "/doobar/docs/plans")
+}
+
+pub fn prepare_review_doc_target_ignores_plain_infinitive_to_test() {
+  let dir = "test/tmp/execplan-target-infinitive-to"
+  reset_dir(dir)
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote("Create an execplan to add custom target support")
+        <> " "
+        <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+        <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_KIND=directory")
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_PATH=docs/plans")
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_DEFAULT=1")
+  let assert Ok(True) = simplifile.is_directory(dir <> "/docs/plans")
+  let assert Ok(False) = simplifile.is_directory(dir <> "/add")
+}
+
+pub fn prepare_review_doc_target_ignores_generic_destination_field_test() {
+  let dir = "test/tmp/execplan-target-generic-destination"
+  reset_dir(dir)
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote("Create an execplan\n\nDestination: production")
+        <> " "
+        <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+        <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_PATH=docs/plans")
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_DEFAULT=1")
+  let assert Ok(False) = simplifile.is_directory(dir <> "/production")
+}
+
+pub fn discover_changed_review_doc_accepts_default_docs_plans_test() {
+  let dir = "test/tmp/execplan-discovery-default"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  write_valid_review_doc(dir <> "/docs/plans/default.md")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER="
+        <> shell_quote(tmp_repo_path("scripts/scherzo-workspace-noop"))
+        <> " SCHERZO_WORKSPACE_PATH=. "
+        <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+        <> " validate-review-doc --discover-changed-review-doc --write-path tmp/review.path",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_PATH=docs/plans")
+  assert string.contains(
+    artifact.stdout,
+    "REVIEW_DOC_PATH=docs/plans/default.md",
+  )
+  let assert Ok(review_path) = simplifile.read(dir <> "/tmp/review.path")
+  assert review_path == "docs/plans/default.md\n"
+}
+
+pub fn discover_changed_review_doc_accepts_custom_requested_directory_test() {
+  let dir = "test/tmp/execplan-discovery-custom"
+  reset_dir(dir)
+  let helper = tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+  let driver = tmp_repo_path("scripts/scherzo-workspace-noop")
+
+  let prepare =
+    run_shell_in(
+      dir,
+      "env SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote("Create an execplan at doobar/docs/plans")
+        <> " "
+        <> helper
+        <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
+    )
+  assert prepare.status == step_artifact.StepSucceeded
+  write_valid_review_doc(dir <> "/doobar/docs/plans/custom.md")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER="
+        <> shell_quote(driver)
+        <> " SCHERZO_WORKSPACE_PATH=. "
+        <> helper
+        <> " validate-review-doc --discover-changed-review-doc --target-file tmp/target.json --write-path tmp/review.path",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(
+    artifact.stdout,
+    "REVIEW_DOC_TARGET_PATH=doobar/docs/plans",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "REVIEW_DOC_PATH=doobar/docs/plans/custom.md",
+  )
+  let assert Ok(review_path) = simplifile.read(dir <> "/tmp/review.path")
+  assert review_path == "doobar/docs/plans/custom.md\n"
+}
+
+pub fn discover_changed_review_doc_accepts_custom_requested_file_test() {
+  let dir = "test/tmp/execplan-discovery-custom-file"
+  reset_dir(dir)
+  let helper = tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+  let driver = tmp_repo_path("scripts/scherzo-workspace-noop")
+
+  let prepare =
+    run_shell_in(
+      dir,
+      "env SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote("Create an execplan at doobar/docs/plans/exact.md")
+        <> " "
+        <> helper
+        <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
+    )
+  assert prepare.status == step_artifact.StepSucceeded
+  write_valid_review_doc(dir <> "/doobar/docs/plans/exact.md")
+  write_valid_review_doc(dir <> "/doobar/docs/plans/sibling.md")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER="
+        <> shell_quote(driver)
+        <> " SCHERZO_WORKSPACE_PATH=. "
+        <> helper
+        <> " validate-review-doc --discover-changed-review-doc --target-file tmp/target.json --write-path tmp/review.path",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "REVIEW_DOC_TARGET_KIND=file")
+  assert string.contains(
+    artifact.stdout,
+    "REVIEW_DOC_TARGET_PATH=doobar/docs/plans/exact.md",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "REVIEW_DOC_PATH=doobar/docs/plans/exact.md",
+  )
+  let assert Ok(review_path) = simplifile.read(dir <> "/tmp/review.path")
+  assert review_path == "doobar/docs/plans/exact.md\n"
+}
+
+pub fn discover_changed_review_doc_rejects_sibling_for_custom_file_test() {
+  let dir = "test/tmp/execplan-discovery-custom-file-sibling"
+  reset_dir(dir)
+  let helper = tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+  let driver = tmp_repo_path("scripts/scherzo-workspace-noop")
+
+  let prepare =
+    run_shell_in(
+      dir,
+      "env SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote("Create an execplan at doobar/docs/plans/exact.md")
+        <> " "
+        <> helper
+        <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
+    )
+  assert prepare.status == step_artifact.StepSucceeded
+  write_valid_review_doc(dir <> "/doobar/docs/plans/sibling.md")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER="
+        <> shell_quote(driver)
+        <> " SCHERZO_WORKSPACE_PATH=. "
+        <> helper
+        <> " validate-review-doc --discover-changed-review-doc --target-file tmp/target.json --write-path tmp/review.path",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(artifact.stderr, "expected exactly one")
+  assert string.contains(artifact.stderr, "found 0")
+}
+
+pub fn prepare_review_doc_target_rejects_unsafe_path_test() {
+  let dir = "test/tmp/execplan-target-unsafe"
+  reset_dir(dir)
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote("Create an execplan at ../outside")
+        <> " "
+        <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
+        <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(
+    artifact.stderr,
+    "must not contain parent-directory traversal",
+  )
 }
 
 pub fn discover_changed_review_doc_rejects_zero_candidates_test() {

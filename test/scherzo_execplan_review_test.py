@@ -326,6 +326,28 @@ class ExecPlanReviewTest(unittest.TestCase):
             self.assertGreaterEqual(len(invocations), 3)
             self.assertTrue(all(item["kind"] == "read" for item in invocations))
 
+    def test_find_plan_file_accepts_custom_markdown_path(self) -> None:
+        self.assertEqual(
+            review.find_plan_file([
+                {
+                    "filename": "doobar/docs/plans/example.md",
+                    "status": "modified",
+                    "patch": MARKDOWN_PATCH,
+                }
+            ]),
+            "doobar/docs/plans/example.md",
+        )
+
+    def test_find_plan_file_rejects_unrelated_markdown_path(self) -> None:
+        with self.assertRaises(SystemExit):
+            review.find_plan_file([
+                {
+                    "filename": "README.md",
+                    "status": "modified",
+                    "patch": MARKDOWN_PATCH,
+                }
+            ])
+
     def test_markdown_renderer_emits_source_line_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             session = self.make_session(

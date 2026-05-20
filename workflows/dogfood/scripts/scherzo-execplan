@@ -31,6 +31,8 @@ EXEC_PLAN_BUNDLE_SCHEMA = SCHEMA_DIR / "exec-plan-bundle.v2.schema.json"
 CODE_CHANGE_BUNDLE_SCHEMA = SCHEMA_DIR / "code-change-bundle.v2.schema.json"
 IMPLEMENTATION_PACK_SUBMISSION_SCHEMA = SCHEMA_DIR / "implementation-pack-submission.v2.schema.json"
 EXEC_PLAN_REVISION_SUBMISSION_SCHEMA = SCHEMA_DIR / "exec-plan-revision-submission.v2.schema.json"
+DEFAULT_REVIEW_DOC_DIRECTORY = "docs/plans"
+REVIEW_DOC_TARGET_SCHEMA_VERSION = 1
 
 REQUIRED_REVIEW_DOC_SECTIONS = [
     "Purpose / Big Picture",
@@ -59,6 +61,17 @@ URL_RE = re.compile(r"https?://[^\s`<>)\]\"']+")
 GITHUB_PR_URL_RE = re.compile(r"https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)", re.IGNORECASE)
 GITHUB_PR_TEXT_RE = re.compile(r"\b(?:PR|pull request)\s*#?\s*(\d+)\b", re.IGNORECASE)
 REVIEW_DOC_PATH_RE = re.compile(r"\b(?:docs/plans|test/fixtures/execplan_v2)/[^\s`<>)\],;]+\.md\b")
+REVIEW_DOC_TARGET_FIELD_RE = re.compile(
+    r"(?im)^\s*(?:(?:exec\s*plan|execplan|review\s+doc(?:ument)?|plan)"
+    r"\s+(?:path|dir|directory|destination)|(?:output|target)\s+(?:path|dir|directory))"
+    r"\s*:\s*(`[^`\n]+`|[^\n#]+?)\s*$"
+)
+REVIEW_DOC_TARGET_PHRASE_RE = re.compile(
+    r"(?is)\b(?:create|draft|write|add|produce|prepare)\s+(?:an?\s+)?(?:exec\s*plan|execplan)\b"
+    r"[^.\n]{0,160}?\b(?:at|under|in|into|to)\s+(`[^`]+`|[^\s`<>)\],;]+)"
+)
+WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 SHA256_TEXT_RE = re.compile(r"\b[a-f0-9]{64}\b", re.IGNORECASE)
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 LINEAR_ISSUE_URL_RE = re.compile(
@@ -73,6 +86,7 @@ REVISION_HEAD_RE = re.compile(r"^[a-f0-9]{12,64}$")
 REVISION_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 REVISION_REMOTE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 DEFAULT_REVISION_REFRESH_TIMEOUT_SECONDS = 120.0
+LINEAR_ISSUE_CONTEXT_TIMEOUT_SECONDS = 30.0
 MAX_WORKSPACE_DRIVER_DETAIL_CHARS = 4000
 
 
@@ -81,8 +95,9 @@ def usage() -> None:
         """Usage: scherzo-execplan <command> [options]
 
 Commands:
+  prepare-review-doc-target --from-issue-context [--write-target PATH]
   validate-review-doc --path PATH
-  validate-review-doc --discover-changed-review-doc --write-path PATH
+  validate-review-doc --discover-changed-review-doc --write-path PATH [--target-file PATH]
   materialize-pack --review-doc PATH --submission PATH --output PATH
   materialize-pack --review-doc-path-file PATH --submission-step STEP --submission-artifact NAME --output PATH
   validate-bundle --bundle PATH [--bundle-sha256 SHA] [--artifact-root PATH] --repo-root PATH
@@ -190,23 +205,49 @@ def validate_schema(value: Any, schema_rel: Path, *, root: Path | None = None) -
         fail(f"schema validation failed for {schema_rel} at {location}: {first.message}")
 
 
+def normalize_repo_relative_path(value: str, *, label: str) -> str:
+    raw = value.strip().strip("`'\"").rstrip(".,;:").strip()
+    if raw.startswith("<absolute-local-path>"):
+        fail(f"{label} must be repository-relative, not absolute: {value!r}")
+    raw = raw.strip("<>").strip()
+    if not raw:
+        fail(f"{label} must be a non-empty repository-relative path")
+    if "\x00" in raw:
+        fail(f"{label} must not contain NUL bytes: {value!r}")
+    normalized_separators = raw.replace("\\", "/")
+    if normalized_separators.startswith("/") or normalized_separators.startswith("<absolute-local-path>"):
+        fail(f"{label} must be repository-relative, not absolute: {value!r}")
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw) or WINDOWS_ABSOLUTE_PATH_RE.match(normalized_separators):
+        fail(f"{label} must be repository-relative, not a Windows absolute path: {value!r}")
+    if URI_SCHEME_RE.match(normalized_separators):
+        fail(f"{label} must be a repository-relative path, not a URL: {value!r}")
+    parts: list[str] = []
+    for part in normalized_separators.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            fail(f"{label} must not contain parent-directory traversal: {value!r}")
+        parts.append(part)
+    if not parts:
+        fail(f"{label} must name a file or directory inside the repository: {value!r}")
+    return "/".join(parts)
+
+
 def is_repo_relative(value: str) -> bool:
-    if not value or value.startswith("/") or value.startswith("<absolute-local-path>"):
+    try:
+        normalize_repo_relative_path(value, label="path")
+    except SystemExit:
         return False
-    if re.match(r"^[A-Za-z]:[\\/]", value):
-        return False
-    parts = Path(value).parts
-    return ".." not in parts
+    return True
 
 
 def ensure_repo_relative_path(value: str, *, label: str) -> None:
-    if not is_repo_relative(value):
-        fail(f"{label} must be repository-relative and must not contain parent-directory traversal: {value!r}")
+    normalize_repo_relative_path(value, label=label)
 
 
 def review_doc_filesystem_path(path_value: str, root: Path | None = None) -> Path:
-    ensure_repo_relative_path(path_value, label="review doc path")
-    return (root or repo_root()) / path_value
+    normalized = normalize_repo_relative_path(path_value, label="review doc path")
+    return (root or repo_root()) / normalized
 
 
 def headings(markdown: str) -> list[tuple[int, str]]:
@@ -237,13 +278,130 @@ def headings(markdown: str) -> list[tuple[int, str]]:
     return result
 
 
-def validate_review_doc_path(path: Path, *, allow_fixture: bool = True) -> dict[str, Any]:
-    value = str(path)
-    ensure_repo_relative_path(value, label="review doc path")
+def review_doc_target_from_value(value: str, *, is_default: bool = False) -> dict[str, Any]:
+    normalized = normalize_repo_relative_path(value, label="ExecPlan output path")
+    kind = "file" if normalized.lower().endswith(".md") else "directory"
+    target = {
+        "schema_version": REVIEW_DOC_TARGET_SCHEMA_VERSION,
+        "artifact_type": "execplan_review_doc_target",
+        "kind": kind,
+        "path": normalized,
+        "default": is_default,
+    }
+    if kind == "file":
+        parent = normalized.rsplit("/", 1)[0] if "/" in normalized else "."
+        target["directory"] = parent
+    else:
+        target["directory"] = normalized
+    return target
+
+
+def default_review_doc_target() -> dict[str, Any]:
+    return review_doc_target_from_value(DEFAULT_REVIEW_DOC_DIRECTORY, is_default=True)
+
+
+def phrase_review_doc_target_is_path_like(value: str) -> bool:
+    stripped = value.strip()
+    if stripped.startswith("`") and stripped.endswith("`"):
+        return True
+    candidate = stripped.strip("'\"").rstrip(".,;:").strip("<>").strip()
+    return "/" in candidate or "\\" in candidate or candidate.lower().endswith(".md")
+
+
+def requested_review_doc_target_values(text: str) -> list[str]:
+    values: list[str] = []
+    for match in REVIEW_DOC_TARGET_FIELD_RE.finditer(text):
+        values.append(match.group(1))
+    for match in REVIEW_DOC_TARGET_PHRASE_RE.finditer(text):
+        value = match.group(1)
+        if phrase_review_doc_target_is_path_like(value):
+            values.append(value)
+    return values
+
+
+def review_doc_target_from_text(text: str) -> dict[str, Any]:
+    targets: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in requested_review_doc_target_values(text):
+        target = review_doc_target_from_value(value)
+        key = (str(target["kind"]), str(target["path"]))
+        if key not in seen:
+            targets.append(target)
+            seen.add(key)
+    if not targets:
+        return default_review_doc_target()
+    if len(targets) > 1:
+        details = ", ".join(f"{target['kind']}:{target['path']}" for target in targets)
+        fail(
+            "ambiguous ExecPlan output path request; specify exactly one repository-relative destination. "
+            f"Found: {details}"
+        )
+    return targets[0]
+
+
+def read_review_doc_target_file(path: Path) -> dict[str, Any]:
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        fail(f"review doc target file must contain a JSON object: {path}")
+    if payload.get("schema_version") != REVIEW_DOC_TARGET_SCHEMA_VERSION or payload.get("artifact_type") != "execplan_review_doc_target":
+        fail(f"review doc target file has an unsupported shape: {path}")
+    kind = payload.get("kind")
+    target_path = payload.get("path")
+    if kind not in {"directory", "file"} or not isinstance(target_path, str):
+        fail(f"review doc target file must include kind and path: {path}")
+    target = review_doc_target_from_value(target_path, is_default=bool(payload.get("default")))
+    if target["kind"] != kind:
+        fail(f"review doc target file kind does not match path extension: {path}")
+    return target
+
+
+def review_doc_target_instruction(target: dict[str, Any]) -> str:
+    path = str(target["path"])
+    if target["kind"] == "file":
+        return f"Write the ExecPlan review document exactly at `{path}`; create its parent directory if it is missing."
+    return f"Write exactly one Markdown ExecPlan review document directly under `{path}/`; create that directory if it is missing."
+
+
+def ensure_review_doc_target_directory(target: dict[str, Any]) -> None:
+    directory = str(target.get("directory") or target["path"])
+    if directory == ".":
+        return
+    directory = normalize_repo_relative_path(directory, label="ExecPlan output directory")
+    try:
+        (Path.cwd() / directory).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        fail(f"could not create ExecPlan output directory `{directory}`: {exc}")
+
+
+def review_doc_path_matches_target(path_value: str, target: dict[str, Any]) -> bool:
+    try:
+        normalized = normalize_repo_relative_path(path_value, label="review doc path")
+    except SystemExit:
+        return False
+    if not normalized.lower().endswith(".md"):
+        return False
+    target_path = str(target["path"])
+    if target["kind"] == "file":
+        return normalized == target_path
+    prefix = target_path.rstrip("/") + "/"
+    if not normalized.startswith(prefix):
+        return False
+    remainder = normalized[len(prefix) :]
+    return bool(remainder) and "/" not in remainder
+
+
+def validate_review_doc_path(path: Path, *, allow_fixture: bool = True, target: dict[str, Any] | None = None) -> dict[str, Any]:
+    value = normalize_repo_relative_path(str(path), label="review doc path")
+    path = Path(value)
     if not value.endswith(".md"):
         fail(f"review doc must be Markdown source, not generated HTML or another format: {value}")
-    if not allow_fixture and not re.match(r"^docs/plans/[^/]+\.md$", value):
-        fail(f"discovered review doc must be exactly one docs/plans/*.md path: {value}")
+    if not allow_fixture:
+        expected = target or default_review_doc_target()
+        if not review_doc_path_matches_target(value, expected):
+            fail(
+                "discovered review doc must match the requested ExecPlan output target "
+                f"({expected['kind']} `{expected['path']}`), got: {value}"
+            )
     data = path_bytes(path)
     text = data.decode("utf-8", errors="replace")
     if re.search(r"<!doctype\s+html|<html\b", text, flags=re.IGNORECASE):
@@ -351,24 +509,47 @@ def changed_file_records() -> list[dict[str, str]]:
     return records
 
 
-def discover_changed_review_doc(write_path: Path) -> dict[str, Any]:
+def discover_changed_review_doc(write_path: Path, *, target: dict[str, Any] | None = None) -> dict[str, Any]:
+    expected = target or default_review_doc_target()
     records = changed_file_records()
     candidates = [
-        record["path"]
+        normalize_repo_relative_path(record["path"], label="changed review doc path")
         for record in records
         if record["status"] in {"added", "modified"}
-        and re.match(r"^docs/plans/[^/]+\.md$", record["path"])
+        and review_doc_path_matches_target(record["path"], expected)
     ]
     if len(candidates) != 1:
-        fail(f"expected exactly one added or modified docs/plans/*.md review doc, found {len(candidates)}")
+        fail(
+            "expected exactly one added or modified Markdown ExecPlan review doc matching "
+            f"{expected['kind']} `{expected['path']}`, found {len(candidates)}"
+        )
     review_path = Path(candidates[0])
-    meta = validate_review_doc_path(review_path, allow_fixture=False)
+    meta = validate_review_doc_path(review_path, allow_fixture=False, target=expected)
     write_path.parent.mkdir(parents=True, exist_ok=True)
     write_path.write_text(str(review_path) + "\n", encoding="utf-8")
+    print(f"REVIEW_DOC_TARGET_KIND={expected['kind']}")
+    print(f"REVIEW_DOC_TARGET_PATH={expected['path']}")
     print(f"REVIEW_DOC_PATH={review_path}")
     print(f"REVIEW_DOC_SHA256={meta['sha256']}")
     print(f"REVIEW_DOC_PATH_FILE={write_path}")
     return meta
+
+
+def command_prepare_review_doc_target(args: list[str]) -> None:
+    parser = argparse.ArgumentParser(prog="scherzo-execplan prepare-review-doc-target")
+    parser.add_argument("--from-issue-context", action="store_true", required=True)
+    parser.add_argument("--write-target")
+    ns = parser.parse_args(args)
+    target = review_doc_target_from_text(issue_context_text())
+    ensure_review_doc_target_directory(target)
+    if ns.write_target:
+        write_json(Path(ns.write_target), target)
+    print(f"REVIEW_DOC_TARGET_KIND={target['kind']}")
+    print(f"REVIEW_DOC_TARGET_PATH={target['path']}")
+    print(f"REVIEW_DOC_TARGET_DEFAULT={'1' if target['default'] else '0'}")
+    print(f"REVIEW_DOC_TARGET_INSTRUCTIONS={review_doc_target_instruction(target)}")
+    if ns.write_target:
+        print(f"REVIEW_DOC_TARGET_FILE={ns.write_target}")
 
 
 def command_validate_review_doc(args: list[str]) -> None:
@@ -377,14 +558,18 @@ def command_validate_review_doc(args: list[str]) -> None:
     group.add_argument("--path")
     group.add_argument("--discover-changed-review-doc", action="store_true")
     parser.add_argument("--write-path")
+    parser.add_argument("--target-file")
     ns = parser.parse_args(args)
+    target = read_review_doc_target_file(Path(ns.target_file)) if ns.target_file else None
     if ns.discover_changed_review_doc:
         if not ns.write_path:
             fail("--discover-changed-review-doc requires --write-path")
-        discover_changed_review_doc(Path(ns.write_path))
+        discover_changed_review_doc(Path(ns.write_path), target=target)
         return
     if ns.write_path:
         fail("--write-path is only valid with --discover-changed-review-doc")
+    if ns.target_file:
+        fail("--target-file is only valid with --discover-changed-review-doc")
     meta = validate_review_doc_path(Path(ns.path))
     print("REVIEW_DOC_VALID=ok")
     print(f"REVIEW_DOC_PATH={meta['path']}")
@@ -398,8 +583,8 @@ def read_review_doc_path_file(path: Path) -> Path:
         fail(f"missing review doc path file: {path}")
     if not value:
         fail(f"review doc path file is empty: {path}")
-    ensure_repo_relative_path(value, label="review doc path")
-    return Path(value)
+    normalized = normalize_repo_relative_path(value, label="review doc path")
+    return Path(normalized)
 
 
 def run_root() -> Path | None:
@@ -802,14 +987,18 @@ def slug(value: str) -> str:
     return value or "task"
 
 
-def issue_context_text() -> str:
+def issue_context_text(*, allow_linear: bool = True) -> str:
     env = os.environ.get("SCHERZO_ISSUE_CONTEXT", "")
     if env:
         return env
     identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
-    if identifier and shutil.which("linear"):
-        proc = run_proc(["linear", "issue", "view", identifier, "--json", "--no-download"])
+    if allow_linear and identifier and shutil.which("linear"):
+        proc = run_proc(
+            ["linear", "issue", "view", identifier, "--json", "--no-download"],
+            timeout=LINEAR_ISSUE_CONTEXT_TIMEOUT_SECONDS,
+        )
         if proc.returncode == 0:
+            print("scherzo-execplan: loaded issue context via Linear CLI fallback", file=sys.stderr)
             try:
                 data = json.loads(proc.stdout)
             except Exception:
@@ -2258,7 +2447,9 @@ def main(argv: list[str]) -> None:
         usage()
         raise SystemExit(0 if argv else 2)
     command, args = argv[0], argv[1:]
-    if command == "validate-review-doc":
+    if command == "prepare-review-doc-target":
+        command_prepare_review_doc_target(args)
+    elif command == "validate-review-doc":
         command_validate_review_doc(args)
     elif command == "materialize-pack":
         command_materialize_pack(args)

@@ -6,7 +6,7 @@ The aggregate JSON Schema lives at [`.scherzo/workflows/schemas/review-artifacts
 
 ## ExecPlan PR review previews
 
-ExecPlan PR review uses `docs/plans/*.md` as the source artifact for new plans. The local helper `scripts/scherzo-execplan-review` may render that Markdown into a temporary HTML viewer under `tmp/scherzo-execplan-review/` so reviewers can use the browser drawer, but that HTML is derived local state, not a checked-in or durable remote artifact. When inline submission is available, comments target the changed Markdown source path and Markdown source line; legacy `docs/plans/*.html` PRs remain supported as legacy source artifacts.
+ExecPlan PR review uses a single checked-in Markdown source artifact: `docs/plans/*.md` by default, or a task-requested repository-relative destination such as `doobar/docs/plans/*.md`. The local helper `scripts/scherzo-execplan-review` may render that Markdown into a temporary HTML viewer under `tmp/scherzo-execplan-review/` so reviewers can use the browser drawer, but that HTML is derived local state, not a checked-in or durable remote artifact. When inline submission is available, comments target the changed Markdown source path and Markdown source line; legacy `docs/plans/*.html` PRs remain supported as legacy source artifacts.
 
 ## Artifact types
 
