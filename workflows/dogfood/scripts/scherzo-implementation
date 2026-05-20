@@ -2014,7 +2014,7 @@ def current_plan_completion_verdict(
 
 
 def plan_completion_retry_command(metadata: dict[str, Any]) -> str:
-    issue_identifier = str(metadata.get("issue_identifier") or "").strip()
+    issue_identifier = implementation_issue_identifier(metadata)
     if issue_identifier:
         return f"scherzoctl retry {issue_identifier}"
     return "scherzoctl retry <issue>"
@@ -2136,7 +2136,7 @@ def plan_completion_recovery_command(args: list[str]) -> None:
         "attempt 1 is apply_plan_completion_feedback; attempt 2 is the late pre-review repair"
     )
     retry_command = plan_completion_retry_command(metadata)
-    issue_identifier = str(metadata.get("issue_identifier") or "").strip()
+    issue_identifier = implementation_issue_identifier(metadata)
     source_ref = issue_identifier or str(current["plan_path"])
 
     if phase == "before-late-repair" and attempt <= max_attempts:
@@ -2486,6 +2486,38 @@ def ensure_validation_passed() -> None:
         fail("final validation did not pass; run validate before publish")
 
 
+def metadata_field(metadata: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def implementation_issue_identifier(metadata: dict[str, Any]) -> str:
+    return metadata_field(metadata, "implementation_issue_identifier", "issue_identifier")
+
+
+def implementation_issue_title(metadata: dict[str, Any], fallback: str = "") -> str:
+    return metadata_field(metadata, "implementation_issue_title", "issue_title") or fallback
+
+
+def implementation_issue_url(metadata: dict[str, Any]) -> str:
+    return metadata_field(metadata, "implementation_issue_url", "issue_url")
+
+
+def source_issue_identifier(metadata: dict[str, Any]) -> str:
+    return metadata_field(metadata, "source_issue_identifier")
+
+
+def source_issue_title(metadata: dict[str, Any]) -> str:
+    return metadata_field(metadata, "source_issue_title")
+
+
+def source_issue_url(metadata: dict[str, Any]) -> str:
+    return metadata_field(metadata, "source_issue_url")
+
+
 def ticket_slug(metadata: dict[str, Any]) -> str:
     identifier = sanitize_ref_part(metadata.get("issue_identifier") or "")
     title = sanitize_ref_part(metadata.get("issue_title") or "")
@@ -2498,8 +2530,8 @@ def execplan_implementation_slug(metadata: dict[str, Any]) -> str:
     # issue key appears in the branch name. Avoid deriving ExecPlan
     # implementation branches from the source plan filename because those
     # filenames often contain the planning ticket key instead.
-    identifier = sanitize_ref_part(metadata.get("issue_identifier") or "")
-    title = sanitize_ref_part(metadata.get("issue_title") or "")
+    identifier = sanitize_ref_part(implementation_issue_identifier(metadata))
+    title = sanitize_ref_part(implementation_issue_title(metadata))
     value = "-".join(part for part in [identifier, title] if part)
     if value:
         return value[:60].strip("-") or "execplan-implementation"
@@ -2561,11 +2593,24 @@ def validation_body_section() -> str:
     return "\n".join(lines) + "\n"
 
 
+def execplan_source_issue_line(metadata: dict[str, Any]) -> str:
+    identifier = source_issue_identifier(metadata)
+    title = source_issue_title(metadata)
+    url = source_issue_url(metadata)
+    if not identifier and not title and not url:
+        return ""
+    return format_issue_line(identifier, title, url).replace(
+        "Task:",
+        "Source ExecPlan issue:",
+        1,
+    )
+
+
 def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
     plan_path = metadata["plan_path"]
-    issue_identifier = metadata.get("issue_identifier") or ""
-    issue_title = metadata.get("issue_title") or plan_title(plan_path)
-    issue_url = metadata.get("issue_url") or ""
+    issue_identifier = implementation_issue_identifier(metadata)
+    issue_title = implementation_issue_title(metadata, plan_title(plan_path))
+    issue_url = implementation_issue_url(metadata)
     slug = execplan_implementation_slug(metadata)
     branch_prefix = "scherzo/execplan-implementation"
     description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
@@ -2576,14 +2621,22 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
         else subject if subject.lower().startswith("implement")
         else "Implement: " + subject
     )
+    source_line = execplan_source_issue_line(metadata)
+    if source_line:
+        source_line += "\n\n"
     body = (
-        "Implements a task through Scherzo's `workflow:execplan-implementation` dogfood workflow. The source task is fetched from Linear today.\n\n"
+        "Implements an implementation handoff task through Scherzo's "
+        "`workflow:execplan-implementation` dogfood workflow. Linear and "
+        "GitHub linkage target the implementation task; the ExecPlan source "
+        "issue is listed separately when available.\n\n"
         f"{format_issue_line(issue_identifier, issue_title, issue_url)}\n\n"
+        f"{source_line}"
         f"Source ExecPlan review doc: `{plan_path}`\n\n"
         + validation_body_section()
         + "This PR is ready for human acceptance.\n"
     )
     return branch_prefix, description, pr_title, body
+
 
 def ticket_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
     slug = ticket_slug(metadata)
@@ -2617,6 +2670,22 @@ def publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str, str, s
     else:
         fail(f"unknown source_kind in {METADATA_PATH}: {source_kind}")
     return source_kind, branch_prefix, slug, description, pr_title, body
+
+
+def add_publish_issue_identity_fields(
+    publish: dict[str, Any], metadata: dict[str, Any], source_kind: str
+) -> None:
+    if source_kind == "execplan":
+        implementation_identifier = implementation_issue_identifier(metadata)
+        publish["issue_identifier"] = implementation_identifier
+        publish["implementation_issue_identifier"] = implementation_identifier
+        publish["implementation_issue_title"] = implementation_issue_title(metadata)
+        publish["implementation_issue_url"] = implementation_issue_url(metadata)
+        publish["source_issue_identifier"] = source_issue_identifier(metadata)
+        publish["source_issue_title"] = source_issue_title(metadata)
+        publish["source_issue_url"] = source_issue_url(metadata)
+    else:
+        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
 
 
 def publish_command_legacy() -> None:
@@ -2705,9 +2774,7 @@ def publish_command_legacy() -> None:
         publish["base_drift_repair_summary_path"] = str(BASE_DRIFT_REPAIR_SUMMARY_PATH)
     if source_kind == "execplan":
         publish["plan_path"] = metadata["plan_path"]
-        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
-    else:
-        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
+    add_publish_issue_identity_fields(publish, metadata, source_kind)
     write_json(PUBLISH_PATH, publish)
 
     print("## Summary")
@@ -2849,9 +2916,7 @@ def publish_command() -> None:
         publish["base_drift_repair_summary_path"] = str(BASE_DRIFT_REPAIR_SUMMARY_PATH)
     if source_kind == "execplan":
         publish["plan_path"] = metadata["plan_path"]
-        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
-    else:
-        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
+    add_publish_issue_identity_fields(publish, metadata, source_kind)
     write_json(PUBLISH_PATH, publish)
 
     print("## Summary")
