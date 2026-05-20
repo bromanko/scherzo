@@ -8,6 +8,7 @@ import scherzo/config/types as config_types
 import scherzo/control/client
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/server as control_server
 import scherzo/error
 import scherzo/handoff
 import scherzo/orchestrator/core
@@ -468,6 +469,33 @@ pub fn daemon_writes_control_file_and_serves_session_list_test() {
   assert control.port > 0
   assert control.token != ""
   let assert Ok([]) = client.list_sessions(control)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_control_server_uses_extended_command_timeout_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-control-timeout")
+  let log_subject = process.new_subject()
+  let settings_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      start_control_server: fn(
+        settings: control_server.Settings,
+        _backend: control_server.Backend,
+      ) {
+        process.send(settings_subject, settings.command_timeout_ms)
+        Ok(daemon.NoControlServer)
+      },
+      stop_control_server: fn(_) { Nil },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(command_timeout_ms) =
+    process.receive(settings_subject, within: 1000)
+  assert command_timeout_ms == control_server.default_command_timeout_ms
+  assert command_timeout_ms > 500
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }

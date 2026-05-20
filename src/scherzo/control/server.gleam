@@ -39,6 +39,12 @@ type Listener
 
 type Socket
 
+pub const default_event_timeout_ms = 500
+
+pub const default_stream_poll_ms = 100
+
+pub const default_command_timeout_ms = 15_000
+
 pub type ServerError {
   ServerStartFailed(message: String)
 }
@@ -48,9 +54,9 @@ pub fn default_settings(token: String) -> Settings {
     host: "127.0.0.1",
     port: 0,
     token: token,
-    event_timeout_ms: 500,
-    stream_poll_ms: 100,
-    command_timeout_ms: 500,
+    event_timeout_ms: default_event_timeout_ms,
+    stream_poll_ms: default_stream_poll_ms,
+    command_timeout_ms: default_command_timeout_ms,
   )
 }
 

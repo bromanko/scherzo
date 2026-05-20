@@ -32,6 +32,10 @@ pub type ControlError {
 
 type Socket
 
+const request_transport_timeout_ms = 5000
+
+const operator_command_response_timeout_ms = 30_000
+
 pub fn request(
   control_file: file.ControlFile,
   request: protocol.Request,
@@ -46,12 +50,17 @@ pub fn raw_request(
 ) -> Result(String, ControlError) {
   use socket <- try_control(connect(control_file))
   let request = authenticate(control_file, request)
+  let timeout_ms = request_response_timeout_ms(request)
   let result = case
-    send_line(socket, protocol.request_to_string(request), 5000)
+    send_line(
+      socket,
+      protocol.request_to_string(request),
+      request_transport_timeout_ms,
+    )
   {
     Error(error) -> Error(ConnectionFailed(error))
     Ok(Nil) ->
-      case recv_line(socket, 5000) {
+      case recv_line(socket, timeout_ms) {
         Ok(line) -> Ok(line)
         Error(error) -> Error(ConnectionFailed(error))
       }
@@ -126,13 +135,19 @@ pub fn stream_events(
   use socket <- try_control(connect(control_file))
   let request =
     protocol.StreamEvents("1", control_file.token, session_id, after)
-  case send_line(socket, protocol.request_to_string(request), 5000) {
+  case
+    send_line(
+      socket,
+      protocol.request_to_string(request),
+      request_transport_timeout_ms,
+    )
+  {
     Error(error) -> {
       ffi_close_socket(socket)
       Error(ConnectionFailed(error))
     }
     Ok(Nil) ->
-      case recv_line(socket, 5000) {
+      case recv_line(socket, request_transport_timeout_ms) {
         Error(error) -> {
           ffi_close_socket(socket)
           Error(ConnectionFailed(error))
@@ -188,8 +203,19 @@ fn stream_loop(
   }
 }
 
+fn request_response_timeout_ms(request: protocol.Request) -> Int {
+  case protocol.request_operator_command(request) {
+    Some(_) -> operator_command_response_timeout_ms
+    None -> request_transport_timeout_ms
+  }
+}
+
 fn connect(control_file: file.ControlFile) -> Result(Socket, ControlError) {
-  ffi_connect(control_file.host, control_file.port, 5000)
+  ffi_connect(
+    control_file.host,
+    control_file.port,
+    request_transport_timeout_ms,
+  )
   |> result.map_error(fn(error) {
     ConnectionFailed(raw_connect_error(control_file.host, error))
   })

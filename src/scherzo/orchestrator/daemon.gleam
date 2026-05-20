@@ -377,15 +377,7 @@ fn start_control_plane(
   secrets: List(String),
 ) -> Result(ControlPlane, StartupError) {
   use token <- try_startup(dependencies.make_control_token())
-  let settings =
-    control_server.Settings(
-      host: "127.0.0.1",
-      port: 0,
-      token: token,
-      event_timeout_ms: 500,
-      stream_poll_ms: 100,
-      command_timeout_ms: 500,
-    )
+  let settings = control_server.default_settings(token)
   use handle <- try_startup(dependencies.start_control_server(
     settings,
     control_backend(event_hub, daemon_subject),
