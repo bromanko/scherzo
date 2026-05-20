@@ -6,5 +6,10 @@ while [ "$count" -lt 5000 ]; do
   count=$((count + 1))
 done
 printf '\n' >&2
-request_id=$(printf '%s' "$input" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+request_id=${input#*\"request_id\":\"}
+if [ "$request_id" = "$input" ]; then
+  request_id=
+else
+  request_id=${request_id%%\"*}
+fi
 printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[]}}\n' "$request_id"
