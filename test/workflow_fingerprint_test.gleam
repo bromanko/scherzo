@@ -893,6 +893,14 @@ pub fn workflow_fingerprint_changes_for_present_workstream_phase_metadata_test()
     parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: implement\n        path: tmp/code-change-bundle.json\nsteps:\n  - id: implement\n    kind: command\n    run: echo ok\nworkstream_phase:\n  phase_id: artifact_specs\n  handoff:\n    output: code_change_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\n  gates: [human_review]\n  next_actions:\n    - action_id: revise_plan\n      workflow_id: execplan-revision\n      inputs: [code_change_bundle]\n      requires_gate: human_review\n      auto_enqueue: false\n",
     )
+  let changed_state =
+    parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: implement\n        path: tmp/code-change-bundle.json\nsteps:\n  - id: implement\n    kind: command\n    run: echo ok\nworkstream_phase:\n  phase_id: artifact_specs\n  handoff:\n    output: code_change_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\n  gates: [human_review]\n  next_actions:\n    - action_id: revise_plan\n      workflow_id: execplan-revision\n      state: available\n      inputs: [code_change_bundle]\n      auto_enqueue: false\n",
+    )
+  let changed_priority =
+    parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: implement\n        path: tmp/code-change-bundle.json\nsteps:\n  - id: implement\n    kind: command\n    run: echo ok\nworkstream_phase:\n  phase_id: artifact_specs\n  handoff:\n    output: code_change_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\n  gates: [human_review]\n  next_actions:\n    - action_id: revise_plan\n      workflow_id: execplan-revision\n      priority: 1\n      inputs: [code_change_bundle]\n      auto_enqueue: false\n",
+    )
   let changed_auto_enqueue =
     parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: implement\n        path: tmp/code-change-bundle.json\nsteps:\n  - id: implement\n    kind: command\n    run: echo ok\nworkstream_phase:\n  phase_id: artifact_specs\n  handoff:\n    output: code_change_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\n  gates: [human_review]\n  next_actions:\n    - action_id: revise_plan\n      workflow_id: execplan-revision\n      inputs: [code_change_bundle]\n      auto_enqueue: true\n",
@@ -917,6 +925,10 @@ pub fn workflow_fingerprint_changes_for_present_workstream_phase_metadata_test()
     != workflow_fingerprint.for_dag("implementation", changed_next_action_input)
   assert fingerprint
     != workflow_fingerprint.for_dag("implementation", changed_requires_gate)
+  assert fingerprint
+    != workflow_fingerprint.for_dag("implementation", changed_state)
+  assert fingerprint
+    != workflow_fingerprint.for_dag("implementation", changed_priority)
   assert fingerprint
     != workflow_fingerprint.for_dag("implementation", changed_auto_enqueue)
   assert fingerprint

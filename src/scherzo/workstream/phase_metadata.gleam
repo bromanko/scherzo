@@ -33,6 +33,8 @@ pub type PhaseNextAction {
   PhaseNextAction(
     action_id: String,
     workflow_id: String,
+    state: String,
+    priority: Int,
     inputs: List(String),
     requires_gate: Option(String),
     auto_enqueue: Bool,
@@ -226,6 +228,19 @@ fn parse_next_action_list(
         "workflow_id",
         "workstream_phase_next_action_workflow_id_missing",
       ))
+      use state_value <- result.try(optional_string(
+        next_action,
+        "state",
+        "workstream_phase_next_action_state_invalid",
+      ))
+      let state = state_value |> option_default("suggested")
+      use Nil <- result.try(validate_next_action_state(state))
+      use priority_value <- result.try(optional_int(
+        next_action,
+        "priority",
+        "workstream_phase_next_action_priority_invalid",
+      ))
+      let priority = priority_value |> option_default(0)
       use inputs <- result.try(parse_string_list(
         next_action,
         "inputs",
@@ -249,6 +264,8 @@ fn parse_next_action_list(
           PhaseNextAction(
             action_id: action_id,
             workflow_id: workflow_id,
+            state: state,
+            priority: priority,
             inputs: inputs,
             requires_gate: requires_gate,
             auto_enqueue: auto_enqueue,
@@ -274,6 +291,19 @@ fn validate_contract_output(
   case output_exists(contract, output) {
     True -> Ok(Nil)
     False -> error(code, "unknown contract output: " <> output)
+  }
+}
+
+fn validate_next_action_state(
+  state: String,
+) -> Result(Nil, PhaseMetadataError) {
+  case state {
+    "suggested" | "available" | "blocked" -> Ok(Nil)
+    _ ->
+      error(
+        "workstream_phase_next_action_state_invalid",
+        "unsupported next action state: " <> state,
+      )
   }
 }
 
@@ -354,6 +384,8 @@ fn next_action_to_json(next_action: PhaseNextAction) -> json.Json {
   let fields = [
     #("action_id", json.string(next_action.action_id)),
     #("workflow_id", json.string(next_action.workflow_id)),
+    #("state", json.string(next_action.state)),
+    #("priority", json.int(next_action.priority)),
     #("inputs", json.array(next_action.inputs, of: json.string)),
     #("auto_enqueue", json.bool(next_action.auto_enqueue)),
   ]
@@ -403,6 +435,18 @@ fn optional_bool(
     None -> Ok(None)
     Some(yay.NodeBool(value)) -> Ok(Some(value))
     Some(_) -> error(code, key <> " must be a boolean")
+  }
+}
+
+fn optional_int(
+  node: yay.Node,
+  key: String,
+  code: String,
+) -> Result(Option(Int), PhaseMetadataError) {
+  case get_node(node, key) {
+    None -> Ok(None)
+    Some(yay.NodeInt(value)) -> Ok(Some(value))
+    Some(_) -> error(code, key <> " must be an integer")
   }
 }
 

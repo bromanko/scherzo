@@ -12,6 +12,7 @@ import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/hash
 import scherzo/json_value
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
@@ -37,6 +38,7 @@ import scherzo/workflow_scheduler
 import scherzo/workspace_driver_context
 import scherzo/workspace_driver_discovery
 import scherzo/workspace_run
+import scherzo/workstream/artifacts as workstream_artifacts
 import simplifile
 import support/expected_crash
 import test_async
@@ -3988,6 +3990,434 @@ pub fn contracted_existing_mismatched_input_manifest_fails_before_prepare_test()
     "existing_input_manifest_mismatch:runs/run-1/inputs.v1.json",
   )
   assert process.receive(subject, within: 20) == Error(Nil)
+}
+
+pub fn opted_in_workstream_phase_emits_handoff_and_next_action_test() {
+  let root = "test/tmp/workflow-run/workstream-phase-success"
+  reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      opted_in_workstream_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(process.new_subject(), None),
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _command,
+          _timeout_ms,
+          secrets,
+          limits,
+        ) {
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "{\"bundle_id\":\"bundle-1\"}\n",
+            "",
+            False,
+            secrets,
+            limits,
+          )
+        },
+        checkpoint: checkpoint,
+      ),
+    )
+
+  let assert Ok(_) = dict.get(success.artifacts, "materialize_bundle")
+  let workstream_records =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      string.starts_with(record.kind(ledger_record.body), "workstream_")
+    })
+  assert list.length(workstream_records) == 5
+  let handoff_ref = recorded_handoff_ref(workstream_records)
+  let next_action_ref = recorded_next_action_ref(workstream_records)
+  let assert Ok(handoff_contents) = checkpoint.read_artifact(handoff_ref)
+  let assert Ok(handoff) = workstream_artifacts.decode_handoff(handoff_contents)
+  assert handoff.workstream_id == "linear:ABC-123"
+  let assert [recommended_next_action] = handoff.recommended_next_actions
+  let assert Ok(next_action_contents) =
+    checkpoint.read_artifact(next_action_ref)
+  let assert Ok(next_action) =
+    workstream_artifacts.decode_next_action(next_action_contents)
+  assert recommended_next_action == next_action.artifact_id
+  assert next_action.workflow_id == "execplan-implementation"
+  assert next_action.auto_enqueue == False
+}
+
+pub fn workflow_without_workstream_phase_writes_no_workstream_records_test() {
+  let root = "test/tmp/workflow-run/workstream-phase-noop"
+  reset_dir(root)
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      non_opted_in_workstream_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(process.new_subject(), None),
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _command,
+          _timeout_ms,
+          secrets,
+          limits,
+        ) {
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "{\"bundle_id\":\"bundle-1\"}\n",
+            "",
+            False,
+            secrets,
+            limits,
+          )
+        },
+        checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+      ),
+    )
+
+  let workstream_records =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      string.starts_with(record.kind(ledger_record.body), "workstream_")
+    })
+  assert workstream_records == []
+}
+
+pub fn metadata_only_workstream_phase_without_contract_noops_test() {
+  let root = "test/tmp/workflow-run/workstream-phase-metadata-only"
+  reset_dir(root)
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      metadata_only_workstream_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(process.new_subject(), None),
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _command,
+          _timeout_ms,
+          secrets,
+          limits,
+        ) {
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "ok\n",
+            "",
+            False,
+            secrets,
+            limits,
+          )
+        },
+        checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+      ),
+    )
+
+  let workstream_records =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      string.starts_with(record.kind(ledger_record.body), "workstream_")
+    })
+  assert workstream_records == []
+}
+
+pub fn opted_in_workstream_phase_fails_closed_when_output_is_absent_test() {
+  let root = "test/tmp/workflow-run/workstream-phase-absent-output"
+  let subject = process.new_subject()
+  reset_dir(root)
+  let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let checkpoint =
+    workflow_checkpoint.Writer(
+      ..base_checkpoint,
+      workflow_finished: fn(finished: workflow_checkpoint.WorkflowFinished) {
+        process.send(subject, finished.outcome)
+        base_checkpoint.workflow_finished(finished)
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      opted_in_optional_output_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, None),
+        agent_step: fn(
+          _issue,
+          _context,
+          _prompt_mode,
+          _attempt_context,
+          _effective,
+          _tracker,
+          _emit_update,
+          _command_ready,
+          _record_pi_session,
+        ) {
+          Ok(success_agent_with_response(None, False))
+        },
+        checkpoint: checkpoint,
+      ),
+    )
+
+  assert string.starts_with(
+    failure.reason,
+    "workflow_workstream_handoff_failed:workstream_handoff_output_absent",
+  )
+  assert receive_event(subject) == "prepare:materialize_bundle:main:"
+  assert receive_event(subject) == "after:materialize_bundle"
+  assert receive_event(subject) == "failed_fatal"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
+pub fn resumed_opted_in_workstream_phase_reuses_recorded_output_manifest_test() {
+  let root = "test/tmp/workflow-run/workstream-phase-recovery-success"
+  reset_dir(root)
+  let dag = opted_in_workstream_dag()
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let manifest = write_recorded_execplan_output_manifest(root, dag, "execplan")
+  let resume =
+    opted_in_workstream_resume_state(workflow_checkpoint.ArtifactWritten(
+      ref: "runs/run-1/outputs.v1.json",
+      sha256: hash.sha256_hex(
+        workflow_contract_manifest.output_manifest_to_string(manifest),
+      ),
+      bytes: string.length(workflow_contract_manifest.output_manifest_to_string(
+        manifest,
+      )),
+    ))
+
+  let assert Ok(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(process.new_subject(), None),
+        checkpoint: checkpoint,
+      ),
+      resume,
+    )
+
+  let workstream_records =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      string.starts_with(record.kind(ledger_record.body), "workstream_")
+    })
+  assert list.length(workstream_records) == 5
+  let handoff_ref = recorded_handoff_ref(workstream_records)
+  let assert Ok(handoff_contents) = checkpoint.read_artifact(handoff_ref)
+  let assert Ok(handoff) = workstream_artifacts.decode_handoff(handoff_contents)
+  let assert [handoff_output] = handoff.outputs
+  assert handoff_output.snapshot.producer.workflow_id == "execplan"
+  assert handoff_output.snapshot.producer.run_id == "run-1"
+  assert handoff_output.snapshot.producer.step_id == "materialize_bundle"
+}
+
+pub fn resumed_opted_in_workstream_phase_rejects_mismatched_output_manifest_identity_test() {
+  let root = "test/tmp/workflow-run/workstream-phase-recovery-manifest-mismatch"
+  reset_dir(root)
+  let dag = opted_in_workstream_dag()
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let manifest =
+    write_recorded_execplan_output_manifest(root, dag, "unexpected-workflow")
+  let resume =
+    opted_in_workstream_resume_state(workflow_checkpoint.ArtifactWritten(
+      ref: "runs/run-1/outputs.v1.json",
+      sha256: hash.sha256_hex(
+        workflow_contract_manifest.output_manifest_to_string(manifest),
+      ),
+      bytes: string.length(workflow_contract_manifest.output_manifest_to_string(
+        manifest,
+      )),
+    ))
+
+  let assert Error(failure) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(process.new_subject(), None),
+        checkpoint: checkpoint,
+      ),
+      resume,
+    )
+
+  assert string.starts_with(
+    failure.reason,
+    "workflow_workstream_handoff_failed:manifest_workflow_id_mismatch",
+  )
+  let workstream_records =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      string.starts_with(record.kind(ledger_record.body), "workstream_")
+    })
+  assert workstream_records == []
+}
+
+fn opted_in_workstream_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nworkstream_phase:\n  phase_id: execplan\n  display_name: ExecPlan authored\n  handoff:\n    output: exec_plan_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\n  next_actions:\n    - action_id: implement_exec_plan\n      workflow_id: execplan-implementation\n      state: suggested\n      priority: 0\n      inputs: [exec_plan_bundle]\n      requires_gate: human_review\n      auto_enqueue: false\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    workspace: main\n",
+    )
+  dag
+}
+
+fn non_opted_in_workstream_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    workspace: main\n",
+    )
+  dag
+}
+
+fn metadata_only_workstream_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan\nworkstream_phase:\n  phase_id: execplan\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    workspace: main\n",
+    )
+  dag
+}
+
+fn opted_in_optional_output_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      required: false\n      source:\n        step: materialize_bundle\n        field: final_response\nworkstream_phase:\n  phase_id: execplan\n  handoff:\n    output: exec_plan_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\nsteps:\n  - id: materialize_bundle\n    kind: agent\n    prompt: emit bundle\n    workspace: main\n",
+    )
+  dag
+}
+
+fn opted_in_workstream_resume_state(
+  recorded: workflow_checkpoint.ArtifactWritten,
+) -> workflow_run.ResumeState {
+  workflow_run.ResumeState(
+    artifacts: dict.from_list([
+      #(
+        "materialize_bundle",
+        step_artifact.from_command_result(
+          "materialize_bundle",
+          0,
+          "{\"bundle_id\":\"bundle-1\"}\n",
+          "",
+          False,
+          [],
+          orchestrator().artifact_limits,
+        ),
+      ),
+    ]),
+    workspaces: dict.new(),
+    next_attempt_indexes: dict.new(),
+    run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+    pi_session_continuations: dict.new(),
+    contract_inputs_recorded: None,
+    contract_outputs_recorded: Some(recorded),
+  )
+}
+
+fn write_recorded_execplan_output_manifest(
+  root: String,
+  dag: workflow_dag.WorkflowDag,
+  manifest_workflow_id: String,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  let store = artifact_store.new(root)
+  let contents = "{\"bundle_id\":\"bundle-1\"}\n"
+  let assert Ok(existing) =
+    artifact_store.write_output_blob(
+      store,
+      "run-1",
+      "exec_plan_bundle",
+      ".json",
+      contents,
+    )
+  let manifest =
+    workflow_contract_manifest.ContractOutputManifest(
+      run_id: "run-1",
+      workflow_id: manifest_workflow_id,
+      workflow_fingerprint: workflow_attempt.workflow_fingerprint(
+        dag,
+        orchestrator(),
+      ),
+      outputs: [
+        workflow_contract_manifest.NamedManifestValue(
+          name: "exec_plan_bundle",
+          value: workflow_contract_manifest.present_run_artifact(
+            workflow_contract.ExecPlanBundle,
+            workflow_contract_manifest.ArtifactWritten(
+              ref: existing.ref,
+              sha256: existing.sha256,
+              bytes: existing.bytes,
+            ),
+            "application/json",
+            Some(source_json("materialize_bundle")),
+          ),
+        ),
+      ],
+      diagnostics: [],
+    )
+  let manifest_text =
+    workflow_contract_manifest.output_manifest_to_string(manifest)
+  let artifact_dir = root <> "/.scherzo-state/artifacts/runs/run-1"
+  let assert Ok(Nil) = simplifile.create_directory_all(artifact_dir)
+  let assert Ok(Nil) =
+    simplifile.write(artifact_dir <> "/outputs.v1.json", manifest_text)
+  manifest
+}
+
+fn source_json(step_id: String) -> json_value.JsonValue {
+  json_value.JObject([#("step_id", json_value.JString(step_id))])
+}
+
+fn recorded_handoff_ref(records: List(record.LedgerRecord)) -> String {
+  let assert Ok(ledger_record) =
+    list.find(records, fn(ledger_record) {
+      record.kind(ledger_record.body) == "workstream_handoff_recorded"
+    })
+  let assert record.WorkstreamHandoffRecorded(handoff_ref: handoff_ref, ..) =
+    ledger_record.body
+  handoff_ref
+}
+
+fn recorded_next_action_ref(records: List(record.LedgerRecord)) -> String {
+  let assert Ok(ledger_record) =
+    list.find(records, fn(ledger_record) {
+      case ledger_record.body {
+        record.WorkstreamArtifactRecorded(
+          artifact_type: artifact_type,
+          contract_type: contract_type,
+          ..,
+        ) ->
+          artifact_type == "scherzo.next_action.v1" && contract_type == "text"
+        _ -> False
+      }
+    })
+  let assert record.WorkstreamArtifactRecorded(snapshot_ref: snapshot_ref, ..) =
+    ledger_record.body
+  snapshot_ref
 }
 
 fn read_input_manifest(
