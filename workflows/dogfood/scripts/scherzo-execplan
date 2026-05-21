@@ -98,7 +98,7 @@ COMPLETION_PREFLIGHT_PACK_CUES = [
         re.compile(r"\b(?:idempotent|idempotency|duplicate|same-stable-record-id|same record id|conflict)\b", re.IGNORECASE),
     ),
     (
-        "manual/browser/dogfood evidence",
+        "manual/browser/dogfood evidence timing",
         re.compile(r"\b(?:manual|browser|dogfood|dry-run|dry run)\b", re.IGNORECASE),
         COMPLETION_PREFLIGHT_MANUAL_PACK_RE,
     ),
@@ -520,7 +520,7 @@ def completion_review_doc_findings(markdown: str) -> list[str]:
     progress = sections.get("Progress", "")
     if not text_has_unnegated_match(validation, COMPLETION_PREFLIGHT_EVIDENCE_RE, include_code_blocks=True):
         findings.append(
-            "Validation and Acceptance is not verifiable: include concrete commands, tests, observable artifacts, expected output, or explicit manual-evidence requirements."
+            "Validation and Acceptance is not verifiable: include concrete commands, tests, observable artifacts, expected output, explicit pre-publish manual-evidence requirements, or explicit deferred post-implementation manual evidence."
         )
     if re.search(
         r"\b(?:works|good|done|complete|sufficient|appropriate|as needed|where practical)\b", validation, re.IGNORECASE

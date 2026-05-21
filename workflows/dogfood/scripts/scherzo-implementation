@@ -2104,6 +2104,42 @@ def string_list_field(value: dict[str, Any], key: str) -> list[str]:
     return strings
 
 
+def deferred_manual_verification_field(value: dict[str, Any]) -> list[dict[str, str]]:
+    field = value.get("deferred_manual_verification", [])
+    if not isinstance(field, list):
+        fail_plan_completion_gate(
+            f"{PLAN_COMPLETION_VERDICT_PATH} field 'deferred_manual_verification' must be a list of objects",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    entries: list[dict[str, str]] = []
+    for item in field:
+        if not isinstance(item, dict):
+            fail_plan_completion_gate(
+                f"{PLAN_COMPLETION_VERDICT_PATH} field 'deferred_manual_verification' must be a list of objects",
+                failure_code="plan_completion_verdict_malformed",
+            )
+        entry: dict[str, str] = {}
+        for key in ["check", "reason", "owner", "when"]:
+            item_value = item.get(key)
+            if not isinstance(item_value, str) or not item_value.strip():
+                fail_plan_completion_gate(
+                    f"{PLAN_COMPLETION_VERDICT_PATH} deferred manual verification entries must include non-empty {key!r}",
+                    failure_code="plan_completion_verdict_malformed",
+                )
+            entry[key] = item_value.strip()
+        entries.append(entry)
+    return entries
+
+
+def deferred_manual_verification_summaries(entries: list[dict[str, str]]) -> list[str]:
+    summaries: list[str] = []
+    for entry in entries:
+        summaries.append(
+            f"{entry['check']} (owner: {entry['owner']}; when: {entry['when']}; reason: {entry['reason']})"
+        )
+    return summaries
+
+
 def required_string_field(value: dict[str, Any], key: str) -> str:
     field = value.get(key)
     if not isinstance(field, str) or not field.strip():
@@ -2169,6 +2205,7 @@ def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str,
             failure_code="plan_completion_verdict_malformed",
         )
     changed_files = string_list_field(verdict, "changed_files")
+    deferred_manual_verification = deferred_manual_verification_field(verdict)
     return {
         "verdict": raw_verdict,
         "blocking_findings": blocking_findings,
@@ -2179,6 +2216,7 @@ def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str,
         "verified_change_id": verified_change_id,
         "verified_diff_fingerprint": verified_diff_fingerprint,
         "changed_files": changed_files,
+        "deferred_manual_verification": deferred_manual_verification,
     }
 
 
@@ -2290,6 +2328,15 @@ def plan_completion_recovery_summary_markdown(payload: dict[str, Any]) -> str:
         lines.extend(f"- {finding}" for finding in blocking_findings)
     else:
         lines.append("- None")
+    lines.extend(["", "## Deferred manual verification", ""])
+    deferred_manual_verification = payload.get("deferred_manual_verification") or []
+    deferred_summaries = deferred_manual_verification_summaries(
+        deferred_manual_verification
+    )
+    if deferred_summaries:
+        lines.extend(f"- {item}" for item in deferred_summaries)
+    else:
+        lines.append("- None")
     lines.extend([
         "",
         "## Next action",
@@ -2330,6 +2377,12 @@ def print_plan_completion_recovery_summary(payload: dict[str, Any]) -> None:
     if payload.get("retention_marker"):
         print(f"PLAN_COMPLETION_RETENTION_MARKER={payload['retention_marker']}")
     print_list("PLAN_COMPLETION_BLOCKING_FINDINGS", payload["blocking_findings"])
+    print_list(
+        "PLAN_COMPLETION_DEFERRED_MANUAL_VERIFICATION",
+        deferred_manual_verification_summaries(
+            payload["deferred_manual_verification"]
+        ),
+    )
 
 
 def parse_plan_completion_recovery_args(args: list[str]) -> tuple[str, int, int]:
@@ -2371,6 +2424,7 @@ def plan_completion_recovery_command(args: list[str]) -> None:
         "blocking_findings": verdict["blocking_findings"],
         "checked_acceptance_criteria": verdict["checked_acceptance_criteria"],
         "evidence": verdict["evidence"],
+        "deferred_manual_verification": verdict["deferred_manual_verification"],
     }
     if verdict["verdict"] == "pass":
         payload["next_action"] = "No late plan-completion repair is needed."
@@ -2433,6 +2487,12 @@ def gate_plan_completion_command(args: list[str]) -> None:
     print(f"PLAN_COMPLETION_VERDICT_RESTORE_STATUS={verdict_restore_status}")
     print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
     print(f"PLAN_COMPLETION_VERDICT_PATH={PLAN_COMPLETION_VERDICT_PATH}")
+    print_list(
+        "PLAN_COMPLETION_DEFERRED_MANUAL_VERIFICATION",
+        deferred_manual_verification_summaries(
+            verdict["deferred_manual_verification"]
+        ),
+    )
     if verdict["verdict"] != "pass":
         print_list("PLAN_COMPLETION_BLOCKING_FINDINGS", verdict["blocking_findings"])
         fail_plan_completion_gate(

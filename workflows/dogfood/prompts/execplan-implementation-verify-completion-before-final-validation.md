@@ -42,6 +42,7 @@ Verification contract:
 - Inspect the canonical plan's Progress, Outcomes/Retrospective, Validation and Acceptance, Milestones, Scope Boundaries, Open Questions, and any explicit non-goals/deferred/stretch sections.
 - Compare the final current changed files/tests against the canonical plan and implementation pack. Inspect the smallest useful set of changed files and tests when the summaries are not enough.
 - Treat unchecked Progress checklist items as evidence requests, not as mandatory source-plan edits. Return `fail` only when the unchecked item corresponds to required behavior, artifacts, tests, validation, or acceptance evidence that is still undelivered or unobservable in the current implementation. Do not fail solely because the immutable source plan still contains historical "implementation pending" or "pack materialization pending" living-status checkboxes when the implementation run provides equivalent evidence.
+- Treat explicitly post-implementation manual/browser/dogfood checks as deferred manual verification, not blocking implementation completion. A manual check is explicitly deferred only when the canonical plan or implementation pack says it is performed after implementation, PR publication, or handoff by a human/operator. Do not fail solely because such deferred manual verification has not been completed; record it in `deferred_manual_verification` instead. If a manual check is required before publish and has no deferred timing/owner, it remains blocking when evidence is missing.
 - Do not fail for imperfect wording, formatting, or optional/stretch work that is clearly marked optional, stretch, deferred, or out of scope.
 - Before writing the verdict, run `bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-context` from the repository root and copy its context values exactly into the JSON artifact.
 - The final command gate will fail closed if the JSON is missing, malformed, has verdict `fail`, or has stale context values. If that final gate still reports a fresh `fail`, Scherzo will retain the workspace and write diagnostic recovery artifacts rather than launching another automatic edit pass.
@@ -61,11 +62,19 @@ Write valid JSON (no Markdown fences, no comments, no trailing commas) to `tmp/s
   "verified_base_change_id": "<PLAN_COMPLETION_BASE_CHANGE_ID>",
   "verified_change_id": "<PLAN_COMPLETION_CHANGE_ID>",
   "verified_diff_fingerprint": "<PLAN_COMPLETION_DIFF_FINGERPRINT>",
-  "changed_files": ["<files from PLAN_COMPLETION_CHANGED_FILES>"]
+  "changed_files": ["<files from PLAN_COMPLETION_CHANGED_FILES>"],
+  "deferred_manual_verification": [
+    {
+      "check": "Manual/browser/dogfood check still to perform after implementation.",
+      "reason": "Requires human/operator environment after implementation.",
+      "owner": "operator",
+      "when": "after implementation workflow"
+    }
+  ]
 }
 ```
 
-Use `"verdict": "fail"` when promised behavior is incomplete after review feedback or base-drift repair. In that case, keep `blocking_findings` concrete and actionable for retained-workspace triage.
+Use `"verdict": "fail"` when promised behavior is incomplete after review feedback or base-drift repair. In that case, keep `blocking_findings` concrete and actionable for retained-workspace triage. Set `deferred_manual_verification` to `[]` when there are no explicitly deferred manual checks.
 
 Process:
 

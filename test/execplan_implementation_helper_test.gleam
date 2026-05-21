@@ -896,6 +896,31 @@ pub fn plan_completion_gate_passes_fresh_pass_verdict_test() {
   assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=passed")
 }
 
+pub fn plan_completion_gate_allows_deferred_manual_verification_test() {
+  let dir = "test/tmp/plan-completion-gate-deferred-manual"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict_with_deferred_manual_verification(
+    dir,
+    fingerprint,
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --final",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_VERDICT=pass")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_DEFERRED_MANUAL_VERIFICATION:",
+  )
+  assert string.contains(artifact.stdout, "Dogfood the browser flow")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=passed")
+}
+
 pub fn plan_completion_gate_blocks_fail_verdict_test() {
   let dir = "test/tmp/plan-completion-gate-fail"
   let fingerprint = setup_plan_completion_gate_fixture(dir)
@@ -2161,6 +2186,11 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
       let assert Ok(prompt) = simplifile.read(path)
       assert string.contains(prompt, "restore-execplan-artifacts")
       assert string.contains(prompt, "Treat unchecked Progress checklist items")
+      assert string.contains(prompt, "deferred_manual_verification")
+      assert string.contains(
+        prompt,
+        "post-implementation manual/browser/dogfood",
+      )
       assert !string.contains(
         prompt,
         "Explicitly return `fail` when required Progress checklist items are still unchecked",
@@ -2528,6 +2558,39 @@ fn write_plan_completion_verdict(
         <> fingerprint
         <> "\",\n"
         <> "  \"changed_files\": [\"scripts/scherzo-implementation\"]\n"
+        <> "}\n",
+    )
+  Nil
+}
+
+fn write_plan_completion_verdict_with_deferred_manual_verification(
+  dir: String,
+  fingerprint: String,
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-plan-completion-verdict.json",
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"verdict\": \"pass\",\n"
+        <> "  \"blocking_findings\": [],\n"
+        <> "  \"evidence\": [\"Implementation prerequisites for manual check are present.\"],\n"
+        <> "  \"checked_acceptance_criteria\": [\"Required work.\"],\n"
+        <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"verified_base_change_id\": \"local-start\",\n"
+        <> "  \"verified_change_id\": \"publishchange\",\n"
+        <> "  \"verified_diff_fingerprint\": \""
+        <> fingerprint
+        <> "\",\n"
+        <> "  \"changed_files\": [\"scripts/scherzo-implementation\"],\n"
+        <> "  \"deferred_manual_verification\": [\n"
+        <> "    {\n"
+        <> "      \"check\": \"Dogfood the browser flow\",\n"
+        <> "      \"reason\": \"Requires a human browser session after implementation\",\n"
+        <> "      \"owner\": \"operator\",\n"
+        <> "      \"when\": \"after implementation workflow\"\n"
+        <> "    }\n"
+        <> "  ]\n"
         <> "}\n",
     )
   Nil

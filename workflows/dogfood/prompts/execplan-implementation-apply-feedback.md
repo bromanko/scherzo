@@ -37,7 +37,7 @@ Feedback contract:
 - Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - Do not create VCS commits. The publish step uses the configured workspace driver to publish the final change after final validation passes.
 - Fix blocking review findings, safe medium-or-smaller findings, and obvious validation risks.
-- If a finding is invalid, too risky, too broad, or intentionally deferred, explain why in the final response.
+- If a finding is invalid, too risky, too broad, or intentionally deferred, explain why in the final response. Do not convert explicitly deferred post-implementation manual verification into a blocking review fix; preserve it for handoff.
 - Write `tmp/review-finding-dispositions.v1.json` before finishing. Use schema_version `1`, artifact_type `review_finding_disposition_input`, and one `entries` item per synthesized finding id from `REVIEW_FINAL_ARTIFACT_PATH` / `artifacts/review/synthesize_review/final-review.v1.json`.
 - Each disposition entry must include `finding_id`, `disposition`, `rationale`, and non-empty `evidence_refs`. Use `resolved` for fixed findings with diff/test evidence, `rejected` for invalid findings with evidence, `deferred` only for non-blocking findings with a deferral reason, and `obsolete` when later changes make the finding inapplicable.
 - Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json` when plan context is needed.
