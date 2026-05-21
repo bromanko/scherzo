@@ -51,9 +51,15 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
     workspace: main
 
+  - id: restore_execplan_artifacts_before_plan_completion
+    kind: command
+    depends_on: [analyze_changes]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
+    workspace: main
+
   - id: verify_plan_completion
     kind: agent
-    depends_on: [analyze_changes]
+    depends_on: [restore_execplan_artifacts_before_plan_completion]
     prompt: prompts/execplan-implementation-verify-completion.md
     workspace: main
 
@@ -71,9 +77,15 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
     workspace: main
 
+  - id: restore_execplan_artifacts_after_plan_feedback
+    kind: command
+    depends_on: [analyze_changes_after_plan_feedback]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
+    workspace: main
+
   - id: verify_plan_completion_after_feedback
     kind: agent
-    depends_on: [analyze_changes_after_plan_feedback]
+    depends_on: [restore_execplan_artifacts_after_plan_feedback]
     prompt: prompts/execplan-implementation-verify-completion-after-feedback.md
     workspace: main
 
@@ -104,9 +116,15 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
     workspace: main
 
+  - id: restore_execplan_artifacts_after_late_plan_feedback
+    kind: command
+    depends_on: [analyze_changes_after_late_plan_feedback]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
+    workspace: main
+
   - id: verify_plan_completion_after_late_repair
     kind: agent
-    depends_on: [analyze_changes_after_late_plan_feedback]
+    depends_on: [restore_execplan_artifacts_after_late_plan_feedback]
     prompt: prompts/execplan-implementation-verify-completion-after-late-repair.md
     workspace: main
 
@@ -441,15 +459,27 @@ steps:
     prompt: prompts/execplan-implementation-repair-base-drift.md
     workspace: main
 
+  - id: restore_execplan_artifacts_before_final_verification
+    kind: command
+    depends_on: [repair_base_drift]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
+    workspace: main
+
   - id: verify_plan_completion_before_final_validation
     kind: agent
-    depends_on: [repair_base_drift]
+    depends_on: [restore_execplan_artifacts_before_final_verification]
     prompt: prompts/execplan-implementation-verify-completion-before-final-validation.md
+    workspace: main
+
+  - id: checkpoint_final_plan_completion_verdict
+    kind: command
+    depends_on: [verify_plan_completion_before_final_validation]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" checkpoint-plan-completion-verdict'
     workspace: main
 
   - id: final_validate
     kind: command
-    depends_on: [verify_plan_completion_before_final_validation]
+    depends_on: [checkpoint_final_plan_completion_verdict]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
     timeout_ms: 1200000
     workspace: main
@@ -477,5 +507,5 @@ steps:
   - id: materialize_code_change_bundle
     kind: command
     depends_on: [publish_pr]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" materialize-code-change-bundle --bundle tmp/execplan-bundle.json --output tmp/execplan-code-change-bundle.json'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; bundle_path=${SCHERZO_RUN_ROOT:-}/state/implementation/execplan-bundle.json; if [ ! -f "$bundle_path" ]; then bundle_path=tmp/execplan-bundle.json; fi; "$bundle_dir/scripts/scherzo-execplan" materialize-code-change-bundle --bundle "$bundle_path" --output tmp/execplan-code-change-bundle.json'
     workspace: main

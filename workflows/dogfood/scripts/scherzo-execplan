@@ -35,6 +35,10 @@ DEFAULT_REVIEW_DOC_DIRECTORY = "docs/plans"
 CANONICAL_PLAN_OUTPUT_NAME = "plan"
 CANONICAL_PLAN_OUTPUT_PATH = Path("tmp/execplan-review-doc.md")
 CANONICAL_PLAN_MEDIA_TYPE = "text/markdown"
+IMPLEMENTATION_STATE_RELATIVE_DIR = Path("state") / "implementation"
+CANONICAL_IMPLEMENTATION_PLAN_STATE_NAME = "execplan-review-doc.md"
+CANONICAL_IMPLEMENTATION_PACK_STATE_NAME = "execplan-implementation-pack.json"
+CANONICAL_IMPLEMENTATION_BUNDLE_STATE_NAME = "execplan-bundle.json"
 REVIEW_DOC_TARGET_SCHEMA_VERSION = 1
 
 REQUIRED_REVIEW_DOC_SECTIONS = [
@@ -243,6 +247,13 @@ def canonical_json(value: Any) -> str:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(canonical_json(value), encoding="utf-8")
+
+
+def implementation_state_dir() -> Path | None:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if not run_root:
+        return None
+    return Path(run_root) / IMPLEMENTATION_STATE_RELATIVE_DIR
 
 
 def load_json(path: Path, *, code: str | None = None) -> Any:
@@ -2654,10 +2665,34 @@ def command_implementation_prepare(args: list[str]) -> None:
     tmp = Path("tmp")
     tmp.mkdir(exist_ok=True)
     prepared_plan_path = tmp / "execplan-review-doc.md"
-    if plan_source_path.resolve() != prepared_plan_path.resolve():
+    prepared_pack_path = tmp / "execplan-implementation-pack.json"
+    prepared_bundle_path = tmp / "execplan-bundle.json"
+    state_dir = implementation_state_dir()
+    canonical_plan_path = prepared_plan_path
+    canonical_pack_path = prepared_pack_path
+    canonical_bundle_path = prepared_bundle_path
+    if state_dir is not None:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        canonical_plan_path = state_dir / CANONICAL_IMPLEMENTATION_PLAN_STATE_NAME
+        canonical_pack_path = state_dir / CANONICAL_IMPLEMENTATION_PACK_STATE_NAME
+        canonical_bundle_path = state_dir / CANONICAL_IMPLEMENTATION_BUNDLE_STATE_NAME
+        if plan_source_path.resolve() != canonical_plan_path.resolve():
+            shutil.copyfile(plan_source_path, canonical_plan_path)
+        if pack_path.resolve() != canonical_pack_path.resolve():
+            shutil.copyfile(pack_path, canonical_pack_path)
+        write_json(canonical_bundle_path, bundle)
+    if canonical_plan_path.resolve() != prepared_plan_path.resolve():
+        shutil.copyfile(canonical_plan_path, prepared_plan_path)
+    elif plan_source_path.resolve() != prepared_plan_path.resolve():
         shutil.copyfile(plan_source_path, prepared_plan_path)
-    shutil.copyfile(pack_path, tmp / "execplan-implementation-pack.json")
-    write_json(tmp / "execplan-bundle.json", bundle)
+    if canonical_pack_path.resolve() != prepared_pack_path.resolve():
+        shutil.copyfile(canonical_pack_path, prepared_pack_path)
+    elif pack_path.resolve() != prepared_pack_path.resolve():
+        shutil.copyfile(pack_path, prepared_pack_path)
+    if canonical_bundle_path.resolve() != prepared_bundle_path.resolve():
+        shutil.copyfile(canonical_bundle_path, prepared_bundle_path)
+    else:
+        write_json(prepared_bundle_path, bundle)
     base_change_id = "unknown-base"
     if workspace_driver_command():
         try:
@@ -2702,20 +2737,28 @@ def command_implementation_prepare(args: list[str]) -> None:
         "plan_bytes": plan_meta["bytes"],
         "plan_media_type": CANONICAL_PLAN_MEDIA_TYPE,
         "plan_artifact_ref": str(bundle.get("plan", {}).get("ref") or ""),
+        "canonical_plan_path": str(canonical_plan_path),
         "legacy_review_doc_path": legacy_review_doc_path(bundle),
         "review_surface_path": str(bundle.get("review_surface", {}).get("review_doc_path") or legacy_review_doc_path(bundle)),
         "base_change_id": base_change_id,
         "execplan_v2_bundle_path": "tmp/execplan-bundle.json",
         "execplan_v2_implementation_pack_path": "tmp/execplan-implementation-pack.json",
+        "canonical_execplan_v2_bundle_path": str(canonical_bundle_path),
+        "canonical_execplan_v2_implementation_pack_path": str(canonical_pack_path),
     }
     marker_source = str(bundle.get("plan", {}).get("ref") or legacy_review_doc_path(bundle) or prepared_plan_path)
     marker = write_implementation_retention_marker("execplan", marker_source)
+    if state_dir is not None:
+        write_json(state_dir / "metadata.json", metadata)
     write_json(tmp / "scherzo-implementation.json", metadata)
     print("IMPLEMENTATION_PREPARE_STATUS=ok")
     print("PLAN=tmp/execplan-review-doc.md")
     print("REVIEW_DOC=tmp/execplan-review-doc.md")
     print("IMPLEMENTATION_PACK=tmp/execplan-implementation-pack.json")
     print("BUNDLE=tmp/execplan-bundle.json")
+    print(f"CANONICAL_PLAN={canonical_plan_path}")
+    print(f"CANONICAL_IMPLEMENTATION_PACK={canonical_pack_path}")
+    print(f"CANONICAL_BUNDLE={canonical_bundle_path}")
     print(f"IMPLEMENTATION_ISSUE_IDENTIFIER={implementation_issue_identifier}")
     print(f"SOURCE_ISSUE_IDENTIFIER={source_issue_identifier}")
     if (

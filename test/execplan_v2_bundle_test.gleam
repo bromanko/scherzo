@@ -420,6 +420,7 @@ pub fn validate_bundle_accepts_artifact_backed_plan_without_repo_path_test() {
 pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
   let dir = "test/tmp/execplan-artifact-backed-plan-prepare"
   reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
   let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
   let #(bundle_ref, bundle_sha, plan_text) =
     write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
@@ -430,7 +431,7 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
   let artifact =
     run_shell_in(
       dir,
-      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_ISSUE_CONTEXT="
+      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_RUN_ROOT=$PWD/run-root SCHERZO_ISSUE_CONTEXT="
         <> shell_quote(issue_context)
         <> " "
         <> helper
@@ -442,9 +443,27 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
   assert string.contains(artifact.stdout, "PLAN=tmp/execplan-review-doc.md")
   let assert Ok(prepared_plan) =
     simplifile.read(dir <> "/tmp/execplan-review-doc.md")
+  let assert Ok(canonical_plan) =
+    simplifile.read(
+      dir <> "/run-root/state/implementation/execplan-review-doc.md",
+    )
+  let assert Ok(canonical_pack) =
+    simplifile.read(
+      dir <> "/run-root/state/implementation/execplan-implementation-pack.json",
+    )
+  let assert Ok(canonical_bundle) =
+    simplifile.read(
+      dir <> "/run-root/state/implementation/execplan-bundle.json",
+    )
   assert prepared_plan == plan_text
+  assert canonical_plan == plan_text
+  assert string.contains(canonical_pack, "schema_version")
+  assert string.contains(canonical_bundle, "schema_version")
   let assert Ok(metadata) =
     simplifile.read(dir <> "/tmp/scherzo-implementation.json")
+  let assert Ok(canonical_metadata) =
+    simplifile.read(dir <> "/run-root/state/implementation/metadata.json")
+  assert canonical_metadata == metadata
   assert string.contains(
     metadata,
     "\"plan_path\": \"tmp/execplan-review-doc.md\"",
@@ -453,6 +472,8 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
     metadata,
     "\"plan_artifact_ref\": \"" <> plan_ref <> "\"",
   )
+  assert string.contains(metadata, "\"canonical_plan_path\":")
+  assert string.contains(metadata, "\"canonical_execplan_v2_bundle_path\":")
   assert string.contains(metadata, "\"legacy_review_doc_path\": \"\"")
 }
 
