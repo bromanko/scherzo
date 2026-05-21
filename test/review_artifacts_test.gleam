@@ -44,6 +44,18 @@ fn assert_not_contains(contents: String, unexpected: String) -> Nil {
   }
 }
 
+fn native_prepare_diff() -> String {
+  "diff --git a/src/example.gleam b/src/example.gleam\n"
+  <> "index 1111111..2222222 100644\n"
+  <> "--- a/src/example.gleam\n"
+  <> "+++ b/src/example.gleam\n"
+  <> "@@ -1,2 +1,3 @@\n"
+  <> " pub fn value() {\n"
+  <> "+  2\n"
+  <> "   1\n"
+  <> " }\n"
+}
+
 pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
   let dir = "test/tmp/review-artifacts-dry-run"
   reset_dir(dir)
@@ -866,6 +878,199 @@ pub fn heuristic_preflight_is_not_cutover_ready_test() {
   )
 }
 
+pub fn prepare_native_serializes_passed_validation_evidence_test() {
+  let dir = "test/tmp/review-artifacts-native-validation-passed"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let output_dir = dir <> "/out"
+  let validation_path = dir <> "/validation-passed.json"
+  let assert Ok(Nil) = simplifile.write(diff_path, native_prepare_diff())
+  let assert Ok(Nil) =
+    simplifile.write(
+      validation_path,
+      "{\n"
+        <> "  \"status\": \"passed\",\n"
+        <> "  \"validator\": \"selfci\",\n"
+        <> "  \"base_revision\": \"main@origin\",\n"
+        <> "  \"commands\": [\"direnv exec . selfci check --base main@origin --candidate @ --print-output\"],\n"
+        <> "  \"setup_commands\": [\"direnv allow .\"]\n"
+        <> "}\n",
+    )
+
+  let prepare =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review prepare-native --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> output_dir
+      <> " --validation-result "
+      <> validation_path
+      <> " --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt",
+    )
+  assert prepare.status == step_artifact.StepSucceeded
+  assert prepare.exit_code == Some(0)
+  let assert Ok(validation_status) =
+    simplifile.read(output_dir <> "/validation-status.v1.json")
+  let assert Ok(brief) = simplifile.read(output_dir <> "/review-brief.v1.json")
+  assert string.contains(
+    validation_status,
+    "\"artifact_type\": \"validation_status\"",
+  )
+  assert string.contains(validation_status, "\"overall_state\": \"passed\"")
+  assert string.contains(
+    validation_status,
+    "\"command\": \"direnv exec . selfci check --base main@origin --candidate @ --print-output\"",
+  )
+  assert string.contains(validation_status, "\"exit_status\": 0")
+  assert string.contains(validation_status, validation_path)
+  assert string.contains(
+    validation_status,
+    ".scherzo/command-step-diagnostics/validate_before_native_review.txt",
+  )
+  assert string.contains(brief, "\"status\": \"passed\"")
+  assert string.contains(
+    brief,
+    "\"source\": \"structured_validation_artifact\"",
+  )
+}
+
+pub fn prepare_native_serializes_failed_validation_evidence_test() {
+  let dir = "test/tmp/review-artifacts-native-validation-failed"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let output_dir = dir <> "/out"
+  let validation_path = dir <> "/validation-failed.json"
+  let assert Ok(Nil) = simplifile.write(diff_path, native_prepare_diff())
+  let assert Ok(Nil) =
+    simplifile.write(
+      validation_path,
+      "{\n"
+        <> "  \"status\": \"failed\",\n"
+        <> "  \"validator\": \"selfci\",\n"
+        <> "  \"exit_code\": 7,\n"
+        <> "  \"commands\": [\"direnv exec . selfci check --base main@origin --candidate @ --print-output\"],\n"
+        <> "  \"failure_summary\": \"SelfCI failed on review fixture.\",\n"
+        <> "  \"stdout_excerpt\": \"stdout line\",\n"
+        <> "  \"stderr_excerpt\": \"stderr line\"\n"
+        <> "}\n",
+    )
+
+  let prepare =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review prepare-native --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> output_dir
+      <> " --validation-result "
+      <> validation_path
+      <> " --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt",
+    )
+  assert prepare.status == step_artifact.StepSucceeded
+  let assert Ok(validation_status) =
+    simplifile.read(output_dir <> "/validation-status.v1.json")
+  let assert Ok(brief) = simplifile.read(output_dir <> "/review-brief.v1.json")
+  assert string.contains(validation_status, "\"overall_state\": \"failed\"")
+  assert string.contains(validation_status, "\"exit_status\": 7")
+  assert string.contains(validation_status, "SelfCI failed on review fixture.")
+  assert string.contains(validation_status, "stdout line")
+  assert string.contains(validation_status, "stderr line")
+  assert string.contains(brief, "\"status\": \"failed\"")
+}
+
+pub fn prepare_native_records_not_run_validation_by_design_test() {
+  let dir = "test/tmp/review-artifacts-native-validation-not-run"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let output_dir = dir <> "/out"
+  let assert Ok(Nil) = simplifile.write(diff_path, native_prepare_diff())
+
+  let prepare =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review prepare-native --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> output_dir,
+    )
+  assert prepare.status == step_artifact.StepSucceeded
+  let assert Ok(validation_status) =
+    simplifile.read(output_dir <> "/validation-status.v1.json")
+  let assert Ok(brief) = simplifile.read(output_dir <> "/review-brief.v1.json")
+  assert string.contains(validation_status, "\"overall_state\": \"not_run\"")
+  assert string.contains(
+    validation_status,
+    "\"source\": \"not_yet_run_by_design\"",
+  )
+  assert string.contains(
+    validation_status,
+    "Validation has not run before native review by workflow design.",
+  )
+  assert_not_contains(validation_status, "not_supplied")
+  assert string.contains(brief, "\"status\": \"not_run\"")
+}
+
+pub fn prepare_native_records_missing_validation_artifact_test() {
+  let dir = "test/tmp/review-artifacts-native-validation-missing"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let output_dir = dir <> "/out"
+  let missing_path = dir <> "/missing-validation.json"
+  let assert Ok(Nil) = simplifile.write(diff_path, native_prepare_diff())
+
+  let prepare =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review prepare-native --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> output_dir
+      <> " --validation-result "
+      <> missing_path,
+    )
+  assert prepare.status == step_artifact.StepSucceeded
+  let assert Ok(validation_status) =
+    simplifile.read(output_dir <> "/validation-status.v1.json")
+  assert string.contains(validation_status, "\"overall_state\": \"missing\"")
+  assert string.contains(
+    validation_status,
+    "\"source\": \"validation_artifact_missing\"",
+  )
+  assert string.contains(validation_status, missing_path)
+  assert string.contains(
+    validation_status,
+    "expected validation evidence before native review, but the structured validation artifact was absent",
+  )
+  assert_not_contains(validation_status, "not_yet_run_by_design")
+}
+
+pub fn prepare_native_records_malformed_validation_artifact_test() {
+  let dir = "test/tmp/review-artifacts-native-validation-malformed"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let output_dir = dir <> "/out"
+  let validation_path = dir <> "/validation-malformed.json"
+  let assert Ok(Nil) = simplifile.write(diff_path, native_prepare_diff())
+  let assert Ok(Nil) = simplifile.write(validation_path, "{not json}\n")
+
+  let prepare =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review prepare-native --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> output_dir
+      <> " --validation-result "
+      <> validation_path,
+    )
+  assert prepare.status == step_artifact.StepSucceeded
+  let assert Ok(validation_status) =
+    simplifile.read(output_dir <> "/validation-status.v1.json")
+  assert string.contains(validation_status, "\"overall_state\": \"malformed\"")
+  assert string.contains(
+    validation_status,
+    "\"source\": \"malformed_validation_artifact\"",
+  )
+  assert string.contains(validation_status, validation_path)
+  assert string.contains(validation_status, "invalid JSON in")
+}
+
 pub fn implementation_workflows_native_cutover_removes_legacy_backend_default_test() {
   let workflow_paths = [
     ".scherzo/workflows/implementation.yaml",
@@ -876,6 +1081,15 @@ pub fn implementation_workflows_native_cutover_removes_legacy_backend_default_te
     let assert Ok(workflow) = simplifile.read(path)
     assert_contains(workflow, "submit_review_lane_draft")
     assert_contains(workflow, "prepare-native")
+    assert_contains(workflow, "validate_before_native_review")
+    assert_contains(
+      workflow,
+      "--validation-result tmp/scherzo-implementation-validation.json",
+    )
+    assert_contains(
+      workflow,
+      ".scherzo/command-step-diagnostics/validate_before_native_review.txt",
+    )
     assert_contains(workflow, "refuses fixture/scenario/heuristic")
     assert_not_contains(workflow, "run-lane --lane")
     assert_not_contains(workflow, "--agent-backend")

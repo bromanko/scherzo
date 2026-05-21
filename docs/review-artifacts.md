@@ -180,6 +180,8 @@ Agent-backed lane runs also retain an input bundle and backend evidence:
 - `prompt.md`, `raw-agent-output.json`, and transcript files when an external backend runs.
 - `evidence-ledger.v1.json` plus reproduction stdout/stderr/command logs when the harness runs trusted executable evidence.
 
+For native review preparation, `validation-status.v1.json` is the explicit pre-native validation artifact. It keeps `schema_version: 1` and `artifact_type: "validation_status"`, adds an `overall_state`, and carries compatibility arrays under both `status` and `test_build_status`. Each entry may include `name`, compatibility `status`, precise `state`, `source`, `summary`, `command`, optional integer `exit_status`, bounded `output_excerpt`, and repository- or run-root-relative `artifact_refs`. Recognized sources currently include `structured_validation_artifact`, `not_yet_run_by_design`, `validation_artifact_missing`, `malformed_validation_artifact`, and `cli`. Full command output stays in retained command-step diagnostics rather than prompt-facing artifacts.
+
 For agent-backed correctness lanes, a blocking correctness finding must reference a harness-issued evidence id from `evidence-ledger.v1.json` with executable evidence type `test`, `runtime`, or `reproduction`. Static-only correctness claims are downgraded into `review_notes`.
 
 If a lane fails before producing findings, it still attempts to write `review-lane-<lane-id>.v1.json` with `execution_status.state: "failed"` and a log artifact containing the error, so malformed briefs, missing external backend configuration, timeouts, malformed raw output, and containment failures are debuggable from retained workflow artifacts.

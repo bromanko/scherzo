@@ -117,6 +117,17 @@ CATEGORY_ORDER = [
     "documentation",
     "other",
 ]
+VALIDATION_OUTPUT_EXCERPT_MAX_CHARS = 4000
+VALIDATION_SUMMARY_MAX_CHARS = 1200
+VALIDATION_STATE_RANK = {
+    "failed": 0,
+    "malformed": 1,
+    "missing": 2,
+    "unknown": 3,
+    "not_run": 4,
+    "skipped": 5,
+    "passed": 6,
+}
 
 SPECIALIST_LANES: dict[str, dict[str, str]] = {
     "correctness": {
@@ -674,12 +685,187 @@ def parse_test_status(values: list[str]) -> list[dict[str, str]]:
     }]
 
 
+def bounded_text(value: Any, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    marker = "\n... truncated ...\n"
+    available = max(0, max_chars - len(marker))
+    omitted = len(text) - available
+    marker = f"\n... truncated {omitted} chars ...\n"
+    available = max(0, max_chars - len(marker))
+    head_chars = available // 2
+    tail_chars = available - head_chars
+    return text[:head_chars] + marker + text[-tail_chars:]
+
+
+def validation_artifact_ref(path_value: str, artifact_type: str) -> dict[str, Any]:
+    path = Path(path_value)
+    ref = {
+        "artifact_type": artifact_type,
+        "path": artifact_ref_display_path(path).as_posix(),
+    }
+    if path.exists() and path.is_file():
+        ref["sha256"] = sha256_file(path)
+    return ref
+
+
+def validation_output_excerpt(result: dict[str, Any]) -> str | None:
+    parts: list[str] = []
+    stdout_excerpt = bounded_text(
+        result.get("stdout_excerpt", ""), VALIDATION_OUTPUT_EXCERPT_MAX_CHARS
+    )
+    stderr_excerpt = bounded_text(
+        result.get("stderr_excerpt", ""), VALIDATION_OUTPUT_EXCERPT_MAX_CHARS
+    )
+    if stdout_excerpt:
+        parts.append("stdout:\n" + stdout_excerpt)
+    if stderr_excerpt:
+        parts.append("stderr:\n" + stderr_excerpt)
+    if not parts:
+        fallback = bounded_text(
+            result.get("failure_summary", ""), VALIDATION_OUTPUT_EXCERPT_MAX_CHARS
+        )
+        if fallback:
+            parts.append(fallback)
+    if not parts:
+        return None
+    return bounded_text("\n\n".join(parts), VALIDATION_OUTPUT_EXCERPT_MAX_CHARS)
+
+
+def overall_validation_state(entries: list[dict[str, Any]]) -> str:
+    if not entries:
+        return "unknown"
+    return min(
+        (str(entry.get("state") or entry.get("status") or "unknown") for entry in entries),
+        key=lambda state: VALIDATION_STATE_RANK.get(state, VALIDATION_STATE_RANK["unknown"]),
+    )
+
+
+def parse_structured_validation_status(raw_status: Any) -> tuple[str, str]:
+    status = str(raw_status or "unknown").strip()
+    if status in {"passed", "failed", "skipped", "not_run", "unknown"}:
+        return status, status
+    return "unknown", "unknown"
+
+
+def normalize_validation_for_prepare_native(
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    log_refs = [
+        validation_artifact_ref(path, "diagnostic_log")
+        for path in args.validation_log_ref
+    ]
+
+    if args.validation_result:
+        validation_path = Path(args.validation_result)
+        artifact_refs = [
+            validation_artifact_ref(args.validation_result, "structured_validation_result"),
+            *log_refs,
+        ]
+        if not validation_path.exists():
+            entries = [{
+                "name": "implementation-validation",
+                "status": "unknown",
+                "state": "missing",
+                "source": "validation_artifact_missing",
+                "summary": bounded_text(
+                    "Review preparation expected validation evidence before native review, "
+                    f"but the structured validation artifact was absent: {args.validation_result}",
+                    VALIDATION_SUMMARY_MAX_CHARS,
+                ),
+                "command": "expected structured validation artifact",
+                "artifact_refs": artifact_refs,
+            }]
+        else:
+            try:
+                result = load_json(validation_path)
+            except ReviewError as exc:
+                entries = [{
+                    "name": "implementation-validation",
+                    "status": "unknown",
+                    "state": "malformed",
+                    "source": "malformed_validation_artifact",
+                    "summary": bounded_text(str(exc), VALIDATION_SUMMARY_MAX_CHARS),
+                    "command": "expected structured validation artifact",
+                    "artifact_refs": artifact_refs,
+                }]
+            else:
+                status, state = parse_structured_validation_status(result.get("status"))
+                command = "unknown"
+                commands = result.get("commands")
+                if isinstance(commands, list) and commands and isinstance(commands[0], str):
+                    command = commands[0]
+                summary = bounded_text(
+                    result.get("failure_summary")
+                    or result.get("diagnostic_note")
+                    or f"Structured validation reported {status}.",
+                    VALIDATION_SUMMARY_MAX_CHARS,
+                )
+                if status == "passed":
+                    summary = bounded_text(
+                        result.get("diagnostic_note") or "Structured validation passed.",
+                        VALIDATION_SUMMARY_MAX_CHARS,
+                    )
+                entry: dict[str, Any] = {
+                    "name": str(result.get("validator") or "implementation-validation").strip()
+                    or "implementation-validation",
+                    "status": status,
+                    "state": state,
+                    "source": "structured_validation_artifact",
+                    "summary": summary,
+                    "command": command,
+                    "artifact_refs": artifact_refs,
+                }
+                exit_code = result.get("exit_code")
+                if isinstance(exit_code, int):
+                    entry["exit_status"] = exit_code
+                elif status == "passed":
+                    entry["exit_status"] = 0
+                output_excerpt = validation_output_excerpt(result)
+                if output_excerpt:
+                    entry["output_excerpt"] = output_excerpt
+                entries = [entry]
+        validation_status = {
+            "schema_version": SCHEMA_VERSION,
+            "artifact_type": "validation_status",
+            "overall_state": overall_validation_state(entries),
+            "status": entries,
+            "test_build_status": entries,
+        }
+        return entries, validation_status
+
+    if args.test_status:
+        entries = [
+            {**status, "state": str(status.get("status") or "unknown")}
+            for status in parse_test_status(args.test_status)
+        ]
+    else:
+        entries = [{
+            "name": "implementation-validation",
+            "status": "not_run",
+            "state": "not_run",
+            "source": "not_yet_run_by_design",
+            "summary": args.validation_not_run_reason,
+            "command": "not run",
+            "artifact_refs": log_refs,
+        }]
+    validation_status = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "validation_status",
+        "overall_state": overall_validation_state(entries),
+        "status": entries,
+        "test_build_status": entries,
+    }
+    return entries, validation_status
+
+
 def build_review_brief(
     *,
     source: dict[str, Any],
     diff: str,
     files: list[DiffFile],
-    test_status: list[dict[str, str]],
+    test_status: list[dict[str, Any]],
     generated_at: str,
 ) -> dict[str, Any]:
     return {
@@ -2493,6 +2679,7 @@ def write_shared_review_inputs(
     source: dict[str, Any],
     files: list[DiffFile],
     brief: dict[str, Any],
+    validation_status: dict[str, Any],
     output_dir: Path,
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2568,11 +2755,7 @@ def write_shared_review_inputs(
         "artifact_type": "changed_files",
         "files": changed_files,
     })
-    write_json(validation_status_path, {
-        "schema_version": SCHEMA_VERSION,
-        "artifact_type": "validation_status",
-        "test_build_status": brief.get("test_build_status", []),
-    })
+    write_json(validation_status_path, validation_status)
     write_json(context_manifest_path, {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "context_manifest",
@@ -2599,7 +2782,7 @@ def prepare_native_command(args: argparse.Namespace) -> None:
 
     diff, source = diff_source_from_args(args)
     files = parse_diff_files(diff)
-    test_status = parse_test_status(args.test_status)
+    test_status, validation_status = normalize_validation_for_prepare_native(args)
     brief = build_review_brief(
         source=source,
         diff=diff,
@@ -2613,6 +2796,7 @@ def prepare_native_command(args: argparse.Namespace) -> None:
         source=source,
         files=files,
         brief=brief,
+        validation_status=validation_status,
         output_dir=output_dir,
     )
     completed_at = now_utc()
@@ -6802,6 +6986,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Record available validation as NAME=STATUS[:SUMMARY]. STATUS is passed, failed, skipped, not_run, or unknown.",
+    )
+    prepare_native.add_argument(
+        "--validation-result",
+        help="Structured validation artifact to normalize into validation-status.v1.json before native review.",
+    )
+    prepare_native.add_argument(
+        "--validation-log-ref",
+        action="append",
+        default=[],
+        help="Retained diagnostic log path to attach to validation-status.v1.json. May be passed multiple times.",
+    )
+    prepare_native.add_argument(
+        "--validation-not-run-reason",
+        default="Validation has not run before native review by workflow design.",
+        help="Summary to record when validation has not run yet before native review.",
     )
     prepare_native.set_defaults(func=prepare_native_command)
 
