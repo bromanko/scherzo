@@ -144,7 +144,10 @@ pub fn plan(
         candidate: recovery.WorkflowRecoveryCandidate(
           run_id: run.run_id,
           workflow_id: run.workflow_id,
-          workflow_fingerprint: run.workflow_fingerprint,
+          workflow_fingerprint: workflow_fingerprint_for_candidate(
+            run.workflow_fingerprint,
+            current_workflow_fingerprint,
+          ),
           issue_id: run.issue_id,
           issue_identifier: run.issue_identifier,
           task_ref: run.task_ref,
@@ -439,6 +442,16 @@ fn validate_drift(
             False -> Ok(Nil)
           }
       }
+  }
+}
+
+fn workflow_fingerprint_for_candidate(
+  recorded: String,
+  current: String,
+) -> String {
+  case string.trim(recorded) == "" {
+    True -> current
+    False -> recorded
   }
 }
 
