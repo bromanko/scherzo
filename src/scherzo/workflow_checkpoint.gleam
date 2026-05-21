@@ -128,6 +128,10 @@ pub type Writer {
       Result(workstream_artifact_store.Snapshot, CheckpointError),
     append_workstream_record_idempotent: fn(record.LedgerRecord) ->
       Result(ledger.AppendIdempotentResult, CheckpointError),
+    append_workstream_start_records: fn(
+      List(record.LedgerRecord),
+      record.LedgerRecord,
+    ) -> Result(ledger.AppendWorkstreamStartResult, CheckpointError),
     write_workflow_inputs_manifest: fn(String, String) ->
       Result(ArtifactWritten, CheckpointError),
     workflow_inputs_recorded: fn(WorkflowContractManifestRecorded) ->
@@ -219,6 +223,9 @@ pub fn noop_writer() -> Writer {
       ))
     },
     append_workstream_record_idempotent: fn(_record) { Ok(ledger.Appended) },
+    append_workstream_start_records: fn(_, _) {
+      Ok(ledger.WorkstreamStartRecordsAppended)
+    },
     write_workflow_inputs_manifest: fn(run_id, _contents) {
       Ok(ArtifactWritten(
         ref: "noop/" <> run_id <> "/inputs.v1.json",
@@ -451,6 +458,30 @@ pub fn ledger_writer_with_artifact_store(
             CheckpointAppendFailed(describe_ledger_error(ledger_error))
           ledger.RecordIdConflict(record_id) ->
             CheckpointAppendFailed("record_id_conflict:" <> record_id)
+        }
+      })
+    },
+    append_workstream_start_records: fn(records, queued_record) {
+      use ledger_path <- result.try(
+        ledger.path_for_workspace_root(workspace_root)
+        |> result.map_error(fn(error) {
+          CheckpointAppendFailed(describe_ledger_error(error))
+        }),
+      )
+      ledger.append_workstream_start_records(
+        ledger_path,
+        records,
+        queued_record,
+        True,
+      )
+      |> result.map_error(fn(error) {
+        case error {
+          ledger.AppendStartLedgerError(ledger_error) ->
+            CheckpointAppendFailed(describe_ledger_error(ledger_error))
+          ledger.AppendStartRecordIdConflict(record_id) ->
+            CheckpointAppendFailed("record_id_conflict:" <> record_id)
+          ledger.AppendStartInvalidQueueRecord ->
+            CheckpointAppendFailed("invalid_workstream_start_queue_record")
         }
       })
     },

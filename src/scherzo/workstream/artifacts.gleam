@@ -197,12 +197,24 @@ pub fn decode_input_bundle(
     "workstream_inputs_missing",
   ))
   use inputs <- result.try(decode_input_bindings(inputs))
+  use source_kind <- result.try(optional_string_field(
+    entries,
+    "source_kind",
+    "workstream_source_kind_invalid",
+  ))
+  use source_reason <- result.try(optional_string_field(
+    entries,
+    "source_reason",
+    "workstream_source_reason_invalid",
+  ))
   Ok(types.InputBundleArtifact(
     artifact_id: artifact_id,
     workstream_id: workstream_id,
     source_handoff_ref: source_handoff_ref,
     workflow_id: workflow_id,
     inputs: inputs,
+    source_kind: source_kind,
+    source_reason: source_reason,
   ))
 }
 
@@ -477,12 +489,55 @@ fn decode_input_bindings(
         "workstream_snapshot_ref_missing",
       ))
       use Nil <- result.try(validate_snapshot_ref(value_ref))
+      use sha256 <- result.try(optional_string_field(
+        entries,
+        "sha256",
+        "workstream_sha256_invalid",
+      ))
+      use Nil <- result.try(validate_optional_sha256(sha256))
+      use Nil <- result.try(validate_optional_snapshot_ref_sha256(
+        value_ref,
+        sha256,
+      ))
+      use bytes <- result.try(optional_int_field(
+        entries,
+        "bytes",
+        "workstream_bytes_invalid",
+      ))
+      use Nil <- result.try(validate_optional_bytes(bytes))
+      use media_type <- result.try(optional_string_field(
+        entries,
+        "media_type",
+        "workstream_media_type_invalid",
+      ))
+      use original_path <- result.try(optional_string_field(
+        entries,
+        "original_path",
+        "workstream_original_path_invalid",
+      ))
+      use Nil <- result.try(validate_optional_original_path(original_path))
+      use artifact_type <- result.try(optional_string_field(
+        entries,
+        "artifact_type",
+        "workstream_artifact_type_invalid",
+      ))
+      use source_kind <- result.try(optional_string_field(
+        entries,
+        "source_kind",
+        "workstream_source_kind_invalid",
+      ))
       use other <- result.try(decode_input_bindings(rest))
       Ok([
         types.InputBinding(
           name: name,
           contract_type: contract_type,
           value_ref: value_ref,
+          sha256: sha256,
+          bytes: bytes,
+          media_type: media_type,
+          original_path: original_path,
+          artifact_type: artifact_type,
+          source_kind: source_kind,
         ),
         ..other
       ])
@@ -740,6 +795,18 @@ fn optional_string_field(
   }
 }
 
+fn optional_int_field(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+  code: String,
+) -> Result(Option(Int), types.SpecError) {
+  case lookup(entries, key) {
+    None -> Ok(None)
+    Some(json_value.JInt(value)) -> Ok(Some(value))
+    Some(_) -> spec_error(code, key <> " must be an integer")
+  }
+}
+
 fn lookup(
   entries: List(#(String, json_value.JsonValue)),
   key: String,
@@ -781,6 +848,16 @@ fn validate_snapshot_ref_sha256(
   }
 }
 
+fn validate_optional_snapshot_ref_sha256(
+  ref: String,
+  sha256: Option(String),
+) -> Result(Nil, types.SpecError) {
+  case sha256 {
+    Some(sha256) -> validate_snapshot_ref_sha256(ref, sha256)
+    None -> Ok(Nil)
+  }
+}
+
 fn snapshot_ref_hash(ref: String) -> Result(String, types.SpecError) {
   case
     string.starts_with(ref, "workstream-artifacts/sha256/")
@@ -813,6 +890,15 @@ fn validate_original_path(path: String) -> Result(Nil, types.SpecError) {
   }
 }
 
+fn validate_optional_original_path(
+  path: Option(String),
+) -> Result(Nil, types.SpecError) {
+  case path {
+    Some(path) -> validate_original_path(path)
+    None -> Ok(Nil)
+  }
+}
+
 fn validate_sha256(value: String) -> Result(Nil, types.SpecError) {
   case string.length(value) == 64 && is_lower_hex(value) {
     True -> Ok(Nil)
@@ -824,6 +910,15 @@ fn validate_sha256(value: String) -> Result(Nil, types.SpecError) {
   }
 }
 
+fn validate_optional_sha256(
+  value: Option(String),
+) -> Result(Nil, types.SpecError) {
+  case value {
+    Some(value) -> validate_sha256(value)
+    None -> Ok(Nil)
+  }
+}
+
 fn validate_bytes(value: Int) -> Result(Nil, types.SpecError) {
   case value > 0 {
     True -> Ok(Nil)
@@ -831,14 +926,18 @@ fn validate_bytes(value: Int) -> Result(Nil, types.SpecError) {
   }
 }
 
+fn validate_optional_bytes(value: Option(Int)) -> Result(Nil, types.SpecError) {
+  case value {
+    Some(value) -> validate_bytes(value)
+    None -> Ok(Nil)
+  }
+}
+
 fn validate_contract_type(value: String) -> Result(Nil, types.SpecError) {
   case workflow_contract.type_from_string(value) {
     Ok(_) -> Ok(Nil)
-    Error(_) ->
-      spec_error(
-        "workstream_contract_type_unknown",
-        "unknown contract type: " <> value,
-      )
+    Error(workflow_contract.ContractError(_, message)) ->
+      spec_error("workstream_contract_type_unknown", message)
   }
 }
 

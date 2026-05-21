@@ -1,5 +1,5 @@
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import scherzo/json_value
 import scherzo/workstream/types
 
@@ -72,7 +72,7 @@ pub fn decision_to_value(
 pub fn input_bundle_to_value(
   value: types.InputBundleArtifact,
 ) -> json_value.JsonValue {
-  json_value.JObject([
+  let base = [
     #("schema_version", json_value.JInt(types.schema_version)),
     #("artifact_type", json_value.JString(types.input_bundle_artifact_type)),
     #("artifact_id", json_value.JString(value.artifact_id)),
@@ -83,7 +83,18 @@ pub fn input_bundle_to_value(
       "inputs",
       json_value.JArray(list.map(value.inputs, input_binding_to_value)),
     ),
-  ])
+  ]
+  let base = case value.source_kind {
+    Some(source_kind) ->
+      list.append(base, [#("source_kind", json_value.JString(source_kind))])
+    None -> base
+  }
+  let base = case value.source_reason {
+    Some(source_reason) ->
+      list.append(base, [#("source_reason", json_value.JString(source_reason))])
+    None -> base
+  }
+  json_value.JObject(base)
 }
 
 pub fn assignment_to_value(
@@ -151,11 +162,32 @@ fn handoff_output_to_value(value: types.HandoffOutput) -> json_value.JsonValue {
 }
 
 fn input_binding_to_value(value: types.InputBinding) -> json_value.JsonValue {
-  json_value.JObject([
+  let base = [
     #("name", json_value.JString(value.name)),
     #("contract_type", json_value.JString(value.contract_type)),
     #("value_ref", json_value.JString(value.value_ref)),
-  ])
+  ]
+  let base = append_optional_string(base, "sha256", value.sha256)
+  let base = case value.bytes {
+    Some(bytes) -> list.append(base, [#("bytes", json_value.JInt(bytes))])
+    None -> base
+  }
+  let base = append_optional_string(base, "media_type", value.media_type)
+  let base = append_optional_string(base, "original_path", value.original_path)
+  let base = append_optional_string(base, "artifact_type", value.artifact_type)
+  let base = append_optional_string(base, "source_kind", value.source_kind)
+  json_value.JObject(base)
+}
+
+fn append_optional_string(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+  value: Option(String),
+) -> List(#(String, json_value.JsonValue)) {
+  case value {
+    Some(value) -> list.append(entries, [#(key, json_value.JString(value))])
+    None -> entries
+  }
 }
 
 fn producer_to_value(value: types.ProducerRef) -> json_value.JsonValue {

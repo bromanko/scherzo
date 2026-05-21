@@ -49,7 +49,17 @@ pub type HandoffOutput {
 }
 
 pub type InputBinding {
-  InputBinding(name: String, contract_type: String, value_ref: String)
+  InputBinding(
+    name: String,
+    contract_type: String,
+    value_ref: String,
+    sha256: Option(String),
+    bytes: Option(Int),
+    media_type: Option(String),
+    original_path: Option(String),
+    artifact_type: Option(String),
+    source_kind: Option(String),
+  )
 }
 
 pub type WorkstreamArtifact {
@@ -94,6 +104,8 @@ pub type InputBundleArtifact {
     source_handoff_ref: String,
     workflow_id: String,
     inputs: List(InputBinding),
+    source_kind: Option(String),
+    source_reason: Option(String),
   )
 }
 
