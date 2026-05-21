@@ -41,11 +41,11 @@ agent:
 pi:
   # Default non-persistent launch path. Scherzo uses this shell command while
   # session persistence is disabled.
-  command: "pi --mode rpc --no-session"
+  command: "pi --mode rpc --no-session --rpc-message-updates off"
   # Opt-in persistent launches must use structured argv so Scherzo owns
   # --session construction during recovery. Do not include --session or
   # --no-session here.
-  # argv: ["pi", "--mode", "rpc"]
+  # argv: ["pi", "--mode", "rpc", "--rpc-message-updates", "off"]
   # session_persistence:
   #   enabled: true
   # Optional project defaults inherited by workflow agent steps.

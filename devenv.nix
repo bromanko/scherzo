@@ -1,7 +1,7 @@
-{ inputs, pkgs, ... }:
+{ pkgs, ... }:
 
 let
-  llmAgentsPackages = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
+  pi = pkgs.callPackage ./nix/pi.nix { };
 
   linearCli = pkgs.callPackage ./nix/linear-cli.nix { };
 
@@ -31,7 +31,7 @@ in
     pkgs.jq
     pkgs.selfci
     pkgs.buildkite-cli
-    llmAgentsPackages.pi
+    pi
     (linearCommand "linear")
     (linearCommand "lc")
   ];

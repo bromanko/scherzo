@@ -1,8 +1,7 @@
 {
   description = "Scherzo Linear/pi orchestration daemon";
 
-  # The devenv shell includes pi from numtide/llm-agents.nix. Trust Numtide's
-  # cache so CI can substitute pi instead of source-building its npm package.
+  # Trust Numtide's cache for shared development dependencies where available.
   nixConfig = {
     extra-substituters = [
       "https://cache.numtide.com"
@@ -91,6 +90,13 @@
         in
         pkgs.callPackage ./nix/linear-cli.nix { };
 
+      piFor =
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        pkgs.callPackage ./nix/pi.nix { };
+
       dogfoodWorkflowsFor =
         system:
         let
@@ -117,11 +123,13 @@
       packages = forAllSystems (
         system:
         let
+          pi = piFor system;
           scherzo = scherzoFor system;
         in
         {
           default = scherzo;
           linear-cli = linearCliFor system;
+          pi = pi;
           scherzo = scherzo;
           scherzo-dogfood-workflows = dogfoodWorkflowsFor system;
         }

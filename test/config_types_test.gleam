@@ -37,7 +37,7 @@ pub fn with_pi_env_prepends_shell_exports_test() {
   let pi =
     config_types.PiConfig(
       ..config.default_pi_config(),
-      command: "pi --mode rpc --no-session",
+      command: "pi --mode rpc --no-session --rpc-message-updates off",
       argv_command: None,
     )
   let configured =
@@ -52,7 +52,10 @@ pub fn with_pi_env_prepends_shell_exports_test() {
     "export SCHERZO_JJ_WORKSPACE_BASE='profile-base'\nexport PATH='/profile/bin'\n",
   )
   assert string.contains(configured.pi.command, "export QUOTE='O'\\''Brien'\n")
-  assert string.ends_with(configured.pi.command, "pi --mode rpc --no-session")
+  assert string.ends_with(
+    configured.pi.command,
+    "pi --mode rpc --no-session --rpc-message-updates off",
+  )
 }
 
 pub fn with_pi_env_merges_argv_env_with_step_precedence_test() {

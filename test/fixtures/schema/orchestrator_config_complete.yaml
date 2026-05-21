@@ -29,8 +29,8 @@ agent:
   max_concurrent_agents_by_state:
     todo: 1
 pi:
-  command: pi --mode rpc --no-session
-  argv: [pi, "--mode", rpc]
+  command: pi --mode rpc --no-session --rpc-message-updates off
+  argv: [pi, "--mode", rpc, "--rpc-message-updates", "off"]
   argv_env:
     PI_LOG: debug
   turn_timeout_ms: 600000

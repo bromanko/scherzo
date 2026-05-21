@@ -81,7 +81,7 @@ pub fn default_recovery_prompt() -> String {
 
 pub fn default_pi_config() -> config_types.PiConfig {
   config_types.PiConfig(
-    command: "pi --mode rpc --no-session",
+    command: "pi --mode rpc --no-session --rpc-message-updates off",
     turn_timeout_ms: 3_600_000,
     read_timeout_ms: 5000,
     stall_timeout_ms: 300_000,
@@ -410,7 +410,8 @@ fn resolve_pi(
 ) -> Result(config_types.PiConfig, error.ConfigError) {
   let pi = get_map(root, "pi")
   let command =
-    get_string(pi, "command") |> option.unwrap("pi --mode rpc --no-session")
+    get_string(pi, "command")
+    |> option.unwrap("pi --mode rpc --no-session --rpc-message-updates off")
   let turn_timeout_ms = get_int(pi, "turn_timeout_ms") |> int_default(3_600_000)
   let read_timeout_ms = get_int(pi, "read_timeout_ms") |> int_default(5000)
   let stall_timeout_ms = get_int(pi, "stall_timeout_ms") |> int_default(300_000)

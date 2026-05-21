@@ -1,9 +1,4 @@
 inputs:
-  llm-agents:
-    url: github:numtide/llm-agents.nix
-    inputs:
-      nixpkgs:
-        follows: nixpkgs
   # Keep in sync with flake.lock's nixpkgs pin, and only bump to revisions
   # where cache.nixos.org substitutes aarch64-linux pkgs.gleam.
   nixpkgs:

@@ -24,8 +24,8 @@ append_system_nix_conf() {
 
   {
     printf '\n'
-    printf '# Scherzo CI: pi is provided by numtide/llm-agents.nix.\n'
-    printf '# Trust Numtide cache to avoid source-building the pi package.\n'
+    printf '# Scherzo CI: trust Numtide cache for shared development dependencies.\n'
+    printf '# This keeps CI from source-building common Nix dependencies when substitutes exist.\n'
     printf 'extra-substituters = %s\n' "$cache_url"
     printf 'extra-trusted-public-keys = %s\n' "$cache_key"
   } | sudo tee -a /etc/nix/nix.conf >/dev/null
@@ -48,7 +48,7 @@ if has_cache_url && has_cache_key; then
 fi
 
 cat >&2 <<EOF
-Scherzo CI requires Numtide's Nix cache for pi from numtide/llm-agents.nix.
+Scherzo CI requires Numtide's Nix cache for shared development dependencies.
 
 Nix is not currently configured to trust:
   substituter: $cache_url
@@ -56,7 +56,7 @@ Nix is not currently configured to trust:
 
 Repository-level NIX_CONFIG/nixConfig is not sufficient when the Buildkite
 agent user is not a trusted Nix user; Nix ignores extra trusted public keys in
-that case and source-builds pi. Configure the hcloud agent's system nix.conf:
+that case and may source-build common dependencies. Configure the hcloud agent's system nix.conf:
 
   extra-substituters = $cache_url
   extra-trusted-public-keys = $cache_key

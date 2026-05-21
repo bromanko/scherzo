@@ -61,7 +61,7 @@ pub fn default_values_test() {
   assert agent.context_recovery_prompt_char_limit == 40_000
 
   let pi = config.default_pi_config()
-  assert pi.command == "pi --mode rpc --no-session"
+  assert pi.command == "pi --mode rpc --no-session --rpc-message-updates off"
   assert pi.turn_timeout_ms == 3_600_000
   assert pi.read_timeout_ms == 5000
   assert pi.stall_timeout_ms == 300_000

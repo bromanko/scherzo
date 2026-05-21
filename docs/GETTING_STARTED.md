@@ -37,11 +37,11 @@ See the [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md) for the n
 
 ### `pi` and model/provider credentials
 
-Scherzo executes agent steps through `pi`. In a source checkout, the direnv/devenv shell provides `pi` from `numtide/llm-agents.nix`; external deployments should install `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo. A safe first config uses non-persistent pi RPC:
+Scherzo executes agent steps through `pi`. In a source checkout, the direnv/devenv shell provides Scherzo's pinned `pi` fork with RPC message update suppression; external deployments should install a compatible `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo. A safe first config uses non-persistent pi RPC without streaming `message_update` records:
 
 ```yaml
 pi:
-  command: "pi --mode rpc --no-session"
+  command: "pi --mode rpc --no-session --rpc-message-updates off"
   compatibility_probe: true
 ```
 
@@ -85,7 +85,8 @@ in
 {
   packages = [
     inputs.scherzo.packages.${system}.default
-    # Add pi, jj, gh, Python, Node, and project tools separately as needed.
+    inputs.scherzo.packages.${system}.pi
+    # Add jj, gh, Python, Node, and project tools separately as needed.
   ];
 }
 ```
@@ -160,7 +161,7 @@ agent:
   max_sessions_per_issue: 2
 
 pi:
-  command: "pi --mode rpc --no-session"
+  command: "pi --mode rpc --no-session --rpc-message-updates off"
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
@@ -648,7 +649,7 @@ Common doctor failures:
 | Workspace driver discovery fails | Driver not on `PATH`, not executable, or invalid `describe --json` | Fix the profile command or implement the driver spec |
 | Workspace lifecycle fails | Driver cannot create/remove scratch workspace or selected jj base is unavailable | Fix driver env, VCS state, base branch, or local permissions |
 | Legacy or unsupported shape | Config, workflow, driver, tracker, or local state uses an old shape | Read the diagnostic path/code and the [upgrade policy](runbooks/upgrades.md) or linked specific runbook |
-| Pi probe fails | `pi` missing, provider credentials missing, or command incompatible | Run `pi --mode rpc --no-session` manually and fix credentials/config |
+| Pi probe fails | `pi` missing, provider credentials missing, or command incompatible | Run `pi --mode rpc --no-session --rpc-message-updates off` manually and fix credentials/config |
 | Prompt/schema path missing | Paths are relative to different roots | Check workflow-relative prompt paths and repository-relative schema paths |
 
 ## 11. Run one task with `--once`
@@ -750,7 +751,7 @@ Use `ps --json` and `session --json` when scripting or when an agent is acting a
 | Driver problem | `<driver> describe --json` | Then run the relevant driver lifecycle/capability command by hand |
 | Upgrade or breaking-change diagnostic | `scherzo doctor .scherzo/scherzo.yaml` or `scherzoctl state status --root <workspace-root>` | Follow the [upgrade policy](runbooks/upgrades.md) and any specific runbook named by the diagnostic |
 | jj workspace problem | `jj status` and driver env review | Verify base, remote, fetch policy, and publish remote before daemon mode |
-| Agent cannot start | `pi --mode rpc --no-session` | Fix `pi` install, model/provider credentials, or `pi.command` |
+| Agent cannot start | `pi --mode rpc --no-session --rpc-message-updates off` | Fix `pi` install, model/provider credentials, or `pi.command` |
 | Structured output rejected | Read retained step diagnostics and schema validator stderr | Final-response source must be one JSON document; command validators should print concise stderr |
 | Daemon appears stuck | `scherzoctl ps`, `scherzoctl session <id>`, `scherzoctl events --pretty <id>` | Use `attach` for live output and UI requests |
 | Need to stop safely | `scherzoctl stop-after-turn <id> --yes` or Ctrl-C the `scherzo-start` terminal | Use `abort` only when you accept the interrupted-run implications |
