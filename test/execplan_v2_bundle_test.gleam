@@ -2213,7 +2213,12 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
   let dir = "test/tmp/execplan-code-change"
   reset_dir(dir)
   let artifact_root = dir <> "/artifacts/runs/run-2"
+  let run_root = dir <> "/run-root"
   let assert Ok(Nil) = simplifile.create_directory_all(artifact_root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      run_root <> "/artifacts/review/final_dispositions",
+    )
   let assert Ok(Nil) = simplifile.create_directory_all("tmp")
   let assert Ok(Nil) =
     simplifile.write(
@@ -2236,12 +2241,36 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
       "tmp/scherzo-plan-completion-verdict.json",
       "{\"verdict\":\"pass\"}\n",
     )
+  let assert Ok(Nil) =
+    simplifile.write(
+      run_root <> "/artifacts/review/final_dispositions/final-review.v1.json",
+      "{\"artifact_type\":\"final_review\"}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      run_root <> "/artifacts/review/final_dispositions/final-review.md",
+      "# Final review\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      run_root
+        <> "/artifacts/review/final_dispositions/review-finding-dispositions.v1.json",
+      "{\"artifact_type\":\"review_finding_dispositions\"}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      run_root
+        <> "/artifacts/review/final_dispositions/review-finding-dispositions.md",
+      "## Finding dispositions\n",
+    )
   let output = dir <> "/code-change-bundle.json"
 
   let artifact =
     run_shell(
       "env SCHERZO_RUN_ID=run-2 SCHERZO_RUN_ARTIFACT_DIR="
       <> shell_quote(artifact_root)
+      <> " SCHERZO_RUN_ROOT="
+      <> shell_quote(run_root)
       <> " SCHERZO_EXECPLAN_DIFF_PATH=test/fixtures/execplan_v2/artifacts/runs/run-2/execplan/code-change/diff.patch .scherzo/workflows/scripts/scherzo-execplan materialize-code-change-bundle --bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
       <> shell_quote(output),
     )
@@ -2252,4 +2281,11 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
   assert string.contains(bundle, "\"artifact_type\": \"code_change_bundle\"")
   assert string.contains(bundle, "runs/run-2/execplan/code-change/diff.patch")
   assert string.contains(bundle, "\"verdict\": \"complete\"")
+  assert string.contains(bundle, "\"name\": \"final-review\"")
+  assert string.contains(bundle, "\"name\": \"final-review-markdown\"")
+  assert string.contains(bundle, "\"name\": \"review-finding-dispositions\"")
+  assert string.contains(
+    bundle,
+    "\"name\": \"review-finding-dispositions-markdown\"",
+  )
 }

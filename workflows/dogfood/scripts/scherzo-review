@@ -128,6 +128,7 @@ VALIDATION_STATE_RANK = {
     "skipped": 5,
     "passed": 6,
 }
+DISPOSITION_ORDER = ["resolved", "rejected", "deferred", "obsolete"]
 
 SPECIALIST_LANES: dict[str, dict[str, str]] = {
     "correctness": {
@@ -1987,6 +1988,19 @@ def validate_artifact_ref(value: Any, *, field: str) -> None:
     validate_repo_relative_path(value.get("path"), field=f"{field}.path")
 
 
+def validate_evidence_ref(value: Any, *, field: str) -> None:
+    if not isinstance(value, dict):
+        raise ReviewError(f"{field} must be an object")
+    for required in ["type", "description"]:
+        validate_string_field(value, required, display_field=f"{field}.{required}")
+    if "path" in value:
+        validate_repo_relative_path(value.get("path"), field=f"{field}.path")
+    if "ref" in value:
+        validate_repo_relative_path(value.get("ref"), field=f"{field}.ref")
+    if "command" in value:
+        validate_string_field(value, "command", display_field=f"{field}.command")
+
+
 def validate_execution_status_shape(value: Any, *, field: str) -> None:
     if not isinstance(value, dict):
         raise ReviewError(f"{field} must be an object")
@@ -2206,7 +2220,11 @@ def validate_final_review(value: dict[str, Any]) -> None:
         raise ReviewError("final review finding_counts must be an object")
     if not isinstance(value.get("grouped_findings"), dict):
         raise ReviewError("final review grouped_findings must be an object")
-    validate_list_field(value, "blockers")
+    blockers = validate_list_field(value, "blockers")
+    for finding in blockers:
+        if not isinstance(finding, dict):
+            raise ReviewError("final review blockers must be objects")
+        validate_review_finding_core(finding)
     validate_list_field(value, "lane_statuses")
     validate_list_field(value, "execution_issues")
     validate_review_notes(value)
@@ -2216,6 +2234,89 @@ def validate_final_review(value: dict[str, Any]) -> None:
             if not isinstance(finding, dict):
                 raise ReviewError("final review non_blocking_findings must be objects")
             validate_review_finding_core(finding)
+    if "finding_dispositions" in value:
+        dispositions = validate_list_field(value, "finding_dispositions")
+        finding_ids: set[str] = set()
+        for index, disposition in enumerate(dispositions):
+            if not isinstance(disposition, dict):
+                raise ReviewError("final review finding_dispositions must be objects")
+            validate_review_finding_disposition_entry(disposition, field=f"finding_dispositions[{index}]")
+            finding_id = str(disposition.get("finding_id"))
+            if finding_id in finding_ids:
+                raise ReviewError("final review finding_dispositions finding_id values must be unique")
+            finding_ids.add(finding_id)
+    if "disposition_summary" in value:
+        validate_review_finding_disposition_summary(value.get("disposition_summary"), field="disposition_summary")
+    if "finding_disposition_ref" in value:
+        validate_artifact_ref(value.get("finding_disposition_ref"), field="finding_disposition_ref")
+
+
+def validate_review_finding_disposition_entry(value: Any, *, field: str) -> None:
+    if not isinstance(value, dict):
+        raise ReviewError(f"{field} must be an object")
+    for required in [
+        "finding_id",
+        "category",
+        "severity",
+        "summary",
+        "disposition",
+        "rationale",
+    ]:
+        validate_string_field(value, required, display_field=f"{field}.{required}")
+    if value.get("category") not in CATEGORY_ORDER:
+        raise ReviewError(f"{field}.category must be a documented canonical category")
+    if value.get("severity") not in SEVERITY_RANK:
+        raise ReviewError(f"{field}.severity must be info, low, medium, high, or critical")
+    if value.get("disposition") not in DISPOSITION_ORDER:
+        raise ReviewError(f"{field}.disposition must be resolved, rejected, deferred, or obsolete")
+    validate_bool_field(value, "blocking", display_field=f"{field}.blocking")
+    validate_bool_field(value, "visible_in_bundle", display_field=f"{field}.visible_in_bundle")
+    evidence_refs = validate_list_field(value, "evidence_refs")
+    if not evidence_refs:
+        raise ReviewError(f"{field}.evidence_refs must contain at least one evidence reference")
+    for index, evidence_ref in enumerate(evidence_refs):
+        validate_evidence_ref(evidence_ref, field=f"{field}.evidence_refs[{index}]")
+
+
+def validate_review_finding_disposition_summary(value: Any, *, field: str) -> None:
+    if not isinstance(value, dict):
+        raise ReviewError(f"{field} must be an object")
+    total = value.get("total")
+    if not isinstance(total, int) or total < 0:
+        raise ReviewError(f"{field}.total must be a non-negative integer")
+    publish_ready = value.get("publish_ready")
+    if not isinstance(publish_ready, bool):
+        raise ReviewError(f"{field}.publish_ready must be a boolean")
+    counts = value.get("by_disposition")
+    if not isinstance(counts, dict):
+        raise ReviewError(f"{field}.by_disposition must be an object")
+    for disposition in DISPOSITION_ORDER:
+        count = counts.get(disposition)
+        if not isinstance(count, int) or count < 0:
+            raise ReviewError(f"{field}.by_disposition.{disposition} must be a non-negative integer")
+
+
+def validate_review_finding_dispositions(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("review finding dispositions schema_version must be 1")
+    if value.get("artifact_type") != "review_finding_dispositions":
+        raise ReviewError("review finding dispositions artifact_type must be review_finding_dispositions")
+    for field in ["generated_at_utc", "markdown", "remote_mutations"]:
+        validate_string_field(value, field)
+    if value.get("remote_mutations") != "none":
+        raise ReviewError("review finding dispositions remote_mutations must be none")
+    if not isinstance(value.get("producer"), dict):
+        raise ReviewError("review finding dispositions producer must be an object")
+    validate_artifact_ref(value.get("final_review_ref"), field="final_review_ref")
+    validate_review_finding_disposition_summary(value.get("summary"), field="summary")
+    entries = validate_list_field(value, "entries")
+    finding_ids: set[str] = set()
+    for index, entry in enumerate(entries):
+        validate_review_finding_disposition_entry(entry, field=f"entries[{index}]")
+        finding_id = str(entry.get("finding_id"))
+        if finding_id in finding_ids:
+            raise ReviewError("review finding dispositions finding_id values must be unique")
+        finding_ids.add(finding_id)
 
 
 def validate_review_lane_draft(value: dict[str, Any]) -> None:
@@ -2419,6 +2520,8 @@ def validate_artifact(value: dict[str, Any]) -> None:
         validate_feedback_manifest(value)
     elif artifact_type == "review_publish_manifest":
         validate_publish_manifest(value)
+    elif artifact_type == "review_finding_dispositions":
+        validate_review_finding_dispositions(value)
     elif artifact_type == "legacy_pr_smoke_manifest":
         validate_legacy_pr_smoke_manifest(value)
     else:
@@ -3477,6 +3580,194 @@ def normalize_lane_result_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_LANE={lane_id}")
     print(f"REVIEW_LANE_RESULT_PATH={result_path}")
     print("REVIEW_LANE_STATE=succeeded")
+    print("REVIEW_REMOTE_MUTATIONS=none")
+
+
+def disposition_table_markdown(entries: list[dict[str, Any]]) -> str:
+    lines = [
+        "## Finding dispositions",
+        "",
+        "| Finding ID | Severity/category | Blocking | Disposition | Rationale | Evidence |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for entry in entries:
+        evidence_parts: list[str] = []
+        for evidence_ref in entry.get("evidence_refs", []):
+            if not isinstance(evidence_ref, dict):
+                continue
+            description = str(evidence_ref.get("description") or "evidence")
+            locator = str(
+                evidence_ref.get("path")
+                or evidence_ref.get("ref")
+                or evidence_ref.get("command")
+                or evidence_ref.get("type")
+                or ""
+            )
+            evidence_parts.append(f"{description} ({locator})" if locator else description)
+        rationale = str(entry.get("rationale") or "").replace("|", "\\|")
+        evidence = "; ".join(part.replace("|", "\\|") for part in evidence_parts) or "none"
+        lines.append(
+            f"| {entry.get('finding_id')} | {entry.get('severity')}/{entry.get('category')} | "
+            f"{'yes' if entry.get('blocking') else 'no'} | {entry.get('disposition')} | {rationale} | {evidence} |"
+        )
+    if not entries:
+        lines.append("| None | - | - | - | No synthesized findings. | - |")
+    return "\n".join(lines) + "\n"
+
+
+def collect_final_review_findings(final_review: dict[str, Any]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for field in ["blockers", "non_blocking_findings"]:
+        items = final_review.get(field, [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                findings.append(item)
+    return findings
+
+
+def load_disposition_input(path: Path) -> list[dict[str, Any]]:
+    value = load_json(path)
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("review finding disposition input schema_version must be 1")
+    if value.get("artifact_type") != "review_finding_disposition_input":
+        raise ReviewError("review finding disposition input artifact_type must be review_finding_disposition_input")
+    entries = validate_list_field(value, "entries")
+    normalized: list[dict[str, Any]] = []
+    finding_ids: set[str] = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ReviewError(f"entries[{index}] must be an object")
+        for required in ["finding_id", "disposition", "rationale"]:
+            validate_string_field(entry, required, display_field=f"entries[{index}].{required}")
+        if entry.get("disposition") not in DISPOSITION_ORDER:
+            raise ReviewError(f"entries[{index}].disposition must be resolved, rejected, deferred, or obsolete")
+        evidence_refs = validate_list_field(entry, "evidence_refs")
+        if not evidence_refs:
+            raise ReviewError(f"entries[{index}].evidence_refs must contain at least one evidence reference")
+        for evidence_index, evidence_ref in enumerate(evidence_refs):
+            validate_evidence_ref(evidence_ref, field=f"entries[{index}].evidence_refs[{evidence_index}]")
+        finding_id = str(entry.get("finding_id"))
+        if finding_id in finding_ids:
+            raise ReviewError("review finding disposition input finding_id values must be unique")
+        finding_ids.add(finding_id)
+        normalized.append(json_clone(entry))
+    return normalized
+
+
+def finalize_dispositions_command(args: argparse.Namespace) -> None:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_review_path = Path(args.final_review)
+    final_review = load_json(final_review_path)
+    validate_final_review(final_review)
+    disposition_input_path = Path(args.disposition_input)
+    disposition_entries = load_disposition_input(disposition_input_path)
+    validation_artifact_path = Path(args.validation_artifact)
+    validation_artifact = load_json(validation_artifact_path)
+
+    findings = collect_final_review_findings(final_review)
+    findings_by_id: dict[str, dict[str, Any]] = {}
+    for finding in findings:
+        finding_id = str(finding.get("id") or "").strip()
+        if not finding_id:
+            raise ReviewError("final review findings must include non-empty ids before disposition finalization")
+        if finding_id in findings_by_id:
+            raise ReviewError("final review finding ids must be unique before disposition finalization")
+        findings_by_id[finding_id] = finding
+
+    input_ids = {str(entry.get("finding_id") or "").strip() for entry in disposition_entries}
+    source_ids = set(findings_by_id.keys())
+    missing = sorted(source_ids - input_ids)
+    extra = sorted(input_ids - source_ids)
+    if missing:
+        raise ReviewError("disposition input missing finding ids: " + ", ".join(missing))
+    if extra:
+        raise ReviewError("disposition input contains unknown finding ids: " + ", ".join(extra))
+
+    by_disposition = {key: 0 for key in DISPOSITION_ORDER}
+    final_entries: list[dict[str, Any]] = []
+    publish_ready = True
+    for input_entry in disposition_entries:
+        finding_id = str(input_entry.get("finding_id"))
+        finding = findings_by_id[finding_id]
+        disposition = str(input_entry.get("disposition"))
+        by_disposition[disposition] += 1
+        blocking = bool(finding.get("blocking"))
+        if blocking and disposition == "deferred":
+            publish_ready = False
+        entry = {
+            "finding_id": finding_id,
+            "category": str(finding.get("category") or "other"),
+            "severity": str(finding.get("severity") or "info"),
+            "blocking": blocking,
+            "summary": str(finding.get("summary") or ""),
+            "disposition": disposition,
+            "rationale": str(input_entry.get("rationale") or ""),
+            "evidence_refs": json_clone(input_entry.get("evidence_refs") or []),
+            "visible_in_bundle": True,
+        }
+        validate_review_finding_disposition_entry(entry, field=f"finding {finding_id}")
+        final_entries.append(entry)
+
+    summary = {
+        "total": len(final_entries),
+        "by_disposition": by_disposition,
+        "publish_ready": publish_ready,
+    }
+    validate_review_finding_disposition_summary(summary, field="summary")
+    disposition_markdown = disposition_table_markdown(final_entries)
+
+    dispositions_artifact = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_finding_dispositions",
+        "generated_at_utc": now_utc(),
+        "producer": {"name": ".scherzo/workflows/scripts/scherzo-review", "version": "1", "mode": "finalize-dispositions"},
+        "final_review_ref": artifact_ref_for(final_review_path, "final_review"),
+        "validation_artifact_ref": artifact_ref_for(validation_artifact_path, str(validation_artifact.get("artifact_type") or "validation_artifact")),
+        "disposition_input_ref": artifact_ref_for(disposition_input_path, "review_finding_disposition_input"),
+        "entries": final_entries,
+        "summary": summary,
+        "markdown": disposition_markdown,
+        "remote_mutations": "none",
+    }
+    if args.diff_file:
+        diff_path = Path(args.diff_file)
+        if diff_path.exists():
+            dispositions_artifact["diff_ref"] = artifact_ref_for(diff_path, "diff")
+    validate_review_finding_dispositions(dispositions_artifact)
+
+    dispositions_path = output_dir / "review-finding-dispositions.v1.json"
+    dispositions_markdown_path = output_dir / "review-finding-dispositions.md"
+    final_review_output_path = output_dir / "final-review.v1.json"
+    final_review_markdown_path = output_dir / "final-review.md"
+    write_json(dispositions_path, dispositions_artifact)
+    dispositions_markdown_path.write_text(disposition_markdown)
+
+    updated_final_review = json_clone(final_review)
+    final_markdown = str(updated_final_review.get("markdown") or "")
+    if not final_markdown.endswith("\n"):
+        final_markdown += "\n"
+    final_markdown += "\n" + disposition_markdown
+    updated_final_review["finding_dispositions"] = final_entries
+    updated_final_review["disposition_summary"] = summary
+    updated_final_review["finding_disposition_ref"] = artifact_ref_for(dispositions_path, "review_finding_dispositions", base_dir=output_dir)
+    updated_final_review["markdown"] = final_markdown
+    validate_final_review(updated_final_review)
+    write_json(final_review_output_path, updated_final_review)
+    final_review_markdown_path.write_text(final_markdown)
+
+    if args.require_publishable and not publish_ready:
+        raise ReviewError("blocking finding disposition state is not publishable")
+
+    print("REVIEW_FINDING_DISPOSITIONS=ok")
+    print(f"REVIEW_FINAL_ARTIFACT_PATH={final_review_output_path}")
+    print(f"REVIEW_FINDING_DISPOSITIONS_PATH={dispositions_path}")
+    print(f"REVIEW_FINAL_MARKDOWN_PATH={final_review_markdown_path}")
+    print(f"REVIEW_FINDING_DISPOSITIONS_MARKDOWN_PATH={dispositions_markdown_path}")
+    print(f"REVIEW_PUBLISH_READY={'true' if publish_ready else 'false'}")
     print("REVIEW_REMOTE_MUTATIONS=none")
 
 
@@ -7178,6 +7469,18 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_lane.add_argument("--brief", required=True, help="ReviewBrief artifact path.")
     normalize_lane.add_argument("--output-dir", required=True, help="Directory for normalized lane result artifacts.")
     normalize_lane.set_defaults(func=normalize_lane_result_command)
+
+    finalize_dispositions = subparsers.add_parser(
+        "finalize-dispositions",
+        help="Validate final finding dispositions and materialize finalized review artifacts.",
+    )
+    finalize_dispositions.add_argument("--final-review", required=True, help="Synthesized final review artifact path.")
+    finalize_dispositions.add_argument("--disposition-input", required=True, help="Agent-authored disposition input artifact path.")
+    finalize_dispositions.add_argument("--validation-artifact", required=True, help="Validation artifact path used as supporting evidence context.")
+    finalize_dispositions.add_argument("--output-dir", required=True, help="Directory for finalized disposition artifacts.")
+    finalize_dispositions.add_argument("--diff-file", help="Optional diff path retained as supporting evidence.")
+    finalize_dispositions.add_argument("--require-publishable", action="store_true", help="Fail when any blocking finding remains non-publishable.")
+    finalize_dispositions.set_defaults(func=finalize_dispositions_command)
 
     apply_feedback = subparsers.add_parser(
         "apply-feedback",

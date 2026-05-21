@@ -2240,7 +2240,7 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
     "apply_review_feedback",
     "prompts/execplan-implementation-repair-base-drift.md",
     "checkpoint_final_plan_completion_verdict",
-    "finalize_final_plan_completion_gate",
+    "finalize_final_plan_completion_gate, finalize_review_dispositions",
   )
   assert string.contains(execplan, "- id: final_plan_completion_gate")
   assert string.contains(execplan, "on_failure: continue")
@@ -2413,7 +2413,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   assert string.contains(workflow, "- id: publish_pr")
   assert string.contains(
     workflow,
-    "depends_on: [finalize_final_plan_completion_gate]",
+    "depends_on: [finalize_final_plan_completion_gate, finalize_review_dispositions]",
   )
 }
 
