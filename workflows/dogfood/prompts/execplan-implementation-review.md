@@ -84,7 +84,7 @@ Review contract:
 - Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - Use `$SCHERZO_WORKSPACE_DRIVER status --human` and `$SCHERZO_WORKSPACE_DRIVER diff --human` only for orientation; the analysis output above is authoritative for changed files across the workflow run.
 - Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json` for ExecPlan handoff context.
-- Determine the checked-in review doc path from `tmp/scherzo-implementation.json` field `plan_path`, falling back to `review_doc.path` in the bundle. Treat that checked-in review doc as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat the implementation pack as mechanical context only when it does not conflict with review-doc intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.
+- Treat `tmp/execplan-review-doc.md` as the authoritative canonical plan resolved during prepare from `exec_plan_bundle.plan.ref` (or legacy `review_doc.path` fallback). `tmp/scherzo-implementation.json` `plan_path` points at that prepared local plan; any `review_surface_path` or legacy `review_doc.path` is optional publication metadata. Treat the implementation pack as mechanical context only when it does not conflict with canonical-plan intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.
 - If `REVIEW_BRIEF_PATH=...` is present in the native preparation output, read that local artifact for orientation. It is additive context only; do not post the artifact to PRs or Linear.
 - Read each normalized native `ReviewLaneResult` referenced by `REVIEW_LANE_RESULT_PATH=...` in the normalization outputs, plus its retained evidence ledger/log/analysis artifacts. Treat lane findings as normalized review input: fix or report blocking findings, preserve non-blocking suspicions as feedback, and do not discard empty-finding lane logs.
 - If synthesis output includes `REVIEW_SYNTHESIS_PATH=...` or `REVIEW_FINAL_ARTIFACT_PATH=...`, read the referenced artifacts first. Use the final artifact as the concise normalized review input, including lane failures and downgraded/unproven correctness claims, but still inspect the actual diff before applying fixes.
@@ -104,7 +104,7 @@ Review process:
 3. Inspect the actual diff and current files only as needed to verify findings.
 4. Apply safe and relevant medium-or-smaller fixes identified by the native staged artifacts or bounded inspection.
 5. Leave risky, broad, ambiguous, unsupported, or product-scope findings for the feedback step with a clear explanation.
-6. Update the checked-in review doc's living sections only if your review fix changes progress, validation, discoveries, decisions, or outcomes.
+6. Do not edit the prepared canonical plan artifact; report any living-section updates that should be handled through a follow-up ExecPlan revision or optional review surface.
 7. Finish with a concise review report.
 
 Final response format:

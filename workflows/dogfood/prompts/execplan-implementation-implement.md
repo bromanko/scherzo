@@ -12,11 +12,11 @@ ExecPlan identity model:
 
 Use these prepared files as the complete handoff:
 
-- `tmp/execplan-review-doc.md`: human-reviewable intent, scope, risks, milestones, and acceptance.
+- `tmp/execplan-review-doc.md`: canonical executable plan artifact resolved from `exec_plan_bundle.plan.ref` (or legacy `review_doc.path` fallback), including human-reviewable intent, scope, risks, milestones, and acceptance.
 - `tmp/execplan-implementation-pack.json`: mechanical implementation steps, verified facts, tests, interfaces, dependencies, and artifact notes.
 - `tmp/execplan-bundle.json`: retained bundle provenance and hashes.
 
-If intent, scope, acceptance, safety, or source-plan provenance in the review doc conflicts with the implementation pack beyond the expected handoff/source identity split described above, write a concise conflict report to `tmp/execplan-conflict.md` and stop without making code changes. Otherwise implement the next required milestone, update any living-document sections in the checked-in review doc when the actual state changes, and run targeted validation when useful.
+If intent, scope, acceptance, safety, or source-plan provenance in the canonical plan conflicts with the implementation pack beyond the expected handoff/source identity split described above, write a concise conflict report to `tmp/execplan-conflict.md` and stop without making code changes. Otherwise implement the next required milestone. Treat any repo path in `review_surface_path` or legacy `review_doc.path` as optional human-review metadata, not as the authoritative implementation input.
 
 Do not create commits, manage workspaces, or open a PR; the workflow publish step owns that.
 

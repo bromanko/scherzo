@@ -299,7 +299,8 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
     simplifile.read(".scherzo/workflows/execplan.yaml")
   let drafting = parse_ok(drafting_source)
   let assert Some(contract) = drafting.contract
-  let assert [implementation_pack, exec_plan_bundle] = contract.outputs
+  let assert [plan, implementation_pack, exec_plan_bundle] = contract.outputs
+  assert plan.type_ == workflow_contract.ExecPlan
   assert implementation_pack.type_ == workflow_contract.ImplementationPack
   assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
 }

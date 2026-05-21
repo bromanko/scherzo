@@ -280,6 +280,110 @@ fn write_source_handoff_split_bundle(dir: String) -> #(String, String) {
   #(bundle_ref, hash.sha256_hex(bundle_text))
 }
 
+fn write_artifact_backed_plan_bundle(
+  dir: String,
+  plan_ref: String,
+  plan_sha_override: String,
+  include_plan_artifact: Bool,
+) -> #(String, String, String) {
+  let run_id = "run-artifact-plan"
+  let output_dir =
+    dir <> "/.scherzo-state/artifacts/runs/" <> run_id <> "/outputs"
+  let assert Ok(Nil) = simplifile.create_directory_all(output_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/.scherzo")
+  let assert Ok(workflows_target) = scherzo_path.absolute("workflows/dogfood")
+  let assert Ok(Nil) =
+    scherzo_path.symlink(workflows_target, dir <> "/.scherzo/workflows")
+  let assert Ok(plan_text) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  case include_plan_artifact {
+    True -> {
+      let assert Ok(Nil) = simplifile.write(output_dir <> "/plan.md", plan_text)
+      Nil
+    }
+    False -> Nil
+  }
+  let plan_sha = case plan_sha_override == "" {
+    True -> hash.sha256_hex(plan_text)
+    False -> plan_sha_override
+  }
+  let plan_bytes = text_bytes(plan_text)
+
+  let assert Ok(pack_source) =
+    simplifile.read("test/fixtures/execplan_v2/implementation-pack.valid.json")
+  let pack_text = string.replace(pack_source, each: "run-1", with: run_id)
+  let pack_path = output_dir <> "/implementation_pack.json"
+  let assert Ok(Nil) = simplifile.write(pack_path, pack_text)
+  let pack_sha = hash.sha256_hex(pack_text)
+  let pack_bytes = text_bytes(pack_text)
+
+  let bundle_ref = "runs/" <> run_id <> "/outputs/exec_plan_bundle.json"
+  let bundle_text =
+    "{\n"
+    <> "  \"artifact_type\": \"exec_plan_bundle\",\n"
+    <> "  \"bundle_id\": \"fixture-bundle-artifact-plan\",\n"
+    <> "  \"implementation_handoff\": {\n"
+    <> "    \"bundle_ref\": \""
+    <> bundle_ref
+    <> "\",\n"
+    <> "    \"issue_identifier\": \"LIV-315\",\n"
+    <> "    \"issue_url\": \"https://linear.app/living-systems/issue/LIV-315/implement-fixture-v2-execplan-bundle\",\n"
+    <> "    \"workflow_label\": \"workflow:execplan-implementation\"\n"
+    <> "  },\n"
+    <> "  \"implementation_pack\": {\n"
+    <> "    \"bytes\": "
+    <> pack_bytes
+    <> ",\n"
+    <> "    \"derived_from_review_doc_sha256\": \""
+    <> plan_sha
+    <> "\",\n"
+    <> "    \"ref\": \"runs/"
+    <> run_id
+    <> "/outputs/implementation_pack.json\",\n"
+    <> "    \"schema\": \".scherzo/workflows/schemas/implementation-pack.v2.schema.json\",\n"
+    <> "    \"sha256\": \""
+    <> pack_sha
+    <> "\"\n"
+    <> "  },\n"
+    <> "  \"plan\": {\n"
+    <> "    \"bytes\": "
+    <> plan_bytes
+    <> ",\n"
+    <> "    \"media_type\": \"text/markdown\",\n"
+    <> "    \"ref\": \""
+    <> plan_ref
+    <> "\",\n"
+    <> "    \"sha256\": \""
+    <> plan_sha
+    <> "\"\n"
+    <> "  },\n"
+    <> "  \"review_surface\": {\n"
+    <> "    \"branch\": \"execplan/liv-314\",\n"
+    <> "    \"pr_url\": \"https://github.com/living-systems/scherzo/pull/314\",\n"
+    <> "    \"source_bundle_ref\": null,\n"
+    <> "    \"status\": \"published\"\n"
+    <> "  },\n"
+    <> "  \"revision\": {\"number\": 1, \"status\": \"created\", \"supersedes\": null},\n"
+    <> "  \"schema_version\": 2,\n"
+    <> "  \"source_issue\": {\n"
+    <> "    \"identifier\": \"LIV-314\",\n"
+    <> "    \"title\": \"Fixture v2 ExecPlan bundle\",\n"
+    <> "    \"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"\n"
+    <> "  },\n"
+    <> "  \"validation\": [{\"name\": \"fixture\", \"status\": \"passed\"}],\n"
+    <> "  \"workflow\": {\n"
+    <> "    \"run_id\": \""
+    <> run_id
+    <> "\",\n"
+    <> "    \"workflow_fingerprint\": \"fixture-fingerprint\",\n"
+    <> "    \"workflow_id\": \"execplan\"\n"
+    <> "  }\n"
+    <> "}\n"
+  let assert Ok(Nil) =
+    simplifile.write(output_dir <> "/exec_plan_bundle.json", bundle_text)
+  #(bundle_ref, hash.sha256_hex(bundle_text), plan_text)
+}
+
 pub fn validate_bundle_accepts_valid_fixture_test() {
   let artifact =
     run_helper(
@@ -289,6 +393,132 @@ pub fn validate_bundle_accepts_valid_fixture_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "BUNDLE_VALID=ok")
+}
+
+pub fn validate_bundle_accepts_artifact_backed_plan_without_repo_path_test() {
+  let dir = "test/tmp/execplan-artifact-backed-plan-validate"
+  reset_dir(dir)
+  let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
+  let #(bundle_ref, _bundle_sha, _plan_text) =
+    write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      helper
+        <> " validate-bundle --bundle .scherzo-state/artifacts/"
+        <> bundle_ref
+        <> " --artifact-root .scherzo-state/artifacts --repo-root .",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "BUNDLE_VALID=ok")
+}
+
+pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
+  let dir = "test/tmp/execplan-artifact-backed-plan-prepare"
+  reset_dir(dir)
+  let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
+  let #(bundle_ref, bundle_sha, plan_text) =
+    write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote(issue_context)
+        <> " "
+        <> helper
+        <> " implementation-prepare --from-issue-context",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PLAN=tmp/execplan-review-doc.md")
+  let assert Ok(prepared_plan) =
+    simplifile.read(dir <> "/tmp/execplan-review-doc.md")
+  assert prepared_plan == plan_text
+  let assert Ok(metadata) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation.json")
+  assert string.contains(
+    metadata,
+    "\"plan_path\": \"tmp/execplan-review-doc.md\"",
+  )
+  assert string.contains(
+    metadata,
+    "\"plan_artifact_ref\": \"" <> plan_ref <> "\"",
+  )
+  assert string.contains(metadata, "\"legacy_review_doc_path\": \"\"")
+}
+
+pub fn implementation_prepare_rejects_plan_hash_mismatch_test() {
+  let dir = "test/tmp/execplan-artifact-plan-hash-mismatch"
+  reset_dir(dir)
+  let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
+  let #(bundle_ref, bundle_sha, _plan_text) =
+    write_artifact_backed_plan_bundle(
+      dir,
+      plan_ref,
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      True,
+    )
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote(issue_context)
+        <> " "
+        <> helper
+        <> " implementation-prepare --from-issue-context",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_plan_hash_mismatch",
+  )
+}
+
+pub fn implementation_prepare_rejects_missing_plan_artifact_test() {
+  let dir = "test/tmp/execplan-artifact-plan-missing"
+  reset_dir(dir)
+  let #(bundle_ref, bundle_sha, _plan_text) =
+    write_artifact_backed_plan_bundle(
+      dir,
+      "runs/run-artifact-plan/outputs/missing-plan.md",
+      "",
+      False,
+    )
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_ISSUE_CONTEXT="
+        <> shell_quote(issue_context)
+        <> " "
+        <> helper
+        <> " implementation-prepare --from-issue-context",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_plan_missing",
+  )
 }
 
 pub fn implementation_prepare_failure_writes_retention_marker_test() {

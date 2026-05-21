@@ -32,6 +32,9 @@ CODE_CHANGE_BUNDLE_SCHEMA = SCHEMA_DIR / "code-change-bundle.v2.schema.json"
 IMPLEMENTATION_PACK_SUBMISSION_SCHEMA = SCHEMA_DIR / "implementation-pack-submission.v2.schema.json"
 EXEC_PLAN_REVISION_SUBMISSION_SCHEMA = SCHEMA_DIR / "exec-plan-revision-submission.v2.schema.json"
 DEFAULT_REVIEW_DOC_DIRECTORY = "docs/plans"
+CANONICAL_PLAN_OUTPUT_NAME = "plan"
+CANONICAL_PLAN_OUTPUT_PATH = Path("tmp/execplan-review-doc.md")
+CANONICAL_PLAN_MEDIA_TYPE = "text/markdown"
 REVIEW_DOC_TARGET_SCHEMA_VERSION = 1
 
 REQUIRED_REVIEW_DOC_SECTIONS = [
@@ -999,6 +1002,80 @@ def resolve_artifact_ref(ref: str, *, artifact_root: str | None = None, repo_roo
     )
 
 
+def canonical_plan_ref(run_id: str) -> str:
+    return f"runs/{run_id}/outputs/{CANONICAL_PLAN_OUTPUT_NAME}.md"
+
+
+def canonical_plan_descriptor(run_id: str, source: Path) -> dict[str, Any]:
+    data = path_bytes(source, code="execplan_v2_plan_missing")
+    return {
+        "ref": canonical_plan_ref(run_id),
+        "sha256": sha256_bytes(data),
+        "bytes": len(data),
+        "media_type": CANONICAL_PLAN_MEDIA_TYPE,
+    }
+
+
+def write_canonical_plan_output(source: Path) -> dict[str, Any]:
+    CANONICAL_PLAN_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if source.resolve() != CANONICAL_PLAN_OUTPUT_PATH.resolve():
+        shutil.copyfile(source, CANONICAL_PLAN_OUTPUT_PATH)
+    return canonical_plan_descriptor(os.environ.get("SCHERZO_RUN_ID", "local-run"), CANONICAL_PLAN_OUTPUT_PATH)
+
+
+def bundle_expected_plan_sha(bundle: dict[str, Any]) -> str:
+    plan = bundle.get("plan")
+    if isinstance(plan, dict):
+        return str(plan.get("sha256") or "")
+    review_doc = bundle.get("review_doc")
+    if isinstance(review_doc, dict):
+        return str(review_doc.get("sha256") or "")
+    return ""
+
+
+def validate_bundle_plan(
+    bundle: dict[str, Any], *, artifact_root: str | None = None, repo_root_arg: str | None = None
+) -> tuple[dict[str, Any], Path] | None:
+    plan = bundle.get("plan")
+    if not isinstance(plan, dict):
+        return None
+    if str(plan.get("media_type") or "") != CANONICAL_PLAN_MEDIA_TYPE:
+        fail("exec_plan_bundle.plan.media_type must be text/markdown", code="execplan_v2_plan_hash_mismatch")
+    plan_ref = str(plan.get("ref") or "")
+    plan_path = resolve_artifact_ref(
+        plan_ref,
+        artifact_root=artifact_root,
+        repo_root_arg=repo_root_arg,
+        code="execplan_v2_plan_missing",
+    )
+    data = path_bytes(plan_path, code="execplan_v2_plan_missing")
+    meta = {"sha256": sha256_bytes(data), "bytes": len(data)}
+    if meta["sha256"] != plan.get("sha256") or meta["bytes"] != plan.get("bytes"):
+        fail("plan artifact bytes do not match bundle metadata", code="execplan_v2_plan_hash_mismatch")
+    return meta, plan_path
+
+
+def validate_bundle_canonical_plan(
+    bundle: dict[str, Any], *, artifact_root: str | None = None, repo_root_arg: str | None = None
+) -> tuple[dict[str, Any], Path]:
+    plan_result = validate_bundle_plan(bundle, artifact_root=artifact_root, repo_root_arg=repo_root_arg)
+    if plan_result is not None:
+        return plan_result
+    review_meta = validate_bundle_review_doc(bundle, repo_root_arg=repo_root_arg)
+    review_path = review_doc_filesystem_path(bundle["review_doc"]["path"], repo_root(repo_root_arg))
+    return review_meta, review_path
+
+
+def legacy_review_doc_path(bundle: dict[str, Any]) -> str:
+    review_doc = bundle.get("review_doc")
+    if isinstance(review_doc, dict):
+        return str(review_doc.get("path") or "")
+    surface = bundle.get("review_surface")
+    if isinstance(surface, dict):
+        return str(surface.get("review_doc_path") or "")
+    return ""
+
+
 def structured_artifact_candidates(step: str, artifact_name: str) -> list[Path]:
     roots: list[Path] = []
     run_dir = run_artifact_dir()
@@ -1207,7 +1284,7 @@ def review_doc_meta_for_bundle(
 def validate_bundle_implementation_pack(
     bundle: dict[str, Any], *, artifact_root: str | None = None, repo_root_arg: str | None = None
 ) -> tuple[dict[str, Any], Path]:
-    review_doc = bundle["review_doc"]
+    expected_plan_sha = bundle_expected_plan_sha(bundle)
     pack_ref = bundle["implementation_pack"]["ref"]
     pack_path = resolve_artifact_ref(
         pack_ref,
@@ -1225,12 +1302,12 @@ def validate_bundle_implementation_pack(
         fail(f"invalid implementation pack JSON: {exc}", code="execplan_v2_implementation_pack_missing")
     validate_schema(pack, IMPLEMENTATION_PACK_SCHEMA, root=repo_root(repo_root_arg))
     pack_review_sha = str(pack.get("derived_from", {}).get("review_doc_sha256") or "")
-    if pack_review_sha != review_doc["sha256"]:
-        fail("implementation pack was derived from a different review doc hash", code="execplan_v2_stale_implementation_pack")
-    if bundle["implementation_pack"]["derived_from_review_doc_sha256"] != review_doc["sha256"]:
+    if pack_review_sha != expected_plan_sha:
+        fail("implementation pack was derived from a different plan hash", code="execplan_v2_stale_implementation_pack")
+    if bundle["implementation_pack"]["derived_from_review_doc_sha256"] != expected_plan_sha:
         fail("bundle implementation_pack.derived_from_review_doc_sha256 is stale", code="execplan_v2_stale_implementation_pack")
-    if pack.get("review_doc", {}).get("sha256") != review_doc["sha256"]:
-        fail("implementation pack review_doc hash does not match bundle", code="execplan_v2_stale_implementation_pack")
+    if pack.get("review_doc", {}).get("sha256") != expected_plan_sha:
+        fail("implementation pack review_doc hash does not match bundle plan", code="execplan_v2_stale_implementation_pack")
     return pack, pack_path
 
 
@@ -1248,7 +1325,7 @@ def load_and_validate_bundle(
         bundle_sha256=bundle_sha256,
         repo_root_arg=repo_root_arg,
     )
-    validate_bundle_review_doc(bundle, repo_root_arg=repo_root_arg)
+    validate_bundle_canonical_plan(bundle, artifact_root=artifact_root, repo_root_arg=repo_root_arg)
     pack, pack_path = validate_bundle_implementation_pack(
         bundle,
         artifact_root=artifact_root,
@@ -1265,6 +1342,7 @@ def load_and_validate_retained_bundle(
         bundle_sha256=bundle_sha256,
         repo_root_arg=repo_root_arg,
     )
+    validate_bundle_plan(bundle, artifact_root=artifact_root, repo_root_arg=repo_root_arg)
     pack, pack_path = validate_bundle_implementation_pack(
         bundle,
         artifact_root=artifact_root,
@@ -1778,6 +1856,7 @@ def materialize_bundle(args: list[str]) -> None:
             "publish context source_issue.identifier",
         )
     run_id = os.environ.get("SCHERZO_RUN_ID", "local-run")
+    plan_meta = write_canonical_plan_output(review_path)
     pack_ref = f"runs/{run_id}/outputs/implementation_pack.json"
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
     bundle = {
@@ -1791,6 +1870,7 @@ def materialize_bundle(args: list[str]) -> None:
             "workflow_fingerprint": os.environ.get("SCHERZO_WORKFLOW_FINGERPRINT", "unknown"),
         },
         "revision": {"status": "created", "number": 1, "supersedes": None},
+        "plan": plan_meta,
         "review_doc": review_meta,
         "implementation_pack": {
             "ref": pack_ref,
@@ -1805,6 +1885,7 @@ def materialize_bundle(args: list[str]) -> None:
             "branch": publish_context["pr"]["branch"],
             "source_bundle_ref": publish_context["review_surface"].get("source_bundle_ref"),
             "head_revision": publish_context["review_surface"].get("head_revision") or publish_context["pr"].get("head_revision"),
+            "review_doc_path": review_meta["path"],
         },
         "implementation_handoff": {
             "issue_identifier": "pending",
@@ -2187,7 +2268,7 @@ def load_bundle_from_context(
             repo_root_arg=str(Path.cwd()),
         )
         if validate_review_doc:
-            validate_bundle_review_doc(bundle, repo_root_arg=str(Path.cwd()))
+            validate_bundle_canonical_plan(bundle, artifact_root=None, repo_root_arg=str(Path.cwd()))
         pack, pack_path = validate_bundle_implementation_pack(
             bundle,
             artifact_root=None,
@@ -2198,13 +2279,15 @@ def load_bundle_from_context(
         parse_bundle_ref_and_sha(text)
     bundle, pack, pack_path, ref, sha, diagnostics = discover_bundle_from_issue_context(text)
     if validate_review_doc:
-        validate_bundle_review_doc(bundle, repo_root_arg=str(Path.cwd()))
+        validate_bundle_canonical_plan(bundle, artifact_root=None, repo_root_arg=str(Path.cwd()))
     return bundle, pack, pack_path, ref, sha, diagnostics
 
 
 
 def review_doc_state_for_bundle(bundle: dict[str, Any], *, repo_root_arg: str | None = None) -> tuple[str, dict[str, Any] | None, str]:
-    review_doc = bundle["review_doc"]
+    review_doc = bundle.get("review_doc")
+    if not isinstance(review_doc, dict):
+        return "missing", None, "<no legacy review_doc.path>"
     review_path = review_doc_filesystem_path(review_doc["path"], repo_root(repo_root_arg))
     try:
         data = review_path.read_bytes()
@@ -2447,8 +2530,9 @@ def materialize_revision(args: list[str]) -> None:
     previous_sha = sha256_bytes(canonical_json(previous).encode("utf-8"))
     status = ns.status
     if status == "auto":
-        status = "unchanged" if review_meta["sha256"] == previous["review_doc"]["sha256"] and pack_meta["sha256"] == previous["implementation_pack"]["sha256"] else "changed"
+        status = "unchanged" if review_meta["sha256"] == bundle_expected_plan_sha(previous) and pack_meta["sha256"] == previous["implementation_pack"]["sha256"] else "changed"
     run_id = os.environ.get("SCHERZO_RUN_ID", "local-run")
+    plan_meta = write_canonical_plan_output(review_path)
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
     bundle = {
         **previous,
@@ -2464,6 +2548,7 @@ def materialize_revision(args: list[str]) -> None:
             "number": int(previous.get("revision", {}).get("number") or 1) + 1,
             "supersedes": {"ref": previous_ref, "sha256": previous_sha},
         },
+        "plan": plan_meta,
         "review_doc": review_meta,
         "implementation_pack": {
             "ref": f"runs/{run_id}/outputs/implementation_pack.json",
@@ -2478,6 +2563,7 @@ def materialize_revision(args: list[str]) -> None:
             "branch": publish_context["pr"]["branch"],
             "source_bundle_ref": publish_context["review_surface"].get("source_bundle_ref"),
             "head_revision": publish_context["review_surface"].get("head_revision") or publish_context["pr"].get("head_revision"),
+            "review_doc_path": review_meta["path"],
         },
         "implementation_handoff": {
             **previous["implementation_handoff"],
@@ -2560,13 +2646,16 @@ def command_implementation_prepare(args: list[str]) -> None:
         os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "unknown-issue").strip() or "unknown-issue",
     )
     bundle, _pack, pack_path, _ref, _sha, _diagnostics = load_bundle_from_context()
-    review_path = review_doc_filesystem_path(bundle["review_doc"]["path"], Path.cwd())
-    review_meta = file_meta(review_path, code="execplan_v2_review_doc_missing")
-    if review_meta["sha256"] != bundle["review_doc"]["sha256"]:
-        fail("checked-in review doc hash does not match bundle", code="execplan_v2_review_doc_hash_mismatch")
+    plan_meta, plan_source_path = validate_bundle_canonical_plan(
+        bundle,
+        artifact_root=None,
+        repo_root_arg=str(Path.cwd()),
+    )
     tmp = Path("tmp")
     tmp.mkdir(exist_ok=True)
-    shutil.copyfile(review_path, tmp / "execplan-review-doc.md")
+    prepared_plan_path = tmp / "execplan-review-doc.md"
+    if plan_source_path.resolve() != prepared_plan_path.resolve():
+        shutil.copyfile(plan_source_path, prepared_plan_path)
     shutil.copyfile(pack_path, tmp / "execplan-implementation-pack.json")
     write_json(tmp / "execplan-bundle.json", bundle)
     base_change_id = "unknown-base"
@@ -2608,14 +2697,22 @@ def command_implementation_prepare(args: list[str]) -> None:
         "source_issue_identifier": source_issue_identifier,
         "source_issue_title": source_issue_title,
         "source_issue_url": source_issue_url,
-        "plan_path": bundle["review_doc"]["path"],
+        "plan_path": str(prepared_plan_path),
+        "plan_sha256": plan_meta["sha256"],
+        "plan_bytes": plan_meta["bytes"],
+        "plan_media_type": CANONICAL_PLAN_MEDIA_TYPE,
+        "plan_artifact_ref": str(bundle.get("plan", {}).get("ref") or ""),
+        "legacy_review_doc_path": legacy_review_doc_path(bundle),
+        "review_surface_path": str(bundle.get("review_surface", {}).get("review_doc_path") or legacy_review_doc_path(bundle)),
         "base_change_id": base_change_id,
         "execplan_v2_bundle_path": "tmp/execplan-bundle.json",
         "execplan_v2_implementation_pack_path": "tmp/execplan-implementation-pack.json",
     }
-    marker = write_implementation_retention_marker("execplan", bundle["review_doc"]["path"])
+    marker_source = str(bundle.get("plan", {}).get("ref") or legacy_review_doc_path(bundle) or prepared_plan_path)
+    marker = write_implementation_retention_marker("execplan", marker_source)
     write_json(tmp / "scherzo-implementation.json", metadata)
     print("IMPLEMENTATION_PREPARE_STATUS=ok")
+    print("PLAN=tmp/execplan-review-doc.md")
     print("REVIEW_DOC=tmp/execplan-review-doc.md")
     print("IMPLEMENTATION_PACK=tmp/execplan-implementation-pack.json")
     print("BUNDLE=tmp/execplan-bundle.json")
@@ -2725,16 +2822,18 @@ def materialize_code_change_bundle(args: list[str]) -> None:
         meta = copy_file_to_artifact(review_final, code_dir / "review" / "final-review.v1.json")
         review_artifacts.append({"name": "final-review", **meta})
     pack = bundle["implementation_pack"]
+    source_plan_sha = bundle_expected_plan_sha(bundle)
+    source_plan_path = legacy_review_doc_path(bundle) or str(CANONICAL_PLAN_OUTPUT_PATH)
     code_bundle = {
         "schema_version": 2,
         "artifact_type": "code_change_bundle",
         "source_bundle": {
             "ref": bundle["implementation_handoff"]["bundle_ref"],
             "sha256": bundle_meta["sha256"],
-            "review_doc_sha256": bundle["review_doc"]["sha256"],
+            "review_doc_sha256": source_plan_sha,
             "implementation_pack_sha256": pack["sha256"],
         },
-        "review_doc": {"path": bundle["review_doc"]["path"], "sha256": bundle["review_doc"]["sha256"]},
+        "review_doc": {"path": source_plan_path, "sha256": source_plan_sha},
         "implementation_pack": {"ref": pack["ref"], "sha256": pack["sha256"]},
         "pr": {
             "url": str(publish.get("pr_url") or publish.get("url") or "https://github.com/living-systems/scherzo/pull/0"),

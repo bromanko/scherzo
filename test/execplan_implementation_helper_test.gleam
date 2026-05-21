@@ -1396,7 +1396,7 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   )
   assert string.contains(
     body,
-    "Source ExecPlan review doc: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
+    "Source ExecPlan plan: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
   )
   assert !string.contains(body, "Task: [LIV-58")
   assert string.contains(body, "SelfCI validation completed before publication")
