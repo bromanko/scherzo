@@ -245,6 +245,73 @@ pub fn optional_artifact_fields_reject_wrong_types_test() {
   )
 }
 
+pub fn input_bundle_metadata_fields_reject_invalid_values_test() {
+  assert_inline_error_code(
+    input_bundle_with_binding_field("\"sha256\": false"),
+    artifacts.decode_input_bundle,
+    "workstream_sha256_invalid",
+  )
+  assert_inline_error_code(
+    input_bundle_with_binding_field(
+      "\"sha256\": \"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"",
+    ),
+    artifacts.decode_input_bundle,
+    "workstream_snapshot_hash_mismatch",
+  )
+  assert_inline_error_code(
+    input_bundle_with_binding_field("\"bytes\": 0"),
+    artifacts.decode_input_bundle,
+    "workstream_bytes_invalid",
+  )
+  assert_inline_error_code(
+    input_bundle_with_binding_field("\"media_type\": false"),
+    artifacts.decode_input_bundle,
+    "workstream_media_type_invalid",
+  )
+  assert_inline_error_code(
+    input_bundle_with_binding_field("\"original_path\": \"../secret\""),
+    artifacts.decode_input_bundle,
+    "workstream_original_path_invalid",
+  )
+  assert_inline_error_code(
+    input_bundle_with_binding_field("\"artifact_type\": false"),
+    artifacts.decode_input_bundle,
+    "workstream_artifact_type_invalid",
+  )
+  assert_inline_error_code(
+    input_bundle_with_binding_field("\"source_kind\": false"),
+    artifacts.decode_input_bundle,
+    "workstream_source_kind_invalid",
+  )
+  assert_inline_error_code(
+    input_bundle_with_top_level_field("\"source_kind\": false"),
+    artifacts.decode_input_bundle,
+    "workstream_source_kind_invalid",
+  )
+  assert_inline_error_code(
+    input_bundle_with_top_level_field("\"source_reason\": false"),
+    artifacts.decode_input_bundle,
+    "workstream_source_reason_invalid",
+  )
+}
+
+fn input_bundle_with_binding_field(field: String) -> String {
+  fixture_text("test/fixtures/workstream/specs/input_bundle_valid.json")
+  |> string.replace(
+    each: "\"value_ref\": \"workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json\"",
+    with: "\"value_ref\": \"workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json\",\n      "
+      <> field,
+  )
+}
+
+fn input_bundle_with_top_level_field(field: String) -> String {
+  fixture_text("test/fixtures/workstream/specs/input_bundle_valid.json")
+  |> string.replace(
+    each: "\"workflow_id\": \"execplan-implementation\",",
+    with: "\"workflow_id\": \"execplan-implementation\",\n  " <> field <> ",",
+  )
+}
+
 pub fn invalid_artifact_variants_return_stable_error_codes_test() {
   assert_error_code(
     "test/fixtures/workstream/specs/decision_invalid_unknown_kind.json",

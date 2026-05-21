@@ -34,6 +34,30 @@ pub fn snapshot_repository_path(
   original_path: String,
   media_type: String,
 ) -> Result(Snapshot, SnapshotError) {
+  use contents <- result.try(read_repository_path(repo_root, original_path))
+  snapshot_bytes(store, original_path, media_type, contents)
+}
+
+pub fn inspect_repository_path(
+  repo_root: String,
+  original_path: String,
+  media_type: String,
+) -> Result(Snapshot, SnapshotError) {
+  use contents <- result.try(read_repository_path(repo_root, original_path))
+  let sha256 = hash.sha256_hex_bytes(contents)
+  Ok(Snapshot(
+    ref: snapshot_ref(sha256),
+    sha256: sha256,
+    bytes: bit_array.byte_size(contents),
+    original_path: original_path,
+    media_type: media_type,
+  ))
+}
+
+fn read_repository_path(
+  repo_root: String,
+  original_path: String,
+) -> Result(BitArray, SnapshotError) {
   use Nil <- result.try(validate_original_path(original_path))
   use repo_root_abs <- result.try(normalize_root(repo_root))
   let source_path = path.join(repo_root, original_path)
@@ -43,14 +67,8 @@ pub fn snapshot_repository_path(
       case path.contains(repo_root_abs, source_path_abs) {
         False -> Error(SourcePathEscapesRepo(original_path))
         True ->
-          case
-            state_artifact_store.read_file_bytes(source_path_abs)
-            |> result.map_error(map_source_read_error(original_path))
-          {
-            Ok(contents) ->
-              snapshot_bytes(store, original_path, media_type, contents)
-            Error(error) -> Error(error)
-          }
+          state_artifact_store.read_file_bytes(source_path_abs)
+          |> result.map_error(map_source_read_error(original_path))
       }
   }
 }

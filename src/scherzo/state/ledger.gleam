@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -56,6 +57,44 @@ pub type AppendIdempotentResult {
 pub type AppendIdempotentError {
   AppendLedgerError(LedgerError)
   RecordIdConflict(record_id: String)
+}
+
+pub type AppendWorkstreamStartResult {
+  WorkstreamStartRecordsAppended
+  WorkstreamStartRecordsDuplicate(existing_run: projection.WorkstreamPhaseRun)
+  WorkstreamStartRecordsConflict(existing_run: projection.WorkstreamPhaseRun)
+}
+
+pub type AppendWorkstreamStartError {
+  AppendStartLedgerError(LedgerError)
+  AppendStartRecordIdConflict(record_id: String)
+  AppendStartInvalidQueueRecord
+}
+
+type StartQueueRecord {
+  StartQueueRecord(
+    workstream_id: String,
+    action_id: String,
+    idempotency_key: String,
+  )
+}
+
+type ExistingStartDecision {
+  NoExistingStart
+  ExistingStartDuplicate(existing_run: projection.WorkstreamPhaseRun)
+  ExistingStartConflict(existing_run: projection.WorkstreamPhaseRun)
+}
+
+type LockedStartAppendDecision {
+  LockedStartAppended
+  LockedStartDuplicate(existing_run: projection.WorkstreamPhaseRun)
+  LockedStartConflict(existing_run: projection.WorkstreamPhaseRun)
+  LockedStartRecordConflict(record_id: String)
+}
+
+type MissingRecordsDecision {
+  MissingRecords(records: List(record.LedgerRecord))
+  MissingRecordConflict(record_id: String)
 }
 
 type LockedAppendDecision {
@@ -147,6 +186,125 @@ pub fn append_idempotent(
     Ok(LockedAppendAppended) -> Ok(Appended)
     Ok(LockedAppendAlreadyRecorded(existing)) -> Ok(AlreadyRecorded(existing))
     Ok(LockedAppendConflict(record_id)) -> Error(RecordIdConflict(record_id))
+  }
+}
+
+pub fn append_workstream_start_records(
+  ledger_path: LedgerPath,
+  records: List(record.LedgerRecord),
+  queued_record: record.LedgerRecord,
+  fsync: Bool,
+) -> Result(AppendWorkstreamStartResult, AppendWorkstreamStartError) {
+  use queue <- result.try(queue_record_details(queued_record))
+  use Nil <- result.try(
+    ensure_layout(ledger_path)
+    |> result.map_error(AppendStartLedgerError),
+  )
+  case
+    with_ledger_lock(ledger_path.ledger_dir, fn() {
+      use projected <- result.try(load_projection_unlocked(ledger_path))
+      case existing_start_decision(projected, queue) {
+        ExistingStartDuplicate(existing_run) ->
+          Ok(LockedStartDuplicate(existing_run))
+        ExistingStartConflict(existing_run) ->
+          Ok(LockedStartConflict(existing_run))
+        NoExistingStart -> {
+          use missing <- result.try(
+            missing_records_unlocked(ledger_path, records, []),
+          )
+          case missing {
+            MissingRecordConflict(record_id) ->
+              Ok(LockedStartRecordConflict(record_id))
+            MissingRecords(missing_records) ->
+              append_prepared(ledger_path.current_path, missing_records, fsync)
+              |> result.map(fn(_) { LockedStartAppended })
+          }
+        }
+      }
+    })
+  {
+    Error(error) -> Error(AppendStartLedgerError(error))
+    Ok(LockedStartAppended) -> Ok(WorkstreamStartRecordsAppended)
+    Ok(LockedStartDuplicate(existing_run)) ->
+      Ok(WorkstreamStartRecordsDuplicate(existing_run))
+    Ok(LockedStartConflict(existing_run)) ->
+      Ok(WorkstreamStartRecordsConflict(existing_run))
+    Ok(LockedStartRecordConflict(record_id)) ->
+      Error(AppendStartRecordIdConflict(record_id))
+  }
+}
+
+fn queue_record_details(
+  ledger_record: record.LedgerRecord,
+) -> Result(StartQueueRecord, AppendWorkstreamStartError) {
+  case ledger_record.body {
+    record.WorkstreamPhaseRunQueued(
+      workstream_id,
+      _,
+      action_id,
+      _,
+      _,
+      _,
+      _,
+      idempotency_key,
+    ) ->
+      Ok(StartQueueRecord(
+        workstream_id: workstream_id,
+        action_id: action_id,
+        idempotency_key: idempotency_key,
+      ))
+    _ -> Error(AppendStartInvalidQueueRecord)
+  }
+}
+
+fn existing_start_decision(
+  projected: projection.Projection,
+  queue: StartQueueRecord,
+) -> ExistingStartDecision {
+  case dict.get(projected.workstreams, queue.workstream_id) {
+    Error(Nil) -> NoExistingStart
+    Ok(workstream) -> {
+      let action_runs =
+        workstream.queued_phase_runs
+        |> dict.values
+        |> list.filter(fn(run) { run.action_id == queue.action_id })
+      case
+        action_runs
+        |> list.find(fn(run) { run.idempotency_key != queue.idempotency_key })
+      {
+        Ok(existing_run) -> ExistingStartConflict(existing_run)
+        Error(Nil) ->
+          case action_runs |> list.first {
+            Ok(existing_run) -> ExistingStartDuplicate(existing_run)
+            Error(Nil) -> NoExistingStart
+          }
+      }
+    }
+  }
+}
+
+fn missing_records_unlocked(
+  ledger_path: LedgerPath,
+  records: List(record.LedgerRecord),
+  acc: List(record.LedgerRecord),
+) -> Result(MissingRecordsDecision, LedgerError) {
+  case records {
+    [] -> Ok(MissingRecords(list.reverse(acc)))
+    [ledger_record, ..rest] -> {
+      use existing <- result.try(find_record_by_id_unlocked(
+        ledger_path,
+        ledger_record.record_id,
+      ))
+      case existing {
+        Some(existing_record) ->
+          case existing_record.body == ledger_record.body {
+            True -> missing_records_unlocked(ledger_path, rest, acc)
+            False -> Ok(MissingRecordConflict(ledger_record.record_id))
+          }
+        None ->
+          missing_records_unlocked(ledger_path, rest, [ledger_record, ..acc])
+      }
+    }
   }
 }
 
