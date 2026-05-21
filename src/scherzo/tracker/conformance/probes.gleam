@@ -3,6 +3,8 @@ import scherzo/port
 import scherzo/tracker/conformance/process_capture
 import scherzo/tracker/conformance/types
 
+const probe_recovery_guidance = "Fix backend visibility or readiness checks before treating the adapter result as trustworthy."
+
 pub fn run(manifest: types.Manifest) -> List(types.ProbeResult) {
   let types.Manifest(probes: probes, ..) = manifest
   run_probes(probes)
@@ -25,6 +27,7 @@ fn run_probe(probe: types.ProbeConfig) -> types.ProbeResult {
         status: types.ProbeFailedStatus,
         message: "probe spawn failed: " <> port.port_error_to_string(error),
         diagnostics: "",
+        recovery_guidance: probe_recovery_guidance,
       )
     Ok(process) ->
       case port.await_exit(process, 1000) {
@@ -36,6 +39,7 @@ fn run_probe(probe: types.ProbeConfig) -> types.ProbeResult {
             diagnostics: process_capture.truncate_diagnostics(
               diagnostics_or_empty(process),
             ),
+            recovery_guidance: probe_recovery_guidance,
           )
         Ok(status) ->
           types.ProbeResult(
@@ -45,6 +49,7 @@ fn run_probe(probe: types.ProbeConfig) -> types.ProbeResult {
             diagnostics: process_capture.truncate_diagnostics(
               diagnostics_or_empty(process),
             ),
+            recovery_guidance: probe_recovery_guidance,
           )
         Error(error) -> {
           let diagnostics =
@@ -54,6 +59,7 @@ fn run_probe(probe: types.ProbeConfig) -> types.ProbeResult {
             status: types.ProbeFailedStatus,
             message: "probe failed: " <> port.port_error_to_string(error),
             diagnostics: process_capture.truncate_diagnostics(diagnostics),
+            recovery_guidance: probe_recovery_guidance,
           )
         }
       }

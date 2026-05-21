@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/task
+import scherzo/tracker/conformance/fixture_manifest
 import scherzo/tracker/conformance/http_manifest
 import scherzo/tracker/conformance/profile
 import scherzo/tracker/conformance/types
@@ -117,6 +118,7 @@ fn validate_manifest(
 ) -> Result(types.Manifest, types.ManifestError) {
   let types.Manifest(
     schema_version: manifest_schema_version,
+    adapter_kind: adapter_kind,
     driver: driver,
     profile: manifest_profile,
     fixtures: fixtures,
@@ -127,7 +129,7 @@ fn validate_manifest(
     capabilities: capabilities,
     adapter_operations: operations,
   ) = manifest_profile
-  let types.FixtureConfig(task_file: task_file) = fixtures
+  let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
 
   use Nil <- result.try(case manifest_schema_version == types.schema_version {
     True -> Ok(Nil)
@@ -159,6 +161,10 @@ fn validate_manifest(
         "fixtures.task_file must be repository-relative and confined to the repository",
       ))
   })
+  use Nil <- result.try(fixture_manifest.validate_tasks(
+    fixture_tasks,
+    adapter_kind,
+  ))
 
   Ok(manifest)
 }
@@ -528,13 +534,21 @@ fn adapter_operations_decoder() -> decode.Decoder(
 }
 
 fn fixtures_to_json(fixtures: types.FixtureConfig) -> json.Json {
-  let types.FixtureConfig(task_file: task_file) = fixtures
-  json.object([#("task_file", json.string(task_file))])
+  let types.FixtureConfig(task_file: task_file, tasks: tasks) = fixtures
+  json.object([
+    #("task_file", json.string(task_file)),
+    #("tasks", fixture_manifest.tasks_to_json(tasks)),
+  ])
 }
 
 fn fixtures_decoder() -> decode.Decoder(types.FixtureConfig) {
   use task_file <- decode.field("task_file", decode.string)
-  decode.success(types.FixtureConfig(task_file: task_file))
+  use tasks <- decode.optional_field(
+    "tasks",
+    [],
+    fixture_manifest.tasks_decoder(),
+  )
+  decode.success(types.FixtureConfig(task_file: task_file, tasks: tasks))
 }
 
 fn probe_to_json(probe: types.ProbeConfig) -> json.Json {

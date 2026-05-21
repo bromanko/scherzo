@@ -76,8 +76,17 @@ pub type ProfileConfig {
   )
 }
 
+pub type FixtureTaskDeclaration {
+  FixtureTaskDeclaration(
+    name: String,
+    ref: task.TaskRef,
+    operator_refs: List(String),
+    purpose: String,
+  )
+}
+
 pub type FixtureConfig {
-  FixtureConfig(task_file: String)
+  FixtureConfig(task_file: String, tasks: List(FixtureTaskDeclaration))
 }
 
 pub type ProbeConfig {
@@ -166,6 +175,10 @@ pub type CaseStatus {
   CleanupFailedStatus
 }
 
+pub type TranscriptEvidence {
+  TranscriptEvidence(body: String, truncated: Bool, original_chars: Int)
+}
+
 pub type CaseResult {
   CaseResult(
     id: String,
@@ -174,6 +187,11 @@ pub type CaseResult {
     request_id: String,
     message: String,
     diagnostics: String,
+    expected_summary: String,
+    actual_summary: String,
+    request_transcript: TranscriptEvidence,
+    response_transcript: Option(TranscriptEvidence),
+    recovery_guidance: String,
   )
 }
 
@@ -183,6 +201,7 @@ pub type HookResult {
     status: CaseStatus,
     message: String,
     diagnostics: String,
+    recovery_guidance: String,
   )
 }
 
@@ -192,6 +211,7 @@ pub type ProbeResult {
     status: CaseStatus,
     message: String,
     diagnostics: String,
+    recovery_guidance: String,
   )
 }
 

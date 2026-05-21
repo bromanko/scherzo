@@ -29,8 +29,19 @@ read -r input || exit 0
 request_id=$(request_id_from_input "$input")
 printf 'driver-diagnostic SECRET_TOKEN scenario=%s mode=%s\n' "$scenario" "$mode" >&2
 task='{"ref":{"backend_kind":"test-memory","remote_id":"card-1","key":"CARD-1","url":"https://tracker.example/tasks/CARD-1"},"title":"Fake card","description":"Fixture task","priority":2,"state":{"id":"todo","name":"Todo","category":"ready"},"branch_hint":"card-1-fake","labels":[{"id":null,"name":"workflow:execplan"}],"blockers":[],"blockers_complete":true,"created_at":null,"updated_at":null}'
+task_2='{"ref":{"backend_kind":"test-memory","remote_id":"card-2","key":"CARD-2","url":"https://tracker.example/tasks/CARD-2"},"title":"Second fake card","description":"Explicit fixture task","priority":1,"state":{"id":"doing","name":"Doing","category":"active"},"branch_hint":"card-2-fake","labels":[{"id":null,"name":"workflow:execplan"}],"blockers":[],"blockers_complete":true,"created_at":null,"updated_at":null}'
+secret_task='{"ref":{"backend_kind":"test-memory","remote_id":"card-1","key":"CARD-1","url":"https://tracker.example/tasks/CARD-1"},"title":"Fake card SECRET_TOKEN","description":"Fixture task SECRET_TOKEN","priority":2,"state":{"id":"todo","name":"Todo","category":"ready"},"branch_hint":"card-1-fake","labels":[{"id":null,"name":"workflow:execplan SECRET_TOKEN"}],"blockers":[],"blockers_complete":true,"created_at":null,"updated_at":null}'
 wrong_backend_task='{"ref":{"backend_kind":"wrong-backend","remote_id":"card-1","key":"CARD-1","url":"https://tracker.example/tasks/CARD-1"},"title":"Fake card","description":"Fixture task","priority":2,"state":{"id":"todo","name":"Todo","category":"ready"},"branch_hint":"card-1-fake","labels":[{"id":null,"name":"workflow:execplan"}],"blockers":[],"blockers_complete":true,"created_at":null,"updated_at":null}'
 wrong_identity_task='{"ref":{"backend_kind":"test-memory","remote_id":"card-2","key":"CARD-2","url":"https://tracker.example/tasks/CARD-2"},"title":"Wrong card","description":"Fixture task","priority":2,"state":{"id":"todo","name":"Todo","category":"ready"},"branch_hint":"card-2-fake","labels":[{"id":null,"name":"workflow:execplan"}],"blockers":[],"blockers_complete":true,"created_at":null,"updated_at":null}'
+selected_task="$task"
+case "$scenario" in
+  explicit-fixtures)
+    selected_task="$task_2"
+    ;;
+  secret-transcripts)
+    selected_task="$secret_task"
+    ;;
+esac
 case "$input" in
   *'"operation":"task_source.fetch_candidates"'*)
     case "$scenario" in
@@ -38,14 +49,14 @@ case "$input" in
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$wrong_backend_task"
         ;;
       *)
-        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$task"
+        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$selected_task"
         ;;
     esac
     ;;
   *'"operation":"task_source.refresh_by_refs"'*'"backend_kind":"wrong-backend"'*)
     case "$scenario" in
       wrong-backend-bad)
-        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$task"
+        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$selected_task"
         ;;
       *)
         printf '{"schema_version":1,"request_id":"%s","ok":false,"error":{"kind":"not_found","message":"wrong backend ref rejected","ref":{"backend_kind":"wrong-backend","remote_id":"card-1","key":"CARD-1","url":"https://tracker.example/tasks/CARD-1"},"capability":null}}\n' "$request_id"
@@ -59,14 +70,14 @@ case "$input" in
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$bad_task"
         ;;
       *)
-        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$task"
+        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$selected_task"
         ;;
     esac
     ;;
   *'"operation":"task_source.lookup_by_operator_ref"'*'"operator_ref":"   "'*)
     case "$scenario" in
       lookup-empty-matches)
-        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"task":%s}}\n' "$request_id" "$task"
+        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"task":%s}}\n' "$request_id" "$selected_task"
         ;;
       *)
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"task":null}}\n' "$request_id"
@@ -79,7 +90,7 @@ case "$input" in
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"task":%s}}\n' "$request_id" "$wrong_identity_task"
         ;;
       *)
-        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"task":%s}}\n' "$request_id" "$task"
+        printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"task":%s}}\n' "$request_id" "$selected_task"
         ;;
     esac
     ;;
