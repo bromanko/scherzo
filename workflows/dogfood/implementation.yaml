@@ -353,9 +353,15 @@ steps:
     timeout_ms: 1200000
     workspace: main
 
-  - id: publish_pr
+  - id: finalize_review_dispositions
     kind: command
     depends_on: [final_validate]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$bundle_dir/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact tmp/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
+    workspace: main
+
+  - id: publish_pr
+    kind: command
+    depends_on: [finalize_review_dispositions]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
     timeout_ms: 300000
     workspace: main

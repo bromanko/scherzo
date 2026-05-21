@@ -1900,6 +1900,410 @@ fn final_review_json() -> String {
   <> "}\n"
 }
 
+fn final_review_with_findings_json() -> String {
+  "{\n"
+  <> "  \"schema_version\": 1,\n"
+  <> "  \"artifact_type\": \"final_review\",\n"
+  <> "  \"generated_at_utc\": \"2026-05-09T00:00:00Z\",\n"
+  <> "  \"producer\": { \"name\": \"test\", \"version\": \"1\", \"mode\": \"test\" },\n"
+  <> "  \"brief_ref\": { \"artifact_type\": \"review_brief\", \"path\": \"review-brief.v1.json\" },\n"
+  <> "  \"synthesis_ref\": { \"artifact_type\": \"review_synthesis\", \"path\": \"review-synthesis.v1.json\" },\n"
+  <> "  \"title\": \"Final review\",\n"
+  <> "  \"summary\": \"Two findings.\",\n"
+  <> "  \"finding_counts\": { \"total\": 2, \"blocking\": 1, \"non_blocking\": 1, \"by_severity\": {}, \"by_category\": {} },\n"
+  <> "  \"grouped_findings\": {},\n"
+  <> "  \"blockers\": [{\"id\":\"F-1\",\"category\":\"correctness\",\"severity\":\"high\",\"evidence_type\":\"test\",\"verified\":true,\"blocking\":true,\"locations\":[{\"path\":\"src/example.gleam\"}],\"summary\":\"Fix blocker\",\"details\":\"Broken behavior\",\"suggested_fix\":\"Add fix\"}],\n"
+  <> "  \"non_blocking_findings\": [{\"id\":\"F-2\",\"category\":\"testing\",\"severity\":\"medium\",\"evidence_type\":\"static\",\"verified\":false,\"blocking\":false,\"locations\":[{\"path\":\"test/example_test.gleam\"}],\"summary\":\"Add test\",\"details\":\"Missing test\",\"suggested_fix\":\"Add coverage\"}],\n"
+  <> "  \"lane_statuses\": [],\n"
+  <> "  \"execution_issues\": [],\n"
+  <> "  \"markdown\": \"# Final review\\nTwo findings.\",\n"
+  <> "  \"remote_mutations\": \"none\"\n"
+  <> "}\n"
+}
+
+fn final_review_with_all_dispositions_json() -> String {
+  "{\n"
+  <> "  \"schema_version\": 1,\n"
+  <> "  \"artifact_type\": \"final_review\",\n"
+  <> "  \"generated_at_utc\": \"2026-05-09T00:00:00Z\",\n"
+  <> "  \"producer\": { \"name\": \"test\", \"version\": \"1\", \"mode\": \"test\" },\n"
+  <> "  \"brief_ref\": { \"artifact_type\": \"review_brief\", \"path\": \"review-brief.v1.json\" },\n"
+  <> "  \"synthesis_ref\": { \"artifact_type\": \"review_synthesis\", \"path\": \"review-synthesis.v1.json\" },\n"
+  <> "  \"title\": \"Final review\",\n"
+  <> "  \"summary\": \"Four findings.\",\n"
+  <> "  \"finding_counts\": { \"total\": 4, \"blocking\": 1, \"non_blocking\": 3, \"by_severity\": {}, \"by_category\": {} },\n"
+  <> "  \"grouped_findings\": {},\n"
+  <> "  \"blockers\": [{\"id\":\"F-1\",\"category\":\"correctness\",\"severity\":\"high\",\"evidence_type\":\"test\",\"verified\":true,\"blocking\":true,\"locations\":[{\"path\":\"src/example.gleam\"}],\"summary\":\"Fix blocker\",\"details\":\"Broken behavior\",\"suggested_fix\":\"Add fix\"}],\n"
+  <> "  \"non_blocking_findings\": [\n"
+  <> "    {\"id\":\"F-2\",\"category\":\"testing\",\"severity\":\"medium\",\"evidence_type\":\"static\",\"verified\":false,\"blocking\":false,\"locations\":[{\"path\":\"test/example_test.gleam\"}],\"summary\":\"Add test\",\"details\":\"Missing test\",\"suggested_fix\":\"Add coverage\"},\n"
+  <> "    {\"id\":\"F-3\",\"category\":\"maintainability\",\"severity\":\"low\",\"evidence_type\":\"static\",\"verified\":false,\"blocking\":false,\"locations\":[{\"path\":\"src/cleanup.gleam\"}],\"summary\":\"Follow-up cleanup\",\"details\":\"Can wait\",\"suggested_fix\":\"Track separately\"},\n"
+  <> "    {\"id\":\"F-4\",\"category\":\"other\",\"severity\":\"info\",\"evidence_type\":\"static\",\"verified\":false,\"blocking\":false,\"locations\":[{\"path\":\"src/old_path.gleam\"}],\"summary\":\"Old path note\",\"details\":\"Later edits removed it\",\"suggested_fix\":\"None\"}\n"
+  <> "  ],\n"
+  <> "  \"lane_statuses\": [],\n"
+  <> "  \"execution_issues\": [],\n"
+  <> "  \"markdown\": \"# Final review\\nFour findings.\",\n"
+  <> "  \"remote_mutations\": \"none\"\n"
+  <> "}\n"
+}
+
+fn write_validation_artifact(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "{\"artifact_type\":\"implementation_validation\",\"status\":\"passed\"}\n",
+    )
+  Nil
+}
+
+pub fn finalize_dispositions_writes_schema_valid_artifacts_test() {
+  let dir = "test/tmp/native-finalize-dispositions"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let input_path = dir <> "/disposition-input.v1.json"
+  let validation_path = dir <> "/validation.json"
+  let output_dir = dir <> "/out"
+  let assert Ok(Nil) =
+    simplifile.write(final_path, final_review_with_all_dispositions_json())
+  let assert Ok(Nil) =
+    simplifile.write(
+      input_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "  \"entries\": [\n"
+        <> "    {\"finding_id\":\"F-1\",\"disposition\":\"resolved\",\"rationale\":\"Validation passed after the fix.\",\"evidence_refs\":[{\"type\":\"path\",\"description\":\"validation artifact\",\"path\":\"tmp/scherzo-implementation-validation.json\"}]},\n"
+        <> "    {\"finding_id\":\"F-2\",\"disposition\":\"rejected\",\"rationale\":\"Existing tests already cover the change.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"targeted test\",\"command\":\"direnv exec . gleam test\"}]},\n"
+        <> "    {\"finding_id\":\"F-3\",\"disposition\":\"deferred\",\"rationale\":\"Documented as non-blocking follow-up.\",\"evidence_refs\":[{\"type\":\"path\",\"description\":\"follow-up note\",\"path\":\"tmp/follow-up.md\"}]},\n"
+        <> "    {\"finding_id\":\"F-4\",\"disposition\":\"obsolete\",\"rationale\":\"Later edits removed the old path.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"diff check\",\"command\":\"jj diff --stat\"}]}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+  write_validation_artifact(validation_path)
+
+  let finalized =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> output_dir
+      <> " --require-publishable",
+    )
+  assert finalized.status == step_artifact.StepSucceeded
+  assert string.contains(finalized.stdout, "REVIEW_FINDING_DISPOSITIONS=ok")
+  assert string.contains(finalized.stdout, "REVIEW_PUBLISH_READY=true")
+
+  let artifact_path = output_dir <> "/review-finding-dispositions.v1.json"
+  let final_output_path = output_dir <> "/final-review.v1.json"
+  let assert Ok(dispositions) = simplifile.read(artifact_path)
+  let assert Ok(finalized_review) = simplifile.read(final_output_path)
+  let assert Ok(markdown) = simplifile.read(output_dir <> "/final-review.md")
+  assert string.contains(
+    dispositions,
+    "\"artifact_type\": \"review_finding_dispositions\"",
+  )
+  assert string.contains(dispositions, "\"disposition\": \"resolved\"")
+  assert string.contains(dispositions, "\"disposition\": \"rejected\"")
+  assert string.contains(dispositions, "\"disposition\": \"deferred\"")
+  assert string.contains(dispositions, "\"disposition\": \"obsolete\"")
+  assert string.contains(finalized_review, "\"finding_dispositions\"")
+  assert string.contains(finalized_review, "\"disposition_summary\"")
+  assert string.contains(finalized_review, "\"publish_ready\": true")
+  assert string.contains(markdown, "## Finding dispositions")
+  assert string.contains(
+    markdown,
+    "| F-1 | high/correctness | yes | resolved |",
+  )
+  assert string.contains(
+    markdown,
+    "| F-3 | low/maintainability | no | deferred |",
+  )
+  assert string.contains(markdown, "| F-4 | info/other | no | obsolete |")
+
+  let validation =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> artifact_path,
+    )
+  assert validation.status == step_artifact.StepSucceeded
+  assert string.contains(
+    validation.stdout,
+    "REVIEW_ARTIFACT_TYPE=review_finding_dispositions",
+  )
+}
+
+pub fn finalize_dispositions_rejects_deferred_blocking_findings_test() {
+  let dir = "test/tmp/native-finalize-dispositions-blocked"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let input_path = dir <> "/disposition-input.v1.json"
+  let validation_path = dir <> "/validation.json"
+  let assert Ok(Nil) =
+    simplifile.write(final_path, final_review_with_findings_json())
+  let assert Ok(Nil) =
+    simplifile.write(
+      input_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "  \"entries\": [\n"
+        <> "    {\"finding_id\":\"F-1\",\"disposition\":\"deferred\",\"rationale\":\"Too risky today.\",\"evidence_refs\":[{\"type\":\"path\",\"description\":\"note\",\"path\":\"tmp/defer.md\"}]},\n"
+        <> "    {\"finding_id\":\"F-2\",\"disposition\":\"obsolete\",\"rationale\":\"Later edits removed the old path.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"diff check\",\"command\":\"jj diff --stat\"}]}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+  write_validation_artifact(validation_path)
+
+  let finalized =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> dir
+      <> "/out --require-publishable",
+    )
+  assert finalized.status == step_artifact.StepFailed
+  assert string.contains(
+    finalized.stderr,
+    "blocking finding disposition state is not publishable",
+  )
+}
+
+pub fn finalize_dispositions_rejects_missing_finding_ids_test() {
+  let dir = "test/tmp/native-finalize-dispositions-missing"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let input_path = dir <> "/disposition-input.v1.json"
+  let validation_path = dir <> "/validation.json"
+  let assert Ok(Nil) =
+    simplifile.write(final_path, final_review_with_findings_json())
+  let assert Ok(Nil) =
+    simplifile.write(
+      input_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "  \"entries\": [\n"
+        <> "    {\"finding_id\":\"F-1\",\"disposition\":\"resolved\",\"rationale\":\"Fixed.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"tests\",\"command\":\"direnv exec . gleam test\"}]}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+  write_validation_artifact(validation_path)
+
+  let finalized =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> dir
+      <> "/out",
+    )
+  assert finalized.status == step_artifact.StepFailed
+  assert string.contains(
+    finalized.stderr,
+    "disposition input missing finding ids: F-2",
+  )
+}
+
+pub fn finalize_dispositions_rejects_duplicate_finding_ids_test() {
+  let dir = "test/tmp/native-finalize-dispositions-duplicate"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let input_path = dir <> "/disposition-input.v1.json"
+  let validation_path = dir <> "/validation.json"
+  let assert Ok(Nil) =
+    simplifile.write(final_path, final_review_with_findings_json())
+  let assert Ok(Nil) =
+    simplifile.write(
+      input_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "  \"entries\": [\n"
+        <> "    {\"finding_id\":\"F-1\",\"disposition\":\"resolved\",\"rationale\":\"Fixed.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"tests\",\"command\":\"direnv exec . gleam test\"}]},\n"
+        <> "    {\"finding_id\":\"F-1\",\"disposition\":\"rejected\",\"rationale\":\"Duplicate entry.\",\"evidence_refs\":[{\"type\":\"path\",\"description\":\"note\",\"path\":\"tmp/duplicate.md\"}]}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+  write_validation_artifact(validation_path)
+
+  let finalized =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> dir
+      <> "/out",
+    )
+  assert finalized.status == step_artifact.StepFailed
+  assert string.contains(
+    finalized.stderr,
+    "review finding disposition input finding_id values must be unique",
+  )
+}
+
+pub fn finalize_dispositions_rejects_unknown_finding_ids_test() {
+  let dir = "test/tmp/native-finalize-dispositions-unknown"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let input_path = dir <> "/disposition-input.v1.json"
+  let validation_path = dir <> "/validation.json"
+  let assert Ok(Nil) =
+    simplifile.write(final_path, final_review_with_findings_json())
+  let assert Ok(Nil) =
+    simplifile.write(
+      input_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "  \"entries\": [\n"
+        <> "    {\"finding_id\":\"F-1\",\"disposition\":\"resolved\",\"rationale\":\"Fixed.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"tests\",\"command\":\"direnv exec . gleam test\"}]},\n"
+        <> "    {\"finding_id\":\"F-2\",\"disposition\":\"rejected\",\"rationale\":\"Not applicable.\",\"evidence_refs\":[{\"type\":\"path\",\"description\":\"note\",\"path\":\"tmp/note.md\"}]},\n"
+        <> "    {\"finding_id\":\"F-99\",\"disposition\":\"obsolete\",\"rationale\":\"Unknown extra entry.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"diff\",\"command\":\"jj diff --stat\"}]}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+  write_validation_artifact(validation_path)
+
+  let finalized =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> dir
+      <> "/out",
+    )
+  assert finalized.status == step_artifact.StepFailed
+  assert string.contains(
+    finalized.stderr,
+    "disposition input contains unknown finding ids: F-99",
+  )
+}
+
+pub fn finalize_dispositions_handles_no_findings_test() {
+  let dir = "test/tmp/native-finalize-dispositions-empty"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let input_path = dir <> "/disposition-input.v1.json"
+  let validation_path = dir <> "/validation.json"
+  let output_dir = dir <> "/out"
+  let assert Ok(Nil) = simplifile.write(final_path, final_review_json())
+  let assert Ok(Nil) =
+    simplifile.write(
+      input_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "  \"entries\": []\n"
+        <> "}\n",
+    )
+  write_validation_artifact(validation_path)
+
+  let finalized =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> output_dir
+      <> " --require-publishable",
+    )
+  assert finalized.status == step_artifact.StepSucceeded
+  let assert Ok(dispositions) =
+    simplifile.read(output_dir <> "/review-finding-dispositions.v1.json")
+  let assert Ok(markdown) = simplifile.read(output_dir <> "/final-review.md")
+  assert_contains(dispositions, "\"total\": 0")
+  assert_contains(dispositions, "\"publish_ready\": true")
+  assert_contains(
+    markdown,
+    "| None | - | - | - | No synthesized findings. | - |",
+  )
+}
+
+pub fn finalize_dispositions_is_idempotent_over_same_output_dir_test() {
+  let dir = "test/tmp/native-finalize-dispositions-idempotent"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let input_path = dir <> "/disposition-input.v1.json"
+  let validation_path = dir <> "/validation.json"
+  let output_dir = dir <> "/out"
+  let assert Ok(Nil) =
+    simplifile.write(final_path, final_review_with_findings_json())
+  let assert Ok(Nil) =
+    simplifile.write(
+      input_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "  \"entries\": [\n"
+        <> "    {\"finding_id\":\"F-1\",\"disposition\":\"resolved\",\"rationale\":\"Fixed.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"tests\",\"command\":\"direnv exec . gleam test\"}]},\n"
+        <> "    {\"finding_id\":\"F-2\",\"disposition\":\"obsolete\",\"rationale\":\"Later edits removed the concern.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"diff\",\"command\":\"jj diff --stat\"}]}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+  write_validation_artifact(validation_path)
+
+  let first =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> output_dir
+      <> " --require-publishable",
+    )
+  let second =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> output_dir
+      <> " --require-publishable",
+    )
+
+  assert first.status == step_artifact.StepSucceeded
+  assert second.status == step_artifact.StepSucceeded
+  let assert Ok(dispositions) =
+    simplifile.read(output_dir <> "/review-finding-dispositions.v1.json")
+  let assert Ok(markdown) = simplifile.read(output_dir <> "/final-review.md")
+  assert_contains(dispositions, "\"total\": 2")
+  assert_contains(dispositions, "\"publish_ready\": true")
+  assert_contains(markdown, "## Finding dispositions")
+  assert_not_contains(
+    markdown,
+    "## Finding dispositions\n\n## Finding dispositions",
+  )
+}
+
 pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
   let dir = "test/tmp/native-publish-feedback"
   reset_dir(dir)
