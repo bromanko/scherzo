@@ -2035,6 +2035,57 @@ pub fn finalize_dispositions_writes_schema_valid_artifacts_test() {
   )
 }
 
+pub fn finalize_dispositions_normalizes_string_evidence_refs_test() {
+  let dir = "test/tmp/native-finalize-dispositions-string-evidence"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let input_path = dir <> "/disposition-input.v1.json"
+  let validation_path = dir <> "/validation.json"
+  let output_dir = dir <> "/out"
+  let assert Ok(Nil) =
+    simplifile.write(final_path, final_review_with_findings_json())
+  let assert Ok(Nil) =
+    simplifile.write(
+      input_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "  \"entries\": [\n"
+        <> "    {\"finding_id\":\"F-1\",\"disposition\":\"resolved\",\"rationale\":\"Fixed and validated.\",\"evidence_refs\":[\"src/example.gleam:Fix blocker\",\"direnv exec . gleam test\"]},\n"
+        <> "    {\"finding_id\":\"F-2\",\"disposition\":\"deferred\",\"rationale\":\"Tracked as non-blocking follow-up.\",\"evidence_refs\":[\"../../artifacts/review/synthesize_review/final-review.v1.json:F-2\"]}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+  write_validation_artifact(validation_path)
+
+  let finalized =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review finalize-dispositions --final-review "
+      <> final_path
+      <> " --disposition-input "
+      <> input_path
+      <> " --validation-artifact "
+      <> validation_path
+      <> " --output-dir "
+      <> output_dir,
+    )
+  assert finalized.status == step_artifact.StepSucceeded
+  let artifact_path = output_dir <> "/review-finding-dispositions.v1.json"
+  let assert Ok(dispositions) = simplifile.read(artifact_path)
+  assert_contains(dispositions, "\"type\": \"reference\"")
+  assert_contains(
+    dispositions,
+    "\"description\": \"src/example.gleam:Fix blocker\"",
+  )
+  assert_contains(dispositions, "\"description\": \"direnv exec . gleam test\"")
+  let validation =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review validate --artifact "
+      <> artifact_path,
+    )
+  assert validation.status == step_artifact.StepSucceeded
+}
+
 pub fn finalize_dispositions_rejects_deferred_blocking_findings_test() {
   let dir = "test/tmp/native-finalize-dispositions-blocked"
   reset_dir(dir)

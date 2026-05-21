@@ -2001,6 +2001,28 @@ def validate_evidence_ref(value: Any, *, field: str) -> None:
         validate_string_field(value, "command", display_field=f"{field}.command")
 
 
+def normalize_disposition_input_evidence_ref(value: Any, *, field: str) -> dict[str, Any]:
+    """Return a schema-valid disposition evidence ref.
+
+    The durable review_finding_dispositions artifact always stores evidence refs
+    as objects. The agent-authored disposition input is intentionally more
+    forgiving so older prompt wording that said only "non-empty evidence_refs"
+    does not strand otherwise publishable runs when an agent writes a bare
+    string shorthand.
+    """
+    if isinstance(value, dict):
+        validate_evidence_ref(value, field=field)
+        return json_clone(value)
+    if isinstance(value, str):
+        description = value.strip()
+        if not description:
+            raise ReviewError(f"{field} must be a non-empty object or string shorthand")
+        ref = {"type": "reference", "description": description}
+        validate_evidence_ref(ref, field=field)
+        return ref
+    raise ReviewError(f"{field} must be an object or string shorthand")
+
+
 def validate_execution_status_shape(value: Any, *, field: str) -> None:
     if not isinstance(value, dict):
         raise ReviewError(f"{field} must be an object")
@@ -3646,13 +3668,21 @@ def load_disposition_input(path: Path) -> list[dict[str, Any]]:
         evidence_refs = validate_list_field(entry, "evidence_refs")
         if not evidence_refs:
             raise ReviewError(f"entries[{index}].evidence_refs must contain at least one evidence reference")
+        normalized_evidence_refs = []
         for evidence_index, evidence_ref in enumerate(evidence_refs):
-            validate_evidence_ref(evidence_ref, field=f"entries[{index}].evidence_refs[{evidence_index}]")
+            normalized_evidence_refs.append(
+                normalize_disposition_input_evidence_ref(
+                    evidence_ref,
+                    field=f"entries[{index}].evidence_refs[{evidence_index}]",
+                )
+            )
         finding_id = str(entry.get("finding_id"))
         if finding_id in finding_ids:
             raise ReviewError("review finding disposition input finding_id values must be unique")
         finding_ids.add(finding_id)
-        normalized.append(json_clone(entry))
+        normalized_entry = json_clone(entry)
+        normalized_entry["evidence_refs"] = normalized_evidence_refs
+        normalized.append(normalized_entry)
     return normalized
 
 

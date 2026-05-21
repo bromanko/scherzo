@@ -24,6 +24,7 @@ Feedback contract:
 - If a finding is invalid, too risky, too broad, or intentionally deferred, explain why in the final response.
 - Write `tmp/review-finding-dispositions.v1.json` before finishing. Use schema_version `1`, artifact_type `review_finding_disposition_input`, and one `entries` item per synthesized finding id from `REVIEW_FINAL_ARTIFACT_PATH` / `artifacts/review/synthesize_review/final-review.v1.json`.
 - Each disposition entry must include `finding_id`, `disposition`, `rationale`, and non-empty `evidence_refs`. Use `resolved` for fixed findings with diff/test evidence, `rejected` for invalid findings with evidence, `deferred` only for non-blocking findings with a deferral reason, and `obsolete` when later changes make the finding inapplicable.
+- Prefer object evidence refs, not bare strings. Each evidence ref object requires `type` and `description`; it may also include `path`, `ref`, or `command`. Paths/refs must be repository- or run-root-relative with no `..`, absolute paths, or environment placeholders. Examples: `{"type":"path","description":"start-key fix","path":"src/scherzo/workstream/start_key.gleam"}` and `{"type":"command","description":"full validation","command":"direnv exec . gleam test"}`.
 - Keep changes focused; do not start unrelated cleanup.
 
 Process:
