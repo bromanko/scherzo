@@ -12,6 +12,11 @@ contract:
       required: true
       source: issue_context
   outputs:
+    plan:
+      type: exec_plan
+      source:
+        step: materialize_revision
+        path: tmp/execplan-review-doc.md
     implementation_pack:
       type: implementation_pack
       source:

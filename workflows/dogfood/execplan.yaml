@@ -16,6 +16,11 @@ contract:
       required: false
       source: mapped_output
   outputs:
+    plan:
+      type: exec_plan
+      source:
+        step: materialize_bundle
+        path: tmp/execplan-review-doc.md
     implementation_pack:
       type: implementation_pack
       source:

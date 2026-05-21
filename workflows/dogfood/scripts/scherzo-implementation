@@ -44,6 +44,7 @@ PUBLISH_PATH = TMP_DIR / "scherzo-implementation-publish.json"
 TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
 PLAN_BRIEF_PATH = TMP_DIR / "scherzo-execplan-brief.md"
 PLAN_INDEX_PATH = TMP_DIR / "scherzo-execplan-index.json"
+PREPARED_EXECPLAN_PATH = TMP_DIR / "execplan-review-doc.md"
 PR_BODY_PATH = TMP_DIR / "scherzo-implementation-pr-body.md"
 BASE_REFRESH_LATEST_PATH = TMP_DIR / "scherzo-implementation-refresh-base-latest.json"
 BASE_DRIFT_REPAIR_SUMMARY_PATH = TMP_DIR / "scherzo-implementation-base-drift-repair.md"
@@ -743,6 +744,32 @@ def validate_plan_path(plan_path: str, repo_root: Path) -> None:
             f"ExecPlan file does not exist: {plan_path}",
             failure_code="prepare_plan_ambiguous",
         )
+
+
+def validate_prepared_execplan_path(plan_path: str, repo_root: Path) -> None:
+    path = Path(plan_path)
+    if path.is_absolute() or ".." in path.parts:
+        fail(
+            f"invalid prepared ExecPlan path: {plan_path}; expected a repository-relative Markdown path",
+            failure_code="prepare_plan_ambiguous",
+        )
+    if path.suffix.lower() not in {".md", ".html"}:
+        fail(
+            f"invalid prepared ExecPlan path: {plan_path}; expected Markdown or legacy HTML",
+            failure_code="prepare_plan_ambiguous",
+        )
+    if not (repo_root / path).is_file():
+        fail(
+            f"ExecPlan file does not exist: {plan_path}",
+            failure_code="prepare_plan_ambiguous",
+        )
+
+
+def validate_metadata_plan_path(metadata: dict[str, Any], plan_path: str, repo_root: Path) -> None:
+    if metadata.get("execplan_v2_bundle_path") or metadata.get("plan_artifact_ref"):
+        validate_prepared_execplan_path(plan_path, repo_root)
+    else:
+        validate_plan_path(plan_path, repo_root)
 
 
 def plan_source_sha256(plan_path: str) -> str:
@@ -1687,7 +1714,7 @@ def require_plan_brief_metadata() -> tuple[dict[str, Any], str]:
     plan_path = str(metadata.get("plan_path") or "").strip()
     if not plan_path:
         fail(f"missing plan_path in {METADATA_PATH}; run prepare --source execplan first")
-    validate_plan_path(plan_path, Path.cwd())
+    validate_metadata_plan_path(metadata, plan_path, Path.cwd())
     return metadata, plan_path
 
 
@@ -2611,6 +2638,14 @@ def validation_body_section() -> str:
     return "\n".join(lines) + "\n"
 
 
+def execplan_plan_display_path(metadata: dict[str, Any]) -> str:
+    for key in ["review_surface_path", "legacy_review_doc_path", "plan_artifact_ref", "plan_path"]:
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
 def execplan_source_issue_line(metadata: dict[str, Any]) -> str:
     identifier = source_issue_identifier(metadata)
     title = source_issue_title(metadata)
@@ -2649,7 +2684,7 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
         "issue is listed separately when available.\n\n"
         f"{format_issue_line(issue_identifier, issue_title, issue_url)}\n\n"
         f"{source_line}"
-        f"Source ExecPlan review doc: `{plan_path}`\n\n"
+        f"Source ExecPlan plan: `{execplan_plan_display_path(metadata)}`\n\n"
         + validation_body_section()
         + "This PR is ready for human acceptance.\n"
     )

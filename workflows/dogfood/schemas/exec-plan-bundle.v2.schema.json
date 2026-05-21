@@ -11,7 +11,6 @@
     "source_issue",
     "workflow",
     "revision",
-    "review_doc",
     "implementation_pack",
     "review_surface",
     "implementation_handoff",
@@ -55,6 +54,7 @@
         }
       }
     },
+    "plan": { "$ref": "#/$defs/plan" },
     "review_doc": { "$ref": "#/$defs/review_doc" },
     "implementation_pack": {
       "type": "object",
@@ -77,7 +77,8 @@
         "pr_url": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
         "branch": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/non_empty_string" }] },
         "source_bundle_ref": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/artifact_ref" }] },
-        "head_revision": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/non_empty_string" }] }
+        "head_revision": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/non_empty_string" }] },
+        "review_doc_path": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/repo_path" }] }
       }
     },
     "implementation_handoff": {
@@ -105,6 +106,10 @@
       }
     }
   },
+  "anyOf": [
+    { "required": ["plan"] },
+    { "required": ["review_doc"] }
+  ],
   "allOf": [
     {
       "if": { "properties": { "revision": { "properties": { "status": { "enum": ["created", "changed"] } } } } },
@@ -159,6 +164,17 @@
       "type": "string",
       "minLength": 1,
       "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?![A-Za-z]:[\\\\/])(?!<absolute-local-path>)[^\\u0000]+$"
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "sha256", "bytes", "media_type"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/artifact_ref" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/bytes" },
+        "media_type": { "const": "text/markdown" }
+      }
     },
     "review_doc": {
       "type": "object",

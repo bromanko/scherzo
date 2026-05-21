@@ -39,8 +39,8 @@ Feedback contract:
 - Fix blocking review findings, safe medium-or-smaller findings, and obvious validation risks.
 - If a finding is invalid, too risky, too broad, or intentionally deferred, explain why in the final response.
 - Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json` when plan context is needed.
-- Determine the checked-in review doc path from `tmp/scherzo-implementation.json` field `plan_path`, falling back to `review_doc.path` in the bundle. Treat that checked-in review doc as authoritative for current intent, scope, acceptance, risks, milestones, and living-document sections. Treat the implementation pack as mechanical context only when it does not conflict with review-doc intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.
-- Keep the checked-in review doc's living-document sections current if you make implementation changes after review.
+- Treat `tmp/execplan-review-doc.md` as the authoritative canonical plan resolved during prepare from `exec_plan_bundle.plan.ref` (or legacy `review_doc.path` fallback). `tmp/scherzo-implementation.json` `plan_path` points at that prepared local plan; any `review_surface_path` or legacy `review_doc.path` is optional publication metadata. Treat the implementation pack as mechanical context only when it does not conflict with canonical-plan intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.
+- Do not edit the prepared canonical plan artifact after review; report any living-document updates that should happen through a follow-up ExecPlan revision or optional review surface.
 - Do not try to refresh `tmp/scherzo-plan-completion-verdict.json` yourself; the workflow runs a final plan-completion verifier before final validation so any tracked review fixes are checked before publish.
 - Keep changes focused; do not start unrelated cleanup.
 
@@ -49,7 +49,7 @@ Process:
 1. Inspect `$SCHERZO_WORKSPACE_DRIVER status --human` and, if needed, `$SCHERZO_WORKSPACE_DRIVER diff --human`.
 2. Read the review summary above and fix safe relevant findings.
 3. Run targeted validation if useful and cheap.
-4. Update the checked-in review doc living-document sections if your changes affect progress, decisions, discoveries, validation, or outcomes.
+4. Report any canonical-plan/review-surface living-document updates needed because of your changes.
 5. Summarize what changed after feedback.
 
 Final response format:
