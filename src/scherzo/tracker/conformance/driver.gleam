@@ -36,27 +36,38 @@ pub fn invoke(
   request: types.DriverRequest,
 ) -> Result(DriverInvocation, DriverFailure) {
   let types.Manifest(driver: driver, ..) = manifest
-  let types.DriverConfig(command: command, timeout_ms: timeout_ms, ..) = driver
-  let types.DriverCommand(
-    executable: executable,
-    args: args,
-    cwd: cwd,
-    env: env,
-  ) = command
-  let stdin = conformance.request_to_string(request) <> "\n"
+  case driver {
+    types.CliDriverConfig(command: command, timeout_ms: timeout_ms) -> {
+      let types.DriverCommand(
+        executable: executable,
+        args: args,
+        cwd: cwd,
+        env: env,
+      ) = command
+      let stdin = conformance.request_to_string(request) <> "\n"
 
-  case
-    port.start_argv_with_input(executable, args, cwd, env_pairs(env), stdin)
-  {
-    Error(error) ->
+      case
+        port.start_argv_with_input(executable, args, cwd, env_pairs(env), stdin)
+      {
+        Error(error) ->
+          Error(DriverFailure(
+            kind: SpawnFailed,
+            message: "driver spawn failed: " <> port.port_error_to_string(error),
+            diagnostics: "",
+            stdout: None,
+            exit_status: None,
+          ))
+        Ok(process) -> read_driver_stdout(process, timeout_ms, request)
+      }
+    }
+    types.HttpDriverConfig(..) ->
       Error(DriverFailure(
         kind: SpawnFailed,
-        message: "driver spawn failed: " <> port.port_error_to_string(error),
+        message: "http driver transport is not implemented yet",
         diagnostics: "",
         stdout: None,
         exit_status: None,
       ))
-    Ok(process) -> read_driver_stdout(process, timeout_ms, request)
   }
 }
 

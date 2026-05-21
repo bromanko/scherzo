@@ -14,16 +14,7 @@
   "properties": {
     "schema_version": { "const": 1 },
     "adapter_kind": { "$ref": "#/$defs/non_empty_string" },
-    "driver": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["transport", "command", "timeout_ms"],
-      "properties": {
-        "transport": { "const": "cli" },
-        "command": { "$ref": "#/$defs/command" },
-        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 }
-      }
-    },
+    "driver": { "$ref": "#/$defs/driver" },
     "profile": {
       "type": "object",
       "additionalProperties": false,
@@ -114,6 +105,71 @@
       "properties": {
         "name": { "$ref": "#/$defs/non_empty_string" },
         "value": { "type": "string" }
+      }
+    },
+    "driver": {
+      "oneOf": [
+        { "$ref": "#/$defs/cli_driver" },
+        { "$ref": "#/$defs/http_driver" }
+      ]
+    },
+    "cli_driver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "command", "timeout_ms"],
+      "properties": {
+        "transport": { "const": "cli" },
+        "command": { "$ref": "#/$defs/command" },
+        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 }
+      }
+    },
+    "http_driver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "endpoint", "timeout_ms"],
+      "properties": {
+        "transport": { "const": "http" },
+        "endpoint": { "$ref": "#/$defs/http_endpoint" },
+        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 }
+      }
+    },
+    "http_endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https?://[^@/#?]+(?:/[^#]*)?$"
+        },
+        "headers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/http_header" },
+          "default": []
+        },
+        "retry": { "$ref": "#/$defs/http_retry" }
+      }
+    },
+    "http_header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value_from_env"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^:\\r\\n]+$"
+        },
+        "value_from_env": { "$ref": "#/$defs/non_empty_string" },
+        "value_prefix": { "type": "string", "default": "" }
+      }
+    },
+    "http_retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 3, "default": 1 },
+        "backoff_ms": { "type": "integer", "minimum": 0, "maximum": 1000, "default": 0 }
       }
     },
     "command": {

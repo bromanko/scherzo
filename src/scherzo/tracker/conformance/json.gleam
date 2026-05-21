@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/task
+import scherzo/tracker/conformance/http_manifest
 import scherzo/tracker/conformance/profile
 import scherzo/tracker/conformance/types
 
@@ -121,8 +122,6 @@ fn validate_manifest(
     fixtures: fixtures,
     ..,
   ) = manifest
-  let types.DriverConfig(transport: transport, timeout_ms: timeout_ms, ..) =
-    driver
   let types.ProfileConfig(
     name: name,
     capabilities: capabilities,
@@ -139,11 +138,7 @@ fn validate_manifest(
       ))
   })
 
-  use Nil <- result.try(case transport {
-    types.CliTransport -> Ok(Nil)
-  })
-
-  use Nil <- result.try(validate_driver_timeout(timeout_ms))
+  use Nil <- result.try(validate_driver(driver))
 
   use Nil <- result.try(case name == profile.TaskSourceProfile {
     True -> Ok(Nil)
@@ -166,6 +161,25 @@ fn validate_manifest(
   })
 
   Ok(manifest)
+}
+
+fn validate_driver(
+  driver: types.DriverConfig,
+) -> Result(Nil, types.ManifestError) {
+  case driver {
+    types.CliDriverConfig(timeout_ms: timeout_ms, ..) ->
+      validate_driver_timeout(timeout_ms)
+    types.HttpDriverConfig(endpoint: endpoint, timeout_ms: timeout_ms) -> {
+      use Nil <- result.try(validate_driver_timeout(timeout_ms))
+      validate_http_endpoint(endpoint)
+    }
+  }
+}
+
+fn validate_http_endpoint(
+  endpoint: types.HttpEndpointConfig,
+) -> Result(Nil, types.ManifestError) {
+  http_manifest.validate_endpoint(endpoint)
 }
 
 fn validate_capabilities(
@@ -349,32 +363,54 @@ fn manifest_decoder() -> decode.Decoder(types.Manifest) {
 }
 
 fn driver_to_json(driver: types.DriverConfig) -> json.Json {
-  let types.DriverConfig(
-    transport: transport,
-    command: command,
-    timeout_ms: timeout_ms,
-  ) = driver
-  json.object([
-    #("transport", json.string(driver_transport_to_string(transport))),
-    #("command", driver_command_to_json(command)),
-    #("timeout_ms", json.int(timeout_ms)),
-  ])
+  case driver {
+    types.CliDriverConfig(command: command, timeout_ms: timeout_ms) ->
+      json.object([
+        #(
+          "transport",
+          json.string(driver_transport_to_string(types.CliTransport)),
+        ),
+        #("command", driver_command_to_json(command)),
+        #("timeout_ms", json.int(timeout_ms)),
+      ])
+    types.HttpDriverConfig(endpoint: endpoint, timeout_ms: timeout_ms) ->
+      json.object([
+        #(
+          "transport",
+          json.string(driver_transport_to_string(types.HttpTransport)),
+        ),
+        #("endpoint", http_manifest.endpoint_to_json(endpoint)),
+        #("timeout_ms", json.int(timeout_ms)),
+      ])
+  }
 }
 
 fn driver_decoder() -> decode.Decoder(types.DriverConfig) {
   use transport <- decode.field("transport", driver_transport_decoder())
-  use command <- decode.field("command", driver_command_decoder())
-  use timeout_ms <- decode.field("timeout_ms", decode.int)
-  decode.success(types.DriverConfig(
-    transport: transport,
-    command: command,
-    timeout_ms: timeout_ms,
-  ))
+  case transport {
+    types.CliTransport -> {
+      use command <- decode.field("command", driver_command_decoder())
+      use timeout_ms <- decode.field("timeout_ms", decode.int)
+      decode.success(types.CliDriverConfig(
+        command: command,
+        timeout_ms: timeout_ms,
+      ))
+    }
+    types.HttpTransport -> {
+      use endpoint <- decode.field("endpoint", http_manifest.endpoint_decoder())
+      use timeout_ms <- decode.field("timeout_ms", decode.int)
+      decode.success(types.HttpDriverConfig(
+        endpoint: endpoint,
+        timeout_ms: timeout_ms,
+      ))
+    }
+  }
 }
 
 fn driver_transport_to_string(transport: types.DriverTransport) -> String {
   case transport {
     types.CliTransport -> "cli"
+    types.HttpTransport -> "http"
   }
 }
 
@@ -382,7 +418,12 @@ fn driver_transport_decoder() -> decode.Decoder(types.DriverTransport) {
   use transport <- decode.then(decode.string)
   case string.trim(transport) {
     "cli" -> decode.success(types.CliTransport)
-    _ -> decode.failure(types.CliTransport, expected: "driver transport cli")
+    "http" -> decode.success(types.HttpTransport)
+    _ ->
+      decode.failure(
+        types.CliTransport,
+        expected: "driver transport cli or http",
+      )
   }
 }
 
