@@ -29,6 +29,9 @@
       "$ref": "#/$defs/EvidenceLedger"
     },
     {
+      "$ref": "#/$defs/ReviewFindingDispositions"
+    },
+    {
       "$ref": "#/$defs/FeedbackManifest"
     },
     {
@@ -906,6 +909,18 @@
             },
             "remote_mutations": {
               "const": "none"
+            },
+            "finding_dispositions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReviewFindingDispositionEntry"
+              }
+            },
+            "disposition_summary": {
+              "$ref": "#/$defs/ReviewFindingDispositionSummary"
+            },
+            "finding_disposition_ref": {
+              "$ref": "#/$defs/ArtifactReference"
             }
           },
           "additionalProperties": true
@@ -1679,6 +1694,229 @@
             },
             "execution_status": {
               "$ref": "#/$defs/ExecutionStatus"
+            },
+            "remote_mutations": {
+              "const": "none"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "DispositionEvidenceRef": {
+      "type": "object",
+      "required": [
+        "type",
+        "description"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^/"
+              },
+              {
+                "pattern": "(^|/)\\.\\.(/|$)"
+              },
+              {
+                "pattern": "^[A-Za-z]:[\\\\/]"
+              }
+            ]
+          }
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^/"
+              },
+              {
+                "pattern": "(^|/)\\.\\.(/|$)"
+              },
+              {
+                "pattern": "^[A-Za-z]:[\\\\/]"
+              }
+            ]
+          }
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "ReviewFindingDispositionEntry": {
+      "type": "object",
+      "required": [
+        "finding_id",
+        "category",
+        "severity",
+        "blocking",
+        "summary",
+        "disposition",
+        "rationale",
+        "evidence_refs",
+        "visible_in_bundle"
+      ],
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "correctness",
+            "maintainability",
+            "security",
+            "performance",
+            "testing",
+            "workflow",
+            "documentation",
+            "artifact_contract",
+            "other"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "resolved",
+            "rejected",
+            "deferred",
+            "obsolete"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/DispositionEvidenceRef"
+          }
+        },
+        "visible_in_bundle": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ReviewFindingDispositionSummary": {
+      "type": "object",
+      "required": [
+        "total",
+        "by_disposition",
+        "publish_ready"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "by_disposition": {
+          "type": "object",
+          "required": [
+            "resolved",
+            "rejected",
+            "deferred",
+            "obsolete"
+          ],
+          "properties": {
+            "resolved": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "rejected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deferred": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "obsolete": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": true
+        },
+        "publish_ready": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ReviewFindingDispositions": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ArtifactHeader"
+        },
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "generated_at_utc",
+            "producer",
+            "final_review_ref",
+            "entries",
+            "summary",
+            "markdown",
+            "remote_mutations"
+          ],
+          "properties": {
+            "artifact_type": {
+              "const": "review_finding_dispositions"
+            },
+            "final_review_ref": {
+              "$ref": "#/$defs/ArtifactReference"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReviewFindingDispositionEntry"
+              }
+            },
+            "summary": {
+              "$ref": "#/$defs/ReviewFindingDispositionSummary"
+            },
+            "markdown": {
+              "type": "string",
+              "minLength": 1
             },
             "remote_mutations": {
               "const": "none"

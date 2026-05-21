@@ -2814,13 +2814,42 @@ def materialize_code_change_bundle(args: list[str]) -> None:
     if verdict not in {"complete", "incomplete", "blocked"}:
         verdict = "blocked"
     review_artifacts: list[dict[str, Any]] = []
+    run_root = Path(os.environ.get("SCHERZO_RUN_ROOT", "")) if os.environ.get("SCHERZO_RUN_ROOT") else None
     review_final = source_file_candidates([
-        Path(os.environ.get("SCHERZO_RUN_ROOT", "")) / "artifacts" / "review" / "synthesize_review" / "final-review.v1.json" if os.environ.get("SCHERZO_RUN_ROOT") else Path("__missing__"),
+        run_root / "artifacts" / "review" / "final_dispositions" / "final-review.v1.json" if run_root else Path("__missing__"),
+        run_root / "artifacts" / "review" / "synthesize_review" / "final-review.v1.json" if run_root else Path("__missing__"),
         Path("tmp/final-review.v1.json"),
     ])
     if review_final:
         meta = copy_file_to_artifact(review_final, code_dir / "review" / "final-review.v1.json")
         review_artifacts.append({"name": "final-review", **meta})
+    extra_review_artifacts = [
+        (
+            "final-review-markdown",
+            source_file_candidates([
+                run_root / "artifacts" / "review" / "final_dispositions" / "final-review.md" if run_root else Path("__missing__"),
+            ]),
+            code_dir / "review" / "final-review.md",
+        ),
+        (
+            "review-finding-dispositions",
+            source_file_candidates([
+                run_root / "artifacts" / "review" / "final_dispositions" / "review-finding-dispositions.v1.json" if run_root else Path("__missing__"),
+            ]),
+            code_dir / "review" / "review-finding-dispositions.v1.json",
+        ),
+        (
+            "review-finding-dispositions-markdown",
+            source_file_candidates([
+                run_root / "artifacts" / "review" / "final_dispositions" / "review-finding-dispositions.md" if run_root else Path("__missing__"),
+            ]),
+            code_dir / "review" / "review-finding-dispositions.md",
+        ),
+    ]
+    for name, src, dest in extra_review_artifacts:
+        if src:
+            meta = copy_file_to_artifact(src, dest)
+            review_artifacts.append({"name": name, **meta})
     pack = bundle["implementation_pack"]
     source_plan_sha = bundle_expected_plan_sha(bundle)
     source_plan_path = legacy_review_doc_path(bundle) or str(CANONICAL_PLAN_OUTPUT_PATH)

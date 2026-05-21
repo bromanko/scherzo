@@ -397,6 +397,43 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
     code_review.depends_on,
     "validate_native_review_artifacts",
   )
+
+  let assert Ok(finalize_dispositions) =
+    workflow_dag.step_by_id(dag, "finalize_review_dispositions")
+  assert finalize_dispositions.depends_on == ["final_validate"]
+  let assert Ok(publish_pr) = workflow_dag.step_by_id(dag, "publish_pr")
+  assert publish_pr.depends_on == ["finalize_review_dispositions"]
+}
+
+pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_test() {
+  let dag = execplan_implementation_dag()
+  let assert Ok(finalize_dispositions) =
+    workflow_dag.step_by_id(dag, "finalize_review_dispositions")
+  assert finalize_dispositions.depends_on == ["final_validate"]
+  let assert Ok(publish_pr) = workflow_dag.step_by_id(dag, "publish_pr")
+  assert_list_contains(
+    publish_pr.depends_on,
+    "finalize_final_plan_completion_gate",
+  )
+  assert_list_contains(publish_pr.depends_on, "finalize_review_dispositions")
+
+  let feedback_prompt_paths = [
+    ".scherzo/workflows/prompts/apply-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+  ]
+  list.each(feedback_prompt_paths, fn(path) {
+    let assert Ok(prompt) = simplifile.read(path)
+    assert_contains(prompt, "review-finding-dispositions.v1.json")
+  })
+
+  let review_prompt_paths = [
+    ".scherzo/workflows/prompts/code-review.md",
+    ".scherzo/workflows/prompts/execplan-implementation-review.md",
+  ]
+  list.each(review_prompt_paths, fn(path) {
+    let assert Ok(prompt) = simplifile.read(path)
+    assert_contains(prompt, "finding ids")
+  })
 }
 
 pub fn routed_review_rejects_final_response_only_and_accepts_tool_submission_test() {
