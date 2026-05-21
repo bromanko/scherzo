@@ -140,6 +140,8 @@ The recovery summary names the failure phase, blocking findings, retention statu
 
 Missing, malformed, or stale plan-completion verdict failures are not repairable through this path; they remain terminal verifier or workflow-state failures. Same-run resume from exhausted plan-completion recovery is intentionally out of scope for this MVP.
 
+For the earlier ExecPlan checks that catch common completion omissions before implementation starts, see `docs/runbooks/execplan-completion-preflight.md`.
+
 ## Sensitive-data handling
 
 Treat pi transcripts, raw event payloads, prompts, tool inputs, tool outputs, and tracker excerpts as sensitive. Scherzo recovery output uses bounded redacted text for recovery messages, cleanup warnings, old-state reasons, and structured logs, but operators should still avoid pasting full prompts, API tokens, raw tool payloads, or full Linear comment bodies into task comments or public logs.
