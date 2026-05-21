@@ -80,6 +80,7 @@
         in
         pkgs.callPackage ./nix/scherzo.nix {
           src = sourceFor system;
+          pi = piFor system;
           inherit sourceRevision sourceDate sourceDirty;
         };
 
@@ -167,8 +168,10 @@
 
       overlays.default = final: _prev: {
         linear-cli = final.callPackage ./nix/linear-cli.nix { };
+        pi = final.callPackage ./nix/pi.nix { };
         scherzo = final.callPackage ./nix/scherzo.nix {
           src = self;
+          pi = final.pi;
         };
       };
 

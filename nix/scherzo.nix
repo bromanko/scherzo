@@ -1,21 +1,22 @@
-{
-  lib,
-  stdenvNoCC,
-  gleam,
-  erlang,
-  rebar3,
-  cacert,
-  coreutils,
-  bash,
-  python3,
-  jujutsu,
-  gh,
-  direnv,
-  makeWrapper,
-  src,
-  sourceRevision ? "unknown",
-  sourceDate ? "unknown",
-  sourceDirty ? "unknown",
+{ lib
+, stdenvNoCC
+, gleam
+, erlang
+, rebar3
+, cacert
+, coreutils
+, bash
+, python3
+, jujutsu
+, gh
+, direnv
+, makeWrapper
+, pi
+, src
+, sourceRevision ? "unknown"
+, sourceDate ? "unknown"
+, sourceDirty ? "unknown"
+,
 }:
 
 let
@@ -28,6 +29,7 @@ let
     coreutils
     bash
     jsonSchemaPython
+    pi
   ];
   noopDriverRuntimePath = lib.makeBinPath [
     python3
@@ -154,6 +156,7 @@ stdenvNoCC.mkDerivation {
       --set-default SCHERZO_SOURCE_DATE "${sourceDate}" \
       --set-default SCHERZO_SOURCE_DIRTY "${sourceDirty}" \
       --set-default SCHERZO_JSON_SCHEMA_HELPER "$out/libexec/${pname}/scherzo-json-schema-validate" \
+      --set-default SCHERZO_PI_BIN "${pi}/bin/pi" \
       --prefix PATH : ${runtimePath}
     makeWrapper "$out/bin/scherzo" "$out/bin/scherzoctl" \
       --add-flags ctl

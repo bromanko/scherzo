@@ -37,7 +37,7 @@ See the [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md) for the n
 
 ### `pi` and model/provider credentials
 
-Scherzo executes agent steps through `pi`. In a source checkout, the direnv/devenv shell provides Scherzo's pinned `pi` fork with RPC message update suppression; external deployments should install a compatible `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo. A safe first config uses non-persistent pi RPC without streaming `message_update` records:
+Scherzo executes agent steps through `pi`. The Nix-packaged `scherzo`/`scherzo-start` wrappers and the source checkout direnv/devenv shell provide Scherzo's pinned `pi` fork with RPC message update suppression. Non-Nix deployments should install a compatible `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo. A safe first config uses non-persistent pi RPC without streaming `message_update` records:
 
 ```yaml
 pi:
