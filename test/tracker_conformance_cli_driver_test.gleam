@@ -111,8 +111,7 @@ fn fixture_manifest(
   types.Manifest(
     schema_version: 1,
     adapter_kind: "test-memory",
-    driver: types.DriverConfig(
-      transport: types.CliTransport,
+    driver: types.CliDriverConfig(
       command: types.DriverCommand(
         executable: executable,
         args: args,

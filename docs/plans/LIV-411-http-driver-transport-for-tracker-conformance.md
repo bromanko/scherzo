@@ -64,6 +64,7 @@ Milestone 4 updates operator-facing docs and release notes. Reviewers should see
 - [x] (2026-05-20) Drafted this concise human-reviewable review document under `docs/plans/`.
 - [x] (2026-05-20) Prepared the structured implementation-pack submission for Scherzo capture.
 - [x] (2026-05-20) Validated this review document with `.scherzo/workflows/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-411-http-driver-transport-for-tracker-conformance.md`.
+- [x] (2026-05-20) Implemented Milestone 1 manifest/type/schema support so CLI remains unchanged and HTTP manifests now decode and validate.
 
 ## Decision Log
 
@@ -81,6 +82,10 @@ Milestone 4 updates operator-facing docs and release notes. Reviewers should see
 
 - Decision: Resolve HTTP secret headers from environment variables and redact resolved values automatically.
   Rationale: Manifests and reports should remain shareable test artifacts without embedding tokens or leaking them in diagnostics.
+  Date: 2026-05-20.
+
+- Decision: Leave HTTP invocation behind the existing driver boundary until Milestone 2 while still decoding and validating HTTP manifests in Milestone 1.
+  Rationale: This keeps the first implementation increment additive and behavior-preserving for CLI while the transport runtime work lands in a later, separately testable step.
   Date: 2026-05-20.
 
 ## Validation and Acceptance

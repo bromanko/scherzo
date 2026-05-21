@@ -6,6 +6,10 @@ pub const schema_version = 1
 
 pub const max_driver_timeout_ms = 60_000
 
+pub const max_http_retry_attempts = 3
+
+pub const max_http_retry_backoff_ms = 1000
+
 pub const max_external_diagnostics_chars = 4096
 
 pub type Manifest {
@@ -26,15 +30,29 @@ pub type ManifestError {
 }
 
 pub type DriverConfig {
-  DriverConfig(
-    transport: DriverTransport,
-    command: DriverCommand,
-    timeout_ms: Int,
-  )
+  CliDriverConfig(command: DriverCommand, timeout_ms: Int)
+  HttpDriverConfig(endpoint: HttpEndpointConfig, timeout_ms: Int)
 }
 
 pub type DriverTransport {
   CliTransport
+  HttpTransport
+}
+
+pub type HttpEndpointConfig {
+  HttpEndpointConfig(
+    url: String,
+    headers: List(HttpHeaderConfig),
+    retry: HttpRetryConfig,
+  )
+}
+
+pub type HttpHeaderConfig {
+  HttpHeaderConfig(name: String, value_from_env: String, value_prefix: String)
+}
+
+pub type HttpRetryConfig {
+  HttpRetryConfig(max_attempts: Int, backoff_ms: Int)
 }
 
 pub type DriverCommand {

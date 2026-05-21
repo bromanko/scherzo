@@ -21,11 +21,8 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
     report: report,
     ..,
   ) = manifest
-  let types.DriverConfig(
-    transport: transport,
-    command: command,
-    timeout_ms: timeout_ms,
-  ) = driver
+  let assert types.CliDriverConfig(command: command, timeout_ms: timeout_ms) =
+    driver
   let types.DriverCommand(
     executable: executable,
     args: args,
@@ -42,7 +39,8 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
 
   assert manifest_schema_version == 1
   assert adapter_kind == "test-memory"
-  assert transport == types.CliTransport
+  assert driver
+    == types.CliDriverConfig(command: command, timeout_ms: timeout_ms)
   assert executable
     == "test/fixtures/tracker_conformance/fake_task_source_driver.sh"
   assert args == ["--mode", "serve"]
@@ -60,6 +58,69 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
   assert task_file
     == "test/fixtures/tracker_conformance/task-source-fetch.response.json"
   assert redact == ["SECRET_TOKEN"]
+}
+
+pub fn manifest_decoder_accepts_minimal_http_task_source_profile_test() {
+  let assert Ok(contents) =
+    simplifile.read(
+      "test/fixtures/tracker_conformance/minimal-http-task-source.manifest.json",
+    )
+  let assert Ok(manifest) = conformance.decode_manifest(contents)
+
+  let types.Manifest(driver: driver, ..) = manifest
+  let assert types.HttpDriverConfig(endpoint: endpoint, timeout_ms: timeout_ms) =
+    driver
+  let types.HttpEndpointConfig(url: url, headers: headers, retry: retry) =
+    endpoint
+  let assert [header] = headers
+  let types.HttpHeaderConfig(
+    name: header_name,
+    value_from_env: value_from_env,
+    value_prefix: value_prefix,
+  ) = header
+  let types.HttpRetryConfig(max_attempts: max_attempts, backoff_ms: backoff_ms) =
+    retry
+
+  assert url == "http://127.0.0.1:8080/tracker-conformance"
+  assert header_name == "authorization"
+  assert value_from_env == "TEST_HTTP_DRIVER_TOKEN"
+  assert value_prefix == "Bearer "
+  assert max_attempts == 1
+  assert backoff_ms == 0
+  assert timeout_ms == 5000
+}
+
+pub fn manifest_decoder_rejects_invalid_http_manifest_fields_test() {
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-http-url-scheme.manifest.json",
+    code: "invalid_http_url",
+    message: "driver.endpoint.url must be an absolute http or https URL with a host and no userinfo or fragment",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-http-url-userinfo.manifest.json",
+    code: "invalid_http_url",
+    message: "driver.endpoint.url must be an absolute http or https URL with a host and no userinfo or fragment",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-http-url-fragment.manifest.json",
+    code: "invalid_http_url",
+    message: "driver.endpoint.url must be an absolute http or https URL with a host and no userinfo or fragment",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-http-header-name.manifest.json",
+    code: "invalid_http_header_name",
+    message: "driver.endpoint.headers[].name must be non-empty and must not contain colon, carriage return, or newline",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-http-header-env.manifest.json",
+    code: "invalid_http_header_env",
+    message: "driver.endpoint.headers[].value_from_env must be non-empty",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-http-retry.manifest.json",
+    code: "invalid_http_retry",
+    message: "driver.endpoint.retry.max_attempts must be between 1 and 3, and driver.endpoint.retry.backoff_ms must be between 0 and 1000",
+  )
 }
 
 pub fn manifest_decoder_rejects_unknown_capabilities_with_stable_code_test() {
@@ -200,6 +261,21 @@ pub fn normalized_error_response_roundtrip_test() {
         capability: None,
       ),
     )
+}
+
+fn assert_manifest_error(
+  fixture fixture: String,
+  code code: String,
+  message message: String,
+) -> Nil {
+  let assert Ok(contents) = simplifile.read(fixture)
+  let assert Error(types.ManifestError(
+    code: actual_code,
+    message: actual_message,
+  )) = conformance.decode_manifest(contents)
+
+  assert actual_code == code
+  assert actual_message == message
 }
 
 fn fixture_task() -> task.Task {
