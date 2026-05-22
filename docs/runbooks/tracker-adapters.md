@@ -109,6 +109,16 @@ direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conform
 
 The grep check should produce no matches. That proves the fake-driver run wrote enriched evidence without leaking configured secrets into retained report artifacts.
 
+Optional-pack fake-driver examples from the repository root:
+
+```sh
+direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/comments-pass.manifest.json --report test/tmp/tracker-conformance/comments-pass.report.json
+direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/state-transition-pass.manifest.json --report test/tmp/tracker-conformance/state-transition-pass.report.json
+direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/routing-metadata-pass.manifest.json --report test/tmp/tracker-conformance/routing-metadata-pass.report.json
+```
+
+Request optional packs explicitly in `profile.requested_packs`, claim the matching granular capabilities in `profile.capabilities`, and keep `probe.*` names out of `profile.adapter_operations`. Claimed-but-unrequested optional capabilities do not run extra cases. Requested-but-unclaimed optional packs fail manifest validation before setup, probe, cleanup, or driver commands run. Side-effect manifests should keep setup and cleanup hooks idempotent so reruns do not leave duplicate marker data behind.
+
 Optional live-backend checklist for operators who already have trusted manifests and pre-provisioned fixtures:
 
 1. Keep privileged setup, probe, and cleanup hooks inside operator-reviewed manifests only.

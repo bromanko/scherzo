@@ -32,6 +32,7 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
   let types.ProfileConfig(
     name: name,
     capabilities: capabilities,
+    requested_packs: requested_packs,
     adapter_operations: operations,
   ) = manifest_profile
   let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
@@ -49,6 +50,7 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
   assert timeout_ms == 5000
   assert name == profile.TaskSourceProfile
   assert capabilities == [profile.TaskSourceCapability]
+  assert requested_packs == [profile.TaskSourcePack]
   assert operations
     == [
       profile.TaskSourceFetchCandidates,
@@ -184,7 +186,8 @@ pub fn manifest_decoder_rejects_unknown_capabilities_with_stable_code_test() {
   let types.ManifestError(code: code, message: message) = error
 
   assert code == "unknown_capability"
-  assert message == "profile.capabilities currently supports only task_source"
+  assert message
+    == "profile.capabilities contains an unknown capability: unknown_capability"
 }
 
 pub fn manifest_decoder_rejects_fixture_namespace_in_adapter_operations_test() {
@@ -202,6 +205,11 @@ pub fn manifest_decoder_rejects_fixture_namespace_in_adapter_operations_test() {
     fixture: "test/fixtures/tracker_conformance/invalid-hook-operation-in-adapter-pack.manifest.json",
     code: "fixture_operation_disallowed",
     message: "profile.adapter_operations must not include fixture/probe/hook operations: hook.cleanup",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-routing-probe-operation.manifest.json",
+    code: "fixture_operation_disallowed",
+    message: "profile.adapter_operations must not include fixture/probe/hook operations: probe.routing_visible",
   )
 }
 
@@ -274,6 +282,58 @@ pub fn request_roundtrip_for_task_source_fetch_candidates_test() {
     ))
 }
 
+pub fn request_roundtrip_for_comments_and_state_transition_payloads_test() {
+  let task_ref =
+    task.TaskRef(
+      backend_kind: "test-memory",
+      remote_id: "card-1",
+      key: Some("CARD-1"),
+      url: Some("https://tracker.example/tasks/CARD-1"),
+    )
+  let comment_request =
+    types.DriverRequest(
+      schema_version: 1,
+      request_id: "req-comment-1",
+      operation: profile.CommentsPostOrUpdate,
+      payload: types.CommentsPostOrUpdatePayload(
+        comment: types.CommentRequestPayload(
+          task: task_ref,
+          body: "comment body",
+          mode: types.UpdateExistingComment(
+            comment_id: "comment-1",
+            allow_create_fallback: True,
+          ),
+        ),
+      ),
+    )
+  let transition_request =
+    types.DriverRequest(
+      schema_version: 1,
+      request_id: "req-transition-1",
+      operation: profile.StateTransitionsTransition,
+      payload: types.StateTransitionPayload(
+        transition: types.StateTransitionRequestPayload(
+          task: task_ref,
+          target_state_id: Some("doing"),
+          target_state_name: "Doing",
+          reason: "because",
+        ),
+      ),
+    )
+
+  let assert Ok(decoded_comment_request) =
+    comment_request
+    |> conformance.request_to_string
+    |> conformance.decode_request
+  let assert Ok(decoded_transition_request) =
+    transition_request
+    |> conformance.request_to_string
+    |> conformance.decode_request
+
+  assert decoded_comment_request == comment_request
+  assert decoded_transition_request == transition_request
+}
+
 pub fn success_response_roundtrip_for_task_source_payload_test() {
   let assert Ok(contents) =
     simplifile.read(
@@ -290,6 +350,54 @@ pub fn success_response_roundtrip_for_task_source_payload_test() {
       request_id: "req-fetch-1",
       result: types.TaskListResult(tasks: [fixture_task()]),
     )
+}
+
+pub fn success_response_roundtrip_for_comments_and_state_transition_payloads_test() {
+  let task_ref =
+    task.TaskRef(
+      backend_kind: "test-memory",
+      remote_id: "card-1",
+      key: Some("CARD-1"),
+      url: Some("https://tracker.example/tasks/CARD-1"),
+    )
+  let comment_response =
+    types.DriverResponseSuccess(
+      schema_version: 1,
+      request_id: "req-comment-1",
+      result: types.CommentResult(comment: types.CommentReceiptPayload(
+        id: "comment-1",
+        task: task_ref,
+        url: Some("https://tracker.example/comments/comment-1"),
+        created: False,
+      )),
+    )
+  let transition_response =
+    types.DriverResponseSuccess(
+      schema_version: 1,
+      request_id: "req-transition-1",
+      result: types.StateTransitionResult(
+        transition: types.StateTransitionReceiptPayload(
+          task: task_ref,
+          state: task.TaskState(
+            id: Some("doing"),
+            name: "Doing",
+            category: task.Active,
+          ),
+        ),
+      ),
+    )
+
+  let assert Ok(decoded_comment_response) =
+    comment_response
+    |> conformance.response_to_string
+    |> conformance.decode_response
+  let assert Ok(decoded_transition_response) =
+    transition_response
+    |> conformance.response_to_string
+    |> conformance.decode_response
+
+  assert decoded_comment_response == comment_response
+  assert decoded_transition_response == transition_response
 }
 
 pub fn normalized_error_response_roundtrip_test() {

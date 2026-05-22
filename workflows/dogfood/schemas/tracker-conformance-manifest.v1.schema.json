@@ -23,10 +23,36 @@
         "name": { "const": "task_source" },
         "capabilities": {
           "type": "array",
-          "items": { "const": "task_source" },
+          "items": {
+            "enum": [
+              "task_source",
+              "comments.create",
+              "comments.update",
+              "comments.allow_create_fallback",
+              "state_transitions.transition",
+              "state_transitions.reason",
+              "routing_metadata.workflow_labels",
+              "routing_metadata.blocker_refs"
+            ]
+          },
           "minItems": 1,
-          "maxItems": 1,
-          "uniqueItems": true
+          "uniqueItems": true,
+          "contains": { "const": "task_source" }
+        },
+        "requested_packs": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "task_source",
+              "comments",
+              "state_transitions",
+              "routing_metadata"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": { "const": "task_source" },
+          "default": ["task_source"]
         },
         "adapter_operations": {
           "type": "array",
@@ -36,7 +62,9 @@
             "enum": [
               "task_source.fetch_candidates",
               "task_source.refresh_by_refs",
-              "task_source.lookup_by_operator_ref"
+              "task_source.lookup_by_operator_ref",
+              "comments.post_or_update",
+              "state_transitions.transition"
             ]
           },
           "allOf": [

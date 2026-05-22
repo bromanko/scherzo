@@ -18,7 +18,11 @@ A conformance manifest is a JSON document with `schema_version: 1` and these top
 - `hooks`: optional setup and cleanup commands.
 - `report`: report redaction configuration.
 
-The MVP accepts only `driver.transport = "cli"`, `driver.timeout_ms` from 1 through 60,000 milliseconds, `profile.name = "task_source"`, and `profile.capabilities = ["task_source"]`. `profile.adapter_operations` must declare all three required task-source operations. Adapter operation names must stay inside the public adapter namespace. Fixture, probe, and hook namespaces are reserved for non-conformance support paths and are rejected inside `profile.adapter_operations`.
+The runner still uses `profile.name = "task_source"`, `driver.transport = "cli"`, and `driver.timeout_ms` from 1 through 60,000 milliseconds. `profile.capabilities` must include `task_source` and may additionally claim optional-pack capabilities such as `comments.create`, `comments.update`, `comments.allow_create_fallback`, `state_transitions.transition`, `state_transitions.reason`, `routing_metadata.workflow_labels`, and `routing_metadata.blocker_refs`.
+
+`profile.requested_packs` is optional and defaults to `["task_source"]`. It must always include `task_source`. Claimed-but-unrequested optional capabilities do not select extra cases. Requested optional packs are validated against their required claimed capabilities before setup hooks, probes, cleanup hooks, or adapter driver operations run. For example, requesting `comments` without `comments.create` is a manifest validation error.
+
+`profile.adapter_operations` must declare all three required task-source operations. It may also list future optional-pack adapter operations such as `comments.post_or_update` and `state_transitions.transition`. Adapter operation names must stay inside the public adapter namespace. Fixture, probe, and hook namespaces are reserved for non-conformance support paths and are rejected inside `profile.adapter_operations`.
 
 `fixtures.task_file` points at a repository-relative JSON fixture that decodes as a successful non-empty task-list driver response. The MVP rejects absolute paths, parent-directory traversal, and Windows-style drive or backslash escape forms, then confirms at runtime that the resolved fixture stays inside the repository root. The MVP uses that fixture both as the expected task inventory and as the stable-identity source for refresh and lookup cases.
 
@@ -33,11 +37,13 @@ Every adapter operation uses one JSON request envelope:
 - `operation`
 - `payload`
 
-The supported MVP operations are:
+The supported operations are:
 
 - `task_source.fetch_candidates`
 - `task_source.refresh_by_refs`
 - `task_source.lookup_by_operator_ref`
+- `comments.post_or_update`
+- `state_transitions.transition`
 
 ## Driver response envelope
 
@@ -51,6 +57,16 @@ Failure responses carry a normalized error object with `kind`, `message`, option
 Driver transport failures are not reported as tracker errors. Scherzo classifies spawn failure, timeout, missing stdout, non-zero exit, malformed JSON, and response-envelope schema/request-id mismatches as driver-level conformance failures and reports them against the public case id that triggered the request. Captured external-process diagnostics are truncated to 4,096 characters before reporting.
 
 Every case report now also carries bounded request and response transcript evidence. A transcript record contains `body`, `truncated`, and `original_chars`. The `body` is the bounded retained text after truncation, `truncated` tells reviewers whether the original text exceeded the safety limit, and `original_chars` records the pre-truncation length. Request transcripts retain the exact JSON stdin Scherzo wrote to the driver. Response transcripts retain the raw stdout line when one existed, even when the line later failed JSON decoding or envelope validation.
+
+## Optional pack cases
+
+When `profile.requested_packs` selects optional packs and the manifest claims the matching capabilities, Scherzo appends these extra public cases after the required `task_source` cases.
+
+`comments` adds `comments.post_or_update.create_only`, `comments.post_or_update.update_existing`, `comments.post_or_update.update_missing_no_fallback`, and `comments.post_or_update.update_missing_allow_create_fallback`. Successful comment receipts must carry a non-empty `id`, the same fixture task identity, and the expected `created` flag. The stale-update-without-fallback case passes only on a normalized `not_found` error.
+
+`state_transitions` adds `state_transitions.transition.target_id_precedence`, `state_transitions.transition.target_name_only`, `state_transitions.transition.unknown_target`, and `state_transitions.transition.reason_propagation`. Successful transition receipts must carry the same fixture task identity and the expected normalized target state. The unknown-target case passes only on a normalized `permanent` error.
+
+`routing_metadata` adds `routing_metadata.fetch.workflow_labels` and `routing_metadata.refresh.blocker_refs`. These cases reuse public task-source reads to prove workflow labels and blocker refs from adapter-returned normalized tasks. Probe commands remain support evidence only and are still rejected inside `profile.adapter_operations`.
 
 ## `task_source` MVP cases
 
@@ -79,6 +95,8 @@ Reports distinguish these failure classes explicitly:
 JSON reports keep those top-level counters and also add a grouped `counts` object with the same values. Each case result retains `id`, `operation`, `status`, `request_id`, `message`, and `diagnostics`, and adds `expected_summary`, `actual_summary`, `request_transcript`, `response_transcript`, and `recovery_guidance`. Hook and probe results add `recovery_guidance` so operators can tell whether to fix setup, visibility checks, cleanup, or the adapter implementation itself.
 
 Configured `report.redact` strings are replaced with `[REDACTED]` in JSON reports and CLI summaries. Redaction applies to messages, diagnostics, summaries, hook and probe evidence, and both request and response transcripts before Scherzo writes report files or prints recovery guidance.
+
+Adapter authors should request optional packs explicitly, keep fake-driver manifests deterministic, reserve probes for support evidence rather than public adapter operations, and make cleanup hooks idempotent so reruns do not leave duplicate marker data behind.
 
 ## Local runner command
 
