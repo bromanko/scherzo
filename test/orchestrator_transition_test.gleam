@@ -100,6 +100,7 @@ pub fn fixture_workflow_dag(id: String) -> workflow_dag.WorkflowDag {
     workspace_profile: None,
     workspace_capabilities: [],
     max_parallel_steps: 1,
+    recover: None,
     contract: None,
     workstream_phase: None,
     steps: [
@@ -110,6 +111,7 @@ pub fn fixture_workflow_dag(id: String) -> workflow_dag.WorkflowDag {
         workspace: workflow_dag.WorkspaceRef(name: "default", from: None),
         on_failure: workflow_dag.FailWorkflow,
         model_settings: model_config.default_settings(),
+        recover: None,
       ),
     ],
   )

@@ -25,6 +25,7 @@ pub fn parses_minimal_workflow_dag_test() {
   assert dag.workspace_profile == None
   assert dag.workspace_capabilities == []
   assert dag.max_parallel_steps == 1
+  assert dag.recover == None
   assert dag.contract == None
   let assert [step] = dag.steps
   assert step.id == "main"
@@ -32,10 +33,105 @@ pub fn parses_minimal_workflow_dag_test() {
   assert step.workspace == workflow_dag.WorkspaceRef(name: "main", from: None)
   assert step.on_failure == workflow_dag.FailWorkflow
   assert step.model_settings == model_config.default_settings()
+  assert step.recover == None
   let assert workflow_dag.AgentStep(
     workflow_dag.PromptFile("prompts/research.md"),
     None,
   ) = step.kind
+}
+
+pub fn parses_workflow_and_step_recover_configs_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: recovery\nrecover:\n  attempts: 2\n  model: gpt-5\n  prompt: prompts/recover.md\nsteps:\n  - id: test\n    kind: command\n    run: gleam test\n  - id: fix\n    kind: agent\n    prompt: prompts/fix.md\n    depends_on: [test]\n    recover:\n      attempts: 1\n      prompt: prompts/step-recover.md\n",
+    )
+  let assert Some(workflow_dag.RecoveryConfigPatch(
+    enabled,
+    attempts,
+    model,
+    prompt,
+  )) = dag.recover
+  assert enabled == None
+  assert attempts == Some(2)
+  assert model == Some("gpt-5")
+  assert prompt == Some(workflow_dag.PromptFile("prompts/recover.md"))
+
+  let assert [test_step, fix_step] = dag.steps
+  let assert Ok(Some(test_recover)) =
+    workflow_dag.effective_recovery_config(dag, test_step)
+  assert test_recover
+    == workflow_dag.EffectiveRecoveryConfig(
+      attempts: 2,
+      model: Some("gpt-5"),
+      prompt: workflow_dag.PromptFile("prompts/recover.md"),
+    )
+  let assert Ok(Some(fix_recover)) =
+    workflow_dag.effective_recovery_config(dag, fix_step)
+  assert fix_recover
+    == workflow_dag.EffectiveRecoveryConfig(
+      attempts: 1,
+      model: Some("gpt-5"),
+      prompt: workflow_dag.PromptFile("prompts/step-recover.md"),
+    )
+}
+
+pub fn parses_step_only_recover_and_default_attempts_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: recovery\nsteps:\n  - id: fix\n    kind: agent\n    prompt: prompts/fix.md\n    recover:\n      prompt: prompts/recover.md\n",
+    )
+  let assert [step] = dag.steps
+  let assert Ok(Some(recover)) =
+    workflow_dag.effective_recovery_config(dag, step)
+  assert recover
+    == workflow_dag.EffectiveRecoveryConfig(
+      attempts: 1,
+      model: None,
+      prompt: workflow_dag.PromptFile("prompts/recover.md"),
+    )
+}
+
+pub fn recover_enabled_false_disables_step_recovery_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: recovery\nrecover:\n  prompt: prompts/recover.md\nsteps:\n  - id: test\n    kind: command\n    run: gleam test\n    recover:\n      enabled: false\n",
+    )
+  let assert [step] = dag.steps
+  assert workflow_dag.effective_recovery_config(dag, step) == Ok(None)
+}
+
+pub fn rejects_invalid_recover_configs_test() {
+  assert error_code(
+      "version: 1\nid: recovery\nrecover: true\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+    )
+    == "recover_not_map"
+  assert error_code(
+      "version: 1\nid: recovery\nrecover:\n  enabled: nope\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+    )
+    == "recover_enabled_not_bool"
+  assert error_code(
+      "version: 1\nid: recovery\nrecover:\n  attempts: once\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+    )
+    == "recover_attempts_not_int"
+  assert error_code(
+      "version: 1\nid: recovery\nrecover:\n  attempts: 0\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+    )
+    == "invalid_recover_attempts"
+  assert error_code(
+      "version: 1\nid: recovery\nrecover:\n  model: bad model\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+    )
+    == "invalid_model"
+  assert error_code(
+      "version: 1\nid: recovery\nrecover:\n  prompt: 123\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+    )
+    == "recover_prompt_not_string"
+}
+
+pub fn rejects_missing_effective_recover_prompt_test() {
+  assert error_code(
+      "version: 1\nid: recovery\nrecover:\n  attempts: 2\nsteps:\n  - id: main\n    kind: command\n    run: 'true'\n",
+    )
+    == "missing_recover_prompt"
 }
 
 pub fn parses_agent_structured_output_defaults_test() {

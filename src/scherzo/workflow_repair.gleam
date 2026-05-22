@@ -268,9 +268,9 @@ fn status_matches_issue_target(
 ) -> Bool {
   case status {
     projection.WorkflowRunFinished(issue_id: issue_id, outcome: outcome, ..) ->
-      case outcome != "failed_fatal" {
-        True -> False
-        False ->
+      case outcome == "failed_fatal" || outcome == "failed_after_recovery" {
+        False -> False
+        True ->
           case target {
             ByIssueId(target_issue_id) -> issue_id == target_issue_id
             ByIssueIdentifier(identifier) ->
@@ -296,7 +296,7 @@ fn selected_run_from_status(
       finished_at_ms,
       run_root,
     ) ->
-      case outcome == "failed_fatal" {
+      case outcome == "failed_fatal" || outcome == "failed_after_recovery" {
         False ->
           Error(RepairError(
             "no_failed_workflow_run",
@@ -537,7 +537,7 @@ fn failed_attempts(
         outcome: outcome,
         ..,
       ) ->
-        case outcome == "failed_fatal" {
+        case outcome == "failed_fatal" || outcome == "failed_after_recovery" {
           True -> [FailedAttempt(step_id, attempt_index), ..acc]
           False -> acc
         }

@@ -233,10 +233,17 @@ fn resolve_prompt_files(
   dag: workflow_dag.WorkflowDag,
   workflow_path: String,
 ) -> Result(#(workflow_dag.WorkflowDag, List(BundleDependency)), BundleError) {
-  use #(steps, dependencies) <- result.try(
+  use #(recover, recover_dependencies) <- result.try(resolve_recover_prompt(
+    dag.recover,
+    workflow_path,
+  ))
+  use #(steps, step_dependencies) <- result.try(
     resolve_step_prompts(dag.steps, workflow_path, [], []),
   )
-  Ok(#(workflow_dag.WorkflowDag(..dag, steps: steps), dependencies))
+  Ok(#(
+    workflow_dag.WorkflowDag(..dag, recover: recover, steps: steps),
+    list.append(recover_dependencies, step_dependencies),
+  ))
 }
 
 fn resolve_step_prompts(
@@ -251,39 +258,83 @@ fn resolve_step_prompts(
   case steps {
     [] -> Ok(#(list.reverse(acc), acc_dependencies))
     [step, ..rest] -> {
-      case step.kind {
-        workflow_dag.AgentStep(
-          workflow_dag.PromptFile(prompt_path),
-          structured_output,
-        ) -> {
-          use #(prompt, dependency) <- result.try(read_relative_prompt(
+      use #(step, step_dependencies) <- result.try(resolve_step_prompt_refs(
+        step,
+        workflow_path,
+      ))
+      resolve_step_prompts(
+        rest,
+        workflow_path,
+        [step, ..acc],
+        list.append(acc_dependencies, step_dependencies),
+      )
+    }
+  }
+}
+
+fn resolve_step_prompt_refs(
+  step: workflow_dag.WorkflowStep,
+  workflow_path: String,
+) -> Result(#(workflow_dag.WorkflowStep, List(BundleDependency)), BundleError) {
+  use #(recover, recover_dependencies) <- result.try(resolve_recover_prompt(
+    step.recover,
+    workflow_path,
+  ))
+  let step = workflow_dag.WorkflowStep(..step, recover: recover)
+  case step.kind {
+    workflow_dag.AgentStep(
+      workflow_dag.PromptFile(prompt_path),
+      structured_output,
+    ) -> {
+      use #(prompt, dependency) <- result.try(read_relative_prompt(
+        prompt_path,
+        workflow_path,
+      ))
+      Ok(#(
+        workflow_dag.WorkflowStep(
+          ..step,
+          kind: workflow_dag.AgentStep(
+            workflow_dag.PromptInline(prompt),
+            structured_output,
+          ),
+        ),
+        list.append(recover_dependencies, [dependency]),
+      ))
+    }
+    _ -> Ok(#(step, recover_dependencies))
+  }
+}
+
+fn resolve_recover_prompt(
+  recover: Option(workflow_dag.RecoveryConfigPatch),
+  workflow_path: String,
+) -> Result(
+  #(Option(workflow_dag.RecoveryConfigPatch), List(BundleDependency)),
+  BundleError,
+) {
+  case recover {
+    None -> Ok(#(None, []))
+    Some(workflow_dag.RecoveryConfigPatch(enabled, attempts, model, prompt)) ->
+      case prompt {
+        Some(workflow_dag.PromptFile(prompt_path)) -> {
+          use #(contents, dependency) <- result.try(read_relative_prompt(
             prompt_path,
             workflow_path,
           ))
-          let step =
-            workflow_dag.WorkflowStep(
-              ..step,
-              kind: workflow_dag.AgentStep(
-                workflow_dag.PromptInline(prompt),
-                structured_output,
-              ),
-            )
-          resolve_step_prompts(
-            rest,
-            workflow_path,
-            [step, ..acc],
-            list.append(acc_dependencies, [dependency]),
+          Ok(
+            #(
+              Some(workflow_dag.RecoveryConfigPatch(
+                enabled: enabled,
+                attempts: attempts,
+                model: model,
+                prompt: Some(workflow_dag.PromptInline(contents)),
+              )),
+              [dependency],
+            ),
           )
         }
-        _ ->
-          resolve_step_prompts(
-            rest,
-            workflow_path,
-            [step, ..acc],
-            acc_dependencies,
-          )
+        _ -> Ok(#(recover, []))
       }
-    }
   }
 }
 

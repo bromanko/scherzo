@@ -192,6 +192,40 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   assert prompt == "Implement {{ issue.identifier }}"
 }
 
+pub fn loads_recovery_prompt_files_test() {
+  let dir = "test/tmp/runtime-bundle-recover-prompts"
+  reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/implement.md", "Implement")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/recover.md", "Recover workflow")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/recover-step.md",
+      "Recover step",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nrecover:\n  prompt: prompts/recover.md\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n    recover:\n      prompt: prompts/recover-step.md\n",
+    )
+  let assert Ok(dag) =
+    runtime_bundle.load_workflow_file(dir <> "/workflows/implementation.yaml")
+  let assert Some(workflow_dag.RecoveryConfigPatch(
+    prompt: Some(workflow_dag.PromptInline(workflow_prompt)),
+    ..,
+  )) = dag.recover
+  let assert [step] = dag.steps
+  let assert Some(workflow_dag.RecoveryConfigPatch(
+    prompt: Some(workflow_dag.PromptInline(step_prompt)),
+    ..,
+  )) = step.recover
+  assert workflow_prompt == "Recover workflow"
+  assert step_prompt == "Recover step"
+}
+
 pub fn runtime_bundle_records_config_workflow_and_prompt_dependencies_test() {
   let dir = "test/tmp/runtime-bundle-dependencies"
   let config_path = dir <> "/scherzo.yaml"

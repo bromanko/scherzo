@@ -638,6 +638,44 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "WorkflowStepRecoveryStarted",
+      "workflow_step_recovery_started",
+      record.with_id(
+        "record-workflow-step-recovery-started",
+        1012,
+        record.WorkflowStepRecoveryStarted(
+          run_id: "workflow-run-1",
+          workflow_id: "implementation",
+          step_id: "implement",
+          failed_attempt_index: 1,
+          recovery_attempt_number: 1,
+          recovery_session_id: "workflow-run-1-implement-recovery-1",
+          model: Some("gpt-5"),
+          prompt_ref: ".scherzo/workflows/prompts/recover_failed_step.md",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "WorkflowStepRecoveryFinished",
+      "workflow_step_recovery_finished",
+      record.with_id(
+        "record-workflow-step-recovery-finished",
+        1013,
+        record.WorkflowStepRecoveryFinished(
+          run_id: "workflow-run-1",
+          workflow_id: "implementation",
+          step_id: "implement",
+          failed_attempt_index: 1,
+          recovery_attempt_number: 1,
+          recovery_session_id: "workflow-run-1-implement-recovery-1",
+          result: "retry_requested",
+          summary: "Fixed tests",
+          reason: "The workspace is ready for a retry.",
+          retry_attempt_index: Some(2),
+        ),
+      ),
+    ),
+    LedgerExample(
       "StepAttemptInterrupted",
       "step_attempt_interrupted",
       record.with_id(
@@ -1562,6 +1600,7 @@ fn projection_fixture_projection() -> projection.Projection {
         ),
       ),
     ]),
+    step_recoveries: dict.new(),
     scheduled_jobs: dict.from_list([
       #(
         "nightly-repair",

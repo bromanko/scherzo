@@ -53,6 +53,18 @@ pub type StructuredArtifactRef {
   )
 }
 
+pub type ImmutableArtifactRef {
+  ImmutableArtifactRef(
+    ref: String,
+    path: String,
+    uri: String,
+    display_path: String,
+    local_path: Option(String),
+    sha256: String,
+    bytes: Int,
+  )
+}
+
 pub type StructuredOutputArtifact {
   StructuredOutputArtifact(
     run_id: String,
@@ -236,6 +248,48 @@ pub fn write_structured_output_artifact(
   Ok(structured_ref_from_artifact(written, artifact_location))
 }
 
+pub fn write_recovery_artifact_json(
+  store: Store,
+  run_id: String,
+  step_id: String,
+  failed_attempt_index: Int,
+  recovery_attempt_number: Int,
+  artifact_name: String,
+  payload_json: String,
+) -> Result(ImmutableArtifactRef, ArtifactError) {
+  let ref =
+    recovery_artifact_ref(
+      run_id,
+      step_id,
+      failed_attempt_index,
+      recovery_attempt_number,
+      artifact_name,
+    )
+  let bytes = bit_array.from_string(payload_json)
+  let sha256 = hash.sha256_hex(payload_json)
+  use write_result <- result.try(write_immutable_artifact_bytes(
+    store,
+    ref,
+    bytes,
+  ))
+  case write_result {
+    ImmutableConflict ->
+      Error(DecodeArtifactFailed("immutable_recovery_artifact_conflict"))
+    ImmutableExisting | ImmutableWritten -> {
+      use artifact_location <- result.try(location(store, ref))
+      Ok(ImmutableArtifactRef(
+        ref: ref,
+        path: option.unwrap(artifact_location.local_path, ref),
+        uri: artifact_location.uri,
+        display_path: artifact_location.display_path,
+        local_path: artifact_location.local_path,
+        sha256: sha256,
+        bytes: bit_array.byte_size(bytes),
+      ))
+    }
+  }
+}
+
 fn parse_structured_payload_json(
   payload_json: String,
 ) -> Result(json_value.JsonValue, ArtifactError) {
@@ -315,6 +369,26 @@ pub fn structured_output_artifact_ref(
   <> "/attempt-"
   <> int.to_string(attempt_index)
   <> "/structured/"
+  <> workflow_identity.safe_component(artifact_name, "artifact")
+  <> ".json"
+}
+
+pub fn recovery_artifact_ref(
+  run_id: String,
+  step_id: String,
+  failed_attempt_index: Int,
+  recovery_attempt_number: Int,
+  artifact_name: String,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/"
+  <> workflow_identity.safe_component(step_id, "step")
+  <> "/attempt-"
+  <> int.to_string(failed_attempt_index)
+  <> "/recovery-"
+  <> int.to_string(recovery_attempt_number)
+  <> "/"
   <> workflow_identity.safe_component(artifact_name, "artifact")
   <> ".json"
 }

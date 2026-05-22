@@ -258,6 +258,7 @@ fn dag_to_json_with_schema_root(
   let fields =
     list.append(prefix, [
       #("max_parallel_steps", json.int(dag.max_parallel_steps)),
+      #("recover", recovery_config_to_json(dag.recover)),
       #(
         "steps",
         json.array(sorted_steps(dag.steps), of: step_to_json(_, schema_root)),
@@ -304,6 +305,7 @@ fn step_to_json(
     #("workspace", workspace_to_json(step.workspace)),
     #("on_failure", json.string(failure_policy_to_string(step.on_failure))),
     #("model_settings", model_settings_to_json(step.model_settings)),
+    #("recover", recovery_config_to_json(step.recover)),
   ])
 }
 
@@ -495,6 +497,24 @@ fn structured_output_schema_to_json(
   }
 }
 
+fn recovery_config_to_json(
+  recover: Option(workflow_dag.RecoveryConfigPatch),
+) -> json.Json {
+  case recover {
+    None -> json.null()
+    Some(workflow_dag.RecoveryConfigPatch(enabled, attempts, model, prompt)) ->
+      json.object([
+        #("enabled", option_bool_to_json(enabled)),
+        #("attempts", option_int_to_json(attempts)),
+        #("model", option_string_to_json(model)),
+        #("prompt", case prompt {
+          Some(prompt) -> prompt_ref_to_json(prompt)
+          None -> json.null()
+        }),
+      ])
+  }
+}
+
 fn prompt_ref_to_json(prompt_ref: workflow_dag.PromptRef) -> json.Json {
   case prompt_ref {
     workflow_dag.PromptInline(prompt) ->
@@ -642,6 +662,13 @@ fn option_thinking_to_json(
 fn option_string_to_json(value: Option(String)) -> json.Json {
   case value {
     Some(value) -> json.string(value)
+    None -> json.null()
+  }
+}
+
+fn option_bool_to_json(value: Option(Bool)) -> json.Json {
+  case value {
+    Some(value) -> json.bool(value)
     None -> json.null()
   }
 }

@@ -203,6 +203,28 @@ pub type RecordBody {
     token_total: Int,
     turns: Int,
   )
+  WorkflowStepRecoveryStarted(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    failed_attempt_index: Int,
+    recovery_attempt_number: Int,
+    recovery_session_id: String,
+    model: Option(String),
+    prompt_ref: String,
+  )
+  WorkflowStepRecoveryFinished(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    failed_attempt_index: Int,
+    recovery_attempt_number: Int,
+    recovery_session_id: String,
+    result: String,
+    summary: String,
+    reason: String,
+    retry_attempt_index: Option(Int),
+  )
   StepAttemptInterrupted(
     run_id: String,
     workflow_id: String,
@@ -589,6 +611,13 @@ type RecordFields {
     input_bundle_ref: Option(String),
     input_bundle_sha256: Option(String),
     input_bundle_bytes: Option(Int),
+    recovery_attempt_number: Option(Int),
+    recovery_session_id: Option(String),
+    model: Option(String),
+    prompt_ref: Option(String),
+    result: Option(String),
+    summary: Option(String),
+    retry_attempt_index: Option(Int),
   )
 }
 
@@ -633,6 +662,8 @@ pub fn kind(body: RecordBody) -> String {
     StepAttemptPiSessionRecordedWithTask(..) ->
       "step_attempt_pi_session_recorded"
     StepAttemptFinished(..) -> "step_attempt_finished"
+    WorkflowStepRecoveryStarted(..) -> "workflow_step_recovery_started"
+    WorkflowStepRecoveryFinished(..) -> "workflow_step_recovery_finished"
     StepAttemptInterrupted(..) -> "step_attempt_interrupted"
     StepAttemptSuperseded(..) -> "step_attempt_superseded"
     RetryScheduled(..) -> "retry_scheduled"
@@ -1019,6 +1050,48 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("workspace_path", json.string(workspace_path)),
       #("token_total", json.int(token_total)),
       #("turns", json.int(turns)),
+    ]
+    WorkflowStepRecoveryStarted(
+      run_id,
+      workflow_id,
+      step_id,
+      failed_attempt_index,
+      recovery_attempt_number,
+      recovery_session_id,
+      model,
+      prompt_ref,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("step_id", json.string(step_id)),
+      #("failed_attempt_index", json.int(failed_attempt_index)),
+      #("recovery_attempt_number", json.int(recovery_attempt_number)),
+      #("recovery_session_id", json.string(recovery_session_id)),
+      #("model", option_string_to_json(model)),
+      #("prompt_ref", json.string(prompt_ref)),
+    ]
+    WorkflowStepRecoveryFinished(
+      run_id,
+      workflow_id,
+      step_id,
+      failed_attempt_index,
+      recovery_attempt_number,
+      recovery_session_id,
+      result,
+      summary,
+      reason,
+      retry_attempt_index,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("step_id", json.string(step_id)),
+      #("failed_attempt_index", json.int(failed_attempt_index)),
+      #("recovery_attempt_number", json.int(recovery_attempt_number)),
+      #("recovery_session_id", json.string(recovery_session_id)),
+      #("result", json.string(result)),
+      #("summary", json.string(summary)),
+      #("reason", json.string(reason)),
+      #("retry_attempt_index", option_int_to_json(retry_attempt_index)),
     ]
     StepAttemptInterrupted(run_id, workflow_id, step_id, attempt_index, reason) -> [
       #("run_id", json.string(run_id)),
@@ -1500,6 +1573,13 @@ fn option_string_to_json(value: Option(String)) -> json.Json {
   }
 }
 
+fn option_int_to_json(value: Option(Int)) -> json.Json {
+  case value {
+    Some(value) -> json.int(value)
+    None -> json.null()
+  }
+}
+
 fn task_ref_entries(task_ref: TaskRefFields) -> List(#(String, json.Json)) {
   let TaskRefFields(task_backend_kind, task_remote_id, task_key, task_url) =
     task_ref
@@ -1916,6 +1996,75 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         workspace_path,
         token_total,
         turns,
+      ))
+    }
+    "workflow_step_recovery_started" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use failed_attempt_index <- result.try(required_int(
+        fields.failed_attempt_index,
+        "failed_attempt_index",
+      ))
+      use recovery_attempt_number <- result.try(required_int(
+        fields.recovery_attempt_number,
+        "recovery_attempt_number",
+      ))
+      use recovery_session_id <- result.try(required_string(
+        fields.recovery_session_id,
+        "recovery_session_id",
+      ))
+      use prompt_ref <- result.try(required_string(
+        fields.prompt_ref,
+        "prompt_ref",
+      ))
+      Ok(WorkflowStepRecoveryStarted(
+        run_id,
+        workflow_id,
+        step_id,
+        failed_attempt_index,
+        recovery_attempt_number,
+        recovery_session_id,
+        fields.model,
+        prompt_ref,
+      ))
+    }
+    "workflow_step_recovery_finished" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use failed_attempt_index <- result.try(required_int(
+        fields.failed_attempt_index,
+        "failed_attempt_index",
+      ))
+      use recovery_attempt_number <- result.try(required_int(
+        fields.recovery_attempt_number,
+        "recovery_attempt_number",
+      ))
+      use recovery_session_id <- result.try(required_string(
+        fields.recovery_session_id,
+        "recovery_session_id",
+      ))
+      use result_value <- result.try(required_string(fields.result, "result"))
+      use summary <- result.try(required_string(fields.summary, "summary"))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(WorkflowStepRecoveryFinished(
+        run_id,
+        workflow_id,
+        step_id,
+        failed_attempt_index,
+        recovery_attempt_number,
+        recovery_session_id,
+        result_value,
+        summary,
+        reason,
+        fields.retry_attempt_index,
       ))
     }
     "step_attempt_interrupted" -> {
@@ -3189,6 +3338,41 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.int),
   )
+  use recovery_attempt_number <- decode.optional_field(
+    "recovery_attempt_number",
+    None,
+    decode.optional(decode.int),
+  )
+  use recovery_session_id <- decode.optional_field(
+    "recovery_session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use model <- decode.optional_field(
+    "model",
+    None,
+    decode.optional(decode.string),
+  )
+  use prompt_ref <- decode.optional_field(
+    "prompt_ref",
+    None,
+    decode.optional(decode.string),
+  )
+  use result <- decode.optional_field(
+    "result",
+    None,
+    decode.optional(decode.string),
+  )
+  use summary <- decode.optional_field(
+    "summary",
+    None,
+    decode.optional(decode.string),
+  )
+  use retry_attempt_index <- decode.optional_field(
+    "retry_attempt_index",
+    None,
+    decode.optional(decode.int),
+  )
   decode.success(RecordFields(
     schema_version: schema_version,
     record_id: record_id,
@@ -3292,6 +3476,13 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     input_bundle_ref: input_bundle_ref,
     input_bundle_sha256: input_bundle_sha256,
     input_bundle_bytes: input_bundle_bytes,
+    recovery_attempt_number: recovery_attempt_number,
+    recovery_session_id: recovery_session_id,
+    model: model,
+    prompt_ref: prompt_ref,
+    result: result,
+    summary: summary,
+    retry_attempt_index: retry_attempt_index,
   ))
 }
 

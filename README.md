@@ -56,6 +56,7 @@ When working from this source checkout, run the same entrypoints through devenv,
 | Tracker adapters and capability matrix | [docs/runbooks/tracker-adapters.md](docs/runbooks/tracker-adapters.md) |
 | Operator control basics | [Observe/control with `scherzoctl`](docs/GETTING_STARTED.md#13-observe-and-control-with-scherzoctl) and [workflow recovery](docs/runbooks/workflow-recovery.md) |
 | Recovery, retained artifacts, and cleanup | [docs/runbooks/workflow-recovery.md](docs/runbooks/workflow-recovery.md) |
+| Step recovery groundwork | [docs/runbooks/workflow-step-recovery.md](docs/runbooks/workflow-step-recovery.md) |
 | Scheduled jobs | [docs/runbooks/scheduled-jobs.md](docs/runbooks/scheduled-jobs.md) |
 | Production lint policy | [docs/LINTING.md](docs/LINTING.md) |
 | Test helpers and async test patterns | [test/README.md](test/README.md) |
@@ -85,7 +86,7 @@ This repository dogfoods the same shape under `.scherzo/` and keeps reusable exa
 
 - **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, workspace profiles, pi settings, agent limits, handoff policy, routing, artifact limits, Linear contract compatibility checks, and optional Linear command comments.
 - **Workspace profiles and drivers** decide where each step runs. Bundled packaged drivers include `scherzo-workspace-noop` for artifact-only workflows and `scherzo-workspace-jj` for jj-backed implementation workspaces. Custom drivers must follow the workspace driver spec.
-- **Workflow DAGs** are YAML files routed by task metadata, currently Linear workflow labels. Steps may be `kind: agent` steps using Markdown prompt templates or `kind: command` steps running shell validation.
+- **Workflow DAGs** are YAML files routed by task metadata, currently Linear workflow labels. Steps may be `kind: agent` steps using Markdown prompt templates or `kind: command` steps running shell validation. The `recover` stanza is currently reserved groundwork for bounded step remediation; runtime recovery is tracked as follow-up work.
 - **Structured output** lets an agent step return a required JSON artifact and validate it with baseline checks, JSON Schema validators, command validators, or both.
 - **Operator control** is through daemon logs, retained artifacts, Linear comments, and `scherzoctl` commands such as `ps`, `session`, `events`, `attach`, `pause`, `resume`, `retry`, `park`, `abort`, and `prompt`.
 

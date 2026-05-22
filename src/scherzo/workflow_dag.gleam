@@ -19,6 +19,7 @@ pub type WorkflowDag {
     workspace_profile: Option(String),
     workspace_capabilities: List(config_types.WorkspaceCapability),
     max_parallel_steps: Int,
+    recover: Option(RecoveryConfigPatch),
     steps: List(WorkflowStep),
     contract: Option(workflow_contract.Contract),
     workstream_phase: Option(phase_metadata.PhaseMetadata),
@@ -33,6 +34,24 @@ pub type WorkflowStep {
     workspace: WorkspaceRef,
     on_failure: FailurePolicy,
     model_settings: model_config.Settings,
+    recover: Option(RecoveryConfigPatch),
+  )
+}
+
+pub type RecoveryConfigPatch {
+  RecoveryConfigPatch(
+    enabled: Option(Bool),
+    attempts: Option(Int),
+    model: Option(String),
+    prompt: Option(PromptRef),
+  )
+}
+
+pub type EffectiveRecoveryConfig {
+  EffectiveRecoveryConfig(
+    attempts: Int,
+    model: Option(String),
+    prompt: PromptRef,
   )
 }
 
@@ -113,6 +132,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
       use workspace_profile <- result.try(read_workspace_profile(root))
       use workspace_capabilities <- result.try(read_workspace_capabilities(root))
       use max_parallel_steps <- result.try(read_max_parallel_steps(root))
+      use recover <- result.try(read_recover(root, "recover"))
       use steps <- result.try(read_steps(root))
       use contract <- result.try(read_contract(root))
       use workstream_phase <- result.try(read_workstream_phase(root, contract))
@@ -123,6 +143,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
           workspace_profile: workspace_profile,
           workspace_capabilities: workspace_capabilities,
           max_parallel_steps: max_parallel_steps,
+          recover: recover,
           steps: steps,
           contract: contract,
           workstream_phase: workstream_phase,
@@ -161,6 +182,41 @@ pub fn with_prompt(step: WorkflowStep, prompt: PromptRef) -> WorkflowStep {
     AgentStep(_, structured_output) ->
       WorkflowStep(..step, kind: AgentStep(prompt, structured_output))
     _ -> step
+  }
+}
+
+pub fn effective_recovery_config(
+  dag: WorkflowDag,
+  step: WorkflowStep,
+) -> Result(Option(EffectiveRecoveryConfig), DagError) {
+  let merged = merge_recovery_config(dag.recover, step.recover)
+  case merged {
+    None -> Ok(None)
+    Some(RecoveryConfigPatch(enabled, attempts, model, prompt)) -> {
+      let enabled = case enabled {
+        Some(value) -> value
+        None -> True
+      }
+      case enabled {
+        False -> Ok(None)
+        True ->
+          case prompt {
+            Some(prompt) ->
+              Ok(
+                Some(EffectiveRecoveryConfig(
+                  attempts: default_recovery_attempts(attempts),
+                  model: model,
+                  prompt: prompt,
+                )),
+              )
+            None ->
+              Error(DagError(
+                "missing_recover_prompt",
+                "recover.prompt is required when recovery is enabled",
+              ))
+          }
+      }
+    }
   }
 }
 
@@ -212,6 +268,7 @@ fn validate(dag: WorkflowDag) -> Result(WorkflowDag, DagError) {
   use _ <- result.try(validate_acyclic(dag.steps))
   use _ <- result.try(validate_workspace_sources(dag.steps))
   use _ <- result.try(validate_structured_output_schema_paths(dag.steps))
+  use _ <- result.try(validate_recovery_configs(dag))
   use _ <- result.try(validate_single_terminal_sink(dag.steps))
   use _ <- result.try(validate_contract_sources(dag))
   Ok(dag)
@@ -365,6 +422,7 @@ fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
       use workspace <- result.try(read_workspace(node))
       use on_failure <- result.try(read_failure_policy(node))
       use model_settings <- result.try(read_model_settings(kind, node))
+      use recover <- result.try(read_recover(node, "step.recover"))
       Ok(WorkflowStep(
         id: id,
         kind: kind,
@@ -372,6 +430,7 @@ fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
         workspace: workspace,
         on_failure: on_failure,
         model_settings: model_settings,
+        recover: recover,
       ))
     }
     _ -> Error(DagError("step_not_map", "each step must be a map"))
@@ -791,6 +850,107 @@ fn read_failure_policy(node: yay.Node) -> Result(FailurePolicy, DagError) {
   }
 }
 
+fn read_recover(
+  node: yay.Node,
+  path: String,
+) -> Result(Option(RecoveryConfigPatch), DagError) {
+  case get_node(node, "recover") {
+    None -> Ok(None)
+    Some(recover_node) ->
+      case recover_node {
+        yay.NodeMap(_) -> {
+          use enabled <- result.try(read_recover_enabled(recover_node, path))
+          use attempts <- result.try(read_recover_attempts(recover_node, path))
+          use model <- result.try(read_recover_model(recover_node, path))
+          use prompt <- result.try(read_recover_prompt(recover_node, path))
+          Ok(
+            Some(RecoveryConfigPatch(
+              enabled: enabled,
+              attempts: attempts,
+              model: model,
+              prompt: prompt,
+            )),
+          )
+        }
+        _ -> Error(DagError("recover_not_map", path <> " must be a map"))
+      }
+  }
+}
+
+fn read_recover_enabled(
+  node: yay.Node,
+  path: String,
+) -> Result(Option(Bool), DagError) {
+  case get_node(node, "enabled") {
+    None -> Ok(None)
+    Some(yay.NodeBool(value)) -> Ok(Some(value))
+    Some(_) ->
+      Error(DagError(
+        "recover_enabled_not_bool",
+        path <> ".enabled must be a boolean",
+      ))
+  }
+}
+
+fn read_recover_attempts(
+  node: yay.Node,
+  path: String,
+) -> Result(Option(Int), DagError) {
+  case get_node(node, "attempts") {
+    None -> Ok(None)
+    Some(yay.NodeInt(value)) ->
+      case value >= 1 {
+        True -> Ok(Some(value))
+        False ->
+          Error(DagError(
+            "invalid_recover_attempts",
+            path <> ".attempts must be at least 1",
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "recover_attempts_not_int",
+        path <> ".attempts must be an integer",
+      ))
+  }
+}
+
+fn read_recover_model(
+  node: yay.Node,
+  path: String,
+) -> Result(Option(String), DagError) {
+  case get_node(node, "model") {
+    None -> Ok(None)
+    Some(yay.NodeStr(value)) ->
+      model_config.parse_model(value, path <> ".model")
+      |> result.map(Some)
+      |> result.map_error(fn(error) {
+        let model_config.ModelError(code, message) = error
+        DagError(code, message)
+      })
+    Some(_) ->
+      Error(DagError(
+        "recover_model_not_string",
+        path <> ".model must be a string",
+      ))
+  }
+}
+
+fn read_recover_prompt(
+  node: yay.Node,
+  path: String,
+) -> Result(Option(PromptRef), DagError) {
+  case get_node(node, "prompt") {
+    None -> Ok(None)
+    Some(yay.NodeStr(value)) -> Ok(Some(PromptFile(value)))
+    Some(_) ->
+      Error(DagError(
+        "recover_prompt_not_string",
+        path <> ".prompt must be a string",
+      ))
+  }
+}
+
 fn read_model_settings(
   kind: StepKind,
   node: yay.Node,
@@ -843,6 +1003,23 @@ fn first_model_settings_field(node: yay.Node) -> Option(String) {
             None -> None
           }
       }
+  }
+}
+
+fn validate_recovery_configs(dag: WorkflowDag) -> Result(Nil, DagError) {
+  validate_step_recovery_configs(dag, dag.steps)
+}
+
+fn validate_step_recovery_configs(
+  dag: WorkflowDag,
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
+  case steps {
+    [] -> Ok(Nil)
+    [step, ..rest] -> {
+      use _ <- result.try(effective_recovery_config(dag, step))
+      validate_step_recovery_configs(dag, rest)
+    }
   }
 }
 
@@ -1392,6 +1569,50 @@ fn optional_string(node: yay.Node, key: String) -> Option(String) {
   case get_node(node, key) {
     Some(yay.NodeStr(value)) -> Some(value)
     _ -> None
+  }
+}
+
+fn merge_recovery_config(
+  workflow_recover: Option(RecoveryConfigPatch),
+  step_recover: Option(RecoveryConfigPatch),
+) -> Option(RecoveryConfigPatch) {
+  case workflow_recover, step_recover {
+    None, None -> None
+    Some(workflow_patch), None -> Some(workflow_patch)
+    None, Some(step_patch) -> Some(step_patch)
+    Some(RecoveryConfigPatch(
+      workflow_enabled,
+      workflow_attempts,
+      workflow_model,
+      workflow_prompt,
+    )),
+      Some(RecoveryConfigPatch(
+        step_enabled,
+        step_attempts,
+        step_model,
+        step_prompt,
+      ))
+    ->
+      Some(RecoveryConfigPatch(
+        enabled: first_some(step_enabled, workflow_enabled),
+        attempts: first_some(step_attempts, workflow_attempts),
+        model: first_some(step_model, workflow_model),
+        prompt: first_some(step_prompt, workflow_prompt),
+      ))
+  }
+}
+
+fn default_recovery_attempts(value: Option(Int)) -> Int {
+  case value {
+    Some(value) -> value
+    None -> 1
+  }
+}
+
+fn first_some(left: Option(a), right: Option(a)) -> Option(a) {
+  case left {
+    Some(_) -> left
+    None -> right
   }
 }
 

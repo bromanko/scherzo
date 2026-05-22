@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "artifact_type", "decision", "summary", "reason"],
+  "properties": {
+    "schema_version": { "type": "integer", "enum": [1] },
+    "artifact_type": { "type": "string", "enum": ["workflow_step_recovery_result"] },
+    "decision": {
+      "type": "string",
+      "enum": ["retry_requested", "gave_up"]
+    },
+    "summary": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}

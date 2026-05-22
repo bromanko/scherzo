@@ -21,6 +21,7 @@ pub type Projection {
     workflow_output_manifests: Dict(String, WorkflowContractManifestRef),
     workflow_repairs: Dict(String, WorkflowRepairStatus),
     step_attempts: Dict(String, StepAttemptStatus),
+    step_recoveries: Dict(String, StepRecoveryStatus),
     retries: Dict(String, RetryStatus),
     parked_issues: Dict(String, ParkedIssue),
     commands: Dict(String, CommandStatus),
@@ -185,6 +186,36 @@ pub type StepAttemptStatus {
     superseded_by_attempt_index: Int,
     reason: String,
     superseded_at_ms: Int,
+  )
+}
+
+pub type StepRecoveryStatus {
+  StepRecoveryStartedStatus(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    failed_attempt_index: Int,
+    recovery_attempt_number: Int,
+    recovery_session_id: String,
+    model: Option(String),
+    prompt_ref: String,
+    started_at_ms: Int,
+  )
+  StepRecoveryFinishedStatus(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    failed_attempt_index: Int,
+    recovery_attempt_number: Int,
+    recovery_session_id: String,
+    model: Option(String),
+    prompt_ref: String,
+    result: String,
+    summary: String,
+    reason: String,
+    retry_attempt_index: Option(Int),
+    started_at_ms: Int,
+    finished_at_ms: Int,
   )
 }
 
@@ -473,6 +504,10 @@ type StepAttemptSnapshot {
   StepAttemptSnapshot(key: String, status: StepAttemptStatus)
 }
 
+type StepRecoverySnapshot {
+  StepRecoverySnapshot(key: String, status: StepRecoveryStatus)
+}
+
 type RetrySnapshot {
   RetrySnapshot(issue_id: String, status: RetryStatus)
 }
@@ -521,6 +556,7 @@ type SnapshotFields {
     workflow_output_manifests: List(WorkflowContractManifestSnapshot),
     workflow_repairs: List(WorkflowRepairSnapshot),
     step_attempts: List(StepAttemptSnapshot),
+    step_recoveries: List(StepRecoverySnapshot),
     retries: List(RetrySnapshot),
     parked_issues: List(ParkedSnapshot),
     commands: List(CommandSnapshot),
@@ -552,6 +588,7 @@ pub fn new() -> Projection {
     workflow_output_manifests: dict.new(),
     workflow_repairs: dict.new(),
     step_attempts: dict.new(),
+    step_recoveries: dict.new(),
     retries: dict.new(),
     parked_issues: dict.new(),
     commands: dict.new(),
@@ -1138,6 +1175,65 @@ pub fn apply(
         ),
       )
     }
+    record.WorkflowStepRecoveryStarted(
+      run_id,
+      workflow_id,
+      step_id,
+      failed_attempt_index,
+      recovery_attempt_number,
+      recovery_session_id,
+      model,
+      prompt_ref,
+    ) ->
+      Projection(
+        ..projection,
+        step_recoveries: dict.insert(
+          projection.step_recoveries,
+          step_recovery_key(
+            run_id,
+            step_id,
+            failed_attempt_index,
+            recovery_attempt_number,
+          ),
+          StepRecoveryStartedStatus(
+            run_id: run_id,
+            workflow_id: workflow_id,
+            step_id: step_id,
+            failed_attempt_index: failed_attempt_index,
+            recovery_attempt_number: recovery_attempt_number,
+            recovery_session_id: recovery_session_id,
+            model: model,
+            prompt_ref: prompt_ref,
+            started_at_ms: at_ms,
+          ),
+        ),
+      )
+    record.WorkflowStepRecoveryFinished(
+      run_id,
+      workflow_id,
+      step_id,
+      failed_attempt_index,
+      recovery_attempt_number,
+      recovery_session_id,
+      result,
+      summary,
+      reason,
+      retry_attempt_index,
+    ) ->
+      apply_step_recovery_finished(
+        projection,
+        at_ms,
+        run_id,
+        workflow_id,
+        step_id,
+        failed_attempt_index,
+        recovery_attempt_number,
+        recovery_session_id,
+        result,
+        summary,
+        reason,
+        retry_attempt_index,
+      )
     record.StepAttemptInterrupted(
       run_id,
       workflow_id,
@@ -2698,6 +2794,84 @@ pub fn step_attempt_key(
   run_id <> "\u{001f}" <> step_id <> "\u{001f}" <> int.to_string(attempt_index)
 }
 
+pub fn step_recovery_key(
+  run_id: String,
+  step_id: String,
+  failed_attempt_index: Int,
+  recovery_attempt_number: Int,
+) -> String {
+  run_id
+  <> "\u{001f}"
+  <> step_id
+  <> "\u{001f}"
+  <> int.to_string(failed_attempt_index)
+  <> "\u{001f}"
+  <> int.to_string(recovery_attempt_number)
+}
+
+fn apply_step_recovery_finished(
+  projection: Projection,
+  at_ms: Int,
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  failed_attempt_index: Int,
+  recovery_attempt_number: Int,
+  recovery_session_id: String,
+  result: String,
+  summary: String,
+  reason: String,
+  retry_attempt_index: Option(Int),
+) -> Projection {
+  let key =
+    step_recovery_key(
+      run_id,
+      step_id,
+      failed_attempt_index,
+      recovery_attempt_number,
+    )
+  let #(model, prompt_ref, started_at_ms) = case
+    dict.get(projection.step_recoveries, key)
+  {
+    Ok(StepRecoveryStartedStatus(
+      model: model,
+      prompt_ref: prompt_ref,
+      started_at_ms: started_at_ms,
+      ..,
+    )) -> #(model, prompt_ref, started_at_ms)
+    Ok(StepRecoveryFinishedStatus(
+      model: model,
+      prompt_ref: prompt_ref,
+      started_at_ms: started_at_ms,
+      ..,
+    )) -> #(model, prompt_ref, started_at_ms)
+    Error(Nil) -> #(None, "", 0)
+  }
+  Projection(
+    ..projection,
+    step_recoveries: dict.insert(
+      projection.step_recoveries,
+      key,
+      StepRecoveryFinishedStatus(
+        run_id: run_id,
+        workflow_id: workflow_id,
+        step_id: step_id,
+        failed_attempt_index: failed_attempt_index,
+        recovery_attempt_number: recovery_attempt_number,
+        recovery_session_id: recovery_session_id,
+        model: model,
+        prompt_ref: prompt_ref,
+        result: result,
+        summary: summary,
+        reason: reason,
+        retry_attempt_index: retry_attempt_index,
+        started_at_ms: started_at_ms,
+        finished_at_ms: at_ms,
+      ),
+    ),
+  )
+}
+
 fn session_fact_values(
   status_workflow_id: String,
   status_workspace_name: String,
@@ -3094,6 +3268,13 @@ pub fn to_json(projection: Projection) -> json.Json {
       ),
     ),
     #(
+      "step_recoveries",
+      json.array(
+        dict.to_list(projection.step_recoveries),
+        of: step_recovery_entry_to_json,
+      ),
+    ),
+    #(
       "retries",
       json.array(dict.to_list(projection.retries), of: retry_entry_to_json),
     ),
@@ -3205,6 +3386,12 @@ fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
         step_attempts: fields.step_attempts
           |> list.map(fn(entry) {
             let StepAttemptSnapshot(key, status) = entry
+            #(key, status)
+          })
+          |> dict.from_list,
+        step_recoveries: fields.step_recoveries
+          |> list.map(fn(entry) {
+            let StepRecoverySnapshot(key, status) = entry
             #(key, status)
           })
           |> dict.from_list,
@@ -3608,6 +3795,72 @@ fn option_string_to_json(value: Option(String)) -> json.Json {
   case value {
     Some(value) -> json.string(value)
     None -> json.null()
+  }
+}
+
+fn step_recovery_entry_to_json(
+  entry: #(String, StepRecoveryStatus),
+) -> json.Json {
+  let #(key, status) = entry
+  case status {
+    StepRecoveryStartedStatus(
+      run_id,
+      workflow_id,
+      step_id,
+      failed_attempt_index,
+      recovery_attempt_number,
+      recovery_session_id,
+      model,
+      prompt_ref,
+      started_at_ms,
+    ) ->
+      json.object([
+        #("key", json.string(key)),
+        #("status", json.string("started")),
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("step_id", json.string(step_id)),
+        #("failed_attempt_index", json.int(failed_attempt_index)),
+        #("recovery_attempt_number", json.int(recovery_attempt_number)),
+        #("recovery_session_id", json.string(recovery_session_id)),
+        #("model", option_string_to_json(model)),
+        #("prompt_ref", json.string(prompt_ref)),
+        #("started_at_ms", json.int(started_at_ms)),
+      ])
+    StepRecoveryFinishedStatus(
+      run_id,
+      workflow_id,
+      step_id,
+      failed_attempt_index,
+      recovery_attempt_number,
+      recovery_session_id,
+      model,
+      prompt_ref,
+      result,
+      summary,
+      reason,
+      retry_attempt_index,
+      started_at_ms,
+      finished_at_ms,
+    ) ->
+      json.object([
+        #("key", json.string(key)),
+        #("status", json.string("finished")),
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("step_id", json.string(step_id)),
+        #("failed_attempt_index", json.int(failed_attempt_index)),
+        #("recovery_attempt_number", json.int(recovery_attempt_number)),
+        #("recovery_session_id", json.string(recovery_session_id)),
+        #("model", option_string_to_json(model)),
+        #("prompt_ref", json.string(prompt_ref)),
+        #("result", json.string(result)),
+        #("summary", json.string(summary)),
+        #("reason", json.string(reason)),
+        #("retry_attempt_index", option_int_to_json(retry_attempt_index)),
+        #("started_at_ms", json.int(started_at_ms)),
+        #("finished_at_ms", json.int(finished_at_ms)),
+      ])
   }
 }
 
@@ -4131,6 +4384,11 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: step_attempt_snapshot_decoder()),
   )
+  use step_recoveries <- decode.optional_field(
+    "step_recoveries",
+    [],
+    decode.list(of: step_recovery_snapshot_decoder()),
+  )
   use retries <- decode.field(
     "retries",
     decode.list(of: retry_snapshot_decoder()),
@@ -4184,6 +4442,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         workflow_output_manifests,
         workflow_repairs,
         step_attempts,
+        step_recoveries,
         retries,
         parked_issues,
         commands,
@@ -4197,6 +4456,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     False ->
       decode.failure(
         SnapshotFields(
+          [],
           [],
           [],
           [],
@@ -4687,6 +4947,86 @@ fn step_attempt_snapshot_decoder() -> decode.Decoder(StepAttemptSnapshot) {
           ),
         ),
         expected: "StepAttemptSnapshot",
+      )
+  }
+}
+
+fn step_recovery_snapshot_decoder() -> decode.Decoder(StepRecoverySnapshot) {
+  use key <- decode.field("key", decode.string)
+  use status <- decode.field("status", decode.string)
+  use run_id <- decode.field("run_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use step_id <- decode.field("step_id", decode.string)
+  use failed_attempt_index <- decode.field("failed_attempt_index", decode.int)
+  use recovery_attempt_number <- decode.field(
+    "recovery_attempt_number",
+    decode.int,
+  )
+  use recovery_session_id <- decode.field("recovery_session_id", decode.string)
+  use model <- decode.optional_field(
+    "model",
+    None,
+    decode.optional(decode.string),
+  )
+  use prompt_ref <- decode.optional_field("prompt_ref", "", decode.string)
+  use started_at_ms <- decode.optional_field("started_at_ms", 0, decode.int)
+  case status {
+    "started" ->
+      decode.success(StepRecoverySnapshot(
+        key,
+        StepRecoveryStartedStatus(
+          run_id: run_id,
+          workflow_id: workflow_id,
+          step_id: step_id,
+          failed_attempt_index: failed_attempt_index,
+          recovery_attempt_number: recovery_attempt_number,
+          recovery_session_id: recovery_session_id,
+          model: model,
+          prompt_ref: prompt_ref,
+          started_at_ms: started_at_ms,
+        ),
+      ))
+    "finished" -> {
+      use result <- decode.field("result", decode.string)
+      use summary <- decode.field("summary", decode.string)
+      use reason <- decode.field("reason", decode.string)
+      use retry_attempt_index <- decode.optional_field(
+        "retry_attempt_index",
+        None,
+        decode.optional(decode.int),
+      )
+      use finished_at_ms <- decode.optional_field(
+        "finished_at_ms",
+        0,
+        decode.int,
+      )
+      decode.success(StepRecoverySnapshot(
+        key,
+        StepRecoveryFinishedStatus(
+          run_id: run_id,
+          workflow_id: workflow_id,
+          step_id: step_id,
+          failed_attempt_index: failed_attempt_index,
+          recovery_attempt_number: recovery_attempt_number,
+          recovery_session_id: recovery_session_id,
+          model: model,
+          prompt_ref: prompt_ref,
+          result: result,
+          summary: summary,
+          reason: reason,
+          retry_attempt_index: retry_attempt_index,
+          started_at_ms: started_at_ms,
+          finished_at_ms: finished_at_ms,
+        ),
+      ))
+    }
+    _ ->
+      decode.failure(
+        StepRecoverySnapshot(
+          "",
+          StepRecoveryStartedStatus("", "", "", 0, 0, "", None, "", 0),
+        ),
+        expected: "StepRecoverySnapshot",
       )
   }
 }
