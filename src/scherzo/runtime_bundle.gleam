@@ -11,6 +11,7 @@ import scherzo/path
 import scherzo/template
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
+import scherzo/workflow_dag_compat
 import scherzo/workspace_driver_discovery
 import scherzo/workspace_profile
 import simplifile
@@ -41,6 +42,19 @@ pub fn select_workflow(
   issue: tracker_issue.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
   select_routed_workflow(bundle.workflows, bundle.orchestrator.routing, issue)
+}
+
+pub fn workflow_by_id(
+  bundle: RuntimeBundle,
+  id: String,
+) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
+  lookup_workflow(bundle.workflows, id)
+}
+
+pub fn normalized_workflows(
+  bundle: RuntimeBundle,
+) -> Dict(String, workflow_dag.WorkflowDag) {
+  workflow_dag_compat.normalize_map(bundle.workflows)
 }
 
 pub fn load(explicit: Option(String)) -> Result(RuntimeBundle, BundleError) {
@@ -100,7 +114,7 @@ fn lookup_workflow(
   id: String,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
   case dict.get(workflows, id) {
-    Ok(dag) -> Ok(#(id, dag))
+    Ok(dag) -> Ok(#(id, workflow_dag_compat.normalize(dag)))
     Error(_) ->
       Error(BundleError(
         "unknown_workflow_label",
@@ -164,6 +178,7 @@ fn load_orchestrator(
     orchestrator.scheduled_jobs,
     workflows,
   ))
+  let workflows = workflow_dag_compat.normalize_map(workflows)
   Ok(RuntimeBundle(
     config_path: selected,
     config_contents: content,

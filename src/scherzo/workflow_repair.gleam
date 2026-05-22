@@ -11,6 +11,7 @@ import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
+import scherzo/workflow_dag_compat
 
 pub type RepairError {
   RepairError(reason: String, message: Option(String))
@@ -70,6 +71,30 @@ pub fn error_message(error: RepairError) -> Option(String) {
   message
 }
 
+pub fn normalize_observation(
+  current: recovery.CurrentWorkflowObservation,
+) -> recovery.CurrentWorkflowObservation {
+  case current {
+    recovery.CurrentWorkflow(
+      issue,
+      workflow_id,
+      workflow_fingerprint,
+      issue_fingerprint,
+      dag,
+      workspace_root,
+    ) ->
+      recovery.CurrentWorkflow(
+        issue,
+        workflow_id,
+        workflow_fingerprint,
+        issue_fingerprint,
+        workflow_dag_compat.normalize(dag),
+        workspace_root,
+      )
+    _ -> current
+  }
+}
+
 pub fn plan(
   projection_state: projection.Projection,
   target: command.RetryWorkflowStepTarget,
@@ -98,6 +123,7 @@ pub fn plan(
         run.run_root,
         workspace_root,
       ))
+      let dag = workflow_dag_compat.normalize(dag)
       let attempts = attempts_for_run(projection_state, run.run_id)
       use failed_attempt <- result.try(select_failed_attempt(
         attempts,

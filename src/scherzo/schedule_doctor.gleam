@@ -8,6 +8,7 @@ import scherzo/runtime_bundle
 import scherzo/scheduled_failure_reporter
 import scherzo/template
 import scherzo/workflow_dag
+import scherzo/workflow_dag_compat
 
 pub type Severity {
   Pass
@@ -74,7 +75,10 @@ pub fn issue_references(
 ) -> List(IssueReference) {
   case dict.get(bundle.workflows, job.workflow) {
     Error(Nil) -> []
-    Ok(dag) -> issue_references_in_steps(job, dag.id, dag.steps)
+    Ok(dag) -> {
+      let dag = workflow_dag_compat.normalize(dag)
+      issue_references_in_steps(job, dag.id, dag.steps)
+    }
   }
 }
 

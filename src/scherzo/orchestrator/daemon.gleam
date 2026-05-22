@@ -2216,7 +2216,12 @@ fn retry_workflow_step_for_operator(
                         recovery.finalize_workflow_candidates_with_config(
                           projection_state,
                           [plan.candidate],
-                          dict.from_list([#(plan.run_id, observation)]),
+                          dict.from_list([
+                            #(
+                              plan.run_id,
+                              workflow_repair.normalize_observation(observation),
+                            ),
+                          ]),
                           artifact_store.new(
                             state.workflow.effective.workspace.root,
                           ),
@@ -3377,7 +3382,7 @@ fn transition_dispatch_context(
   transition_types.dispatch_context(
     state.workflow.effective,
     state.workflow.bundle.orchestrator.routing,
-    state.workflow.bundle.workflows,
+    runtime_bundle.normalized_workflows(state.workflow.bundle),
     config.can_dispatch(state.workflow.reload_state),
     state.operator_paused,
     worker_registry.worker_issue_ids(state.registry),
@@ -4712,7 +4717,9 @@ fn spawn_scheduled_worker_for_pending(
   state: State,
   pending: ScheduledPendingStart,
 ) -> State {
-  case dict.get(state.workflow.bundle.workflows, pending.workflow_id) {
+  case
+    runtime_bundle.workflow_by_id(state.workflow.bundle, pending.workflow_id)
+  {
     Error(_) -> {
       let _ =
         append_ledger_bodies(
@@ -4737,7 +4744,7 @@ fn spawn_scheduled_worker_for_pending(
         ),
       )
     }
-    Ok(dag) ->
+    Ok(#(_, dag)) ->
       case
         workspace_run.scheduled_run_root_for(
           pending.job_id,

@@ -10,6 +10,7 @@ import scherzo/path as scherzo_path
 import scherzo/structured_output_source
 import scherzo/workflow_contract
 import scherzo/workflow_dag
+import scherzo/workflow_dag_compat
 import scherzo/workspace_driver_env
 import scherzo/workspace_profile
 import scherzo/workstream/phase_metadata
@@ -24,6 +25,7 @@ pub type FingerprintError {
 pub fn fingerprint(
   dag: workflow_dag.WorkflowDag,
 ) -> Result(String, FingerprintError) {
+  let dag = workflow_dag_compat.normalize(dag)
   Ok(for_dag(dag.id, dag))
 }
 
@@ -31,10 +33,12 @@ pub fn fingerprint_for_execution(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(String, FingerprintError) {
+  let dag = workflow_dag_compat.normalize(dag)
   for_execution(dag.id, dag, orchestrator)
 }
 
 pub fn for_dag(workflow_id: String, dag: workflow_dag.WorkflowDag) -> String {
+  let dag = workflow_dag_compat.normalize(dag)
   hash.sha256_hex(canonical_input_for(workflow_id, dag))
 }
 
@@ -43,6 +47,7 @@ pub fn for_execution(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(String, FingerprintError) {
+  let dag = workflow_dag_compat.normalize(dag)
   use profile <- result.try(
     workspace_profile.resolve(dag, orchestrator)
     |> result.map_error(workspace_profile_error_to_fingerprint_error),
@@ -64,6 +69,7 @@ pub fn for_execution_options(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
+  let dag = workflow_dag_compat.normalize(dag)
   let profile =
     config_types.WorkspaceHookProfile(
       name: "default",
@@ -87,6 +93,7 @@ pub fn for_execution_profile_options(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
+  let dag = workflow_dag_compat.normalize(dag)
   hash.sha256_hex(canonical_execution_input_for_profile(
     workflow_id,
     dag,
@@ -115,6 +122,7 @@ fn for_execution_profile_options_with_schema_root(
 }
 
 pub fn canonical_input(dag: workflow_dag.WorkflowDag) -> String {
+  let dag = workflow_dag_compat.normalize(dag)
   canonical_input_for(dag.id, dag)
 }
 
@@ -122,6 +130,7 @@ pub fn canonical_input_for(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
 ) -> String {
+  let dag = workflow_dag_compat.normalize(dag)
   dag_to_json(workflow_id, dag) |> json.to_string
 }
 
@@ -132,6 +141,7 @@ pub fn canonical_execution_input_for(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
+  let dag = workflow_dag_compat.normalize(dag)
   let profile =
     config_types.WorkspaceHookProfile(
       name: "default",
@@ -155,6 +165,7 @@ pub fn canonical_execution_input_for_profile(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
+  let dag = workflow_dag_compat.normalize(dag)
   canonical_execution_input_for_profile_with_schema_root(
     workflow_id,
     dag,
@@ -236,6 +247,7 @@ fn dag_to_json_with_schema_root(
   dag: workflow_dag.WorkflowDag,
   schema_root: Option(String),
 ) -> json.Json {
+  let dag = workflow_dag_compat.normalize(dag)
   let prefix = [
     #("id", json.string(workflow_id)),
     #("description", option_string_to_json(dag.description)),
