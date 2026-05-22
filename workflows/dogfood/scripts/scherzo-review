@@ -129,6 +129,9 @@ VALIDATION_STATE_RANK = {
     "passed": 6,
 }
 DISPOSITION_ORDER = ["resolved", "rejected", "deferred", "obsolete"]
+DISPOSITION_INPUT_ARTIFACT_NAME = "review_finding_disposition_input"
+DISPOSITION_INPUT_PROVIDER_SCHEMA_PATH = ".scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json"
+DISPOSITION_INPUT_TOOL_NAME = "submit_review_finding_dispositions"
 
 SPECIALIST_LANES: dict[str, dict[str, str]] = {
     "correctness": {
@@ -2001,26 +2004,34 @@ def validate_evidence_ref(value: Any, *, field: str) -> None:
         validate_string_field(value, "command", display_field=f"{field}.command")
 
 
-def normalize_disposition_input_evidence_ref(value: Any, *, field: str) -> dict[str, Any]:
+def normalize_disposition_input_evidence_ref(
+    value: Any,
+    *,
+    field: str,
+    allow_string_shorthand: bool = True,
+) -> dict[str, Any]:
     """Return a schema-valid disposition evidence ref.
 
     The durable review_finding_dispositions artifact always stores evidence refs
-    as objects. The agent-authored disposition input is intentionally more
-    forgiving so older prompt wording that said only "non-empty evidence_refs"
-    does not strand otherwise publishable runs when an agent writes a bare
-    string shorthand.
+    as objects. The legacy file-input path remains forgiving so older prompt
+    wording that said only "non-empty evidence_refs" does not strand otherwise
+    publishable local runs when an agent wrote a bare string shorthand. The
+    structured-output validator disables that shorthand so review-feedback runs
+    fail near the tool call instead of after final validation.
     """
     if isinstance(value, dict):
         validate_evidence_ref(value, field=field)
         return json_clone(value)
-    if isinstance(value, str):
+    if isinstance(value, str) and allow_string_shorthand:
         description = value.strip()
         if not description:
             raise ReviewError(f"{field} must be a non-empty object or string shorthand")
         ref = {"type": "reference", "description": description}
         validate_evidence_ref(ref, field=field)
         return ref
-    raise ReviewError(f"{field} must be an object or string shorthand")
+    if allow_string_shorthand:
+        raise ReviewError(f"{field} must be an object or string shorthand")
+    raise ReviewError(f"{field} must be an object")
 
 
 def validate_execution_status_shape(value: Any, *, field: str) -> None:
@@ -3649,13 +3660,51 @@ def collect_final_review_findings(final_review: dict[str, Any]) -> list[dict[str
     return findings
 
 
-def load_disposition_input(path: Path) -> list[dict[str, Any]]:
-    value = load_json(path)
-    if value.get("schema_version") != SCHEMA_VERSION:
-        raise ReviewError("review finding disposition input schema_version must be 1")
-    if value.get("artifact_type") != "review_finding_disposition_input":
-        raise ReviewError("review finding disposition input artifact_type must be review_finding_disposition_input")
-    entries = validate_list_field(value, "entries")
+def describe_json_value_for_diagnostic(value: Any) -> str:
+    if isinstance(value, str):
+        return "string " + json.dumps(value)
+    if isinstance(value, bool):
+        return "boolean " + ("true" if value else "false")
+    if value is None:
+        return "null"
+    if isinstance(value, (int, float)):
+        return "number " + json.dumps(value)
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def is_json_number_one(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and value == SCHEMA_VERSION
+
+
+def validate_disposition_input_header(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ReviewError("review finding disposition input must be a JSON object")
+    schema_version = value.get("schema_version")
+    if not is_json_number_one(schema_version):
+        raise ReviewError(
+            "review finding disposition input schema_version must be JSON number 1, got "
+            + describe_json_value_for_diagnostic(schema_version)
+        )
+    artifact_type = value.get("artifact_type")
+    if artifact_type != DISPOSITION_INPUT_ARTIFACT_NAME:
+        raise ReviewError(
+            "review finding disposition input artifact_type must be review_finding_disposition_input, got "
+            + describe_json_value_for_diagnostic(artifact_type)
+        )
+    return value
+
+
+def validate_review_finding_disposition_input_payload(
+    value: Any,
+    *,
+    allow_string_evidence_refs: bool,
+) -> list[dict[str, Any]]:
+    payload = validate_disposition_input_header(value)
+    entries = validate_list_field(payload, "entries")
     normalized: list[dict[str, Any]] = []
     finding_ids: set[str] = set()
     for index, entry in enumerate(entries):
@@ -3674,6 +3723,7 @@ def load_disposition_input(path: Path) -> list[dict[str, Any]]:
                 normalize_disposition_input_evidence_ref(
                     evidence_ref,
                     field=f"entries[{index}].evidence_refs[{evidence_index}]",
+                    allow_string_shorthand=allow_string_evidence_refs,
                 )
             )
         finding_id = str(entry.get("finding_id"))
@@ -3684,6 +3734,185 @@ def load_disposition_input(path: Path) -> list[dict[str, Any]]:
         normalized_entry["evidence_refs"] = normalized_evidence_refs
         normalized.append(normalized_entry)
     return normalized
+
+
+def load_disposition_input(path: Path) -> list[dict[str, Any]]:
+    return validate_review_finding_disposition_input_payload(
+        load_json(path),
+        allow_string_evidence_refs=True,
+    )
+
+
+def disposition_step_metadata_paths(artifact_dir: Path, step_id: str) -> list[tuple[int, Path]]:
+    step_dir = artifact_dir / step_id
+    resolved_step_dir = lane_contract.resolve_path_within(step_dir, artifact_dir)
+    if resolved_step_dir is None or not resolved_step_dir.is_dir():
+        return []
+    candidates: list[tuple[int, Path]] = []
+    try:
+        attempt_files = list(resolved_step_dir.glob("attempt-*.json"))
+    except OSError:
+        return []
+    for attempt_file in attempt_files:
+        attempt_index = lane_contract.attempt_index_from_name(attempt_file.name)
+        resolved_attempt_file = lane_contract.resolve_file_within(attempt_file, artifact_dir)
+        if attempt_index is not None and resolved_attempt_file is not None:
+            candidates.append((attempt_index, resolved_attempt_file))
+    return sorted(candidates, key=lambda item: item[0], reverse=True)
+
+
+def structured_disposition_input_path_from_step_metadata(
+    metadata_path: Path,
+    *,
+    artifact_dir: Path,
+    step_id: str,
+    artifact_name: str,
+    attempt_index: int,
+) -> Path | None:
+    try:
+        metadata = load_json(metadata_path)
+    except ReviewError:
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    artifact = lane_contract.step_artifact_payload(metadata)
+    if artifact.get("status") != "success" and artifact.get("state") != "succeeded":
+        return None
+    structured_output = artifact.get("structured_output")
+    if not isinstance(structured_output, dict):
+        return None
+    if structured_output.get("status") != "valid":
+        return None
+    if structured_output.get("artifact_name") != artifact_name:
+        return None
+    if structured_output.get("source_type") != "pi_tool_call":
+        return None
+    if structured_output.get("source_tool_name") != DISPOSITION_INPUT_TOOL_NAME:
+        return None
+    if structured_output.get("source_parameters_schema_path") != DISPOSITION_INPUT_PROVIDER_SCHEMA_PATH:
+        return None
+    path_text = structured_output.get("path")
+    if not isinstance(path_text, str) or not path_text:
+        return None
+    expected_path = lane_contract.resolve_file_within(
+        artifact_dir / step_id / f"attempt-{attempt_index}" / "structured" / f"{artifact_name}.json",
+        artifact_dir,
+    )
+    if expected_path is None:
+        return None
+    for candidate in lane_contract.structured_output_candidate_paths(path_text, artifact_dir):
+        resolved_candidate = lane_contract.resolve_file_within(candidate, artifact_dir)
+        if resolved_candidate is None or resolved_candidate != expected_path:
+            continue
+        if lane_contract.structured_output_ref_matches(
+            resolved_candidate,
+            artifact_dir,
+            structured_output,
+        ) and lane_contract.structured_output_sha_matches(resolved_candidate, structured_output):
+            return resolved_candidate
+    return None
+
+
+def resolve_structured_disposition_input_path(
+    *,
+    artifact_dir: Path,
+    step_id: str,
+    artifact_name: str,
+) -> Path:
+    for attempt_index, metadata_path in disposition_step_metadata_paths(artifact_dir, step_id):
+        resolved = structured_disposition_input_path_from_step_metadata(
+            metadata_path,
+            artifact_dir=artifact_dir,
+            step_id=step_id,
+            artifact_name=artifact_name,
+            attempt_index=attempt_index,
+        )
+        if resolved is not None:
+            return resolved
+    raise ReviewError(
+        "could not resolve runner-validated review finding disposition structured output "
+        f"for step {step_id!r} artifact {artifact_name!r} under {artifact_dir}"
+    )
+
+
+def unwrap_disposition_structured_output_artifact(
+    value: dict[str, Any],
+    *,
+    expected_step_id: str | None,
+    expected_artifact_name: str,
+) -> dict[str, Any]:
+    if value.get("artifact_type") != "structured_output":
+        return value
+
+    wrapper_errors: list[str] = []
+    if value.get("schema_version") != 1:
+        wrapper_errors.append("schema_version must be 1")
+    if value.get("format") != "json":
+        wrapper_errors.append("format must be json")
+    if expected_step_id and value.get("step_id") != expected_step_id:
+        wrapper_errors.append(f"step_id must be {expected_step_id}")
+    if value.get("artifact_name") != expected_artifact_name:
+        wrapper_errors.append(f"artifact_name must be {expected_artifact_name}")
+    if value.get("source_type") != "pi_tool_call":
+        wrapper_errors.append("source_type must be pi_tool_call")
+    if value.get("source_tool_name") != DISPOSITION_INPUT_TOOL_NAME:
+        wrapper_errors.append(f"source_tool_name must be {DISPOSITION_INPUT_TOOL_NAME}")
+
+    validation = value.get("validation")
+    if not isinstance(validation, dict):
+        wrapper_errors.append("validation must be an object")
+    else:
+        if validation.get("source_parameters_schema_path") != DISPOSITION_INPUT_PROVIDER_SCHEMA_PATH:
+            wrapper_errors.append(f"validation.source_parameters_schema_path must be {DISPOSITION_INPUT_PROVIDER_SCHEMA_PATH}")
+
+    payload = value.get("payload")
+    if not isinstance(payload, dict):
+        wrapper_errors.append("payload must be a JSON object")
+
+    if wrapper_errors:
+        raise ReviewError(
+            "invalid structured-output artifact for review finding disposition materialization: "
+            + "; ".join(wrapper_errors)
+        )
+    return payload
+
+
+def materialize_disposition_input_command(args: argparse.Namespace) -> None:
+    artifact_name = str(args.submission_artifact or DISPOSITION_INPUT_ARTIFACT_NAME).strip()
+    if artifact_name != DISPOSITION_INPUT_ARTIFACT_NAME:
+        raise ReviewError(f"review finding disposition structured artifact name must be {DISPOSITION_INPUT_ARTIFACT_NAME}")
+
+    submission_step = str(args.submission_step or "").strip()
+    if args.submission:
+        submission_path = Path(args.submission)
+    else:
+        if not args.artifact_dir or not submission_step:
+            raise ReviewError("provide --submission or both --artifact-dir and --submission-step")
+        submission_path = resolve_structured_disposition_input_path(
+            artifact_dir=Path(args.artifact_dir),
+            step_id=submission_step,
+            artifact_name=artifact_name,
+        )
+
+    value = load_json(submission_path)
+    if not isinstance(value, dict):
+        raise ReviewError("review finding disposition structured output must be a JSON object")
+    payload = unwrap_disposition_structured_output_artifact(
+        value,
+        expected_step_id=submission_step or None,
+        expected_artifact_name=artifact_name,
+    )
+    normalized_entries = validate_review_finding_disposition_input_payload(
+        payload,
+        allow_string_evidence_refs=False,
+    )
+    materialized = json_clone(payload)
+    materialized["entries"] = normalized_entries
+    output_path = Path(args.output)
+    write_json(output_path, materialized)
+    print("REVIEW_FINDING_DISPOSITION_INPUT=ok")
+    print(f"REVIEW_FINDING_DISPOSITION_INPUT_PATH={output_path}")
+    print(f"REVIEW_FINDING_DISPOSITION_STRUCTURED_OUTPUT_PATH={submission_path}")
 
 
 def finalize_dispositions_command(args: argparse.Namespace) -> None:
@@ -7214,7 +7443,7 @@ def validate_command(args: argparse.Namespace) -> None:
 
 
 def validate_structured_output_command(args: argparse.Namespace) -> None:
-    payload = sys.stdin.readline()
+    payload = sys.stdin.read()
     if not payload:
         raise ReviewError("structured output payload on stdin is required")
     try:
@@ -7225,6 +7454,12 @@ def validate_structured_output_command(args: argparse.Namespace) -> None:
         raise ReviewError("structured output payload must be a JSON object")
     if args.validator == "review_lane_draft":
         validate_review_lane_draft(value)
+        return
+    if args.validator == "review_finding_disposition_input":
+        validate_review_finding_disposition_input_payload(
+            value,
+            allow_string_evidence_refs=False,
+        )
         return
     raise ReviewError(f"unknown structured-output validator: {args.validator}")
 
@@ -7500,12 +7735,23 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_lane.add_argument("--output-dir", required=True, help="Directory for normalized lane result artifacts.")
     normalize_lane.set_defaults(func=normalize_lane_result_command)
 
+    materialize_disposition_input = subparsers.add_parser(
+        "materialize-disposition-input",
+        help="Materialize runner-validated review finding disposition structured output to the workflow temp input file.",
+    )
+    materialize_disposition_input.add_argument("--submission", help="Optional structured-output artifact path to materialize directly.")
+    materialize_disposition_input.add_argument("--artifact-dir", help="Run artifact directory used to resolve the successful structured-output attempt.")
+    materialize_disposition_input.add_argument("--submission-step", help="Agent step id that submitted the disposition structured output.")
+    materialize_disposition_input.add_argument("--submission-artifact", default=DISPOSITION_INPUT_ARTIFACT_NAME, help="Structured artifact name (default: review_finding_disposition_input).")
+    materialize_disposition_input.add_argument("--output", required=True, help="Output path for tmp/review-finding-dispositions.v1.json.")
+    materialize_disposition_input.set_defaults(func=materialize_disposition_input_command)
+
     finalize_dispositions = subparsers.add_parser(
         "finalize-dispositions",
         help="Validate final finding dispositions and materialize finalized review artifacts.",
     )
     finalize_dispositions.add_argument("--final-review", required=True, help="Synthesized final review artifact path.")
-    finalize_dispositions.add_argument("--disposition-input", required=True, help="Agent-authored disposition input artifact path.")
+    finalize_dispositions.add_argument("--disposition-input", required=True, help="Runner-validated disposition input artifact path.")
     finalize_dispositions.add_argument("--validation-artifact", required=True, help="Validation artifact path used as supporting evidence context.")
     finalize_dispositions.add_argument("--output-dir", required=True, help="Directory for finalized disposition artifacts.")
     finalize_dispositions.add_argument("--diff-file", help="Optional diff path retained as supporting evidence.")
