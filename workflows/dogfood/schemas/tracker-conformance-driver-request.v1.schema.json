@@ -12,7 +12,9 @@
       "enum": [
         "task_source.fetch_candidates",
         "task_source.refresh_by_refs",
-        "task_source.lookup_by_operator_ref"
+        "task_source.lookup_by_operator_ref",
+        "comments.post_or_update",
+        "state_transitions.transition"
       ]
     },
     "payload": {

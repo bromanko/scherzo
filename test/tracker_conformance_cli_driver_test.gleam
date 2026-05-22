@@ -157,6 +157,7 @@ fn fixture_manifest(
     profile: types.ProfileConfig(
       name: profile.TaskSourceProfile,
       capabilities: [profile.TaskSourceCapability],
+      requested_packs: [profile.TaskSourcePack],
       adapter_operations: [
         profile.TaskSourceFetchCandidates,
         profile.TaskSourceRefreshByRefs,

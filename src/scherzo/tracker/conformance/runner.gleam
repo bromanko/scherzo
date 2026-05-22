@@ -2,10 +2,13 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/task
 import scherzo/tracker/conformance
+import scherzo/tracker/conformance/comments_pack
 import scherzo/tracker/conformance/fixtures
 import scherzo/tracker/conformance/probes
 import scherzo/tracker/conformance/profile
 import scherzo/tracker/conformance/report
+import scherzo/tracker/conformance/routing_metadata_pack
+import scherzo/tracker/conformance/state_transition_pack
 import scherzo/tracker/conformance/task_source_pack
 import scherzo/tracker/conformance/types
 import simplifile
@@ -81,9 +84,61 @@ fn run_profile(
   fixture_tasks: List(task.Task),
 ) -> List(types.CaseResult) {
   let types.Manifest(profile: manifest_profile, ..) = manifest
-  let types.ProfileConfig(name: name, ..) = manifest_profile
+  let types.ProfileConfig(name: name, requested_packs: requested_packs, ..) =
+    manifest_profile
   case name {
-    profile.TaskSourceProfile -> task_source_pack.run(manifest, fixture_tasks)
+    profile.TaskSourceProfile ->
+      list_append(
+        run_requested_pack(requested_packs, profile.TaskSourcePack, fn() {
+          task_source_pack.run(manifest, fixture_tasks)
+        }),
+        list_append(
+          run_requested_pack(requested_packs, profile.CommentsPack, fn() {
+            comments_pack.run(manifest, fixture_tasks)
+          }),
+          list_append(
+            run_requested_pack(
+              requested_packs,
+              profile.StateTransitionsPack,
+              fn() { state_transition_pack.run(manifest, fixture_tasks) },
+            ),
+            run_requested_pack(
+              requested_packs,
+              profile.RoutingMetadataPack,
+              fn() { routing_metadata_pack.run(manifest, fixture_tasks) },
+            ),
+          ),
+        ),
+      )
+  }
+}
+
+fn run_requested_pack(
+  requested_packs: List(profile.PackName),
+  pack: profile.PackName,
+  runner: fn() -> List(types.CaseResult),
+) -> List(types.CaseResult) {
+  case pack_requested(requested_packs, pack) {
+    True -> runner()
+    False -> []
+  }
+}
+
+fn pack_requested(
+  requested_packs: List(profile.PackName),
+  target: profile.PackName,
+) -> Bool {
+  case requested_packs {
+    [] -> False
+    [requested_pack, ..rest] ->
+      requested_pack == target || pack_requested(rest, target)
+  }
+}
+
+fn list_append(left: List(a), right: List(a)) -> List(a) {
+  case left {
+    [] -> right
+    [first, ..rest] -> [first, ..list_append(rest, right)]
   }
 }
 

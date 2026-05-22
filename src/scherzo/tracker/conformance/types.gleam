@@ -72,6 +72,7 @@ pub type ProfileConfig {
   ProfileConfig(
     name: profile.ProfileName,
     capabilities: List(profile.Capability),
+    requested_packs: List(profile.PackName),
     adapter_operations: List(profile.AdapterOperation),
   )
 }
@@ -118,6 +119,8 @@ pub type RequestPayload {
   FetchCandidatesPayload(task_search: TaskSearchPayload)
   RefreshByRefsPayload(refs: List(task.TaskRef))
   LookupByOperatorRefPayload(operator_ref: String)
+  CommentsPostOrUpdatePayload(comment: CommentRequestPayload)
+  StateTransitionPayload(transition: StateTransitionRequestPayload)
 }
 
 pub type TaskSearchPayload {
@@ -127,6 +130,28 @@ pub type TaskSearchPayload {
     terminal_states: List(String),
     workflow_labels: List(String),
     limit: Int,
+  )
+}
+
+pub type CommentRequestPayload {
+  CommentRequestPayload(
+    task: task.TaskRef,
+    body: String,
+    mode: CommentWriteMode,
+  )
+}
+
+pub type CommentWriteMode {
+  CreateOnlyComment
+  UpdateExistingComment(comment_id: String, allow_create_fallback: Bool)
+}
+
+pub type StateTransitionRequestPayload {
+  StateTransitionRequestPayload(
+    task: task.TaskRef,
+    target_state_id: Option(String),
+    target_state_name: String,
+    reason: String,
   )
 }
 
@@ -146,6 +171,21 @@ pub type DriverResponse {
 pub type ResponseResult {
   TaskListResult(tasks: List(task.Task))
   OptionalTaskResult(task: Option(task.Task))
+  CommentResult(comment: CommentReceiptPayload)
+  StateTransitionResult(transition: StateTransitionReceiptPayload)
+}
+
+pub type CommentReceiptPayload {
+  CommentReceiptPayload(
+    id: String,
+    task: task.TaskRef,
+    url: Option(String),
+    created: Bool,
+  )
+}
+
+pub type StateTransitionReceiptPayload {
+  StateTransitionReceiptPayload(task: task.TaskRef, state: task.TaskState)
 }
 
 pub type DriverError {

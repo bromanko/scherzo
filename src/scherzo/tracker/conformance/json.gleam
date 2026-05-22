@@ -6,8 +6,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/task
-import scherzo/tracker/conformance/fixture_manifest
-import scherzo/tracker/conformance/http_manifest
+import scherzo/tracker/conformance/manifest_support
+import scherzo/tracker/conformance/manifest_validation
 import scherzo/tracker/conformance/profile
 import scherzo/tracker/conformance/types
 
@@ -127,6 +127,7 @@ fn validate_manifest(
   let types.ProfileConfig(
     name: name,
     capabilities: capabilities,
+    requested_packs: requested_packs,
     adapter_operations: operations,
   ) = manifest_profile
   let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
@@ -141,18 +142,12 @@ fn validate_manifest(
   })
 
   use Nil <- result.try(validate_driver(driver))
-
-  use Nil <- result.try(case name == profile.TaskSourceProfile {
-    True -> Ok(Nil)
-    False ->
-      Error(types.ManifestError(
-        "unknown_profile",
-        "profile.name must be task_source",
-      ))
-  })
-
-  use Nil <- result.try(validate_capabilities(capabilities))
-  use Nil <- result.try(validate_operations(name, operations))
+  use Nil <- result.try(manifest_validation.validate_profile(
+    name,
+    capabilities,
+    requested_packs,
+    operations,
+  ))
   use Nil <- result.try(case valid_repository_relative_path(task_file) {
     True -> Ok(Nil)
     False ->
@@ -161,7 +156,7 @@ fn validate_manifest(
         "fixtures.task_file must be repository-relative and confined to the repository",
       ))
   })
-  use Nil <- result.try(fixture_manifest.validate_tasks(
+  use Nil <- result.try(manifest_support.validate_tasks(
     fixture_tasks,
     adapter_kind,
   ))
@@ -185,30 +180,7 @@ fn validate_driver(
 fn validate_http_endpoint(
   endpoint: types.HttpEndpointConfig,
 ) -> Result(Nil, types.ManifestError) {
-  http_manifest.validate_endpoint(endpoint)
-}
-
-fn validate_capabilities(
-  capabilities: List(profile.Capability),
-) -> Result(Nil, types.ManifestError) {
-  case capabilities {
-    [] ->
-      Error(types.ManifestError(
-        "missing_capability",
-        "profile.capabilities must include task_source",
-      ))
-    [profile.TaskSourceCapability] -> Ok(Nil)
-    [profile.UnknownCapability(name), ..] ->
-      Error(types.ManifestError(
-        "unknown_capability",
-        "profile.capabilities contains an unknown capability: " <> name,
-      ))
-    _ ->
-      Error(types.ManifestError(
-        "unknown_capability",
-        "profile.capabilities currently supports only task_source",
-      ))
-  }
+  manifest_support.validate_endpoint(endpoint)
 }
 
 fn validate_driver_timeout(
@@ -222,120 +194,6 @@ fn validate_driver_timeout(
         "driver.timeout_ms must be between 1 and "
           <> int.to_string(types.max_driver_timeout_ms),
       ))
-  }
-}
-
-fn validate_operations(
-  name: profile.ProfileName,
-  operations: List(profile.AdapterOperation),
-) -> Result(Nil, types.ManifestError) {
-  case operations {
-    [] ->
-      Error(types.ManifestError(
-        "missing_operation",
-        "profile.adapter_operations must list the required adapter operations",
-      ))
-    _ -> {
-      use Nil <- result.try(validate_operation_list(name, operations))
-      use Nil <- result.try(validate_unique_operations(operations))
-      validate_required_operations(name, operations)
-    }
-  }
-}
-
-fn validate_operation_list(
-  name: profile.ProfileName,
-  operations: List(profile.AdapterOperation),
-) -> Result(Nil, types.ManifestError) {
-  case operations {
-    [] -> Ok(Nil)
-    [operation, ..rest] ->
-      case operation {
-        profile.FixtureNamespaceOperation(value) ->
-          Error(types.ManifestError(
-            "fixture_operation_disallowed",
-            "profile.adapter_operations must not include fixture/probe/hook operations: "
-              <> value,
-          ))
-        profile.UnknownAdapterOperation(value) ->
-          Error(types.ManifestError(
-            "unknown_operation",
-            "profile.adapter_operations contains an unknown operation: "
-              <> value,
-          ))
-        _ ->
-          case profile.operation_is_allowed_for_profile(name, operation) {
-            True -> validate_operation_list(name, rest)
-            False ->
-              Error(types.ManifestError(
-                "unknown_operation",
-                "profile.adapter_operations contains an unsupported adapter operation",
-              ))
-          }
-      }
-  }
-}
-
-fn validate_unique_operations(
-  operations: List(profile.AdapterOperation),
-) -> Result(Nil, types.ManifestError) {
-  case operations {
-    [] -> Ok(Nil)
-    [operation, ..rest] ->
-      case operation_in_list(rest, operation) {
-        True ->
-          Error(types.ManifestError(
-            "duplicate_operation",
-            "profile.adapter_operations must not contain duplicate operation: "
-              <> profile.operation_to_string(operation),
-          ))
-        False -> validate_unique_operations(rest)
-      }
-  }
-}
-
-fn validate_required_operations(
-  name: profile.ProfileName,
-  operations: List(profile.AdapterOperation),
-) -> Result(Nil, types.ManifestError) {
-  case
-    missing_required_operation(
-      profile.profile_default_operations(name),
-      operations,
-    )
-  {
-    None -> Ok(Nil)
-    Some(operation) ->
-      Error(types.ManifestError(
-        "missing_operation",
-        "profile.adapter_operations must include "
-          <> profile.operation_to_string(operation),
-      ))
-  }
-}
-
-fn missing_required_operation(
-  required: List(profile.AdapterOperation),
-  operations: List(profile.AdapterOperation),
-) -> Option(profile.AdapterOperation) {
-  case required {
-    [] -> None
-    [operation, ..rest] ->
-      case operation_in_list(operations, operation) {
-        True -> missing_required_operation(rest, operations)
-        False -> Some(operation)
-      }
-  }
-}
-
-fn operation_in_list(
-  operations: List(profile.AdapterOperation),
-  target: profile.AdapterOperation,
-) -> Bool {
-  case operations {
-    [] -> False
-    [operation, ..rest] ->
-      operation == target || operation_in_list(rest, target)
   }
 }
 
@@ -385,7 +243,7 @@ fn driver_to_json(driver: types.DriverConfig) -> json.Json {
           "transport",
           json.string(driver_transport_to_string(types.HttpTransport)),
         ),
-        #("endpoint", http_manifest.endpoint_to_json(endpoint)),
+        #("endpoint", manifest_support.endpoint_to_json(endpoint)),
         #("timeout_ms", json.int(timeout_ms)),
       ])
   }
@@ -403,7 +261,10 @@ fn driver_decoder() -> decode.Decoder(types.DriverConfig) {
       ))
     }
     types.HttpTransport -> {
-      use endpoint <- decode.field("endpoint", http_manifest.endpoint_decoder())
+      use endpoint <- decode.field(
+        "endpoint",
+        manifest_support.endpoint_decoder(),
+      )
       use timeout_ms <- decode.field("timeout_ms", decode.int)
       decode.success(types.HttpDriverConfig(
         endpoint: endpoint,
@@ -476,6 +337,7 @@ fn profile_config_to_json(manifest_profile: types.ProfileConfig) -> json.Json {
   let types.ProfileConfig(
     name: name,
     capabilities: capabilities,
+    requested_packs: requested_packs,
     adapter_operations: operations,
   ) = manifest_profile
   json.object([
@@ -484,6 +346,12 @@ fn profile_config_to_json(manifest_profile: types.ProfileConfig) -> json.Json {
       "capabilities",
       json.array(capabilities, of: fn(capability) {
         capability |> profile.capability_to_string |> json.string
+      }),
+    ),
+    #(
+      "requested_packs",
+      json.array(requested_packs, of: fn(requested_pack) {
+        requested_pack |> profile.pack_name_to_string |> json.string
       }),
     ),
     #(
@@ -501,6 +369,11 @@ fn profile_config_decoder() -> decode.Decoder(types.ProfileConfig) {
     "capabilities",
     decode.list(capability_decoder()),
   )
+  use requested_packs <- decode.optional_field(
+    "requested_packs",
+    profile.default_requested_packs(),
+    decode.list(requested_pack_decoder()),
+  )
   use operations <- decode.field(
     "adapter_operations",
     adapter_operations_decoder(),
@@ -508,6 +381,7 @@ fn profile_config_decoder() -> decode.Decoder(types.ProfileConfig) {
   decode.success(types.ProfileConfig(
     name: name,
     capabilities: capabilities,
+    requested_packs: requested_packs,
     adapter_operations: operations,
   ))
 }
@@ -526,6 +400,11 @@ fn capability_decoder() -> decode.Decoder(profile.Capability) {
   decode.success(profile.capability_from_string(value))
 }
 
+fn requested_pack_decoder() -> decode.Decoder(profile.PackName) {
+  use value <- decode.then(decode.string)
+  decode.success(profile.pack_name_from_string(value))
+}
+
 fn adapter_operations_decoder() -> decode.Decoder(
   List(profile.AdapterOperation),
 ) {
@@ -537,7 +416,7 @@ fn fixtures_to_json(fixtures: types.FixtureConfig) -> json.Json {
   let types.FixtureConfig(task_file: task_file, tasks: tasks) = fixtures
   json.object([
     #("task_file", json.string(task_file)),
-    #("tasks", fixture_manifest.tasks_to_json(tasks)),
+    #("tasks", manifest_support.tasks_to_json(tasks)),
   ])
 }
 
@@ -546,7 +425,7 @@ fn fixtures_decoder() -> decode.Decoder(types.FixtureConfig) {
   use tasks <- decode.optional_field(
     "tasks",
     [],
-    fixture_manifest.tasks_decoder(),
+    manifest_support.tasks_decoder(),
   )
   decode.success(types.FixtureConfig(task_file: task_file, tasks: tasks))
 }
@@ -621,6 +500,10 @@ fn request_payload_to_json(payload: types.RequestPayload) -> json.Json {
       json.object([#("refs", json.array(refs, of: task_ref_to_json))])
     types.LookupByOperatorRefPayload(operator_ref: operator_ref) ->
       json.object([#("operator_ref", json.string(operator_ref))])
+    types.CommentsPostOrUpdatePayload(comment: comment) ->
+      manifest_support.comment_request_to_json(comment)
+    types.StateTransitionPayload(transition: transition) ->
+      manifest_support.state_transition_request_to_json(transition)
   }
 }
 
@@ -649,6 +532,10 @@ fn request_payload_decoder(
     profile.TaskSourceRefreshByRefs -> refresh_by_refs_payload_decoder()
     profile.TaskSourceLookupByOperatorRef ->
       lookup_by_operator_ref_payload_decoder()
+    profile.CommentsPostOrUpdate ->
+      manifest_support.comment_request_payload_decoder()
+    profile.StateTransitionsTransition ->
+      manifest_support.state_transition_payload_decoder()
     _ ->
       decode.failure(
         types.FetchCandidatesPayload(task_search: types.TaskSearchPayload(
@@ -729,6 +616,17 @@ fn response_result_to_json(result_value: types.ResponseResult) -> json.Json {
       json.object([#("tasks", json.array(tasks, of: task_to_json))])
     types.OptionalTaskResult(task: maybe_task) ->
       json.object([#("task", option_json(maybe_task, task_to_json))])
+    types.CommentResult(comment: comment) ->
+      json.object([
+        #("comment", manifest_support.comment_receipt_to_json(comment)),
+      ])
+    types.StateTransitionResult(transition: transition) ->
+      json.object([
+        #(
+          "transition",
+          manifest_support.state_transition_receipt_to_json(transition),
+        ),
+      ])
   }
 }
 
@@ -767,10 +665,26 @@ fn response_result_decoder() -> decode.Decoder(types.ResponseResult) {
     None,
     decode.optional(task_decoder()),
   )
-  case tasks, maybe_task {
-    Some(tasks), _ -> decode.success(types.TaskListResult(tasks: tasks))
-    None, task_value ->
-      decode.success(types.OptionalTaskResult(task: task_value))
+  use comment <- decode.optional_field(
+    "comment",
+    None,
+    decode.optional(manifest_support.comment_receipt_decoder()),
+  )
+  use transition <- decode.optional_field(
+    "transition",
+    None,
+    decode.optional(manifest_support.state_transition_receipt_decoder()),
+  )
+  case tasks, maybe_task, comment, transition {
+    Some(tasks), _, _, _ -> decode.success(types.TaskListResult(tasks: tasks))
+    None, Some(task_value), _, _ ->
+      decode.success(types.OptionalTaskResult(task: Some(task_value)))
+    None, None, Some(comment_value), _ ->
+      decode.success(types.CommentResult(comment: comment_value))
+    None, None, None, Some(transition_value) ->
+      decode.success(types.StateTransitionResult(transition: transition_value))
+    None, None, None, None ->
+      decode.success(types.OptionalTaskResult(task: None))
   }
 }
 
@@ -841,6 +755,8 @@ fn operation_decoder() -> decode.Decoder(profile.AdapterOperation) {
     profile.TaskSourceFetchCandidates -> decode.success(operation)
     profile.TaskSourceRefreshByRefs -> decode.success(operation)
     profile.TaskSourceLookupByOperatorRef -> decode.success(operation)
+    profile.CommentsPostOrUpdate -> decode.success(operation)
+    profile.StateTransitionsTransition -> decode.success(operation)
     _ ->
       decode.failure(
         profile.TaskSourceFetchCandidates,
