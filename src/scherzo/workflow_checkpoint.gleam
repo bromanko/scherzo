@@ -55,6 +55,58 @@ pub type StructuredArtifactWritten {
   )
 }
 
+pub type RecoveryArtifactWrite {
+  RecoveryArtifactWrite(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    failed_attempt_index: Int,
+    recovery_attempt_number: Int,
+    artifact_name: String,
+    payload_json: String,
+  )
+}
+
+pub type RecoveryArtifactWritten {
+  RecoveryArtifactWritten(
+    ref: String,
+    path: String,
+    uri: String,
+    display_path: String,
+    local_path: Option(String),
+    sha256: String,
+    bytes: Int,
+  )
+}
+
+pub type StepRecoveryStarted {
+  StepRecoveryStarted(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    failed_attempt_index: Int,
+    recovery_attempt_number: Int,
+    recovery_session_id: String,
+    model: Option(String),
+    prompt_ref: String,
+  )
+}
+
+pub type StepRecoveryFinished {
+  StepRecoveryFinished(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    failed_attempt_index: Int,
+    recovery_attempt_number: Int,
+    recovery_session_id: String,
+    result: String,
+    summary: String,
+    reason: String,
+    retry_attempt_index: Option(Int),
+  )
+}
+
 pub type WorkflowFinished {
   WorkflowFinished(
     run_id: String,
@@ -119,6 +171,8 @@ pub type Writer {
       Result(ArtifactWritten, CheckpointError),
     write_structured_output_artifact: fn(StructuredOutputWrite) ->
       Result(StructuredArtifactWritten, CheckpointError),
+    write_recovery_artifact: fn(RecoveryArtifactWrite) ->
+      Result(RecoveryArtifactWritten, CheckpointError),
     read_artifact: fn(String) -> Result(String, CheckpointError),
     artifact_location: fn(String) ->
       Result(artifact_store.ArtifactLocation, CheckpointError),
@@ -143,6 +197,10 @@ pub type Writer {
     write_workflow_output_blob: fn(WorkflowOutputBlobWrite) ->
       Result(ArtifactWritten, CheckpointError),
     step_finished: fn(StepFinished, ArtifactWritten) ->
+      Result(Nil, CheckpointError),
+    step_recovery_started: fn(StepRecoveryStarted) ->
+      Result(Nil, CheckpointError),
+    step_recovery_finished: fn(StepRecoveryFinished) ->
       Result(Nil, CheckpointError),
     step_interrupted: fn(String, String, String, Int, String) ->
       Result(Nil, CheckpointError),
@@ -181,6 +239,25 @@ pub fn noop_writer() -> Writer {
         uri: "artifact://noop/structured-output",
         display_path: "noop-structured-output-artifact.json",
         local_path: Some("noop-structured-output-artifact.json"),
+        sha256: "noop",
+        bytes: 0,
+      ))
+    },
+    write_recovery_artifact: fn(write) {
+      Ok(RecoveryArtifactWritten(
+        ref: "noop/"
+          <> workflow_identity.step_component(write.step_id)
+          <> "/attempt-"
+          <> int.to_string(write.failed_attempt_index)
+          <> "/recovery-"
+          <> int.to_string(write.recovery_attempt_number)
+          <> "/"
+          <> workflow_identity.safe_component(write.artifact_name, "artifact")
+          <> ".json",
+        path: "noop-recovery-artifact.json",
+        uri: "artifact://noop/recovery",
+        display_path: "noop-recovery-artifact.json",
+        local_path: Some("noop-recovery-artifact.json"),
         sha256: "noop",
         bytes: 0,
       ))
@@ -254,6 +331,8 @@ pub fn noop_writer() -> Writer {
       ))
     },
     step_finished: fn(_, _) { Ok(Nil) },
+    step_recovery_started: fn(_) { Ok(Nil) },
+    step_recovery_finished: fn(_) { Ok(Nil) },
     step_interrupted: fn(_, _, _, _, _) { Ok(Nil) },
   )
 }
@@ -389,6 +468,31 @@ pub fn ledger_writer_with_artifact_store(
       )
       |> result.map(fn(ref) {
         StructuredArtifactWritten(
+          ref: ref.ref,
+          path: ref.path,
+          uri: ref.uri,
+          display_path: ref.display_path,
+          local_path: ref.local_path,
+          sha256: ref.sha256,
+          bytes: ref.bytes,
+        )
+      })
+      |> result.map_error(fn(error) {
+        CheckpointArtifactFailed(describe_artifact_error(error))
+      })
+    },
+    write_recovery_artifact: fn(write) {
+      artifact_store.write_recovery_artifact_json(
+        store,
+        write.run_id,
+        write.step_id,
+        write.failed_attempt_index,
+        write.recovery_attempt_number,
+        write.artifact_name,
+        write.payload_json,
+      )
+      |> result.map(fn(ref) {
+        RecoveryArtifactWritten(
           ref: ref.ref,
           path: ref.path,
           uri: ref.uri,
@@ -614,6 +718,40 @@ pub fn ledger_writer_with_artifact_store(
           finished.workspace_path,
           finished.token_total,
           finished.turns,
+        ),
+      )
+    },
+    step_recovery_started: fn(started) {
+      append_body(
+        workspace_root,
+        now_ms,
+        record.WorkflowStepRecoveryStarted(
+          started.run_id,
+          started.workflow_id,
+          started.step_id,
+          started.failed_attempt_index,
+          started.recovery_attempt_number,
+          started.recovery_session_id,
+          started.model,
+          started.prompt_ref,
+        ),
+      )
+    },
+    step_recovery_finished: fn(finished) {
+      append_body(
+        workspace_root,
+        now_ms,
+        record.WorkflowStepRecoveryFinished(
+          finished.run_id,
+          finished.workflow_id,
+          finished.step_id,
+          finished.failed_attempt_index,
+          finished.recovery_attempt_number,
+          finished.recovery_session_id,
+          finished.result,
+          finished.summary,
+          finished.reason,
+          finished.retry_attempt_index,
         ),
       )
     },

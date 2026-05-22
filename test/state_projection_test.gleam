@@ -212,6 +212,51 @@ pub fn legacy_projection_snapshot_without_workstreams_decodes_test() {
 
   let assert Ok(decoded) = projection.decode_string(legacy_snapshot)
   assert decoded.workstreams == dict.new()
+  assert decoded.step_recoveries == dict.new()
+}
+
+pub fn projection_records_step_recoveries_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "recovery-started",
+        1000,
+        record.WorkflowStepRecoveryStarted(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          step_id: "implement",
+          failed_attempt_index: 1,
+          recovery_attempt_number: 1,
+          recovery_session_id: "recover-1",
+          model: Some("gpt-5"),
+          prompt_ref: ".scherzo/workflows/prompts/recover_failed_step.md",
+        ),
+      ),
+      record.with_id(
+        "recovery-finished",
+        1010,
+        record.WorkflowStepRecoveryFinished(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          step_id: "implement",
+          failed_attempt_index: 1,
+          recovery_attempt_number: 1,
+          recovery_session_id: "recover-1",
+          result: "retry_requested",
+          summary: "Fixed tests",
+          reason: "Ready for retry",
+          retry_attempt_index: Some(2),
+        ),
+      ),
+    ])
+
+  let key = projection.step_recovery_key("run-1", "implement", 1, 1)
+  let assert Ok(projection.StepRecoveryFinishedStatus(
+    result: "retry_requested",
+    retry_attempt_index: Some(2),
+    finished_at_ms: 1010,
+    ..,
+  )) = dict.get(folded.step_recoveries, key)
 }
 
 pub fn projection_snapshot_with_partial_workstream_task_ref_fails_test() {

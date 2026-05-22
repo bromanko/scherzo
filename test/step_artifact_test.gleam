@@ -474,6 +474,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
       workspace_profile: None,
       workspace_capabilities: [],
       max_parallel_steps: 2,
+      recover: None,
       workstream_phase: None,
       steps: [
         workflow_dag.WorkflowStep(
@@ -486,6 +487,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
           workspace: workflow_dag.WorkspaceRef(name: "main", from: None),
           on_failure: workflow_dag.FailWorkflow,
           model_settings: model_config.default_settings(),
+          recover: None,
         ),
         workflow_dag.WorkflowStep(
           id: "final_test",
@@ -494,6 +496,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
           workspace: workflow_dag.WorkspaceRef(name: "main", from: None),
           on_failure: workflow_dag.FailWorkflow,
           model_settings: model_config.default_settings(),
+          recover: None,
         ),
       ],
       contract: None,

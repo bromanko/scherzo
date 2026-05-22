@@ -5,6 +5,7 @@ import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/runtime_bundle
 import scherzo/step_artifact
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -222,6 +223,47 @@ pub fn workflow_fingerprint_changes_for_semantic_fields_test() {
     != workflow_fingerprint.for_dag("implementation", changed_command)
   assert base_fingerprint
     != workflow_fingerprint.for_dag("implementation", changed_parallelism)
+}
+
+pub fn workflow_fingerprint_changes_for_recover_config_test() {
+  let base =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let recovered =
+    parse(
+      "version: 1\nid: implementation\nrecover:\n  attempts: 2\n  prompt: prompts/recover.md\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+
+  assert workflow_fingerprint.for_dag("implementation", base)
+    != workflow_fingerprint.for_dag("implementation", recovered)
+  assert string.contains(
+    workflow_fingerprint.canonical_input(recovered),
+    "recover",
+  )
+}
+
+pub fn workflow_fingerprint_changes_for_resolved_recover_prompt_contents_test() {
+  let dir = "test/tmp/workflow-fingerprint-recover-prompts"
+  let workflow_path = dir <> "/workflow.yaml"
+  let prompt_path = dir <> "/prompts/recover.md"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_path,
+      "version: 1\nid: implementation\nrecover:\n  prompt: prompts/recover.md\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n",
+    )
+  let assert Ok(Nil) = simplifile.write(prompt_path, "Recover v1")
+  let assert Ok(first) = runtime_bundle.load_workflow_file(workflow_path)
+  let first_fingerprint = workflow_fingerprint.for_dag("implementation", first)
+
+  let assert Ok(Nil) = simplifile.write(prompt_path, "Recover v2")
+  let assert Ok(second) = runtime_bundle.load_workflow_file(workflow_path)
+  let second_fingerprint =
+    workflow_fingerprint.for_dag("implementation", second)
+
+  assert first_fingerprint != second_fingerprint
 }
 
 pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {

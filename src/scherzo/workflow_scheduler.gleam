@@ -86,6 +86,13 @@ pub fn mark_running(state: SchedulerState, step_id: String) -> SchedulerState {
   )
 }
 
+pub fn mark_pending(state: SchedulerState, step_id: String) -> SchedulerState {
+  SchedulerState(
+    ..state,
+    statuses: dict.insert(state.statuses, step_id, Pending),
+  )
+}
+
 pub fn mark_finished(
   state: SchedulerState,
   step_id: String,
