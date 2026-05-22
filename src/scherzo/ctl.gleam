@@ -9,12 +9,12 @@ import scherzo/control/client
 import scherzo/control/command as control_command
 import scherzo/control/file
 import scherzo/control/protocol
+import scherzo/ctl/schedule_state
+import scherzo/ctl/workstream as ctl_workstream
 import scherzo/path
-import scherzo/runtime_bundle
 import scherzo/schedule_doctor
 import scherzo/session/event
 import scherzo/session/reason as session_reason
-import scherzo/state/ledger
 import scherzo/state/local_artifacts
 import scherzo/state/projection
 import scherzo/terminal/render
@@ -93,6 +93,7 @@ pub type Command {
     json: Bool,
     job_id: String,
   )
+  Workstream(ctl_workstream.Command)
   StateStatus(root: String, json: Bool)
   StateArchiveOld(root: String, json: Bool, yes: Bool)
   StateDiscardOld(root: String, json: Bool, yes: Bool)
@@ -210,7 +211,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed workflow step without redispatching the whole task.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed workflow step without redispatching the whole task.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -439,6 +440,13 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
       Error(UsageError(
         "schedules usage: schedules status [job] | history <job> | logs <job> --last | doctor <job> | run <job> --now",
       ))
+    "workstream", args ->
+      case
+        ctl_workstream.parse(args, flags.control_file, flags.root, flags.json)
+      {
+        Ok(command) -> Ok(Workstream(command))
+        Error(message) -> Error(UsageError(message))
+      }
     "state", ["status"] -> {
       use root <- try_ctl(required_root(flags))
       Ok(StateStatus(root, flags.json))
@@ -690,6 +698,11 @@ pub fn run_with_deps(
       )
     SchedulesDoctor(control_path, root, json, job_id) ->
       run_schedules_doctor(control_path, root, json, job_id, output)
+    Workstream(command) ->
+      case ctl_workstream.run(command, output.line, output.inline) {
+        Ok(Nil) -> Ok(Nil)
+        Error(#(code, message)) -> Error(Failed(code, message))
+      }
     StateStatus(root, json) -> run_state_status(root, json, output)
     StateArchiveOld(root, json, yes) ->
       run_state_archive_old(root, json, yes, output)
@@ -791,7 +804,7 @@ fn run_schedules_status(
   output: Output,
 ) -> Result(Nil, Error) {
   use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
-  use projected <- try_ctl(load_schedule_projection(root))
+  use projected <- try_ctl(schedule_state.load_projection(root, Failed))
   let statuses = case job_id {
     None -> projection.scheduled_statuses(projected)
     Some(id) ->
@@ -821,7 +834,7 @@ fn run_schedules_history(
   output: Output,
 ) -> Result(Nil, Error) {
   use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
-  use projected <- try_ctl(load_schedule_projection(root))
+  use projected <- try_ctl(schedule_state.load_projection(root, Failed))
   let status = projection.scheduled_status_for(projected, job_id)
   case status {
     Error(_) -> Error(Failed("schedule_not_found", "scheduled job not found"))
@@ -846,7 +859,7 @@ fn run_schedules_logs(
   output: Output,
 ) -> Result(Nil, Error) {
   use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
-  use projected <- try_ctl(load_schedule_projection(root))
+  use projected <- try_ctl(schedule_state.load_projection(root, Failed))
   use status <- try_ctl(schedule_status_or_error(projected, job_id))
   use run <- try_ctl(current_scheduled_run_or_error(status))
   case json_output {
@@ -905,7 +918,8 @@ fn build_schedule_doctor_report(
   job_id: String,
 ) -> ScheduleDoctorReport {
   let config_path = schedule_config_path(explicit_root)
-  let config_diagnostics = schedule_config_diagnostics(config_path, job_id)
+  let config_diagnostics =
+    schedule_state.config_diagnostics(config_path, job_id)
   let projection_diagnostics =
     schedule_projection_diagnostics(control_path, explicit_root, job_id)
   ScheduleDoctorReport(
@@ -913,49 +927,6 @@ fn build_schedule_doctor_report(
     config_path: config_path,
     diagnostics: list.append(config_diagnostics, projection_diagnostics),
   )
-}
-
-fn schedule_config_diagnostics(
-  config_path: Option(String),
-  job_id: String,
-) -> List(schedule_doctor.Diagnostic) {
-  case config_path {
-    None -> [
-      schedule_doctor.Diagnostic(
-        name: "config_load",
-        severity: schedule_doctor.Fail,
-        code: "schedule_config_missing",
-        message: "could not find scherzo.yaml for schedule doctor; run from the config directory or pass --root pointing at a directory that contains scherzo.yaml",
-        fields: [#("job_id", job_id)],
-      ),
-    ]
-    Some(path) ->
-      case runtime_bundle.load(Some(path)) {
-        Error(runtime_bundle.BundleError(code, message)) -> [
-          schedule_doctor.Diagnostic(
-            name: "config_load",
-            severity: schedule_doctor.Fail,
-            code: code,
-            message: message,
-            fields: [#("job_id", job_id), #("config_path", path)],
-          ),
-        ]
-        Ok(bundle) -> {
-          let schedule_doctor.Report(_, diagnostics) =
-            schedule_doctor.inspect_bundle(bundle, Some(job_id))
-          [
-            schedule_doctor.Diagnostic(
-              name: "config_load",
-              severity: schedule_doctor.Pass,
-              code: "ok",
-              message: "scherzo.yaml and routed workflow DAGs loaded successfully",
-              fields: [#("config_path", path), #("job_id", job_id)],
-            ),
-            ..diagnostics
-          ]
-        }
-      }
-  }
 }
 
 fn schedule_projection_diagnostics(
@@ -966,7 +937,7 @@ fn schedule_projection_diagnostics(
   case schedule_workspace_root(control_path, explicit_root) {
     Error(err) -> [workspace_root_unavailable_diagnostic(job_id, err)]
     Ok(root) ->
-      case load_schedule_projection(root) {
+      case schedule_state.load_projection(root, Failed) {
         Error(err) -> [projection_load_failed_diagnostic(root, job_id, err)]
         Ok(projected) ->
           case projection.scheduled_status_for(projected, job_id) {
@@ -1284,21 +1255,6 @@ fn schedule_workspace_root(
       use control_file <- try_ctl(load_control_file(control_path))
       Ok(control_file.workspace_root)
     }
-  }
-}
-
-fn load_schedule_projection(
-  root: String,
-) -> Result(projection.Projection, Error) {
-  case ledger.path_for_workspace_root(root) {
-    Error(_) ->
-      Error(Failed("ledger_path_failed", "could not resolve ledger path"))
-    Ok(ledger_path) ->
-      case ledger.load_projection(ledger_path) {
-        Ok(projected) -> Ok(projected)
-        Error(_) ->
-          Error(Failed("ledger_load_failed", "could not load local ledger"))
-      }
   }
 }
 
