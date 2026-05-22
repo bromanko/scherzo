@@ -55,6 +55,13 @@ REQUIRED_REVIEW_DOC_SECTIONS = [
     "Rollout, Recovery, and Idempotence",
     "Open Questions and Clarifications Needed",
 ]
+REVIEW_DOC_REQUIRED_SECTION_REPAIR_HINT = (
+    "Required review-doc sections are fail-closed: keep every required level-2 heading "
+    "and write meaningful content or an explicit sentinel such as `None.` / `No open questions.`. "
+    "Operator action for validate_review_doc_after_review: retry or rerun incorporate_review when "
+    "the agent can regenerate the section; otherwise repair the review doc before materializing the "
+    "bundle, or move the issue back to Todo if the missing content is unknown."
+)
 FORBIDDEN_REVIEW_DOC_SECTIONS = {
     "Concrete Steps",
     "Testing and Falsifiability",
@@ -424,6 +431,29 @@ def markdown_sections(markdown: str) -> dict[str, str]:
     return {title: "\n".join(lines).strip() for title, lines in sections.items()}
 
 
+def review_doc_section_has_meaningful_content(markdown: str) -> bool:
+    visible = re.sub(r"<!--.*?-->", " ", markdown, flags=re.DOTALL)
+    for raw in visible.splitlines():
+        line = raw.strip()
+        line = re.sub(r"^>\s*", "", line)
+        line = re.sub(r"^[-*+]\s+(?:\[[ xX-]\]\s*)?", "", line)
+        line = re.sub(r"^\d+[.)](?:\s+(?:\[[ xX-]\]\s*)?)?", "", line)
+        line = re.sub(r"^\[[ xX-]\]\s*", "", line)
+        line = re.sub(r"`([^`]*)`", r"\1", line)
+        line = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", line)
+        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+        line = re.sub(r"<[^>]+>", " ", line)
+        line = re.sub(r"[*_~`#\\|<>{}=:+.,;!?()[\]/-]+", " ", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if re.search(r"[A-Za-z0-9]", line):
+            return True
+    return False
+
+
+def fail_review_doc_required_section(message: str, *, code: str) -> None:
+    fail(f"{message}\n{REVIEW_DOC_REQUIRED_SECTION_REPAIR_HINT}", code=code)
+
+
 def strip_markdown_code_blocks(markdown: str) -> str:
     lines: list[str] = []
     in_fence = False
@@ -733,9 +763,18 @@ def validate_review_doc_path(path: Path, *, allow_fixture: bool = True, target: 
     if not any(level == 1 for level, _ in all_headings):
         fail("review doc must contain a level-1 title")
     section_titles = {title for level, title in all_headings if level == 2}
+    sections = markdown_sections(text)
     for section in REQUIRED_REVIEW_DOC_SECTIONS:
         if section not in section_titles:
-            fail(f"review doc missing required section: {section}")
+            fail_review_doc_required_section(
+                f"review doc missing required section: {section}",
+                code="execplan_review_doc_required_section_missing",
+            )
+        if not review_doc_section_has_meaningful_content(sections.get(section, "")):
+            fail_review_doc_required_section(
+                f"review doc required section has no meaningful content: {section}",
+                code="execplan_review_doc_required_section_empty",
+            )
     forbidden = sorted(FORBIDDEN_REVIEW_DOC_SECTIONS.intersection(section_titles))
     if forbidden:
         fail(
