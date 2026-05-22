@@ -1,4 +1,7 @@
+import gleam/dynamic/decode
+import gleam/json
 import gleam/option.{None, Some}
+import gleam/string
 import scherzo/control/command
 
 pub fn command_names_and_targets_are_stable_test() {
@@ -65,4 +68,197 @@ pub fn result_constructor_uses_command_metadata_test() {
   assert command.status_to_string(result.status) == "rejected"
   assert command.status_reason(result.status) == Some("busy")
   assert result.message == Some("turn is currently streaming")
+}
+
+pub fn operator_command_codec_roundtrips_all_variants_test() {
+  assert_command_roundtrip(command.PauseDispatch)
+  assert_command_roundtrip(command.ResumeDispatch)
+  assert_command_roundtrip(command.ReloadWorkflow)
+  assert_command_roundtrip(command.RetryIssue(command.IssueId("issue-123")))
+  assert_command_roundtrip(
+    command.RetryIssue(command.IssueIdentifier("ABC-123")),
+  )
+  assert_command_roundtrip(command.RetryWorkflowStep(
+    command.RetryWorkflowStepAutoTarget("ABC-123"),
+    None,
+  ))
+  assert_command_roundtrip(command.RetryWorkflowStep(
+    command.RetryWorkflowStepIssueRef(command.IssueIdentifier("ABC-123")),
+    Some("build"),
+  ))
+  assert_command_roundtrip(command.RetryWorkflowStep(
+    command.RetryWorkflowStepRunId("run-1"),
+    None,
+  ))
+  assert_command_roundtrip(command.RetryWorkflowStep(
+    command.RetryWorkflowStepRunId("run-1"),
+    Some("step-2"),
+  ))
+  assert_command_roundtrip(command.ParkIssue(
+    command.IssueId("issue-123"),
+    "manual hold",
+  ))
+  assert_command_roundtrip(
+    command.UnparkIssue(command.IssueIdentifier("ABC-123")),
+  )
+  assert_command_roundtrip(command.AbortSession("session-1"))
+  assert_command_roundtrip(command.StopAfterCurrentTurn("session-1"))
+  assert_command_roundtrip(command.PromptSession("session-1", "continue please"))
+  assert_command_roundtrip(command.RespondUi(
+    "session-1",
+    "ui-1",
+    command.UiCancel,
+  ))
+  assert_command_roundtrip(command.RespondUi(
+    "session-1",
+    "ui-2",
+    command.UiValue("choice"),
+  ))
+  assert_command_roundtrip(command.RunScheduleNow("nightly-repair"))
+}
+
+pub fn operator_command_codec_preserves_free_form_text_whitespace_test() {
+  assert_command_roundtrip(command.ParkIssue(
+    command.IssueId("issue-123"),
+    "  manual hold  ",
+  ))
+  assert_command_roundtrip(command.PromptSession(
+    "session-1",
+    "  keep spacing  ",
+  ))
+}
+
+pub fn invalid_operator_command_payloads_return_stable_errors_test() {
+  assert_invalid_command("{}", "invalid_command")
+  assert_invalid_command("{\"type\":\"unknown\"}", "unknown_command")
+  assert_invalid_command("{\"type\":\"retry\"}", "invalid_command")
+  assert_invalid_command(
+    "{\"type\":\"retry\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"ABC-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"retry\",\"issue_identifier\":\"   \"}",
+    "invalid_command",
+  )
+  assert_invalid_command("{\"type\":\"retry_step\"}", "invalid_command")
+  assert_invalid_command(
+    "{\"type\":\"retry_step\",\"target\":\"ABC-1\",\"run_id\":\"run-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"retry_step\",\"target\":\"ABC-1\",\"issue_id\":\"issue-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"retry_step\",\"step_id\":\"   \",\"target\":\"ABC-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"park\",\"issue_id\":\"issue-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"park\",\"issue_id\":\"issue-1\",\"reason\":\"   \"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"prompt\",\"session_id\":\"session-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"prompt\",\"session_id\":\"session-1\",\"message\":\"   \"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"respond_ui\",\"session_id\":\"session-1\",\"request_id\":\"ui-1\",\"cancel\":false}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"respond_ui\",\"session_id\":\"session-1\",\"request_id\":\"ui-1\",\"cancel\":true,\"value\":\"ok\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"respond_ui\",\"session_id\":\"session-1\",\"request_id\":\"ui-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"schedule_run_now\",\"job_id\":\"   \"}",
+    "invalid_command",
+  )
+}
+
+pub fn command_result_codec_roundtrips_statuses_and_reasons_test() {
+  assert_result_roundtrip(command.CommandResult(
+    command: "pause",
+    status: command.Applied,
+    target: None,
+    message: Some("paused"),
+  ))
+  assert_result_roundtrip(command.CommandResult(
+    command: "retry",
+    status: command.Queued,
+    target: Some("ABC-123"),
+    message: Some("queued"),
+  ))
+  assert_result_roundtrip(command.CommandResult(
+    command: "abort",
+    status: command.Rejected("busy"),
+    target: Some("session-1"),
+    message: Some("session busy"),
+  ))
+  assert_result_roundtrip(command.CommandResult(
+    command: "reload",
+    status: command.NotFound,
+    target: None,
+    message: Some("missing"),
+  ))
+  assert_result_roundtrip(command.CommandResult(
+    command: "prompt",
+    status: command.NotAllowed("policy"),
+    target: Some("session-1"),
+    message: Some("policy denied"),
+  ))
+}
+
+pub fn invalid_command_result_payloads_return_stable_errors_test() {
+  assert_invalid_result("{\"command\":\"prompt\"}", "invalid_result")
+  assert_invalid_result(
+    "{\"command\":\"prompt\",\"status\":123}",
+    "invalid_result",
+  )
+  assert_invalid_result(
+    "{\"command\":\"prompt\",\"status\":\"future_status\"}",
+    "invalid_result",
+  )
+}
+
+fn assert_command_roundtrip(operator_command: command.OperatorCommand) -> Nil {
+  let encoded =
+    command.operator_command_to_json(operator_command) |> json.to_string
+  let assert Ok(dynamic) = json.parse(encoded, decode.dynamic)
+  let assert Ok(decoded) = command.decode_operator_command_dynamic(dynamic)
+  assert decoded == operator_command
+}
+
+fn assert_invalid_command(line: String, expected_code: String) -> Nil {
+  let assert Ok(dynamic) = json.parse(line, decode.dynamic)
+  let assert Error(command.CodecError(code: code, message: message)) =
+    command.decode_operator_command_dynamic(dynamic)
+  assert code == expected_code
+  assert string.length(message) > 0
+}
+
+fn assert_result_roundtrip(result: command.CommandResult) -> Nil {
+  let encoded = command.command_result_to_json(result) |> json.to_string
+  let assert Ok(dynamic) = json.parse(encoded, decode.dynamic)
+  let assert Ok(decoded) = command.decode_command_result_dynamic(dynamic)
+  assert decoded == result
+}
+
+fn assert_invalid_result(line: String, expected_code: String) -> Nil {
+  let assert Ok(dynamic) = json.parse(line, decode.dynamic)
+  let assert Error(command.CodecError(code: code, message: message)) =
+    command.decode_command_result_dynamic(dynamic)
+  assert code == expected_code
+  assert string.length(message) > 0
 }

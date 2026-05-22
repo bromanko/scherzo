@@ -245,7 +245,7 @@ fn assert_invalid_request(line: String) -> Nil {
 }
 
 pub fn command_result_rejections_are_success_data_test() {
-  let data =
+  let rejected =
     command.CommandResult(
       command: "abort",
       status: command.Rejected("busy"),
@@ -253,16 +253,43 @@ pub fn command_result_rejections_are_success_data_test() {
       message: Some("session is busy"),
     )
     |> protocol.command_result_data
-  let encoded =
-    protocol.success_response("cmd-1", data) |> protocol.response_to_string
+  let rejected_encoded =
+    protocol.success_response("cmd-1", rejected) |> protocol.response_to_string
 
-  assert string.contains(encoded, "\"ok\":true")
-  assert string.contains(encoded, "\"status\":\"rejected\"")
-  assert string.contains(encoded, "\"reason\":\"busy\"")
+  assert string.contains(rejected_encoded, "\"ok\":true")
+  assert string.contains(rejected_encoded, "\"status\":\"rejected\"")
+  assert string.contains(rejected_encoded, "\"reason\":\"busy\"")
 
-  let assert Ok(decoded) = protocol.decode_command_result_response(encoded)
-  assert decoded.command == "abort"
-  assert command.status_to_string(decoded.status) == "rejected"
+  let assert Ok(decoded_rejected) =
+    protocol.decode_command_result_response(rejected_encoded)
+  assert decoded_rejected.command == "abort"
+  assert decoded_rejected.target == Some("session-1")
+  assert decoded_rejected.message == Some("session is busy")
+  assert command.status_to_string(decoded_rejected.status) == "rejected"
+  assert command.status_reason(decoded_rejected.status) == Some("busy")
+
+  let not_allowed =
+    command.CommandResult(
+      command: "prompt",
+      status: command.NotAllowed("policy"),
+      target: Some("session-2"),
+      message: Some("operator policy denied"),
+    )
+    |> protocol.command_result_data
+  let not_allowed_encoded =
+    protocol.success_response("cmd-2", not_allowed)
+    |> protocol.response_to_string
+
+  assert string.contains(not_allowed_encoded, "\"status\":\"not_allowed\"")
+  assert string.contains(not_allowed_encoded, "\"reason\":\"policy\"")
+
+  let assert Ok(decoded_not_allowed) =
+    protocol.decode_command_result_response(not_allowed_encoded)
+  assert decoded_not_allowed.command == "prompt"
+  assert decoded_not_allowed.target == Some("session-2")
+  assert decoded_not_allowed.message == Some("operator policy denied")
+  assert command.status_to_string(decoded_not_allowed.status) == "not_allowed"
+  assert command.status_reason(decoded_not_allowed.status) == Some("policy")
 }
 
 pub fn decode_events_response_accepts_missing_and_new_tool_fields_test() {

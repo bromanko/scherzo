@@ -762,23 +762,7 @@ pub fn event_page_data(page: event.EventPage) -> json.Json {
 }
 
 pub fn command_result_data(result: command.CommandResult) -> json.Json {
-  let base = [
-    #("command", json.string(result.command)),
-    #("status", json.string(command.status_to_string(result.status))),
-  ]
-  let with_target = case result.target {
-    Some(target) -> [#("target", json.string(target)), ..base]
-    None -> base
-  }
-  let with_message = case result.message {
-    Some(message) -> [#("message", json.string(message)), ..with_target]
-    None -> with_target
-  }
-  let entries = case command.status_reason(result.status) {
-    Some(reason) -> [#("reason", json.string(reason)), ..with_message]
-    None -> with_message
-  }
-  entries |> list.reverse |> json.object
+  command.command_result_to_json(result)
 }
 
 pub fn command_request(
@@ -903,7 +887,7 @@ pub fn decode_get_events_response(
 pub fn decode_command_result_response(
   line: String,
 ) -> Result(command.CommandResult, ErrorBody) {
-  decode_response_result(line, command_result_decoder())
+  decode_response_result(line, command.command_result_decoder())
 }
 
 pub fn decode_stream_event(
@@ -967,32 +951,6 @@ fn error_body_decoder() -> decode.Decoder(ErrorBody) {
   use code <- decode.field("code", decode.string)
   use message <- decode.optional_field("message", code, decode.string)
   decode.success(ErrorBody(code: code, message: message))
-}
-
-fn command_result_decoder() -> decode.Decoder(command.CommandResult) {
-  use command_name <- decode.field("command", decode.string)
-  use status_name <- decode.field("status", decode.string)
-  use target <- decode.optional_field(
-    "target",
-    None,
-    decode.optional(decode.string),
-  )
-  use message <- decode.optional_field(
-    "message",
-    None,
-    decode.optional(decode.string),
-  )
-  use reason <- decode.optional_field(
-    "reason",
-    None,
-    decode.optional(decode.string),
-  )
-  decode.success(command.CommandResult(
-    command: command_name,
-    status: command.status_from_string(status_name, reason),
-    target: target,
-    message: message,
-  ))
 }
 
 fn session_list_decoder() -> decode.Decoder(event.SessionList) {
