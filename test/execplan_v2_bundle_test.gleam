@@ -73,6 +73,23 @@ fn assert_completion_preflight_failed(
   Nil
 }
 
+fn assert_review_doc_section_failed(
+  artifact: step_artifact.StepArtifact,
+  diagnostic: String,
+  section: String,
+) -> Nil {
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(artifact.stderr, diagnostic)
+  assert string.contains(artifact.stderr, section)
+  assert string.contains(
+    artifact.stderr,
+    "Required review-doc sections are fail-closed",
+  )
+  assert string.contains(artifact.stderr, "No open questions.")
+  Nil
+}
+
 fn shell_quote(value: String) -> String {
   "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
@@ -1003,6 +1020,106 @@ pub fn validate_review_doc_rejects_mechanical_sections_test() {
 
   assert artifact.status == step_artifact.StepFailed
   assert string.contains(artifact.stderr, "mechanical implementation sections")
+}
+
+pub fn validate_review_doc_rejects_liv_503_missing_open_questions_regression_test() {
+  let dir = "test/tmp/execplan-missing-open-questions"
+  reset_dir(dir)
+  let path = dir <> "/review.md"
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let review =
+    string.replace(
+      valid,
+      each: "\n## Open Questions and Clarifications Needed\n\nNone.\n",
+      with: "\n",
+    )
+  let assert Ok(Nil) = simplifile.write(path, review)
+
+  let artifact = run_helper("validate-review-doc --path " <> path)
+
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_review_doc_required_section_missing",
+  )
+  assert_review_doc_section_failed(
+    artifact,
+    "review doc missing required section",
+    "Open Questions and Clarifications Needed",
+  )
+}
+
+pub fn validate_review_doc_rejects_empty_open_questions_test() {
+  let dir = "test/tmp/execplan-empty-open-questions"
+  reset_dir(dir)
+  let path = dir <> "/review.md"
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let review =
+    string.replace(
+      valid,
+      each: "## Open Questions and Clarifications Needed\n\nNone.\n",
+      with: "## Open Questions and Clarifications Needed\n\n<!-- intentionally blank -->\n",
+    )
+  let assert Ok(Nil) = simplifile.write(path, review)
+
+  let artifact = run_helper("validate-review-doc --path " <> path)
+
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_review_doc_required_section_empty",
+  )
+  assert_review_doc_section_failed(
+    artifact,
+    "review doc required section has no meaningful content",
+    "Open Questions and Clarifications Needed",
+  )
+}
+
+pub fn validate_review_doc_rejects_missing_strategy_overview_test() {
+  let dir = "test/tmp/execplan-missing-strategy-overview"
+  reset_dir(dir)
+  let path = dir <> "/review.md"
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let review =
+    string.replace(
+      valid,
+      each: "## Strategy Overview\n\nAdd one small documentation note and validate it with helper-level tests. The implementation pack contains the exact commands and file list.\n\n",
+      with: "",
+    )
+  let assert Ok(Nil) = simplifile.write(path, review)
+
+  let artifact = run_helper("validate-review-doc --path " <> path)
+
+  assert_review_doc_section_failed(
+    artifact,
+    "review doc missing required section",
+    "Strategy Overview",
+  )
+}
+
+pub fn validate_review_doc_rejects_empty_scope_boundaries_test() {
+  let dir = "test/tmp/execplan-empty-scope-boundaries"
+  reset_dir(dir)
+  let path = dir <> "/review.md"
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let review =
+    string.replace(
+      valid,
+      each: "## Scope Boundaries\n\nOnly fixture files under `test/fixtures/execplan_v2/` are in scope for this sample. No production workflow is exercised by the fixture itself.\n\n## Milestones",
+      with: "## Scope Boundaries\n\n1. \n<!-- intentionally blank -->\n\n## Milestones",
+    )
+  let assert Ok(Nil) = simplifile.write(path, review)
+
+  let artifact = run_helper("validate-review-doc --path " <> path)
+
+  assert_review_doc_section_failed(
+    artifact,
+    "review doc required section has no meaningful content",
+    "Scope Boundaries",
+  )
 }
 
 pub fn validate_review_doc_rejects_unchecked_required_progress_test() {

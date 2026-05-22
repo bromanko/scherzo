@@ -13,6 +13,10 @@ The ExecPlan helper blocks high-confidence plan defects before materializing an 
 
 The review and incorporation prompts also ask agents to flag required behavior that is not represented in the implementation pack. These are blocking when the deterministic helper can identify the gap; otherwise they are advisory review feedback.
 
+## Required review-doc section failures
+
+`validate-review-doc` fails closed when any required review-doc section is missing or has no meaningful content. Intentionally empty sections must keep their heading and use an explicit sentinel such as `None.` or `No open questions.`. If this fails in `validate_review_doc_after_review`, retry or rerun the incorporate-review step only when the agent can regenerate the section from known context; otherwise repair the review document before materializing the bundle, or move the issue back to Todo when the missing content is unknown and needs human input.
+
 ## Intentionally late checks
 
 The final execplan-implementation plan-completion gate still runs. It remains responsible for failures that require inspecting the actual implementation diff or command results, including:

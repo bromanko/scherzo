@@ -402,6 +402,28 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
   })
 }
 
+pub fn execplan_prompts_require_non_empty_review_doc_sections_test() {
+  let draft_prompt = read_file(".scherzo/workflows/prompts/execplan-draft.md")
+  let incorporate_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-incorporate-review.md")
+
+  assert_contains(
+    draft_prompt,
+    "Keep every required section present and non-empty",
+  )
+  assert_contains(draft_prompt, "None.")
+  assert_contains(draft_prompt, "No open questions.")
+  assert_contains(draft_prompt, "never leave a required section blank")
+  assert_contains(
+    incorporate_prompt,
+    "Preserve every required level-2 review-doc section",
+  )
+  assert_contains(incorporate_prompt, "re-check that each required section")
+  assert_contains(incorporate_prompt, "No open questions.")
+  assert_contains(incorporate_prompt, "leaving it blank")
+  assert_contains(incorporate_prompt, "empty list item/comment")
+}
+
 pub fn execplan_prompts_describe_bundle_handoff_test() {
   let draft_prompt = read_file(".scherzo/workflows/prompts/execplan-draft.md")
   let review_prompt = read_file(".scherzo/workflows/prompts/execplan-review.md")
