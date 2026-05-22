@@ -31,6 +31,16 @@ pub type ParkReleasePolicy {
   AutoUnparkOnIssueChange(issue_fingerprint: String)
 }
 
+pub fn park_release_policy_from_string(
+  release_policy: String,
+  issue_fingerprint: String,
+) -> ParkReleasePolicy {
+  case release_policy {
+    "auto_unpark_on_issue_change" -> AutoUnparkOnIssueChange(issue_fingerprint)
+    _ -> ExplicitUnparkOnly
+  }
+}
+
 pub type ParkedEntry {
   ParkedEntry(
     issue_id: String,

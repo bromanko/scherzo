@@ -1,4 +1,4 @@
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -91,18 +91,15 @@ fn compare_priority(a: Option(Int), b: Option(Int)) -> Order {
 }
 
 pub fn issue_fingerprint(issue: tracker_issue.Issue) -> String {
-  [
-    encode_string(issue.id),
-    encode_string(issue.identifier),
-    encode_string(issue.title),
-    encode_optional_string(issue.description),
-    encode_optional_int(issue.priority),
-    encode_string(issue_state.to_string(issue.state)),
-    encode_optional_string(issue.branch_name),
-    encode_string(bool_to_string(issue.blocked_by_complete)),
-    blocker_fingerprint(issue.blocked_by),
-  ]
-  |> string.join(with: "|")
+  tracker_issue.content_fingerprint(issue)
+}
+
+pub fn issues_by_id(
+  issues: List(tracker_issue.Issue),
+) -> Dict(String, tracker_issue.Issue) {
+  issues
+  |> list.map(fn(issue) { #(issue.id, issue) })
+  |> dict.from_list
 }
 
 fn encode_string(value: String) -> String {
@@ -129,13 +126,6 @@ fn encode_optional_issue_state(
   case value {
     None -> "none"
     Some(value) -> "some:" <> encode_string(issue_state.to_string(value))
-  }
-}
-
-fn encode_optional_int(value: Option(Int)) -> String {
-  case value {
-    None -> "none"
-    Some(value) -> "some:" <> encode_string(int.to_string(value))
   }
 }
 
@@ -279,7 +269,7 @@ fn park_blocks_dispatch(
   case parked.release_policy {
     orchestrator_state.ExplicitUnparkOnly -> True
     orchestrator_state.AutoUnparkOnIssueChange(stored) ->
-      stored == issue_fingerprint(issue)
+      tracker_issue.fingerprint_matches(stored, issue)
   }
 }
 
@@ -712,7 +702,7 @@ pub fn unpark_if_issue_changed(
       case parked.release_policy {
         orchestrator_state.ExplicitUnparkOnly -> state
         orchestrator_state.AutoUnparkOnIssueChange(stored) ->
-          case stored == issue_fingerprint(issue) {
+          case tracker_issue.fingerprint_matches(stored, issue) {
             True -> state
             False ->
               orchestrator_state.RuntimeState(

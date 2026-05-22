@@ -51,6 +51,42 @@ pub fn current_projection_sources_emit_only_backed_recovery_metadata_test() {
         ),
       ),
       record.with_id(
+        "issue-content-drift-park",
+        3100,
+        record.IssueParkedV2(
+          issue_id: "issue-5",
+          issue_identifier: "ABC-5",
+          reason: "issue_content_drift:issue_fingerprint_changed",
+          release_policy: "explicit_unpark_only",
+          issue_fingerprint: "fingerprint",
+          observed_updated_at_ms: 3000,
+        ),
+      ),
+      record.with_id(
+        "workflow-definition-drift-park",
+        3200,
+        record.IssueParkedV2(
+          issue_id: "issue-6",
+          issue_identifier: "ABC-6",
+          reason: "workflow_definition_drift:workflow_fingerprint_changed",
+          release_policy: "explicit_unpark_only",
+          issue_fingerprint: "fingerprint",
+          observed_updated_at_ms: 3100,
+        ),
+      ),
+      record.with_id(
+        "issue-state-drift-park",
+        3300,
+        record.IssueParkedV2(
+          issue_id: "issue-7",
+          issue_identifier: "ABC-7",
+          reason: "issue_state_drift:terminal_state",
+          release_policy: "explicit_unpark_only",
+          issue_fingerprint: "fingerprint",
+          observed_updated_at_ms: 3200,
+        ),
+      ),
+      record.with_id(
         "run-finished",
         4000,
         record.RunFinished(
@@ -84,6 +120,19 @@ pub fn current_projection_sources_emit_only_backed_recovery_metadata_test() {
   assert parked_info.status == session_event.Parked
   assert parked_info.park_reason == Some("operator hold")
   assert parked_info.park_release_policy == Some("explicit_unpark_only")
+  assert parked_info.drift_kind == None
+
+  let assert Ok(issue_drift) = dict.get(projection.parked_issues, "issue-5")
+  let issue_drift_info = session_recovery.parked_issue(issue_drift)
+  assert issue_drift_info.drift_kind == Some("issue_content")
+
+  let assert Ok(workflow_drift) = dict.get(projection.parked_issues, "issue-6")
+  let workflow_drift_info = session_recovery.parked_issue(workflow_drift)
+  assert workflow_drift_info.drift_kind == Some("workflow_definition")
+
+  let assert Ok(state_drift) = dict.get(projection.parked_issues, "issue-7")
+  let state_drift_info = session_recovery.parked_issue(state_drift)
+  assert state_drift_info.drift_kind == Some("issue_state")
 
   let assert Ok(finished) = dict.get(projection.runs, "run-4")
   assert session_recovery.interrupted_run("run-4", finished, None) == None
@@ -251,6 +300,30 @@ pub fn auto_parked_issue_with_same_fingerprint_survives_restart_test() {
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
   assert dict.has_key(plan.runtime.parked, "issue-1")
+}
+
+pub fn auto_parked_legacy_stateful_fingerprint_survives_state_change_test() {
+  let refreshed = issue("issue-1", "ABC-1", "In Progress")
+  let projection =
+    projection.fold([
+      record.with_id(
+        "park",
+        1000,
+        record.IssueParkedV2(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          reason: "max_retry_attempts",
+          release_policy: "auto_unpark_on_issue_change",
+          issue_fingerprint: "7:issue-1|5:ABC-1|11:Title ABC-1|none|none|4:Todo|none|4:true|",
+          observed_updated_at_ms: 1000,
+        ),
+      ),
+    ])
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
+
+  assert dict.has_key(plan.runtime.parked, "issue-1")
+  assert plan.records_to_append == []
 }
 
 pub fn auto_parked_issue_with_new_fingerprint_unparks_test() {

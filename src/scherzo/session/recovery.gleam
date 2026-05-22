@@ -1,4 +1,5 @@
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/log
 import scherzo/session/event
 import scherzo/state/projection
@@ -126,7 +127,23 @@ pub fn parked_issue(parked: projection.ParkedIssue) -> event.RecoveryInfo {
     park_reason: Some(recovery_safe_text(parked.reason, [])),
     park_release_policy: Some(parked.release_policy),
     parked_at_ms: Some(parked.parked_at_ms),
+    drift_kind: drift_kind_from_park_reason(parked.reason),
   )
+}
+
+fn drift_kind_from_park_reason(reason: String) -> Option(String) {
+  case string.starts_with(reason, "workflow_definition_drift") {
+    True -> Some("workflow_definition")
+    False ->
+      case string.starts_with(reason, "issue_content_drift") {
+        True -> Some("issue_content")
+        False ->
+          case string.starts_with(reason, "issue_state_drift") {
+            True -> Some("issue_state")
+            False -> None
+          }
+      }
+  }
 }
 
 pub fn cleanup_request(
