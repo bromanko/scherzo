@@ -10,7 +10,13 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "scherzo-pi"
 
 
 class ScherzoPiRoutingTests(unittest.TestCase):
-    def run_wrapper(self, workspace_kind: str) -> list[str]:
+    def run_wrapper(
+        self,
+        workspace_kind: str,
+        *,
+        provide_pi_bin: bool = True,
+        provide_core_direnv: bool = False,
+    ) -> list[str]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = root / ".scherzo" / "workspaces" / workspace_kind / "LIV-346" / "run-1" / "workspaces" / "main"
@@ -54,7 +60,12 @@ class ScherzoPiRoutingTests(unittest.TestCase):
                 "SCHERZO_PI_CAPTURE": str(capture),
                 "SCHERZO_EXECPLAN_PI_MODEL": "execplan-model",
                 "SCHERZO_RESEARCH_PI_MODEL": "research-model",
+                "TEST_CORE_PACKAGED_PI": str(packaged_pi),
             }
+            if provide_pi_bin:
+                env["SCHERZO_PI_BIN"] = str(packaged_pi)
+            else:
+                env.pop("SCHERZO_PI_BIN", None)
             env.pop("SCHERZO_PI_SESSION_PERSISTENCE", None)
 
             result = subprocess.run(
@@ -82,6 +93,16 @@ class ScherzoPiRoutingTests(unittest.TestCase):
 
         self.assertNotIn("execplan-model", args)
         self.assertEqual(args[:2], ["--mode", "rpc"])
+        self.assertEqual(args[-3:], ["--no-session", "--rpc-message-updates", "off"])
+
+    def test_uses_core_direnv_packaged_pi_when_scherzo_pi_bin_unset(self):
+        args = self.run_wrapper(
+            "execplan",
+            provide_pi_bin=False,
+            provide_core_direnv=True,
+        )
+
+        self.assertEqual(args[:4], ["--model", "execplan-model", "--mode", "rpc"])
         self.assertEqual(args[-3:], ["--no-session", "--rpc-message-updates", "off"])
 
     def test_research_workspace_uses_research_model(self):
