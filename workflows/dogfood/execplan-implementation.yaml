@@ -436,10 +436,51 @@ steps:
     model: openai-codex/gpt-5.4
     thinking: medium
     workspace: main
+    structured_output:
+      format: json
+      artifact_name: review_finding_disposition_input
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_finding_dispositions
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: review_finding_disposition_input_semantics
+          type: command
+          argv:
+            - python3
+            - .scherzo/workflows/scripts/scherzo-review
+            - validate-structured-output
+            - --validator
+            - review_finding_disposition_input
+          working_directory: repository
+          timeout_ms: 30000
+        - name: review_finding_disposition_provider_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json
+          draft: "2020-12"
+        - name: review_finding_disposition_input_schema
+          type: json_schema
+          path: .scherzo/workflows/schemas/review-finding-disposition-input.v1.schema.json
+          draft: "2020-12"
+      schema:
+        type: object
+        required:
+          - schema_version
+          - artifact_type
+          - entries
+
+  - id: materialize_review_dispositions
+    kind: command
+    depends_on: [apply_review_feedback]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review" materialize-disposition-input --artifact-dir "$artifact_dir" --submission-step apply_review_feedback --submission-artifact review_finding_disposition_input --output tmp/review-finding-dispositions.v1.json'
+    workspace: main
 
   - id: refresh_base_before_validation
     kind: command
-    depends_on: [apply_review_feedback]
+    depends_on: [materialize_review_dispositions]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" refresh-base --stage before-validation'
     timeout_ms: 300000
     on_failure: continue

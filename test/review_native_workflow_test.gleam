@@ -9,6 +9,10 @@ import simplifile
 
 const submit_structured_output_tool = "submit_review_lane_draft"
 
+const submit_dispositions_tool = "submit_review_finding_dispositions"
+
+const disposition_provider_schema_path = ".scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json"
+
 fn implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
     simplifile.read(".scherzo/workflows/implementation.yaml")
@@ -75,6 +79,65 @@ fn assert_review_lane_validators(
   schema_path: String,
 ) -> Nil {
   assert spec.validators == expected_review_lane_validators(schema_path)
+}
+
+fn assert_disposition_tool_source(
+  spec: workflow_dag.StructuredOutputSpec,
+) -> Nil {
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: submit_dispositions_tool,
+      require_single: True,
+      reject_sibling_tool_calls: True,
+      parameters_schema_path: Some(disposition_provider_schema_path),
+    )
+}
+
+fn expected_disposition_validators() -> List(
+  workflow_dag.StructuredOutputValidator,
+) {
+  [
+    workflow_dag.CommandValidator(
+      name: "review_finding_disposition_input_semantics",
+      argv: [
+        "python3",
+        ".scherzo/workflows/scripts/scherzo-review",
+        "validate-structured-output",
+        "--validator",
+        "review_finding_disposition_input",
+      ],
+      timeout_ms: 30_000,
+      working_directory: workflow_dag.ValidatorInRepository,
+      env: [],
+    ),
+    workflow_dag.JsonSchemaValidator(
+      name: "review_finding_disposition_provider_shape",
+      path: disposition_provider_schema_path,
+      draft: Some("2020-12"),
+    ),
+    workflow_dag.JsonSchemaValidator(
+      name: "review_finding_disposition_input_schema",
+      path: ".scherzo/workflows/schemas/review-finding-disposition-input.v1.schema.json",
+      draft: Some("2020-12"),
+    ),
+  ]
+}
+
+fn assert_disposition_structured_output(
+  dag: workflow_dag.WorkflowDag,
+  step_id: String,
+) -> Nil {
+  let spec = lane_spec(dag, step_id)
+  assert spec.artifact_name == "review_finding_disposition_input"
+  assert spec.required == True
+  assert spec.schema
+    == workflow_dag.StructuredObjectSchema([
+      "schema_version",
+      "artifact_type",
+      "entries",
+    ])
+  assert_disposition_tool_source(spec)
+  assert spec.validators == expected_disposition_validators()
 }
 
 fn assert_lane_workspace_from_main(
@@ -145,6 +208,7 @@ fn valid_review_lane_draft_json() -> String {
 fn workflow_schema_files() -> List(String) {
   [
     "review-artifacts.v1.schema.json",
+    "review-finding-disposition-input.v1.schema.json",
     "review-lane-draft.v1.schema.json",
     "review-lane-draft.correctness.v1.schema.json",
     "review-lane-draft.test-quality.v1.schema.json",
@@ -155,6 +219,7 @@ fn workflow_schema_files() -> List(String) {
 
 fn provider_schema_files() -> List(String) {
   [
+    "review-finding-dispositions.v1.schema.json",
     "review-lane-draft.correctness.v1.schema.json",
     "review-lane-draft.test-quality.v1.schema.json",
     "review-lane-draft.idioms-maintainability.v1.schema.json",
@@ -398,6 +463,15 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
     "validate_native_review_artifacts",
   )
 
+  assert_disposition_structured_output(dag, "apply_feedback")
+  let materialize_run = command_step_run(dag, "materialize_review_dispositions")
+  assert_contains(materialize_run, "materialize-disposition-input")
+  assert_contains(materialize_run, "--submission-step apply_feedback")
+  assert_contains(materialize_run, "tmp/review-finding-dispositions.v1.json")
+  let assert Ok(refresh_base) =
+    workflow_dag.step_by_id(dag, "refresh_base_before_validation")
+  assert refresh_base.depends_on == ["materialize_review_dispositions"]
+
   let assert Ok(finalize_dispositions) =
     workflow_dag.step_by_id(dag, "finalize_review_dispositions")
   assert finalize_dispositions.depends_on == ["final_validate"]
@@ -407,6 +481,15 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
 
 pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_test() {
   let dag = execplan_implementation_dag()
+  assert_disposition_structured_output(dag, "apply_review_feedback")
+  let materialize_run = command_step_run(dag, "materialize_review_dispositions")
+  assert_contains(materialize_run, "materialize-disposition-input")
+  assert_contains(materialize_run, "--submission-step apply_review_feedback")
+  assert_contains(materialize_run, "tmp/review-finding-dispositions.v1.json")
+  let assert Ok(refresh_base) =
+    workflow_dag.step_by_id(dag, "refresh_base_before_validation")
+  assert refresh_base.depends_on == ["materialize_review_dispositions"]
+
   let assert Ok(finalize_dispositions) =
     workflow_dag.step_by_id(dag, "finalize_review_dispositions")
   assert finalize_dispositions.depends_on == ["final_validate"]
@@ -424,6 +507,11 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
   list.each(feedback_prompt_paths, fn(path) {
     let assert Ok(prompt) = simplifile.read(path)
     assert_contains(prompt, "review-finding-dispositions.v1.json")
+    assert_contains(prompt, submit_dispositions_tool)
+    assert_not_contains(
+      prompt,
+      "Write `tmp/review-finding-dispositions.v1.json`",
+    )
   })
 
   let review_prompt_paths = [
