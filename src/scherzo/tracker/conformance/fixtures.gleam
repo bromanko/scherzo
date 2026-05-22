@@ -13,11 +13,15 @@ pub type FixtureError {
   FixtureError(code: String, message: String)
 }
 
+const setup_recovery_guidance = "Fix fixture setup or backend credentials before judging adapter conformance."
+
+const cleanup_recovery_guidance = "Repair teardown and rerun because cleanup failures can contaminate later conformance results."
+
 pub fn load_tasks(
   manifest: types.Manifest,
 ) -> Result(List(task.Task), FixtureError) {
   let types.Manifest(fixtures: fixtures, ..) = manifest
-  let types.FixtureConfig(task_file: task_file) = fixtures
+  let types.FixtureConfig(task_file: task_file, tasks: declarations) = fixtures
   use Nil <- result.try(validate_task_file_path(task_file))
   use contents <- result.try(case simplifile.read(task_file) {
     Ok(contents) -> Ok(contents)
@@ -32,7 +36,11 @@ pub fn load_tasks(
     Ok(types.DriverResponseSuccess(
       result: types.TaskListResult(tasks: tasks),
       ..,
-    )) -> Ok(tasks)
+    )) -> {
+      use Nil <- result.try(validate_task_inventory(tasks))
+      use Nil <- result.try(validate_fixture_declarations(declarations, tasks))
+      Ok(tasks)
+    }
     _ ->
       Error(FixtureError(
         code: "fixture_decode_failed",
@@ -41,26 +49,92 @@ pub fn load_tasks(
   }
 }
 
+fn validate_task_inventory(
+  tasks: List(task.Task),
+) -> Result(Nil, FixtureError) {
+  case tasks {
+    [] ->
+      Error(FixtureError(
+        code: "fixture_task_file_empty",
+        message: "fixtures.task_file must contain at least one task for task_source conformance",
+      ))
+    _ -> Ok(Nil)
+  }
+}
+
+fn validate_fixture_declarations(
+  declarations: List(types.FixtureTaskDeclaration),
+  tasks: List(task.Task),
+) -> Result(Nil, FixtureError) {
+  case declarations {
+    [] -> Ok(Nil)
+    [types.FixtureTaskDeclaration(name: name, ref: ref, ..), ..rest] ->
+      case task_ref_in_tasks(tasks, ref) {
+        True -> validate_fixture_declarations(rest, tasks)
+        False ->
+          Error(FixtureError(
+            code: "fixture_declaration_missing_task",
+            message: "fixture declaration does not match any task in fixtures.task_file: "
+              <> name,
+          ))
+      }
+  }
+}
+
+fn task_ref_in_tasks(tasks: List(task.Task), target: task.TaskRef) -> Bool {
+  case tasks {
+    [] -> False
+    [task.Task(ref: ref, ..), ..rest] ->
+      same_ref(ref, target) || task_ref_in_tasks(rest, target)
+  }
+}
+
+fn same_ref(left: task.TaskRef, right: task.TaskRef) -> Bool {
+  let task.TaskRef(
+    backend_kind: left_backend_kind,
+    remote_id: left_remote_id,
+    ..,
+  ) = left
+  let task.TaskRef(
+    backend_kind: right_backend_kind,
+    remote_id: right_remote_id,
+    ..,
+  ) = right
+  left_backend_kind == right_backend_kind && left_remote_id == right_remote_id
+}
+
 pub fn run_setup(manifest: types.Manifest) -> Option(types.HookResult) {
   let types.Manifest(hooks: hooks, ..) = manifest
   let types.HooksConfig(setup: setup, ..) = hooks
-  run_optional_hook(setup, "setup", types.SetupFailedStatus)
+  run_optional_hook(
+    setup,
+    "setup",
+    types.SetupFailedStatus,
+    setup_recovery_guidance,
+  )
 }
 
 pub fn run_cleanup(manifest: types.Manifest) -> Option(types.HookResult) {
   let types.Manifest(hooks: hooks, ..) = manifest
   let types.HooksConfig(cleanup: cleanup, ..) = hooks
-  run_optional_hook(cleanup, "cleanup", types.CleanupFailedStatus)
+  run_optional_hook(
+    cleanup,
+    "cleanup",
+    types.CleanupFailedStatus,
+    cleanup_recovery_guidance,
+  )
 }
 
 fn run_optional_hook(
   hook: Option(types.HookCommand),
   phase: String,
   failure_status: types.CaseStatus,
+  recovery_guidance: String,
 ) -> Option(types.HookResult) {
   case hook {
     None -> None
-    Some(command) -> Some(run_hook(command, phase, failure_status))
+    Some(command) ->
+      Some(run_hook(command, phase, failure_status, recovery_guidance))
   }
 }
 
@@ -68,6 +142,7 @@ fn run_hook(
   command: types.HookCommand,
   phase: String,
   failure_status: types.CaseStatus,
+  recovery_guidance: String,
 ) -> types.HookResult {
   let types.HookCommand(executable: executable, args: args, cwd: cwd) = command
   case port.start_argv(executable, args, cwd, []) {
@@ -79,6 +154,7 @@ fn run_hook(
           <> " hook spawn failed: "
           <> port.port_error_to_string(error),
         diagnostics: "",
+        recovery_guidance: recovery_guidance,
       )
     Ok(process) ->
       case port.await_exit(process, 1000) {
@@ -90,6 +166,7 @@ fn run_hook(
             diagnostics: process_capture.truncate_diagnostics(
               diagnostics_or_empty(process),
             ),
+            recovery_guidance: recovery_guidance,
           )
         Ok(status) ->
           types.HookResult(
@@ -101,6 +178,7 @@ fn run_hook(
             diagnostics: process_capture.truncate_diagnostics(
               diagnostics_or_empty(process),
             ),
+            recovery_guidance: recovery_guidance,
           )
         Error(error) -> {
           let diagnostics =
@@ -112,6 +190,7 @@ fn run_hook(
               <> " hook failed: "
               <> port.port_error_to_string(error),
             diagnostics: process_capture.truncate_diagnostics(diagnostics),
+            recovery_guidance: recovery_guidance,
           )
         }
       }

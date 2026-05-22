@@ -18,6 +18,8 @@ pub type DriverFailure {
     kind: DriverFailureKind,
     message: String,
     diagnostics: String,
+    request_transcript: types.TranscriptEvidence,
+    response_transcript: Option(types.TranscriptEvidence),
     stdout: Option(String),
     exit_status: Option(Int),
   )
@@ -28,6 +30,8 @@ pub type DriverInvocation {
     response: types.DriverResponse,
     stdout: String,
     diagnostics: String,
+    request_transcript: types.TranscriptEvidence,
+    response_transcript: types.TranscriptEvidence,
   )
 }
 
@@ -36,6 +40,8 @@ pub fn invoke(
   request: types.DriverRequest,
 ) -> Result(DriverInvocation, DriverFailure) {
   let types.Manifest(driver: driver, ..) = manifest
+  let stdin = conformance.request_to_string(request) <> "\n"
+  let request_transcript = process_capture.capture_text(stdin)
   case driver {
     types.CliDriverConfig(command: command, timeout_ms: timeout_ms) -> {
       let types.DriverCommand(
@@ -44,7 +50,6 @@ pub fn invoke(
         cwd: cwd,
         env: env,
       ) = command
-      let stdin = conformance.request_to_string(request) <> "\n"
 
       case
         port.start_argv_with_input(executable, args, cwd, env_pairs(env), stdin)
@@ -54,10 +59,13 @@ pub fn invoke(
             kind: SpawnFailed,
             message: "driver spawn failed: " <> port.port_error_to_string(error),
             diagnostics: "",
+            request_transcript: request_transcript,
+            response_transcript: None,
             stdout: None,
             exit_status: None,
           ))
-        Ok(process) -> read_driver_stdout(process, timeout_ms, request)
+        Ok(process) ->
+          read_driver_stdout(process, timeout_ms, request, request_transcript)
       }
     }
     types.HttpDriverConfig(..) ->
@@ -65,6 +73,8 @@ pub fn invoke(
         kind: SpawnFailed,
         message: "http driver transport is not implemented yet",
         diagnostics: "",
+        request_transcript: request_transcript,
+        response_transcript: None,
         stdout: None,
         exit_status: None,
       ))
@@ -75,20 +85,31 @@ fn read_driver_stdout(
   process: port.Process,
   timeout_ms: Int,
   request: types.DriverRequest,
+  request_transcript: types.TranscriptEvidence,
 ) -> Result(DriverInvocation, DriverFailure) {
   case port.read_stdout_line(process, timeout_ms) {
-    Ok(stdout) -> finish_invocation(process, timeout_ms, request, stdout)
+    Ok(stdout) ->
+      finish_invocation(
+        process,
+        timeout_ms,
+        request,
+        request_transcript,
+        stdout,
+      )
     Error(port.ReadTimeout) -> {
       let diagnostics = diagnostics_or_empty(process) <> terminate_note(process)
       Error(DriverFailure(
         kind: TimeoutFailed,
         message: "driver timed out waiting for stdout",
         diagnostics: process_capture.truncate_diagnostics(diagnostics),
+        request_transcript: request_transcript,
+        response_transcript: None,
         stdout: None,
         exit_status: None,
       ))
     }
-    Error(port.ProcessExited(status)) -> classify_early_exit(process, status)
+    Error(port.ProcessExited(status)) ->
+      classify_early_exit(process, status, request_transcript)
     Error(error) -> {
       let diagnostics = diagnostics_or_empty(process) <> terminate_note(process)
       Error(DriverFailure(
@@ -96,6 +117,8 @@ fn read_driver_stdout(
         message: "driver did not produce a response line: "
           <> port.port_error_to_string(error),
         diagnostics: process_capture.truncate_diagnostics(diagnostics),
+        request_transcript: request_transcript,
+        response_transcript: None,
         stdout: None,
         exit_status: None,
       ))
@@ -107,9 +130,11 @@ fn finish_invocation(
   process: port.Process,
   timeout_ms: Int,
   request: types.DriverRequest,
+  request_transcript: types.TranscriptEvidence,
   stdout: String,
 ) -> Result(DriverInvocation, DriverFailure) {
   let diagnostics = diagnostics_or_empty(process)
+  let response_transcript = process_capture.capture_text(stdout)
   case conformance.decode_response(stdout) {
     Error(_) -> {
       let diagnostics = diagnostics <> terminate_note(process)
@@ -117,18 +142,30 @@ fn finish_invocation(
         kind: MalformedResponseFailed,
         message: "driver stdout was not valid conformance JSON",
         diagnostics: process_capture.truncate_diagnostics(diagnostics),
+        request_transcript: request_transcript,
+        response_transcript: Some(response_transcript),
         stdout: Some(stdout),
         exit_status: None,
       ))
     }
     Ok(response) ->
       case port.await_exit(process, timeout_ms) {
-        Ok(0) -> accept_response(request, response, stdout, diagnostics)
+        Ok(0) ->
+          accept_response(
+            request,
+            response,
+            stdout,
+            diagnostics,
+            request_transcript,
+            response_transcript,
+          )
         Ok(status) ->
           Error(DriverFailure(
             kind: ExitStatusFailed,
             message: "driver exited with status " <> int.to_string(status),
             diagnostics: process_capture.truncate_diagnostics(diagnostics),
+            request_transcript: request_transcript,
+            response_transcript: Some(response_transcript),
             stdout: Some(stdout),
             exit_status: Some(status),
           ))
@@ -139,6 +176,8 @@ fn finish_invocation(
             diagnostics: process_capture.truncate_diagnostics(
               diagnostics <> terminate_note(process),
             ),
+            request_transcript: request_transcript,
+            response_transcript: Some(response_transcript),
             stdout: Some(stdout),
             exit_status: None,
           ))
@@ -151,6 +190,8 @@ fn finish_invocation(
             diagnostics: process_capture.truncate_diagnostics(
               diagnostics <> terminate_note(process),
             ),
+            request_transcript: request_transcript,
+            response_transcript: Some(response_transcript),
             stdout: Some(stdout),
             exit_status: None,
           ))
@@ -164,6 +205,8 @@ fn accept_response(
   response: types.DriverResponse,
   stdout: String,
   diagnostics: String,
+  request_transcript: types.TranscriptEvidence,
+  response_transcript: types.TranscriptEvidence,
 ) -> Result(DriverInvocation, DriverFailure) {
   case response_matches_request(response, request) {
     True ->
@@ -171,12 +214,16 @@ fn accept_response(
         response: response,
         stdout: stdout,
         diagnostics: process_capture.truncate_diagnostics(diagnostics),
+        request_transcript: request_transcript,
+        response_transcript: response_transcript,
       ))
     False ->
       Error(DriverFailure(
         kind: MalformedResponseFailed,
         message: "driver response envelope did not match request schema_version or request_id",
         diagnostics: process_capture.truncate_diagnostics(diagnostics),
+        request_transcript: request_transcript,
+        response_transcript: Some(response_transcript),
         stdout: Some(stdout),
         exit_status: None,
       ))
@@ -211,6 +258,7 @@ fn response_request_id(response: types.DriverResponse) -> String {
 fn classify_early_exit(
   process: port.Process,
   status: Int,
+  request_transcript: types.TranscriptEvidence,
 ) -> Result(DriverInvocation, DriverFailure) {
   let diagnostics = diagnostics_or_empty(process)
   let kind = case status == 0 {
@@ -225,6 +273,8 @@ fn classify_early_exit(
     kind: kind,
     message: message,
     diagnostics: process_capture.truncate_diagnostics(diagnostics),
+    request_transcript: request_transcript,
+    response_transcript: None,
     stdout: None,
     exit_status: Some(status),
   ))

@@ -34,7 +34,7 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
     capabilities: capabilities,
     adapter_operations: operations,
   ) = manifest_profile
-  let types.FixtureConfig(task_file: task_file) = fixtures
+  let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
   let types.ReportConfig(redact: redact) = report
 
   assert manifest_schema_version == 1
@@ -57,7 +57,59 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
     ]
   assert task_file
     == "test/fixtures/tracker_conformance/task-source-fetch.response.json"
+  assert fixture_tasks == []
   assert redact == ["SECRET_TOKEN"]
+}
+
+pub fn manifest_decoder_accepts_explicit_fixture_tasks_test() {
+  let assert Ok(contents) =
+    simplifile.read(
+      "test/fixtures/tracker_conformance/explicit-fixture-tasks.manifest.json",
+    )
+  let assert Ok(manifest) = conformance.decode_manifest(contents)
+  let types.Manifest(fixtures: fixtures, ..) = manifest
+  let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
+
+  assert task_file
+    == "test/fixtures/tracker_conformance/task-source-fetch.response.json"
+  assert fixture_tasks
+    == [
+      types.FixtureTaskDeclaration(
+        name: "primary-card",
+        ref: task.TaskRef(
+          backend_kind: "test-memory",
+          remote_id: "card-1",
+          key: Some("CARD-1"),
+          url: Some("https://tracker.example/tasks/CARD-1"),
+        ),
+        operator_refs: ["CARD-1"],
+        purpose: "Stable identity fixture for refresh and lookup cases",
+      ),
+    ]
+}
+
+pub fn manifest_decoder_rejects_duplicate_fixture_task_names_test() {
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-fixture-task-duplicate-name.manifest.json",
+    code: "duplicate_fixture_task_name",
+    message: "fixtures.tasks[].name must be unique: primary-card",
+  )
+}
+
+pub fn manifest_decoder_rejects_blank_fixture_operator_refs_test() {
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-fixture-task-empty-operator-ref.manifest.json",
+    code: "invalid_fixture_task_operator_ref",
+    message: "fixtures.tasks[].operator_refs must contain only non-empty values",
+  )
+}
+
+pub fn manifest_decoder_rejects_blank_fixture_remote_id_test() {
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-fixture-task-empty-remote-id.manifest.json",
+    code: "invalid_fixture_task_remote_id",
+    message: "fixtures.tasks[].ref.remote_id must be non-empty",
+  )
 }
 
 pub fn manifest_decoder_accepts_minimal_http_task_source_profile_test() {
@@ -136,16 +188,21 @@ pub fn manifest_decoder_rejects_unknown_capabilities_with_stable_code_test() {
 }
 
 pub fn manifest_decoder_rejects_fixture_namespace_in_adapter_operations_test() {
-  let assert Ok(contents) =
-    simplifile.read(
-      "test/fixtures/tracker_conformance/invalid-fixture-operation-in-adapter-pack.manifest.json",
-    )
-  let assert Error(error) = conformance.decode_manifest(contents)
-  let types.ManifestError(code: code, message: message) = error
-
-  assert code == "fixture_operation_disallowed"
-  assert message
-    == "profile.adapter_operations must not include fixture/probe/hook operations: fixture.setup"
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-fixture-operation-in-adapter-pack.manifest.json",
+    code: "fixture_operation_disallowed",
+    message: "profile.adapter_operations must not include fixture/probe/hook operations: fixture.setup",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-probe-operation-in-adapter-pack.manifest.json",
+    code: "fixture_operation_disallowed",
+    message: "profile.adapter_operations must not include fixture/probe/hook operations: probe.fixture_visible",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-hook-operation-in-adapter-pack.manifest.json",
+    code: "fixture_operation_disallowed",
+    message: "profile.adapter_operations must not include fixture/probe/hook operations: hook.cleanup",
+  )
 }
 
 pub fn manifest_decoder_rejects_missing_required_adapter_operations_test() {

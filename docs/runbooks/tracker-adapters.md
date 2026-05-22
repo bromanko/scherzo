@@ -86,6 +86,8 @@ Before enabling a new production adapter, verify these facts with tests and oper
 
 The repository now includes a black-box tracker adapter conformance runner for external adapters that expose the MVP CLI driver protocol described in `docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md`.
 
+LIV-410 baseline note: the existing MVP already covers the CLI `task_source` path, `fixtures.task_file`, optional setup and cleanup hooks, optional probes, support-failure counters, fixture/probe/hook namespace rejection inside `profile.adapter_operations`, configured redaction, and truncated external diagnostics.
+
 Run the local MVP suite from the repository root with:
 
 ```sh
@@ -93,3 +95,24 @@ direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conform
 ```
 
 The command exits `0` only when the selected profile passes and setup, probe, and cleanup counters remain zero. Report JSON distinguishes adapter case failures from `setup_failed`, `probe_failed`, and `cleanup_failed` support-path failures, configured redaction strings are replaced with `[REDACTED]` before Scherzo writes the report or prints the CLI summary, and captured driver or hook diagnostics are truncated before reporting.
+
+The enriched report contract is additive. Existing top-level counters remain, and a grouped `counts` object repeats them for consumers that prefer a nested shape. Each case result now includes `expected_summary`, `actual_summary`, bounded `request_transcript`, bounded `response_transcript`, and `recovery_guidance`. Hook and probe results add `recovery_guidance` so failures can be triaged as setup, backend-visibility, cleanup, or adapter defects instead of being lumped together.
+
+Use explicit `fixtures.tasks` declarations when you already know the trusted pre-provisioned task identities a profile should exercise. Each declaration names the fixture, pins the durable task ref, records one or more operator refs, and states its purpose. The runner still loads expected payloads from `fixtures.task_file`, but refresh and known-lookup cases use the explicit declarations when present.
+
+Deterministic fake-driver dogfood command:
+
+```sh
+direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/task-source-pass.manifest.json --report test/tmp/tracker-conformance/task-source-pass.report.json
+! grep -R "SECRET_TOKEN" test/tmp/tracker-conformance/task-source-pass.report.json
+```
+
+The grep check should produce no matches. That proves the fake-driver run wrote enriched evidence without leaking configured secrets into retained report artifacts.
+
+Optional live-backend checklist for operators who already have trusted manifests and pre-provisioned fixtures:
+
+1. Keep privileged setup, probe, and cleanup hooks inside operator-reviewed manifests only.
+2. Prefer explicit `fixtures.tasks` declarations over inferred fixture selection when task identities are known ahead of time.
+3. Run the same `tracker-conformance run ... --report ...` command shape against the live manifest.
+4. Inspect only redacted report excerpts before sharing them outside the trusted operator context.
+5. Treat provider-live cache behavior as not applicable here unless a future conformance change introduces a cache layer.
