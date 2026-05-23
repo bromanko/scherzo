@@ -1403,6 +1403,26 @@ fn projection_fixture_projection() -> projection.Projection {
         ),
       ),
     ]),
+    workflow_run_provenances: dict.from_list([
+      #(
+        "workflow-run-1",
+        projection.WorkflowRunProvenance(
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-fingerprint",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-1",
+          issue_fingerprint: "issue-fingerprint",
+          observed_updated_at_ms: 999,
+          run_root: ".scherzo/workflows/implementation/run-1",
+          task_ref: record.TaskRefFields(
+            task_backend_kind: "linear",
+            task_remote_id: "issue-1",
+            task_key: Some("LIV-1"),
+            task_url: None,
+          ),
+        ),
+      ),
+    ]),
     workflow_task_refs: dict.from_list([
       #(
         "workflow-run-1",
