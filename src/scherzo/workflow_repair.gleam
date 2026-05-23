@@ -12,6 +12,7 @@ import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import scherzo/workflow_dag_compat
+import scherzo/workflow_outcome
 
 pub type RepairError {
   RepairError(reason: String, message: Option(String))
@@ -42,6 +43,7 @@ type SelectedRun {
     repairable_at_ms: Int,
     run_root: String,
     task_ref: record.TaskRefFields,
+    recovery_evidence: workflow_outcome.RecoveryEvidence,
   )
 }
 
@@ -187,6 +189,7 @@ pub fn plan(
           ),
           observed_updated_at_ms: run.observed_updated_at_ms,
           run_root: run.run_root,
+          recovery_evidence: run.recovery_evidence,
           attempts: candidate_attempts,
           contract_input_manifest: manifest_to_recovered(
             projection.workflow_input_manifest(projection_state, run.run_id),
@@ -333,17 +336,32 @@ fn selected_run_from_status(
       finished_at_ms: finished_at_ms,
       ..,
     ) ->
-      case outcome == "failed_fatal" || outcome == "failed_after_recovery" {
+      case workflow_outcome.is_terminal_failure(outcome) {
         False ->
           Error(RepairError(
             "no_failed_workflow_run",
             Some("workflow run is not repairable"),
           ))
         True ->
-          Ok(selected_run_from_provenance(run_id, provenance, finished_at_ms))
+          Ok(
+            selected_run_from_provenance(
+              run_id,
+              provenance,
+              finished_at_ms,
+              case outcome == workflow_outcome.failed_after_recovery {
+                True -> workflow_outcome.StepRecoveryRan
+                False -> workflow_outcome.NoStepRecovery
+              },
+            ),
+          )
       }
     projection.WorkflowRunInterrupted(interrupted_at_ms: interrupted_at_ms, ..) ->
-      Ok(selected_run_from_provenance(run_id, provenance, interrupted_at_ms))
+      Ok(selected_run_from_provenance(
+        run_id,
+        provenance,
+        interrupted_at_ms,
+        recovery.step_recovery_evidence_for_run(projection_state, run_id),
+      ))
     _ ->
       Error(RepairError(
         "no_failed_workflow_run",
@@ -356,6 +374,7 @@ fn selected_run_from_provenance(
   run_id: String,
   provenance: projection.WorkflowRunProvenance,
   repairable_at_ms: Int,
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
 ) -> SelectedRun {
   SelectedRun(
     run_id: run_id,
@@ -368,6 +387,7 @@ fn selected_run_from_provenance(
     repairable_at_ms: repairable_at_ms,
     run_root: provenance.run_root,
     task_ref: provenance.task_ref,
+    recovery_evidence: recovery_evidence,
   )
 }
 
@@ -564,7 +584,7 @@ fn repair_boundaries(
         outcome: outcome,
         ..,
       ) ->
-        case outcome == "failed_fatal" || outcome == "failed_after_recovery" {
+        case workflow_outcome.is_terminal_failure(outcome) {
           True -> [RepairBoundary(step_id, attempt_index), ..acc]
           False -> acc
         }

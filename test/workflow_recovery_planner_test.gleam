@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/step_artifact
 import scherzo/workflow_dag
+import scherzo/workflow_outcome
 import scherzo/workflow_recovery_planner as planner
 import scherzo/workflow_scheduler
 
@@ -248,6 +249,7 @@ fn run_for(
     observed_updated_at_ms: 1000,
     run_root: "test/tmp/workflow-recovery/run-1",
     cleanup_recorded: False,
+    recovery_evidence: workflow_outcome.NoStepRecovery,
     run_status: planner.RunActive,
     step_attempts: step_attempts,
   )
@@ -974,6 +976,30 @@ pub fn active_all_completed_run_emits_finish_record_not_cleanup_test() {
   assert recovery.cleanup_run_roots == []
 }
 
+pub fn active_completed_run_after_recovery_emits_recovered_finish_record_test() {
+  let dag = parse_dag(single_step_yaml())
+  let recovery =
+    plan(
+      dag,
+      planner.WorkflowRunFacts(
+        ..base_run([completed("implement", 1)]),
+        recovery_evidence: workflow_outcome.StepRecoveryRan,
+      ),
+      current_ok(),
+    )
+
+  assert recovery.outcome == planner.TerminalRecordNeeded
+  assert recovery.workflow_finish_records
+    == [
+      planner.WorkflowFinishRecordIntent(
+        run_id: "run-1",
+        workflow_id: "review-flow",
+        issue_id: "issue-1",
+        outcome: planner.WorkflowSucceededAfterRecovery,
+      ),
+    ]
+}
+
 pub fn active_fatal_run_emits_failed_finish_record_not_cleanup_test() {
   let dag = parse_dag(single_step_yaml())
   let recovery =
@@ -990,6 +1016,54 @@ pub fn active_fatal_run_emits_failed_finish_record_not_cleanup_test() {
       ),
     ]
   assert recovery.cleanup_run_roots == []
+}
+
+pub fn active_fatal_run_after_recovery_emits_recovered_failed_finish_record_test() {
+  let dag = parse_dag(single_step_yaml())
+  let recovery =
+    plan(
+      dag,
+      planner.WorkflowRunFacts(
+        ..base_run([failed_fatal("implement", 1)]),
+        recovery_evidence: workflow_outcome.StepRecoveryRetryRequested,
+      ),
+      current_ok(),
+    )
+
+  assert recovery.outcome == planner.TerminalRecordNeeded
+  assert recovery.workflow_finish_records
+    == [
+      planner.WorkflowFinishRecordIntent(
+        run_id: "run-1",
+        workflow_id: "review-flow",
+        issue_id: "issue-1",
+        outcome: planner.WorkflowFailedAfterRecovery,
+      ),
+    ]
+}
+
+pub fn recovered_finished_statuses_classify_as_terminal_success_and_failure_test() {
+  let dag = parse_dag(single_step_yaml())
+  let base = base_run([])
+  let recovered_success =
+    planner.WorkflowRunFacts(
+      ..base,
+      run_status: planner.RunFinished(
+        planner.WorkflowSucceededAfterRecovery,
+        1,
+        1,
+      ),
+    )
+  let recovered_failure =
+    planner.WorkflowRunFacts(
+      ..base,
+      run_status: planner.RunFinished(planner.WorkflowFailedAfterRecovery, 1, 1),
+    )
+
+  assert plan(dag, recovered_success, current_ok()).outcome
+    == planner.TerminalSucceeded
+  assert plan(dag, recovered_failure, current_ok()).outcome
+    == planner.TerminalFailed
 }
 
 pub fn durable_finished_runs_request_cleanup_once_for_each_terminal_outcome_test() {

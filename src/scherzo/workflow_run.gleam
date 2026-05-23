@@ -35,6 +35,7 @@ import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest as contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_identity
+import scherzo/workflow_outcome
 import scherzo/workflow_scheduler
 import scherzo/workflow_step_recovery
 import scherzo/workflow_structured_retry
@@ -129,6 +130,7 @@ pub type RecoveredRunContext {
     workflow_fingerprint: String,
     run_id: String,
     run_root: String,
+    recovery_evidence: workflow_outcome.RecoveryEvidence,
     scheduler_statuses: Dict(String, workflow_scheduler.StepRuntime),
     artifacts: Dict(String, step_artifact.StepArtifact),
     prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
@@ -238,6 +240,7 @@ pub type ResumeState {
     workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
     next_attempt_indexes: Dict(String, Int),
     run_root: Option(String),
+    recovery_evidence: workflow_outcome.RecoveryEvidence,
     pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
     contract_inputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
     contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
@@ -296,7 +299,23 @@ type RecoveryAttemptOutcome {
     tokens: session_tokens.TokenTotals,
     final_issue: Option(tracker_issue.Issue),
     turns: Int,
+    recovery_evidence: workflow_outcome.RecoveryEvidence,
   )
+}
+
+fn combine_recovery_evidence(
+  current: workflow_outcome.RecoveryEvidence,
+  next: workflow_outcome.RecoveryEvidence,
+) -> workflow_outcome.RecoveryEvidence {
+  case current, next {
+    workflow_outcome.StepRecoveryRetryRequested, _ ->
+      workflow_outcome.StepRecoveryRetryRequested
+    _, workflow_outcome.StepRecoveryRetryRequested ->
+      workflow_outcome.StepRecoveryRetryRequested
+    workflow_outcome.StepRecoveryRan, _ -> workflow_outcome.StepRecoveryRan
+    _, workflow_outcome.StepRecoveryRan -> workflow_outcome.StepRecoveryRan
+    _, _ -> workflow_outcome.NoStepRecovery
+  }
 }
 
 type PrepareReadyFailure {
@@ -503,6 +522,7 @@ pub fn execute_with_resume(
       ),
       run_id: run_id,
       run_root: run_root_value,
+      recovery_evidence: resume.recovery_evidence,
       scheduler_statuses: scheduler_state.statuses,
       artifacts: resume.artifacts,
       prepared_workspaces: resume.workspaces,
@@ -691,7 +711,9 @@ pub fn execute_with_context(
                     workflow_id: dag.id,
                     issue_id: issue.id,
                     task_ref: task_ref(issue),
-                    outcome: "failed_fatal",
+                    outcome: workflow_outcome.terminal_failed_fatal(
+                      workflow_outcome.NoStepRecovery,
+                    ),
                     token_total: 0,
                     turns: 0,
                   ),
@@ -715,6 +737,7 @@ pub fn execute_with_context(
                 invocation.run_id,
                 invocation.workflow_fingerprint,
                 None,
+                workflow_outcome.NoStepRecovery,
                 False,
                 dependencies,
                 workflow_scheduler.init(dag),
@@ -759,7 +782,9 @@ pub fn execute_with_context(
                         workflow_id: dag.id,
                         issue_id: issue.id,
                         task_ref: task_ref(issue),
-                        outcome: "failed_fatal",
+                        outcome: workflow_outcome.terminal_failed_fatal(
+                          recovered.recovery_evidence,
+                        ),
                         token_total: recovered.token_totals.total,
                         turns: recovered.turns,
                       ),
@@ -801,6 +826,7 @@ pub fn execute_with_context(
                         recovered.run_id,
                         recovered.workflow_fingerprint,
                         recovered.contract_outputs_recorded,
+                        recovered.recovery_evidence,
                         True,
                         dependencies,
                         scheduler_state,
@@ -1882,6 +1908,7 @@ fn loop(
   run_id: String,
   workflow_fingerprint: String,
   contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
   recovered_execution: Bool,
   dependencies: Dependencies,
   scheduler_state: workflow_scheduler.SchedulerState,
@@ -1936,7 +1963,9 @@ fn loop(
                     workflow_id: dag.id,
                     issue_id: issue.id,
                     task_ref: task_ref(issue),
-                    outcome: "completed",
+                    outcome: workflow_outcome.terminal_success(
+                      recovery_evidence,
+                    ),
                     token_total: tokens.total,
                     turns: turns,
                   ),
@@ -1980,7 +2009,9 @@ fn loop(
                         workflow_id: dag.id,
                         issue_id: issue.id,
                         task_ref: task_ref(issue),
-                        outcome: "failed_fatal",
+                        outcome: workflow_outcome.terminal_failed_fatal(
+                          recovery_evidence,
+                        ),
                         token_total: tokens.total,
                         turns: turns,
                       ),
@@ -2010,7 +2041,9 @@ fn loop(
                     workflow_id: dag.id,
                     issue_id: issue.id,
                     task_ref: task_ref(issue),
-                    outcome: "failed_fatal",
+                    outcome: workflow_outcome.terminal_failed_fatal(
+                      recovery_evidence,
+                    ),
                     token_total: tokens.total,
                     turns: turns,
                   ),
@@ -2050,7 +2083,9 @@ fn loop(
                 workflow_id: dag.id,
                 issue_id: issue.id,
                 task_ref: task_ref(issue),
-                outcome: "failed_fatal",
+                outcome: workflow_outcome.terminal_failed_fatal(
+                  recovery_evidence,
+                ),
                 token_total: tokens.total,
                 turns: turns,
               ),
@@ -2085,7 +2120,9 @@ fn loop(
                 workflow_id: dag.id,
                 issue_id: issue.id,
                 task_ref: task_ref(issue),
-                outcome: "failed_fatal",
+                outcome: workflow_outcome.terminal_failed_fatal(
+                  recovery_evidence,
+                ),
                 token_total: tokens.total,
                 turns: turns,
               ),
@@ -2144,7 +2181,7 @@ fn loop(
             workflow_id: dag.id,
             issue_id: issue.id,
             task_ref: task_ref(issue),
-            outcome: "failed_fatal",
+            outcome: workflow_outcome.terminal_failed_fatal(recovery_evidence),
             token_total: tokens.total,
             turns: turns,
           ),
@@ -2167,6 +2204,7 @@ fn loop(
         [] -> {
           mark_workflow_failed_terminal(
             dependencies,
+            recovery_evidence,
             run_id,
             dag.id,
             issue.id,
@@ -2222,6 +2260,7 @@ fn loop(
               let failure_run_root = option.or(prepared_run_root, run_root)
               mark_workflow_failed_terminal(
                 dependencies,
+                recovery_evidence,
                 run_id,
                 dag.id,
                 issue.id,
@@ -2263,6 +2302,7 @@ fn loop(
                 run_id,
                 workflow_fingerprint,
                 contract_outputs_recorded,
+                recovery_evidence,
                 dependencies,
                 scheduler_state,
                 artifacts,
@@ -2532,6 +2572,7 @@ fn execute_prepared_steps(
   run_id: String,
   workflow_fingerprint: String,
   contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
   dependencies: Dependencies,
   scheduler_state: workflow_scheduler.SchedulerState,
   artifacts: Dict(String, step_artifact.StepArtifact),
@@ -2557,6 +2598,7 @@ fn execute_prepared_steps(
         run_id,
         workflow_fingerprint,
         contract_outputs_recorded,
+        recovery_evidence,
         recovered_execution,
         dependencies,
         scheduler_state,
@@ -2589,6 +2631,7 @@ fn execute_prepared_steps(
         Error(StepBatchStartError(reason, batch_cleanup_allowed)) -> {
           mark_workflow_failed_terminal(
             dependencies,
+            recovery_evidence,
             run_id,
             dag.id,
             issue.id,
@@ -2627,6 +2670,7 @@ fn execute_prepared_steps(
             run_id,
             workflow_fingerprint,
             contract_outputs_recorded,
+            recovery_evidence,
             dependencies,
             scheduler_state,
             artifacts,
@@ -2654,6 +2698,7 @@ fn execute_prepared_steps(
             run_id,
             workflow_fingerprint,
             contract_outputs_recorded,
+            recovery_evidence,
             dependencies,
             scheduler_state,
             artifacts,
@@ -3095,6 +3140,7 @@ fn finish_fatal_batch_result(
   run_id: String,
   workflow_fingerprint: String,
   contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
   dependencies: Dependencies,
   scheduler_state: workflow_scheduler.SchedulerState,
   artifacts: Dict(String, step_artifact.StepArtifact),
@@ -3120,6 +3166,7 @@ fn finish_fatal_batch_result(
         run_id,
         workflow_fingerprint,
         contract_outputs_recorded,
+        recovery_evidence,
         orchestrator,
         dependencies,
         artifacts,
@@ -3138,7 +3185,7 @@ fn finish_fatal_batch_result(
           workflow_id: dag.id,
           step_id: step.id,
           attempt_index: workspace.attempt_index,
-          outcome: "failed_fatal",
+          outcome: workflow_outcome.failed_fatal,
           workspace_name: workspace.workspace_name,
           workspace_path: workspace.path,
           token_total: result.tokens.total,
@@ -3165,6 +3212,7 @@ fn finish_fatal_batch_result(
             run_id,
             workflow_fingerprint,
             contract_outputs_recorded,
+            recovery_evidence,
             orchestrator,
             dependencies,
             artifacts,
@@ -3219,6 +3267,7 @@ fn finish_fatal_batch_result(
                     run_id,
                     workflow_fingerprint,
                     contract_outputs_recorded,
+                    workflow_outcome.StepRecoveryRetryRequested,
                     recovered_execution,
                     dependencies,
                     scheduler_state,
@@ -3234,7 +3283,17 @@ fn finish_fatal_batch_result(
                     profile,
                   )
                 }
-                RecoveryStop(recovery_tokens, _, recovery_turns) ->
+                RecoveryStop(
+                  recovery_tokens,
+                  _,
+                  recovery_turns,
+                  stop_recovery_evidence,
+                ) -> {
+                  let recovery_evidence =
+                    combine_recovery_evidence(
+                      recovery_evidence,
+                      stop_recovery_evidence,
+                    )
                   terminal_fatal_batch_failure(
                     starts,
                     result,
@@ -3243,6 +3302,7 @@ fn finish_fatal_batch_result(
                     run_id,
                     workflow_fingerprint,
                     contract_outputs_recorded,
+                    recovery_evidence,
                     orchestrator,
                     dependencies,
                     artifacts,
@@ -3254,6 +3314,7 @@ fn finish_fatal_batch_result(
                     profile,
                     checkpoint_error: None,
                   )
+                }
               }
             None ->
               terminal_fatal_batch_failure(
@@ -3264,6 +3325,7 @@ fn finish_fatal_batch_result(
                 run_id,
                 workflow_fingerprint,
                 contract_outputs_recorded,
+                recovery_evidence,
                 orchestrator,
                 dependencies,
                 artifacts,
@@ -3289,6 +3351,7 @@ fn terminal_fatal_batch_failure(
   run_id: String,
   workflow_fingerprint: String,
   contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
   orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
@@ -3336,7 +3399,7 @@ fn terminal_fatal_batch_failure(
         workflow_id: dag.id,
         issue_id: issue.id,
         task_ref: task_ref(issue),
-        outcome: "failed_fatal",
+        outcome: workflow_outcome.terminal_failed_fatal(recovery_evidence),
         token_total: workflow_finished_token_total,
         turns: workflow_finished_turns,
       ),
@@ -3443,7 +3506,13 @@ fn execute_step_recovery(
       prompt_ref: prompt_ref,
     )
   case dependencies.checkpoint.step_recovery_started(start) {
-    Error(_) -> RecoveryStop(session_tokens.zero_token_totals(), None, 0)
+    Error(_) ->
+      RecoveryStop(
+        session_tokens.zero_token_totals(),
+        None,
+        0,
+        workflow_outcome.NoStepRecovery,
+      )
     Ok(Nil) -> {
       let context =
         recovery_context(step_context(
@@ -3511,7 +3580,12 @@ fn execute_step_recovery(
               ),
             ),
           )
-          RecoveryStop(failure.tokens, failure.final_issue, 0)
+          RecoveryStop(
+            failure.tokens,
+            failure.final_issue,
+            0,
+            workflow_outcome.StepRecoveryRan,
+          )
         }
       }
     }
@@ -3550,7 +3624,12 @@ fn apply_recovery_success(
             success.turns,
           )
         False ->
-          RecoveryStop(success.tokens, success.final_issue, success.turns)
+          RecoveryStop(
+            success.tokens,
+            success.final_issue,
+            success.turns,
+            workflow_outcome.StepRecoveryRan,
+          )
       }
     Ok(workflow_step_recovery.GaveUp(summary, reason)) -> {
       let _ =
@@ -3566,7 +3645,12 @@ fn apply_recovery_success(
           secrets,
           dependencies,
         )
-      RecoveryStop(success.tokens, success.final_issue, success.turns)
+      RecoveryStop(
+        success.tokens,
+        success.final_issue,
+        success.turns,
+        workflow_outcome.StepRecoveryRan,
+      )
     }
     Error(protocol_error) -> {
       let protocol_reason =
@@ -3591,7 +3675,12 @@ fn apply_recovery_success(
           ),
         ),
       )
-      RecoveryStop(success.tokens, success.final_issue, success.turns)
+      RecoveryStop(
+        success.tokens,
+        success.final_issue,
+        success.turns,
+        workflow_outcome.StepRecoveryRan,
+      )
     }
   }
 }
@@ -3816,6 +3905,7 @@ fn apply_prepared_results(
   run_id: String,
   workflow_fingerprint: String,
   contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
   dependencies: Dependencies,
   scheduler_state: workflow_scheduler.SchedulerState,
   artifacts: Dict(String, step_artifact.StepArtifact),
@@ -3841,6 +3931,7 @@ fn apply_prepared_results(
         run_id,
         workflow_fingerprint,
         contract_outputs_recorded,
+        recovery_evidence,
         recovered_execution,
         dependencies,
         scheduler_state,
@@ -3860,6 +3951,7 @@ fn apply_prepared_results(
         Error(Nil) -> {
           mark_workflow_failed_terminal(
             dependencies,
+            recovery_evidence,
             run_id,
             dag.id,
             issue.id,
@@ -3909,6 +4001,7 @@ fn apply_prepared_results(
             Error(error) -> {
               mark_workflow_failed_terminal(
                 dependencies,
+                recovery_evidence,
                 run_id,
                 dag.id,
                 issue.id,
@@ -3947,6 +4040,7 @@ fn apply_prepared_results(
                 Error(reason) -> {
                   mark_workflow_failed_terminal(
                     dependencies,
+                    recovery_evidence,
                     run_id,
                     dag.id,
                     issue.id,
@@ -3979,6 +4073,7 @@ fn apply_prepared_results(
                     Error(error) -> {
                       mark_workflow_failed_terminal(
                         dependencies,
+                        recovery_evidence,
                         run_id,
                         dag.id,
                         issue.id,
@@ -4028,6 +4123,7 @@ fn apply_prepared_results(
                         run_id,
                         workflow_fingerprint,
                         contract_outputs_recorded,
+                        recovery_evidence,
                         dependencies,
                         scheduler_state,
                         artifacts,
@@ -5236,6 +5332,7 @@ fn task_ref(issue: tracker_issue.Issue) -> Option(workflow_checkpoint.TaskRef) {
 
 fn mark_workflow_failed_terminal(
   dependencies: Dependencies,
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
   run_id: String,
   workflow_id: String,
   issue_id: String,
@@ -5249,7 +5346,7 @@ fn mark_workflow_failed_terminal(
         workflow_id: workflow_id,
         issue_id: issue_id,
         task_ref: None,
-        outcome: "failed_fatal",
+        outcome: workflow_outcome.terminal_failed_fatal(recovery_evidence),
         token_total: token_total,
         turns: turns,
       ),

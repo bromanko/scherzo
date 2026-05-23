@@ -18,6 +18,7 @@ import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_attempt
 import scherzo/workflow_dag
+import scherzo/workflow_outcome
 import simplifile
 
 pub type RecoveredRetry {
@@ -72,6 +73,7 @@ pub type RecoveredWorkflowRun {
     workflow_id: String,
     workflow_fingerprint: String,
     run_root: String,
+    recovery_evidence: workflow_outcome.RecoveryEvidence,
     completed_artifacts: Dict(String, step_artifact.StepArtifact),
     completed_workspaces: Dict(String, RecoveredWorkspaceSummary),
     next_attempt_indexes: Dict(String, Int),
@@ -92,6 +94,7 @@ pub type WorkflowRecoveryCandidate {
     issue_fingerprint: String,
     observed_updated_at_ms: Int,
     run_root: String,
+    recovery_evidence: workflow_outcome.RecoveryEvidence,
     attempts: List(projection.StepAttemptStatus),
     contract_input_manifest: Option(RecoveredContractManifest),
     contract_output_manifest: Option(RecoveredContractManifest),
@@ -178,6 +181,8 @@ fn default_session_recovery_config() -> SessionRecoveryConfig {
 pub fn workflow_candidates(
   projection: projection.Projection,
 ) -> List(WorkflowRecoveryCandidate) {
+  let recovery_evidence_by_run = step_recovery_evidence_by_run(projection)
+
   projection.active_workflow_runs(projection)
   |> list.filter_map(fn(entry) {
     let #(run_id, status) = entry
@@ -207,6 +212,9 @@ pub fn workflow_candidates(
           issue_fingerprint: issue_fingerprint,
           observed_updated_at_ms: observed_updated_at_ms,
           run_root: run_root,
+          recovery_evidence: recovery_evidence_by_run
+            |> dict.get(run_id)
+            |> result.unwrap(workflow_outcome.NoStepRecovery),
           attempts: attempts_for_run(projection, run_id),
           contract_input_manifest: projection.workflow_input_manifest(
             projection,
@@ -391,6 +399,69 @@ fn attempts_for_run(
     let #(status_run_id, _, _) = attempt_identity(status)
     status_run_id == run_id
   })
+}
+
+pub fn step_recovery_evidence_for_run(
+  projection: projection.Projection,
+  run_id: String,
+) -> workflow_outcome.RecoveryEvidence {
+  step_recovery_evidence_by_run(projection)
+  |> dict.get(run_id)
+  |> result.unwrap(workflow_outcome.NoStepRecovery)
+}
+
+fn step_recovery_evidence_by_run(
+  projection: projection.Projection,
+) -> Dict(String, workflow_outcome.RecoveryEvidence) {
+  projection.step_recoveries
+  |> dict.values
+  |> list.fold(dict.new(), fn(evidence_by_run, status) {
+    let run_id = step_recovery_status_run_id(status)
+    let evidence =
+      evidence_by_run
+      |> dict.get(run_id)
+      |> result.unwrap(workflow_outcome.NoStepRecovery)
+    dict.insert(
+      evidence_by_run,
+      run_id,
+      combine_recovery_evidence(evidence, recovery_evidence_from_status(status)),
+    )
+  })
+}
+
+fn step_recovery_status_run_id(
+  status: projection.StepRecoveryStatus,
+) -> String {
+  case status {
+    projection.StepRecoveryStartedStatus(run_id: run_id, ..)
+    | projection.StepRecoveryFinishedStatus(run_id: run_id, ..) -> run_id
+  }
+}
+
+fn recovery_evidence_from_status(
+  status: projection.StepRecoveryStatus,
+) -> workflow_outcome.RecoveryEvidence {
+  case status {
+    projection.StepRecoveryFinishedStatus(result: "retry_requested", ..) ->
+      workflow_outcome.StepRecoveryRetryRequested
+    projection.StepRecoveryStartedStatus(..)
+    | projection.StepRecoveryFinishedStatus(..) ->
+      workflow_outcome.StepRecoveryRan
+  }
+}
+
+fn combine_recovery_evidence(
+  left: workflow_outcome.RecoveryEvidence,
+  right: workflow_outcome.RecoveryEvidence,
+) -> workflow_outcome.RecoveryEvidence {
+  case left, right {
+    workflow_outcome.StepRecoveryRetryRequested, _
+    | _, workflow_outcome.StepRecoveryRetryRequested
+    -> workflow_outcome.StepRecoveryRetryRequested
+    workflow_outcome.StepRecoveryRan, _ | _, workflow_outcome.StepRecoveryRan ->
+      workflow_outcome.StepRecoveryRan
+    _, _ -> workflow_outcome.NoStepRecovery
+  }
 }
 
 fn finalize_workflow_candidates_loop(
@@ -713,6 +784,7 @@ fn recover_attempts_loop(
           workflow_id: candidate.workflow_id,
           workflow_fingerprint: candidate.workflow_fingerprint,
           run_root: candidate.run_root,
+          recovery_evidence: candidate.recovery_evidence,
           completed_artifacts: artifacts,
           completed_workspaces: workspaces,
           next_attempt_indexes: next_indexes,

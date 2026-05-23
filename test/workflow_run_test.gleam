@@ -34,6 +34,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
+import scherzo/workflow_outcome
 import scherzo/workflow_run
 import scherzo/workflow_scheduler
 import scherzo/workspace_driver_context
@@ -327,6 +328,49 @@ fn ledger_records(root: String) -> List(record.LedgerRecord) {
     let assert Ok(decoded) = record.decode_string(line)
     decoded
   })
+}
+
+fn workflow_finished_outcome(root: String) -> String {
+  let records = ledger_records(root)
+  let assert Ok(ledger_record) =
+    list.find(records, fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_run_finished"
+    })
+  case ledger_record.body {
+    record.WorkflowRunFinished(outcome: outcome, ..)
+    | record.WorkflowRunFinishedWithTask(outcome: outcome, ..) -> outcome
+    _ -> panic as "expected workflow_run_finished"
+  }
+}
+
+fn step_finished_outcome(root: String, step_id: String) -> String {
+  let records = ledger_records(root)
+  let assert Ok(ledger_record) =
+    list.find(records, fn(ledger_record) {
+      case ledger_record.body {
+        record.StepAttemptFinished(step_id: finished_step_id, ..) ->
+          finished_step_id == step_id
+        _ -> False
+      }
+    })
+  case ledger_record.body {
+    record.StepAttemptFinished(outcome: outcome, ..) -> outcome
+    _ -> panic as "expected step_attempt_finished"
+  }
+}
+
+fn recording_checkpoint(
+  root: String,
+  subject: process.Subject(String),
+) -> workflow_checkpoint.Writer {
+  let base = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  workflow_checkpoint.Writer(
+    ..base,
+    workflow_finished: fn(finished: workflow_checkpoint.WorkflowFinished) {
+      process.send(subject, "workflow_finished:" <> finished.outcome)
+      base.workflow_finished(finished)
+    },
+  )
 }
 
 fn fake_pi() -> String {
@@ -970,6 +1014,7 @@ fn recovered_context(
     workflow_fingerprint: "wf-test",
     run_id: "run-1",
     run_root: "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+    recovery_evidence: workflow_outcome.NoStepRecovery,
     scheduler_statuses: scheduler_statuses,
     artifacts: artifacts,
     prepared_workspaces: prepared_workspaces,
@@ -4335,6 +4380,7 @@ fn opted_in_workstream_resume_state(
     workspaces: dict.new(),
     next_attempt_indexes: dict.new(),
     run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+    recovery_evidence: workflow_outcome.NoStepRecovery,
     pi_session_continuations: dict.new(),
     contract_inputs_recorded: None,
     contract_outputs_recorded: Some(recorded),
@@ -5188,6 +5234,169 @@ pub fn contracted_optional_missing_output_allows_success_test() {
   assert notes.value.status == workflow_contract_manifest.Absent
 }
 
+pub fn resumed_run_without_step_recovery_emits_completed_terminal_outcome_test() {
+  let root = "test/tmp/workflow-run/recovered-outcome-clean-success"
+  let subject = process.new_subject()
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let resume =
+    workflow_run.ResumeState(
+      artifacts: dict.new(),
+      workspaces: dict.new(),
+      next_attempt_indexes: dict.from_list([#("collect", 1)]),
+      run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      recovery_evidence: workflow_outcome.NoStepRecovery,
+      pi_session_continuations: dict.new(),
+      contract_inputs_recorded: None,
+      contract_outputs_recorded: None,
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, None),
+        checkpoint: recording_checkpoint(root, subject),
+      ),
+      resume,
+    )
+
+  assert receive_event_with_prefix(subject, "workflow_finished:", 20)
+    == "workflow_finished:completed"
+  assert workflow_finished_outcome(root) == workflow_outcome.completed
+}
+
+pub fn resumed_run_with_step_recovery_emits_succeeded_after_recovery_test() {
+  let root = "test/tmp/workflow-run/recovered-outcome-recovered-success"
+  let subject = process.new_subject()
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let resume =
+    workflow_run.ResumeState(
+      artifacts: dict.new(),
+      workspaces: dict.new(),
+      next_attempt_indexes: dict.from_list([#("collect", 1)]),
+      run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      recovery_evidence: workflow_outcome.StepRecoveryRan,
+      pi_session_continuations: dict.new(),
+      contract_inputs_recorded: None,
+      contract_outputs_recorded: None,
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, None),
+        checkpoint: recording_checkpoint(root, subject),
+      ),
+      resume,
+    )
+
+  assert receive_event_with_prefix(subject, "workflow_finished:", 20)
+    == "workflow_finished:succeeded_after_recovery"
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.succeeded_after_recovery
+}
+
+pub fn resumed_run_without_step_recovery_emits_failed_fatal_terminal_outcome_test() {
+  let root = "test/tmp/workflow-run/recovered-outcome-clean-failure"
+  let subject = process.new_subject()
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let resume =
+    workflow_run.ResumeState(
+      artifacts: dict.new(),
+      workspaces: dict.new(),
+      next_attempt_indexes: dict.from_list([#("collect", 1)]),
+      run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      recovery_evidence: workflow_outcome.NoStepRecovery,
+      pi_session_continuations: dict.new(),
+      contract_inputs_recorded: None,
+      contract_outputs_recorded: None,
+    )
+
+  let assert Error(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, Some("collect")),
+        checkpoint: recording_checkpoint(root, subject),
+      ),
+      resume,
+    )
+
+  assert receive_event_with_prefix(subject, "workflow_finished:", 20)
+    == "workflow_finished:failed_fatal"
+  assert workflow_finished_outcome(root) == workflow_outcome.failed_fatal
+}
+
+pub fn resumed_run_with_step_recovery_retry_requested_emits_failed_after_recovery_test() {
+  let root = "test/tmp/workflow-run/recovered-outcome-recovered-failure"
+  let subject = process.new_subject()
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let resume =
+    workflow_run.ResumeState(
+      artifacts: dict.new(),
+      workspaces: dict.new(),
+      next_attempt_indexes: dict.from_list([#("collect", 1)]),
+      run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      recovery_evidence: workflow_outcome.StepRecoveryRetryRequested,
+      pi_session_continuations: dict.new(),
+      contract_inputs_recorded: None,
+      contract_outputs_recorded: None,
+    )
+
+  let assert Error(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, Some("collect")),
+        checkpoint: recording_checkpoint(root, subject),
+      ),
+      resume,
+    )
+
+  assert receive_event_with_prefix(subject, "workflow_finished:", 20)
+    == "workflow_finished:failed_after_recovery"
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.failed_after_recovery
+  assert step_finished_outcome(root, "collect") == workflow_outcome.failed_fatal
+}
+
 pub fn contracted_recovery_with_started_attempt_records_recovery_input_manifest_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-recovery-started-attempt"
@@ -5202,6 +5411,7 @@ pub fn contracted_recovery_with_started_attempt_records_recovery_input_manifest_
       workspaces: dict.new(),
       next_attempt_indexes: dict.from_list([#("collect", 1)]),
       run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      recovery_evidence: workflow_outcome.NoStepRecovery,
       pi_session_continuations: dict.new(),
       contract_inputs_recorded: None,
       contract_outputs_recorded: None,
@@ -5261,6 +5471,7 @@ pub fn contracted_recovery_records_missing_inputs_once_and_preserves_outputs_tes
       workspaces: dict.new(),
       next_attempt_indexes: dict.new(),
       run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      recovery_evidence: workflow_outcome.NoStepRecovery,
       pi_session_continuations: dict.new(),
       contract_inputs_recorded: None,
       contract_outputs_recorded: None,

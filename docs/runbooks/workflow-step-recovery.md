@@ -2,7 +2,7 @@
 
 This page documents the currently active runtime step-recovery path in Scherzo. When a step has effective `recover` configuration and its failure would otherwise be fatal, `workflow_run` records the failed original attempt, starts one bounded nested recovery worker in the same workspace, and retries the original step unchanged when the recovery result is `retry_requested`.
 
-Recovery remains a no-op for steps without effective recovery, for `recover.enabled: false`, and for `on_failure: continue`. Recovered terminal outcome names and operator-facing timeline rendering are still deferred; the runtime slice only activates the recovery worker, durable recovery records, retained recovery artifacts, and retry requeueing.
+Recovery remains a no-op for steps without effective recovery, for `recover.enabled: false`, and for `on_failure: continue`. Scherzo also accepts stored step-recovery history and recovered workflow terminal outcomes for compatibility. A workflow run emits `succeeded_after_recovery` or `failed_after_recovery` only when the same run has durable `workflow_step_recovery_started` or `workflow_step_recovery_finished` evidence; daemon startup resume by itself does not relabel a clean run.
 
 ## Current merge scope
 
@@ -22,7 +22,6 @@ Implemented in this slice:
 
 Still intentionally deferred:
 
-- emitting `succeeded_after_recovery` or `failed_after_recovery` outcomes;
 - operator-facing history/CLI rendering for the failed-attempt → recovery → retry timeline;
 - deeper interruption and crash-resume hardening beyond preserving the original failure result.
 
@@ -71,3 +70,5 @@ Durable history records written by the runtime are:
 - `workflow_step_recovery_finished`
 
 These records link the failed attempt, recovery attempt number, recovery session id, decision (`retry_requested` or `gave_up`), and optional retry attempt index.
+
+Workflow terminal outcomes remain `completed` and `failed_fatal` for clean runs. When same-run step-recovery evidence exists, terminal workflow outcomes may instead be `succeeded_after_recovery` or `failed_after_recovery`.
