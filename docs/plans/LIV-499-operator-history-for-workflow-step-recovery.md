@@ -57,6 +57,10 @@ Milestone 5 migrates documentation and completes validation. `docs/runbooks/work
 - [x] (2026-05-22) Reviewed the failed LIV-499 workflow artifacts and recovered the accepted implementation-pack content.
 - [x] (2026-05-22) Authored this concise review document without mechanical implementation sections so it can be paired with the structured implementation pack.
 - [x] (2026-05-22) Incorporated the prior plan-review feedback by requiring error-path evidence, all session-resolution entry points, unrelated-session behavior, duplicate or multi-entry visibility, exhaustive runbook migration, and unchanged `session --json` scope.
+- [x] (2026-05-23) Implemented `src/scherzo/ctl/workflow_recovery_history.gleam`, wired human `scherzoctl session` output to append recovery history, and added deterministic helper plus CLI acceptance tests.
+- [x] (2026-05-23) Migrated `docs/runbooks/workflow-step-recovery.md` and `docs/runbooks/workflow-recovery.md` to point operators at the new history surface.
+- [x] (2026-05-23) Ran `direnv exec . gleam test` and `direnv exec . gleam format --check src test`; both passed.
+- [x] (2026-05-23) Ran `direnv exec . gleam run -m glinter` and `direnv exec . gleam run -m scherzo_lint`; both completed with the existing warning inventory and no new errors.
 
 ## Decision Log
 
@@ -95,3 +99,9 @@ If ledger replay fails, the command should preserve the existing session output 
 ## Open Questions and Clarifications Needed
 
 There are no stakeholder decisions required before implementation. The implementer still must verify that LIV-488 and LIV-489 runtime contracts are present in the checkout before coding. Future work may add a stable JSON recovery-history protocol or a richer UI view, but those surfaces are intentionally outside this display-only ticket.
+
+## Outcomes & Retrospective
+
+The implementation stayed within the intended display-only scope. Operators can now inspect workflow step recovery history from the human `scherzoctl session` output for failed-step sessions, retry continuations, and nested recovery sessions, while `session --json` remains unchanged. The unavailable-history path is bounded and non-fatal, duplicate recovery-start records remain visible, and the required docs now point operators at the implemented surface.
+
+Validation passed for `direnv exec . gleam test` and `direnv exec . gleam format --check src test`. The required lint gates also completed successfully, but they still report the pre-existing repository warning inventory; this change did not add new lint errors or new warning categories.

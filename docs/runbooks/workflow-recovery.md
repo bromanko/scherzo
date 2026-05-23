@@ -37,7 +37,7 @@ scripts/scherzoctl session <session-id> --json
 scripts/scherzoctl events --pretty <session-id>
 ```
 
-Look for `recovery.status`, `recovery.source`, `recovery.message`, `recovery.safe_actions`, `workflow_run_id`, and pi session ids. Do not assume a current pi session id is a recovered old pi process. If `status` is `running` and `recovery.status` is `interrupted`, keep those meanings separate: the process status is current process state; the recovery status is durable history or operator guidance.
+Look for `recovery.status`, `recovery.source`, `recovery.message`, `recovery.safe_actions`, `workflow_run_id`, and pi session ids. When the session belongs to a workflow step run or nested recovery run, the human `session` output also appends `workflow_step_recovery_history`, which summarizes the failed attempt, recovery decision, retry attempt, and recovered terminal workflow outcome when known. Do not assume a current pi session id is a recovered old pi process. If `status` is `running` and `recovery.status` is `interrupted`, keep those meanings separate: the process status is current process state; the recovery status is durable history or operator guidance.
 
 If retrying could repeat an unsafe external side effect, park the task first:
 
