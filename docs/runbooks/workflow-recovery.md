@@ -61,6 +61,22 @@ scripts/scherzoctl unpark <task>
 
 If a parked task exists because of retry caps, inspect recent events and handoff comments before unpark or retry. Do not unpark solely because the live worker list is quiet.
 
+## Repair interrupted retained workflow runs
+
+Use `retry-step` when a retained workflow run has durable completed upstream artifacts and a failed or interrupted repair boundary that you want to rerun in place instead of redispatching the full task:
+
+```sh
+scripts/scherzoctl retry-step run:<run-id> --step <step-id>
+```
+
+This path is fail-closed. Scherzo accepts it only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
+
+If the issue is parked, unpark it first and then rerun `retry-step`. `retry-step` does not silently override operator park policy.
+
+If drift or retained artifact recovery cannot be proven safe, fall back to manual salvage or a full task retry with `scripts/scherzoctl retry <task>`.
+
+The historical LIV-509 retry remains deferred operator evidence after publish, not a pre-publish gate for code changes.
+
 ## Inspect cleanup eligibility
 
 Cleanup starts read-only:

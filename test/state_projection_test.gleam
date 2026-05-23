@@ -259,6 +259,58 @@ pub fn projection_records_step_recoveries_test() {
   )) = dict.get(folded.step_recoveries, key)
 }
 
+pub fn workflow_run_provenance_survives_interrupted_and_snapshot_round_trip_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "run-started",
+        1000,
+        record.WorkflowRunStartedWithTask(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-1",
+          task_ref: record.linear_task_ref_fields(
+            "issue-1",
+            Some("LIV-1"),
+            None,
+          ),
+          issue_fingerprint: "issue-fp-1",
+          observed_updated_at_ms: 900,
+          run_root: "test/tmp/projection/run-1",
+        ),
+      ),
+      record.with_id(
+        "run-interrupted",
+        1010,
+        record.WorkflowRunInterrupted(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          issue_id: "issue-1",
+          reason: "daemon_shutdown",
+        ),
+      ),
+    ])
+
+  let assert Ok(provenance) =
+    projection.workflow_run_provenance(folded, "run-1")
+  assert provenance.workflow_id == "implementation"
+  assert provenance.workflow_fingerprint == "wf-1"
+  assert provenance.issue_identifier == "LIV-1"
+  assert provenance.issue_fingerprint == "issue-fp-1"
+  assert provenance.observed_updated_at_ms == 900
+  assert provenance.run_root == "test/tmp/projection/run-1"
+  assert provenance.task_ref.task_remote_id == "issue-1"
+  assert provenance.task_ref.task_key == Some("LIV-1")
+
+  let assert Ok(decoded) =
+    projection.decode_string(projection.to_string(folded))
+  let assert Ok(decoded_provenance) =
+    projection.workflow_run_provenance(decoded, "run-1")
+  assert decoded_provenance == provenance
+}
+
 pub fn projection_snapshot_with_partial_workstream_task_ref_fails_test() {
   let malformed_snapshot =
     "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[],\"workstreams\":[{\"workstream_id\":\"linear:LIV-393\",\"task_backend_kind\":\"linear\"}]}"

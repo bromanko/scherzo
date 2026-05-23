@@ -39,13 +39,14 @@ type SelectedRun {
     issue_identifier: String,
     issue_fingerprint: String,
     observed_updated_at_ms: Int,
+    repairable_at_ms: Int,
     run_root: String,
     task_ref: record.TaskRefFields,
   )
 }
 
-type FailedAttempt {
-  FailedAttempt(step_id: String, attempt_index: Int)
+type RepairBoundary {
+  RepairBoundary(step_id: String, attempt_index: Int)
 }
 
 type IssueTarget {
@@ -114,6 +115,7 @@ pub fn plan(
     )) -> {
       use _ <- result.try(validate_drift(
         run,
+        issue,
         current_workflow_id,
         current_workflow_fingerprint,
         current_issue_fingerprint,
@@ -125,7 +127,7 @@ pub fn plan(
       ))
       let dag = workflow_dag_compat.normalize(dag)
       let attempts = attempts_for_run(projection_state, run.run_id)
-      use failed_attempt <- result.try(select_failed_attempt(
+      use failed_attempt <- result.try(select_repair_boundary(
         attempts,
         dag,
         selected_step_id,
@@ -151,6 +153,8 @@ pub fn plan(
       let records_to_append =
         repair_records(
           projection_state,
+          target,
+          selected_step_id,
           run,
           issue,
           current_issue_fingerprint,
@@ -274,15 +278,17 @@ fn select_latest_failed_run(
     [] ->
       Error(RepairError(
         "no_failed_workflow_run",
-        Some("no terminal failed workflow run found"),
+        Some("no failed or interrupted workflow run found"),
       ))
     [candidate] -> Ok(candidate)
     [first, second, ..] ->
-      case first.observed_updated_at_ms == second.observed_updated_at_ms {
+      case first.repairable_at_ms == second.repairable_at_ms {
         True ->
           Error(RepairError(
             "ambiguous_failed_run",
-            Some("multiple terminal failed workflow runs match; use a run id"),
+            Some(
+              "multiple failed or interrupted workflow runs match; use a run id",
+            ),
           ))
         False -> Ok(first)
       }
@@ -295,18 +301,14 @@ fn status_matches_issue_target(
   status: projection.WorkflowRunStatus,
   target: IssueTarget,
 ) -> Bool {
-  case status {
-    projection.WorkflowRunFinished(issue_id: issue_id, outcome: outcome, ..) ->
-      case outcome == "failed_fatal" || outcome == "failed_after_recovery" {
-        False -> False
-        True ->
-          case target {
-            ByIssueId(target_issue_id) -> issue_id == target_issue_id
-            ByIssueIdentifier(identifier) ->
-              task_ref_identifier(projection_state, run_id) == Some(identifier)
-          }
+  case selected_run_from_status(projection_state, run_id, status) {
+    Error(_) -> False
+    Ok(selected_run) ->
+      case target {
+        ByIssueId(target_issue_id) -> selected_run.issue_id == target_issue_id
+        ByIssueIdentifier(identifier) ->
+          selected_run.issue_identifier == identifier
       }
-    _ -> False
   }
 }
 
@@ -315,97 +317,62 @@ fn selected_run_from_status(
   run_id: String,
   status: projection.WorkflowRunStatus,
 ) -> Result(SelectedRun, RepairError) {
+  use provenance <- result.try(
+    projection.workflow_run_provenance(projection_state, run_id)
+    |> result.map_error(fn(_) {
+      RepairError(
+        "workspace_recovery_failed",
+        Some("workflow run provenance is missing"),
+      )
+    }),
+  )
+
   case status {
     projection.WorkflowRunFinished(
-      workflow_id,
-      issue_id,
-      outcome,
-      _token_total,
-      _turns,
-      finished_at_ms,
-      run_root,
+      outcome: outcome,
+      finished_at_ms: finished_at_ms,
+      ..,
     ) ->
       case outcome == "failed_fatal" || outcome == "failed_after_recovery" {
         False ->
           Error(RepairError(
             "no_failed_workflow_run",
-            Some("workflow run is not terminal failed"),
+            Some("workflow run is not repairable"),
           ))
         True ->
-          Ok(SelectedRun(
-            run_id: run_id,
-            workflow_id: workflow_id,
-            workflow_fingerprint: workflow_fingerprint_for_run(
-              projection_state,
-              run_id,
-            ),
-            issue_id: issue_id,
-            issue_identifier: option.unwrap(
-              task_ref_identifier(projection_state, run_id),
-              issue_id,
-            ),
-            issue_fingerprint: issue_fingerprint_for_run(
-              projection_state,
-              run_id,
-            ),
-            observed_updated_at_ms: finished_at_ms,
-            run_root: run_root,
-            task_ref: task_ref_for_run(projection_state, run_id, issue_id),
-          ))
+          Ok(selected_run_from_provenance(run_id, provenance, finished_at_ms))
       }
+    projection.WorkflowRunInterrupted(interrupted_at_ms: interrupted_at_ms, ..) ->
+      Ok(selected_run_from_provenance(run_id, provenance, interrupted_at_ms))
     _ ->
       Error(RepairError(
         "no_failed_workflow_run",
-        Some("workflow run is not terminal failed"),
+        Some("workflow run is not repairable"),
       ))
   }
 }
 
-fn workflow_fingerprint_for_run(
-  projection_state: projection.Projection,
+fn selected_run_from_provenance(
   run_id: String,
-) -> String {
-  case projection.workflow_input_manifest(projection_state, run_id) {
-    Some(manifest) -> manifest.workflow_fingerprint
-    None ->
-      case projection.workflow_output_manifest(projection_state, run_id) {
-        Some(manifest) -> manifest.workflow_fingerprint
-        None -> ""
-      }
-  }
-}
-
-fn issue_fingerprint_for_run(
-  projection_state: projection.Projection,
-  run_id: String,
-) -> String {
-  case projection.latest_workflow_repair(projection_state, run_id) {
-    Some(_) -> ""
-    None -> ""
-  }
-}
-
-fn task_ref_for_run(
-  projection_state: projection.Projection,
-  run_id: String,
-  issue_id: String,
-) -> record.TaskRefFields {
-  projection.workflow_task_ref(projection_state, run_id)
-  |> result.unwrap(record.legacy_linear_task_ref_fields(issue_id, issue_id))
-}
-
-fn task_ref_identifier(
-  projection_state: projection.Projection,
-  run_id: String,
-) -> Option(String) {
-  case projection.workflow_task_ref(projection_state, run_id) {
-    Ok(task_ref) -> task_ref.task_key
-    Error(Nil) -> None
-  }
+  provenance: projection.WorkflowRunProvenance,
+  repairable_at_ms: Int,
+) -> SelectedRun {
+  SelectedRun(
+    run_id: run_id,
+    workflow_id: provenance.workflow_id,
+    workflow_fingerprint: provenance.workflow_fingerprint,
+    issue_id: provenance.issue_id,
+    issue_identifier: provenance.issue_identifier,
+    issue_fingerprint: provenance.issue_fingerprint,
+    observed_updated_at_ms: provenance.observed_updated_at_ms,
+    repairable_at_ms: repairable_at_ms,
+    run_root: provenance.run_root,
+    task_ref: provenance.task_ref,
+  )
 }
 
 fn compare_selected_runs_desc(a: SelectedRun, b: SelectedRun) -> Order {
-  case int_compare_desc(a.observed_updated_at_ms, b.observed_updated_at_ms) {
+  case int_compare_desc(a.repairable_at_ms, b.repairable_at_ms) {
     Eq -> string.compare(a.run_id, b.run_id)
     order -> order
   }
@@ -439,6 +406,7 @@ fn require_current_workflow(
 
 fn validate_drift(
   run: SelectedRun,
+  issue: tracker_issue.Issue,
   current_workflow_id: String,
   current_workflow_fingerprint: String,
   current_issue_fingerprint: String,
@@ -458,14 +426,25 @@ fn validate_drift(
         False ->
           case
             run.issue_fingerprint != ""
-            && run.issue_fingerprint != current_issue_fingerprint
+            && !tracker_issue.fingerprint_equivalent(
+              run.issue_fingerprint,
+              current_issue_fingerprint,
+            )
           {
             True ->
               Error(RepairError(
                 "issue_drift",
                 Some("issue fingerprint drifted"),
               ))
-            False -> Ok(Nil)
+            False ->
+              case task_ref_matches_issue(run.task_ref, issue) {
+                True -> Ok(Nil)
+                False ->
+                  Error(RepairError(
+                    "issue_drift",
+                    Some("task identity drifted"),
+                  ))
+              }
           }
       }
   }
@@ -512,6 +491,17 @@ fn validate_run_root(
   }
 }
 
+fn task_ref_matches_issue(
+  task_ref: record.TaskRefFields,
+  issue: tracker_issue.Issue,
+) -> Bool {
+  task_ref.task_remote_id == issue.id
+  && case task_ref.task_key {
+    Some(task_key) -> task_key == issue.identifier
+    None -> True
+  }
+}
+
 fn attempts_for_run(
   projection_state: projection.Projection,
   run_id: String,
@@ -527,46 +517,44 @@ fn attempts_for_run(
   })
 }
 
-fn select_failed_attempt(
+fn select_repair_boundary(
   attempts: List(projection.StepAttemptStatus),
-  dag: workflow_dag.WorkflowDag,
+  _dag: workflow_dag.WorkflowDag,
   selected_step_id: Option(String),
-) -> Result(FailedAttempt, RepairError) {
-  let failed = failed_attempts(attempts)
+) -> Result(RepairBoundary, RepairError) {
+  let repairable =
+    repair_boundaries(attempts)
+    |> list.sort(by: compare_repair_boundaries_desc)
   case selected_step_id {
     Some(step_id) ->
-      case find_failed_attempt(failed, step_id) {
+      case find_repair_boundary(repairable, step_id) {
         Some(candidate) -> Ok(candidate)
         None ->
           Error(RepairError(
-            "step_not_failed_fatal",
-            Some("selected step is not failed_fatal"),
+            "step_not_repairable",
+            Some("selected step is not failed or interrupted"),
           ))
       }
     None ->
-      case failed {
+      case repairable {
         [] ->
           Error(RepairError(
             "no_failed_workflow_run",
-            Some("workflow run has no failed_fatal step"),
+            Some("workflow run has no failed or interrupted step"),
           ))
         [candidate] -> Ok(candidate)
         _ ->
-          case unique_failed_root(failed, dag) {
-            Some(candidate) -> Ok(candidate)
-            None ->
-              Error(RepairError(
-                "ambiguous_failed_step",
-                Some("multiple failed steps match; use --step"),
-              ))
-          }
+          Error(RepairError(
+            "ambiguous_repair_step",
+            Some("multiple failed or interrupted steps match; use --step"),
+          ))
       }
   }
 }
 
-fn failed_attempts(
+fn repair_boundaries(
   attempts: List(projection.StepAttemptStatus),
-) -> List(FailedAttempt) {
+) -> List(RepairBoundary) {
   attempts
   |> list.fold([], fn(acc, status) {
     case status {
@@ -577,48 +565,40 @@ fn failed_attempts(
         ..,
       ) ->
         case outcome == "failed_fatal" || outcome == "failed_after_recovery" {
-          True -> [FailedAttempt(step_id, attempt_index), ..acc]
+          True -> [RepairBoundary(step_id, attempt_index), ..acc]
           False -> acc
         }
+      projection.StepAttemptInterruptedStatus(
+        step_id: step_id,
+        attempt_index: attempt_index,
+        ..,
+      ) -> [RepairBoundary(step_id, attempt_index), ..acc]
       _ -> acc
     }
   })
 }
 
-fn find_failed_attempt(
-  failed: List(FailedAttempt),
+fn compare_repair_boundaries_desc(
+  a: RepairBoundary,
+  b: RepairBoundary,
+) -> Order {
+  case int_compare_desc(a.attempt_index, b.attempt_index) {
+    Eq -> string.compare(a.step_id, b.step_id)
+    order -> order
+  }
+}
+
+fn find_repair_boundary(
+  boundaries: List(RepairBoundary),
   step_id: String,
-) -> Option(FailedAttempt) {
-  case failed {
+) -> Option(RepairBoundary) {
+  case boundaries {
     [] -> None
     [candidate, ..rest] ->
       case candidate.step_id == step_id {
         True -> Some(candidate)
-        False -> find_failed_attempt(rest, step_id)
+        False -> find_repair_boundary(rest, step_id)
       }
-  }
-}
-
-fn unique_failed_root(
-  failed: List(FailedAttempt),
-  dag: workflow_dag.WorkflowDag,
-) -> Option(FailedAttempt) {
-  let roots =
-    failed
-    |> list.fold([], fn(acc, candidate) {
-      let blocked =
-        list.any(failed, fn(other) {
-          other.step_id != candidate.step_id
-          && step_depends_on(dag, other.step_id, candidate.step_id)
-        })
-      case blocked {
-        True -> acc
-        False -> [candidate, ..acc]
-      }
-    })
-  case roots {
-    [candidate] -> Some(candidate)
-    _ -> None
   }
 }
 
@@ -701,10 +681,12 @@ fn rewritten_attempts(
 
 fn repair_records(
   projection_state: projection.Projection,
+  target: command.RetryWorkflowStepTarget,
+  requested_step_id: Option(String),
   run: SelectedRun,
   issue: tracker_issue.Issue,
   current_issue_fingerprint: String,
-  failed_attempt: FailedAttempt,
+  failed_attempt: RepairBoundary,
   next_attempt_index: Int,
   excluded_steps: List(String),
   attempts: List(projection.StepAttemptStatus),
@@ -718,10 +700,8 @@ fn repair_records(
       run.workflow_id,
       issue.id,
       issue.identifier,
-      command.retry_workflow_step_target_to_string(
-        command.RetryWorkflowStepRunId(run.run_id),
-      ),
-      None,
+      command.retry_workflow_step_target_to_string(target),
+      requested_step_id,
       failed_attempt.step_id,
       failed_attempt.attempt_index,
       next_attempt_index,
@@ -769,7 +749,7 @@ fn supersede_records(
   attempts: List(projection.StepAttemptStatus),
   excluded_steps: List(String),
   run: SelectedRun,
-  failed_attempt: FailedAttempt,
+  failed_attempt: RepairBoundary,
   projection_state: projection.Projection,
 ) -> List(record.RecordBody) {
   attempts
@@ -861,20 +841,5 @@ fn attempt_identity(
       _,
       _,
     ) -> #(run_id, step_id, attempt_index)
-  }
-}
-
-fn step_depends_on(
-  dag: workflow_dag.WorkflowDag,
-  step_id: String,
-  dependency_id: String,
-) -> Bool {
-  case workflow_dag.step_by_id(dag, step_id) {
-    Error(Nil) -> False
-    Ok(step) ->
-      list.contains(step.depends_on, dependency_id)
-      || list.any(step.depends_on, fn(parent_id) {
-        step_depends_on(dag, parent_id, dependency_id)
-      })
   }
 }

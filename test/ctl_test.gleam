@@ -377,6 +377,10 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "attach --raw --json <session-ref>")
   assert string.contains(usage, "pause")
   assert string.contains(usage, "retry-step <target>")
+  assert string.contains(
+    usage,
+    "Retry a failed or interrupted workflow step without redispatching the whole task.",
+  )
   assert string.contains(usage, "abort <session-ref> --yes")
   assert string.contains(usage, "ui respond")
   assert string.contains(usage, "cleanup")
