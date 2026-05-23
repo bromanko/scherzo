@@ -2055,6 +2055,76 @@ pub fn materialize_disposition_input_uses_runner_validated_structured_output_tes
   assert_contains(contents, "\"finding_id\": \"F-1\"")
 }
 
+pub fn materialize_disposition_input_finds_hash_suffixed_step_metadata_test() {
+  let dir = "test/tmp/native-disposition-input-hashed-metadata"
+  reset_dir(dir)
+  let artifact_dir = dir <> "/artifacts"
+  let structured_dir = artifact_dir <> "/apply_feedback/attempt-2/structured"
+  let metadata_dir = artifact_dir <> "/apply_feedback-8eeea1750f4d"
+  let assert Ok(Nil) = simplifile.create_directory_all(structured_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(metadata_dir)
+  let structured_path =
+    structured_dir <> "/review_finding_disposition_input.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_dir <> "/attempt-2.json",
+      "{\n"
+        <> "  \"artifact\": {\n"
+        <> "    \"status\": \"success\",\n"
+        <> "    \"structured_output\": {\n"
+        <> "      \"status\": \"valid\",\n"
+        <> "      \"artifact_name\": \"review_finding_disposition_input\",\n"
+        <> "      \"path\": \"apply_feedback/attempt-2/structured/review_finding_disposition_input.json\",\n"
+        <> "      \"source_type\": \"pi_tool_call\",\n"
+        <> "      \"source_tool_name\": \"submit_review_finding_dispositions\",\n"
+        <> "      \"source_parameters_schema_path\": \".scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json\"\n"
+        <> "    }\n"
+        <> "  }\n"
+        <> "}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      structured_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"structured_output\",\n"
+        <> "  \"run_id\": \"run-1\",\n"
+        <> "  \"workflow_id\": \"implementation\",\n"
+        <> "  \"step_id\": \"apply_feedback\",\n"
+        <> "  \"attempt_index\": 2,\n"
+        <> "  \"artifact_name\": \"review_finding_disposition_input\",\n"
+        <> "  \"format\": \"json\",\n"
+        <> "  \"source_type\": \"pi_tool_call\",\n"
+        <> "  \"source_tool_name\": \"submit_review_finding_dispositions\",\n"
+        <> "  \"validation\": {\n"
+        <> "    \"source_parameters_schema_path\": \".scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json\"\n"
+        <> "  },\n"
+        <> "  \"payload\": {\n"
+        <> "    \"schema_version\": 1,\n"
+        <> "    \"artifact_type\": \"review_finding_disposition_input\",\n"
+        <> "    \"entries\": [\n"
+        <> "      {\"finding_id\":\"F-2\",\"disposition\":\"resolved\",\"rationale\":\"Fixed and validated from hash-suffixed metadata.\",\"evidence_refs\":[{\"type\":\"command\",\"description\":\"targeted tests\",\"command\":\"direnv exec . gleam test\"}]}\n"
+        <> "    ]\n"
+        <> "  }\n"
+        <> "}\n",
+    )
+  let output_path = dir <> "/tmp/review-finding-dispositions.v1.json"
+
+  let materialized =
+    run_command(
+      ".scherzo/workflows/scripts/scherzo-review materialize-disposition-input --artifact-dir "
+      <> artifact_dir
+      <> " --submission-step apply_feedback --submission-artifact review_finding_disposition_input --output "
+      <> output_path,
+    )
+
+  assert materialized.status == step_artifact.StepSucceeded
+  assert_contains(materialized.stdout, "REVIEW_FINDING_DISPOSITION_INPUT=ok")
+  let assert Ok(contents) = simplifile.read(output_path)
+  assert_contains(contents, "\"finding_id\": \"F-2\"")
+  assert_not_contains(contents, "\"artifact_type\": \"structured_output\"")
+}
+
 pub fn finalize_dispositions_writes_schema_valid_artifacts_test() {
   let dir = "test/tmp/native-finalize-dispositions"
   reset_dir(dir)

@@ -3744,20 +3744,28 @@ def load_disposition_input(path: Path) -> list[dict[str, Any]]:
 
 
 def disposition_step_metadata_paths(artifact_dir: Path, step_id: str) -> list[tuple[int, Path]]:
-    step_dir = artifact_dir / step_id
-    resolved_step_dir = lane_contract.resolve_path_within(step_dir, artifact_dir)
-    if resolved_step_dir is None or not resolved_step_dir.is_dir():
+    if not artifact_dir.exists() or not artifact_dir.is_dir():
         return []
     candidates: list[tuple[int, Path]] = []
     try:
-        attempt_files = list(resolved_step_dir.glob("attempt-*.json"))
+        step_dirs = list(artifact_dir.iterdir())
     except OSError:
         return []
-    for attempt_file in attempt_files:
-        attempt_index = lane_contract.attempt_index_from_name(attempt_file.name)
-        resolved_attempt_file = lane_contract.resolve_file_within(attempt_file, artifact_dir)
-        if attempt_index is not None and resolved_attempt_file is not None:
-            candidates.append((attempt_index, resolved_attempt_file))
+    for step_dir in step_dirs:
+        if step_dir.name != step_id and not step_dir.name.startswith(step_id + "-"):
+            continue
+        resolved_step_dir = lane_contract.resolve_path_within(step_dir, artifact_dir)
+        if resolved_step_dir is None or not resolved_step_dir.is_dir():
+            continue
+        try:
+            attempt_files = list(resolved_step_dir.glob("attempt-*.json"))
+        except OSError:
+            continue
+        for attempt_file in attempt_files:
+            attempt_index = lane_contract.attempt_index_from_name(attempt_file.name)
+            resolved_attempt_file = lane_contract.resolve_file_within(attempt_file, artifact_dir)
+            if attempt_index is not None and resolved_attempt_file is not None:
+                candidates.append((attempt_index, resolved_attempt_file))
     return sorted(candidates, key=lambda item: item[0], reverse=True)
 
 
