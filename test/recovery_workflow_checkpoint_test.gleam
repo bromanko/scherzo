@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import legacy_ledger_fixtures
+import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
 import scherzo/state/artifact_store
@@ -40,14 +41,32 @@ fn limits() -> config_types.ArtifactLimits {
   )
 }
 
+fn recovery_config() -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: config.default_tracker_config(),
+    polling: config.default_polling_config(),
+    workspace: config_types.WorkspaceConfig(root: "test/tmp/workspaces"),
+    hooks: config.default_hooks_config(),
+    agent: config.default_agent_config(),
+    pi: config.default_pi_config(),
+    handoff: config.default_handoff_config(),
+    linear_contract: config.default_linear_contract_config(),
+    linear_commands: config.default_linear_command_config(),
+  )
+}
+
 fn issue() -> tracker_issue.Issue {
+  issue_in_state("Todo")
+}
+
+fn issue_in_state(state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
     id: "issue-1",
     identifier: "LIV-59",
     title: "Durable checkpoints",
     description: None,
     priority: None,
-    state: issue_state.from_string_unchecked("Todo"),
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: ["workflow:workflow-alpha"],
@@ -94,14 +113,30 @@ fn source_dag() -> workflow_dag.WorkflowDag {
 }
 
 fn recovery_scenario(root: String, run_id: String) -> RecoveryScenario {
+  recovery_scenario_with_fingerprint(
+    root,
+    run_id,
+    core.issue_fingerprint(issue()),
+  )
+}
+
+fn recovery_scenario_with_fingerprint(
+  root: String,
+  run_id: String,
+  issue_fingerprint: String,
+) -> RecoveryScenario {
   reset_dir(root)
   RecoveryScenario(
     root: root,
     store: artifact_store.new(root),
-    issue_fingerprint: core.issue_fingerprint(issue()),
+    issue_fingerprint: issue_fingerprint,
     run_id: run_id,
     run_root: root <> "/workflow-alpha/LIV-59/" <> run_id,
   )
+}
+
+fn legacy_stateful_todo_issue_fingerprint() -> String {
+  "7:issue-1|6:LIV-59|19:Durable checkpoints|none|none|4:Todo|none|4:true|"
 }
 
 fn workspace_path(
@@ -361,14 +396,22 @@ fn current_observations(
   scenario: RecoveryScenario,
   dag: workflow_dag.WorkflowDag,
 ) {
+  current_observations_with_issue(scenario, dag, issue())
+}
+
+fn current_observations_with_issue(
+  scenario: RecoveryScenario,
+  dag: workflow_dag.WorkflowDag,
+  current_issue: tracker_issue.Issue,
+) {
   dict.from_list([
     #(
       scenario.run_id,
       recovery.CurrentWorkflow(
-        issue(),
+        current_issue,
         "workflow-alpha",
         "wf-sha",
-        scenario.issue_fingerprint,
+        core.issue_fingerprint(current_issue),
         dag,
         scenario.root,
       ),
@@ -635,6 +678,203 @@ pub fn workflow_recovery_disabled_mode_parks_resumable_run_test() {
 
   expect_no_resumption(finalized)
   expect_park_reason(finalized, "workflow_recovery_disabled")
+}
+
+pub fn workflow_recovery_ignores_handoff_state_only_transition_test() {
+  let scenario =
+    recovery_scenario_with_fingerprint(
+      "test/tmp/recovery-workflow-state-transition",
+      "run-state",
+      legacy_stateful_todo_issue_fingerprint(),
+    )
+  let folded = projection.fold([given_workflow_started(scenario, 1)])
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  let assert Ok(finalized) =
+    recovery.finalize_workflow_candidates_with_config(
+      folded,
+      [candidate],
+      current_observations_with_issue(
+        scenario,
+        agent_dag(),
+        issue_in_state("In Progress"),
+      ),
+      scenario.store,
+      99,
+      recovery_config(),
+    )
+
+  let resumption = expect_single_resumption(finalized)
+  assert resumption.issue.state
+    == issue_state.from_string_unchecked("In Progress")
+  expect_no_appended_records(finalized)
+  assert finalized.warnings == []
+}
+
+pub fn workflow_recovery_parks_terminal_state_only_transition_test() {
+  let scenario =
+    recovery_scenario_with_fingerprint(
+      "test/tmp/recovery-workflow-terminal-state-transition",
+      "run-terminal-state",
+      legacy_stateful_todo_issue_fingerprint(),
+    )
+  let folded = projection.fold([given_workflow_started(scenario, 1)])
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  let assert Ok(finalized) =
+    recovery.finalize_workflow_candidates_with_config(
+      folded,
+      [candidate],
+      current_observations_with_issue(
+        scenario,
+        agent_dag(),
+        issue_in_state("Done"),
+      ),
+      scenario.store,
+      99,
+      recovery_config(),
+    )
+
+  expect_no_resumption(finalized)
+  expect_park_reason(finalized, "issue_state_drift:terminal_state")
+  assert !has_park_reason(finalized.records_to_append, "workflow_drift")
+  assert !has_park_reason(finalized.records_to_append, "issue_content_drift")
+  assert finalized.warnings
+    == [
+      "workflow_recovery_parked_issue_state_drift:run-terminal-state:terminal_state:Done",
+    ]
+}
+
+pub fn workflow_recovery_parks_non_active_state_only_transition_test() {
+  let scenario =
+    recovery_scenario_with_fingerprint(
+      "test/tmp/recovery-workflow-non-active-state-transition",
+      "run-non-active-state",
+      legacy_stateful_todo_issue_fingerprint(),
+    )
+  let folded = projection.fold([given_workflow_started(scenario, 1)])
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  let assert Ok(finalized) =
+    recovery.finalize_workflow_candidates_with_config(
+      folded,
+      [candidate],
+      current_observations_with_issue(
+        scenario,
+        agent_dag(),
+        issue_in_state("Triage"),
+      ),
+      scenario.store,
+      99,
+      recovery_config(),
+    )
+
+  expect_no_resumption(finalized)
+  expect_park_reason(finalized, "issue_state_drift:non_active_state")
+  assert !has_park_reason(finalized.records_to_append, "workflow_drift")
+  assert !has_park_reason(finalized.records_to_append, "issue_content_drift")
+  assert finalized.warnings
+    == [
+      "workflow_recovery_parked_issue_state_drift:run-non-active-state:non_active_state:Triage",
+    ]
+}
+
+pub fn workflow_recovery_parks_issue_content_drift_with_issue_reason_test() {
+  let scenario =
+    recovery_scenario("test/tmp/recovery-workflow-issue-drift", "run-issue")
+  let folded = projection.fold([given_workflow_started(scenario, 1)])
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  let changed_issue = tracker_issue.Issue(..issue(), title: "Changed title")
+  let assert Ok(finalized) =
+    recovery.finalize_workflow_candidates(
+      folded,
+      [candidate],
+      current_observations_with_issue(scenario, agent_dag(), changed_issue),
+      scenario.store,
+      99,
+    )
+
+  expect_no_resumption(finalized)
+  expect_park_reason(finalized, "issue_content_drift:issue_fingerprint_changed")
+  assert !has_park_reason(finalized.records_to_append, "workflow_drift")
+  assert finalized.warnings
+    == [
+      "workflow_recovery_parked_issue_content_drift:run-issue:issue_fingerprint_changed",
+    ]
+}
+
+pub fn workflow_recovery_parks_workflow_drift_with_definition_reason_test() {
+  let scenario =
+    recovery_scenario("test/tmp/recovery-workflow-definition-drift", "run-wf")
+  let folded = projection.fold([given_workflow_started(scenario, 1)])
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  let observations =
+    dict.from_list([
+      #(
+        scenario.run_id,
+        recovery.CurrentWorkflow(
+          issue(),
+          "workflow-alpha",
+          "wf-changed",
+          core.issue_fingerprint(issue()),
+          agent_dag(),
+          scenario.root,
+        ),
+      ),
+    ])
+  let assert Ok(finalized) =
+    recovery.finalize_workflow_candidates(
+      folded,
+      [candidate],
+      observations,
+      scenario.store,
+      99,
+    )
+
+  expect_no_resumption(finalized)
+  expect_park_reason(
+    finalized,
+    "workflow_definition_drift:workflow_fingerprint_changed",
+  )
+  assert !has_park_reason(finalized.records_to_append, "issue_content_drift")
+  assert finalized.warnings
+    == [
+      "workflow_recovery_parked_workflow_definition_drift:run-wf:workflow_fingerprint_changed",
+    ]
+}
+
+pub fn workflow_recovery_parks_workflow_id_drift_with_definition_reason_test() {
+  let scenario =
+    recovery_scenario("test/tmp/recovery-workflow-id-drift", "run-wf-id")
+  let folded = projection.fold([given_workflow_started(scenario, 1)])
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  let observations =
+    dict.from_list([
+      #(
+        scenario.run_id,
+        recovery.CurrentWorkflow(
+          issue(),
+          "workflow-beta",
+          "wf-sha",
+          core.issue_fingerprint(issue()),
+          agent_dag(),
+          scenario.root,
+        ),
+      ),
+    ])
+  let assert Ok(finalized) =
+    recovery.finalize_workflow_candidates(
+      folded,
+      [candidate],
+      observations,
+      scenario.store,
+      99,
+    )
+
+  expect_no_resumption(finalized)
+  expect_park_reason(finalized, "workflow_definition_drift:workflow_id_changed")
+  assert !has_park_reason(finalized.records_to_append, "issue_content_drift")
+  assert finalized.warnings
+    == [
+      "workflow_recovery_parked_workflow_definition_drift:run-wf-id:workflow_id_changed",
+    ]
 }
 
 pub fn workflow_recovery_parks_interrupted_command_attempts_test() {

@@ -1,11 +1,14 @@
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
+import scherzo/state/projection
 import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint as fingerprint
 
@@ -96,6 +99,127 @@ pub fn projection_key(
 
 pub fn issue_fingerprint(issue: tracker_issue.Issue) -> String {
   core.issue_fingerprint(issue)
+}
+
+pub fn recovery_drift_reason(
+  run_id: String,
+  recorded_workflow_id: String,
+  current_workflow_id: String,
+  recorded_workflow_fingerprint: String,
+  current_workflow_fingerprint: String,
+  recorded_issue_fingerprint: String,
+  current_issue_fingerprint: String,
+) -> Option(#(String, String)) {
+  case recorded_workflow_id != current_workflow_id {
+    True ->
+      Some(#(
+        "workflow_definition_drift:workflow_id_changed",
+        "workflow_recovery_parked_workflow_definition_drift:"
+          <> run_id
+          <> ":workflow_id_changed",
+      ))
+    False ->
+      case recorded_workflow_fingerprint != current_workflow_fingerprint {
+        True ->
+          Some(#(
+            "workflow_definition_drift:workflow_fingerprint_changed",
+            "workflow_recovery_parked_workflow_definition_drift:"
+              <> run_id
+              <> ":workflow_fingerprint_changed",
+          ))
+        False ->
+          case
+            tracker_issue.fingerprint_equivalent(
+              recorded_issue_fingerprint,
+              current_issue_fingerprint,
+            )
+          {
+            True -> None
+            False ->
+              Some(#(
+                "issue_content_drift:issue_fingerprint_changed",
+                "workflow_recovery_parked_issue_content_drift:"
+                  <> run_id
+                  <> ":issue_fingerprint_changed",
+              ))
+          }
+      }
+  }
+}
+
+pub fn recovery_issue_state_drift(
+  effective_config: Option(config_types.EffectiveConfig),
+  issue: tracker_issue.Issue,
+  run_id: String,
+) -> Option(#(String, String)) {
+  case effective_config {
+    None -> None
+    Some(config) ->
+      case core.is_terminal(config, issue.state) {
+        True ->
+          Some(issue_state_drift_reason(
+            run_id,
+            "terminal_state",
+            issue_state.to_string(issue.state),
+          ))
+        False ->
+          case core.is_active(config, issue.state) {
+            True -> None
+            False ->
+              Some(issue_state_drift_reason(
+                run_id,
+                "non_active_state",
+                issue_state.to_string(issue.state),
+              ))
+          }
+      }
+  }
+}
+
+fn issue_state_drift_reason(
+  run_id: String,
+  reason: String,
+  state: String,
+) -> #(String, String) {
+  #(
+    "issue_state_drift:" <> reason,
+    "workflow_recovery_parked_issue_state_drift:"
+      <> run_id
+      <> ":"
+      <> reason
+      <> ":"
+      <> state,
+  )
+}
+
+pub fn parked_issue_should_survive(
+  parked: projection.ParkedIssue,
+  issue_id: String,
+  issue_by_id: Dict(String, tracker_issue.Issue),
+) -> Bool {
+  case parked.release_policy {
+    "auto_unpark_on_issue_change" ->
+      case dict.get(issue_by_id, issue_id) {
+        Ok(issue) ->
+          tracker_issue.fingerprint_matches(parked.issue_fingerprint, issue)
+        Error(Nil) -> True
+      }
+    _ -> True
+  }
+}
+
+pub fn remaining_retry_delay(
+  status: projection.RetryStatus,
+  now_ms: Int,
+) -> Int {
+  case projection.retry_due_at_ms(status) {
+    Ok(due_at_ms) ->
+      case due_at_ms > now_ms {
+        True -> due_at_ms - now_ms
+        False -> 0
+      }
+    Error(Nil) -> 0
+  }
 }
 
 pub fn workflow_fingerprint(

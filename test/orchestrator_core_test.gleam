@@ -200,11 +200,12 @@ fn state_with_parked(
   )
 }
 
-pub fn issue_fingerprint_ignores_timestamps_url_and_labels_test() {
+pub fn issue_fingerprint_ignores_timestamps_url_labels_and_state_test() {
   let base = rich_issue()
   let metadata_changed =
     tracker_issue.Issue(
       ..base,
+      state: issue_state.from_string_unchecked("In Progress"),
       url: Some("https://linear.app/example/ABC-1?metadata=changed"),
       labels: ["frontend", "needs-review"],
       created_at: Some(birl.from_unix(100)),
@@ -213,6 +214,18 @@ pub fn issue_fingerprint_ignores_timestamps_url_and_labels_test() {
 
   assert core.issue_fingerprint(base)
     == core.issue_fingerprint(metadata_changed)
+}
+
+pub fn legacy_stateful_issue_fingerprint_matches_content_fingerprint_test() {
+  let legacy_todo_fingerprint =
+    "1:a|5:ABC-1|11:Title ABC-1|none|some:1:1|4:Todo|none|4:true|"
+  let current =
+    tracker_issue.Issue(
+      ..issue("a", "ABC-1", "In Progress", Some(1)),
+      updated_at: Some(birl.from_unix(101)),
+    )
+
+  assert tracker_issue.fingerprint_matches(legacy_todo_fingerprint, current)
 }
 
 pub fn issue_fingerprint_changes_for_blockers_test() {
@@ -266,13 +279,6 @@ pub fn issue_fingerprint_changes_for_core_fields_test() {
     )
     != base_fingerprint
   assert core.issue_fingerprint(tracker_issue.Issue(..base, priority: Some(2)))
-    != base_fingerprint
-  assert core.issue_fingerprint(
-      tracker_issue.Issue(
-        ..base,
-        state: issue_state.from_string_unchecked("In Progress"),
-      ),
-    )
     != base_fingerprint
   assert core.issue_fingerprint(
       tracker_issue.Issue(..base, branch_name: Some("new")),
@@ -1092,6 +1098,20 @@ pub fn auto_park_ignores_comment_and_non_core_changes_test() {
 
   let labels_changed = tracker_issue.Issue(..issue, labels: ["new", "metadata"])
   assert_auto_park_blocks(state, labels_changed)
+
+  let handoff_state_changed =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("In Progress"),
+    )
+  assert_auto_park_blocks(state, handoff_state_changed)
+
+  let terminal_state_changed =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
+  assert_auto_park_blocks(state, terminal_state_changed)
 }
 
 pub fn auto_park_clears_on_blocker_change_test() {

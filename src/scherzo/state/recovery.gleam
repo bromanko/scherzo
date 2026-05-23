@@ -247,6 +247,7 @@ pub fn finalize_workflow_candidates(
     observations,
     artifact_store,
     now_ms,
+    None,
     default_session_recovery_config(),
     ResumeRecoveredWorkflows,
   )
@@ -266,6 +267,7 @@ pub fn finalize_workflow_candidates_with_config(
     observations,
     artifact_store,
     now_ms,
+    Some(config),
     SessionRecoveryConfig(
       enabled: config.pi.session_persistence.enabled,
       recovery_prompt: config.pi.session_persistence.recovery_prompt,
@@ -288,26 +290,28 @@ pub fn finalize_workflow_candidates_with_mode(
     observations,
     artifact_store,
     now_ms,
+    None,
     default_session_recovery_config(),
     mode,
   )
 }
 
 fn finalize_workflow_candidates_with_config_and_mode(
-  projection: projection.Projection,
+  _projection: projection.Projection,
   candidates: List(WorkflowRecoveryCandidate),
   observations: Dict(String, CurrentWorkflowObservation),
   artifact_store: artifact_store.Store,
   now_ms: Int,
+  effective_config: Option(config_types.EffectiveConfig),
   session_recovery: SessionRecoveryConfig,
   mode: WorkflowRecoveryMode,
 ) -> Result(WorkflowFinalization, RecoveryError) {
-  let _ = projection
   finalize_workflow_candidates_loop(
     candidates,
     observations,
     artifact_store,
     now_ms,
+    effective_config,
     session_recovery,
     mode,
     [],
@@ -323,7 +327,7 @@ pub fn plan(
   now_ms: Int,
 ) -> Result(RecoveryPlan, RecoveryError) {
   let outbox_recovery = replayable_outbox(projection)
-  let issue_by_id = issues_by_id(refreshed_issues)
+  let issue_by_id = core.issues_by_id(refreshed_issues)
   let base = core.new_state(config)
   let build =
     Build(
@@ -394,6 +398,7 @@ fn finalize_workflow_candidates_loop(
   observations: Dict(String, CurrentWorkflowObservation),
   store: artifact_store.Store,
   now_ms: Int,
+  effective_config: Option(config_types.EffectiveConfig),
   session_recovery: SessionRecoveryConfig,
   mode: WorkflowRecoveryMode,
   record_bodies: List(record.RecordBody),
@@ -415,6 +420,7 @@ fn finalize_workflow_candidates_loop(
         candidate,
         observation,
         store,
+        effective_config,
         session_recovery,
         mode,
       ))
@@ -424,6 +430,7 @@ fn finalize_workflow_candidates_loop(
         observations,
         store,
         now_ms,
+        effective_config,
         session_recovery,
         mode,
         list.append(list.reverse(bodies), record_bodies),
@@ -438,6 +445,7 @@ fn finalize_one_workflow_candidate(
   candidate: WorkflowRecoveryCandidate,
   observation: CurrentWorkflowObservation,
   store: artifact_store.Store,
+  effective_config: Option(config_types.EffectiveConfig),
   session_recovery: SessionRecoveryConfig,
   mode: WorkflowRecoveryMode,
 ) -> Result(
@@ -486,27 +494,31 @@ fn finalize_one_workflow_candidate(
       workspace_root,
     ) ->
       case
-        workflow_id == candidate.workflow_id
-        && workflow_fingerprint == candidate.workflow_fingerprint
-        && issue_fingerprint == candidate.issue_fingerprint
+        workflow_attempt.recovery_drift_reason(
+          candidate.run_id,
+          candidate.workflow_id,
+          workflow_id,
+          candidate.workflow_fingerprint,
+          workflow_fingerprint,
+          candidate.issue_fingerprint,
+          issue_fingerprint,
+        )
       {
-        False ->
+        Some(#(reason, warning)) ->
           Ok(
             #(
               park_candidate_bodies(
                 candidate,
                 issue.identifier,
-                "workflow_drift",
+                reason,
                 issue_fingerprint,
                 candidate.observed_updated_at_ms,
               ),
               None,
-              [
-                "workflow_recovery_parked_workflow_drift:" <> candidate.run_id,
-              ],
+              [warning],
             ),
           )
-        True ->
+        None ->
           case mode {
             ParkRecoveredWorkflows ->
               Ok(
@@ -525,15 +537,38 @@ fn finalize_one_workflow_candidate(
                 ),
               )
             ResumeRecoveredWorkflows ->
-              finalize_resumable_workflow_candidate(
-                candidate,
-                issue,
-                issue_fingerprint,
-                store,
-                dag,
-                workspace_root,
-                session_recovery,
-              )
+              case
+                workflow_attempt.recovery_issue_state_drift(
+                  effective_config,
+                  issue,
+                  candidate.run_id,
+                )
+              {
+                Some(#(reason, warning)) ->
+                  Ok(
+                    #(
+                      park_candidate_bodies(
+                        candidate,
+                        issue.identifier,
+                        reason,
+                        issue_fingerprint,
+                        candidate.observed_updated_at_ms,
+                      ),
+                      None,
+                      [warning],
+                    ),
+                  )
+                None ->
+                  finalize_resumable_workflow_candidate(
+                    candidate,
+                    issue,
+                    issue_fingerprint,
+                    store,
+                    dag,
+                    workspace_root,
+                    session_recovery,
+                  )
+              }
           }
       }
   }
@@ -720,7 +755,9 @@ fn recover_attempts_loop(
             True -> candidate.run_root
             False -> run_root
           }
-          let workspaces = case dependency_satisfying_outcome(outcome) {
+          let workspaces = case
+            outcome == "completed" || outcome == "failed_continued"
+          {
             True -> {
               let workspace =
                 RecoveredWorkspaceSummary(
@@ -1471,10 +1508,6 @@ fn is_unfinished_attempt(status: projection.StepAttemptStatus) -> Bool {
   }
 }
 
-fn dependency_satisfying_outcome(outcome: String) -> Bool {
-  outcome == "completed" || outcome == "failed_continued"
-}
-
 fn append_optional_resumption(
   resumptions: List(RecoveredWorkflowRun),
   resumption: Option(RecoveredWorkflowRun),
@@ -1799,14 +1832,23 @@ fn restore_parked(
   |> dict.to_list
   |> list.fold(build, fn(build, entry) {
     let #(issue_id, parked) = entry
-    case parked_should_survive(parked, issue_id, issue_by_id) {
+    case
+      workflow_attempt.parked_issue_should_survive(
+        parked,
+        issue_id,
+        issue_by_id,
+      )
+    {
       True -> {
         let parked_entry =
           orchestrator_state.ParkedEntry(
             issue_id: issue_id,
             identifier: parked.issue_identifier,
             reason: park_reason_from_string(parked.reason),
-            release_policy: release_policy_from_projection(parked),
+            release_policy: orchestrator_state.park_release_policy_from_string(
+              parked.release_policy,
+              parked.issue_fingerprint,
+            ),
             parked_at_ms: parked.parked_at_ms,
           )
         Build(
@@ -1930,7 +1972,8 @@ fn restore_scheduled_retry(
                         "recovery_non_active_issue",
                       )
                     True -> {
-                      let remaining = remaining_retry_delay(status, now_ms)
+                      let remaining =
+                        workflow_attempt.remaining_retry_delay(status, now_ms)
                       let retry =
                         orchestrator_state.RetryEntry(
                           issue_id,
@@ -2279,53 +2322,6 @@ fn ensure_retry_or_park_for_counter(
         }
       }
   }
-}
-
-fn parked_should_survive(
-  parked: projection.ParkedIssue,
-  issue_id: String,
-  issue_by_id: Dict(String, tracker_issue.Issue),
-) -> Bool {
-  case parked.release_policy {
-    "auto_unpark_on_issue_change" ->
-      case dict.get(issue_by_id, issue_id) {
-        Ok(issue) -> core.issue_fingerprint(issue) == parked.issue_fingerprint
-        Error(_) -> True
-      }
-    _ -> True
-  }
-}
-
-fn release_policy_from_projection(
-  parked: projection.ParkedIssue,
-) -> orchestrator_state.ParkReleasePolicy {
-  case parked.release_policy {
-    "auto_unpark_on_issue_change" ->
-      orchestrator_state.AutoUnparkOnIssueChange(parked.issue_fingerprint)
-    _ -> orchestrator_state.ExplicitUnparkOnly
-  }
-}
-
-fn remaining_retry_delay(status: projection.RetryStatus, now_ms: Int) -> Int {
-  case projection.retry_due_at_ms(status) {
-    Ok(due_at_ms) -> max_int(0, due_at_ms - now_ms)
-    Error(_) -> 0
-  }
-}
-
-fn max_int(a: Int, b: Int) -> Int {
-  case a > b {
-    True -> a
-    False -> b
-  }
-}
-
-fn issues_by_id(
-  issues: List(tracker_issue.Issue),
-) -> Dict(String, tracker_issue.Issue) {
-  issues
-  |> list.map(fn(issue) { #(issue.id, issue) })
-  |> dict.from_list
 }
 
 fn ledger_records(
