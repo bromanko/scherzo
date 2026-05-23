@@ -940,6 +940,88 @@ pub fn session_display_ref_resolves_to_canonical_and_prints_both_names_test() {
   assert string.contains(transcript, "session_id: " <> canonical_session_id)
 }
 
+pub fn session_human_output_appends_workflow_recovery_history_test() {
+  let base = "test/tmp/ctl-session-recovery-history"
+  let root = base <> "/workspaces"
+  let path = base <> "/control.json"
+  reset_dir(base)
+  write_control_file_for_root(path, root)
+  write_workflow_recovery_history(root)
+  let summary =
+    event.SessionSummary(
+      ..session_summary("session-1", ps_now_ms - 1000),
+      issue_identifier: "LIV-490",
+      issue_title: "Operator history for workflow step recovery",
+    )
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), False, "session-1"),
+      session_ref_deps([summary]),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "display_name: session-1")
+  assert string.contains(transcript, "workflow_step_recovery_history:")
+  assert string.contains(transcript, "decision: retry_requested")
+  assert string.contains(transcript, "retry_attempt_index: 2")
+  assert string.contains(transcript, "retry_result: succeeded")
+  assert string.contains(
+    transcript,
+    "final_workflow_outcome: succeeded_after_recovery",
+  )
+}
+
+pub fn session_json_output_remains_raw_when_recovery_history_exists_test() {
+  let base = "test/tmp/ctl-session-recovery-history-json"
+  let root = base <> "/workspaces"
+  let path = base <> "/control.json"
+  reset_dir(base)
+  write_control_file_for_root(path, root)
+  write_workflow_recovery_history(root)
+  let raw_response =
+    "{\"session_id\":\"session-1\",\"display_name\":\"session-1\"}"
+  let summary = session_summary("session-1", ps_now_ms - 1000)
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), True, "session-1"),
+      ps_deps([summary], ps_now_ms, raw_response),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  assert drain_output(subject) == raw_response <> "\n"
+}
+
+pub fn session_human_output_preserves_base_fields_when_history_unavailable_test() {
+  let base = "test/tmp/ctl-session-recovery-history-unavailable"
+  let path = base <> "/control.json"
+  reset_dir(base)
+  write_control_file_for_root(path, "")
+  let summary = session_summary("session-unavailable", ps_now_ms - 1000)
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), False, "session-unavailable"),
+      session_ref_deps([summary]),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "display_name: session-unavailable")
+  assert string.contains(
+    transcript,
+    "workflow_step_recovery_history: unavailable (workspace root must not be empty)",
+  )
+}
+
 pub fn events_json_ref_prefers_exact_session_id_over_display_name_test() {
   let path = "test/tmp/ctl-ps/exact-ref-control.json"
   write_control_file(path)
@@ -1173,6 +1255,128 @@ fn replay_event(session_id: String) -> event.SessionEvent {
       event.LifecycleName(event.WorkerStarted),
     ),
   )
+}
+
+fn write_workflow_recovery_history(root: String) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.new(
+          900,
+          1,
+          record.WorkflowRunStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            workflow_fingerprint: "wf-1",
+            issue_id: "issue-1",
+            issue_identifier: "LIV-490",
+            issue_fingerprint: "issue-fp-1",
+            observed_updated_at_ms: 800,
+            run_root: root,
+          ),
+        ),
+        record.new(
+          1000,
+          2,
+          record.StepAttemptStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "implement",
+            attempt_index: 1,
+            operator_session_id: "session-1",
+            external_session_ref: None,
+            continuation_capable: True,
+          ),
+        ),
+        record.new(
+          1010,
+          3,
+          record.WorkflowStepRecoveryStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "implement",
+            failed_attempt_index: 1,
+            recovery_attempt_number: 1,
+            recovery_session_id: "recover-1",
+            model: Some("gpt-5"),
+            prompt_ref: ".scherzo/workflows/prompts/recover_failed_step.md",
+          ),
+        ),
+        record.new(
+          1020,
+          4,
+          record.WorkflowStepRecoveryFinished(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "implement",
+            failed_attempt_index: 1,
+            recovery_attempt_number: 1,
+            recovery_session_id: "recover-1",
+            result: "retry_requested",
+            summary: "Fixed tests",
+            reason: "Ready for retry",
+            retry_attempt_index: Some(2),
+          ),
+        ),
+        record.new(
+          1030,
+          5,
+          record.StepAttemptStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "implement",
+            attempt_index: 2,
+            operator_session_id: "session-2",
+            external_session_ref: None,
+            continuation_capable: True,
+          ),
+        ),
+        record.new(
+          1031,
+          6,
+          record.StepAttemptContinuationStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "implement",
+            attempt_index: 2,
+            session_id: "continue-2",
+          ),
+        ),
+        record.new(
+          1040,
+          7,
+          record.StepAttemptFinished(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "implement",
+            attempt_index: 2,
+            outcome: "succeeded",
+            artifact_ref: "runs/run-1/implement/attempt-2.json",
+            artifact_sha256: "sha-2",
+            workspace_name: "main",
+            workspace_path: root <> "/main",
+            token_total: 0,
+            turns: 0,
+          ),
+        ),
+        record.new(
+          1050,
+          8,
+          record.WorkflowRunFinished(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            issue_id: "issue-1",
+            outcome: "succeeded_after_recovery",
+            token_total: 0,
+            turns: 0,
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
 }
 
 fn write_scheduled_history(root: String, session_id: String) -> Nil {

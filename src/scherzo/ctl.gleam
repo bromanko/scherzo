@@ -10,6 +10,7 @@ import scherzo/control/command as control_command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/ctl/schedule_state
+import scherzo/ctl/workflow_recovery_history
 import scherzo/ctl/workstream as ctl_workstream
 import scherzo/path
 import scherzo/schedule_doctor
@@ -620,6 +621,11 @@ pub fn run_with_deps(
           case deps.get_session(control_file, session_id) {
             Ok(Some(summary)) -> {
               print_session(summary, output)
+              print_workflow_recovery_history(
+                control_file.workspace_root,
+                summary,
+                output,
+              )
               Ok(Nil)
             }
             Ok(None) -> Error(Failed("missing_session", "session not found"))
@@ -2189,6 +2195,24 @@ fn print_session(summary: event.SessionSummary, output: Output) -> Nil {
   output.line("workspace: " <> summary.workspace_path)
   output.line("last_event_at_ms: " <> int.to_string(summary.last_event_at_ms))
   print_recovery_section(summary.recovery, output)
+}
+
+fn print_workflow_recovery_history(
+  workspace_root: String,
+  summary: event.SessionSummary,
+  output: Output,
+) -> Nil {
+  case workflow_recovery_history.load(workspace_root, summary) {
+    Ok(history) ->
+      workflow_recovery_history.render(history)
+      |> list.each(output.line)
+    Error(error) ->
+      output.line(
+        "workflow_step_recovery_history: unavailable ("
+        <> workflow_recovery_history.describe_load_error(error)
+        <> ")",
+      )
+  }
 }
 
 fn print_recovery_section(

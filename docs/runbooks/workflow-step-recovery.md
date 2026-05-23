@@ -22,7 +22,6 @@ Implemented in this slice:
 
 Still intentionally deferred:
 
-- operator-facing history/CLI rendering for the failed-attempt → recovery → retry timeline;
 - deeper interruption and crash-resume hardening beyond preserving the original failure result.
 
 ## YAML shape
@@ -70,5 +69,36 @@ Durable history records written by the runtime are:
 - `workflow_step_recovery_finished`
 
 These records link the failed attempt, recovery attempt number, recovery session id, decision (`retry_requested` or `gave_up`), and optional retry attempt index.
+
+Use the human session view to inspect that history quickly:
+
+```sh
+scripts/scherzoctl session <session-ref>
+```
+
+The output appends a `workflow_step_recovery_history` block for the original failed step session, the retry continuation session, or the nested recovery session. A successful recovered timeline looks like:
+
+```text
+workflow_step_recovery_history:
+  - run_id: run-1
+    workflow_id: implementation
+    step_id: implement
+    failed_attempt_index: 1
+    recovery_attempt_number: 1
+    recovery_session_id: workflow-run-1-implement-recovery-1
+    status: finished
+    decision: retry_requested
+    summary: Fixed tests
+    reason: The workspace is ready for a retry.
+    retry_attempt_index: 2
+    retry_result: succeeded
+    final_workflow_outcome: succeeded_after_recovery
+```
+
+For deeper transcript inspection, replay the nested recovery session directly:
+
+```sh
+scripts/scherzoctl events --pretty <recovery-session-id>
+```
 
 Workflow terminal outcomes remain `completed` and `failed_fatal` for clean runs. When same-run step-recovery evidence exists, terminal workflow outcomes may instead be `succeeded_after_recovery` or `failed_after_recovery`.
