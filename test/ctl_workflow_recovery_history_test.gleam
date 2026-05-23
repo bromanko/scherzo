@@ -4,6 +4,7 @@ import gleam/string
 import scherzo/ctl/workflow_recovery_history
 import scherzo/session/event
 import scherzo/session/tokens as session_tokens
+import scherzo/state/artifact_store
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/workflow_outcome
@@ -12,8 +13,29 @@ pub fn original_step_session_renders_retry_requested_history_test() {
   let transcript = render(sample_success_records(), "session-1")
 
   assert string.contains(transcript, "workflow_step_recovery_history:")
+  assert string.contains(
+    transcript,
+    "failed_attempt_artifact_ref: runs/run-1/implement",
+  )
+  assert string.contains(transcript, "/attempt-1.json")
+  assert string.contains(
+    transcript,
+    "recovery_result_artifact_ref: "
+      <> artifact_store.recovery_artifact_ref(
+      "run-1",
+      "implement",
+      1,
+      1,
+      "workflow_step_recovery_result",
+    ),
+  )
   assert string.contains(transcript, "decision: retry_requested")
   assert string.contains(transcript, "retry_attempt_index: 2")
+  assert string.contains(
+    transcript,
+    "retry_attempt_artifact_ref: runs/run-1/implement",
+  )
+  assert string.contains(transcript, "/attempt-2.json")
   assert string.contains(transcript, "retry_result: succeeded")
   assert string.contains(
     transcript,
@@ -54,18 +76,57 @@ pub fn recovery_session_renders_multiple_duplicate_and_incomplete_entries_test()
   assert first_render == second_render
   assert count_occurrences(first_render, "recovery_session_id: recover-2") == 2
   assert string.contains(first_render, "status: incomplete")
+  assert string.contains(
+    first_render,
+    "failed_attempt_artifact_ref: runs/run-1/implement",
+  )
+  assert string.contains(first_render, "/attempt-1.json")
+  assert !string.contains(first_render, "recovery_result_artifact_ref:")
 }
 
 pub fn gave_up_history_renders_failed_after_recovery_outcome_test() {
   let transcript = render(sample_gave_up_records(), "session-gave-up")
 
+  assert string.contains(
+    transcript,
+    "failed_attempt_artifact_ref: runs/run-gave-up/implement",
+  )
+  assert string.contains(transcript, "/attempt-1.json")
+  assert string.contains(
+    transcript,
+    "recovery_result_artifact_ref: "
+      <> artifact_store.recovery_artifact_ref(
+      "run-gave-up",
+      "implement",
+      1,
+      1,
+      "workflow_step_recovery_result",
+    ),
+  )
   assert string.contains(transcript, "decision: gave_up")
   assert string.contains(
     transcript,
     "final_workflow_outcome: failed_after_recovery",
   )
   assert !string.contains(transcript, "retry_attempt_index:")
+  assert !string.contains(transcript, "retry_attempt_artifact_ref:")
   assert !string.contains(transcript, "retry_result:")
+}
+
+pub fn failed_recovery_history_omits_result_and_retry_artifact_refs_test() {
+  let transcript =
+    render(sample_artifact_write_failed_records(), "session-artifact-failed")
+
+  assert string.contains(
+    transcript,
+    "failed_attempt_artifact_ref: "
+      <> artifact_store.artifact_ref("run-artifact-failed", "implement", 1),
+  )
+  assert string.contains(transcript, "status: finished")
+  assert string.contains(transcript, "decision: artifact_write_failed")
+  assert !string.contains(transcript, "recovery_result_artifact_ref:")
+  assert !string.contains(transcript, "retry_attempt_index:")
+  assert !string.contains(transcript, "retry_attempt_artifact_ref:")
 }
 
 pub fn unrelated_session_renders_empty_history_marker_test() {
@@ -368,6 +429,54 @@ fn sample_gave_up_records() -> List(record.LedgerRecord) {
         outcome: workflow_outcome.failed_after_recovery,
         token_total: 0,
         turns: 0,
+      ),
+    ),
+  ]
+}
+
+fn sample_artifact_write_failed_records() -> List(record.LedgerRecord) {
+  [
+    record.with_id(
+      "attempt-artifact-failed-started",
+      1000,
+      record.StepAttemptStarted(
+        run_id: "run-artifact-failed",
+        workflow_id: "implementation",
+        step_id: "implement",
+        attempt_index: 1,
+        operator_session_id: "session-artifact-failed",
+        external_session_ref: None,
+        continuation_capable: False,
+      ),
+    ),
+    record.with_id(
+      "recovery-artifact-failed-started",
+      1010,
+      record.WorkflowStepRecoveryStarted(
+        run_id: "run-artifact-failed",
+        workflow_id: "implementation",
+        step_id: "implement",
+        failed_attempt_index: 1,
+        recovery_attempt_number: 1,
+        recovery_session_id: "recover-artifact-failed",
+        model: None,
+        prompt_ref: ".scherzo/workflows/prompts/recover_failed_step.md",
+      ),
+    ),
+    record.with_id(
+      "recovery-artifact-failed-finished",
+      1020,
+      record.WorkflowStepRecoveryFinished(
+        run_id: "run-artifact-failed",
+        workflow_id: "implementation",
+        step_id: "implement",
+        failed_attempt_index: 1,
+        recovery_attempt_number: 1,
+        recovery_session_id: "recover-artifact-failed",
+        result: "artifact_write_failed",
+        summary: "Recovery artifact write failed",
+        reason: "artifact_write_failed: immutable conflict",
+        retry_attempt_index: None,
       ),
     ),
   ]

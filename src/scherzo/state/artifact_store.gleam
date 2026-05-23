@@ -383,7 +383,7 @@ pub fn recovery_artifact_ref(
   "runs/"
   <> workflow_identity.safe_component(run_id, "run")
   <> "/"
-  <> workflow_identity.safe_component(step_id, "step")
+  <> workflow_identity.step_component(step_id)
   <> "/attempt-"
   <> int.to_string(failed_attempt_index)
   <> "/recovery-"

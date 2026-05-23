@@ -3563,7 +3563,7 @@ fn execute_step_recovery(
         Error(failure) -> {
           let failure_reason =
             error.agent_artifact_detail(failure.reason)
-            |> log.redact("workflow_step_recovery", _, secrets)
+            |> recovery_detail(secrets)
           ignore_secondary_checkpoint_result(
             dependencies.checkpoint.step_recovery_finished(
               workflow_checkpoint.StepRecoveryFinished(
@@ -3657,8 +3657,7 @@ fn apply_recovery_success(
         workflow_step_recovery.describe_error(protocol_error)
         <> ":"
         <> workflow_step_recovery.error_message(protocol_error)
-      let protocol_reason =
-        log.redact("workflow_step_recovery", protocol_reason, secrets)
+      let protocol_reason = recovery_detail(protocol_reason, secrets)
       ignore_secondary_checkpoint_result(
         dependencies.checkpoint.step_recovery_finished(
           workflow_checkpoint.StepRecoveryFinished(
@@ -3712,7 +3711,29 @@ fn record_recovery_decision(
       payload_json: payload,
     )
   case dependencies.checkpoint.write_recovery_artifact(write) {
-    Error(_) -> False
+    Error(error) -> {
+      let reason =
+        "artifact_write_failed:"
+        <> workflow_checkpoint.describe_error(error)
+        |> recovery_detail(secrets)
+      ignore_secondary_checkpoint_result(
+        dependencies.checkpoint.step_recovery_finished(
+          workflow_checkpoint.StepRecoveryFinished(
+            run_id: workspace.run_id,
+            workflow_id: workspace.workflow_id,
+            step_id: step.id,
+            failed_attempt_index: workspace.attempt_index,
+            recovery_attempt_number: recovery_attempt_number,
+            recovery_session_id: recovery_session_id,
+            result: "artifact_write_failed",
+            summary: "Recovery artifact write failed",
+            reason: reason,
+            retry_attempt_index: None,
+          ),
+        ),
+      )
+      False
+    }
     Ok(_) ->
       case
         dependencies.checkpoint.step_recovery_finished(
@@ -3734,6 +3755,11 @@ fn record_recovery_decision(
         Error(_) -> False
       }
   }
+}
+
+fn recovery_detail(detail: String, secrets: List(String)) -> String {
+  log.redact("workflow_step_recovery", detail, secrets)
+  |> log.truncate(4000)
 }
 
 fn recovery_context(context: StepContext) -> StepContext {

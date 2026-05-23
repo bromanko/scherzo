@@ -15,6 +15,7 @@ import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_outcome
 
 pub fn current_projection_sources_emit_only_backed_recovery_metadata_test() {
   let projection =
@@ -216,6 +217,44 @@ pub fn interrupted_run_recovery_is_idempotent_test() {
 
   assert counter_failure_attempts(first.runtime, "issue-1") == 1
   assert counter_failure_attempts(second.runtime, "issue-1") == 1
+}
+
+pub fn workflow_candidates_preserve_started_recovery_without_finish_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "workflow-run-started",
+        1000,
+        record.WorkflowRunStarted(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          issue_fingerprint: "issue-fp-1",
+          observed_updated_at_ms: 900,
+          run_root: "test/tmp/state-recovery/run-1",
+        ),
+      ),
+      record.with_id(
+        "recovery-started",
+        1010,
+        record.WorkflowStepRecoveryStarted(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          step_id: "implement",
+          failed_attempt_index: 1,
+          recovery_attempt_number: 1,
+          recovery_session_id: "recover-1",
+          model: Some("gpt-5"),
+          prompt_ref: ".scherzo/workflows/prompts/recover_failed_step.md",
+        ),
+      ),
+    ])
+
+  let assert [candidate] = recovery.workflow_candidates(projection)
+  assert candidate.run_id == "run-1"
+  assert candidate.recovery_evidence == workflow_outcome.StepRecoveryRan
 }
 
 pub fn unfinished_run_terminal_issue_cleans_known_workspace_test() {
