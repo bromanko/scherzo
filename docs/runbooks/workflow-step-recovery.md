@@ -1,6 +1,8 @@
-# Workflow step recovery groundwork
+# Workflow step recovery
 
-This page documents the step-recovery foundation that Scherzo can parse, bundle, persist, and project. Runtime step recovery is not active yet: `workflow_run` does not start nested recovery workers, retry failed steps, or emit recovered terminal outcomes. Treat `recover` as reserved workflow metadata until the runtime follow-up lands.
+This page documents the currently active runtime step-recovery path in Scherzo. When a step has effective `recover` configuration and its failure would otherwise be fatal, `workflow_run` records the failed original attempt, starts one bounded nested recovery worker in the same workspace, and retries the original step unchanged when the recovery result is `retry_requested`.
+
+Recovery remains a no-op for steps without effective recovery, for `recover.enabled: false`, and for `on_failure: continue`. Recovered terminal outcome names and operator-facing timeline rendering are still deferred; the runtime slice only activates the recovery worker, durable recovery records, retained recovery artifacts, and retry requeueing.
 
 ## Current merge scope
 
@@ -10,22 +12,23 @@ Implemented in this slice:
 - shallow merge semantics and `recover.enabled: false` disablement;
 - recovery prompt bundling in runtime bundles;
 - recovery decision protocol parsing for `retry_requested` and `gave_up`;
-- ledger record types for recovery start/finish events;
-- projection fields for stored step-recovery history;
-- retained artifact path helpers and default prompt/schema assets.
-
-Intentionally deferred:
-
-- starting a nested recovery worker from `workflow_run` after a failed step;
-- enforcing the recovery attempt budget at runtime;
+- recording the failed original attempt before recovery starts;
+- starting a nested recovery worker from `workflow_run` after a recoverable fatal step failure;
+- enforcing the configured recovery attempt budget at runtime;
 - retrying the original step unchanged after `retry_requested`;
+- ledger record types for recovery start/finish events and retained recovery result artifacts;
+- projection fields for stored step-recovery history;
+- runtime coverage for no-op paths plus invalid-output and artifact-conflict failure preservation.
+
+Still intentionally deferred:
+
 - emitting `succeeded_after_recovery` or `failed_after_recovery` outcomes;
 - operator-facing history/CLI rendering for the failed-attempt → recovery → retry timeline;
-- crash, timeout, invalid-output, artifact-conflict, and interruption-safety runtime tests.
+- deeper interruption and crash-resume hardening beyond preserving the original failure result.
 
-## Reserved YAML shape
+## YAML shape
 
-The reserved configuration shape is:
+The recovery configuration shape is:
 
 ```yaml
 version: 1
@@ -57,12 +60,12 @@ Default protocol assets:
 - Provider schema: `.scherzo/workflows/schemas/provider/workflow-step-recovery-result.v1.schema.json`
 - Canonical schema: `.scherzo/workflows/schemas/workflow-step-recovery-result.v1.schema.json`
 
-Planned retained recovery artifacts live under the failed attempt:
+Retained recovery artifacts live under the failed attempt:
 
 - `runs/<run>/<step>/attempt-<n>.json`
 - `runs/<run>/<step>/attempt-<n>/recovery-<m>/workflow_step_recovery_result.json`
 
-Durable history records are available for future runtime integration:
+Durable history records written by the runtime are:
 
 - `workflow_step_recovery_started`
 - `workflow_step_recovery_finished`

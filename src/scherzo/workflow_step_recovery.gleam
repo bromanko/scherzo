@@ -246,7 +246,7 @@ fn payload_decoder() -> decode.Decoder(Payload) {
 }
 
 pub fn artifact_json(
-  result: String,
+  decision: String,
   summary: String,
   reason: String,
   redaction_secrets: List(String),
@@ -254,7 +254,7 @@ pub fn artifact_json(
   json.object([
     #("artifact_type", json.string(artifact_type)),
     #("schema_version", json.int(schema_version)),
-    #("result", json.string(result)),
+    #("decision", json.string(decision)),
     #(
       "summary",
       json.string(log.redact(

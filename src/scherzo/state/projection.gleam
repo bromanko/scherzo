@@ -16,6 +16,7 @@ pub type Projection {
   Projection(
     runs: Dict(String, RunStatus),
     workflow_runs: Dict(String, WorkflowRunStatus),
+    workflow_run_provenances: Dict(String, WorkflowRunProvenance),
     workflow_task_refs: Dict(String, record.TaskRefFields),
     workflow_input_manifests: Dict(String, WorkflowContractManifestRef),
     workflow_output_manifests: Dict(String, WorkflowContractManifestRef),
@@ -96,6 +97,19 @@ pub type WorkflowContractManifestRef {
     artifact_sha256: String,
     artifact_bytes: Int,
     recorded_at_ms: Int,
+  )
+}
+
+pub type WorkflowRunProvenance {
+  WorkflowRunProvenance(
+    workflow_id: String,
+    workflow_fingerprint: String,
+    issue_id: String,
+    issue_identifier: String,
+    issue_fingerprint: String,
+    observed_updated_at_ms: Int,
+    run_root: String,
+    task_ref: record.TaskRefFields,
   )
 }
 
@@ -500,6 +514,13 @@ type WorkflowTaskRefSnapshot {
   WorkflowTaskRefSnapshot(run_id: String, task_ref: record.TaskRefFields)
 }
 
+type WorkflowRunProvenanceSnapshot {
+  WorkflowRunProvenanceSnapshot(
+    run_id: String,
+    provenance: WorkflowRunProvenance,
+  )
+}
+
 type StepAttemptSnapshot {
   StepAttemptSnapshot(key: String, status: StepAttemptStatus)
 }
@@ -551,6 +572,7 @@ type SnapshotFields {
   SnapshotFields(
     runs: List(RunSnapshot),
     workflow_runs: List(WorkflowRunSnapshot),
+    workflow_run_provenances: List(WorkflowRunProvenanceSnapshot),
     workflow_task_refs: List(WorkflowTaskRefSnapshot),
     workflow_input_manifests: List(WorkflowContractManifestSnapshot),
     workflow_output_manifests: List(WorkflowContractManifestSnapshot),
@@ -583,6 +605,7 @@ pub fn new() -> Projection {
   Projection(
     runs: dict.new(),
     workflow_runs: dict.new(),
+    workflow_run_provenances: dict.new(),
     workflow_task_refs: dict.new(),
     workflow_input_manifests: dict.new(),
     workflow_output_manifests: dict.new(),
@@ -673,6 +696,23 @@ pub fn apply(
             at_ms,
           ),
         ),
+        workflow_run_provenances: dict.insert(
+          projection.workflow_run_provenances,
+          run_id,
+          WorkflowRunProvenance(
+            workflow_id: workflow_id,
+            workflow_fingerprint: workflow_fingerprint,
+            issue_id: issue_id,
+            issue_identifier: issue_identifier,
+            issue_fingerprint: issue_fingerprint,
+            observed_updated_at_ms: observed_updated_at_ms,
+            run_root: run_root,
+            task_ref: record.legacy_linear_task_ref_fields(
+              issue_id,
+              issue_identifier,
+            ),
+          ),
+        ),
         workflow_task_refs: dict.insert(
           projection.workflow_task_refs,
           run_id,
@@ -704,6 +744,20 @@ pub fn apply(
             observed_updated_at_ms,
             run_root,
             at_ms,
+          ),
+        ),
+        workflow_run_provenances: dict.insert(
+          projection.workflow_run_provenances,
+          run_id,
+          WorkflowRunProvenance(
+            workflow_id: workflow_id,
+            workflow_fingerprint: workflow_fingerprint,
+            issue_id: issue_id,
+            issue_identifier: issue_identifier,
+            issue_fingerprint: issue_fingerprint,
+            observed_updated_at_ms: observed_updated_at_ms,
+            run_root: run_root,
+            task_ref: task_ref,
           ),
         ),
         workflow_task_refs: dict.insert(
@@ -3194,6 +3248,13 @@ pub fn workflow_task_ref(
   dict.get(projection.workflow_task_refs, run_id)
 }
 
+pub fn workflow_run_provenance(
+  projection: Projection,
+  run_id: String,
+) -> Result(WorkflowRunProvenance, Nil) {
+  dict.get(projection.workflow_run_provenances, run_id)
+}
+
 pub fn command_receipt(
   projection: Projection,
   comment_id: String,
@@ -3230,6 +3291,13 @@ pub fn to_json(projection: Projection) -> json.Json {
       json.array(
         dict.to_list(projection.workflow_runs),
         of: workflow_run_entry_to_json,
+      ),
+    ),
+    #(
+      "workflow_run_provenances",
+      json.array(
+        dict.to_list(projection.workflow_run_provenances),
+        of: workflow_run_provenance_entry_to_json,
       ),
     ),
     #(
@@ -3357,6 +3425,12 @@ fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
           |> list.map(fn(entry) {
             let WorkflowRunSnapshot(run_id, status) = entry
             #(run_id, status)
+          })
+          |> dict.from_list,
+        workflow_run_provenances: fields.workflow_run_provenances
+          |> list.map(fn(entry) {
+            let WorkflowRunProvenanceSnapshot(run_id, provenance) = entry
+            #(run_id, provenance)
           })
           |> dict.from_list,
         workflow_task_refs: fields.workflow_task_refs
@@ -3575,6 +3649,32 @@ fn workflow_run_entry_to_json(
         #("run_root", json.string(run_root)),
       ])
   }
+}
+
+fn workflow_run_provenance_entry_to_json(
+  entry: #(String, WorkflowRunProvenance),
+) -> json.Json {
+  let #(run_id, provenance) = entry
+  let record.TaskRefFields(
+    task_backend_kind,
+    task_remote_id,
+    task_key,
+    task_url,
+  ) = provenance.task_ref
+  json.object([
+    #("run_id", json.string(run_id)),
+    #("workflow_id", json.string(provenance.workflow_id)),
+    #("workflow_fingerprint", json.string(provenance.workflow_fingerprint)),
+    #("issue_id", json.string(provenance.issue_id)),
+    #("issue_identifier", json.string(provenance.issue_identifier)),
+    #("issue_fingerprint", json.string(provenance.issue_fingerprint)),
+    #("observed_updated_at_ms", json.int(provenance.observed_updated_at_ms)),
+    #("run_root", json.string(provenance.run_root)),
+    #("task_backend_kind", json.string(task_backend_kind)),
+    #("task_remote_id", json.string(task_remote_id)),
+    #("task_key", option_string_to_json(task_key)),
+    #("task_url", option_string_to_json(task_url)),
+  ])
 }
 
 fn workflow_task_ref_entry_to_json(
@@ -4359,6 +4459,11 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: workflow_run_snapshot_decoder()),
   )
+  use workflow_run_provenances <- decode.optional_field(
+    "workflow_run_provenances",
+    [],
+    decode.list(of: workflow_run_provenance_snapshot_decoder()),
+  )
   use workflow_task_refs <- decode.optional_field(
     "workflow_task_refs",
     [],
@@ -4437,6 +4542,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
       decode.success(SnapshotFields(
         runs,
         workflow_runs,
+        workflow_run_provenances,
         workflow_task_refs,
         workflow_input_manifests,
         workflow_output_manifests,
@@ -4456,6 +4562,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     False ->
       decode.failure(
         SnapshotFields(
+          [],
           [],
           [],
           [],
@@ -4617,6 +4724,55 @@ fn workflow_run_snapshot_decoder() -> decode.Decoder(WorkflowRunSnapshot) {
         expected: "WorkflowRunSnapshot",
       )
   }
+}
+
+fn workflow_run_provenance_snapshot_decoder() -> decode.Decoder(
+  WorkflowRunProvenanceSnapshot,
+) {
+  use run_id <- decode.field("run_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use workflow_fingerprint <- decode.field(
+    "workflow_fingerprint",
+    decode.string,
+  )
+  use issue_id <- decode.field("issue_id", decode.string)
+  use issue_identifier <- decode.field("issue_identifier", decode.string)
+  use issue_fingerprint <- decode.field("issue_fingerprint", decode.string)
+  use observed_updated_at_ms <- decode.field(
+    "observed_updated_at_ms",
+    decode.int,
+  )
+  use run_root <- decode.optional_field("run_root", "", decode.string)
+  use task_backend_kind <- decode.field("task_backend_kind", decode.string)
+  use task_remote_id <- decode.field("task_remote_id", decode.string)
+  use task_key <- decode.optional_field(
+    "task_key",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_url <- decode.optional_field(
+    "task_url",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(WorkflowRunProvenanceSnapshot(
+    run_id,
+    WorkflowRunProvenance(
+      workflow_id: workflow_id,
+      workflow_fingerprint: workflow_fingerprint,
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      issue_fingerprint: issue_fingerprint,
+      observed_updated_at_ms: observed_updated_at_ms,
+      run_root: run_root,
+      task_ref: record.TaskRefFields(
+        task_backend_kind: task_backend_kind,
+        task_remote_id: task_remote_id,
+        task_key: task_key,
+        task_url: task_url,
+      ),
+    ),
+  ))
 }
 
 fn workflow_task_ref_snapshot_decoder() -> decode.Decoder(

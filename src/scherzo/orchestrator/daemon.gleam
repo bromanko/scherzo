@@ -2187,122 +2187,144 @@ fn retry_workflow_step_for_operator(
               ),
             )
             False ->
-              case issue_for_id(state, issue_id) {
-                Error(status) -> #(
+              case dict.get(state.runtime.parked, issue_id) {
+                Ok(parked) -> #(
                   state,
-                  command.result_for(operator_command, status, None),
+                  command.rejected(
+                    operator_command,
+                    "issue_parked",
+                    Some(
+                      "issue is parked for "
+                      <> orchestrator_reason.park_to_string(parked.reason)
+                      <> "; unpark before retry-step",
+                    ),
+                  ),
                 )
-                Ok(issue) -> {
-                  let observation =
-                    current_workflow_observation(state.workflow.bundle, issue)
-                  case
-                    workflow_repair.plan(
-                      projection_state,
-                      target,
-                      step_id,
-                      observation,
-                    )
-                  {
-                    Error(error) -> #(
+                Error(Nil) ->
+                  case issue_for_id(state, issue_id) {
+                    Error(status) -> #(
                       state,
-                      command.rejected(
-                        operator_command,
-                        workflow_repair.describe_error(error),
-                        workflow_repair.error_message(error),
-                      ),
+                      command.result_for(operator_command, status, None),
                     )
-                    Ok(plan) ->
+                    Ok(issue) -> {
+                      let observation =
+                        current_workflow_observation(
+                          state.workflow.bundle,
+                          issue,
+                        )
                       case
-                        recovery.finalize_workflow_candidates_with_config(
+                        workflow_repair.plan(
                           projection_state,
-                          [plan.candidate],
-                          dict.from_list([
-                            #(
-                              plan.run_id,
-                              workflow_repair.normalize_observation(observation),
-                            ),
-                          ]),
-                          artifact_store.new(
-                            state.workflow.effective.workspace.root,
-                          ),
-                          state.dependencies.now_ms(),
-                          state.workflow.effective,
+                          target,
+                          step_id,
+                          observation,
                         )
                       {
                         Error(error) -> #(
                           state,
                           command.rejected(
                             operator_command,
-                            recovery.describe_error(error),
-                            Some(recovery.describe_error(error)),
+                            workflow_repair.describe_error(error),
+                            workflow_repair.error_message(error),
                           ),
                         )
-                        Ok(finalization) ->
-                          case finalization.resumptions {
-                            [resumption] -> {
-                              let bodies =
-                                list.append(
-                                  plan.records_to_append,
-                                  ledger_record_bodies(
-                                    finalization.records_to_append,
+                        Ok(plan) ->
+                          case
+                            recovery.finalize_workflow_candidates_with_config(
+                              projection_state,
+                              [plan.candidate],
+                              dict.from_list([
+                                #(
+                                  plan.run_id,
+                                  workflow_repair.normalize_observation(
+                                    observation,
                                   ),
-                                )
-                              case
-                                append_ledger_bodies(
-                                  state,
-                                  bodies,
-                                  "retry_step_append_failed",
-                                )
-                              {
-                                False -> #(
-                                  state,
-                                  command.rejected(
-                                    operator_command,
-                                    "ledger_append_failed",
-                                    Some(
-                                      "failed to append retry-step repair records",
-                                    ),
-                                  ),
-                                )
-                                True -> {
-                                  let state =
-                                    spawn_recovered_workflow_resumption(
-                                      state,
-                                      resumption,
-                                    )
-                                  #(
-                                    state,
-                                    command.applied(
-                                      operator_command,
-                                      Some(
-                                        "retrying run "
-                                        <> plan.run_id
-                                        <> " step "
-                                        <> plan.selected_step_id
-                                        <> " at attempt "
-                                        <> int.to_string(
-                                          plan.next_attempt_index,
-                                        ),
-                                      ),
-                                    ),
-                                  )
-                                }
-                              }
-                            }
-                            _ -> #(
+                                ),
+                              ]),
+                              artifact_store.new(
+                                state.workflow.effective.workspace.root,
+                              ),
+                              state.dependencies.now_ms(),
+                              state.workflow.effective,
+                            )
+                          {
+                            Error(error) -> #(
                               state,
                               command.rejected(
                                 operator_command,
-                                rejection_reason_from_finalization(finalization),
-                                Some(
-                                  "retry-step repair was rejected by recovery validation",
-                                ),
+                                recovery.describe_error(error),
+                                Some(recovery.describe_error(error)),
                               ),
                             )
+                            Ok(finalization) ->
+                              case finalization.resumptions {
+                                [resumption] -> {
+                                  let bodies =
+                                    list.append(
+                                      plan.records_to_append,
+                                      ledger_record_bodies(
+                                        finalization.records_to_append,
+                                      ),
+                                    )
+                                  case
+                                    append_ledger_bodies(
+                                      state,
+                                      bodies,
+                                      "retry_step_append_failed",
+                                    )
+                                  {
+                                    False -> #(
+                                      state,
+                                      command.rejected(
+                                        operator_command,
+                                        "ledger_append_failed",
+                                        Some(
+                                          "failed to append retry-step repair records",
+                                        ),
+                                      ),
+                                    )
+                                    True -> {
+                                      let state =
+                                        spawn_recovered_workflow_resumption(
+                                          state,
+                                          resumption,
+                                        )
+                                      #(
+                                        state,
+                                        command.applied(
+                                          operator_command,
+                                          Some(
+                                            "retrying run "
+                                            <> plan.run_id
+                                            <> " step "
+                                            <> plan.selected_step_id
+                                            <> " at attempt "
+                                            <> int.to_string(
+                                              plan.next_attempt_index,
+                                            ),
+                                          ),
+                                        ),
+                                      )
+                                    }
+                                  }
+                                }
+                                _ -> #(
+                                  state,
+                                  command.rejected(
+                                    operator_command,
+                                    rejection_reason_from_finalization(
+                                      finalization,
+                                    ),
+                                    Some(
+                                      "retry-step repair was rejected by recovery validation",
+                                    ),
+                                  ),
+                                )
+                              }
                           }
                       }
+                    }
                   }
-                }
               }
           }
       }

@@ -1,4 +1,5 @@
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/result_artifact
 import scherzo/workflow_step_recovery
 
@@ -66,4 +67,20 @@ pub fn rejects_wrong_artifact_type_test() {
     workflow_step_recovery.decision_from_result(artifact)
   assert workflow_step_recovery.describe_error(error)
     == "recovery_result_wrong_artifact_type"
+}
+
+pub fn artifact_json_uses_decision_field_and_redacts_test() {
+  let payload =
+    workflow_step_recovery.artifact_json(
+      "retry_requested",
+      "patched TOP_SECRET",
+      "ready TOP_SECRET",
+      ["TOP_SECRET"],
+    )
+
+  assert string.contains(payload, "\"decision\":\"retry_requested\"")
+  assert !string.contains(payload, "\"result\"")
+  assert !string.contains(payload, "TOP_SECRET")
+  assert string.contains(payload, "patched [REDACTED]")
+  assert string.contains(payload, "ready [REDACTED]")
 }
