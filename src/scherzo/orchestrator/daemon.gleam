@@ -1566,6 +1566,7 @@ fn run_recovered_workflow_worker(
                   ),
                   next_attempt_indexes: recovered.next_attempt_indexes,
                   run_root: Some(recovered.run_root),
+                  recovery_evidence: recovered.recovery_evidence,
                   pi_session_continuations: recovered.pi_session_continuations,
                   contract_inputs_recorded: recovered_contract_manifest(
                     recovered.contract_input_manifest,

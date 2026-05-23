@@ -795,6 +795,34 @@ fn failing_command_workflow_run_dependencies(
   )
 }
 
+fn failing_agent_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    agent_step: fn(
+      issue,
+      context: workflow_run.StepContext,
+      _prompt_mode,
+      _attempt_context,
+      _effective,
+      _tracker,
+      _emit_update,
+      _command_ready,
+      _record_pi_session,
+    ) {
+      process.send(log_subject, "yaml_agent_failed:" <> context.step_id)
+      Error(agent_types.WorkerFailure(
+        reason: error.PiFailed(error.PiProtocolError("forced_failure")),
+        workspace_path: Some(context.workspace_path),
+        tokens: session_tokens.zero_token_totals(),
+        final_issue: Some(issue),
+      ))
+    },
+  )
+}
+
 fn scheduled_reporter_success(
   report_subject: process.Subject(
     scheduled_failure_reporter.FailureReportRequest,
@@ -1186,6 +1214,35 @@ fn load_test_records(root: String) -> List(record.LedgerRecord) {
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(read) = ledger.read_records(ledger_path)
   read.records
+}
+
+fn workflow_finished_outcomes(root: String) -> List(String) {
+  load_test_records(root)
+  |> list.filter_map(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowRunFinished(outcome: outcome, ..)
+      | record.WorkflowRunFinishedWithTask(outcome: outcome, ..) -> Ok(outcome)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn wait_for_workflow_finished_outcomes(
+  root: String,
+  expected: List(String),
+  attempts: Int,
+) -> Bool {
+  case attempts <= 0 {
+    True -> False
+    False ->
+      case workflow_finished_outcomes(root) == expected {
+        True -> True
+        False -> {
+          process.sleep(50)
+          wait_for_workflow_finished_outcomes(root, expected, attempts - 1)
+        }
+      }
+  }
 }
 
 fn append_test_ledger_bodies(
@@ -3035,6 +3092,141 @@ steps:
     "yaml_command:second",
     "yaml_command:first",
     10,
+  )
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_startup_resume_preserves_recovered_success_outcome_test() {
+  let dir = "test/tmp/daemon-startup-recovered-success"
+  let workflow_path = write_yaml_agent_workflow(dir)
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let candidate =
+    tracker_issue.Issue(
+      ..issue("issue-recovered-success", "ABC-100", "Todo"),
+      labels: [
+        "workflow:implementation",
+      ],
+    )
+  let assert Ok(#(_, dag)) = runtime_bundle.select_workflow(bundle, candidate)
+  let assert Ok(fingerprint) =
+    workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
+  let workspace_root = bundle.effective.workspace.root
+  let run_root = workspace_root <> "/implementation/ABC-100/run-recovered"
+  append_test_ledger_bodies(workspace_root, [
+    record.WorkflowRunStarted(
+      "run-recovered",
+      "implementation",
+      fingerprint,
+      candidate.id,
+      candidate.identifier,
+      core.issue_fingerprint(candidate),
+      0,
+      run_root,
+    ),
+    record.WorkflowStepRecoveryStarted(
+      "run-recovered",
+      "implementation",
+      "implement",
+      1,
+      1,
+      "recovery-session-1",
+      Some("test-model"),
+      "artifacts://prompt.md",
+    ),
+  ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      logger: fn(_, _, _, _) { Ok(Nil) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_workflow_finished_outcomes(
+    workspace_root,
+    ["succeeded_after_recovery"],
+    20,
+  )
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_startup_resume_preserves_recovered_failure_outcome_test() {
+  let dir = "test/tmp/daemon-startup-recovered-failure"
+  let workflow_path = write_yaml_agent_workflow(dir)
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let candidate =
+    tracker_issue.Issue(
+      ..issue("issue-recovered-failure", "ABC-101", "Todo"),
+      labels: [
+        "workflow:implementation",
+      ],
+    )
+  let assert Ok(#(_, dag)) = runtime_bundle.select_workflow(bundle, candidate)
+  let assert Ok(fingerprint) =
+    workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
+  let workspace_root = bundle.effective.workspace.root
+  let run_root = workspace_root <> "/implementation/ABC-101/run-recovered"
+  append_test_ledger_bodies(workspace_root, [
+    record.WorkflowRunStarted(
+      "run-recovered",
+      "implementation",
+      fingerprint,
+      candidate.id,
+      candidate.identifier,
+      core.issue_fingerprint(candidate),
+      0,
+      run_root,
+    ),
+    record.WorkflowStepRecoveryStarted(
+      "run-recovered",
+      "implementation",
+      "implement",
+      1,
+      1,
+      "recovery-session-1",
+      Some("test-model"),
+      "artifacts://prompt.md",
+    ),
+    record.WorkflowStepRecoveryFinished(
+      "run-recovered",
+      "implementation",
+      "implement",
+      1,
+      1,
+      "recovery-session-1",
+      "retry_requested",
+      "summary",
+      "reason",
+      Some(2),
+    ),
+  ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: failing_agent_workflow_run_dependencies(
+        log_subject,
+      ),
+      logger: fn(_, _, _, _) { Ok(Nil) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_workflow_finished_outcomes(
+    workspace_root,
+    ["failed_after_recovery"],
+    20,
   )
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }

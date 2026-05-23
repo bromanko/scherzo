@@ -13,6 +13,7 @@ import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
+import scherzo/workflow_outcome
 import simplifile
 
 type RecoveryScenario {
@@ -356,6 +357,52 @@ fn given_missing_step_finished(
   )
 }
 
+fn given_step_recovery_started(
+  scenario: RecoveryScenario,
+  sequence: Int,
+  step_id: String,
+) -> record.LedgerRecord {
+  record.new(
+    sequence,
+    sequence,
+    record.WorkflowStepRecoveryStarted(
+      scenario.run_id,
+      "workflow-alpha",
+      step_id,
+      1,
+      1,
+      "recovery-session-1",
+      Some("test-model"),
+      "artifacts://prompt.md",
+    ),
+  )
+}
+
+fn given_step_recovery_finished(
+  scenario: RecoveryScenario,
+  sequence: Int,
+  step_id: String,
+  result: String,
+  retry_attempt_index: Option(Int),
+) -> record.LedgerRecord {
+  record.new(
+    sequence,
+    sequence,
+    record.WorkflowStepRecoveryFinished(
+      scenario.run_id,
+      "workflow-alpha",
+      step_id,
+      1,
+      1,
+      "recovery-session-1",
+      result,
+      "summary",
+      "reason",
+      retry_attempt_index,
+    ),
+  )
+}
+
 fn finalize_resume(
   scenario: RecoveryScenario,
   folded: projection.Projection,
@@ -476,6 +523,7 @@ pub fn old_workflow_checkpoint_records_recover_active_candidate_test() {
       issue_fingerprint: "fp-old",
       observed_updated_at_ms: 10,
       run_root: "test/tmp/run-root",
+      recovery_evidence: workflow_outcome.NoStepRecovery,
       contract_input_manifest: None,
       contract_output_manifest: None,
       attempts: [
@@ -499,6 +547,78 @@ pub fn old_workflow_checkpoint_records_recover_active_candidate_test() {
 fn decode_checkpoint_record(line: String) -> record.LedgerRecord {
   let assert Ok(decoded) = record.decode_string(line)
   decoded
+}
+
+pub fn workflow_recovery_candidate_marks_started_same_run_step_recovery_test() {
+  let scenario =
+    recovery_scenario(
+      "test/tmp/recovery-workflow-step-recovery-started",
+      "run-started",
+    )
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_recovery_started(scenario, 2, "a"),
+    ])
+
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  assert candidate.recovery_evidence == workflow_outcome.StepRecoveryRan
+}
+
+pub fn workflow_recovery_candidate_marks_retry_requested_same_run_step_recovery_test() {
+  let scenario =
+    recovery_scenario(
+      "test/tmp/recovery-workflow-step-recovery-finished",
+      "run-finished",
+    )
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_recovery_started(scenario, 2, "a"),
+      given_step_recovery_finished(scenario, 3, "a", "retry_requested", Some(2)),
+    ])
+
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  assert candidate.recovery_evidence
+    == workflow_outcome.StepRecoveryRetryRequested
+}
+
+pub fn workflow_recovery_ignores_other_run_step_recovery_records_test() {
+  let scenario =
+    recovery_scenario(
+      "test/tmp/recovery-workflow-step-recovery-other-run",
+      "run-clean",
+    )
+  ensure_workspace(scenario, "main")
+  let artifact = command_artifact("a", 0, "done", "")
+  let stored = write_artifact(scenario, "a", artifact)
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_prepared(scenario, 2, "a", "main", None, None),
+      given_step_finished(scenario, 3, "a", "completed", stored, "main"),
+      record.new(
+        4,
+        4,
+        record.WorkflowStepRecoveryStarted(
+          "other-run",
+          "workflow-alpha",
+          "a",
+          1,
+          1,
+          "recovery-session-other",
+          Some("test-model"),
+          "artifacts://other-prompt.md",
+        ),
+      ),
+    ])
+
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  assert candidate.recovery_evidence == workflow_outcome.NoStepRecovery
+
+  let finalized = finalize_resume(scenario, folded, agent_dag())
+  let resumption = expect_single_resumption(finalized)
+  assert resumption.recovery_evidence == workflow_outcome.NoStepRecovery
 }
 
 pub fn workflow_checkpoint_candidates_carry_contract_manifest_refs_test() {

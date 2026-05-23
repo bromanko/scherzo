@@ -13,6 +13,7 @@ import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
+import scherzo/workflow_outcome
 import scherzo/workflow_repair
 import simplifile
 
@@ -59,6 +60,22 @@ pub fn retry_step_can_repair_interrupted_attempt_test() {
     1,
     2,
   )
+}
+
+pub fn retry_step_interrupted_run_carries_step_recovery_evidence_test() {
+  let projection = projection.fold(interrupted_run_records_with_step_recovery())
+  let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_workflow(dag),
+    )
+
+  assert plan.candidate.recovery_evidence
+    == workflow_outcome.StepRecoveryRetryRequested
 }
 
 pub fn retry_step_accepts_legacy_stateful_issue_fingerprint_when_equivalent_test() {
@@ -114,6 +131,98 @@ pub fn retry_step_issue_target_selects_latest_repairable_run_by_status_time_test
       current_workflow(dag),
     )
   assert auto_plan.run_id == "run-2"
+}
+
+pub fn retry_step_accepts_failed_after_recovery_run_test() {
+  let projection = projection.fold(failed_after_recovery_run_records())
+  let assert Ok(dag) = workflow_dag.parse(multiple_boundary_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("first"),
+      current_workflow(dag),
+    )
+
+  assert plan.run_id == "run-1"
+  assert plan.selected_step_id == "first"
+  assert plan.failed_attempt_index == 1
+}
+
+pub fn retry_step_issue_target_accepts_failed_after_recovery_run_test() {
+  let projection = projection.fold(failed_after_recovery_run_records())
+  let assert Ok(dag) = workflow_dag.parse(multiple_boundary_workflow_yaml())
+
+  let assert Ok(identifier_plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepIssueRef(command.IssueIdentifier("LIV-509")),
+      Some("first"),
+      current_workflow(dag),
+    )
+  assert identifier_plan.run_id == "run-1"
+  assert identifier_plan.selected_step_id == "first"
+
+  let assert Ok(id_plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepIssueRef(command.IssueId("issue-1")),
+      Some("first"),
+      current_workflow(dag),
+    )
+  assert id_plan.run_id == "run-1"
+
+  let assert Ok(auto_plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepAutoTarget("LIV-509"),
+      Some("first"),
+      current_workflow(dag),
+    )
+  assert auto_plan.run_id == "run-1"
+}
+
+pub fn retry_step_rejects_non_failed_terminal_outcomes_test() {
+  let assert Ok(dag) = workflow_dag.parse(single_step_workflow_yaml())
+
+  let completed_projection =
+    projection.fold(workflow_finished_run_records(workflow_outcome.completed))
+  let assert Error(completed_error) =
+    workflow_repair.plan(
+      completed_projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("first"),
+      current_workflow(dag),
+    )
+  assert workflow_repair.describe_error(completed_error)
+    == "no_failed_workflow_run"
+
+  let recovered_success_projection =
+    projection.fold(workflow_finished_run_records(
+      workflow_outcome.succeeded_after_recovery,
+    ))
+  let assert Error(recovered_success_error) =
+    workflow_repair.plan(
+      recovered_success_projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("first"),
+      current_workflow(dag),
+    )
+  assert workflow_repair.describe_error(recovered_success_error)
+    == "no_failed_workflow_run"
+
+  let cancelled_projection =
+    projection.fold(workflow_finished_run_records(workflow_outcome.cancelled))
+  let assert Error(cancelled_error) =
+    workflow_repair.plan(
+      cancelled_projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("first"),
+      current_workflow(dag),
+    )
+  assert workflow_repair.describe_error(cancelled_error)
+    == "no_failed_workflow_run"
 }
 
 pub fn retry_step_selected_repeated_step_boundary_uses_latest_attempt_test() {
@@ -472,6 +581,17 @@ steps:
 "
 }
 
+fn single_step_workflow_yaml() -> String {
+  "version: 1
+id: implementation
+steps:
+  - id: first
+    kind: command
+    run: first
+    workspace: main
+"
+}
+
 fn selected_non_repairable_workflow_yaml() -> String {
   "version: 1
 id: implementation
@@ -543,6 +663,19 @@ fn interrupted_run_records() -> List(record.LedgerRecord) {
   interrupted_run_records_with_issue_fingerprint(
     tracker_issue.content_fingerprint(issue()),
   )
+}
+
+fn interrupted_run_records_with_step_recovery() -> List(record.LedgerRecord) {
+  list.append(interrupted_run_records(), [
+    step_recovery_started_record("run-1", "validate_before_native_review", 25),
+    step_recovery_finished_record(
+      "run-1",
+      "validate_before_native_review",
+      26,
+      "retry_requested",
+      Some(2),
+    ),
+  ])
 }
 
 fn interrupted_run_records_with_issue_fingerprint(
@@ -636,6 +769,40 @@ fn latest_repairable_run_records() -> List(record.LedgerRecord) {
     prepared_attempt_record_for_run("run-2", "first", 1, "main", 30),
     interrupted_attempt_record("run-2", "first", 1, 31),
     workflow_interrupted_record_for_run("run-2", 50),
+  ]
+}
+
+fn failed_after_recovery_run_records() -> List(record.LedgerRecord) {
+  [
+    base_workflow_started_record("workflow-failed-after-recovery"),
+    finished_attempt_record_for_run(
+      "run-1",
+      "first",
+      1,
+      workflow_outcome.failed_fatal,
+      "main",
+      10,
+    ),
+    workflow_finished_record_for_run(
+      "run-1",
+      workflow_outcome.failed_after_recovery,
+      20,
+    ),
+  ]
+}
+
+fn workflow_finished_run_records(outcome: String) -> List(record.LedgerRecord) {
+  [
+    base_workflow_started_record("workflow-finished-run"),
+    finished_attempt_record_for_run(
+      "run-1",
+      "first",
+      1,
+      workflow_outcome.completed,
+      "main",
+      10,
+    ),
+    workflow_finished_record_for_run("run-1", outcome, 20),
   ]
 }
 
@@ -964,6 +1131,71 @@ fn interrupted_attempt_record(
       step_id: step_id,
       attempt_index: attempt_index,
       reason: "daemon_shutdown",
+    ),
+  )
+}
+
+fn step_recovery_started_record(
+  run_id: String,
+  step_id: String,
+  at_ms: Int,
+) -> record.LedgerRecord {
+  record.with_id(
+    "step-recovery-started-" <> run_id <> "-" <> step_id,
+    at_ms,
+    record.WorkflowStepRecoveryStarted(
+      run_id,
+      "implementation",
+      step_id,
+      1,
+      1,
+      "recovery-session-1",
+      Some("test-model"),
+      "artifacts://prompt.md",
+    ),
+  )
+}
+
+fn step_recovery_finished_record(
+  run_id: String,
+  step_id: String,
+  at_ms: Int,
+  result: String,
+  retry_attempt_index: Option(Int),
+) -> record.LedgerRecord {
+  record.with_id(
+    "step-recovery-finished-" <> run_id <> "-" <> step_id,
+    at_ms,
+    record.WorkflowStepRecoveryFinished(
+      run_id,
+      "implementation",
+      step_id,
+      1,
+      1,
+      "recovery-session-1",
+      result,
+      "summary",
+      "reason",
+      retry_attempt_index,
+    ),
+  )
+}
+
+fn workflow_finished_record_for_run(
+  run_id: String,
+  outcome: String,
+  at_ms: Int,
+) -> record.LedgerRecord {
+  record.with_id(
+    "workflow-finished-" <> run_id <> "-" <> int.to_string(at_ms),
+    at_ms,
+    record.WorkflowRunFinished(
+      run_id: run_id,
+      workflow_id: "implementation",
+      issue_id: "issue-1",
+      outcome: outcome,
+      token_total: 1,
+      turns: 1,
     ),
   )
 }

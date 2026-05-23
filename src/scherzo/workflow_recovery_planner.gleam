@@ -7,6 +7,7 @@ import gleam/result
 import gleam/string
 import scherzo/step_artifact
 import scherzo/workflow_dag
+import scherzo/workflow_outcome
 import scherzo/workflow_scheduler
 
 pub const start_reason_dependencies_complete_after_startup = "dependencies_complete_after_startup"
@@ -34,6 +35,7 @@ pub type WorkflowRunFacts {
     observed_updated_at_ms: Int,
     run_root: String,
     cleanup_recorded: Bool,
+    recovery_evidence: workflow_outcome.RecoveryEvidence,
     run_status: DurableRunStatus,
     step_attempts: List(StepAttemptFacts),
   )
@@ -50,6 +52,8 @@ pub type WorkflowRunOutcome {
   WorkflowCompleted
   WorkflowFailedFatal
   WorkflowCancelled
+  WorkflowSucceededAfterRecovery
+  WorkflowFailedAfterRecovery
 }
 
 pub type CurrentWorkflowObservation {
@@ -905,9 +909,12 @@ fn finish_decision(
   start_steps: List(StartStep),
 ) -> FinishDecision {
   case run.run_status {
-    RunFinished(WorkflowCompleted, _, _) ->
+    RunFinished(WorkflowCompleted, _, _)
+    | RunFinished(WorkflowSucceededAfterRecovery, _, _) ->
       FinishDecision(TerminalSucceeded, [])
-    RunFinished(WorkflowFailedFatal, _, _) -> FinishDecision(TerminalFailed, [])
+    RunFinished(WorkflowFailedFatal, _, _)
+    | RunFinished(WorkflowFailedAfterRecovery, _, _) ->
+      FinishDecision(TerminalFailed, [])
     RunFinished(WorkflowCancelled, _, _) ->
       FinishDecision(TerminalCancelled, [])
     RunInterrupted(_) -> FinishDecision(AlreadyInterrupted, [])
@@ -923,7 +930,7 @@ fn finish_decision(
                   run_id: run.run_id,
                   workflow_id: run.workflow_id,
                   issue_id: run.issue_id,
-                  outcome: WorkflowFailedFatal,
+                  outcome: failed_terminal_outcome(run.recovery_evidence),
                 ),
               ])
             False ->
@@ -934,7 +941,9 @@ fn finish_decision(
                       run_id: run.run_id,
                       workflow_id: run.workflow_id,
                       issue_id: run.issue_id,
-                      outcome: WorkflowCompleted,
+                      outcome: successful_terminal_outcome(
+                        run.recovery_evidence,
+                      ),
                     ),
                   ])
                 False ->
@@ -949,6 +958,24 @@ fn finish_decision(
               }
           }
       }
+  }
+}
+
+fn successful_terminal_outcome(
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
+) -> WorkflowRunOutcome {
+  case workflow_outcome.recovery_attempted(recovery_evidence) {
+    True -> WorkflowSucceededAfterRecovery
+    False -> WorkflowCompleted
+  }
+}
+
+fn failed_terminal_outcome(
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
+) -> WorkflowRunOutcome {
+  case workflow_outcome.recovery_attempted(recovery_evidence) {
+    True -> WorkflowFailedAfterRecovery
+    False -> WorkflowFailedFatal
   }
 }
 
