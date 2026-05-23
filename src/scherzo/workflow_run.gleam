@@ -36,6 +36,7 @@ import scherzo/workflow_contract_manifest as contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workflow_scheduler
+import scherzo/workflow_step_recovery
 import scherzo/workflow_structured_retry
 import scherzo/workspace_profile
 import scherzo/workspace_run
@@ -283,6 +284,19 @@ type AfterStepMessage {
   AfterStepCompleted
   AfterStepDown(process.Down)
   AfterStepLinkedExit
+}
+
+type RecoveryAttemptOutcome {
+  RecoveryRetryRequested(
+    tokens: session_tokens.TokenTotals,
+    final_issue: Option(tracker_issue.Issue),
+    turns: Int,
+  )
+  RecoveryStop(
+    tokens: session_tokens.TokenTotals,
+    final_issue: Option(tracker_issue.Issue),
+    turns: Int,
+  )
 }
 
 type PrepareReadyFailure {
@@ -2634,15 +2648,24 @@ fn execute_prepared_steps(
             result,
             issue,
             dag,
+            orchestrator,
+            tracker_client,
+            secrets,
             run_id,
             workflow_fingerprint,
             contract_outputs_recorded,
-            orchestrator,
             dependencies,
+            scheduler_state,
             artifacts,
             prepared_workspaces,
             run_root,
+            attempt_indexes,
+            tokens,
+            final_issue,
+            turns,
             True,
+            recovered_execution,
+            pi_session_continuations,
             profile,
           )
       }
@@ -3066,20 +3089,48 @@ fn finish_fatal_batch_result(
   result: StepExecutionResult,
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  tracker_client: tracker.Client,
+  secrets: List(String),
   run_id: String,
   workflow_fingerprint: String,
   contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
-  orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
+  scheduler_state: workflow_scheduler.SchedulerState,
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   run_root: Option(String),
+  attempt_indexes: Dict(String, Int),
+  tokens: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
+  turns: Int,
   cleanup_allowed: Bool,
+  recovered_execution: Bool,
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   let artifacts = dict.insert(artifacts, result.step_id, result.artifact)
-  let checkpoint_result = case prepared_start_by_step(starts, result.step_id) {
-    Error(Nil) -> Ok(Nil)
+  case prepared_start_by_step(starts, result.step_id) {
+    Error(Nil) ->
+      terminal_fatal_batch_failure(
+        starts,
+        result,
+        issue,
+        dag,
+        run_id,
+        workflow_fingerprint,
+        contract_outputs_recorded,
+        orchestrator,
+        dependencies,
+        artifacts,
+        prepared_workspaces,
+        run_root,
+        tokens.total,
+        turns,
+        cleanup_allowed,
+        profile,
+        checkpoint_error: None,
+      )
     Ok(PreparedStart(step, workspace)) -> {
       let finished =
         workflow_checkpoint.StepFinished(
@@ -3094,35 +3145,169 @@ fn finish_fatal_batch_result(
           turns: result.turns,
         )
       case
-        dependencies.checkpoint.write_step_artifact(finished, result.artifact)
+        finalize_step_attempt(
+          dependencies,
+          issue,
+          step.id,
+          workspace,
+          orchestrator,
+          profile,
+          finished,
+          result.artifact,
+        )
       {
-        Error(error) -> Error(error)
-        Ok(artifact_ref) ->
+        Error(error) ->
+          terminal_fatal_batch_failure(
+            starts,
+            result,
+            issue,
+            dag,
+            run_id,
+            workflow_fingerprint,
+            contract_outputs_recorded,
+            orchestrator,
+            dependencies,
+            artifacts,
+            prepared_workspaces,
+            run_root,
+            tokens.total,
+            turns,
+            cleanup_allowed,
+            profile,
+            checkpoint_error: Some(error),
+          )
+        Ok(_) ->
           case
-            run_after_step(
-              dependencies,
-              issue,
-              step.id,
-              workspace,
-              orchestrator,
-              profile,
-            )
+            effective_recovery_for_failure(dag, step, workspace.attempt_index)
           {
-            Error(reason) ->
-              Error(workflow_checkpoint.CheckpointAppendFailed(reason))
-            Ok(Nil) ->
-              dependencies.checkpoint.step_finished(finished, artifact_ref)
+            Some(config) ->
+              case
+                execute_step_recovery(
+                  step,
+                  workspace,
+                  result.artifact,
+                  config,
+                  issue,
+                  dag,
+                  orchestrator,
+                  tracker_client,
+                  secrets,
+                  dependencies,
+                  profile,
+                )
+              {
+                RecoveryRetryRequested(
+                  recovery_tokens,
+                  recovery_final_issue,
+                  recovery_turns,
+                ) -> {
+                  let scheduler_state =
+                    mark_batch_pending(scheduler_state, starts)
+                  let tokens =
+                    add_tokens(
+                      add_tokens(tokens, result.tokens),
+                      recovery_tokens,
+                    )
+                  let final_issue =
+                    latest_final_issue(final_issue, recovery_final_issue)
+                  loop(
+                    issue,
+                    dag,
+                    orchestrator,
+                    tracker_client,
+                    secrets,
+                    run_id,
+                    workflow_fingerprint,
+                    contract_outputs_recorded,
+                    recovered_execution,
+                    dependencies,
+                    scheduler_state,
+                    artifacts,
+                    prepared_workspaces,
+                    run_root,
+                    attempt_indexes,
+                    tokens,
+                    final_issue,
+                    turns + result.turns + recovery_turns,
+                    cleanup_allowed,
+                    pi_session_continuations,
+                    profile,
+                  )
+                }
+                RecoveryStop(recovery_tokens, _, recovery_turns) ->
+                  terminal_fatal_batch_failure(
+                    starts,
+                    result,
+                    issue,
+                    dag,
+                    run_id,
+                    workflow_fingerprint,
+                    contract_outputs_recorded,
+                    orchestrator,
+                    dependencies,
+                    artifacts,
+                    prepared_workspaces,
+                    run_root,
+                    tokens.total + result.tokens.total + recovery_tokens.total,
+                    turns + result.turns + recovery_turns,
+                    cleanup_allowed,
+                    profile,
+                    checkpoint_error: None,
+                  )
+              }
+            None ->
+              terminal_fatal_batch_failure(
+                starts,
+                result,
+                issue,
+                dag,
+                run_id,
+                workflow_fingerprint,
+                contract_outputs_recorded,
+                orchestrator,
+                dependencies,
+                artifacts,
+                prepared_workspaces,
+                run_root,
+                tokens.total + result.tokens.total,
+                turns + result.turns,
+                cleanup_allowed,
+                profile,
+                checkpoint_error: None,
+              )
           }
       }
     }
   }
-  let reason = case checkpoint_result {
-    Ok(Nil) -> workflow_step_failed_reason(result)
-    Error(error) ->
+}
+
+fn terminal_fatal_batch_failure(
+  starts: List(PreparedStart),
+  result: StepExecutionResult,
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  run_id: String,
+  workflow_fingerprint: String,
+  contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+  orchestrator: config_types.OrchestratorConfig,
+  dependencies: Dependencies,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
+  run_root: Option(String),
+  workflow_finished_token_total: Int,
+  workflow_finished_turns: Int,
+  cleanup_allowed: Bool,
+  profile: config_types.WorkspaceHookProfile,
+  checkpoint_error checkpoint_error: Option(workflow_checkpoint.CheckpointError),
+) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  let reason = case checkpoint_error {
+    Some(error) ->
       "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
+    None -> workflow_step_failed_reason(result)
   }
-  let output_suffix = case checkpoint_result {
-    Ok(Nil) ->
+  let output_suffix = case checkpoint_error {
+    Some(_) -> ""
+    None ->
       case
         record_outputs_if_contracted(
           dag,
@@ -3137,7 +3322,6 @@ fn finish_fatal_batch_result(
         Ok(_) -> ""
         Error(error) -> "; workflow_output_manifest_failed:" <> error
       }
-    Error(_) -> ""
   }
   mark_unfinished_siblings_interrupted(
     starts,
@@ -3153,8 +3337,8 @@ fn finish_fatal_batch_result(
         issue_id: issue.id,
         task_ref: task_ref(issue),
         outcome: "failed_fatal",
-        token_total: result.tokens.total,
-        turns: result.turns,
+        token_total: workflow_finished_token_total,
+        turns: workflow_finished_turns,
       ),
     ),
   )
@@ -3173,6 +3357,393 @@ fn finish_fatal_batch_result(
     run_root: run_root,
     failed_step_id: Some(result.step_id),
   ))
+}
+
+fn finalize_step_attempt(
+  dependencies: Dependencies,
+  issue: tracker_issue.Issue,
+  step_id: String,
+  workspace: workspace_run.PreparedStepWorkspace,
+  orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
+  finished: workflow_checkpoint.StepFinished,
+  artifact: step_artifact.StepArtifact,
+) -> Result(
+  workflow_checkpoint.ArtifactWritten,
+  workflow_checkpoint.CheckpointError,
+) {
+  use artifact_ref <- result.try(dependencies.checkpoint.write_step_artifact(
+    finished,
+    artifact,
+  ))
+  use Nil <- result.try(
+    run_after_step(
+      dependencies,
+      issue,
+      step_id,
+      workspace,
+      orchestrator,
+      profile,
+    )
+    |> result.map_error(workflow_checkpoint.CheckpointAppendFailed),
+  )
+  use Nil <- result.try(dependencies.checkpoint.step_finished(
+    finished,
+    artifact_ref,
+  ))
+  Ok(artifact_ref)
+}
+
+fn effective_recovery_for_failure(
+  dag: workflow_dag.WorkflowDag,
+  step: workflow_dag.WorkflowStep,
+  failed_attempt_index: Int,
+) -> Option(workflow_dag.EffectiveRecoveryConfig) {
+  case step.on_failure == workflow_dag.ContinueWorkflow {
+    True -> None
+    False ->
+      case workflow_dag.effective_recovery_config(dag, step) {
+        Ok(Some(config)) if failed_attempt_index <= config.attempts ->
+          Some(config)
+        _ -> None
+      }
+  }
+}
+
+fn execute_step_recovery(
+  step: workflow_dag.WorkflowStep,
+  workspace: workspace_run.PreparedStepWorkspace,
+  failed_artifact: step_artifact.StepArtifact,
+  config: workflow_dag.EffectiveRecoveryConfig,
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  dependencies: Dependencies,
+  profile: config_types.WorkspaceHookProfile,
+) -> RecoveryAttemptOutcome {
+  let recovery_attempt_number = workspace.attempt_index
+  let recovery_session_id =
+    workflow_identity.step_session_id(
+      workspace.run_id,
+      step.id <> "-recovery-" <> int.to_string(recovery_attempt_number),
+      workspace.attempt_index,
+    )
+  let prompt_ref = prompt_ref_text(config.prompt)
+  let start =
+    workflow_checkpoint.StepRecoveryStarted(
+      run_id: workspace.run_id,
+      workflow_id: workspace.workflow_id,
+      step_id: step.id,
+      failed_attempt_index: workspace.attempt_index,
+      recovery_attempt_number: recovery_attempt_number,
+      recovery_session_id: recovery_session_id,
+      model: recovery_model_name(orchestrator, step, config.model),
+      prompt_ref: prompt_ref,
+    )
+  case dependencies.checkpoint.step_recovery_started(start) {
+    Error(_) -> RecoveryStop(session_tokens.zero_token_totals(), None, 0)
+    Ok(Nil) -> {
+      let context =
+        recovery_context(step_context(
+          step,
+          workspace,
+          issue,
+          orchestrator,
+          profile,
+        ))
+      let prompt =
+        workflow_step_recovery.prompt(
+          prompt_ref,
+          step.id,
+          workspace.attempt_index,
+          failed_artifact,
+        )
+      let prompt_mode = workflow_attempt.StepRecoveryPrompt(prompt)
+      let effective = effective_for_recovery(orchestrator, step, config.model)
+      let attempt_context =
+        workflow_attempt_context(context, dag, orchestrator, prompt_mode, None)
+      case
+        dependencies.agent_step(
+          issue,
+          context,
+          prompt_mode,
+          attempt_context,
+          effective,
+          tracker_client,
+          fn(_) { Nil },
+          fn(_) { Nil },
+          fn(observation) {
+            ignore_secondary_checkpoint_result(
+              dependencies.checkpoint.step_pi_session_recorded(observation),
+            )
+          },
+        )
+      {
+        Ok(success) ->
+          apply_recovery_success(
+            step,
+            workspace,
+            recovery_attempt_number,
+            recovery_session_id,
+            success,
+            secrets,
+            dependencies,
+          )
+        Error(failure) -> {
+          let failure_reason =
+            error.agent_artifact_detail(failure.reason)
+            |> log.redact("workflow_step_recovery", _, secrets)
+          ignore_secondary_checkpoint_result(
+            dependencies.checkpoint.step_recovery_finished(
+              workflow_checkpoint.StepRecoveryFinished(
+                run_id: workspace.run_id,
+                workflow_id: workspace.workflow_id,
+                step_id: step.id,
+                failed_attempt_index: workspace.attempt_index,
+                recovery_attempt_number: recovery_attempt_number,
+                recovery_session_id: recovery_session_id,
+                result: "worker_failed",
+                summary: "Recovery worker failed",
+                reason: failure_reason,
+                retry_attempt_index: None,
+              ),
+            ),
+          )
+          RecoveryStop(failure.tokens, failure.final_issue, 0)
+        }
+      }
+    }
+  }
+}
+
+fn apply_recovery_success(
+  step: workflow_dag.WorkflowStep,
+  workspace: workspace_run.PreparedStepWorkspace,
+  recovery_attempt_number: Int,
+  recovery_session_id: String,
+  success: agent_types.WorkerSuccess,
+  secrets: List(String),
+  dependencies: Dependencies,
+) -> RecoveryAttemptOutcome {
+  case workflow_step_recovery.decision(success) {
+    Ok(workflow_step_recovery.RetryRequested(summary, reason)) ->
+      case
+        record_recovery_decision(
+          step,
+          workspace,
+          recovery_attempt_number,
+          recovery_session_id,
+          "retry_requested",
+          summary,
+          reason,
+          Some(workspace.attempt_index + 1),
+          secrets,
+          dependencies,
+        )
+      {
+        True ->
+          RecoveryRetryRequested(
+            success.tokens,
+            success.final_issue,
+            success.turns,
+          )
+        False ->
+          RecoveryStop(success.tokens, success.final_issue, success.turns)
+      }
+    Ok(workflow_step_recovery.GaveUp(summary, reason)) -> {
+      let _ =
+        record_recovery_decision(
+          step,
+          workspace,
+          recovery_attempt_number,
+          recovery_session_id,
+          "gave_up",
+          summary,
+          reason,
+          None,
+          secrets,
+          dependencies,
+        )
+      RecoveryStop(success.tokens, success.final_issue, success.turns)
+    }
+    Error(protocol_error) -> {
+      let protocol_reason =
+        workflow_step_recovery.describe_error(protocol_error)
+        <> ":"
+        <> workflow_step_recovery.error_message(protocol_error)
+      let protocol_reason =
+        log.redact("workflow_step_recovery", protocol_reason, secrets)
+      ignore_secondary_checkpoint_result(
+        dependencies.checkpoint.step_recovery_finished(
+          workflow_checkpoint.StepRecoveryFinished(
+            run_id: workspace.run_id,
+            workflow_id: workspace.workflow_id,
+            step_id: step.id,
+            failed_attempt_index: workspace.attempt_index,
+            recovery_attempt_number: recovery_attempt_number,
+            recovery_session_id: recovery_session_id,
+            result: "invalid_output",
+            summary: "Recovery output was invalid",
+            reason: protocol_reason,
+            retry_attempt_index: None,
+          ),
+        ),
+      )
+      RecoveryStop(success.tokens, success.final_issue, success.turns)
+    }
+  }
+}
+
+fn record_recovery_decision(
+  step: workflow_dag.WorkflowStep,
+  workspace: workspace_run.PreparedStepWorkspace,
+  recovery_attempt_number: Int,
+  recovery_session_id: String,
+  result_text: String,
+  summary: String,
+  reason: String,
+  retry_attempt_index: Option(Int),
+  secrets: List(String),
+  dependencies: Dependencies,
+) -> Bool {
+  let payload =
+    workflow_step_recovery.artifact_json(result_text, summary, reason, secrets)
+  let redacted_summary = log.redact("workflow_step_recovery", summary, secrets)
+  let redacted_reason = log.redact("workflow_step_recovery", reason, secrets)
+  let write =
+    workflow_checkpoint.RecoveryArtifactWrite(
+      run_id: workspace.run_id,
+      workflow_id: workspace.workflow_id,
+      step_id: step.id,
+      failed_attempt_index: workspace.attempt_index,
+      recovery_attempt_number: recovery_attempt_number,
+      artifact_name: workflow_step_recovery.artifact_name,
+      payload_json: payload,
+    )
+  case dependencies.checkpoint.write_recovery_artifact(write) {
+    Error(_) -> False
+    Ok(_) ->
+      case
+        dependencies.checkpoint.step_recovery_finished(
+          workflow_checkpoint.StepRecoveryFinished(
+            run_id: workspace.run_id,
+            workflow_id: workspace.workflow_id,
+            step_id: step.id,
+            failed_attempt_index: workspace.attempt_index,
+            recovery_attempt_number: recovery_attempt_number,
+            recovery_session_id: recovery_session_id,
+            result: result_text,
+            summary: redacted_summary,
+            reason: redacted_reason,
+            retry_attempt_index: retry_attempt_index,
+          ),
+        )
+      {
+        Ok(Nil) -> True
+        Error(_) -> False
+      }
+  }
+}
+
+fn recovery_context(context: StepContext) -> StepContext {
+  case
+    workflow_step_recovery.tool_spec(
+      context.workflow_id,
+      context.run_id,
+      context.step_id,
+      context.attempt_index,
+      structured_output.validator_repo_root(
+        context.config_dir,
+        context.workspace_path,
+      ),
+    )
+  {
+    Error(_) -> context
+    Ok(tool_spec) ->
+      case structured_output_tool_spec.write(tool_spec, context.run_root) {
+        Ok(written) ->
+          StepContext(..context, extra_pi_env: [
+            structured_output_tool_spec.env_pair(written),
+          ])
+        Error(_) -> context
+      }
+  }
+}
+
+fn prompt_ref_text(prompt_ref: workflow_dag.PromptRef) -> String {
+  case prompt_ref {
+    workflow_dag.PromptInline(prompt) -> prompt
+    workflow_dag.PromptFile(path) -> path
+  }
+}
+
+fn recovery_model_name(
+  orchestrator: config_types.OrchestratorConfig,
+  step: workflow_dag.WorkflowStep,
+  override_model: Option(String),
+) -> Option(String) {
+  case override_model {
+    Some(model) -> Some(model)
+    None ->
+      model_config.resolve(orchestrator.model_settings, step.model_settings).model
+  }
+}
+
+fn effective_for_recovery(
+  orchestrator: config_types.OrchestratorConfig,
+  step: workflow_dag.WorkflowStep,
+  override_model: Option(String),
+) -> config_types.EffectiveConfig {
+  let base =
+    model_config.resolve(orchestrator.model_settings, step.model_settings)
+  let settings =
+    model_config.Settings(
+      model: option.or(override_model, base.model),
+      thinking: base.thinking,
+    )
+  let command =
+    model_config.apply_to_command(orchestrator.effective.pi.command, settings)
+  let argv_command = case orchestrator.effective.pi.argv_command {
+    Some(argv) ->
+      Some(
+        config_types.PiArgvCommand(
+          ..argv,
+          args: model_config.apply_to_argv_args(argv.args, settings),
+        ),
+      )
+    None -> None
+  }
+  config_types.EffectiveConfig(
+    ..orchestrator.effective,
+    pi: config_types.PiConfig(
+      ..orchestrator.effective.pi,
+      command: command,
+      argv_command: argv_command,
+    ),
+  )
+}
+
+fn latest_final_issue(
+  previous: Option(tracker_issue.Issue),
+  next: Option(tracker_issue.Issue),
+) -> Option(tracker_issue.Issue) {
+  case next {
+    Some(_) -> next
+    None -> previous
+  }
+}
+
+fn mark_batch_pending(
+  state: workflow_scheduler.SchedulerState,
+  starts: List(PreparedStart),
+) -> workflow_scheduler.SchedulerState {
+  case starts {
+    [] -> state
+    [PreparedStart(step: step, ..), ..rest] ->
+      mark_batch_pending(workflow_scheduler.mark_pending(state, step.id), rest)
+  }
 }
 
 fn workflow_step_failed_reason(result: StepExecutionResult) -> String {
@@ -4492,6 +5063,7 @@ fn workflow_attempt_context(
     workspace_path: context.workspace_path,
     continuation_capable: case prompt_mode {
       workflow_attempt.RecoveryPrompt(_) -> True
+      workflow_attempt.StepRecoveryPrompt(_) -> False
       workflow_attempt.OriginalPrompt(_)
       | workflow_attempt.StructuredOutputRetryPrompt(_) ->
         orchestrator.effective.pi.session_persistence.enabled

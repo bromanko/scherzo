@@ -339,7 +339,8 @@ fn launch_for_prompt_mode(
 ) -> Result(client.Session, error.PiRpcError) {
   case mode {
     workflow_attempt.OriginalPrompt(_)
-    | workflow_attempt.StructuredOutputRetryPrompt(_) -> {
+    | workflow_attempt.StructuredOutputRetryPrompt(_)
+    | workflow_attempt.StepRecoveryPrompt(_) -> {
       let launch_mode = case config.pi.session_persistence.enabled {
         True -> pi_command.FreshPersistent
         False -> pi_command.FreshNoSession
@@ -388,6 +389,7 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
     workflow_attempt.OriginalPrompt(prompt) -> prompt
     workflow_attempt.StructuredOutputRetryPrompt(prompt) -> prompt
+    workflow_attempt.StepRecoveryPrompt(prompt) -> prompt
     workflow_attempt.RecoveryPrompt(prompt) -> prompt
   }
 }
@@ -401,7 +403,8 @@ fn record_session_observation(
   let recordable_prompt = case mode {
     workflow_attempt.OriginalPrompt(_)
     | workflow_attempt.StructuredOutputRetryPrompt(_) -> True
-    workflow_attempt.RecoveryPrompt(_) -> False
+    workflow_attempt.StepRecoveryPrompt(_)
+    | workflow_attempt.RecoveryPrompt(_) -> False
   }
   case
     recordable_prompt,
@@ -500,7 +503,8 @@ fn launch_worker_failure(
         Some(workspace_path),
       )
     workflow_attempt.OriginalPrompt(_)
-    | workflow_attempt.StructuredOutputRetryPrompt(_) ->
+    | workflow_attempt.StructuredOutputRetryPrompt(_)
+    | workflow_attempt.StepRecoveryPrompt(_) ->
       worker_failure(error.PiFailed(err), Some(workspace_path))
   }
 }

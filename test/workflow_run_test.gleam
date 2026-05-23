@@ -23,6 +23,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/record
 import scherzo/step_artifact
+import scherzo/structured_output_tool_spec
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
@@ -209,6 +210,7 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
     workflow_attempt.OriginalPrompt(prompt) -> prompt
     workflow_attempt.StructuredOutputRetryPrompt(prompt) -> prompt
+    workflow_attempt.StepRecoveryPrompt(prompt) -> prompt
     workflow_attempt.RecoveryPrompt(prompt) -> prompt
   }
 }
@@ -5315,4 +5317,1102 @@ pub fn contracted_recovery_records_missing_inputs_once_and_preserves_outputs_tes
       || record.kind(ledger_record.body) == "workflow_run_outputs_recorded"
     })
   assert list.length(contract_records) == 2
+}
+
+fn workflow_step_recovery_result(
+  decision: String,
+  summary: String,
+  reason: String,
+) -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+    result_artifact.ToolCallSubmission(
+      name: "submit_workflow_step_recovery_result",
+      arguments_json: Some(
+        "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\""
+        <> decision
+        <> "\",\"summary\":\""
+        <> summary
+        <> "\",\"reason\":\""
+        <> reason
+        <> "\"}",
+      ),
+      status: Some("success"),
+      sibling_count: 1,
+      receipt_json: None,
+    ),
+  ])
+}
+
+fn first_index_of_kind(
+  records: List(record.LedgerRecord),
+  kind: String,
+  index: Int,
+) -> Result(Int, Nil) {
+  case records {
+    [] -> Error(Nil)
+    [ledger_record, ..rest] ->
+      case record.kind(ledger_record.body) == kind {
+        True -> Ok(index)
+        False -> first_index_of_kind(rest, kind, index + 1)
+      }
+  }
+}
+
+pub fn fatal_command_step_recovery_retries_original_step_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-command-retry"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: fixable\n    kind: command\n    run: ignored\n    workspace: main\n    recover:\n      attempts: 1\n      prompt: repair the workspace\n",
+    )
+  reset_dir("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  let checkpoint = hidden_local_path_checkpoint(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "command:"
+            <> context.step_id
+            <> ":"
+            <> int.to_string(context.attempt_index),
+        )
+        let exit_code = case context.attempt_index == 1 {
+          True -> 1
+          False -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> int.to_string(context.attempt_index),
+          "stderr:" <> int.to_string(context.attempt_index),
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent:"
+            <> context.step_id
+            <> ":"
+            <> int.to_string(context.attempt_index)
+            <> ":"
+            <> prompt_text(prompt_mode),
+        )
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "fixable")
+  assert artifact.status == step_artifact.StepSucceeded
+  assert receive_event(subject) == "prepare:fixable:main:"
+  assert receive_event(subject) == "command:fixable:1"
+  assert receive_event(subject) == "after:fixable"
+  let recovery_event = receive_event(subject)
+  assert string.starts_with(
+    recovery_event,
+    "agent:fixable:1:repair the workspace",
+  )
+  assert receive_event(subject) == "prepare:fixable:main:"
+  assert receive_event(subject) == "command:fixable:2"
+  assert receive_event(subject) == "after:fixable"
+
+  let records = ledger_records(root)
+  let assert Ok(first_finished_index) =
+    first_index_of_kind(records, "step_attempt_finished", 0)
+  let assert Ok(recovery_started_index) =
+    first_index_of_kind(records, "workflow_step_recovery_started", 0)
+  let assert Ok(recovery_finished_index) =
+    first_index_of_kind(records, "workflow_step_recovery_finished", 0)
+  assert first_finished_index < recovery_started_index
+  assert recovery_started_index < recovery_finished_index
+
+  let step_finished_records =
+    records
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "step_attempt_finished"
+    })
+  let assert [first_finished, second_finished] = step_finished_records
+  let assert record.StepAttemptFinished(
+    _,
+    _,
+    "fixable",
+    1,
+    "failed_fatal",
+    _,
+    _,
+    _,
+    _,
+    _,
+    _,
+  ) = first_finished.body
+  let assert record.StepAttemptFinished(
+    _,
+    _,
+    "fixable",
+    2,
+    "completed",
+    _,
+    _,
+    _,
+    _,
+    _,
+    _,
+  ) = second_finished.body
+  let recovery_records =
+    records
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+  let assert [recovery_finished] = recovery_records
+  let assert record.WorkflowStepRecoveryFinished(
+    _,
+    _,
+    "fixable",
+    1,
+    1,
+    _,
+    "retry_requested",
+    "patched",
+    "ready for retry",
+    Some(2),
+  ) = recovery_finished.body
+}
+
+pub fn continued_failures_do_not_start_step_recovery_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-continue-noop"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: optional\n    kind: command\n    run: ignored\n    workspace: main\n    on_failure: continue\n    recover:\n      attempts: 1\n      prompt: ignored\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, Some("optional")),
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let recovery_records =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      let kind = record.kind(ledger_record.body)
+      kind == "workflow_step_recovery_started"
+      || kind == "workflow_step_recovery_finished"
+    })
+  assert recovery_records == []
+}
+
+pub fn disabled_step_recovery_preserves_original_failure_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-disabled"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: broken\n    kind: command\n    run: ignored\n    workspace: main\n    recover:\n      enabled: false\n      attempts: 1\n      prompt: ignored\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, Some("broken")),
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert_no_recovery_records(root)
+}
+
+fn assert_no_recovery_records(root: String) {
+  assert recovery_records(root) == []
+}
+
+fn recovery_records(root: String) -> List(record.LedgerRecord) {
+  ledger_records(root)
+  |> list.filter(fn(ledger_record) {
+    let kind = record.kind(ledger_record.body)
+    kind == "workflow_step_recovery_started"
+    || kind == "workflow_step_recovery_finished"
+  })
+}
+
+fn broken_command_recovery_dag(extra_yaml: String) -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: broken\n    kind: command\n    run: ignored\n    workspace: main\n"
+      <> extra_yaml,
+    )
+  dag
+}
+
+fn prompt_mode_name(mode: workflow_attempt.AgentPromptMode) -> String {
+  case mode {
+    workflow_attempt.OriginalPrompt(_) -> "original"
+    workflow_attempt.StructuredOutputRetryPrompt(_) -> "structured_retry"
+    workflow_attempt.StepRecoveryPrompt(_) -> "recovery"
+    workflow_attempt.RecoveryPrompt(_) -> "recovery"
+  }
+}
+
+fn structured_output_spec_kind(context: workflow_run.StepContext) -> String {
+  case
+    list.key_find(
+      context.extra_pi_env,
+      structured_output_tool_spec.spec_env_var,
+    )
+  {
+    Ok(path) -> {
+      let assert Ok(contents) = simplifile.read(path)
+      case string.contains(contents, "submit_workflow_step_recovery_result") {
+        True -> "recovery"
+        False ->
+          case string.contains(contents, "submit_review_result") {
+            True -> "review"
+            False -> "unknown"
+          }
+      }
+    }
+    Error(_) -> "missing"
+  }
+}
+
+fn recovery_tool_call(
+  arguments_json: Option(String),
+  sibling_count: Int,
+) -> result_artifact.ToolCallSubmission {
+  result_artifact.ToolCallSubmission(
+    name: "submit_workflow_step_recovery_result",
+    arguments_json: arguments_json,
+    status: Some("success"),
+    sibling_count: sibling_count,
+    receipt_json: None,
+  )
+}
+
+fn recovery_result_with_calls(
+  calls: List(result_artifact.ToolCallSubmission),
+) -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response_with_tool_calls(
+    None,
+    False,
+    "test",
+    calls,
+  )
+}
+
+pub fn absent_step_recovery_preserves_original_failure_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-absent"
+  reset_dir(root)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, Some("broken")),
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(""),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert_no_recovery_records(root)
+}
+
+pub fn fatal_agent_step_recovery_preserves_original_definition_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-agent-retry"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: draft\n    kind: agent\n    prompt: draft prompt\n    workspace: main\n    model: openai/gpt-5.1\n    structured_output:\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n    recover:\n      attempts: 1\n      prompt: repair draft workspace\n      model: github-copilot/gpt-5.1-codex\n",
+    )
+  let checkpoint = hidden_local_path_checkpoint(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        effective: config_types.EffectiveConfig,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent_call:"
+            <> prompt_mode_name(prompt_mode)
+            <> ":"
+            <> int.to_string(context.attempt_index)
+            <> ":"
+            <> structured_output_spec_kind(context)
+            <> ":"
+            <> effective.pi.command
+            <> ":"
+            <> prompt_text(prompt_mode)
+            <> ":"
+            <> context.workspace_path,
+        )
+        case prompt_mode_name(prompt_mode), context.attempt_index {
+          "recovery", _ ->
+            Ok(
+              success_agent_with_result(workflow_step_recovery_result(
+                "retry_requested",
+                "patched",
+                "ready for retry",
+              )),
+            )
+          "original", 1 ->
+            Error(agent_types.WorkerFailure(
+              reason: error.PiFailed(error.PiProtocolError("draft failed")),
+              workspace_path: Some(context.workspace_path),
+              tokens: session_tokens.zero_token_totals(),
+              final_issue: Some(issue()),
+            ))
+          _, _ ->
+            Ok(
+              success_agent_with_result(review_result_tool_call(
+                Some("{\"summary\":\"ok\",\"findings\":[]}"),
+                Some("success"),
+              )),
+            )
+        }
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "draft")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Some(step_artifact.StructuredOutputValid(_)) =
+    artifact.structured_output
+  assert receive_event(subject) == "prepare:draft:main:"
+  let first_original = receive_event(subject)
+  assert string.starts_with(first_original, "agent_call:original:1:")
+  assert string.contains(first_original, "--model 'openai/gpt-5.1'")
+  assert string.contains(first_original, ":draft prompt:")
+  assert string.contains(
+    first_original,
+    ":test/tmp/workflow-run/workspaces/implementation/ABC-123/main",
+  )
+  assert receive_event(subject) == "after:draft"
+  let recovery = receive_event(subject)
+  assert string.starts_with(recovery, "agent_call:recovery:1:")
+  assert string.contains(recovery, "--model 'github-copilot/gpt-5.1-codex'")
+  assert string.contains(recovery, "repair draft workspace")
+  assert receive_event(subject) == "prepare:draft:main:"
+  let second_original = receive_event(subject)
+  assert string.starts_with(second_original, "agent_call:original:2:")
+  assert string.contains(second_original, "--model 'openai/gpt-5.1'")
+  assert string.contains(second_original, ":draft prompt:")
+  assert string.contains(
+    second_original,
+    ":test/tmp/workflow-run/workspaces/implementation/ABC-123/main",
+  )
+  assert receive_event(subject) == "after:draft"
+}
+
+pub fn step_recovery_gave_up_preserves_original_failure_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-gave-up"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        step_artifact.from_command_result(
+          context.step_id,
+          1,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "gave_up",
+            "not fixable",
+            "needs human help",
+          )),
+        )
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert failure.failed_step_id == Some("broken")
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "gave_up",
+      "not fixable",
+      "needs human help",
+      None,
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+}
+
+pub fn failed_recovery_worker_preserves_original_failure_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-worker-failed"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        step_artifact.from_command_result(
+          context.step_id,
+          1,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("recovery failed")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: Some(issue()),
+        ))
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "worker_failed",
+      "Recovery worker failed",
+      _,
+      None,
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+}
+
+fn assert_invalid_recovery_output_failure(
+  root: String,
+  result: result_artifact.ResultArtifact,
+  expected_code: String,
+) {
+  let subject = process.new_subject()
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        step_artifact.from_command_result(
+          context.step_id,
+          1,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        Ok(success_agent_with_result(result))
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  let finished_records =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "invalid_output",
+      "Recovery output was invalid",
+      reason,
+      None,
+    ),
+  ] = finished_records
+  assert string.contains(reason, expected_code)
+}
+
+pub fn missing_recovery_result_preserves_original_failure_test() {
+  assert_invalid_recovery_output_failure(
+    "test/tmp/workflow-run/recovery-missing-output",
+    success_agent_with_response(Some("no tool call"), False).result,
+    "recovery_result_missing",
+  )
+}
+
+pub fn duplicate_recovery_result_preserves_original_failure_test() {
+  assert_invalid_recovery_output_failure(
+    "test/tmp/workflow-run/recovery-duplicate-output",
+    recovery_result_with_calls([
+      recovery_tool_call(
+        Some(
+          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"retry_requested\",\"summary\":\"patched\",\"reason\":\"done\"}",
+        ),
+        1,
+      ),
+      recovery_tool_call(
+        Some(
+          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"retry_requested\",\"summary\":\"patched\",\"reason\":\"done\"}",
+        ),
+        1,
+      ),
+    ]),
+    "recovery_result_duplicate",
+  )
+}
+
+pub fn invalid_recovery_result_preserves_original_failure_test() {
+  assert_invalid_recovery_output_failure(
+    "test/tmp/workflow-run/recovery-invalid-output",
+    recovery_result_with_calls([
+      recovery_tool_call(
+        Some(
+          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"keep_trying\",\"summary\":\"patched\",\"reason\":\"done\"}",
+        ),
+        1,
+      ),
+    ]),
+    "recovery_result_invalid_decision",
+  )
+}
+
+pub fn recovery_artifact_write_failure_preserves_original_failure_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-artifact-write-failure"
+  reset_dir(root)
+  let base = deps(subject, Some("broken"))
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: workflow_checkpoint.Writer(
+        ..hidden_local_path_checkpoint(root),
+        write_recovery_artifact: fn(_) {
+          Error(workflow_checkpoint.CheckpointArtifactFailed("write failed"))
+        },
+      ),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  let kinds =
+    recovery_records(root)
+    |> list.map(fn(ledger_record) { record.kind(ledger_record.body) })
+  assert kinds == ["workflow_step_recovery_started"]
+}
+
+pub fn recovery_started_checkpoint_failure_preserves_original_failure_test() {
+  let root = "test/tmp/workflow-run/recovery-started-checkpoint-failure"
+  reset_dir(root)
+  let agent_subject = process.new_subject()
+  let base = deps(process.new_subject(), Some("broken"))
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(agent_subject, "agent_called")
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: workflow_checkpoint.Writer(
+        ..hidden_local_path_checkpoint(root),
+        step_recovery_started: fn(_) {
+          Error(workflow_checkpoint.CheckpointAppendFailed("start failed"))
+        },
+      ),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert recovery_records(root) == []
+  test_async.assert_no_extra_message_within(agent_subject, 50)
+}
+
+pub fn recovery_finished_checkpoint_failure_preserves_original_failure_test() {
+  let root = "test/tmp/workflow-run/recovery-finished-checkpoint-failure"
+  reset_dir(root)
+  let base = deps(process.new_subject(), Some("broken"))
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: workflow_checkpoint.Writer(
+        ..hidden_local_path_checkpoint(root),
+        step_recovery_finished: fn(_) {
+          Error(workflow_checkpoint.CheckpointAppendFailed("finish failed"))
+        },
+      ),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  let recovery_kinds =
+    recovery_records(root)
+    |> list.map(fn(ledger_record) { record.kind(ledger_record.body) })
+  assert recovery_kinds == ["workflow_step_recovery_started"]
+  let step_finished_count =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "step_attempt_finished"
+    })
+    |> list.length
+  assert step_finished_count == 1
+}
+
+pub fn step_recovery_finished_redacts_secrets_and_artifact_uses_decision_test() {
+  let root = "test/tmp/workflow-run/recovery-redacted-finished"
+  reset_dir(root)
+  let base = deps(process.new_subject(), Some("broken"))
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "gave_up",
+            "patched TOP_SECRET",
+            "reason TOP_SECRET",
+          )),
+        )
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      ["TOP_SECRET"],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "gave_up",
+      "patched [REDACTED]",
+      "reason [REDACTED]",
+      None,
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+
+  let assert Ok(payload) =
+    simplifile.read(
+      artifact_root(root)
+      <> "/runs/run-1/broken/attempt-1/recovery-1/workflow_step_recovery_result.json",
+    )
+  assert string.contains(payload, "\"decision\":\"gave_up\"")
+  assert !string.contains(payload, "\"result\"")
+  assert !string.contains(payload, "TOP_SECRET")
+}
+
+pub fn exhausted_step_recovery_budget_preserves_original_failure_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/recovery-budget-exhausted"
+  reset_dir(root)
+  let checkpoint = hidden_local_path_checkpoint(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "command_attempt:" <> int.to_string(context.attempt_index),
+        )
+        step_artifact.from_command_result(
+          context.step_id,
+          1,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent_call:"
+            <> prompt_mode_name(prompt_mode)
+            <> ":"
+            <> int.to_string(context.attempt_index),
+        )
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert receive_event(subject) == "prepare:broken:main:"
+  assert receive_event(subject) == "command_attempt:1"
+  assert receive_event(subject) == "after:broken"
+  assert receive_event(subject) == "agent_call:recovery:1"
+  assert receive_event(subject) == "prepare:broken:main:"
+  assert receive_event(subject) == "command_attempt:2"
+  assert receive_event(subject) == "after:broken"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+  let kinds =
+    recovery_records(root)
+    |> list.map(fn(ledger_record) { record.kind(ledger_record.body) })
+  assert kinds
+    == [
+      "workflow_step_recovery_started",
+      "workflow_step_recovery_finished",
+    ]
 }

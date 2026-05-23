@@ -33,6 +33,7 @@ pub type StepAttemptContext {
 pub type AgentPromptMode {
   OriginalPrompt(String)
   StructuredOutputRetryPrompt(String)
+  StepRecoveryPrompt(String)
   RecoveryPrompt(String)
 }
 
