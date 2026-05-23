@@ -31,13 +31,20 @@ fn hooks(create: Option(String)) -> config_types.DagHooksConfig {
 
 fn profile(
   name: String,
-  hooks: config_types.DagHooksConfig,
+  _hooks: config_types.DagHooksConfig,
 ) -> config_types.WorkspaceHookProfile {
   config_types.WorkspaceHookProfile(
     name: name,
-    hooks: Some(hooks),
-    driver: None,
-    source: config_types.ConfiguredWorkspaceHooks,
+    driver: Some(
+      config_types.WorkspaceDriverConfig(
+        command: "scripts/" <> name,
+        lifecycle: [],
+        capabilities: [],
+        timeout_ms: 1000,
+        env: [],
+      ),
+    ),
+    source: config_types.ConfiguredWorkspaceDriver,
   )
 }
 
@@ -57,7 +64,6 @@ fn hook_profile_with_driver(
 ) -> config_types.WorkspaceHookProfile {
   config_types.WorkspaceHookProfile(
     name: name,
-    hooks: Some(hooks),
     driver: Some(
       config_types.WorkspaceDriverConfig(
         command: command,
@@ -67,7 +73,7 @@ fn hook_profile_with_driver(
         env: [],
       ),
     ),
-    source: config_types.ConfiguredWorkspaceHooks,
+    source: config_types.ConfiguredWorkspaceDriver,
   )
 }
 
@@ -89,7 +95,6 @@ fn driver_profile_with_env(
 ) -> config_types.WorkspaceHookProfile {
   config_types.WorkspaceHookProfile(
     name: "noop",
-    hooks: None,
     driver: Some(config_types.WorkspaceDriverConfig(
       command: command,
       lifecycle: lifecycle,
@@ -422,7 +427,7 @@ pub fn execution_fingerprint_uses_selected_workspace_profile_test() {
   let settings = model_config.default_settings()
   let noop = profile("noop", hooks(Some("create")))
   let renamed = profile("isolated", hooks(Some("create")))
-  let changed = profile("noop", hooks(Some("changed")))
+  let changed = driver_profile_with_timeout("scripts/changed", [], [], 1000)
   let base =
     workflow_fingerprint.for_execution_profile_options(
       "implementation",
@@ -793,7 +798,7 @@ pub fn execution_fingerprint_ignores_unselected_driver_profiles_test() {
   assert first == second
 }
 
-pub fn workflow_execution_fingerprint_changes_for_hooks_and_artifact_limits_test() {
+pub fn workflow_execution_fingerprint_ignores_legacy_hooks_but_changes_for_artifact_limits_test() {
   let dag =
     parse(
       "version: 1\nid: implementation\nmax_parallel_steps: 1\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
@@ -809,7 +814,7 @@ pub fn workflow_execution_fingerprint_changes_for_hooks_and_artifact_limits_test
     )
 
   assert base
-    != workflow_fingerprint.for_execution_options(
+    == workflow_fingerprint.for_execution_options(
       "implementation",
       dag,
       hooks(Some("create-workspace")),

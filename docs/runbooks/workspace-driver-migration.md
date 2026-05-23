@@ -4,7 +4,7 @@ Scherzo workspace configuration has moved from inline hook snippets to named wor
 
 ## Who needs this
 
-Use this guide if your orchestrator config contains legacy `workspace.hooks`, `workspace.profiles.<name>.hooks`, or examples copied from an older Scherzo README. Current Scherzo still warns about those legacy shapes during doctor checks so operators can migrate safely, but new checked configs should use `workspace.profiles.<name>.driver`.
+Use this guide if your orchestrator config contains legacy `workspace.hooks`, `workspace.profiles.<name>.hooks`, or examples copied from an older Scherzo README. Current Scherzo rejects those legacy shapes during config loading; update or reset the config to use `workspace.profiles.<name>.driver` before dispatching or running doctor checks that load workflow config.
 
 Workflow authors also need this guide when a workflow previously assumed a particular VCS command. The workflow should declare `workspace_capabilities` and call the driver command exposed in `SCHERZO_WORKSPACE_DRIVER` for capability operations instead of defining trusted shell in workflow YAML. Command steps run inside the prepared workspace, so workflows that call a relative driver command should resolve it against `SCHERZO_CONFIG_DIR` before invoking it.
 
@@ -16,21 +16,21 @@ Driver commands are trusted operator config, not workflow-defined shell. A workf
 
 The accepted lifecycle names are `create`, `before-step`, `after-step`, and `remove`. The accepted public capability names are `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. The `driver.command` value must be one executable token without whitespace or shell metacharacters. It may use `$SCHERZO_REPO_ROOT` as a leading placeholder, which Scherzo resolves before exposing `SCHERZO_WORKSPACE_DRIVER` to workflow steps. Profiles configure command, lifecycle, and timeout; drivers self-describe capabilities with `describe --json`.
 
-If the selected profile has hooks and a driver, the hooks still prepare and clean up the workspace while command steps, agent subprocesses, and prompt templates receive the selected driver context. If the selected profile is driver-only, Scherzo invokes the configured driver for supported lifecycle operations. A hook-backed profile with a driver command remains a production-safe bridge, and a driver-only profile is the target shape for profiles whose driver implements the lifecycle contract in [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
+Legacy hook blocks are no longer runtime configuration. A top-level `workspace.hooks` block or a profile-local `workspace.profiles.<name>.hooks` block fails config loading with an `invalid_config` diagnostic that names the unsupported key and links back to this runbook. Use a driver-backed profile whose driver implements the lifecycle contract in [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
 
 `examples/scherzo.yaml` is the canonical runnable checked source-tree example for reusable configuration. Because that file lives under `examples/`, its driver commands use `../scripts/...` to reach the checked driver scripts. A config copied to a repository root would normally use `scripts/...`. A packaged installation should use `command: scherzo-workspace-noop` for the bundled no-op driver, as shown by `examples/scherzo-packaged-noop.yaml`, or another PATH command/absolute trusted wrapper. Keep snippets in this guide aligned with the checked examples when driver field names, command paths, lifecycle operations, or metadata behavior change.
 
-## Doctor warnings to expect
+## Diagnostics to expect
 
-A top-level legacy hook config produces warning content like this:
+A top-level legacy hook config fails workflow-config loading with an `invalid_config` message like this:
 
-    workspace.hooks is legacy workspace configuration; migrate to workspace.profiles.<name>.driver and read docs/runbooks/workspace-driver-migration.md
+    workspace.hooks is no longer supported; remove legacy workspace hook config and update or reset this config to use workspace.profiles.<name>.driver. See docs/runbooks/workspace-driver-migration.md
 
-A profile-local hook config produces warning content like this:
+A profile-local hook config fails with the same diagnostic shape and names the profile key:
 
-    workspace.profiles.noop.hooks is legacy workspace configuration; migrate to workspace.profiles.noop.driver and read docs/runbooks/workspace-driver-migration.md
+    workspace.profiles.noop.hooks is no longer supported; remove legacy workspace hook config and update or reset this config to use workspace.profiles.<name>.driver. See docs/runbooks/workspace-driver-migration.md
 
-The doctor check name remains `workspace-hooks` during this transition for CLI compatibility.
+The doctor check name remains `workspace-hooks` for CLI compatibility, but legacy hook config is rejected by the earlier workflow-config load.
 
 ## Before and after: direct hooks
 
@@ -174,27 +174,7 @@ workspace:
 
 The profile name can stay stable, so existing workflows that already say `workspace_profile: isolated` do not need to change unless they also require a new capability.
 
-## Legacy hook-backed profile with workflow-facing driver context
-
-During the transition, a hook-backed profile can also declare a driver command. Prefer the direct `driver:` profile shape above for new config. If a legacy hook-backed profile must remain temporarily, call the same driver lifecycle operations directly from hooks; the driver command is discovered with `describe --json` and exposed to workflow command steps, agent subprocesses, and prompt templates as workflow-facing context.
-
-```yaml
-workspace:
-  root: .scherzo/workspaces
-  default_profile: isolated
-  profiles:
-    isolated:
-      hooks:
-        create: scripts/scherzo-workspace-jj lifecycle create
-        before_step: scripts/scherzo-workspace-jj lifecycle before-step
-        after_step: scripts/scherzo-workspace-jj lifecycle after-step
-        remove: scripts/scherzo-workspace-jj lifecycle remove
-        timeout_ms: 60000
-      driver:
-        command: scripts/scherzo-workspace-jj
-```
-
-Command steps and agent subprocesses run under this profile receive `SCHERZO_WORKSPACE_PROFILE=isolated`, `SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-jj`, and `SCHERZO_WORKSPACE_CAPABILITIES="status diff changed-files assert-only baseline refresh-base publish-change"`. An original agent prompt can render `{{ workspace.driver }}` or loop over `{% for capability in workspace.capabilities %}`.
+Command steps and agent subprocesses run under a driver-backed profile receive `SCHERZO_WORKSPACE_PROFILE=isolated`, `SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-jj`, and `SCHERZO_WORKSPACE_CAPABILITIES="status diff changed-files assert-only baseline refresh-base publish-change"`. An original agent prompt can render `{{ workspace.driver }}` or loop over `{% for capability in workspace.capabilities %}`.
 
 ## Choosing capabilities
 
@@ -313,7 +293,7 @@ A passing workflow-config check means Scherzo can parse the orchestrator config,
 
 ## Troubleshooting
 
-If doctor reports `legacy_workspace_hooks`, find the `workspace.hooks` or `workspace.profiles.<name>.hooks` block named in the message and migrate that block to a named `driver:` profile. Keep the old profile name when possible so existing `workspace_profile` selectors continue to work.
+If workflow-config reports `invalid_config` for `workspace.hooks` or `workspace.profiles.<name>.hooks`, migrate that block to a named `driver:` profile. Keep the old profile name when possible so existing `workspace_profile` selectors continue to work.
 
 If workflow-config fails with `workspace_capabilities_unavailable`, the workflow requires a capability that the selected driver's `describe --json` response does not include. Either remove the unnecessary workflow capability, select a profile whose driver reports it, or teach the trusted driver to support it in a separate runtime change.
 
@@ -325,8 +305,8 @@ If a lifecycle command cannot find `scripts/scherzo-workspace-jj`, `scripts/sche
 
 ## Rollback
 
-There is no stored data migration in this transition. If doctor warnings are disruptive, operators can temporarily ignore the `workspace-hooks` warning or pin to the previous Scherzo version. To roll back a driver-only profile, restore the previous hook-backed profile and a Scherzo version whose config schema matches that profile.
+There is no stored data migration in this transition. Legacy hook config now requires an older Scherzo version whose config schema still accepts it. To roll back a driver-only profile, restore the previous hook-backed profile and the matching older Scherzo version together.
 
-Keep config and Scherzo binary versions together. If you must roll back after migrating to drivers, restore the previous config at the same time as the previous Scherzo version. Do not mix a future driver-only Scherzo binary with old direct-hook config; either finish the migration or roll back both the binary and config.
+Keep config and Scherzo binary versions together. Do not mix a driver-only Scherzo binary with old direct-hook config; either finish the migration or roll back both the binary and config.
 
 If the migrated profile fails validation or lifecycle execution, switch back to the old config, keep dispatch paused with `agent.max_concurrent_agents: 0` if needed, and rerun the workflow-config doctor check before resuming real dispatch.

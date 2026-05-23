@@ -72,7 +72,6 @@ fn orchestrator_with_env(
           "noop",
           config_types.WorkspaceHookProfile(
             name: "noop",
-            hooks: None,
             driver: Some(driver),
             source: config_types.ConfiguredWorkspaceDriver,
           ),

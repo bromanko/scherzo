@@ -116,9 +116,8 @@ fn local_orchestrator(run_root: String) -> config_types.OrchestratorConfig {
   let profile =
     config_types.WorkspaceHookProfile(
       name: "dogfood-jj",
-      hooks: Some(hooks),
       driver: None,
-      source: config_types.ConfiguredWorkspaceHooks,
+      source: config_types.SyntheticDefaultWorkspace,
     )
   config_types.OrchestratorConfig(
     effective: config_types.EffectiveConfig(

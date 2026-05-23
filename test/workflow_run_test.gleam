@@ -113,15 +113,10 @@ fn dag_hooks_with_timeout(timeout_ms: Int) -> config_types.DagHooksConfig {
 
 fn workspace_profile(
   name: String,
-  hooks: config_types.DagHooksConfig,
+  _hooks: config_types.DagHooksConfig,
   source: config_types.WorkspaceProfileSource,
 ) -> config_types.WorkspaceHookProfile {
-  config_types.WorkspaceHookProfile(
-    name: name,
-    hooks: Some(hooks),
-    driver: None,
-    source: source,
-  )
+  config_types.WorkspaceHookProfile(name: name, driver: None, source: source)
 }
 
 fn workspace_profile_with_driver(
@@ -151,7 +146,6 @@ fn workspace_profile_with_driver_env(
 ) -> config_types.WorkspaceHookProfile {
   config_types.WorkspaceHookProfile(
     name: name,
-    hooks: Some(hooks),
     driver: Some(config_types.WorkspaceDriverConfig(
       command: command,
       lifecycle: [],
@@ -171,7 +165,11 @@ fn legacy_workspace_profiles(
     profiles: dict.from_list([
       #(
         "default",
-        workspace_profile("default", hooks, config_types.LegacyWorkspaceHooks),
+        workspace_profile(
+          "default",
+          hooks,
+          config_types.SyntheticDefaultWorkspace,
+        ),
       ),
     ]),
   )
@@ -1029,7 +1027,7 @@ fn recovered_context(
   )
 }
 
-pub fn command_default_timeout_uses_selected_workspace_profile_test() {
+pub fn command_default_timeout_uses_builtin_default_test() {
   let subject = process.new_subject()
   let default_hooks = dag_hooks_with_timeout(1000)
   let noop_hooks = dag_hooks_with_timeout(42)
@@ -1045,7 +1043,7 @@ pub fn command_default_timeout_uses_selected_workspace_profile_test() {
             workspace_profile(
               "default",
               default_hooks,
-              config_types.LegacyWorkspaceHooks,
+              config_types.SyntheticDefaultWorkspace,
             ),
           ),
           #(
@@ -1053,7 +1051,7 @@ pub fn command_default_timeout_uses_selected_workspace_profile_test() {
             workspace_profile(
               "noop",
               noop_hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
             ),
           ),
         ]),
@@ -1094,7 +1092,7 @@ pub fn command_default_timeout_uses_selected_workspace_profile_test() {
     )
 
   assert receive_event(subject) == "prepare:run:main:"
-  assert receive_event(subject) == "timeout:42"
+  assert receive_event(subject) == "timeout:60000"
 }
 
 pub fn execute_rejects_missing_workspace_capabilities_before_prepare_test() {
@@ -1111,7 +1109,7 @@ pub fn execute_rejects_missing_workspace_capabilities_before_prepare_test() {
             workspace_profile_with_driver(
               "dogfood-jj",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               "scripts/scherzo-workspace-jj",
               [config_types.WorkspaceStatus],
             ),
@@ -1158,7 +1156,7 @@ pub fn command_step_receives_workspace_driver_context_from_resolved_profile_test
             workspace_profile_with_driver(
               "dogfood-jj",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               "scripts/scherzo-workspace-jj",
               [
                 config_types.WorkspaceAssertOnly,
@@ -1234,7 +1232,7 @@ pub fn command_step_receives_discovered_workspace_driver_context_test() {
             workspace_profile_with_driver(
               "noop",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               driver_path,
               [],
             ),
@@ -1302,7 +1300,6 @@ pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
   let profile =
     config_types.WorkspaceHookProfile(
       name: "noop",
-      hooks: None,
       driver: Some(
         config_types.WorkspaceDriverConfig(
           command: "scherzo-workspace-noop",
@@ -1415,7 +1412,7 @@ pub fn default_agent_step_receives_workspace_driver_environment_test() {
             workspace_profile_with_driver_env(
               "dogfood-jj",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               "scripts/scherzo-workspace-jj",
               [config_types.WorkspaceAssertOnly],
               [
@@ -1651,7 +1648,7 @@ pub fn workspace_driver_context_resolves_repo_root_placeholder_test() {
             workspace_profile_with_driver(
               "dogfood-jj",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj",
               [config_types.WorkspaceAssertOnly],
             ),
@@ -1714,7 +1711,7 @@ pub fn workflow_yaml_cannot_override_workspace_driver_context_test() {
             workspace_profile_with_driver(
               "dogfood-jj",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               "scripts/scherzo-workspace-jj",
               [config_types.WorkspaceAssertOnly],
             ),
@@ -1778,7 +1775,7 @@ pub fn agent_prompt_renders_workspace_driver_locals_test() {
             workspace_profile_with_driver(
               "dogfood-jj",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               "scripts/scherzo-workspace-jj",
               [
                 config_types.WorkspaceAssertOnly,
@@ -1827,7 +1824,7 @@ pub fn agent_prompt_preserves_artifact_locals_with_workspace_driver_locals_test(
             workspace_profile_with_driver(
               "dogfood-jj",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               "scripts/scherzo-workspace-jj",
               [config_types.WorkspaceAssertOnly],
             ),
@@ -1892,7 +1889,7 @@ pub fn recovery_prompt_does_not_rerender_workspace_driver_locals_test() {
             workspace_profile_with_driver(
               "dogfood-jj",
               hooks,
-              config_types.ConfiguredWorkspaceHooks,
+              config_types.ConfiguredWorkspaceDriver,
               "scripts/scherzo-workspace-jj",
               [config_types.WorkspaceAssertOnly],
             ),

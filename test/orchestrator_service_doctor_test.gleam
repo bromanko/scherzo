@@ -66,10 +66,14 @@ fn write_config(dir: String, extra: String) -> String {
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/workflows/prompts")
   let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(driver_command) =
+    path.absolute("scripts/scherzo-workspace-noop")
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
+        <> driver_command
+        <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
         <> extra,
     )
   let assert Ok(Nil) =
@@ -81,6 +85,17 @@ fn write_config(dir: String, extra: String) -> String {
     simplifile.write(
       dir <> "/workflows/prompts/implementation.md",
       "Implement the issue.",
+    )
+  config_path
+}
+
+fn write_top_level_hooks_config(dir: String) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n",
     )
   config_path
 }
@@ -477,7 +492,7 @@ pub fn doctor_linear_smoke_failure_does_not_skip_workspace_probe_test() {
   let assert Some(pi_result) = result_for(report, doctor.PiProbe)
   assert smoke_result.status == doctor.Fail
   assert smoke_result.code == "linear_api_status"
-  assert workspace_result.status == doctor.Warn
+  assert workspace_result.status == doctor.Pass
   assert pi_result.status == doctor.Pass
 
   let assert Error(err) = service.start_doctor_with_dependencies(options, deps)
@@ -600,47 +615,46 @@ pub fn doctor_workspace_and_pi_share_one_prepared_workspace_test() {
   assert field_value(pi_result.fields, "workspace_path") == Some(workspace_path)
 
   let assert Ok(LockAcquired(_)) = process.receive(subject, within: 1000)
-  let assert Ok(PrepareCalled(run_root, prepared_path, "default")) =
+  let assert Ok(PrepareCalled(run_root, prepared_path, "noop")) =
     process.receive(subject, within: 1000)
   let assert Ok(PiCalled(pi_path)) = process.receive(subject, within: 1000)
-  let assert Ok(CleanupCalled(cleaned_root, "default")) =
+  let assert Ok(CleanupCalled(cleaned_root, "noop")) =
     process.receive(subject, within: 1000)
   let assert Ok(LockReleased) = process.receive(subject, within: 1000)
   assert pi_path == prepared_path
   assert cleaned_root == run_root
 }
 
-pub fn doctor_workspace_hooks_warns_for_top_level_legacy_hooks_test() {
-  let config_path = write_config("test/tmp/doctor-top-level-hook-warning", "")
+pub fn doctor_reports_unsupported_top_level_legacy_hooks_test() {
+  let config_path =
+    write_top_level_hooks_config("test/tmp/doctor-top-level-hook-warning")
   let subject = process.new_subject()
   let deps = successful_deps(subject)
   let options =
     doctor.Options(
       path: Some(config_path),
-      checks: ["workspace-hooks"],
+      checks: ["workflow-config", "workspace-hooks"],
       list_checks: False,
       output: doctor.Human,
     )
   let assert Ok(report) =
     service.build_doctor_report_with_dependencies(options, deps)
-  let assert Some(result) = result_for(report, doctor.WorkspaceHooks)
-  assert result.status == doctor.Warn
-  assert result.code == "legacy_workspace_hooks"
+  let assert Some(result) = result_for(report, doctor.WorkflowConfig)
+  assert result.status == doctor.Fail
+  assert result.code == "invalid_config"
   assert string.contains(result.message, "workspace.hooks")
+  assert string.contains(result.message, "no longer supported")
   assert string.contains(result.message, "workspace.profiles.<name>.driver")
-  assert string.contains(
-    result.message,
-    "docs/runbooks/workspace-driver-migration.md",
-  )
-  assert field_value(result.fields, "legacy_key") == Some("workspace.hooks")
+  let assert Some(skipped) = result_for(report, doctor.WorkspaceHooks)
+  assert skipped.status == doctor.Skip
 
-  assert service.start_doctor_with_dependencies(options, deps) == Ok(Nil)
+  let assert Error(_) = service.start_doctor_with_dependencies(options, deps)
   let assert Some(output) = receive_list_written(subject)
-  assert string.contains(output, "docs/runbooks/workspace-driver-migration.md")
   assert string.contains(output, "workspace.hooks")
+  assert string.contains(output, "no longer supported")
 }
 
-pub fn doctor_workspace_hooks_warns_for_profile_local_legacy_hooks_test() {
+pub fn doctor_reports_unsupported_profile_local_legacy_hooks_test() {
   let config_path =
     write_profile_hooks_config("test/tmp/doctor-profile-hook-warning")
   let subject = process.new_subject()
@@ -648,22 +662,18 @@ pub fn doctor_workspace_hooks_warns_for_profile_local_legacy_hooks_test() {
   let options =
     doctor.Options(
       path: Some(config_path),
-      checks: ["workspace-hooks"],
+      checks: ["workflow-config", "workspace-hooks"],
       list_checks: False,
       output: doctor.Human,
     )
   let assert Ok(report) =
     service.build_doctor_report_with_dependencies(options, deps)
-  let assert Some(result) = result_for(report, doctor.WorkspaceHooks)
-  assert result.status == doctor.Warn
+  let assert Some(result) = result_for(report, doctor.WorkflowConfig)
+  assert result.status == doctor.Fail
+  assert result.code == "invalid_config"
   assert string.contains(result.message, "workspace.profiles.noop.hooks")
-  assert string.contains(result.message, "workspace.profiles.noop.driver")
-  assert string.contains(
-    result.message,
-    "docs/runbooks/workspace-driver-migration.md",
-  )
-  assert field_value(result.fields, "legacy_key")
-    == Some("workspace.profiles.noop.hooks")
+  assert string.contains(result.message, "no longer supported")
+  assert string.contains(result.message, "workspace.profiles.<name>.driver")
 }
 
 pub fn doctor_cleanup_failure_warns_test() {
@@ -688,7 +698,7 @@ pub fn doctor_cleanup_failure_warns_test() {
       deps,
     )
   let summary = doctor.summary(report)
-  assert summary.warned == 2
+  assert summary.warned == 1
   let doctor.Report(results) = report
   assert has_warning(results, "workspace_cleanup_failed") == True
 }

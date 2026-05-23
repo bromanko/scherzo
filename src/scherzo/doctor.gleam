@@ -242,8 +242,8 @@ fn human_pass_body(result: CheckResult) -> String {
       indent(["Local instance lock can be acquired and released."])
     WorkspaceHooks ->
       indent([
-        "Scratch workspace was prepared and cleaned up during the workspace driver migration transition.",
-        "Hooks: " <> field_or(result.fields, "hooks", "none") <> ".",
+        "Scratch workspace was prepared and cleaned up with the default workspace profile.",
+        "Profile: " <> field_or(result.fields, "workspace_profile", "?") <> ".",
       ])
     PiProbe -> indent(["pi RPC launched successfully and no prompt was sent."])
   }
@@ -371,7 +371,7 @@ fn check_title(check: CheckName) -> String {
     LinearContract -> "Tracker contract"
     LinearSmoke -> "Tracker smoke"
     InstanceLock -> "Instance lock"
-    WorkspaceHooks -> "Workspace driver migration"
+    WorkspaceHooks -> "Workspace driver"
     PiProbe -> "Pi probe"
   }
 }
@@ -389,7 +389,7 @@ fn impact(check: CheckName) -> String {
     InstanceLock ->
       "Another local Scherzo process may be active, or a stale lock may need operator cleanup."
     WorkspaceHooks ->
-      "Legacy hook-based workspace configuration still runs during this transition, but operators need migration guidance before future driver-backed profiles become dispatchable."
+      "The default workspace profile cannot safely prepare and clean up a scratch workspace."
     PiProbe ->
       "Scherzo may not be able to launch pi RPC in prepared workspaces."
   }
@@ -423,9 +423,9 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- If no process is active, remove the stale instance.lock file manually.",
     ]
     WorkspaceHooks -> [
-      "- Inspect any legacy workspace.hooks or workspace.profiles.<name>.hooks entries in the YAML config.",
-      "- Plan migration to workspace.profiles.<name>.driver after driver invocation support lands.",
-      "- Read docs/runbooks/workspace-driver-migration.md for before-and-after examples and rollout guidance.",
+      "- Ensure workspace.default_profile names a driver-backed workspace profile.",
+      "- If workflow-config reports workspace.hooks or workspace.profiles.<name>.hooks, remove that unsupported block and reset or update the config to workspace.profiles.<name>.driver.",
+      "- Read docs/runbooks/workspace-driver-migration.md for driver-backed examples.",
     ]
     PiProbe -> [
       "- Confirm pi is installed and the configured pi.command supports --mode rpc.",
