@@ -119,7 +119,7 @@ fn run_driver_create(
   )
 }
 
-pub fn root_workspace_fetches_configured_publish_base_before_add_test() {
+pub fn root_workspace_fetches_configured_jj_base_before_add_test() {
   let dir = "test/tmp/jj-workspace-driver-fetches-base"
   let #(repo, workspace_path, bin, log) = setup_driver_fixture(dir)
 
@@ -129,7 +129,7 @@ pub fn root_workspace_fetches_configured_publish_base_before_add_test() {
       workspace_path,
       bin,
       log,
-      "SCHERZO_PR_REMOTE=upstream SCHERZO_PR_BASE=develop ",
+      "SCHERZO_JJ_WORKSPACE_REMOTE=upstream SCHERZO_JJ_WORKSPACE_BASE_BRANCH=develop ",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -219,7 +219,7 @@ pub fn fetch_failure_fails_root_workspace_creation_with_override_hint_test() {
       workspace_path,
       bin,
       log,
-      "SCHERZO_PR_REMOTE=upstream SCHERZO_PR_BASE=develop SCHERZO_FAKE_JJ_FETCH_FAIL=1 ",
+      "SCHERZO_JJ_WORKSPACE_REMOTE=upstream SCHERZO_JJ_WORKSPACE_BASE_BRANCH=develop SCHERZO_FAKE_JJ_FETCH_FAIL=1 ",
     )
 
   assert artifact.status == step_artifact.StepFailed

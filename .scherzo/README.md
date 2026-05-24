@@ -10,7 +10,7 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Put workflow-required agent guidance directly in checked-in prompt templates (or a workflow-owned bundled include mechanism when one exists) so consuming repositories do not have to vendor Pi skills.
 - Put runtime jj workspaces under `.scherzo/workspaces/<workflow-name>/`; they are ignored by git.
 - Config-relative paths are resolved from `.scherzo/scherzo.yaml`, so this repository uses `workspace.root: workspaces` to land at repo-root `.scherzo/workspaces`.
-- Populate Scherzo workspaces with `jj workspace add`, not separate `git clone` checkouts. New root workspaces prefer `SCHERZO_PR_BASE@SCHERZO_PR_REMOTE` (default `main@origin`) when that revision is already known locally, falling back through the local base branch and finally `@`; set `SCHERZO_JJ_WORKSPACE_BASE` to override this for deliberate local dogfooding.
+- Populate Scherzo workspaces with `jj workspace add`, not separate `git clone` checkouts. New root workspaces use the canonical `SCHERZO_JJ_WORKSPACE_*` driver env configured under `.scherzo/scherzo.yaml` (`main@scherzo-agent` for this dogfood profile) and fall back through the selected local base branch and finally `@` only when no canonical base remote/branch is configured; set `SCHERZO_JJ_WORKSPACE_BASE` to override this for deliberate local dogfooding.
 - Keep dogfood workspace lifecycle policy explicit: `.scherzo/scherzo.yaml` defines `workspace.profiles.dogfood-jj.driver` as the documented default, and implementation/review workflows select it with top-level `workspace_profile: dogfood-jj`. Command-only root-maintenance schedules may select `workspace_profile: noop` and then explicitly resolve `SCHERZO_REPO_ROOT` before touching the root checkout.
 - The `dogfood-jj` workspace driver uses the trusted command `$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj` for lifecycle operations and self-describes the dogfood capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. The normative driver contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../docs/specs/WORKSPACE_DRIVER_SPEC.md); hook-backed profile configuration is unsupported legacy migration material covered by [`docs/runbooks/workspace-driver-migration.md`](../docs/runbooks/workspace-driver-migration.md). Do not add new dogfood hook snippets as the current convention.
 - Use `scripts/scherzo-pi` as the checked-in `pi.command` wrapper so workflows such as research and bundle-based ExecPlan can select `openai-codex/gpt-5.5:xhigh` while other workflows keep the default pi model.
@@ -58,11 +58,13 @@ export LINEAR_DEFAULT_PROJECT="Scherzo Core"
 export SCHERZO_RESEARCH_PI_MODEL=openai-codex/gpt-5.5:xhigh
 # Optional. Defaults to openai-codex/gpt-5.5:xhigh for bundle-based ExecPlan drafting, revision, and implementation workflows.
 export SCHERZO_EXECPLAN_PI_MODEL=openai-codex/gpt-5.5:xhigh
-# Optional. Git remote used by implementation, bundle-based ExecPlan, and merge-conflict workflows that publish PRs.
+# Optional. Historical legacy PR remote name. Current dogfood jj driver and workflow helpers use
+# SCHERZO_JJ_WORKSPACE_* values from workspace.profiles.dogfood-jj.driver.env instead.
 export SCHERZO_PR_REMOTE=origin
-# Optional. PR base used by implementation, ExecPlan implementation, and branch-targeted merge-conflict runs.
+# Optional. Historical legacy PR base name. Current dogfood jj driver and workflow helpers use
+# SCHERZO_JJ_WORKSPACE_BASE_BRANCH from workspace.profiles.dogfood-jj.driver.env instead.
 export SCHERZO_PR_BASE=main
-# Optional. Defaults to the owner/repo inferred from SCHERZO_PR_REMOTE.
+# Optional. Defaults to the owner/repo inferred from the selected publication remote.
 export SCHERZO_PR_REPO=scherzo-systems/scherzo
 # Optional. Defaults to the current non-draft PR behavior when unset.
 # Set true to create draft PRs; set false to force ready-for-review PRs.
@@ -94,7 +96,9 @@ SCHERZO_AGENT_GIT_NAME="Scherzo Agent"
 SCHERZO_AGENT_GIT_EMAIL=agent-email@example.invalid
 # Optional. Defaults to github-scherzo-agent.
 SCHERZO_AGENT_SSH_HOST=github-scherzo-agent
-# Optional. Defaults to scherzo-agent.
+# Optional. Defaults to scherzo-agent. Keep this aligned with dogfood-jj driver.env
+# (`SCHERZO_JJ_WORKSPACE_REMOTE` and `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`) unless
+# you also change the checked-in or local Scherzo config.
 SCHERZO_AGENT_PR_REMOTE=scherzo-agent
 # Optional. Defaults to scherzo-systems/scherzo.
 SCHERZO_AGENT_PR_REPO=scherzo-systems/scherzo

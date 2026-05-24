@@ -1208,8 +1208,9 @@ pub fn jj_workspace_driver_prefers_configured_remote_base_for_new_root_workspace
   assert string.contains(script, "selected_workspace_base_remote")
   assert string.contains(script, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
   assert string.contains(script, "SCHERZO_JJ_WORKSPACE_REMOTE")
-  assert string.contains(script, "SCHERZO_PR_BASE")
-  assert string.contains(script, "SCHERZO_PR_REMOTE")
+  assert !string.contains(script, "SCHERZO_PR_BASE")
+  assert !string.contains(script, "env_value(\"SCHERZO_PR_REMOTE\") or")
+  assert string.contains(script, "legacy_publication_remote_unsupported")
   assert string.contains(script, "configured_base_candidates(branch, remote)")
   assert string.contains(
     script,
@@ -1237,7 +1238,7 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   assert string.contains(direnv_log, "allow .")
   assert string.contains(
     direnv_log,
-    "exec . selfci check --base main@origin --candidate @ --print-output",
+    "exec . selfci check --base main@scherzo-agent --candidate @ --print-output",
   )
   assert !string.contains(direnv_log, "exec . gleam format --check src test")
   assert !string.contains(direnv_log, "exec . gleam test")
@@ -1245,10 +1246,13 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
     simplifile.read(dir <> "/tmp/scherzo-implementation-validation.json")
   assert string.contains(validation_json, "\"status\": \"passed\"")
   assert string.contains(validation_json, "\"validator\": \"selfci\"")
-  assert string.contains(validation_json, "\"base_revision\": \"main@origin\"")
   assert string.contains(
     validation_json,
-    "direnv exec . selfci check --base main@origin --candidate @ --print-output",
+    "\"base_revision\": \"main@scherzo-agent\"",
+  )
+  assert string.contains(
+    validation_json,
+    "direnv exec . selfci check --base main@scherzo-agent --candidate @ --print-output",
   )
 }
 
@@ -1373,7 +1377,7 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_PR_REMOTE=legacy SCHERZO_PR_BASE=legacy SCHERZO_PR_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1391,6 +1395,8 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   assert string.contains(jj_log, "git fetch --remote origin --branch main")
   assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
   assert string.contains(jj_log, "diff --from main@origin --to @ --name-only")
+  assert string.contains(jj_log, "git push --remote fork")
+  assert !string.contains(jj_log, "git push --remote origin")
   let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
   assert string.contains(
     direnv_log,
@@ -1918,7 +1924,7 @@ fn run_driver_backed_publish_with_pr_draft(
   run_helper_in(
     dir,
     pr_draft_env_prefix(draft)
-      <> "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main SCHERZO_PR_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      <> "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=origin SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main SCHERZO_PR_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
   )
 }
 

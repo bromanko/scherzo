@@ -116,7 +116,7 @@ plan-completion-recovery --phase before-late-repair|after-late-repair|final --at
               authorize one bounded late repair pass or fail with retained
               workspace diagnostics.
 refresh-base --stage <stage>
-              Fetch SCHERZO_PR_REMOTE/SCHERZO_PR_BASE, rebase @ when needed,
+              Fetch the canonical jj workspace base, rebase @ when needed,
               and write structured base-refresh JSON under tmp/.
 validate      Run final direnv-backed SelfCI verification.
 publish       Describe the final jj change, push a bookmark, create/find a PR,
@@ -1105,9 +1105,13 @@ def command_display(args: list[str]) -> str:
 
 
 def configured_publish_base() -> tuple[str, str]:
-    base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
-    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    base = os.environ.get("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main").strip() or "main"
+    remote = os.environ.get("SCHERZO_JJ_WORKSPACE_REMOTE", "origin").strip() or "origin"
     return base, remote
+
+
+def configured_publication_remote() -> str:
+    return os.environ.get("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin").strip() or "origin"
 
 
 def parse_refresh_base_args(args: list[str]) -> str:
@@ -1143,7 +1147,7 @@ def resolve_base_revision(base: str, remote: str) -> tuple[str | None, list[str]
     local_commits = revision_commit_ids_if_exists(base)
     if local_commits is not None:
         print(
-            f"warning: remote publish base {remote_base!r} was not found after fetch; "
+            f"warning: remote workspace base {remote_base!r} was not found after fetch; "
             f"falling back to local revision {base!r}",
             file=sys.stderr,
         )
@@ -1269,8 +1273,9 @@ def refresh_base(stage: str) -> dict[str, Any]:
             has_unresolved_conflicts=has_unresolved_conflicts_at_current_change(),
             conflicted=conflicted_files(),
             message=(
-                f"could not fetch PR base {base!r} from remote {remote!r}; "
-                "fetch or configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry"
+                f"could not fetch jj workspace base {base!r} from remote {remote!r}; "
+                "fetch or configure SCHERZO_JJ_WORKSPACE_REMOTE/"
+                "SCHERZO_JJ_WORKSPACE_BASE_BRANCH and retry"
             ),
             commands=commands,
             fetch_stdout=fetch_proc.stdout,
@@ -1447,8 +1452,8 @@ def driver_refresh_result(stage: str) -> dict[str, Any]:
         "stage": payload.get("stage") or stage,
         "status": status,
         "repairable": repairable,
-        "remote": os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin",
-        "base": payload.get("base_ref") or os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main",
+        "remote": os.environ.get("SCHERZO_JJ_WORKSPACE_REMOTE", "origin").strip() or "origin",
+        "base": payload.get("base_ref") or os.environ.get("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main").strip() or "main",
         "base_revision": payload.get("base_revision") or payload.get("base_ref") or "",
         "base_commit_before_fetch": None,
         "base_commit_after_fetch": payload.get("base_revision") or "",
@@ -3019,7 +3024,8 @@ def publish_command_legacy() -> None:
     ensure_validation_passed()
     metadata = load_implementation_metadata()
 
-    base, remote = configured_publish_base()
+    base, base_remote = configured_publish_base()
+    publish_remote = configured_publication_remote()
     refresh = refresh_base("publish")
     write_refresh_base_result(refresh)
     refresh_status = str(refresh.get("status") or "")
@@ -3030,7 +3036,7 @@ def publish_command_legacy() -> None:
     if refresh_status in {"fetch_failed", "base_not_found"}:
         publish_blocked_after_refresh(refresh, failure_code="base_refresh_conflict")
 
-    base_revision = str(refresh.get("base_revision") or f"{base}@{remote}")
+    base_revision = str(refresh.get("base_revision") or f"{base}@{base_remote}")
     if refresh_status == "rebased_clean":
         print("")
         print("## Revalidation after publish-base normalization")
@@ -3053,12 +3059,12 @@ def publish_command_legacy() -> None:
         fail("could not determine current jj change id")
     branch = f"{branch_prefix}/{slug}-{change_id}"
 
-    repo = default_repo(remote)
+    repo = default_repo(publish_remote)
     require_command("gh")
     run(["jj", "describe", "-m", description])
-    ensure_no_empty_descriptions_to_push(remote)
+    ensure_no_empty_descriptions_to_push(publish_remote)
     run(["jj", "bookmark", "set", branch, "--revision", "@"])
-    run(["jj", "git", "push", "--remote", remote, "--bookmark", branch, "--allow-new"])
+    run(["jj", "git", "push", "--remote", publish_remote, "--bookmark", branch, "--allow-new"])
 
     body, repair_summary_included = append_base_drift_repair_summary(body)
     PR_BODY_PATH.parent.mkdir(parents=True, exist_ok=True)

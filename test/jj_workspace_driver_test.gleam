@@ -428,8 +428,8 @@ pub fn jj_driver_lifecycle_create_implements_root_workspace_creation_test() {
       fake_env(workspace, bin, log, [
         #("SCHERZO_REPO_ROOT", repo),
         #("SCHERZO_WORKFLOW_ID", "implementation"),
-        #("SCHERZO_PR_REMOTE", "upstream"),
-        #("SCHERZO_PR_BASE", "develop"),
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "develop"),
       ]),
     )
 
@@ -500,13 +500,13 @@ pub fn jj_driver_jj_specific_aliases_override_legacy_pr_names_test() {
   assert !string.contains(logged, "--revision main@origin")
 }
 
-pub fn jj_driver_legacy_pr_base_names_still_work_test() {
-  let dir = "test/tmp/jj-workspace-driver-legacy-base"
+pub fn jj_driver_legacy_pr_base_names_are_ignored_test() {
+  let dir = "test/tmp/jj-workspace-driver-legacy-base-ignored"
   let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
 
   let artifact =
     run_jj(
-      "jj_driver_legacy_base",
+      "jj_driver_legacy_base_ignored",
       "lifecycle create",
       fake_env(workspace, bin, log, [
         #("SCHERZO_REPO_ROOT", repo),
@@ -517,8 +517,13 @@ pub fn jj_driver_legacy_pr_base_names_still_work_test() {
 
   assert_exit(artifact, 0)
   let logged = log_text(log)
-  assert string.contains(logged, "git fetch --remote upstream --branch develop")
-  assert string.contains(logged, "--revision develop@upstream")
+  assert string.contains(logged, "git fetch --remote origin --branch main")
+  assert string.contains(logged, "--revision main@origin")
+  assert !string.contains(
+    logged,
+    "git fetch --remote upstream --branch develop",
+  )
+  assert !string.contains(logged, "--revision develop@upstream")
 }
 
 pub fn jj_driver_fetch_base_false_skips_network_test() {
@@ -565,18 +570,18 @@ pub fn jj_driver_invalid_fetch_policy_exits_usage_error_test() {
   assert !string.contains(log_text(log), "workspace add")
 }
 
-pub fn jj_driver_stale_explicit_legacy_base_fails_without_fallback_test() {
-  let dir = "test/tmp/jj-workspace-driver-stale-legacy-base"
+pub fn jj_driver_stale_canonical_base_fails_without_fallback_test() {
+  let dir = "test/tmp/jj-workspace-driver-stale-canonical-base"
   let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
 
   let artifact =
     run_jj(
-      "jj_driver_stale_legacy_base",
+      "jj_driver_stale_canonical_base",
       "lifecycle create",
       fake_env(workspace, bin, log, [
         #("SCHERZO_REPO_ROOT", repo),
-        #("SCHERZO_PR_REMOTE", "upstream"),
-        #("SCHERZO_PR_BASE", "develop"),
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "develop"),
         #("SCHERZO_FAKE_JJ_MISSING_REVISIONS", "develop@upstream develop"),
       ]),
     )
@@ -586,6 +591,8 @@ pub fn jj_driver_stale_explicit_legacy_base_fails_without_fallback_test() {
   assert string.contains(artifact.stderr, "upstream")
   assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
   assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_REMOTE")
+  assert !string.contains(artifact.stderr, "SCHERZO_PR_BASE")
+  assert !string.contains(artifact.stderr, "SCHERZO_PR_REMOTE")
   let logged = log_text(log)
   assert !string.contains(logged, "workspace add")
   assert !string.contains(logged, "log -r main@origin")
@@ -744,6 +751,29 @@ pub fn jj_driver_refresh_base_uses_jj_specific_aliases_test() {
   )
 }
 
+pub fn jj_driver_refresh_base_ignores_legacy_pr_names_test() {
+  let dir = "test/tmp/jj-workspace-driver-refresh-legacy-ignored"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_refresh_legacy_ignored",
+      "refresh-base --stage pre-validation --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_PR_REMOTE", "fork"),
+        #("SCHERZO_PR_BASE", "develop"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stdout, "\"base_ref\":\"main\"")
+  assert string.contains(artifact.stdout, "\"base_revision\":\"main@origin\"")
+  let logged = log_text(log)
+  assert string.contains(logged, "git fetch --remote origin --branch main")
+  assert !string.contains(logged, "git fetch --remote fork --branch develop")
+}
+
 pub fn jj_driver_publish_remote_is_separate_from_base_remote_test() {
   let dir = "test/tmp/jj-workspace-driver-publish-remote"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
@@ -772,8 +802,8 @@ pub fn jj_driver_publish_remote_is_separate_from_base_remote_test() {
   assert !string.contains(logged, "git push --remote upstream")
 }
 
-pub fn jj_driver_publish_remote_legacy_fallback_test() {
-  let dir = "test/tmp/jj-workspace-driver-publish-legacy-remote"
+pub fn jj_driver_publish_legacy_remote_without_canonical_fails_closed_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-legacy-remote-fails"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
@@ -782,7 +812,7 @@ pub fn jj_driver_publish_remote_legacy_fallback_test() {
 
   let artifact =
     run_jj(
-      "jj_driver_publish_legacy_remote",
+      "jj_driver_publish_legacy_remote_fails",
       "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base develop@fork --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
@@ -791,8 +821,15 @@ pub fn jj_driver_publish_remote_legacy_fallback_test() {
       ]),
     )
 
-  assert_exit(artifact, 0)
-  assert string.contains(log_text(log), "git push --remote fork")
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"legacy_publication_remote_unsupported\"",
+  )
+  assert string.contains(artifact.stdout, "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE")
+  let logged = log_text(log)
+  assert !string.contains(logged, "git push --remote origin")
+  assert !string.contains(logged, "git push --remote fork")
 }
 
 pub fn jj_driver_publish_target_branch_allows_stale_local_bookmark_test() {
