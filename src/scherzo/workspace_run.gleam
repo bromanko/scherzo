@@ -368,7 +368,11 @@ pub fn cleanup_run(
       case retain_cleanup(target_abs) {
         True -> Ok(Nil)
         False -> {
-          run_remove_lifecycle(target_abs, orchestrator, profile)
+          use _ <- result.try(run_remove_lifecycle(
+            target_abs,
+            orchestrator,
+            profile,
+          ))
           case simplifile.delete(target_abs) {
             Ok(Nil) -> Ok(Nil)
             Error(simplifile.Enoent) -> Ok(Nil)
@@ -979,7 +983,7 @@ fn run_remove_lifecycle(
   target_abs: String,
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
-) -> Nil {
+) -> Result(Nil, error.WorkspaceError) {
   case profile.driver {
     Some(driver) ->
       workspace_driver_lifecycle.remove_run(
@@ -988,7 +992,7 @@ fn run_remove_lifecycle(
         profile.name,
         driver,
       )
-    None -> Nil
+    None -> Ok(Nil)
   }
 }
 

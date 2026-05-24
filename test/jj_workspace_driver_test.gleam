@@ -141,7 +141,10 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = bookmark ] && [ \"$2\" = set ]; then exit 0; fi\n"
         <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"
         <> "if [ \"$1\" = resolve ] && [ \"$2\" = --list ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = workspace ] && [ \"$2\" = forget ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = workspace ] && [ \"$2\" = forget ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_FORGET_FAIL:-}\" = 1 ]; then echo 'simulated forget failure' >&2; exit 1; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "exit 1\n",
     )
   chmod_executable(path)
@@ -1231,6 +1234,30 @@ pub fn jj_driver_lifecycle_remove_forgets_run_workspaces_test() {
     )
 
   assert_exit(artifact, 0)
+  assert log_lines(log) == ["root", "workspace forget"]
+}
+
+pub fn jj_driver_lifecycle_remove_surfaces_forget_failure_test() {
+  let dir = "test/tmp/jj-workspace-driver-remove-forget-failure"
+  let #(_, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_forget_failure",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_RUN_ROOT", run_root),
+        #("SCHERZO_FAKE_JJ_FORGET_FAIL", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stderr, "simulated forget failure")
+  assert string.contains(artifact.stderr, "could not forget jj workspace")
+  assert simplifile.is_directory(run_root) == Ok(True)
   assert log_lines(log) == ["root", "workspace forget"]
 }
 

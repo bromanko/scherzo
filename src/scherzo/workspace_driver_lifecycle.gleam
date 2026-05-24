@@ -1,4 +1,6 @@
+import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
@@ -76,9 +78,9 @@ pub fn remove_run(
   orchestrator: config_types.OrchestratorConfig,
   profile_name: String,
   driver: config_types.WorkspaceDriverConfig,
-) -> Nil {
+) -> Result(Nil, error.WorkspaceError) {
   case supports(driver, config_types.LifecycleRemove) {
-    False -> Nil
+    False -> Ok(Nil)
     True -> {
       let workspaces_dir = path.join(run_root, "workspaces")
       case simplifile.read_directory(workspaces_dir) {
@@ -91,7 +93,11 @@ pub fn remove_run(
             profile_name,
             driver,
           )
-        Error(_) -> Nil
+        Error(simplifile.Enoent) -> Ok(Nil)
+        Error(file_error) ->
+          Error(error.WorkspaceIo(
+            "read workspaces failed: " <> simplifile.describe_error(file_error),
+          ))
       }
     }
   }
@@ -104,28 +110,19 @@ fn remove_entries(
   orchestrator: config_types.OrchestratorConfig,
   profile_name: String,
   driver: config_types.WorkspaceDriverConfig,
-) -> Nil {
+) -> Result(Nil, error.WorkspaceError) {
   case entries {
-    [] -> Nil
+    [] -> Ok(Nil)
     [entry, ..rest] -> {
       let workspace_path = path.join(workspaces_dir, entry)
-      case simplifile.is_directory(workspace_path) {
-        Ok(True) ->
-          run_best_effort(
-            "driver_lifecycle_remove",
-            config_types.LifecycleRemove,
-            driver,
-            orchestrator,
-            remove_env(
-              run_root,
-              workspace_path,
-              entry,
-              profile_name,
-              orchestrator,
-            ),
-          )
-        _ -> Nil
-      }
+      use _ <- result.try(remove_entry(
+        workspace_path,
+        entry,
+        run_root,
+        orchestrator,
+        profile_name,
+        driver,
+      ))
       remove_entries(
         rest,
         workspaces_dir,
@@ -135,6 +132,71 @@ fn remove_entries(
         driver,
       )
     }
+  }
+}
+
+fn remove_entry(
+  workspace_path: String,
+  workspace_name: String,
+  run_root: String,
+  orchestrator: config_types.OrchestratorConfig,
+  profile_name: String,
+  driver: config_types.WorkspaceDriverConfig,
+) -> Result(Nil, error.WorkspaceError) {
+  case simplifile.is_directory(workspace_path) {
+    Ok(True) ->
+      run(
+        "driver_lifecycle_remove",
+        config_types.LifecycleRemove,
+        driver,
+        orchestrator,
+        remove_env(
+          run_root,
+          workspace_path,
+          workspace_name,
+          profile_name,
+          orchestrator,
+        ),
+      )
+      |> result.map_error(fn(err) {
+        driver_remove_error(workspace_name, workspace_path, err)
+      })
+    Ok(False) -> Ok(Nil)
+    Error(simplifile.Enoent) -> Ok(Nil)
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "inspect workspace failed: " <> simplifile.describe_error(file_error),
+      ))
+  }
+}
+
+fn driver_remove_error(
+  workspace_name: String,
+  workspace_path: String,
+  err: error.HookError,
+) -> error.WorkspaceError {
+  error.WorkspaceIo(
+    "driver lifecycle remove failed for workspace "
+    <> workspace_name
+    <> " at "
+    <> workspace_path
+    <> ": "
+    <> hook_error_detail(err),
+  )
+}
+
+fn hook_error_detail(err: error.HookError) -> String {
+  case err {
+    error.HookFailed(name, status, diagnostics) -> {
+      let detail = name <> " exited " <> int.to_string(status)
+      case string.trim(diagnostics) == "" {
+        True -> error.hook_code(err) <> ": " <> detail
+        False -> error.hook_code(err) <> ": " <> detail <> ": " <> diagnostics
+      }
+    }
+    error.HookTimedOut(name) ->
+      error.hook_code(err) <> ": " <> name <> " timed out"
+    error.HookIo(message) -> error.hook_code(err) <> ": " <> message
   }
 }
 
