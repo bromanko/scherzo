@@ -9,6 +9,7 @@ import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
+import scherzo/orchestrator/transitions/claims
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/tracker/issue as tracker_issue
@@ -207,19 +208,120 @@ fn retry_issue(
     dispatch_candidates: dispatch,
     ..,
   ) = callbacks
+  case context.dispatch_enabled {
+    False ->
+      finish(
+        state,
+        request,
+        command.rejected(
+          request.operator_command,
+          "dispatch_disabled",
+          Some("dispatch is not currently enabled"),
+        ),
+      )
+    True -> {
+      let state =
+        transition_types.State(
+          ..state,
+          runtime: core.unpark_if_issue_changed(state.runtime, issue),
+        )
+      case
+        core.retry_candidate_precondition_failure(
+          state.runtime,
+          context.effective,
+          issue.id,
+          issue,
+        )
+      {
+        Some(reason) ->
+          finish(
+            state,
+            request,
+            command.rejected(
+              request.operator_command,
+              reason,
+              Some(retry_rejection_message(reason)),
+            ),
+          )
+        None ->
+          case core.workflow_policy_satisfied(context.effective, issue) {
+            False ->
+              finish(
+                state,
+                request,
+                command.rejected(
+                  request.operator_command,
+                  "retry_workflow_policy_invalid",
+                  Some("retry rejected: workflow policy is not satisfied"),
+                ),
+              )
+            True ->
+              case can_reserve(state, context, issue) {
+                False ->
+                  finish(
+                    state,
+                    request,
+                    command.rejected(
+                      request.operator_command,
+                      "retry_no_dispatch_slots",
+                      Some("retry deferred: no dispatch slots are available"),
+                    ),
+                  )
+                True -> {
+                  let state = reset_issue_for_operator_retry(state, issue)
+                  let effects = operator_retry_effects(issue, context)
+                  let claim =
+                    claims.begin_for_issue(
+                      state,
+                      issue,
+                      [],
+                      context,
+                      claims.Callbacks(dispatch_candidates: dispatch),
+                    )
+                  transition_types.Outcome(
+                    state: claim.state,
+                    effects: list.append(
+                      effects,
+                      list.append(claim.effects, [
+                        effects_types.FinishOperatorCommand(
+                          request,
+                          command.applied(
+                            request.operator_command,
+                            Some("retry dispatched"),
+                          ),
+                        ),
+                      ]),
+                    ),
+                  )
+                }
+              }
+          }
+      }
+    }
+  }
+}
+
+fn reset_issue_for_operator_retry(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+) -> transition_types.State {
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
-      parked: dict.delete(state.runtime.parked, issue.id),
       retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
       issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
     )
-  let state = transition_types.State(..state, runtime: runtime)
-  let effects = [
+  transition_types.State(..state, runtime: runtime)
+}
+
+fn operator_retry_effects(
+  issue: tracker_issue.Issue,
+  context: transition_types.DispatchContext,
+) -> List(effects_types.Effect) {
+  [
     effects_types.AppendLedger(effects_types.LedgerAppend(
       correlation_id: "operator_retry:" <> issue.id,
       bodies: [
-        record.IssueUnparked(issue.id, issue.identifier, "operator_retry"),
         record.IssueCounterUpdated(
           issue.id,
           issue.identifier,
@@ -235,44 +337,10 @@ fn retry_issue(
     effects_types.CancelRetryTimer(issue.id, 0, "operator_retry"),
     effects_types.ClearRecovery(issue.id),
   ]
-  case
-    context.dispatch_enabled
-    && core.should_dispatch(state.runtime, context.effective, issue)
-    && can_reserve(state, context, issue)
-  {
-    True -> {
-      let dispatched = dispatch([issue], state, context)
-      transition_types.Outcome(
-        state: dispatched.state,
-        effects: list.append(
-          effects,
-          list.append(dispatched.effects, [
-            effects_types.FinishOperatorCommand(
-              request,
-              command.applied(
-                request.operator_command,
-                Some("retry dispatched"),
-              ),
-            ),
-          ]),
-        ),
-      )
-    }
-    False ->
-      transition_types.Outcome(
-        state: state,
-        effects: list.append(effects, [
-          effects_types.FinishOperatorCommand(
-            request,
-            command.rejected(
-              request.operator_command,
-              "not_dispatchable",
-              Some("issue is not currently dispatchable"),
-            ),
-          ),
-        ]),
-      )
-  }
+}
+
+fn retry_rejection_message(reason: String) -> String {
+  "retry rejected: " <> reason
 }
 
 fn handle_park(

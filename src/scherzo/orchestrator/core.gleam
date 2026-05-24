@@ -148,7 +148,8 @@ pub fn should_dispatch(
   config: config_types.EffectiveConfig,
   issue: tracker_issue.Issue,
 ) -> Bool {
-  dispatch_preconditions_satisfied(state, config, issue)
+  is_dispatch_state(config, issue.state)
+  && dispatch_preconditions_satisfied(state, config, issue)
   && workflow_policy_satisfied(config, issue)
 }
 
@@ -204,35 +205,34 @@ pub fn is_terminal(
   issue_state.contains_normalized(config.tracker.terminal_states, state)
 }
 
-pub fn retry_candidate_preconditions_satisfied(
+pub fn retry_candidate_precondition_failure(
   state: orchestrator_state.RuntimeState,
   config: config_types.EffectiveConfig,
   issue_id: String,
   issue: tracker_issue.Issue,
-) -> Bool {
-  retry_candidate_preconditions_satisfied_without_slot_capacity(
-    state,
-    config,
-    issue_id,
-    issue,
-  )
-  && slots_available(state, config, issue.state)
-}
-
-pub fn retry_candidate_preconditions_satisfied_without_slot_capacity(
-  state: orchestrator_state.RuntimeState,
-  config: config_types.EffectiveConfig,
-  issue_id: String,
-  issue: tracker_issue.Issue,
-) -> Bool {
-  issue.id == issue_id
-  && issue_has_required_fields(issue)
-  && is_active(config, issue.state)
-  && !is_terminal(config, issue.state)
-  && !dict.has_key(state.running, issue.id)
-  && retry_claim_allowed(state, issue.id)
-  && !is_parked_for_issue(state, issue)
-  && blockers_satisfied(config, issue)
+) -> Option(String) {
+  case
+    issue.id != issue_id,
+    issue_has_required_fields(issue),
+    is_terminal(config, issue.state),
+    config_types.retry_state_allowed(config, issue.state),
+    dict.has_key(state.running, issue.id),
+    retry_claim_allowed(state, issue.id),
+    is_parked_for_issue(state, issue),
+    blockers_satisfied(config, issue)
+  {
+    True, _, _, _, _, _, _, _ -> Some("retry_issue_id_mismatch")
+    _, False, _, _, _, _, _, _ -> Some("retry_missing_required_fields")
+    _, _, True, _, _, _, _, _ ->
+      Some("retry_terminal_state:" <> issue_state.to_string(issue.state))
+    _, _, _, False, _, _, _, _ ->
+      Some(config_types.retry_non_retryable_state_reason(issue.state))
+    _, _, _, _, True, _, _, _ -> Some("retry_issue_already_running")
+    _, _, _, _, _, False, _, _ -> Some("retry_issue_already_claimed")
+    _, _, _, _, _, _, True, _ -> Some("retry_issue_parked")
+    _, _, _, _, _, _, _, False -> Some("retry_blocked_by_dependency")
+    _, _, _, _, _, _, _, True -> None
+  }
 }
 
 fn retry_claim_allowed(
@@ -560,27 +560,29 @@ pub fn handle_retry_candidate(
     Ok(None) -> release_retry_claim(state, issue_id, "retry_issue_missing")
     Ok(Some(issue)) -> {
       let state = unpark_if_issue_changed(state, issue)
-      let dispatchable_without_slot_capacity =
-        retry_candidate_preconditions_satisfied_without_slot_capacity(
-          state,
-          config,
-          issue_id,
-          issue,
-        )
-        && workflow_policy_satisfied(config, issue)
-
-      case dispatchable_without_slot_capacity {
-        False -> release_retry_claim(state, issue_id, "retry_not_dispatchable")
-        True ->
-          case slots_available(state, config, issue.state) {
-            True -> dispatch_retry_claim(state, issue_id, issue)
+      case
+        retry_candidate_precondition_failure(state, config, issue_id, issue)
+      {
+        Some(reason) -> release_retry_claim(state, issue_id, reason)
+        None ->
+          case workflow_policy_satisfied(config, issue) {
             False ->
-              schedule_retry_with_backoff(
+              release_retry_claim(
                 state,
-                config,
                 issue_id,
-                reason.RetryNoSlots,
+                "retry_workflow_policy_invalid",
               )
+            True ->
+              case slots_available(state, config, issue.state) {
+                True -> dispatch_retry_claim(state, issue_id, issue)
+                False ->
+                  schedule_retry_with_backoff(
+                    state,
+                    config,
+                    issue_id,
+                    reason.RetryNoSlots,
+                  )
+              }
           }
       }
     }

@@ -605,6 +605,103 @@ pub fn with_pi_env(
   }
 }
 
+pub fn retry_state_allowed(
+  config: EffectiveConfig,
+  state: issue_state.IssueState,
+) -> Bool {
+  issue_state.contains_normalized(config.tracker.active_states, state)
+  || retry_handoff_state_allowed(config, state)
+}
+
+pub fn retry_non_retryable_state_reason(
+  state: issue_state.IssueState,
+) -> String {
+  "retry_non_retryable_state:" <> issue_state.to_string(state)
+}
+
+pub fn recovery_non_retryable_reason(state: issue_state.IssueState) -> String {
+  "recovery_non_retryable_state:" <> issue_state.to_string(state)
+}
+
+fn retry_handoff_state_allowed(
+  config: EffectiveConfig,
+  state: issue_state.IssueState,
+) -> Bool {
+  retry_handoff_states(config)
+  |> list.any(fn(candidate) { issue_state.equals_normalized(candidate, state) })
+}
+
+fn retry_handoff_states(
+  config: EffectiveConfig,
+) -> List(issue_state.IssueState) {
+  list.append(
+    completion_retry_handoff_states(config),
+    legacy_failure_handoff_states(config),
+  )
+}
+
+fn completion_retry_handoff_states(
+  config: EffectiveConfig,
+) -> List(issue_state.IssueState) {
+  case config.handoff.completion_states {
+    None -> []
+    Some(policy) -> {
+      let global_refs = [policy.failure_state, policy.partial_success_state]
+      let global_refs =
+        prepend_optional_ref(global_refs, policy.cancellation_state)
+      let workflow_refs =
+        policy.workflows
+        |> dict.values
+        |> list.fold([], fn(acc, override) {
+          let acc = prepend_optional_ref(acc, override.failure_state)
+          let acc = prepend_optional_ref(acc, override.partial_success_state)
+          prepend_optional_ref(acc, override.cancellation_state)
+        })
+      list.append(global_refs, workflow_refs)
+      |> list.filter_map(state_ref_to_issue_state)
+    }
+  }
+}
+
+fn legacy_failure_handoff_states(
+  config: EffectiveConfig,
+) -> List(issue_state.IssueState) {
+  case config.handoff.failure_state_id {
+    None -> []
+    Some(_) ->
+      case dict.get(config.linear_contract.handoff_state_bindings, "failure") {
+        Error(_) -> []
+        Ok(required_state_key) ->
+          case
+            dict.get(config.linear_contract.required_states, required_state_key)
+          {
+            Error(_) -> []
+            Ok(state_name) -> [issue_state.from_string_unchecked(state_name)]
+          }
+      }
+  }
+}
+
+fn prepend_optional_ref(
+  refs: List(workflow_completion_policy.LinearStateRef),
+  maybe_ref: Option(workflow_completion_policy.LinearStateRef),
+) -> List(workflow_completion_policy.LinearStateRef) {
+  case maybe_ref {
+    None -> refs
+    Some(ref) -> [ref, ..refs]
+  }
+}
+
+fn state_ref_to_issue_state(
+  ref: workflow_completion_policy.LinearStateRef,
+) -> Result(issue_state.IssueState, Nil) {
+  case ref {
+    workflow_completion_policy.StateByName(name) ->
+      Ok(issue_state.from_string_unchecked(name))
+    workflow_completion_policy.StateById(_) -> Error(Nil)
+  }
+}
+
 fn shell_command_with_env(
   command: String,
   env: List(#(String, String)),

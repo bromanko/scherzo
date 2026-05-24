@@ -218,7 +218,7 @@ Set `tracker.linear.project_slug` to the Linear project slug Scherzo should poll
 export LINEAR_API_KEY=lin_api_...
 ```
 
-Use `tracker.dispatch_states` for task states Scherzo may pick up. It must be a subset of `tracker.active_states`. Put completed or abandoned states in `tracker.terminal_states` so Scherzo can ignore those tasks and reason about recovery. Older flat fields such as `tracker.api_key`, `tracker.endpoint`, and `tracker.project_slug` remain compatibility aliases; prefer `tracker.credentials.api_key_env` and `tracker.linear.*` in new config.
+Use `tracker.dispatch_states` for task states Scherzo may pick up for initial dispatch. It must be a subset of `tracker.active_states`. Put completed or abandoned states in `tracker.terminal_states` so Scherzo can ignore those tasks and reason about recovery. Retry paths are not gated by `tracker.dispatch_states`: a `handoff.completion_states.failure_state` such as `Triage` or `Needs Attention` does not need to be included in `dispatch_states` for automatic failure retries or explicit operator retries to work. Retries may resume from `tracker.active_states` and configured retry handoff states such as failure, partial-success, or cancellation states while still enforcing parked/active/pending/drift/recovery checks. Older flat fields such as `tracker.api_key`, `tracker.endpoint`, and `tracker.project_slug` remain compatibility aliases; prefer `tracker.credentials.api_key_env` and `tracker.linear.*` in new config.
 
 ### Workflow labels and routing
 

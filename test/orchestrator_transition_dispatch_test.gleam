@@ -3,7 +3,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import orchestrator_transition_test
 import scherzo/config/types as config_types
+import scherzo/control/command
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
@@ -11,6 +13,7 @@ import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 
 pub fn stale_poll_generation_ignored_test() {
   let transition_types.Outcome(effects: effects, ..) =
@@ -23,6 +26,233 @@ pub fn stale_poll_generation_ignored_test() {
     )
 
   assert effects == []
+}
+
+pub fn initial_dispatch_skips_non_dispatch_state_test() {
+  let candidate =
+    tracker_issue.Issue(
+      ..orchestrator_transition_test.fixture_issue(),
+      state: issue_state.from_string_unchecked("In Progress"),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.DispatchCandidates(
+        [candidate],
+        orchestrator_transition_test.fixture_context(),
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  assert dict.size(next.pending_dispatch_validations) == 0
+  assert effects == []
+}
+
+pub fn automatic_retry_non_dispatch_state_dispatches_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..orchestrator_transition_test.fixture_issue(),
+      state: issue_state.from_string_unchecked("Triage"),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        1,
+        Ok([issue]),
+        context_with_failure_state("Triage"),
+      ),
+      state_with_retry(issue),
+    )
+
+  assert dict.has_key(next.pending_claims, issue.id)
+  assert !dict.has_key(next.runtime.retry_attempts, issue.id)
+  assert has_claim_issue(effects)
+  assert has_cancel_retry_reason(effects, "retry_dispatch")
+  assert !has_cancel_retry_reason(effects, "retry_not_dispatchable")
+}
+
+pub fn automatic_retry_non_retryable_state_is_rejected_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..orchestrator_transition_test.fixture_issue(),
+      state: issue_state.from_string_unchecked("Backlog"),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        1,
+        Ok([issue]),
+        context_with_failure_state("Triage"),
+      ),
+      state_with_retry(issue),
+    )
+
+  assert !dict.has_key(next.pending_claims, issue.id)
+  assert !dict.has_key(next.runtime.retry_attempts, issue.id)
+  assert !dict.has_key(next.runtime.claimed, issue.id)
+  assert !has_claim_issue(effects)
+  assert has_cancel_retry_reason(effects, "retry_non_retryable_state:Backlog")
+}
+
+pub fn automatic_retry_dispatch_state_dispatches_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        1,
+        Ok([issue]),
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state_with_retry(issue),
+    )
+
+  assert dict.has_key(next.pending_claims, issue.id)
+  assert !dict.has_key(next.runtime.retry_attempts, issue.id)
+  assert has_claim_issue(effects)
+  assert has_cancel_retry_reason(effects, "retry_dispatch")
+}
+
+pub fn explicit_retry_non_dispatch_state_dispatches_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..orchestrator_transition_test.fixture_issue(),
+      state: issue_state.from_string_unchecked("Triage"),
+    )
+  let request = retry_request(issue.id)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: context_with_failure_state("Triage"),
+        issue_resolution: transition_types.OperatorIssueResolved(issue),
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  assert dict.has_key(next.pending_claims, issue.id)
+  assert has_claim_issue(effects)
+  assert has_finished_operator_applied(effects)
+}
+
+pub fn explicit_retry_non_retryable_state_is_rejected_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..orchestrator_transition_test.fixture_issue(),
+      state: issue_state.from_string_unchecked("Backlog"),
+    )
+  let request = retry_request(issue.id)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: context_with_failure_state("Triage"),
+        issue_resolution: transition_types.OperatorIssueResolved(issue),
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  assert !dict.has_key(next.pending_claims, issue.id)
+  assert !has_claim_issue(effects)
+  assert has_finished_operator_rejected(
+    effects,
+    "retry_non_retryable_state:Backlog",
+  )
+}
+
+pub fn explicit_retry_auto_unparks_changed_issue_test() {
+  let original = orchestrator_transition_test.fixture_issue()
+  let issue =
+    tracker_issue.Issue(
+      ..original,
+      title: original.title <> " (updated)",
+      state: issue_state.from_string_unchecked("Triage"),
+    )
+  let request = retry_request(issue.id)
+  let parked =
+    orchestrator_state.ParkedEntry(
+      issue_id: original.id,
+      identifier: original.identifier,
+      reason: orchestrator_reason.ParkMaxRetryAttempts,
+      release_policy: orchestrator_state.AutoUnparkOnIssueChange(
+        tracker_issue.content_fingerprint(original),
+      ),
+      parked_at_ms: 123,
+    )
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      parked: dict.from_list([#(original.id, parked)]),
+    )
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      runtime: runtime,
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: context_with_failure_state("Triage"),
+        issue_resolution: transition_types.OperatorIssueResolved(issue),
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      state,
+    )
+
+  assert dict.has_key(next.pending_claims, issue.id)
+  assert !dict.has_key(next.runtime.parked, issue.id)
+  assert has_claim_issue(effects)
+  assert has_finished_operator_applied(effects)
+}
+
+pub fn explicit_retry_preserves_parked_safety_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let request = retry_request(issue.id)
+  let parked =
+    orchestrator_state.ParkedEntry(
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: orchestrator_reason.ParkOperator("operator_hold"),
+      release_policy: orchestrator_state.ExplicitUnparkOnly,
+      parked_at_ms: 123,
+    )
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      parked: dict.from_list([#(issue.id, parked)]),
+    )
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      runtime: runtime,
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: orchestrator_transition_test.fixture_context(),
+        issue_resolution: transition_types.OperatorIssueResolved(issue),
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      state,
+    )
+
+  assert !dict.has_key(next.pending_claims, issue.id)
+  assert dict.has_key(next.runtime.parked, issue.id)
+  assert !has_claim_issue(effects)
+  assert has_finished_operator_rejected(effects, "retry_issue_parked")
 }
 
 pub fn blocked_dependency_candidate_skipped_and_reported_test() {
@@ -435,6 +665,66 @@ fn state_with_pending_dispatch_validation(
   )
 }
 
+fn state_with_retry(issue: tracker_issue.Issue) -> transition_types.State {
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      claimed: dict.from_list([#(issue.id, issue.identifier)]),
+      retry_attempts: dict.from_list([
+        #(
+          issue.id,
+          orchestrator_state.RetryEntry(
+            issue_id: issue.id,
+            delay_ms: 1000,
+            timer_generation: 1,
+          ),
+        ),
+      ]),
+    )
+  transition_types.State(
+    ..orchestrator_transition_test.fixture_state(),
+    runtime: runtime,
+  )
+}
+
+fn retry_request(issue_id: String) -> effects_types.OperatorCommandRequest {
+  effects_types.OperatorCommandRequest(
+    source: effects_types.LocalOperatorCommand,
+    operator_command: command.RetryIssue(command.IssueId(issue_id)),
+    timeout_ms: 1000,
+  )
+}
+
+fn context_with_failure_state(
+  state_name: String,
+) -> transition_types.DispatchContext {
+  let context = orchestrator_transition_test.fixture_context()
+  let effective =
+    config_types.EffectiveConfig(
+      ..context.effective,
+      handoff: config_types.HandoffConfig(
+        ..context.effective.handoff,
+        completion_states: Some(
+          workflow_completion_policy.CompletionStatePolicy(
+            default_completion_state: workflow_completion_policy.StateByName(
+              "In Review",
+            ),
+            no_review_completion_state: Some(
+              workflow_completion_policy.StateByName("Done"),
+            ),
+            failure_state: workflow_completion_policy.StateByName(state_name),
+            partial_success_state: workflow_completion_policy.StateByName(
+              state_name,
+            ),
+            cancellation_state: None,
+            workflows: dict.new(),
+          ),
+        ),
+      ),
+    )
+  transition_types.DispatchContext(..context, effective: effective)
+}
+
 fn context_with_preflight(
   policy: review_lane_preflight_policy.Policy,
   result: review_lane_preflight.PreflightResult,
@@ -495,6 +785,44 @@ fn has_preflight_failure_log(effects: List(effects_types.Effect)) -> Bool {
   list.any(effects, fn(effect) {
     case effect {
       effects_types.Log(_, "review_infrastructure_preflight_failed", _) -> True
+      _ -> False
+    }
+  })
+}
+
+fn has_cancel_retry_reason(
+  effects: List(effects_types.Effect),
+  expected: String,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.CancelRetryTimer(_, _, reason) -> reason == expected
+      _ -> False
+    }
+  })
+}
+
+fn has_finished_operator_applied(effects: List(effects_types.Effect)) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.FinishOperatorCommand(_, result) ->
+        command.status_to_string(result.status) == "applied"
+      _ -> False
+    }
+  })
+}
+
+fn has_finished_operator_rejected(
+  effects: List(effects_types.Effect),
+  expected: String,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.FinishOperatorCommand(_, result) ->
+        case result.status {
+          command.Rejected(reason) -> reason == expected
+          _ -> False
+        }
       _ -> False
     }
   })
