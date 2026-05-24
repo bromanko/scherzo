@@ -26,6 +26,7 @@ pub type PiEvent {
   OperatorUiTimeout
   PiAbortSent
   PiAbortFailed
+  PiProtocolDiagnostic
   ContextRecoveryStarted
   ContextRecoverySucceeded
   ContextRecoveryFailed
@@ -59,6 +60,7 @@ pub fn to_string(event: PiEvent) -> String {
     OperatorUiTimeout -> "operator_ui_timeout"
     PiAbortSent -> "pi_abort_sent"
     PiAbortFailed -> "pi_abort_failed"
+    PiProtocolDiagnostic -> "pi_protocol_diagnostic"
     ContextRecoveryStarted -> "context_recovery_started"
     ContextRecoverySucceeded -> "context_recovery_succeeded"
     ContextRecoveryFailed -> "context_recovery_failed"
@@ -93,6 +95,7 @@ pub fn from_string(name: String) -> PiEvent {
     "operator_ui_timeout" -> OperatorUiTimeout
     "pi_abort_sent" -> PiAbortSent
     "pi_abort_failed" -> PiAbortFailed
+    "pi_protocol_diagnostic" -> PiProtocolDiagnostic
     "context_recovery_started" -> ContextRecoveryStarted
     "context_recovery_succeeded" -> ContextRecoverySucceeded
     "context_recovery_failed" -> ContextRecoveryFailed

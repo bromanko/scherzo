@@ -47,6 +47,23 @@ pub fn port_keeps_stderr_out_of_stdout_test() {
   assert !string.contains(stdout, "diagnostic")
 }
 
+pub fn port_read_diagnostics_uses_bounded_tail_test() {
+  let cwd = "test/tmp/port-stderr-bounded"
+  reset_dir(cwd)
+
+  let command =
+    "i=0; while [ \"$i\" -lt 70000 ]; do "
+    <> "printf A >&2; i=$((i + 1)); done; printf TAIL-MARKER >&2"
+  let assert Ok(process) = port.start(command, cwd)
+  let assert Error(port.ProcessExited(0)) = port.read_stdout_line(process, 5000)
+  let assert Ok(diagnostics) = port.read_diagnostics(process)
+  let _ = port.terminate(process)
+
+  assert string.starts_with(diagnostics, "[stderr truncated to last ")
+  assert string.contains(diagnostics, "TAIL-MARKER")
+  assert string.length(diagnostics) < 66_000
+}
+
 pub fn port_start_with_env_applies_environment_test() {
   let cwd = "test/tmp/port-env"
   reset_dir(cwd)

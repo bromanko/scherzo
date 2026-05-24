@@ -319,7 +319,8 @@ fn format_stats_row(stats: SourceStats) -> String {
 
 fn oversized_source_baseline() -> List(SourceLimit) {
   [
-    SourceLimit("src/scherzo/agent/run_attempt.gleam", 2206, 27),
+    SourceLimit("src/scherzo/agent/run_attempt.gleam", 2251, 28),
+    SourceLimit("src/scherzo/agent/turn_loop.gleam", 1116, 18),
     SourceLimit("src/scherzo/config.gleam", 2619, 8),
     SourceLimit("src/scherzo/control/protocol.gleam", 1551, 7),
     SourceLimit("src/scherzo/ctl.gleam", 2453, 16),

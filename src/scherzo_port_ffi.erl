@@ -16,6 +16,7 @@
 ]).
 
 -define(MAX_LINE, 10000000).
+-define(MAX_DIAGNOSTICS_BYTES, 65536).
 -define(TERM_GRACE_MS, 300).
 -define(KILL_GRACE_MS, 700).
 -define(CHILD_PID_WAIT_MS, 200).
@@ -407,7 +408,7 @@ pop_stdout_status(State, Buffer) ->
 read_diagnostics(Process) ->
     try
         ErrPath = process_err_path(Process),
-        case file:read_file(ErrPath) of
+        case read_diagnostics_file(ErrPath) of
             {ok, Bytes} ->
                 put_cached_diagnostics(Process, Bytes),
                 {ok, Bytes};
@@ -417,6 +418,33 @@ read_diagnostics(Process) ->
     catch
         Class:CatchReason -> {error, tagged_error(diagnostics_failed, format_error(Class, CatchReason))}
     end.
+
+read_diagnostics_file(ErrPath) ->
+    case file:read_file_info(ErrPath) of
+        {ok, #file_info{size = Size}} when Size =< ?MAX_DIAGNOSTICS_BYTES ->
+            file:read_file(ErrPath);
+        {ok, #file_info{size = Size}} ->
+            read_diagnostics_tail(ErrPath, Size);
+        {error, Reason} -> {error, Reason}
+    end.
+
+read_diagnostics_tail(ErrPath, Size) ->
+    Offset = Size - ?MAX_DIAGNOSTICS_BYTES,
+    case file:open(ErrPath, [read, binary]) of
+        {ok, IoDevice} ->
+            Read = file:pread(IoDevice, Offset, ?MAX_DIAGNOSTICS_BYTES),
+            _ = file:close(IoDevice),
+            case Read of
+                {ok, Bytes} -> {ok, truncated_diagnostics(Bytes)};
+                eof -> {ok, <<>>};
+                {error, Reason} -> {error, Reason}
+            end;
+        {error, Reason} -> {error, Reason}
+    end.
+
+truncated_diagnostics(Bytes) ->
+    Limit = integer_to_binary(?MAX_DIAGNOSTICS_BYTES),
+    <<"[stderr truncated to last ", Limit/binary, " bytes]\n", Bytes/binary>>.
 
 terminate(Process) ->
     try
@@ -758,7 +786,7 @@ tmp_base() ->
 cache_diagnostics(Process) ->
     try
         ErrPath = process_err_path(Process),
-        case file:read_file(ErrPath) of
+        case read_diagnostics_file(ErrPath) of
             {ok, Bytes} ->
                 put_cached_diagnostics(Process, Bytes),
                 ok;

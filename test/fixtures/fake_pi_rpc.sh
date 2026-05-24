@@ -209,6 +209,9 @@ while IFS= read -r line; do
       if [[ -n "${FAKE_PI_INTERLEAVE_EVENT_BEFORE_PROMPT_RESPONSE:-}" ]]; then
         jq -cn '{type:"message_update",delta:"interleaved"}'
       fi
+      if [[ -n "${FAKE_PI_INTERLEAVE_EMPTY_ASSISTANT_BEFORE_PROMPT_RESPONSE:-}" ]]; then
+        jq -cn '{type:"message_start",message:{api:"openai-codex-responses",content:[],model:"gpt-5.5",provider:"openai-codex",role:"assistant",stopReason:"stop",timestamp:1779646430577,usage:{cacheRead:0,cacheWrite:0,input:0,output:0,totalTokens:"[REDACTED]"}}}'
+      fi
       jq -cn --arg id "$id" '{id:$id,type:"response",command:"prompt",success:true}'
       if [[ -n "${FAKE_PI_NO_OUTPUT_AFTER_PROMPT:-}" ]]; then
         while true; do sleep 60; done
@@ -224,6 +227,17 @@ while IFS= read -r line; do
       fi
       jq -cn '{type:"agent_start"}'
       jq -cn '{type:"turn_start"}'
+      if [[ -n "${FAKE_PI_EMPTY_ASSISTANT_MESSAGE_START:-}" ]]; then
+        jq -cn '{type:"message_start",message:{api:"openai-codex-responses",content:[],model:"gpt-5.5",provider:"openai-codex",role:"assistant",stopReason:"stop",timestamp:1779646430577,usage:{cacheRead:0,cacheWrite:0,input:0,output:0,totalTokens:"[REDACTED]"}}}'
+        if [[ -n "${FAKE_PI_EMPTY_ASSISTANT_EXIT:-}" ]]; then
+          exit 0
+        fi
+        while true; do sleep 60; done
+      fi
+      if [[ -n "${FAKE_PI_EMPTY_ASSISTANT_WITHOUT_USAGE:-}" ]]; then
+        jq -cn '{type:"message_start",message:{api:"openai-codex-responses",content:[],model:"gpt-5.5",provider:"openai-codex",role:"assistant",stopReason:"stop",timestamp:1779646430577}}'
+        while true; do sleep 60; done
+      fi
       if [[ -n "${FAKE_PI_AUTO_RETRY_SUCCESS:-}" ]]; then
         jq -cn '{type:"message_update",delta:"first attempt"}'
         jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'

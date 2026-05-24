@@ -127,7 +127,8 @@ pub fn kind_for_update(
   case update.event {
     pi_event.ProbeStarted
     | pi_event.ProbeFinished
-    | pi_event.PiSessionStarted -> session_event.Lifecycle
+    | pi_event.PiSessionStarted
+    | pi_event.PiProtocolDiagnostic -> session_event.Lifecycle
     pi_event.TurnFinished -> session_event.TokenStats
     pi_event.MessageStart | pi_event.MessageUpdate | pi_event.MessageEnd ->
       session_event.AssistantMessage
@@ -188,8 +189,9 @@ pub fn status_for_update(
         True -> Some(session_event.WaitingUi)
         False -> Some(session_event.Running)
       }
-    pi_event.ExtensionUiResponse | pi_event.TurnFinished ->
-      Some(session_event.Running)
+    pi_event.ExtensionUiResponse
+    | pi_event.TurnFinished
+    | pi_event.PiProtocolDiagnostic -> Some(session_event.Running)
     _ ->
       case update.raw_json {
         Some(_) -> Some(session_event.Running)

@@ -4,6 +4,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/pi_diagnostic
 import scherzo/agent/pi_event
 import scherzo/agent/run_attempt
 import scherzo/agent/runner
@@ -12,6 +13,8 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/orchestrator/event_publisher
 import scherzo/path
+import scherzo/pi/client
+import scherzo/port
 import scherzo/session/event
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
@@ -213,6 +216,26 @@ fn find_update(
         False -> find_update(rest, name)
       }
     [_, ..rest] -> find_update(rest, name)
+  }
+}
+
+fn find_update_message_containing(
+  updates: List(agent_types.RunnerUpdate),
+  name: String,
+  needle: String,
+) -> Option(agent_types.PiUpdate) {
+  case updates {
+    [] -> None
+    [agent_types.RunnerPiUpdate(update), ..rest] ->
+      case pi_event.to_string(update.event) == name, update.message {
+        True, Some(message) ->
+          case string.contains(message, needle) {
+            True -> Some(update)
+            False -> find_update_message_containing(rest, name, needle)
+          }
+        _, _ -> find_update_message_containing(rest, name, needle)
+      }
+    [_, ..rest] -> find_update_message_containing(rest, name, needle)
   }
 }
 
@@ -858,6 +881,306 @@ pub fn recovery_resume_validation_failure_returns_specific_failure_before_prompt
   assert string.contains(transcript_contents, "get_state")
   assert !string.contains(transcript_contents, "prompt")
   assert !string.contains(transcript_contents, "RECOVERY_PROMPT_MARKER")
+}
+
+pub fn wrapper_diagnostics_read_failure_emits_unavailable_diagnostic_test() {
+  let root = "test/tmp/runner-wrapper-stderr-unavailable"
+  reset_dir(root)
+  let assert Ok(process) = port.start("while true; do sleep 60; done", root)
+  let assert Ok(tmp_dir) = port.temp_dir_for_test(process)
+  let stderr_path = tmp_dir <> "/stderr.log"
+  let _ = simplifile.delete(stderr_path)
+  let assert Ok(Nil) = simplifile.create_directory_all(stderr_path)
+  let session =
+    client.Session(
+      process: process,
+      command: "fake-pi",
+      cwd: root,
+      session_id: Some("fake-session"),
+      session_file: None,
+      reported_cwd: None,
+      next_id: 1,
+    )
+
+  let diagnostic =
+    pi_diagnostic.wrapper_failure_update(
+      session,
+      error.PiFailed(error.PiStallTimeout),
+      Some(1),
+      config(root, fake_pi(), False, 1),
+    )
+  let _ = port.terminate(process)
+
+  let assert Some(agent_types.RunnerPiUpdate(update)) = diagnostic
+  assert update.event == pi_event.PiProtocolDiagnostic
+  let assert Some(message) = update.message
+  assert string.contains(message, "kind=wrapper_stderr_unavailable")
+  assert string.contains(message, "reason=pi_stall_timeout")
+  assert string.contains(message, "diagnostic_read_error=pi_protocol_error")
+}
+
+pub fn reported_missing_pi_session_file_emits_diagnostic_test() {
+  let root = "test/tmp/runner-missing-pi-session-file"
+  reset_dir(root)
+  let workspace = root <> "/workspace"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(abs_workspace) = path.absolute(workspace)
+  let session_file = abs_workspace <> "/missing.pi-session"
+  let cfg = persistent_config(root, [#("FAKE_PI_SESSION_FILE", session_file)])
+  let context =
+    workflow_attempt.StepAttemptContext(
+      run_id: "run-1",
+      issue_id: "issue-id",
+      issue_identifier: "ABC-123",
+      workflow_id: "implementation",
+      workflow_fingerprint: "wf-sha",
+      step_id: "implement",
+      workspace_name: "main",
+      attempt_index: 1,
+      workspace_path: abs_workspace,
+      continuation_capable: True,
+      continuation_session_file: None,
+    )
+  let update_subject = process.new_subject()
+
+  let assert Ok(success) =
+    run_attempt.run_prompt_mode_in_workspace(
+      issue("Todo"),
+      workflow_attempt.OriginalPrompt("Do it"),
+      context,
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+      process.new_subject(),
+      fn() { Nil },
+      abs_workspace,
+      fn(_) { Nil },
+    )
+
+  assert success.final_classification == agent_types.FinalTerminal
+  let updates = drain_updates(update_subject, [])
+  let assert Some(diagnostic) =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "transcript_persistence_failure",
+    )
+  let assert Some(message) = diagnostic.message
+  assert string.contains(message, "status=missing")
+  assert string.contains(message, session_file)
+}
+
+pub fn empty_assistant_message_start_emits_protocol_diagnostics_test() {
+  let root = "test/tmp/runner-empty-assistant-message-start"
+  reset_dir(root)
+  let command =
+    "FAKE_PI_EMPTY_ASSISTANT_MESSAGE_START=1 "
+    <> "FAKE_PI_STDERR=OPENAI_API_KEY=provider-live-value "
+    <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      pi: config_types.PiConfig(
+        ..base.pi,
+        read_timeout_ms: 100,
+        stall_timeout_ms: 150,
+        turn_timeout_ms: 1000,
+      ),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.reason == error.PiFailed(error.PiStallTimeout)
+  let updates = drain_updates(update_subject, [])
+  let assert Some(provider_diagnostic) =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "provider_empty_response_candidate",
+    )
+  let assert Some(provider_message) = provider_diagnostic.message
+  assert string.contains(provider_message, "provider=openai-codex")
+  assert string.contains(provider_message, "model=gpt-5.5")
+
+  let assert Some(stream_diagnostic) =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "stream_stalled_before_turn_end",
+    )
+  let assert Some(stream_message) = stream_diagnostic.message
+  assert string.contains(stream_message, "suspicious_empty_assistant_seen=true")
+  assert string.contains(stream_message, "wrapper_stderr_excerpt=")
+  assert string.contains(stream_message, "[REDACTED]")
+  assert !string.contains(stream_message, "OPENAI_API_KEY")
+  assert !string.contains(stream_message, "provider-live-value")
+
+  let assert Some(wrapper_diagnostic) =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "kind=wrapper_stderr",
+    )
+  let assert Some(wrapper_message) = wrapper_diagnostic.message
+  assert string.contains(wrapper_message, "[REDACTED]")
+  assert !string.contains(wrapper_message, "OPENAI_API_KEY")
+  assert !string.contains(wrapper_message, "provider-live-value")
+}
+
+pub fn empty_assistant_without_usage_does_not_emit_zero_usage_diagnostic_test() {
+  let root = "test/tmp/runner-empty-assistant-without-usage"
+  reset_dir(root)
+  let command = "FAKE_PI_EMPTY_ASSISTANT_WITHOUT_USAGE=1 " <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      pi: config_types.PiConfig(
+        ..base.pi,
+        read_timeout_ms: 100,
+        stall_timeout_ms: 150,
+        turn_timeout_ms: 1000,
+      ),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.reason == error.PiFailed(error.PiStallTimeout)
+  let updates = drain_updates(update_subject, [])
+  let assert None =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "provider_empty_response_candidate",
+    )
+  let assert Some(stream_diagnostic) =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "stream_stalled_before_turn_end",
+    )
+  let assert Some(stream_message) = stream_diagnostic.message
+  assert string.contains(
+    stream_message,
+    "suspicious_empty_assistant_seen=false",
+  )
+  assert string.contains(stream_message, "last_event=message_start")
+}
+
+pub fn empty_assistant_skipped_before_prompt_response_emits_protocol_diagnostics_test() {
+  let root = "test/tmp/runner-empty-assistant-skipped-message-start"
+  reset_dir(root)
+  let command =
+    "FAKE_PI_INTERLEAVE_EMPTY_ASSISTANT_BEFORE_PROMPT_RESPONSE=1 "
+    <> "FAKE_PI_NO_OUTPUT_AFTER_PROMPT=1 "
+    <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      pi: config_types.PiConfig(
+        ..base.pi,
+        read_timeout_ms: 100,
+        stall_timeout_ms: 150,
+        turn_timeout_ms: 1000,
+      ),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.reason == error.PiFailed(error.PiStallTimeout)
+  let updates = drain_updates(update_subject, [])
+  let assert Some(_) =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "provider_empty_response_candidate",
+    )
+  let assert Some(stream_diagnostic) =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "stream_stalled_before_turn_end",
+    )
+  let assert Some(stream_message) = stream_diagnostic.message
+  assert string.contains(stream_message, "suspicious_empty_assistant_seen=true")
+  assert string.contains(stream_message, "last_event=message_start")
+}
+
+pub fn turn_end_without_agent_end_emits_before_agent_end_diagnostic_test() {
+  let root = "test/tmp/runner-turn-end-without-agent-end"
+  reset_dir(root)
+  let command =
+    "FAKE_PI_NO_AGENT_END=1 " <> "FAKE_PI_STDERR=post-turn-stderr " <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      pi: config_types.PiConfig(
+        ..base.pi,
+        read_timeout_ms: 100,
+        stall_timeout_ms: 150,
+        turn_timeout_ms: 1000,
+      ),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.reason == error.PiFailed(error.PiStallTimeout)
+  let updates = drain_updates(update_subject, [])
+  let assert Some(stream_diagnostic) =
+    find_update_message_containing(
+      updates,
+      "pi_protocol_diagnostic",
+      "stream_stalled_before_agent_end",
+    )
+  let assert Some(stream_message) = stream_diagnostic.message
+  assert string.contains(stream_message, "turn_end_seen=true")
+  assert string.contains(stream_message, "agent_end_seen=false")
+  assert string.contains(
+    stream_message,
+    "suspicious_empty_assistant_seen=false",
+  )
+  assert string.contains(stream_message, "last_event=turn_end")
+  assert string.contains(stream_message, "wrapper_stderr_excerpt=")
+  assert string.contains(stream_message, "post-turn-stderr")
 }
 
 pub fn cancel_ui_policy_sends_extension_ui_cancel_test() {

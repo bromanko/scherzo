@@ -100,6 +100,46 @@ pub fn event_publisher_classifies_turn_finished_tokens_test() {
   assert payload.tokens == tokens
 }
 
+pub fn worker_update_publishes_pi_protocol_diagnostic_as_lifecycle_test() {
+  let assert Ok(subject) = hub.start(10, fn() { 1000 })
+  hub.register_session(
+    subject,
+    event.SessionSummary(..summary("session-1"), status: event.WaitingUi),
+  )
+
+  event_publisher.worker_update(
+    subject,
+    "session-1",
+    agent_types.RunnerPiUpdate(agent_types.PiUpdate(
+      event: pi_event.PiProtocolDiagnostic,
+      message: Some("kind=provider_empty_response_candidate"),
+      raw_json: None,
+      turn: Some(2),
+      request_id: None,
+      method: None,
+      pi_session_id: None,
+      tokens: session_tokens.zero_token_totals(),
+      tool_name: None,
+      tool_input: None,
+      tool_output: None,
+      tool_status: None,
+    )),
+  )
+
+  let assert Ok(Some(summary)) = hub.get_session(subject, "session-1", 1000)
+  assert summary.status == event.Running
+  assert summary.current_turn == 2
+  let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
+  let assert [stored_event] = page.events
+  assert stored_event.payload.kind == event.Lifecycle
+  assert stored_event.payload.name
+    == event.PiName(pi_event.PiProtocolDiagnostic)
+  assert stored_event.payload.message
+    == Some("kind=provider_empty_response_candidate")
+  assert stored_event.payload.raw_json == None
+  hub.stop(subject)
+}
+
 pub fn turn_update_payload_is_sanitized_for_all_lifecycle_names_test() {
   assert_turn_payload(turn_telemetry.EventStarted, None)
   assert_turn_payload(turn_telemetry.EventFinished, None)

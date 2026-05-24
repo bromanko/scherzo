@@ -1,10 +1,12 @@
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/agent/auto_retry
 import scherzo/agent/context_exhaustion
 import scherzo/agent/operator_control
+import scherzo/agent/pi_diagnostic
 import scherzo/agent/pi_event
 import scherzo/agent/turn_result_buffer as turn_buffer
 import scherzo/agent/turn_update
@@ -75,6 +77,7 @@ type ActiveCommandState {
     stall_deadline_ms: Int,
     records: turn_buffer.Buffer,
     pending_auto_retry: auto_retry.State,
+    protocol_state: pi_diagnostic.State,
   )
 }
 
@@ -87,6 +90,12 @@ pub fn run_active_turn(
   turn_records: List(protocol.RpcRecord),
   stall_deadline_ms: Int,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
+  let protocol_state =
+    observe_records_and_emit_diagnostics(
+      context,
+      pi_diagnostic.initial_state(),
+      turn_records,
+    )
   active_turn_loop(
     context,
     session,
@@ -96,6 +105,7 @@ pub fn run_active_turn(
     turn_buffer.from_records(turn_records),
     stall_deadline_ms,
     auto_retry.initial(),
+    protocol_state,
   )
 }
 
@@ -108,6 +118,7 @@ fn active_turn_loop(
   turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
   case process.receive(context.command_subject, within: 0) {
     Ok(command) -> {
@@ -121,6 +132,7 @@ fn active_turn_loop(
         turn_records,
         stall_deadline_ms,
         pending_auto_retry,
+        protocol_state,
       ))
       active_turn_loop(
         context,
@@ -131,6 +143,7 @@ fn active_turn_loop(
         state.records,
         state.stall_deadline_ms,
         state.pending_auto_retry,
+        state.protocol_state,
       )
     }
     Error(_) -> {
@@ -167,6 +180,7 @@ fn active_turn_loop(
                 ui,
                 turn_records,
                 pending_auto_retry,
+                protocol_state,
               )
             None ->
               case
@@ -180,7 +194,13 @@ fn active_turn_loop(
                     pending_auto_retry,
                     None,
                   ))
-                False ->
+                False -> {
+                  emit_terminal_protocol_diagnostic(
+                    context,
+                    session,
+                    error.PiStallTimeout,
+                    protocol_state,
+                  )
                   Error(
                     FinalFailure(context.cleanup_failure(
                       session,
@@ -191,10 +211,18 @@ fn active_turn_loop(
                       None,
                     )),
                   )
+                }
               }
           }
-        Error(err) ->
+        Error(err) -> {
+          emit_terminal_protocol_diagnostic(
+            context,
+            session,
+            err,
+            protocol_state,
+          )
           Error(recoverable_or_final(context, session, prompt_queue, err))
+        }
         Ok(#(session, None)) ->
           active_turn_loop(
             context,
@@ -205,6 +233,7 @@ fn active_turn_loop(
             turn_records,
             stall_deadline_ms,
             pending_auto_retry,
+            protocol_state,
           )
         Ok(#(session, Some(record))) ->
           handle_turn_record(
@@ -217,6 +246,7 @@ fn active_turn_loop(
             turn_records,
             stall_deadline_ms,
             pending_auto_retry,
+            protocol_state,
           )
       }
     }
@@ -233,6 +263,7 @@ fn handle_active_command(
   turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> Result(ActiveCommandState, ActiveTurnFailure) {
   let previous_state =
     operator_control.from_parts(prompt_queue, stop_after_turn, pending_ui)
@@ -252,6 +283,7 @@ fn handle_active_command(
     turn_records,
     stall_deadline_ms,
     pending_auto_retry,
+    protocol_state,
   )
 }
 
@@ -264,6 +296,7 @@ fn interpret_active_effects(
   turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> Result(ActiveCommandState, ActiveTurnFailure) {
   case effects {
     [] ->
@@ -273,6 +306,7 @@ fn interpret_active_effects(
         stall_deadline_ms,
         turn_records,
         pending_auto_retry,
+        protocol_state,
       ))
     [effect, ..rest] ->
       case effect {
@@ -287,6 +321,7 @@ fn interpret_active_effects(
             turn_records,
             stall_deadline_ms,
             pending_auto_retry,
+            protocol_state,
           )
         }
         operator_control.EmitPromptQueued(message) -> {
@@ -305,6 +340,7 @@ fn interpret_active_effects(
             turn_records,
             stall_deadline_ms,
             pending_auto_retry,
+            protocol_state,
           )
         }
         operator_control.AbortRequested(reply) ->
@@ -327,6 +363,7 @@ fn interpret_active_effects(
             turn_records,
             stall_deadline_ms,
             pending_auto_retry,
+            protocol_state,
           )
         operator_control.SendUiCancel(reply, request_id) -> {
           use active_state <- result.try(send_active_ui_response(
@@ -337,6 +374,7 @@ fn interpret_active_effects(
             turn_records,
             stall_deadline_ms,
             pending_auto_retry,
+            protocol_state,
             request_id,
             command.UiCancel,
             reply,
@@ -350,6 +388,7 @@ fn interpret_active_effects(
             active_state.records,
             active_state.stall_deadline_ms,
             active_state.pending_auto_retry,
+            active_state.protocol_state,
           )
         }
         operator_control.SendUiValue(reply, request_id, value) -> {
@@ -361,6 +400,7 @@ fn interpret_active_effects(
             turn_records,
             stall_deadline_ms,
             pending_auto_retry,
+            protocol_state,
             request_id,
             command.UiValue(value),
             reply,
@@ -374,6 +414,7 @@ fn interpret_active_effects(
             active_state.records,
             active_state.stall_deadline_ms,
             active_state.pending_auto_retry,
+            active_state.protocol_state,
           )
         }
       }
@@ -388,6 +429,7 @@ fn send_active_ui_response(
   turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
   request_id: String,
   response: command.UiResponse,
   reply: process.Subject(worker_command.Reply),
@@ -429,6 +471,7 @@ fn send_active_ui_response(
         stall_deadline_ms,
         turn_records,
         pending_auto_retry,
+        protocol_state,
       ))
     }
     Ok(#(session, skipped)) -> {
@@ -454,6 +497,8 @@ fn send_active_ui_response(
           context.turn,
         ),
       )
+      let protocol_state =
+        observe_records_and_emit_diagnostics(context, protocol_state, skipped)
       let turn_records = turn_buffer.append_records(turn_records, skipped)
       Ok(active_command_state(
         session,
@@ -461,6 +506,7 @@ fn send_active_ui_response(
         monotonic_ms() + context.config.pi.stall_timeout_ms,
         turn_records,
         pending_auto_retry,
+        protocol_state,
       ))
     }
   }
@@ -472,6 +518,7 @@ fn active_command_state(
   stall_deadline_ms: Int,
   turn_records: turn_buffer.Buffer,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> ActiveCommandState {
   ActiveCommandState(
     session: session,
@@ -481,6 +528,7 @@ fn active_command_state(
     stall_deadline_ms: stall_deadline_ms,
     records: turn_records,
     pending_auto_retry: pending_auto_retry,
+    protocol_state: protocol_state,
   )
 }
 
@@ -494,6 +542,18 @@ fn active_to_control_state(
   )
 }
 
+fn observe_records_and_emit_diagnostics(
+  context: Context,
+  state: pi_diagnostic.State,
+  records: List(protocol.RpcRecord),
+) -> pi_diagnostic.State {
+  records
+  |> list.fold(state, fn(state, record) {
+    emit_empty_assistant_diagnostic(context, record)
+    pi_diagnostic.observe_record(state, record)
+  })
+}
+
 fn handle_turn_record(
   context: Context,
   session: client.Session,
@@ -504,13 +564,16 @@ fn handle_turn_record(
   turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
   let secrets = config_module.resolved_secrets(context.config)
   let event = pi_event.from_string(record.type_)
+  let protocol_state = pi_diagnostic.observe_record(protocol_state, record)
   context.emit_update(
     context.issue_id,
     turn_update.update_from_record(record, context.turn, secrets),
   )
+  emit_empty_assistant_diagnostic(context, record)
   let turn_records = turn_buffer.append_record(turn_records, record)
   case retry_event.from_record(record) {
     Some(retry_event.AutoRetryStart(..)) ->
@@ -523,6 +586,7 @@ fn handle_turn_record(
         turn_records,
         monotonic_ms() + context.config.pi.stall_timeout_ms,
         auto_retry.mark_started(pending_auto_retry),
+        protocol_state,
       )
     Some(retry_event.AutoRetryEnd(success: True, ..)) ->
       case auto_retry.agent_end_seen(pending_auto_retry) {
@@ -540,6 +604,7 @@ fn handle_turn_record(
             turn_records,
             monotonic_ms() + context.config.pi.stall_timeout_ms,
             auto_retry.initial(),
+            protocol_state,
           )
       }
     Some(retry_event.AutoRetryEnd(success: False, final_error: final_error, ..)) ->
@@ -571,6 +636,7 @@ fn handle_turn_record(
                     context.config.pi.read_timeout_ms,
                   ),
                 ),
+                protocol_state,
               )
             False ->
               Error(recoverable_or_final(context, session, prompt_queue, err))
@@ -586,6 +652,7 @@ fn handle_turn_record(
                 pending_ui,
                 turn_records,
                 pending_auto_retry,
+                protocol_state,
               )
             pi_event.ExtensionUiRequest ->
               handle_extension_ui_record(
@@ -598,6 +665,7 @@ fn handle_turn_record(
                 turn_records,
                 stall_deadline_ms,
                 auto_retry.mark_output_event(pending_auto_retry, event),
+                protocol_state,
               )
             _ ->
               active_turn_loop(
@@ -609,6 +677,7 @@ fn handle_turn_record(
                 turn_records,
                 monotonic_ms() + context.config.pi.stall_timeout_ms,
                 auto_retry.mark_output_event(pending_auto_retry, event),
+                protocol_state,
               )
           }
       }
@@ -623,6 +692,7 @@ fn handle_agent_end_record(
   pending_ui: Option(operator_control.PendingUi),
   turn_records: turn_buffer.Buffer,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
   case pending_ui {
     Some(_) ->
@@ -660,6 +730,7 @@ fn handle_agent_end_record(
                 context.config.pi.read_timeout_ms,
               ),
             ),
+            protocol_state,
           )
       }
   }
@@ -733,6 +804,7 @@ fn handle_extension_ui_record(
   turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
   case
     pi_event.is_blocking_ui_request(pi_event.ExtensionUiRequest, record.method)
@@ -747,6 +819,7 @@ fn handle_extension_ui_record(
         turn_records,
         monotonic_ms() + context.config.pi.stall_timeout_ms,
         pending_auto_retry,
+        protocol_state,
       )
     True ->
       case pending_ui {
@@ -775,6 +848,7 @@ fn handle_extension_ui_record(
                 turn_records,
                 stall_deadline_ms,
                 pending_auto_retry,
+                protocol_state,
               )
             _, _ ->
               Error(
@@ -805,6 +879,7 @@ fn handle_blocking_ui_policy(
   turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
   case context.config.pi.ui_request_policy {
     config_types.Fail ->
@@ -830,6 +905,7 @@ fn handle_blocking_ui_policy(
         turn_records,
         monotonic_ms() + context.config.pi.stall_timeout_ms,
         pending_auto_retry,
+        protocol_state,
       )
     config_types.Cancel -> {
       case
@@ -857,6 +933,12 @@ fn handle_blocking_ui_policy(
               context.turn,
             ),
           )
+          let protocol_state =
+            observe_records_and_emit_diagnostics(
+              context,
+              protocol_state,
+              skipped,
+            )
           let turn_records = turn_buffer.append_records(turn_records, skipped)
           active_turn_loop(
             context,
@@ -867,6 +949,7 @@ fn handle_blocking_ui_policy(
             turn_records,
             monotonic_ms() + context.config.pi.stall_timeout_ms,
             pending_auto_retry,
+            protocol_state,
           )
         }
         Error(err) ->
@@ -901,6 +984,7 @@ fn handle_blocking_ui_policy(
         turn_records,
         stall_deadline_ms,
         pending_auto_retry,
+        protocol_state,
       )
     }
   }
@@ -914,6 +998,7 @@ fn handle_operator_ui_timeout(
   ui: operator_control.PendingUi,
   turn_records: turn_buffer.Buffer,
   pending_auto_retry: auto_retry.State,
+  protocol_state: pi_diagnostic.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
   case
     client.send_extension_ui_cancel(
@@ -961,6 +1046,8 @@ fn handle_operator_ui_timeout(
           context.turn,
         ),
       )
+      let protocol_state =
+        observe_records_and_emit_diagnostics(context, protocol_state, skipped)
       let turn_records = turn_buffer.append_records(turn_records, skipped)
       active_turn_loop(
         context,
@@ -971,9 +1058,40 @@ fn handle_operator_ui_timeout(
         turn_records,
         monotonic_ms() + context.config.pi.stall_timeout_ms,
         pending_auto_retry,
+        protocol_state,
       )
     }
   }
+}
+
+fn emit_empty_assistant_diagnostic(
+  context: Context,
+  record: protocol.RpcRecord,
+) -> Nil {
+  case
+    pi_diagnostic.empty_assistant_update(record, context.turn, context.config)
+  {
+    Some(update) -> context.emit_update(context.issue_id, update)
+    None -> Nil
+  }
+}
+
+fn emit_terminal_protocol_diagnostic(
+  context: Context,
+  session: client.Session,
+  err: error.PiRpcError,
+  state: pi_diagnostic.State,
+) -> Nil {
+  context.emit_update(
+    context.issue_id,
+    pi_diagnostic.terminal_update(
+      session,
+      err,
+      state,
+      context.turn,
+      context.config,
+    ),
+  )
 }
 
 fn final_deferred_retry_failure(

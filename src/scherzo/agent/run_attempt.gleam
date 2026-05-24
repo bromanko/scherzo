@@ -6,6 +6,7 @@ import scherzo/agent/context_exhaustion
 import scherzo/agent/context_recovery_artifact
 import scherzo/agent/context_recovery_prompt
 import scherzo/agent/operator_control
+import scherzo/agent/pi_diagnostic
 import scherzo/agent/pi_event
 import scherzo/agent/probe
 import scherzo/agent/turn_loop
@@ -460,7 +461,7 @@ fn run_pi_loop(
       Error(launch_worker_failure(first_prompt, err, workspace_path))
     }
     Ok(session) -> {
-      emit_update(issue.id, pi_session_started_update(session.session_id))
+      emit_pi_session_started(issue.id, session, config, emit_update)
       record_session_observation(
         first_prompt,
         attempt_context,
@@ -1084,7 +1085,7 @@ fn fresh_session_recovery(
       Error(worker_failure_with(reason, Some(workspace_path), totals, None))
     }
     Ok(session) -> {
-      emit_update(issue.id, pi_session_started_update(session.session_id))
+      emit_pi_session_started(issue.id, session, config, emit_update)
       run_recovery_prompt(
         session,
         issue,
@@ -1784,6 +1785,14 @@ fn cleanup_failure(
   turn: Option(Int),
 ) -> types.WorkerFailure {
   emit_turn_failure_if_active(issue_id, emit_update, turn, reason, tokens)
+  emit_wrapper_failure_diagnostic(
+    issue_id,
+    session,
+    config,
+    emit_update,
+    reason,
+    turn,
+  )
   let _ = client.terminate(session)
   let _ = workspace.after_run(workspace_path, config.hooks)
   emit_dropped_prompts(
@@ -2087,6 +2096,42 @@ fn lifecycle_update_with_message(
     tool_output: None,
     tool_status: None,
   ))
+}
+
+fn emit_pi_session_started(
+  issue_id: String,
+  session: client.Session,
+  config: config_types.EffectiveConfig,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+) -> Nil {
+  emit_update(issue_id, pi_session_started_update(session.session_id))
+  emit_session_file_diagnostic(issue_id, session, config, emit_update)
+}
+
+fn emit_session_file_diagnostic(
+  issue_id: String,
+  session: client.Session,
+  config: config_types.EffectiveConfig,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+) -> Nil {
+  case pi_diagnostic.session_file_update(session, config) {
+    Some(update) -> emit_update(issue_id, update)
+    None -> Nil
+  }
+}
+
+fn emit_wrapper_failure_diagnostic(
+  issue_id: String,
+  session: client.Session,
+  config: config_types.EffectiveConfig,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  reason: error.AgentRunnerError,
+  turn: Option(Int),
+) -> Nil {
+  case pi_diagnostic.wrapper_failure_update(session, reason, turn, config) {
+    Some(update) -> emit_update(issue_id, update)
+    None -> Nil
+  }
 }
 
 fn pi_session_started_update(

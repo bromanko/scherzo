@@ -414,6 +414,10 @@ pub fn get_session_stats(
   }
 }
 
+pub fn read_diagnostics(session: Session) -> Result(String, error.PiRpcError) {
+  port.read_diagnostics(session.process) |> map_port_error
+}
+
 pub fn terminate(session: Session) -> Result(Nil, error.PiRpcError) {
   port.terminate(session.process) |> map_port_error
 }
