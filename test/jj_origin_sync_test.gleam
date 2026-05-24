@@ -38,7 +38,8 @@ fn prepare_fake_repo(dir: String) -> Nil {
 
 fn run_sync_in(dir: String, env_prefix: String) -> step_artifact.StepArtifact {
   let command =
-    env_prefix
+    "env -u SCHERZO_ORIGIN_SYNC_REMOTE -u SCHERZO_ORIGIN_SYNC_BRANCH -u SCHERZO_ORIGIN_SYNC_DESTINATION -u SCHERZO_ORIGIN_SYNC_REBASE_REVSET -u SCHERZO_JJ_WORKSPACE_REMOTE -u SCHERZO_JJ_WORKSPACE_BASE_BRANCH "
+    <> env_prefix
     <> " SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-jj-origin-sync"
 
   command_step.run(
@@ -124,6 +125,36 @@ pub fn origin_sync_rebases_empty_working_copy_test() {
   assert string.contains(
     jj_log,
     "rebase -r main@origin..@ -d main@origin --color=never",
+  )
+}
+
+pub fn origin_sync_uses_canonical_jj_workspace_remote_when_workflow_remote_unset_test() {
+  let dir = "test/tmp/jj-origin-sync-canonical-remote"
+  prepare_fake_repo(dir)
+
+  let artifact =
+    run_sync_in(
+      dir,
+      "SCHERZO_JJ_WORKSPACE_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "ORIGIN_SYNC_REMOTE=scherzo-agent")
+  assert string.contains(
+    artifact.stdout,
+    "ORIGIN_SYNC_DESTINATION=main@scherzo-agent",
+  )
+  assert string.contains(artifact.stdout, "ORIGIN_SYNC_STATUS=rebased_clean")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "git fetch --remote scherzo-agent")
+  assert string.contains(
+    jj_log,
+    "bookmark advance main --to main@scherzo-agent --color=never",
+  )
+  assert string.contains(
+    jj_log,
+    "rebase -r main@scherzo-agent..@ -d main@scherzo-agent --color=never",
   )
 }
 
@@ -415,6 +446,9 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = log ] && [ \"$2\" = -r ] && [ \"$3\" = '(main) & (main@origin)' ]; then\n"
         <> "  echo commit-main-origin\n"
         <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = log ] && [ \"$2\" = -r ]; then\n"
+        <> "  case \"$3\" in '(main) & ('*')') echo commit-main-destination; exit 0 ;; esac\n"
         <> "fi\n"
         <> "if [ \"$1\" = log ] && [ \"$2\" = -r ] && [ \"$3\" = 'conflicts() & (main@origin..@)' ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_ORIGIN_SYNC_CONFLICTS:-}\" = 1 ]; then echo stackconflict; fi\n"

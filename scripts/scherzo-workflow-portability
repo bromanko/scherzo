@@ -104,7 +104,7 @@ def rewrite_config(repo_root: Path, stage_root: Path) -> Path:
             raise RuntimeError(
                 f"expected .scherzo/scherzo.yaml entry for portability rewrite: {old}"
             )
-        source = source.replace(old, new, 1)
+        source = source.replace(old, new)
     config_path = stage_root / ".scherzo" / "scherzo.yaml"
     write_text(config_path, source)
     return config_path

@@ -1675,16 +1675,24 @@ def sanitize_ref_part(value: str) -> str:
     return value
 
 
+def githubish_host(host: str) -> bool:
+    normalized = host.lower()
+    return normalized == "github.com" or normalized.startswith("github")
+
+
 def owner_repo_from_url(url: str) -> str | None:
     if url.startswith("https://github.com/"):
         value = url.removeprefix("https://github.com/")
-    elif url.startswith("git@github.com:"):
-        value = url.removeprefix("git@github.com:")
-    elif url.startswith("ssh://git@github.com/"):
-        value = url.removeprefix("ssh://git@github.com/")
     else:
-        return None
-    value = value.removesuffix(".git")
+        scp_match = re.match(r"^git@([^:]+):(.+)$", url)
+        ssh_match = re.match(r"^ssh://(?:git@)?([^/]+)/(.+)$", url)
+        if scp_match and githubish_host(scp_match.group(1)):
+            value = scp_match.group(2)
+        elif ssh_match and githubish_host(ssh_match.group(1)):
+            value = ssh_match.group(2)
+        else:
+            return None
+    value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/").removesuffix(".git")
     parts = value.split("/")
     if len(parts) >= 2 and parts[0] and parts[1]:
         return f"{parts[0]}/{parts[1]}"
@@ -1700,17 +1708,35 @@ def remote_url(remote: str) -> str | None:
     return None
 
 
+def explicit_repo_env() -> tuple[str, str] | None:
+    for name in ["SCHERZO_GITHUB_REPO", "SCHERZO_PR_REPO"]:
+        explicit = os.environ.get(name, "").strip()
+        if explicit:
+            return name, explicit
+    return None
+
+
 def default_repo(remote: str) -> str:
-    explicit = os.environ.get("SCHERZO_PR_REPO", "").strip()
-    if explicit:
-        return explicit
     url = remote_url(remote)
     if not url:
         fail(f"could not find jj git remote: {remote}")
-    repo = owner_repo_from_url(url)
-    if not repo:
-        fail(f"could not infer GitHub owner/repo from remote URL: {url}")
-    return repo
+    remote_repo = owner_repo_from_url(url)
+    explicit = explicit_repo_env()
+    if explicit:
+        name, repo = explicit
+        if remote_repo and repo.lower() != remote_repo.lower():
+            fail(
+                f"{name}={repo} does not match selected jj publication remote "
+                f"'{remote}' ({remote_repo}); update {name} or "
+                "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE"
+            )
+        return repo
+    if remote_repo:
+        return remote_repo
+    github_repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if github_repo:
+        return github_repo
+    fail(f"could not infer GitHub owner/repo from remote URL: {url}")
 
 
 def plan_title(plan_path: str) -> str:
@@ -2535,6 +2561,8 @@ def validation_env() -> dict[str, str]:
     # instead of their own temporary test context.
     for key in [
         "SCHERZO_CONFIG_DIR",
+        "GITHUB_REPOSITORY",
+        "SCHERZO_GITHUB_REPO",
         "SCHERZO_ISSUE_ID",
         "SCHERZO_ISSUE_IDENTIFIER",
         "SCHERZO_JJ_WORKSPACE_BASE",

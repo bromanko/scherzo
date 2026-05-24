@@ -21,7 +21,7 @@ require_linear_identity
 echo "Linear viewer=$linear_actor"
 
 remote_value=$(require_agent_remote)
-echo "SCHERZO_PR_REMOTE=$SCHERZO_PR_REMOTE"
+echo "SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE=$SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE"
 echo "remote url=$remote_value"
 show_identities
 

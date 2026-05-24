@@ -97,6 +97,7 @@ pub fn is_contract_file(path: String) -> Bool {
 
 pub fn contract_test_files() -> List(String) {
   [
+    "agent_helper_script_test.gleam",
     "execplan_implementation_helper_test.gleam",
     "execplan_html_renderer_test.gleam",
     "jj_workspace_driver_test.gleam",

@@ -204,6 +204,7 @@ pub fn packaged_jj_docs_cover_base_fetch_and_publication_policy_test() {
   assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
   assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_FETCH_BASE")
   assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE")
+  assert_contains(readme_path, docs, "SCHERZO_GITHUB_REPO")
   assert_contains(
     readme_path,
     docs,
