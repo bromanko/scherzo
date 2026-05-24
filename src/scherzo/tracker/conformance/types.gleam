@@ -12,6 +12,16 @@ pub const max_http_retry_backoff_ms = 1000
 
 pub const max_external_diagnostics_chars = 4096
 
+pub const max_remote_command_event_id_chars = 128
+
+pub const max_remote_command_author_id_chars = 128
+
+pub const max_remote_command_name_chars = 128
+
+pub const max_remote_command_body_chars = 128
+
+pub const max_remote_command_excerpt_chars = 128
+
 pub type Manifest {
   Manifest(
     schema_version: Int,
@@ -74,7 +84,20 @@ pub type ProfileConfig {
     capabilities: List(profile.Capability),
     requested_packs: List(profile.PackName),
     adapter_operations: List(profile.AdapterOperation),
+    retry_behavior: Option(RetryBehaviorConfig),
   )
+}
+
+pub type RetryBehaviorConfig {
+  RetryBehaviorConfig(
+    remote_command_ack: Option(RetryBehavior),
+    handoff_report: Option(RetryBehavior),
+  )
+}
+
+pub type RetryBehavior {
+  IdempotentUpdateOrDedupe
+  DuplicateVisible
 }
 
 pub type FixtureTaskDeclaration {
@@ -120,7 +143,10 @@ pub type RequestPayload {
   RefreshByRefsPayload(refs: List(task.TaskRef))
   LookupByOperatorRefPayload(operator_ref: String)
   CommentsPostOrUpdatePayload(comment: CommentRequestPayload)
+  RemoteCommandsFetchPayload(fetch: RemoteCommandFetchPayload)
+  RemoteCommandsPostAckPayload(ack: RemoteCommandAckPayload)
   StateTransitionPayload(transition: StateTransitionRequestPayload)
+  HandoffReportPayload(event: HandoffEventPayload)
 }
 
 pub type TaskSearchPayload {
@@ -146,12 +172,67 @@ pub type CommentWriteMode {
   UpdateExistingComment(comment_id: String, allow_create_fallback: Bool)
 }
 
+pub type RemoteCommandFetchPayload {
+  RemoteCommandFetchPayload(
+    task_refs: List(task.TaskRef),
+    since_event_ids: List(String),
+    limit_per_task: Int,
+  )
+}
+
+pub type RemoteCommandEventPayload {
+  RemoteCommandEventPayload(
+    event_id: String,
+    task: task.TaskRef,
+    author_id: String,
+    body: String,
+    command_name: String,
+    excerpt: String,
+    observed_at_ms: Int,
+  )
+}
+
+pub type RemoteCommandAckPayload {
+  RemoteCommandAckPayload(event: RemoteCommandEventPayload, body: String)
+}
+
 pub type StateTransitionRequestPayload {
   StateTransitionRequestPayload(
     task: task.TaskRef,
     target_state_id: Option(String),
     target_state_name: String,
     reason: String,
+  )
+}
+
+pub type HandoffEventPayload {
+  HandoffClaimEvent(task: task.TaskRef, workspace_path: String, run_id: String)
+  HandoffSuccessEvent(task: task.TaskRef, run_id: String, summary: String)
+  HandoffFailureEvent(task: task.TaskRef, run_id: String, reason: String)
+  HandoffParkEvent(task: task.TaskRef, reason: String, release_policy: String)
+  LegacyHandoffClaimEvent(
+    issue_identifier: String,
+    workspace_path: String,
+    run_id: String,
+  )
+  LegacyHandoffSuccessEvent(
+    issue_identifier: String,
+    success: String,
+    run_id: String,
+    workflow_id: String,
+  )
+  LegacyHandoffFailureEvent(
+    issue_identifier: String,
+    failure: String,
+    run_id: String,
+    workflow_id: String,
+  )
+  LegacyHandoffParkEvent(
+    task: task.TaskRef,
+    issue_identifier: String,
+    reason: String,
+    release_policy: Option(String),
+    run_id: Option(String),
   )
 }
 
@@ -172,7 +253,14 @@ pub type ResponseResult {
   TaskListResult(tasks: List(task.Task))
   OptionalTaskResult(task: Option(task.Task))
   CommentResult(comment: CommentReceiptPayload)
+  RemoteCommandEventsResult(events: List(RemoteCommandEventPayload))
+  RemoteCommandAckResult(comment: CommentReceiptPayload)
   StateTransitionResult(transition: StateTransitionReceiptPayload)
+  HandoffReportResult(receipt: HandoffReportReceiptPayload)
+}
+
+pub type HandoffReportReceiptPayload {
+  HandoffReportReceiptPayload(reported: Bool)
 }
 
 pub type CommentReceiptPayload {

@@ -3,6 +3,7 @@ import gleam/json
 import scherzo/tracker/conformance/fixture_manifest
 import scherzo/tracker/conformance/http_manifest
 import scherzo/tracker/conformance/operation_json
+import scherzo/tracker/conformance/profile_json
 import scherzo/tracker/conformance/types
 
 pub fn validate_tasks(
@@ -44,6 +45,52 @@ pub fn comment_request_payload_decoder() -> decode.Decoder(types.RequestPayload)
   operation_json.comment_request_payload_decoder()
 }
 
+pub fn retry_behavior_to_json(
+  retry_behavior: types.RetryBehaviorConfig,
+) -> json.Json {
+  profile_json.retry_behavior_to_json(retry_behavior)
+}
+
+pub fn retry_behavior_decoder() -> decode.Decoder(types.RetryBehaviorConfig) {
+  profile_json.retry_behavior_decoder()
+}
+
+pub fn remote_command_fetch_to_json(
+  fetch: types.RemoteCommandFetchPayload,
+) -> json.Json {
+  operation_json.remote_command_fetch_to_json(fetch)
+}
+
+pub fn remote_command_fetch_payload_decoder() -> decode.Decoder(
+  types.RequestPayload,
+) {
+  operation_json.remote_command_fetch_payload_decoder()
+}
+
+pub fn remote_command_event_to_json(
+  event: types.RemoteCommandEventPayload,
+) -> json.Json {
+  operation_json.remote_command_event_to_json(event)
+}
+
+pub fn remote_command_event_decoder() -> decode.Decoder(
+  types.RemoteCommandEventPayload,
+) {
+  operation_json.remote_command_event_decoder()
+}
+
+pub fn remote_command_ack_to_json(
+  ack: types.RemoteCommandAckPayload,
+) -> json.Json {
+  operation_json.remote_command_ack_to_json(ack)
+}
+
+pub fn remote_command_ack_payload_decoder() -> decode.Decoder(
+  types.RequestPayload,
+) {
+  operation_json.remote_command_ack_payload_decoder()
+}
+
 pub fn state_transition_request_to_json(
   transition: types.StateTransitionRequestPayload,
 ) -> json.Json {
@@ -54,6 +101,14 @@ pub fn state_transition_payload_decoder() -> decode.Decoder(
   types.RequestPayload,
 ) {
   operation_json.state_transition_payload_decoder()
+}
+
+pub fn handoff_event_to_json(event: types.HandoffEventPayload) -> json.Json {
+  operation_json.handoff_event_to_json(event)
+}
+
+pub fn handoff_report_payload_decoder() -> decode.Decoder(types.RequestPayload) {
+  operation_json.handoff_report_payload_decoder()
 }
 
 pub fn comment_receipt_to_json(
@@ -76,4 +131,16 @@ pub fn state_transition_receipt_decoder() -> decode.Decoder(
   types.StateTransitionReceiptPayload,
 ) {
   operation_json.state_transition_receipt_decoder()
+}
+
+pub fn handoff_report_receipt_to_json(
+  receipt: types.HandoffReportReceiptPayload,
+) -> json.Json {
+  operation_json.handoff_report_receipt_to_json(receipt)
+}
+
+pub fn handoff_report_receipt_decoder() -> decode.Decoder(
+  types.HandoffReportReceiptPayload,
+) {
+  operation_json.handoff_report_receipt_decoder()
 }

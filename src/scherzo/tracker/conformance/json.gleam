@@ -122,6 +122,7 @@ fn validate_manifest(
     driver: driver,
     profile: manifest_profile,
     fixtures: fixtures,
+    probes: probes,
     ..,
   ) = manifest
   let types.ProfileConfig(
@@ -129,6 +130,7 @@ fn validate_manifest(
     capabilities: capabilities,
     requested_packs: requested_packs,
     adapter_operations: operations,
+    retry_behavior: retry_behavior,
   ) = manifest_profile
   let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
 
@@ -147,6 +149,11 @@ fn validate_manifest(
     capabilities,
     requested_packs,
     operations,
+    retry_behavior,
+  ))
+  use Nil <- result.try(manifest_validation.validate_probe_requirements(
+    requested_packs,
+    probes,
   ))
   use Nil <- result.try(case valid_repository_relative_path(task_file) {
     True -> Ok(Nil)
@@ -339,6 +346,7 @@ fn profile_config_to_json(manifest_profile: types.ProfileConfig) -> json.Json {
     capabilities: capabilities,
     requested_packs: requested_packs,
     adapter_operations: operations,
+    retry_behavior: retry_behavior,
   ) = manifest_profile
   json.object([
     #("name", json.string(profile.profile_name_to_string(name))),
@@ -360,6 +368,10 @@ fn profile_config_to_json(manifest_profile: types.ProfileConfig) -> json.Json {
         operation |> profile.operation_to_string |> json.string
       }),
     ),
+    #(
+      "retry_behavior",
+      option_json(retry_behavior, manifest_support.retry_behavior_to_json),
+    ),
   ])
 }
 
@@ -378,11 +390,17 @@ fn profile_config_decoder() -> decode.Decoder(types.ProfileConfig) {
     "adapter_operations",
     adapter_operations_decoder(),
   )
+  use retry_behavior <- decode.optional_field(
+    "retry_behavior",
+    None,
+    decode.optional(manifest_support.retry_behavior_decoder()),
+  )
   decode.success(types.ProfileConfig(
     name: name,
     capabilities: capabilities,
     requested_packs: requested_packs,
     adapter_operations: operations,
+    retry_behavior: retry_behavior,
   ))
 }
 
@@ -502,8 +520,14 @@ fn request_payload_to_json(payload: types.RequestPayload) -> json.Json {
       json.object([#("operator_ref", json.string(operator_ref))])
     types.CommentsPostOrUpdatePayload(comment: comment) ->
       manifest_support.comment_request_to_json(comment)
+    types.RemoteCommandsFetchPayload(fetch: fetch) ->
+      manifest_support.remote_command_fetch_to_json(fetch)
+    types.RemoteCommandsPostAckPayload(ack: ack) ->
+      manifest_support.remote_command_ack_to_json(ack)
     types.StateTransitionPayload(transition: transition) ->
       manifest_support.state_transition_request_to_json(transition)
+    types.HandoffReportPayload(event: event) ->
+      manifest_support.handoff_event_to_json(event)
   }
 }
 
@@ -534,8 +558,13 @@ fn request_payload_decoder(
       lookup_by_operator_ref_payload_decoder()
     profile.CommentsPostOrUpdate ->
       manifest_support.comment_request_payload_decoder()
+    profile.RemoteCommandsFetchEvents ->
+      manifest_support.remote_command_fetch_payload_decoder()
+    profile.RemoteCommandsPostAck ->
+      manifest_support.remote_command_ack_payload_decoder()
     profile.StateTransitionsTransition ->
       manifest_support.state_transition_payload_decoder()
+    profile.HandoffReport -> manifest_support.handoff_report_payload_decoder()
     _ ->
       decode.failure(
         types.FetchCandidatesPayload(task_search: types.TaskSearchPayload(
@@ -620,12 +649,27 @@ fn response_result_to_json(result_value: types.ResponseResult) -> json.Json {
       json.object([
         #("comment", manifest_support.comment_receipt_to_json(comment)),
       ])
+    types.RemoteCommandEventsResult(events: events) ->
+      json.object([
+        #(
+          "events",
+          json.array(events, of: manifest_support.remote_command_event_to_json),
+        ),
+      ])
+    types.RemoteCommandAckResult(comment: comment) ->
+      json.object([
+        #("ack", manifest_support.comment_receipt_to_json(comment)),
+      ])
     types.StateTransitionResult(transition: transition) ->
       json.object([
         #(
           "transition",
           manifest_support.state_transition_receipt_to_json(transition),
         ),
+      ])
+    types.HandoffReportResult(receipt: receipt) ->
+      json.object([
+        #("handoff", manifest_support.handoff_report_receipt_to_json(receipt)),
       ])
   }
 }
@@ -670,20 +714,44 @@ fn response_result_decoder() -> decode.Decoder(types.ResponseResult) {
     None,
     decode.optional(manifest_support.comment_receipt_decoder()),
   )
+  use events <- decode.optional_field(
+    "events",
+    None,
+    decode.optional(
+      decode.list(manifest_support.remote_command_event_decoder()),
+    ),
+  )
+  use ack <- decode.optional_field(
+    "ack",
+    None,
+    decode.optional(manifest_support.comment_receipt_decoder()),
+  )
   use transition <- decode.optional_field(
     "transition",
     None,
     decode.optional(manifest_support.state_transition_receipt_decoder()),
   )
-  case tasks, maybe_task, comment, transition {
-    Some(tasks), _, _, _ -> decode.success(types.TaskListResult(tasks: tasks))
-    None, Some(task_value), _, _ ->
+  use handoff <- decode.optional_field(
+    "handoff",
+    None,
+    decode.optional(manifest_support.handoff_report_receipt_decoder()),
+  )
+  case tasks, maybe_task, comment, events, ack, transition, handoff {
+    Some(tasks), _, _, _, _, _, _ ->
+      decode.success(types.TaskListResult(tasks: tasks))
+    None, Some(task_value), _, _, _, _, _ ->
       decode.success(types.OptionalTaskResult(task: Some(task_value)))
-    None, None, Some(comment_value), _ ->
+    None, None, Some(comment_value), _, _, _, _ ->
       decode.success(types.CommentResult(comment: comment_value))
-    None, None, None, Some(transition_value) ->
+    None, None, None, Some(events_value), _, _, _ ->
+      decode.success(types.RemoteCommandEventsResult(events: events_value))
+    None, None, None, None, Some(comment_value), _, _ ->
+      decode.success(types.RemoteCommandAckResult(comment: comment_value))
+    None, None, None, None, None, Some(transition_value), _ ->
       decode.success(types.StateTransitionResult(transition: transition_value))
-    None, None, None, None ->
+    None, None, None, None, None, None, Some(receipt) ->
+      decode.success(types.HandoffReportResult(receipt: receipt))
+    None, None, None, None, None, None, None ->
       decode.success(types.OptionalTaskResult(task: None))
   }
 }
@@ -756,7 +824,10 @@ fn operation_decoder() -> decode.Decoder(profile.AdapterOperation) {
     profile.TaskSourceRefreshByRefs -> decode.success(operation)
     profile.TaskSourceLookupByOperatorRef -> decode.success(operation)
     profile.CommentsPostOrUpdate -> decode.success(operation)
+    profile.RemoteCommandsFetchEvents -> decode.success(operation)
+    profile.RemoteCommandsPostAck -> decode.success(operation)
     profile.StateTransitionsTransition -> decode.success(operation)
+    profile.HandoffReport -> decode.success(operation)
     _ ->
       decode.failure(
         profile.TaskSourceFetchCandidates,

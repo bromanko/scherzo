@@ -113,11 +113,13 @@ Optional-pack fake-driver examples from the repository root:
 
 ```sh
 direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/comments-pass.manifest.json --report test/tmp/tracker-conformance/comments-pass.report.json
+direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/remote-commands-pass.manifest.json --report test/tmp/tracker-conformance/remote-commands-pass.report.json
 direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/state-transition-pass.manifest.json --report test/tmp/tracker-conformance/state-transition-pass.report.json
 direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/routing-metadata-pass.manifest.json --report test/tmp/tracker-conformance/routing-metadata-pass.report.json
+direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/handoff-pass.manifest.json --report test/tmp/tracker-conformance/handoff-pass.report.json
 ```
 
-Request optional packs explicitly in `profile.requested_packs`, claim the matching granular capabilities in `profile.capabilities`, and keep `probe.*` names out of `profile.adapter_operations`. Claimed-but-unrequested optional capabilities do not run extra cases. Requested-but-unclaimed optional packs fail manifest validation before setup, probe, cleanup, or driver commands run. Side-effect manifests should keep setup and cleanup hooks idempotent so reruns do not leave duplicate marker data behind.
+Request optional packs explicitly in `profile.requested_packs`, claim the matching granular capabilities in `profile.capabilities`, and keep `probe.*` names out of `profile.adapter_operations`. Claimed-but-unrequested optional capabilities do not run extra cases. Requested-but-unclaimed optional packs fail manifest validation before setup, probe, cleanup, or driver commands run. `remote_commands` also requires `comments.create`, and side-effect packs such as `remote_commands` and `handoff` must declare `profile.retry_behavior` so reports can classify same-event acknowledgement and same-run handoff retries as `idempotent_update_or_dedupe` or `duplicate_visible`. `handoff` manifests must also include at least one backend-visibility probe because retry classification is probe-backed. Remote-command fetch events are bounded: `event_id`, `author_id`, `command_name`, `body`, and `excerpt` all fail conformance when they exceed the protocol limits. Side-effect manifests should keep setup and cleanup hooks idempotent so reruns do not leave duplicate marker data behind.
 
 Optional live-backend checklist for operators who already have trusted manifests and pre-provisioned fixtures:
 
