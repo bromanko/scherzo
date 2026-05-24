@@ -13,6 +13,36 @@ pub fn drops_plain_streaming_message_updates_from_result_buffer_test() {
   assert turn_result_buffer.retain_record(update) == False
 }
 
+pub fn keeps_boundary_records_for_terminal_diagnostics_test() {
+  let agent_start = decode("{\"type\":\"agent_start\"}")
+  let turn_start = decode("{\"type\":\"turn_start\"}")
+  let message_start = decode("{\"cursor\":15044,\"type\":\"message_start\"}")
+  let turn_end = decode("{\"type\":\"turn_end\"}")
+  let auto_retry_start = decode("{\"type\":\"auto_retry_start\"}")
+  let auto_retry_end = decode("{\"type\":\"auto_retry_end\"}")
+  let update = decode("{\"type\":\"message_update\",\"delta\":\"token\"}")
+
+  let records = [
+    agent_start,
+    turn_start,
+    message_start,
+    update,
+    turn_end,
+    auto_retry_start,
+    auto_retry_end,
+  ]
+
+  assert turn_result_buffer.retain_records(records)
+    == [
+      agent_start,
+      turn_start,
+      message_start,
+      turn_end,
+      auto_retry_start,
+      auto_retry_end,
+    ]
+}
+
 pub fn keeps_completed_messages_agent_end_and_tool_records_test() {
   let completed =
     decode(

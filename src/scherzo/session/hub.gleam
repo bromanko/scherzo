@@ -340,18 +340,61 @@ fn update_summary_status(
   session_id: String,
   status: event.SessionStatus,
 ) -> State {
+  let now = state.now_ms()
   let updated =
     update_summary(state, session_id, fn(summary) {
-      event.SessionSummary(
-        ..summary,
-        status: status,
-        last_event_at_ms: state.now_ms(),
-      )
+      let summary =
+        event.SessionSummary(..summary, status: status, last_event_at_ms: now)
+      case status {
+        event.Exited(exit_reason) ->
+          finalize_running_turn_on_exit(summary, exit_reason, now)
+        _ -> summary
+      }
     })
 
   case status {
     event.Exited(_) -> prune_exited_session_events(updated, session_id)
     _ -> updated
+  }
+}
+
+fn finalize_running_turn_on_exit(
+  summary: event.SessionSummary,
+  exit_reason: reason.WorkerExitReason,
+  now: Int,
+) -> event.SessionSummary {
+  case summary.current_turn_status {
+    Some(turn_telemetry.StatusRunning) -> {
+      let #(turn_status, turn_reason) = turn_finalization_for_exit(exit_reason)
+      event.SessionSummary(
+        ..summary,
+        current_turn_status: Some(turn_status),
+        last_turn_finished_at_ms: Some(now),
+        last_turn_duration_ms: turn_duration(summary, summary.current_turn, now),
+        last_turn_token_delta: session_tokens.zero_token_totals(),
+        last_turn_reason: turn_reason,
+      )
+    }
+    _ -> summary
+  }
+}
+
+fn turn_finalization_for_exit(
+  exit_reason: reason.WorkerExitReason,
+) -> #(turn_telemetry.TurnStatus, Option(turn_telemetry.TurnReason)) {
+  case exit_reason {
+    reason.OperatorAbort -> #(
+      turn_telemetry.StatusStopped,
+      Some(turn_telemetry.ReasonOperatorAbort),
+    )
+    reason.OperatorStopAfterCurrentTurn | reason.Stopped -> #(
+      turn_telemetry.StatusStopped,
+      Some(turn_telemetry.ReasonOperatorStopAfterCurrentTurn),
+    )
+    reason.Normal | reason.Failed | reason.WorkerDown -> #(
+      turn_telemetry.StatusFailed,
+      Some(turn_telemetry.ReasonPiError),
+    )
   }
 }
 

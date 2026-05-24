@@ -7,13 +7,15 @@ pub opaque type Buffer {
   Buffer(reversed_records: List(protocol.RpcRecord))
 }
 
-/// Keep only Pi records needed to build the durable turn result.
+/// Keep only Pi records needed to build the durable turn result and diagnose
+/// terminal stream/protocol failures.
 ///
 /// Scherzo still emits every streaming record to the live session hub as it is
 /// observed. The turn result buffer is only for post-turn materialization, so
 /// plain token-level message updates should not be retained here.
 pub fn retain_record(record: protocol.RpcRecord) -> Bool {
   record.type_ == "agent_end"
+  || is_boundary_record(record.type_)
   || !list.is_empty(record.assistant_messages)
   || !list.is_empty(record.tool_calls)
   || has_non_empty(record.tool_name)
@@ -49,6 +51,19 @@ pub fn append_records(
 ) -> Buffer {
   let additions = additions |> retain_records |> list.reverse
   Buffer(reversed_records: list.append(additions, buffer.reversed_records))
+}
+
+fn is_boundary_record(type_: String) -> Bool {
+  case type_ {
+    "agent_start"
+    | "turn_start"
+    | "turn_end"
+    | "message_start"
+    | "message_end"
+    | "auto_retry_start"
+    | "auto_retry_end" -> True
+    _ -> False
+  }
 }
 
 fn has_non_empty(value: Option(String)) -> Bool {
