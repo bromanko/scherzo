@@ -2235,12 +2235,7 @@ fn retry_workflow_step_for_operator(
                               projection_state,
                               [plan.candidate],
                               dict.from_list([
-                                #(
-                                  plan.run_id,
-                                  workflow_repair.normalize_observation(
-                                    observation,
-                                  ),
-                                ),
+                                #(plan.run_id, observation),
                               ]),
                               artifact_store.new(
                                 state.workflow.effective.workspace.root,

@@ -25,16 +25,6 @@ tracker:
   terminal_states: [Done]
 workspace:
   root: " <> root <> "
-  hooks:
-    create: |
-      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"
-    before_step: |
-      test -d \"$SCHERZO_WORKSPACE_PATH\"
-    after_step: |
-      true
-    remove: |
-      rm -rf \"$SCHERZO_WORKSPACE_PATH\"
-    timeout_ms: 60000
 polling:
   interval_ms: " <> int.to_string(interval_ms) <> "
 agent:

@@ -63,17 +63,16 @@ fn chmod_executable(path: String) -> Nil {
 
 fn orchestrator(
   dir: String,
-  create_hook: String,
-  before_hook: String,
+  _create_hook: String,
+  _before_hook: String,
 ) -> config_types.OrchestratorConfig {
+  write_lifecycle_driver(dir)
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n"
-    <> indent(create_hook)
-    <> "    before_step: |\n"
-    <> indent(before_hook)
-    <> "    timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: default\n  profiles:\n    default:\n      driver:\n        command: ./driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(root(source), dir <> "/scherzo.yaml", env)
+  let assert Ok(orchestrator) =
+    workspace_driver_discovery.enrich_orchestrator(orchestrator)
   orchestrator
 }
 
@@ -92,21 +91,6 @@ fn named_profile(
   let assert Ok(profile) =
     dict.get(orchestrator.workspace_profiles.profiles, name)
   profile
-}
-
-fn profile_orchestrator(dir: String) -> config_types.OrchestratorConfig {
-  let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n          touch \"$SCHERZO_WORKSPACE_PATH/isolated\"\n        remove: |\n          printf '%s' \"$SCHERZO_WORKSPACE_PROFILE\" > remove-profile.log\n        timeout_ms: 5000\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n          touch \"$SCHERZO_WORKSPACE_PATH/noop\"\n        remove: |\n          printf '%s' \"$SCHERZO_WORKSPACE_PROFILE\" > remove-profile.log\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
-  let assert Ok(orchestrator) =
-    config.resolve_orchestrator_root(root(source), dir <> "/scherzo.yaml", env)
-  orchestrator
-}
-
-fn indent(script: String) -> String {
-  script
-  |> string.split(on: "\n")
-  |> list_map(fn(line) { "      " <> line <> "\n" })
-  |> string.join(with: "")
 }
 
 pub fn prepares_logical_workspace_paths_under_run_root_test() {
@@ -162,105 +146,6 @@ pub fn prepares_logical_workspace_paths_under_run_root_test() {
   )
   assert main.path != code_review_path
   assert main.path != other_run.path
-}
-
-pub fn hook_receives_step_environment_and_config_cwd_test() {
-  let dir = "test/tmp/workspace-run-hooks"
-  reset_dir(dir)
-  let create_hook =
-    "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nprintf '%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_CONFIG_DIR\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_NAME\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_SOURCE_WORKSPACE_NAME\" \"$SCHERZO_SOURCE_WORKSPACE_PATH\" >> hook.log\nif [ -n \"$SCHERZO_SOURCE_WORKSPACE_PATH\" ]; then cp \"$SCHERZO_SOURCE_WORKSPACE_PATH/marker\" \"$SCHERZO_WORKSPACE_PATH/from-source\"; fi"
-  let before_hook = "pwd > \"$SCHERZO_WORKSPACE_PATH/before-cwd\""
-  let orchestrator = orchestrator(dir, create_hook, before_hook)
-  let assert Ok(main) =
-    workspace_run.prepare_step(
-      issue(),
-      "implementation",
-      "run-1",
-      "implement",
-      workflow_dag.WorkspaceRef(name: "main", from: None),
-      orchestrator,
-      default_profile(orchestrator),
-      dict.new(),
-    )
-  let assert Ok(Nil) = simplifile.write(main.path <> "/marker", "copied")
-  let known = dict.from_list([#("main", main)])
-  let assert Ok(review) =
-    workspace_run.prepare_step(
-      issue(),
-      "implementation",
-      "run-1",
-      "code_review",
-      workflow_dag.WorkspaceRef(name: "code-review", from: Some("main")),
-      orchestrator,
-      default_profile(orchestrator),
-      known,
-    )
-  let assert Ok(hook_log) =
-    simplifile.read(orchestrator.config_dir <> "/hook.log")
-  assert string.contains(hook_log, "|code_review|default|code-review|")
-  assert string.contains(hook_log, "|main|")
-  assert string.contains(hook_log, main.path)
-  let assert Ok(copied) = simplifile.read(review.path <> "/from-source")
-  assert copied == "copied"
-  let assert Ok(before_cwd) = simplifile.read(review.path <> "/before-cwd")
-  assert string.trim(before_cwd) == orchestrator.config_dir
-
-  let assert Ok(next_main) =
-    workspace_run.prepare_step(
-      issue(),
-      "implementation",
-      "run-1",
-      "test_after_implement",
-      workflow_dag.WorkspaceRef(name: "main", from: None),
-      orchestrator,
-      default_profile(orchestrator),
-      known,
-    )
-  assert next_main.path == main.path
-  assert next_main.source_workspace_name == Some("main")
-  assert next_main.source_workspace_path == Some(main.path)
-}
-
-pub fn selected_profile_uses_selected_hook_bodies_test() {
-  let dir = "test/tmp/workspace-run-selected-profile"
-  reset_dir(dir)
-  let orchestrator = profile_orchestrator(dir)
-  let noop = named_profile(orchestrator, "noop")
-  let isolated = named_profile(orchestrator, "isolated")
-  let assert Ok(noop_workspace) =
-    workspace_run.prepare_step(
-      issue(),
-      "implementation",
-      "run-noop",
-      "implement",
-      workflow_dag.WorkspaceRef(name: "main", from: None),
-      orchestrator,
-      noop,
-      dict.new(),
-    )
-  let assert Ok(True) = simplifile.is_file(noop_workspace.path <> "/noop")
-  let assert Ok(False) = simplifile.is_file(noop_workspace.path <> "/isolated")
-
-  let assert Ok(isolated_workspace) =
-    workspace_run.prepare_step(
-      issue(),
-      "implementation",
-      "run-isolated",
-      "implement",
-      workflow_dag.WorkspaceRef(name: "main", from: None),
-      orchestrator,
-      isolated,
-      dict.new(),
-    )
-  let assert Ok(True) =
-    simplifile.is_file(isolated_workspace.path <> "/isolated")
-  let assert Ok(False) = simplifile.is_file(isolated_workspace.path <> "/noop")
-
-  let assert Ok(Nil) =
-    workspace_run.cleanup_run(noop_workspace.run_root, orchestrator, noop)
-  let assert Ok(remove_profile) =
-    simplifile.read(orchestrator.config_dir <> "/remove-profile.log")
-  assert remove_profile == "noop"
 }
 
 fn driver_profile_orchestrator(dir: String) -> config_types.OrchestratorConfig {
@@ -490,11 +375,4 @@ pub fn cleanup_retention_marker_skips_delete_until_removed_test() {
       default_profile(orchestrator),
     )
   let assert Ok(False) = simplifile.is_directory(main.run_root)
-}
-
-fn list_map(values: List(a), mapper: fn(a) -> b) -> List(b) {
-  case values {
-    [] -> []
-    [value, ..rest] -> [mapper(value), ..list_map(rest, mapper)]
-  }
 }

@@ -192,16 +192,6 @@ tracker:
   terminal_states: [Done]
 workspace:
   root: " <> root <> "
-  hooks:
-    create: |
-      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"
-    before_step: |
-      test -d \"$SCHERZO_WORKSPACE_PATH\"
-    after_step: |
-      true
-    remove: |
-      rm -rf \"$SCHERZO_WORKSPACE_PATH\"
-    timeout_ms: 60000
 polling:
   interval_ms: 1000
 agent:
@@ -284,7 +274,6 @@ fn in_process_dependencies(
   ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
-    ..daemon.default_dependencies(),
     make_tracker_adapter: fn(_) {
       let legacy =
         adapter_legacy.adapter_from_legacy_client(tracker_client, "linear")

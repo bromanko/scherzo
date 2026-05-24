@@ -36,7 +36,7 @@ For every breaking change, make the compatibility decision explicit in the same 
 
 A good breaking-change diagnostic is short, searchable, and actionable. It should include:
 
-- a stable `code` or event name, such as `legacy_workspace_hooks`, `legacy_tracker_field_ignored`, or `old_state_reset_required`;
+- a stable `code` or event name, such as `invalid_config`, `legacy_tracker_field_ignored`, or `old_state_reset_required`;
 - the old path or shape, for example `workspace.hooks`;
 - the replacement or required action, for example `workspace.profiles.<name>.driver`;
 - the boundary where it was detected, such as config load, `doctor`, driver discovery, ledger replay, or `scherzoctl state status`;
@@ -93,13 +93,24 @@ Current target shape:
 
 - `workspace.profiles.<name>.driver`
 
-Current behavior uses a statically discoverable `doctor` warning with code `legacy_workspace_hooks`. The warning names the old key, names the driver key, and links to [workspace driver migration](workspace-driver-migration.md). During the compatibility window, checked configs may still load, but new examples should use driver-backed profiles. If a future change removes hook support, config loading should reject the hook shape at the config boundary with the same stable code/path vocabulary and the same migration link.
+Current behavior rejects those old shapes during workflow-config loading with `invalid_config`. The diagnostic names the old key, names the driver key, and links to [workspace driver migration](workspace-driver-migration.md). Checked configs must use driver-backed profiles; no compatibility window remains for hook-backed workspace profiles.
 
 Recommended operator command:
 
 ```sh
-scherzo doctor --check workspace-hooks .scherzo/scherzo.yaml
+scherzo doctor --check workflow-config .scherzo/scherzo.yaml
 ```
+
+### Obsolete in-process WorkflowDag tuple shims
+
+Old shapes:
+
+- BEAM terms tagged `workflow_dag` whose tuple arity predates `recover` or `workstream_phase` fields.
+- BEAM terms tagged `workflow_step` whose tuple arity predates the step `recover` field.
+
+Current behavior rejects silent in-process compatibility for those tuple shapes by not loading or normalizing serialized DAG terms. Runtime bundles load workflow definitions from YAML through the current `workflow_dag.parse` path on startup and reload, and recovery observations are rebuilt from the current runtime bundle rather than decoded from retained DAG terms. Workflow YAML that omits optional `recover` fields remains supported; obsolete pre-current BEAM tuple shapes from mixed-version hot code upgrades are unsupported.
+
+Recommended operator action is to stop and restart Scherzo after upgrading instead of hot-swapping modules. If durable local state cannot be replayed by the current tree, follow the unsupported local state flow below (`archive-old` or `discard-old`, then `reinitialize`) rather than expecting DAG tuple normalization.
 
 ### Flat tracker fields to nested tracker config
 

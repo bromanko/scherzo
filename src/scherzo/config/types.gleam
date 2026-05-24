@@ -382,8 +382,6 @@ fn uses_supported_workspace_driver_env(command: String) -> Bool {
 }
 
 pub type WorkspaceProfileSource {
-  LegacyWorkspaceHooks
-  ConfiguredWorkspaceHooks
   ConfiguredWorkspaceDriver
   SyntheticDefaultWorkspace
 }
@@ -391,7 +389,6 @@ pub type WorkspaceProfileSource {
 pub type WorkspaceHookProfile {
   WorkspaceHookProfile(
     name: String,
-    hooks: Option(DagHooksConfig),
     driver: Option(WorkspaceDriverConfig),
     source: WorkspaceProfileSource,
   )
@@ -405,13 +402,6 @@ pub fn empty_dag_hooks() -> DagHooksConfig {
     remove: None,
     timeout_ms: 60_000,
   )
-}
-
-pub fn profile_hooks(profile: WorkspaceHookProfile) -> DagHooksConfig {
-  case profile.hooks {
-    Some(hooks) -> hooks
-    None -> empty_dag_hooks()
-  }
 }
 
 pub fn workspace_lifecycle_operation_from_string(

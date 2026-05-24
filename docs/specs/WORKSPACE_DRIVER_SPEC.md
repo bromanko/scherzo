@@ -78,7 +78,7 @@ The driver schema fields are:
 
 `workspace.profiles.<name>.driver.capabilities` MUST NOT be configured. Scherzo discovers driver capabilities by invoking `<driver> describe --json`.
 
-A profile MAY contain legacy `hooks` plus a `driver` during migration. In that bridge shape, hooks remain responsible for lifecycle preparation and cleanup, while Scherzo still discovers the driver, exposes driver context to workflow code, and validates `workspace_capabilities` against the discovered capabilities. A driver-only profile contains `driver` and no `hooks`; Scherzo invokes the configured driver for supported lifecycle operations.
+A profile MUST contain a `driver` block and MUST NOT contain legacy `hooks`. Top-level `workspace.hooks` and profile-local `workspace.profiles.<name>.hooks` are unsupported migration input; Scherzo rejects them during config loading. Scherzo invokes the configured driver for supported lifecycle operations, discovers driver capabilities, exposes driver context to workflow code, and validates `workspace_capabilities` against the discovered capabilities.
 
 Workflow DAGs select and require workspace policy with:
 
@@ -498,7 +498,7 @@ An artifact/no-op driver is suitable for workflows that only need an empty works
 
 A VCS-backed driver is suitable for workflows that run in a source workspace and need changed-file inventory, diffs, base refresh, or publication. A conforming VCS-backed driver SHOULD:
 
-- implement lifecycle `create`, `before-step`, `after-step`, and `remove` or document any lifecycle operations intentionally delegated to hooks,
+- implement lifecycle `create`, `before-step`, `after-step`, and `remove` directly, or document any lifecycle operations intentionally unsupported,
 - preserve a clear baseline for each workspace,
 - report capabilities matching the operations it actually implements,
 - implement `status`, `diff`, `changed-files`, `assert-only`, and `baseline` against the prepared baseline,

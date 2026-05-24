@@ -6,7 +6,6 @@ import scherzo/workspace_driver_context
 fn driver_profile() -> config_types.WorkspaceHookProfile {
   config_types.WorkspaceHookProfile(
     name: "dogfood-jj",
-    hooks: Some(config_types.empty_dag_hooks()),
     driver: Some(
       config_types.WorkspaceDriverConfig(
         command: "scripts/scherzo-workspace-jj",
@@ -19,7 +18,7 @@ fn driver_profile() -> config_types.WorkspaceHookProfile {
         env: [#("SCHERZO_JJ_WORKSPACE_BASE", "profile-base")],
       ),
     ),
-    source: config_types.ConfiguredWorkspaceHooks,
+    source: config_types.ConfiguredWorkspaceDriver,
   )
 }
 
@@ -69,9 +68,8 @@ pub fn driverless_profile_uses_empty_driver_context_test() {
   let context =
     workspace_driver_context.from_profile(config_types.WorkspaceHookProfile(
       name: "default",
-      hooks: Some(config_types.empty_dag_hooks()),
       driver: None,
-      source: config_types.LegacyWorkspaceHooks,
+      source: config_types.SyntheticDefaultWorkspace,
     ))
 
   assert workspace_driver_context.env_vars(context)

@@ -112,8 +112,8 @@ scripts/scherzoctl / scherzo ctl
   require top-level `workspace_capabilities`; omitted selectors use the orchestrator
   default profile. Scherzo validates required capabilities against the selected profile
   before dispatch. `docs/specs/WORKSPACE_DRIVER_SPEC.md` is the normative driver
-  contract. Direct `workspace.hooks` and profile-local hook blocks are legacy migration
-  shapes surfaced by doctor guidance, not the current architecture invariant.
+  contract. Direct `workspace.hooks` and profile-local hook blocks are unsupported
+  legacy shapes rejected during config loading, not current architecture invariants.
 
 ### Orchestrator dispatch
 

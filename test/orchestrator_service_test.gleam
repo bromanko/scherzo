@@ -78,9 +78,13 @@ fn yaml_config_with_max(
   max_concurrent: Int,
   extra: String,
 ) -> String {
+  let assert Ok(driver_command) =
+    path.absolute("scripts/scherzo-workspace-noop")
   "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
   <> root
-  <> "\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    after_step: |\n      true\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: "
+  <> "\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
+  <> driver_command
+  <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: "
   <> int_to_string(max_concurrent)
   <> "\n  max_turns: 1\n"
   <> extra
@@ -214,13 +218,17 @@ fn workflow_deps() -> workflow_run.Dependencies {
 }
 
 fn contract_config_text(root: String, active_state: String) -> String {
+  let assert Ok(driver_command) =
+    path.absolute("scripts/scherzo-workspace-noop")
   "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: ["
   <> active_state
   <> "]\n  dispatch_states: ["
   <> active_state
   <> "]\n  terminal_states: [Done]\nworkspace:\n  root: "
   <> root
-  <> "\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+  <> "\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
+  <> driver_command
+  <> "\n        lifecycle: [create, before-step, after-step, remove]\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n"
 }
 
 fn contract_team(

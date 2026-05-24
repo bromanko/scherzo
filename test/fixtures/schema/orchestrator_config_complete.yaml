@@ -10,12 +10,13 @@ polling:
   interval_ms: 45000
 workspace:
   root: workspaces
-  hooks:
-    create: mkdir -p "$SCHERZO_WORKSPACE_PATH"
-    before_step: test -d "$SCHERZO_WORKSPACE_PATH"
-    after_step: echo done
-    remove: rm -rf "$SCHERZO_WORKSPACE_PATH"
-    timeout_ms: 1234
+  default_profile: fixture
+  profiles:
+    fixture:
+      driver:
+        command: scripts/scherzo-workspace-noop
+        lifecycle: [create, before-step, after-step, remove]
+        timeout_ms: 1234
 hooks:
   before_run: test -d .git
   after_run: echo done

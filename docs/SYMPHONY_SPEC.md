@@ -180,7 +180,7 @@ Fields:
 Parsed workflow policy is split across a YAML orchestrator config and one or more YAML workflow DAG files:
 
 - `orchestrator` (typed config)
-  - Tracker, polling, workspace hooks, agent, pi, handoff, routing, artifact, contract, and command settings.
+  - Tracker, polling, workspace profiles/drivers, agent, pi, handoff, routing, artifact, contract, and command settings.
 - `workflows` (map)
   - Workflow ids mapped to DAG definitions.
 - `prompt_templates` (files)
@@ -197,7 +197,7 @@ Examples:
 - active and terminal issue states
 - concurrency limits
 - coding-agent executable/args/timeouts
-- workspace hooks
+- workspace profiles and drivers
 
 #### 4.1.4 Workspace
 
@@ -400,7 +400,7 @@ Fields:
   - Failure is logged but ignored; cleanup still proceeds.
 - `timeout_ms` (integer, OPTIONAL)
   - Default: `60000`
-  - Applies to all workspace hooks.
+  - Applies to all configured legacy hook scripts.
   - Invalid values fail configuration validation.
   - Changes SHOULD be re-applied at runtime for future hook executions.
 
@@ -1636,16 +1636,16 @@ RECOMMENDED additional hardening for ports:
 - Do not log API tokens or secret env values.
 - Validate presence of secrets without printing them.
 
-### 15.4 Hook Script Safety
+### 15.4 Workspace Driver Safety
 
-Workspace hooks are arbitrary shell scripts from `scherzo.yaml`.
+Workspace driver commands are trusted operator configuration from `scherzo.yaml`.
 
 Implications:
 
-- Hooks are fully trusted configuration.
-- Hooks run inside the workspace directory.
-- Hook output SHOULD be truncated in logs.
-- Hook timeouts are REQUIRED to avoid hanging the orchestrator.
+- Drivers are fully trusted configuration.
+- Lifecycle operations run with Scherzo-provided workspace environment variables.
+- Driver output SHOULD be truncated in logs.
+- Driver timeouts are REQUIRED to avoid hanging the orchestrator.
 
 ### 15.5 Harness Hardening Guidance
 
@@ -2076,8 +2076,8 @@ Use the same validation profiles as Section 17:
 - Polling orchestrator with single-authority mutable state
 - Issue tracker client with candidate fetch + state refresh + terminal fetch
 - Workspace manager with sanitized per-issue workspaces
-- Workspace lifecycle hooks (`workspace.hooks.create`, `before_step`, `after_step`, `remove`)
-- Hook timeout config (`workspace.hooks.timeout_ms`, default `60000`)
+- Driver-backed workspace profiles with lifecycle operations (`create`, `before-step`, `after-step`, `remove`)
+- Workspace driver timeout config (`workspace.profiles.<name>.driver.timeout_ms`, default `60000`)
 - Coding-agent app-server subprocess client with JSON line protocol
 - Codex launch command config (`codex.command`, default `codex app-server`)
 - Strict prompt rendering with `issue` and `attempt` variables

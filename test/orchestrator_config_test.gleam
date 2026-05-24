@@ -56,9 +56,9 @@ pub fn resolve_root_resolves_shared_config_from_standalone_yaml_test() {
   )
 }
 
-pub fn orchestrator_config_resolves_routing_and_dag_hooks_test() {
+pub fn orchestrator_config_resolves_routing_and_driver_profile_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: test -d \"$SCHERZO_WORKSPACE_PATH\"\n    after_step: echo done\n    remove: rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 1234\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nartifact_limits:\n  command_stream_max_chars: 111\n  template_field_max_chars: 222\n  workflow_summary_max_chars: 333\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/scherzo-workspace-noop\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 1234\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nartifact_limits:\n  command_stream_max_chars: 111\n  template_field_max_chars: 222\n  workflow_summary_max_chars: 333\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(source),
@@ -74,48 +74,27 @@ pub fn orchestrator_config_resolves_routing_and_dag_hooks_test() {
     path,
     "/test/tmp/config/workflows/implementation.yaml",
   )
-  assert orchestrator.dag_hooks.create
-    == Some("mkdir -p \"$SCHERZO_WORKSPACE_PATH\"")
-  assert orchestrator.dag_hooks.before_step
-    == Some("test -d \"$SCHERZO_WORKSPACE_PATH\"")
-  assert orchestrator.dag_hooks.after_step == Some("echo done")
-  assert orchestrator.dag_hooks.remove
-    == Some("rm -rf \"$SCHERZO_WORKSPACE_PATH\"")
-  assert orchestrator.dag_hooks.timeout_ms == 1234
+  assert orchestrator.dag_hooks == config_types.empty_dag_hooks()
   assert orchestrator.artifact_limits.command_stream_max_chars == 111
   assert orchestrator.artifact_limits.template_field_max_chars == 222
   assert orchestrator.artifact_limits.workflow_summary_max_chars == 333
   assert orchestrator.model_settings == model_config.default_settings()
 }
 
-pub fn legacy_workspace_hooks_synthesize_default_profile_test() {
-  let assert Ok(orchestrator) =
-    config.resolve_orchestrator_root(
-      root(base_config_with_workspace(
-        "  root: workspaces\n  hooks:\n    create: legacy-create\n    before_step: legacy-before\n    after_step: legacy-after\n    remove: legacy-remove\n    timeout_ms: 123\n",
-      )),
-      "test/tmp/config/scherzo.yaml",
-      env,
+pub fn legacy_workspace_hooks_are_rejected_test() {
+  let message =
+    invalid_workspace_error(
+      "  root: workspaces\n  hooks:\n    create: legacy-create\n",
     )
-  assert orchestrator.workspace_profiles.default_profile == "default"
-  let assert Ok(profile) =
-    dict.get(orchestrator.workspace_profiles.profiles, "default")
-  assert profile.name == "default"
-  assert profile.source == config_types.LegacyWorkspaceHooks
-  let assert Some(hooks) = profile.hooks
-  assert profile.driver == None
-  assert hooks.create == Some("legacy-create")
-  assert hooks.before_step == Some("legacy-before")
-  assert hooks.after_step == Some("legacy-after")
-  assert hooks.remove == Some("legacy-remove")
-  assert hooks.timeout_ms == 123
-  assert orchestrator.dag_hooks == hooks
+  assert string.contains(message, "workspace.hooks")
+  assert string.contains(message, "no longer supported")
+  assert string.contains(message, "workspace.profiles.<name>.driver")
 }
 
-pub fn workspace_profiles_resolve_default_and_named_hooks_test() {
+pub fn workspace_profiles_resolve_default_and_named_drivers_test() {
   let source =
     base_config_with_workspace(
-      "  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      hooks:\n        create: isolated-create\n        timeout_ms: 111\n    noop:\n      hooks:\n        create: noop-create\n        before_step: noop-before\n        timeout_ms: 222\n",
+      "  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/isolated\n        timeout_ms: 111\n    noop:\n      driver:\n        command: scripts/noop\n        lifecycle: [create]\n        timeout_ms: 222\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -128,18 +107,16 @@ pub fn workspace_profiles_resolve_default_and_named_hooks_test() {
     dict.get(orchestrator.workspace_profiles.profiles, "isolated")
   let assert Ok(noop) =
     dict.get(orchestrator.workspace_profiles.profiles, "noop")
-  assert isolated.source == config_types.ConfiguredWorkspaceHooks
-  assert noop.source == config_types.ConfiguredWorkspaceHooks
-  let assert Some(isolated_hooks) = isolated.hooks
-  let assert Some(noop_hooks) = noop.hooks
-  assert isolated.driver == None
-  assert noop.driver == None
-  assert isolated_hooks.create == Some("isolated-create")
-  assert isolated_hooks.timeout_ms == 111
-  assert noop_hooks.create == Some("noop-create")
-  assert noop_hooks.before_step == Some("noop-before")
-  assert noop_hooks.timeout_ms == 222
-  assert orchestrator.dag_hooks == isolated_hooks
+  assert isolated.source == config_types.ConfiguredWorkspaceDriver
+  assert noop.source == config_types.ConfiguredWorkspaceDriver
+  let assert Some(isolated_driver) = isolated.driver
+  let assert Some(noop_driver) = noop.driver
+  assert isolated_driver.command == "scripts/isolated"
+  assert isolated_driver.timeout_ms == 111
+  assert noop_driver.command == "scripts/noop"
+  assert noop_driver.lifecycle == [config_types.LifecycleCreate]
+  assert noop_driver.timeout_ms == 222
+  assert orchestrator.dag_hooks == config_types.empty_dag_hooks()
 }
 
 pub fn driver_workspace_profile_parses_schema_test() {
@@ -158,7 +135,6 @@ pub fn driver_workspace_profile_parses_schema_test() {
     dict.get(orchestrator.workspace_profiles.profiles, "noop")
   assert profile.name == "noop"
   assert profile.source == config_types.ConfiguredWorkspaceDriver
-  assert profile.hooks == None
   let assert Some(driver) = profile.driver
   assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop"
   assert driver.lifecycle
@@ -191,7 +167,6 @@ pub fn workspace_driver_profiles_resolve_dogfood_jj_shape_test() {
     dict.get(orchestrator.workspace_profiles.profiles, "dogfood-jj")
   assert profile.name == "dogfood-jj"
   assert profile.source == config_types.ConfiguredWorkspaceDriver
-  assert profile.hooks == None
   let assert Some(driver) = profile.driver
   assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
   assert driver.lifecycle
@@ -205,26 +180,14 @@ pub fn workspace_driver_profiles_resolve_dogfood_jj_shape_test() {
   assert driver.timeout_ms == 60_000
 }
 
-pub fn hook_workspace_profile_can_include_driver_context_test() {
-  let source =
-    base_config_with_workspace(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        timeout_ms: 111\n      driver:\n        command: scripts/scherzo-workspace-jj\n",
+pub fn profile_local_hooks_are_rejected_even_with_driver_test() {
+  let message =
+    invalid_workspace_error(
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n      driver:\n        command: scripts/scherzo-workspace-jj\n",
     )
-  let assert Ok(orchestrator) =
-    config.resolve_orchestrator_root(
-      root(source),
-      "test/tmp/config/scherzo.yaml",
-      env,
-    )
-  let assert Ok(profile) =
-    dict.get(orchestrator.workspace_profiles.profiles, "noop")
-  assert profile.source == config_types.ConfiguredWorkspaceHooks
-  let assert Some(hooks) = profile.hooks
-  let assert Some(driver) = profile.driver
-  assert hooks.timeout_ms == 111
-  assert driver.command == "scripts/scherzo-workspace-jj"
-  assert driver.capabilities == []
-  assert orchestrator.dag_hooks == hooks
+  assert string.contains(message, "workspace.profiles.noop.hooks")
+  assert string.contains(message, "no longer supported")
+  assert string.contains(message, "workspace.profiles.<name>.driver")
 }
 
 pub fn rejects_removed_driver_capabilities_config_test() {
@@ -245,7 +208,7 @@ pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
     invalid_workspace_error(
       "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop: {}\n",
     )
-  assert string.contains(missing_shape, "must define hooks")
+  assert string.contains(missing_shape, "must define driver")
 
   let empty_command =
     invalid_workspace_error(
@@ -313,35 +276,19 @@ pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
   assert string.contains(invalid_timeout, "timeout_ms must be positive")
 }
 
-pub fn workspace_hooks_can_coexist_with_extra_profiles_test() {
-  let assert Ok(orchestrator) =
-    config.resolve_orchestrator_root(
-      root(base_config_with_workspace(
-        "  root: workspaces\n  hooks:\n    create: legacy-create\n  profiles:\n    noop:\n      hooks:\n        create: noop-create\n",
-      )),
-      "test/tmp/config/scherzo.yaml",
-      env,
+pub fn workspace_hooks_cannot_coexist_with_driver_profiles_test() {
+  let message =
+    invalid_workspace_error(
+      "  root: workspaces\n  hooks:\n    create: legacy-create\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n",
     )
-  assert orchestrator.workspace_profiles.default_profile == "default"
-  let assert Ok(default_profile) =
-    dict.get(orchestrator.workspace_profiles.profiles, "default")
-  let assert Ok(noop) =
-    dict.get(orchestrator.workspace_profiles.profiles, "noop")
-  assert default_profile.source == config_types.LegacyWorkspaceHooks
-  assert noop.source == config_types.ConfiguredWorkspaceHooks
-  let assert Some(default_hooks) = default_profile.hooks
-  let assert Some(noop_hooks) = noop.hooks
-  assert default_profile.driver == None
-  assert noop.driver == None
-  assert default_hooks.create == Some("legacy-create")
-  assert noop_hooks.create == Some("noop-create")
-  assert orchestrator.dag_hooks.create == Some("legacy-create")
+  assert string.contains(message, "workspace.hooks")
+  assert string.contains(message, "no longer supported")
 }
 
-pub fn examples_workspace_hook_profiles_remain_parseable_test() {
+pub fn examples_workspace_driver_profiles_remain_parseable_test() {
   let source =
     base_config_with_workspace(
-      "  root: .scherzo/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        before_step: |\n          test -d \"$SCHERZO_WORKSPACE_PATH\"\n        after_step: |\n          true\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n        timeout_ms: 60000\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        before_step: |\n          true\n        after_step: |\n          true\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n        timeout_ms: 60000\n",
+      "  root: .scherzo/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\n    noop:\n      driver:\n        command: scripts/scherzo-workspace-noop\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -354,12 +301,12 @@ pub fn examples_workspace_hook_profiles_remain_parseable_test() {
     dict.get(orchestrator.workspace_profiles.profiles, "isolated")
   let assert Ok(noop) =
     dict.get(orchestrator.workspace_profiles.profiles, "noop")
-  assert isolated.source == config_types.ConfiguredWorkspaceHooks
-  assert noop.source == config_types.ConfiguredWorkspaceHooks
-  let assert Some(isolated_hooks) = isolated.hooks
-  let assert Some(noop_hooks) = noop.hooks
-  assert isolated_hooks.timeout_ms == 60_000
-  assert noop_hooks.timeout_ms == 60_000
+  assert isolated.source == config_types.ConfiguredWorkspaceDriver
+  assert noop.source == config_types.ConfiguredWorkspaceDriver
+  let assert Some(isolated_driver) = isolated.driver
+  let assert Some(noop_driver) = noop.driver
+  assert isolated_driver.timeout_ms == 60_000
+  assert noop_driver.timeout_ms == 60_000
 }
 
 pub fn workspace_profiles_reject_invalid_config_test() {
@@ -377,7 +324,7 @@ pub fn workspace_profiles_reject_invalid_config_test() {
 
   let missing_default =
     base_config_with_workspace(
-      "  root: workspaces\n  profiles:\n    noop:\n      hooks: {}\n",
+      "  root: workspaces\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n",
     )
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_orchestrator_root(
@@ -389,7 +336,7 @@ pub fn workspace_profiles_reject_invalid_config_test() {
 
   let unknown_default =
     base_config_with_workspace(
-      "  root: workspaces\n  default_profile: missing\n  profiles:\n    noop:\n      hooks: {}\n",
+      "  root: workspaces\n  default_profile: missing\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n",
     )
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_orchestrator_root(
@@ -401,7 +348,7 @@ pub fn workspace_profiles_reject_invalid_config_test() {
 
   let collision =
     base_config_with_workspace(
-      "  root: workspaces\n  hooks:\n    create: legacy\n  profiles:\n    default:\n      hooks: {}\n",
+      "  root: workspaces\n  hooks:\n    create: legacy\n  profiles:\n    default:\n      driver:\n        command: scripts/noop\n",
     )
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_orchestrator_root(
@@ -409,7 +356,8 @@ pub fn workspace_profiles_reject_invalid_config_test() {
       "test/tmp/config/scherzo.yaml",
       env,
     )
-  assert string.contains(message, "conflicts with legacy workspace.hooks")
+  assert string.contains(message, "workspace.hooks")
+  assert string.contains(message, "no longer supported")
 }
 
 pub fn orchestrator_config_parses_project_model_defaults_test() {

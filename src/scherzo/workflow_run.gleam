@@ -4258,11 +4258,7 @@ fn run_step(
   let context = step_context(step, workspace, issue, orchestrator, profile)
   case step.kind {
     workflow_dag.CommandStep(run, timeout_ms) -> {
-      let timeout_ms =
-        option.unwrap(
-          timeout_ms,
-          config_types.profile_hooks(profile).timeout_ms,
-        )
+      let timeout_ms = option.unwrap(timeout_ms, 60_000)
       #(
         dependencies.command_step(
           context,

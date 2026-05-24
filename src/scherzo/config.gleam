@@ -218,10 +218,10 @@ pub fn resolve_orchestrator_root(
   use effective <- result.try(resolve_root(root, config_path, env))
   use routing <- result.try(resolve_routing(root, config_path))
   use workspace_profiles <- result.try(resolve_workspace_profiles(root))
-  use default_workspace_profile <- result.try(resolve_default_workspace_profile(
-    workspace_profiles,
-  ))
-  let dag_hooks = config_types.profile_hooks(default_workspace_profile)
+  use _default_workspace_profile <- result.try(
+    resolve_default_workspace_profile(workspace_profiles),
+  )
+  let dag_hooks = config_types.empty_dag_hooks()
   use artifact_limits <- result.try(resolve_artifact_limits(root))
   use model_settings <- result.try(resolve_workflow_model_settings(root))
   use scheduled_jobs <- result.try(resolve_scheduled_jobs(root, routing))
@@ -1168,25 +1168,60 @@ fn resolve_workspace_profiles(
   root: yay.Node,
 ) -> Result(config_types.WorkspaceHookProfiles, error.ConfigError) {
   let workspace = get_map(root, "workspace")
-  let has_legacy_hooks = get_node(workspace, "hooks") != None
+  use _ <- result.try(reject_legacy_workspace_hooks(workspace))
   let has_configured_profiles = get_node(workspace, "profiles") != None
-  use profiles <- result.try(read_configured_workspace_profiles(workspace))
-  use profiles <- result.try(add_legacy_default_profile(
+  use configured_profiles <- result.try(read_configured_workspace_profiles(
     workspace,
-    profiles,
-    has_legacy_hooks,
-    has_configured_profiles,
   ))
+  let profiles =
+    ensure_workspace_default_profile(
+      configured_profiles,
+      has_configured_profiles,
+    )
   use default_profile <- result.try(resolve_default_workspace_profile_name(
     workspace,
     profiles,
-    has_legacy_hooks,
     has_configured_profiles,
   ))
   Ok(config_types.WorkspaceHookProfiles(
     default_profile: default_profile,
     profiles: profiles,
   ))
+}
+
+fn reject_legacy_workspace_hooks(
+  workspace: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(workspace, "hooks") {
+    None -> Ok(Nil)
+    Some(_) -> Error(unsupported_legacy_workspace_hooks("workspace.hooks"))
+  }
+}
+
+fn unsupported_legacy_workspace_hooks(path: String) -> error.ConfigError {
+  error.InvalidConfig(
+    path
+    <> " is no longer supported; remove legacy workspace hook config and update or reset this config to use workspace.profiles.<name>.driver. See docs/runbooks/workspace-driver-migration.md",
+  )
+}
+
+fn ensure_workspace_default_profile(
+  profiles: dict.Dict(String, config_types.WorkspaceHookProfile),
+  has_configured_profiles: Bool,
+) -> dict.Dict(String, config_types.WorkspaceHookProfile) {
+  case has_configured_profiles {
+    True -> profiles
+    False ->
+      dict.insert(
+        profiles,
+        "default",
+        config_types.WorkspaceHookProfile(
+          name: "default",
+          driver: None,
+          source: config_types.SyntheticDefaultWorkspace,
+        ),
+      )
+  }
 }
 
 fn resolve_default_workspace_profile(
@@ -1200,24 +1235,6 @@ fn resolve_default_workspace_profile(
       Error(error.InvalidConfig(
         "workspace.default_profile references unknown profile: "
         <> workspace_profiles.default_profile,
-      ))
-  }
-}
-
-fn read_dag_hooks(
-  hooks: yay.Node,
-  path: String,
-) -> Result(config_types.DagHooksConfig, error.ConfigError) {
-  let timeout = get_int(hooks, "timeout_ms") |> int_default(60_000)
-  case timeout > 0 {
-    False -> Error(error.InvalidConfig(path <> ".timeout_ms must be positive"))
-    True ->
-      Ok(config_types.DagHooksConfig(
-        create: get_non_empty_string(hooks, "create"),
-        before_step: get_non_empty_string(hooks, "before_step"),
-        after_step: get_non_empty_string(hooks, "after_step"),
-        remove: get_non_empty_string(hooks, "remove"),
-        timeout_ms: timeout,
       ))
   }
 }
@@ -1427,20 +1444,6 @@ fn read_workspace_profile_entries(
   }
 }
 
-fn read_optional_dag_hooks(
-  node: Option(yay.Node),
-  path: String,
-) -> Result(Option(config_types.DagHooksConfig), error.ConfigError) {
-  case node {
-    None -> Ok(None)
-    Some(yay.NodeMap(_) as hooks) -> {
-      use hooks <- result.try(read_dag_hooks(hooks, path))
-      Ok(Some(hooks))
-    }
-    Some(_) -> Error(error.InvalidConfig(path <> " must be a map"))
-  }
-}
-
 fn read_optional_workspace_driver(
   node: Option(yay.Node),
   path: String,
@@ -1462,31 +1465,19 @@ fn read_workspace_profile_entry(
   let path = "workspace.profiles." <> name
   case node {
     yay.NodeMap(_) -> {
-      use hooks <- result.try(read_optional_dag_hooks(
-        get_node(node, "hooks"),
-        path <> ".hooks",
-      ))
+      use _ <- result.try(reject_legacy_workspace_profile_hooks(node, path))
       use driver <- result.try(read_optional_workspace_driver(
         get_node(node, "driver"),
         path <> ".driver",
       ))
-      case hooks, driver {
-        None, None ->
+      case driver {
+        None ->
           Error(error.InvalidConfig(
-            path
-            <> " must define hooks for runtime workspace preparation or driver for the new workspace schema",
+            path <> " must define driver for workspace preparation",
           ))
-        Some(_), _ ->
+        Some(_) ->
           Ok(config_types.WorkspaceHookProfile(
             name: name,
-            hooks: hooks,
-            driver: driver,
-            source: config_types.ConfiguredWorkspaceHooks,
-          ))
-        None, Some(_) ->
-          Ok(config_types.WorkspaceHookProfile(
-            name: name,
-            hooks: None,
             driver: driver,
             source: config_types.ConfiguredWorkspaceDriver,
           ))
@@ -1496,56 +1487,19 @@ fn read_workspace_profile_entry(
   }
 }
 
-fn add_legacy_default_profile(
-  workspace: yay.Node,
-  profiles: dict.Dict(String, config_types.WorkspaceHookProfile),
-  has_legacy_hooks: Bool,
-  has_configured_profiles: Bool,
-) -> Result(
-  dict.Dict(String, config_types.WorkspaceHookProfile),
-  error.ConfigError,
-) {
-  case has_legacy_hooks, has_configured_profiles {
-    False, True -> Ok(profiles)
-    True, _ ->
-      case dict.has_key(profiles, "default") {
-        True ->
-          Error(error.InvalidConfig(
-            "workspace.profiles.default conflicts with legacy workspace.hooks; move the legacy hooks into profiles.default or rename the profile",
-          ))
-        False -> {
-          let hooks = get_map(workspace, "hooks")
-          use hooks <- result.try(read_dag_hooks(hooks, "workspace.hooks"))
-          Ok(dict.insert(
-            profiles,
-            "default",
-            config_types.WorkspaceHookProfile(
-              name: "default",
-              hooks: Some(hooks),
-              driver: None,
-              source: config_types.LegacyWorkspaceHooks,
-            ),
-          ))
-        }
-      }
-    False, False ->
-      Ok(dict.insert(
-        profiles,
-        "default",
-        config_types.WorkspaceHookProfile(
-          name: "default",
-          hooks: None,
-          driver: None,
-          source: config_types.SyntheticDefaultWorkspace,
-        ),
-      ))
+fn reject_legacy_workspace_profile_hooks(
+  node: yay.Node,
+  path: String,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(node, "hooks") {
+    None -> Ok(Nil)
+    Some(_) -> Error(unsupported_legacy_workspace_hooks(path <> ".hooks"))
   }
 }
 
 fn resolve_default_workspace_profile_name(
   workspace: yay.Node,
   profiles: dict.Dict(String, config_types.WorkspaceHookProfile),
-  has_legacy_hooks: Bool,
   has_configured_profiles: Bool,
 ) -> Result(String, error.ConfigError) {
   case
@@ -1568,11 +1522,11 @@ fn resolve_default_workspace_profile_name(
       }
     }
     Ok(None) ->
-      case has_legacy_hooks || !has_configured_profiles {
-        True -> Ok("default")
-        False ->
+      case has_configured_profiles {
+        False -> Ok("default")
+        True ->
           Error(error.InvalidConfig(
-            "workspace.default_profile is required when workspace.profiles is set without workspace.hooks",
+            "workspace.default_profile is required when workspace.profiles is set",
           ))
       }
   }

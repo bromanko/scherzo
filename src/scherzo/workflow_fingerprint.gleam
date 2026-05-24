@@ -10,7 +10,6 @@ import scherzo/path as scherzo_path
 import scherzo/structured_output_source
 import scherzo/workflow_contract
 import scherzo/workflow_dag
-import scherzo/workflow_dag_compat
 import scherzo/workspace_driver_env
 import scherzo/workspace_profile
 import scherzo/workstream/phase_metadata
@@ -25,7 +24,6 @@ pub type FingerprintError {
 pub fn fingerprint(
   dag: workflow_dag.WorkflowDag,
 ) -> Result(String, FingerprintError) {
-  let dag = workflow_dag_compat.normalize(dag)
   Ok(for_dag(dag.id, dag))
 }
 
@@ -33,12 +31,10 @@ pub fn fingerprint_for_execution(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(String, FingerprintError) {
-  let dag = workflow_dag_compat.normalize(dag)
   for_execution(dag.id, dag, orchestrator)
 }
 
 pub fn for_dag(workflow_id: String, dag: workflow_dag.WorkflowDag) -> String {
-  let dag = workflow_dag_compat.normalize(dag)
   hash.sha256_hex(canonical_input_for(workflow_id, dag))
 }
 
@@ -47,7 +43,6 @@ pub fn for_execution(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(String, FingerprintError) {
-  let dag = workflow_dag_compat.normalize(dag)
   use profile <- result.try(
     workspace_profile.resolve(dag, orchestrator)
     |> result.map_error(workspace_profile_error_to_fingerprint_error),
@@ -65,17 +60,15 @@ pub fn for_execution(
 pub fn for_execution_options(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
-  dag_hooks: config_types.DagHooksConfig,
+  _dag_hooks: config_types.DagHooksConfig,
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
-  let dag = workflow_dag_compat.normalize(dag)
   let profile =
     config_types.WorkspaceHookProfile(
       name: "default",
-      hooks: Some(dag_hooks),
       driver: None,
-      source: config_types.LegacyWorkspaceHooks,
+      source: config_types.SyntheticDefaultWorkspace,
     )
   for_execution_profile_options(
     workflow_id,
@@ -93,7 +86,6 @@ pub fn for_execution_profile_options(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
-  let dag = workflow_dag_compat.normalize(dag)
   hash.sha256_hex(canonical_execution_input_for_profile(
     workflow_id,
     dag,
@@ -122,7 +114,6 @@ fn for_execution_profile_options_with_schema_root(
 }
 
 pub fn canonical_input(dag: workflow_dag.WorkflowDag) -> String {
-  let dag = workflow_dag_compat.normalize(dag)
   canonical_input_for(dag.id, dag)
 }
 
@@ -130,24 +121,21 @@ pub fn canonical_input_for(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
 ) -> String {
-  let dag = workflow_dag_compat.normalize(dag)
   dag_to_json(workflow_id, dag) |> json.to_string
 }
 
 pub fn canonical_execution_input_for(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
-  dag_hooks: config_types.DagHooksConfig,
+  _dag_hooks: config_types.DagHooksConfig,
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
-  let dag = workflow_dag_compat.normalize(dag)
   let profile =
     config_types.WorkspaceHookProfile(
       name: "default",
-      hooks: Some(dag_hooks),
       driver: None,
-      source: config_types.LegacyWorkspaceHooks,
+      source: config_types.SyntheticDefaultWorkspace,
     )
   canonical_execution_input_for_profile(
     workflow_id,
@@ -165,7 +153,6 @@ pub fn canonical_execution_input_for_profile(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
-  let dag = workflow_dag_compat.normalize(dag)
   canonical_execution_input_for_profile_with_schema_root(
     workflow_id,
     dag,
@@ -207,18 +194,11 @@ fn execution_to_json(
     #("dag", dag_to_json_with_schema_root(workflow_id, dag, schema_root)),
   ]
   let fields = case profile.source {
-    config_types.LegacyWorkspaceHooks
-    | config_types.SyntheticDefaultWorkspace -> fields
-    config_types.ConfiguredWorkspaceHooks
-    | config_types.ConfiguredWorkspaceDriver ->
+    config_types.SyntheticDefaultWorkspace -> fields
+    config_types.ConfiguredWorkspaceDriver ->
       list.append(fields, [
         #("workspace_profile", workspace_profile_to_json(profile)),
       ])
-  }
-  let fields = case profile.hooks {
-    Some(hooks) ->
-      list.append(fields, [#("dag_hooks", dag_hooks_to_json(hooks))])
-    None -> fields
   }
   let fields = case profile.driver {
     Some(driver) ->
@@ -247,7 +227,6 @@ fn dag_to_json_with_schema_root(
   dag: workflow_dag.WorkflowDag,
   schema_root: Option(String),
 ) -> json.Json {
-  let dag = workflow_dag_compat.normalize(dag)
   let prefix = [
     #("id", json.string(workflow_id)),
     #("description", option_string_to_json(dag.description)),
@@ -610,21 +589,9 @@ fn workspace_profile_source_to_string(
   source: config_types.WorkspaceProfileSource,
 ) -> String {
   case source {
-    config_types.LegacyWorkspaceHooks -> "legacy-hooks"
-    config_types.ConfiguredWorkspaceHooks -> "configured-hooks"
     config_types.ConfiguredWorkspaceDriver -> "configured-driver"
     config_types.SyntheticDefaultWorkspace -> "synthetic-default"
   }
-}
-
-fn dag_hooks_to_json(hooks: config_types.DagHooksConfig) -> json.Json {
-  json.object([
-    #("create", option_string_to_json(hooks.create)),
-    #("before_step", option_string_to_json(hooks.before_step)),
-    #("after_step", option_string_to_json(hooks.after_step)),
-    #("remove", option_string_to_json(hooks.remove)),
-    #("timeout_ms", json.int(hooks.timeout_ms)),
-  ])
 }
 
 fn artifact_limits_to_json(limits: config_types.ArtifactLimits) -> json.Json {

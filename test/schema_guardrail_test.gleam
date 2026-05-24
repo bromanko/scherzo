@@ -281,14 +281,21 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
     "/test/tmp/schema_guardrail/workflows/implementation.yaml",
   )
 
-  assert orchestrator.dag_hooks.create
-    == Some("mkdir -p \"$SCHERZO_WORKSPACE_PATH\"")
-  assert orchestrator.dag_hooks.before_step
-    == Some("test -d \"$SCHERZO_WORKSPACE_PATH\"")
-  assert orchestrator.dag_hooks.after_step == Some("echo done")
-  assert orchestrator.dag_hooks.remove
-    == Some("rm -rf \"$SCHERZO_WORKSPACE_PATH\"")
-  assert orchestrator.dag_hooks.timeout_ms == 1234
+  assert orchestrator.dag_hooks == config_types.empty_dag_hooks()
+  assert orchestrator.workspace_profiles.default_profile == "fixture"
+  let assert Ok(fixture_profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "fixture")
+  assert fixture_profile.source == config_types.ConfiguredWorkspaceDriver
+  let assert Some(fixture_driver) = fixture_profile.driver
+  assert fixture_driver.command == "scripts/scherzo-workspace-noop"
+  assert fixture_driver.lifecycle
+    == [
+      config_types.LifecycleCreate,
+      config_types.LifecycleBeforeStep,
+      config_types.LifecycleAfterStep,
+      config_types.LifecycleRemove,
+    ]
+  assert fixture_driver.timeout_ms == 1234
 
   assert orchestrator.artifact_limits.command_stream_max_chars == 111
   assert orchestrator.artifact_limits.template_field_max_chars == 222

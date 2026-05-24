@@ -5,7 +5,6 @@ import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
-import scherzo/hooks
 import scherzo/orchestrator/schedule_core
 import scherzo/path
 import scherzo/tracker/issue as tracker_issue
@@ -307,23 +306,8 @@ pub fn after_step(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Nil {
-  case profile.hooks, profile.driver {
-    Some(profile_hooks), _ ->
-      case profile_hooks.after_step {
-        None -> Nil
-        Some(script) -> {
-          let _ =
-            hooks.run_best_effort_with_env(
-              "after_step",
-              script,
-              orchestrator.config_dir,
-              profile_hooks.timeout_ms,
-              hook_env(issue, step_id, prepared, orchestrator),
-            )
-          Nil
-        }
-      }
-    None, Some(driver) ->
+  case profile.driver {
+    Some(driver) ->
       workspace_driver_lifecycle.run_best_effort(
         "driver_lifecycle_after_step",
         config_types.LifecycleAfterStep,
@@ -331,7 +315,7 @@ pub fn after_step(
         orchestrator,
         hook_env(issue, step_id, prepared, orchestrator),
       )
-    None, None -> Nil
+    None -> Nil
   }
 }
 
@@ -352,23 +336,8 @@ pub fn scheduled_after_step(
       prepared,
       orchestrator,
     )
-  case profile.hooks, profile.driver {
-    Some(profile_hooks), _ ->
-      case profile_hooks.after_step {
-        None -> Nil
-        Some(script) -> {
-          let _ =
-            hooks.run_best_effort_with_env(
-              "after_step",
-              script,
-              orchestrator.config_dir,
-              profile_hooks.timeout_ms,
-              env,
-            )
-          Nil
-        }
-      }
-    None, Some(driver) ->
+  case profile.driver {
+    Some(driver) ->
       workspace_driver_lifecycle.run_best_effort(
         "driver_lifecycle_after_step",
         config_types.LifecycleAfterStep,
@@ -376,7 +345,7 @@ pub fn scheduled_after_step(
         orchestrator,
         env,
       )
-    None, None -> Nil
+    None -> Nil
   }
 }
 
@@ -871,22 +840,8 @@ fn run_create_hook(
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
   let env = hook_env(issue, step_id, prepared, orchestrator)
-  case profile.hooks, profile.driver {
-    Some(profile_hooks), _ ->
-      case profile_hooks.create {
-        None ->
-          create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
-        Some(script) ->
-          hooks.run_hook_with_env(
-            "create",
-            script,
-            orchestrator.config_dir,
-            profile_hooks.timeout_ms,
-            env,
-          )
-          |> result.map_error(HookFailure)
-      }
-    None, Some(driver) ->
+  case profile.driver {
+    Some(driver) ->
       run_driver_lifecycle_or_create_directory(
         "driver_lifecycle_create",
         config_types.LifecycleCreate,
@@ -895,7 +850,7 @@ fn run_create_hook(
         orchestrator,
         env,
       )
-    None, None ->
+    None ->
       create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
   }
 }
@@ -908,21 +863,8 @@ fn run_before_step_hook(
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
   let env = hook_env(issue, step_id, prepared, orchestrator)
-  case profile.hooks, profile.driver {
-    Some(profile_hooks), _ ->
-      case profile_hooks.before_step {
-        None -> Ok(Nil)
-        Some(script) ->
-          hooks.run_hook_with_env(
-            "before_step",
-            script,
-            orchestrator.config_dir,
-            profile_hooks.timeout_ms,
-            env,
-          )
-          |> result.map_error(HookFailure)
-      }
-    None, Some(driver) ->
+  case profile.driver {
+    Some(driver) ->
       run_driver_lifecycle_if_supported(
         "driver_lifecycle_before_step",
         config_types.LifecycleBeforeStep,
@@ -931,7 +873,7 @@ fn run_before_step_hook(
         orchestrator,
         env,
       )
-    None, None -> Ok(Nil)
+    None -> Ok(Nil)
   }
 }
 
@@ -952,22 +894,8 @@ fn run_scheduled_create_hook(
       prepared,
       orchestrator,
     )
-  case profile.hooks, profile.driver {
-    Some(profile_hooks), _ ->
-      case profile_hooks.create {
-        None ->
-          create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
-        Some(script) ->
-          hooks.run_hook_with_env(
-            "create",
-            script,
-            orchestrator.config_dir,
-            profile_hooks.timeout_ms,
-            env,
-          )
-          |> result.map_error(HookFailure)
-      }
-    None, Some(driver) ->
+  case profile.driver {
+    Some(driver) ->
       run_driver_lifecycle_or_create_directory(
         "driver_lifecycle_create",
         config_types.LifecycleCreate,
@@ -976,7 +904,7 @@ fn run_scheduled_create_hook(
         orchestrator,
         env,
       )
-    None, None ->
+    None ->
       create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
   }
 }
@@ -998,21 +926,8 @@ fn run_scheduled_before_step_hook(
       prepared,
       orchestrator,
     )
-  case profile.hooks, profile.driver {
-    Some(profile_hooks), _ ->
-      case profile_hooks.before_step {
-        None -> Ok(Nil)
-        Some(script) ->
-          hooks.run_hook_with_env(
-            "before_step",
-            script,
-            orchestrator.config_dir,
-            profile_hooks.timeout_ms,
-            env,
-          )
-          |> result.map_error(HookFailure)
-      }
-    None, Some(driver) ->
+  case profile.driver {
+    Some(driver) ->
       run_driver_lifecycle_if_supported(
         "driver_lifecycle_before_step",
         config_types.LifecycleBeforeStep,
@@ -1021,7 +936,7 @@ fn run_scheduled_before_step_hook(
         orchestrator,
         env,
       )
-    None, None -> Ok(Nil)
+    None -> Ok(Nil)
   }
 }
 
@@ -1065,69 +980,16 @@ fn run_remove_lifecycle(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Nil {
-  case profile.hooks, profile.driver {
-    Some(profile_hooks), _ ->
-      run_remove_hook(target_abs, orchestrator, profile, profile_hooks)
-    None, Some(driver) ->
+  case profile.driver {
+    Some(driver) ->
       workspace_driver_lifecycle.remove_run(
         target_abs,
         orchestrator,
         profile.name,
         driver,
       )
-    None, None -> Nil
-  }
-}
-
-fn run_remove_hook(
-  target_abs: String,
-  orchestrator: config_types.OrchestratorConfig,
-  profile: config_types.WorkspaceHookProfile,
-  profile_hooks: config_types.DagHooksConfig,
-) -> Nil {
-  case profile_hooks.remove {
     None -> Nil
-    Some(script) -> {
-      let prepared = removal_prepared(target_abs, target_abs, "", profile.name)
-      let _ =
-        hooks.run_best_effort_with_env(
-          "remove",
-          script,
-          orchestrator.config_dir,
-          profile_hooks.timeout_ms,
-          removal_env(prepared, orchestrator),
-        )
-      Nil
-    }
   }
-}
-
-fn removal_prepared(
-  run_root: String,
-  workspace_path: String,
-  workspace_name: String,
-  profile_name: String,
-) -> PreparedStepWorkspace {
-  PreparedStepWorkspace(
-    workflow_id: "",
-    run_id: "",
-    run_root: run_root,
-    workflow_bundle_dir: "",
-    attempt_index: 0,
-    workspace_name: workspace_name,
-    path: workspace_path,
-    source_workspace_name: None,
-    source_workspace_path: None,
-    workspace_profile: profile_name,
-  )
-}
-
-fn removal_env(
-  prepared: PreparedStepWorkspace,
-  orchestrator: config_types.OrchestratorConfig,
-) -> List(#(String, String)) {
-  base_hook_env("", prepared, orchestrator, "", "")
-  |> append_issue_hook_env
 }
 
 pub fn scheduled_hook_env(

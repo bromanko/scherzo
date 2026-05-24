@@ -192,6 +192,30 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   assert prompt == "Implement {{ issue.identifier }}"
 }
 
+pub fn loads_workflow_yaml_without_recover_fields_through_current_parser_test() {
+  let dir = "test/tmp/runtime-bundle-current-dag-shape"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/legacy.yaml",
+      "version: 1\nid: legacy\ncontract:\n  version: 1\n  outputs:\n    summary:\n      type: document.markdown\n      source:\n        step: summarize\n        field: stdout\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n",
+    )
+
+  let assert Ok(dag) =
+    runtime_bundle.load_workflow_file(dir <> "/workflows/legacy.yaml")
+
+  assert dag.id == "legacy"
+  assert dag.recover == None
+  let assert Some(_) = dag.contract
+  let assert [collect, summarize] = dag.steps
+  assert collect.id == "collect"
+  assert collect.recover == None
+  assert summarize.id == "summarize"
+  assert summarize.depends_on == ["collect"]
+  assert summarize.recover == None
+}
+
 pub fn loads_recovery_prompt_files_test() {
   let dir = "test/tmp/runtime-bundle-recover-prompts"
   reset_dir(dir)
@@ -278,10 +302,12 @@ pub fn loads_workflows_with_workspace_profiles_test() {
       dir <> "/workflows/defaulted.yaml",
       "version: 1\nid: defaulted\nsteps:\n  - id: run\n    kind: command\n    run: echo default\n",
     )
+  write_describe_driver(dir, "isolated", "[]")
+  write_describe_driver(dir, "noop", "[]")
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n    defaulted: workflows/defaulted.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/isolated\n    noop:\n      driver:\n        command: scripts/noop\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n    defaulted: workflows/defaulted.yaml\n",
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -291,7 +317,7 @@ pub fn loads_workflows_with_workspace_profiles_test() {
   assert defaulted.workspace_profile == None
 }
 
-pub fn loads_hook_backed_profile_with_no_workspace_capabilities_test() {
+pub fn rejects_hook_backed_profile_with_no_workspace_capabilities_test() {
   let dir = "test/tmp/runtime-bundle-hook-no-capabilities"
   reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
@@ -305,9 +331,11 @@ pub fn loads_hook_backed_profile_with_no_workspace_capabilities_test() {
       dir <> "/scherzo.yaml",
       "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
     )
-  let assert Ok(bundle) =
+  let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
-  assert dict.has_key(bundle.workflows, "noop")
+  assert code == "invalid_config"
+  assert string.contains(message, "workspace.profiles.noop.hooks")
+  assert string.contains(message, "no longer supported")
 }
 
 pub fn rejects_missing_selected_workspace_capabilities_test() {
@@ -333,7 +361,7 @@ pub fn rejects_missing_selected_workspace_capabilities_test() {
   assert string.contains(message, "missing: assert-only")
 }
 
-pub fn loads_hook_backed_profile_with_driver_capabilities_test() {
+pub fn loads_driver_profile_with_driver_capabilities_test() {
   let dir = "test/tmp/runtime-bundle-hook-driver-capabilities"
   reset_dir(dir)
   write_describe_driver(
@@ -350,7 +378,7 @@ pub fn loads_hook_backed_profile_with_driver_capabilities_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n      driver:\n        command: scripts/scherzo-workspace-jj\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/scherzo-workspace-jj\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -405,7 +433,6 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
     runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
   let assert Ok(profile) =
     dict.get(bundle.orchestrator.workspace_profiles.profiles, "dogfood-jj")
-  assert profile.hooks == None
   let assert Some(driver) = profile.driver
   assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
   assert driver.lifecycle
@@ -514,17 +541,17 @@ pub fn rejects_workflow_with_unknown_workspace_profile_test() {
       dir <> "/workflows/noop.yaml",
       "version: 1\nid: noop\nworkspace_profile: missing\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
+  write_describe_driver(dir, "isolated", "[]")
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n  profiles:\n    isolated:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/isolated\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   assert code == "unknown_workspace_profile"
   assert string.contains(message, "noop")
   assert string.contains(message, "missing")
-  assert string.contains(message, "default")
   assert string.contains(message, "isolated")
 }
 
@@ -666,7 +693,6 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
     dict.get(bundle.orchestrator.workspace_profiles.profiles, "dogfood-jj")
   assert profile.name == "dogfood-jj"
   assert profile.source == config_types.ConfiguredWorkspaceDriver
-  assert profile.hooks == None
   let assert Some(driver) = profile.driver
   assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
   assert driver.lifecycle

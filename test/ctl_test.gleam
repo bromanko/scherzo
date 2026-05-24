@@ -6,6 +6,7 @@ import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/ctl
+import scherzo/path
 import scherzo/session/event
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
@@ -1448,10 +1449,14 @@ fn write_schedule_doctor_config(dir: String, prompt: String) -> String {
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/workflows/prompts")
   let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(driver_command) =
+    path.absolute("scripts/scherzo-workspace-noop")
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    nightly: workflows/nightly.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\nscheduled_jobs:\n  - id: nightly\n    workflow: nightly\n    enabled: true\n    every: 15m\n    overlap: skip\n    catch_up: false\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:nightly\n        dedupe: open_issue_per_job\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
+        <> driver_command
+        <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    nightly: workflows/nightly.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\nscheduled_jobs:\n  - id: nightly\n    workflow: nightly\n    enabled: true\n    every: 15m\n    overlap: skip\n    catch_up: false\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:nightly\n        dedupe: open_issue_per_job\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
