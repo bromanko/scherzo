@@ -120,7 +120,7 @@ fn matches_operator_ref(ref: task.TaskRef, operator_ref: String) -> Bool {
 }
 
 fn same_ref(left: task.TaskRef, right: task.TaskRef) -> Bool {
-  left.backend_kind == right.backend_kind && left.remote_id == right.remote_id
+  task.identity(left) == task.identity(right)
 }
 
 fn option_equals(value: Option(String), expected: String) -> Bool {

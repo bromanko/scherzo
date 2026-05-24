@@ -1017,41 +1017,55 @@ fn resolve_linear_contract(
 fn resolve_linear_commands(
   root: yay.Node,
 ) -> Result(config_types.LinearCommandConfig, error.ConfigError) {
-  let node = get_map(root, "linear_commands")
+  let remote_node = get_map(root, "remote_commands")
+  let legacy_node = get_map(root, "linear_commands")
   let defaults = default_linear_command_config()
-  let enabled = get_bool(node, "enabled") |> bool_default(defaults.enabled)
-  let prefix = get_string(node, "prefix") |> option.unwrap(defaults.prefix)
-  let prefix = string.trim(prefix)
+  let enabled =
+    get_bool(remote_node, "enabled")
+    |> option.lazy_or(fn() { get_bool(legacy_node, "enabled") })
+    |> bool_default(defaults.enabled)
+  let prefix =
+    get_string(remote_node, "prefix")
+    |> option.lazy_or(fn() { get_string(legacy_node, "prefix") })
+    |> option.unwrap(defaults.prefix)
+    |> string.trim
   let authorized_user_ids =
-    get_string_list(node, "authorized_user_ids")
+    get_string_list(remote_node, "authorized_user_ids")
+    |> option.lazy_or(fn() {
+      get_string_list(legacy_node, "authorized_user_ids")
+    })
     |> list_default(defaults.authorized_user_ids)
     |> normalize_string_list
   let poll_limit_per_issue =
-    get_int(node, "poll_limit_per_issue")
+    get_int(remote_node, "poll_limit_per_issue")
+    |> option.lazy_or(fn() { get_int(legacy_node, "poll_limit_per_issue") })
     |> int_default(defaults.poll_limit_per_issue)
   let max_comments_per_tick =
-    get_int(node, "max_comments_per_tick")
+    get_int(remote_node, "max_comments_per_tick")
+    |> option.lazy_or(fn() { get_int(legacy_node, "max_comments_per_tick") })
     |> int_default(defaults.max_comments_per_tick)
   let acknowledge_success =
-    get_bool(node, "acknowledge_success")
+    get_bool(remote_node, "acknowledge_success")
+    |> option.lazy_or(fn() { get_bool(legacy_node, "acknowledge_success") })
     |> bool_default(defaults.acknowledge_success)
   let acknowledge_rejection =
-    get_bool(node, "acknowledge_rejection")
+    get_bool(remote_node, "acknowledge_rejection")
+    |> option.lazy_or(fn() { get_bool(legacy_node, "acknowledge_rejection") })
     |> bool_default(defaults.acknowledge_rejection)
   case prefix == "" {
     True ->
-      Error(error.InvalidConfig("linear_commands.prefix must be non-empty"))
+      Error(error.InvalidConfig("remote_commands.prefix must be non-empty"))
     False ->
       case poll_limit_per_issue <= 0 || max_comments_per_tick <= 0 {
         True ->
           Error(error.InvalidConfig(
-            "linear_commands poll limits must be positive",
+            "remote_commands poll limits must be positive",
           ))
         False ->
           case enabled && list.is_empty(authorized_user_ids) {
             True ->
               Error(error.InvalidConfig(
-                "linear_commands.authorized_user_ids is required when enabled",
+                "remote_commands.authorized_user_ids is required when enabled",
               ))
             False ->
               Ok(config_types.LinearCommandConfig(

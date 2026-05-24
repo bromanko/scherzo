@@ -72,6 +72,11 @@ pub type TaskConversionError {
   MissingTaskKey
 }
 
+pub fn identity(ref: TaskRef) -> #(String, String) {
+  let TaskRef(backend_kind: backend_kind, remote_id: remote_id, ..) = ref
+  #(backend_kind, remote_id)
+}
+
 pub fn display_key(ref: TaskRef) -> String {
   let TaskRef(remote_id: remote_id, key: key, ..) = ref
   case non_empty(key) {
@@ -132,6 +137,17 @@ pub fn from_legacy_issue(issue: tracker_issue.Issue) -> Task {
 pub fn to_legacy_issue(
   task: Task,
 ) -> Result(tracker_issue.Issue, TaskConversionError) {
+  let Task(ref: ref, ..) = task
+  let TaskRef(backend_kind: backend_kind, key: key, ..) = ref
+
+  case backend_kind == "linear", non_empty(key) {
+    False, _ -> Error(RequiresLinearTask)
+    True, None -> Error(MissingTaskKey)
+    True, Some(_) -> Ok(to_runtime_issue(task))
+  }
+}
+
+pub fn to_runtime_issue(task: Task) -> tracker_issue.Issue {
   let Task(
     ref: ref,
     title: title,
@@ -145,39 +161,29 @@ pub fn to_legacy_issue(
     created_at: created_at,
     updated_at: updated_at,
   ) = task
-  let TaskRef(
-    backend_kind: backend_kind,
-    remote_id: remote_id,
-    key: key,
-    url: url,
-  ) = ref
+  let TaskRef(remote_id: remote_id, key: key, url: url, ..) = ref
 
-  case backend_kind == "linear", non_empty(key) {
-    False, _ -> Error(RequiresLinearTask)
-    True, None -> Error(MissingTaskKey)
-    True, Some(identifier) ->
-      Ok(tracker_issue.Issue(
-        id: remote_id,
-        identifier: identifier,
-        title: title,
-        description: description,
-        priority: priority,
-        state: issue_state.from_string_unchecked(state.name),
-        branch_name: branch_hint,
-        url: url,
-        labels: list.map(labels, fn(label) {
-          let TaskLabel(name: name, ..) = label
-          name
-        }),
-        blocked_by: case blockers_complete {
-          True -> []
-          False -> list.filter_map(blockers, task_ref_to_legacy_blocker)
-        },
-        blocked_by_complete: blockers_complete,
-        created_at: created_at,
-        updated_at: updated_at,
-      ))
-  }
+  tracker_issue.Issue(
+    id: remote_id,
+    identifier: non_empty(key) |> option.unwrap(remote_id),
+    title: title,
+    description: description,
+    priority: priority,
+    state: issue_state.from_string_unchecked(state.name),
+    branch_name: branch_hint,
+    url: url,
+    labels: list.map(labels, fn(label) {
+      let TaskLabel(name: name, ..) = label
+      name
+    }),
+    blocked_by: case blockers_complete {
+      True -> []
+      False -> list.filter_map(blockers, task_ref_to_legacy_blocker)
+    },
+    blocked_by_complete: blockers_complete,
+    created_at: created_at,
+    updated_at: updated_at,
+  )
 }
 
 fn legacy_blocker_to_task_ref(

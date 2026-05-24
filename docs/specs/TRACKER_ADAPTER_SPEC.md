@@ -151,7 +151,7 @@ Capability names in this table are canonical and MUST match the public fields in
 | --- | --- | --- | --- |
 | `task_source` | Yes | Always; it is a non-optional field | Reads candidate tasks, refreshes task refs, and resolves operator refs. |
 | `comments` | No | Remote command acknowledgement when remote commands are enabled | Startup validation specifically requires `comments` for `remote_command_ack`. Invalid-workflow comment reporting also uses this capability at runtime when configured. |
-| `remote_commands` | No | `linear_commands.enabled` / remote operator commands | Current config path remains Linear-named for compatibility. |
+| `remote_commands` | No | `remote_commands.enabled` / remote operator commands | `linear_commands` remains a compatibility alias during migration. |
 | `state_transitions` | No | Handoff state moves when configured | Moves tasks to configured states. Invalid-workflow state reporting also uses this capability at runtime when configured. |
 | `routing_metadata` | No | Workflow label routing when workflow label paths are configured | Extracts labels and blocker refs from normalized tasks. |
 | `links` | No | No required startup feature today | Generic link upsert seam for future use. |
@@ -339,7 +339,7 @@ The current validation rules are:
 
 | Feature | Required capability | Config path | Message |
 | --- | --- | --- | --- |
-| `remote_commands` | `remote_commands` | `linear_commands.enabled` unless caller supplied another path | `linear_commands.enabled requires tracker adapter <kind> to expose remote_commands` |
+| `remote_commands` | `remote_commands` | `remote_commands.enabled` unless caller supplied another path | `remote_commands.enabled requires tracker adapter <kind> to expose remote_commands` |
 | `remote_command_ack` | `comments` | same remote-command config path | `remote command acknowledgements require comments capability` |
 | `handoff_comments` | `handoff` | `handoff.comments` or caller-supplied handoff path | `handoff comments require handoff capability` |
 | `handoff_state_moves` | `state_transitions` | `handoff.states` or caller-supplied handoff path | `handoff state moves require state_transitions capability` |

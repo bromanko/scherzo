@@ -154,16 +154,42 @@ fn lookup_task_by_operator_ref(
   case operator_ref == "" {
     True -> Ok(None)
     False -> {
-      use tasks <- try_adapter(linear.fetch_issue_states_by_ids(
+      use issues <- try_adapter(linear.fetch_issue_states_by_ids(
         config,
         [operator_ref],
         transport,
       ))
-      case list.map(tasks, task.from_legacy_issue) {
-        [] -> Ok(None)
+      case list.map(issues, task.from_legacy_issue) {
+        [] ->
+          lookup_candidate_task_by_identifier(config, transport, operator_ref)
         [task, ..] -> Ok(Some(task))
       }
     }
+  }
+}
+
+fn lookup_candidate_task_by_identifier(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  identifier: String,
+) -> Result(Option(task.Task), adapter.TrackerError) {
+  let request =
+    adapter.TaskSearchRequest(
+      active_states: [],
+      dispatch_states: [],
+      terminal_states: [],
+      workflow_labels: [],
+      limit: 100,
+    )
+  case fetch_candidate_tasks(config, transport, request) {
+    Error(err) -> Error(err)
+    Ok(tasks) ->
+      case
+        list.find(tasks, fn(item) { task.display_key(item.ref) == identifier })
+      {
+        Ok(task) -> Ok(Some(task))
+        Error(Nil) -> Ok(None)
+      }
   }
 }
 

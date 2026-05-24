@@ -105,8 +105,8 @@ pub fn tracker_adapter_spec_documents_startup_validation_table_test() {
       #(
         "remote_commands",
         "remote_commands",
-        "`linear_commands.enabled` unless caller supplied another path",
-        "linear_commands.enabled requires tracker adapter <kind> to expose remote_commands",
+        "`remote_commands.enabled` unless caller supplied another path",
+        "remote_commands.enabled requires tracker adapter <kind> to expose remote_commands",
       ),
       #(
         "remote_command_ack",

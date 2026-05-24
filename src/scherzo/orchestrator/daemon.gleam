@@ -307,7 +307,7 @@ fn tracker_requirements(
   let effective = orchestrator.effective
   adapter.TrackerRequirements(
     remote_commands_enabled: effective.linear_commands.enabled,
-    remote_commands_config_path: Some("linear_commands.enabled"),
+    remote_commands_config_path: Some("remote_commands.enabled"),
     handoff_comments_enabled: handoff_comments_enabled(effective.handoff),
     handoff_state_moves_enabled: handoff_state_moves_enabled(effective.handoff),
     handoff_config_path: Some("handoff.states"),
@@ -472,11 +472,11 @@ pub fn start(
     tracker_adapter,
     bundle.orchestrator,
   ))
-  let tracker_client = adapter_legacy.legacy_client(tracker_adapter)
+  let tracker_client = adapter_legacy.workflow_compat_client(tracker_adapter)
   let secrets = config.resolved_secrets(effective)
   use startup_recovery <- try_startup(load_startup_recovery(
     bundle,
-    tracker_client,
+    tracker_adapter,
     dependencies,
     secrets,
   ))
@@ -637,7 +637,7 @@ pub fn get_snapshot(
 
 fn load_startup_recovery(
   bundle: runtime_bundle.RuntimeBundle,
-  tracker_client: tracker.Client,
+  tracker_adapter: adapter.TrackerAdapter,
   dependencies: RuntimeDependencies,
   secrets: List(String),
 ) -> Result(StartupRecovery, StartupError) {
@@ -662,7 +662,7 @@ fn load_startup_recovery(
     False -> Nil
   }
   use refreshed_issues <- try_startup(fetch_recovery_issue_states(
-    tracker_client,
+    tracker_adapter,
     recovery.known_issue_ids(replayed.projection),
   ))
   use recovery_plan <- try_startup(
@@ -1213,31 +1213,33 @@ fn current_workflow_observation(
 }
 
 fn fetch_recovery_issue_states(
-  tracker_client: tracker.Client,
+  tracker_adapter: adapter.TrackerAdapter,
   issue_ids: List(String),
 ) -> Result(List(tracker_issue.Issue), StartupError) {
-  fetch_recovery_issue_chunks(tracker_client, chunk_strings(issue_ids, 50), [])
+  fetch_recovery_issue_chunks(tracker_adapter, chunk_strings(issue_ids, 50), [])
 }
 
 fn fetch_recovery_issue_chunks(
-  tracker_client: tracker.Client,
+  tracker_adapter: adapter.TrackerAdapter,
   chunks: List(List(String)),
   acc: List(tracker_issue.Issue),
 ) -> Result(List(tracker_issue.Issue), StartupError) {
   case chunks {
     [] -> Ok(list.reverse(acc))
     [chunk, ..rest] ->
-      case tracker_client.fetch_issue_states_by_ids(chunk) {
+      case
+        adapter_legacy.refresh_runtime_issues_by_ids(tracker_adapter, chunk)
+      {
         Ok(issues) ->
           fetch_recovery_issue_chunks(
-            tracker_client,
+            tracker_adapter,
             rest,
             list.append(list.reverse(issues), acc),
           )
         Error(err) ->
           Error(StartupError(
             "recovery_issue_fetch_failed",
-            error.tracker_code(err),
+            adapter_legacy.adapter_error_message(err),
           ))
       }
   }
@@ -2930,12 +2932,10 @@ fn fetch_candidates_with_identifier(
   state: State,
   identifier: String,
 ) -> Result(tracker_issue.Issue, command.CommandStatus) {
-  case state.tracker_client.fetch_candidate_issues() {
+  case adapter_legacy.lookup_runtime_issue(state.tracker_adapter, identifier) {
+    Ok(Some(issue)) -> Ok(issue)
+    Ok(None) -> Error(command.NotFound)
     Error(_) -> Error(command.Rejected("candidate_fetch_failed"))
-    Ok(issues) ->
-      issues
-      |> list.filter(fn(issue) { issue.identifier == identifier })
-      |> unique_issue
   }
 }
 
@@ -2943,7 +2943,11 @@ fn fetch_issue_by_id(
   state: State,
   issue_id: String,
 ) -> Result(tracker_issue.Issue, command.CommandStatus) {
-  case state.tracker_client.fetch_issue_states_by_ids([issue_id]) {
+  case
+    adapter_legacy.refresh_runtime_issues_by_ids(state.tracker_adapter, [
+      issue_id,
+    ])
+  {
     Ok([issue]) -> Ok(issue)
     Ok([]) -> Error(command.NotFound)
     Ok(_) -> Error(command.Rejected("ambiguous_issue_id"))
@@ -3064,7 +3068,7 @@ fn apply_reloaded_workflow(
     State(
       ..state,
       workflow: workflow,
-      tracker_client: adapter_legacy.legacy_client(tracker_adapter),
+      tracker_client: adapter_legacy.workflow_compat_client(tracker_adapter),
       tracker_adapter: tracker_adapter,
       runtime: runtime,
     )
@@ -3102,7 +3106,7 @@ fn begin_running_refresh(state: State, generation: Int) -> State {
         effect_runner.RefreshRunning(
           generation: generation,
           ids: ids,
-          client: state.tracker_client,
+          tracker_adapter: state.tracker_adapter,
         ),
       )
   }
@@ -3503,7 +3507,7 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
         state,
         effect_runner.FetchCandidates(
           generation: generation,
-          client: state.tracker_client,
+          tracker_adapter: state.tracker_adapter,
         ),
       )
     },
@@ -3536,7 +3540,7 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
         effect_runner.ValidateDispatchClaim(
           issue_id: issue_id,
           generation: generation,
-          client: state.tracker_client,
+          tracker_adapter: state.tracker_adapter,
         ),
       )
     },
@@ -4166,7 +4170,7 @@ fn transition_begin_retry_refresh(
         effect_runner.RefreshRetry(
           issue_id: issue_id,
           generation: generation,
-          client: state.tracker_client,
+          tracker_adapter: state.tracker_adapter,
         ),
       )
   }
