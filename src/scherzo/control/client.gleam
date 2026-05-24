@@ -1,4 +1,5 @@
 import gleam/int
+import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -30,11 +31,53 @@ pub type ControlError {
   ProtocolFailed(message: String)
 }
 
+pub type ControlTarget {
+  ControlTarget(control_path: String, control_file: file.ControlFile)
+}
+
 type Socket
 
 const request_transport_timeout_ms = 5000
 
 const operator_command_response_timeout_ms = 30_000
+
+pub fn discover_target(
+  explicit_path: Option(String),
+  env: fn(String) -> Option(String),
+) -> Result(ControlTarget, file.ControlFileError) {
+  case file.discover_path(explicit_path, env) {
+    Error(err) -> Error(err)
+    Ok(control_path) ->
+      case file.read(control_path) {
+        Error(err) -> Error(err)
+        Ok(control_file) ->
+          Ok(ControlTarget(
+            control_path: control_path,
+            control_file: control_file,
+          ))
+      }
+  }
+}
+
+pub fn target_response_line(line: String, target: ControlTarget) -> String {
+  case protocol.decode_response(line) {
+    Ok(response) ->
+      protocol.response_to_json_with_fields(response, [
+        #("target", target_to_json(target)),
+      ])
+      |> json.to_string
+    Error(_) -> line
+  }
+}
+
+fn target_to_json(target: ControlTarget) -> json.Json {
+  json.object([
+    #("control_file_path", json.string(target.control_path)),
+    #("workspace_root", json.string(target.control_file.workspace_root)),
+    #("host", json.string(target.control_file.host)),
+    #("port", json.int(target.control_file.port)),
+  ])
+}
 
 pub fn request(
   control_file: file.ControlFile,

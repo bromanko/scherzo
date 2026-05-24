@@ -720,7 +720,7 @@ direnv exec . scripts/scherzoctl stop-after-turn <session-id> --yes
 direnv exec . scripts/scherzoctl abort <session-id> --yes
 ```
 
-Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
+Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
 
 ## 14. Adaptation checklist and troubleshooting
 

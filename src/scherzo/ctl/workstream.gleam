@@ -169,7 +169,7 @@ fn workspace_root(
   explicit_root: Option(String),
 ) -> Result(String, #(String, String)) {
   case explicit_root {
-    Some(root) -> Ok(root)
+    Some(root) -> Ok(file.resolve_cli_path(root, file.get_env))
     None -> {
       use control_file <- try_workstream(load_control_file(control_path))
       Ok(control_file.workspace_root)
