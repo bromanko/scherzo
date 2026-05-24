@@ -303,4 +303,31 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   assert plan.type_ == workflow_contract.ExecPlan
   assert implementation_pack.type_ == workflow_contract.ImplementationPack
   assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
+
+  let assert Ok(validate_review_doc) =
+    workflow_dag.step_by_id(drafting, "validate_review_doc")
+  let assert Ok(Some(recovery_config)) =
+    workflow_dag.effective_recovery_config(drafting, validate_review_doc)
+  assert recovery_config.attempts == 1
+  assert recovery_config.model == None
+  assert recovery_config.prompt
+    == workflow_dag.PromptFile("prompts/execplan-recover-failed-step.md")
+
+  let assert Ok(publish_review_doc) =
+    workflow_dag.step_by_id(drafting, "publish_review_doc")
+  let assert Ok(None) =
+    workflow_dag.effective_recovery_config(drafting, publish_review_doc)
+  let assert Ok(materialize_bundle) =
+    workflow_dag.step_by_id(drafting, "materialize_bundle")
+  let assert Ok(None) =
+    workflow_dag.effective_recovery_config(drafting, materialize_bundle)
+
+  let assert Ok(recovery_prompt) =
+    simplifile.read(
+      ".scherzo/workflows/prompts/execplan-recover-failed-step.md",
+    )
+  assert string.contains(
+    recovery_prompt,
+    "submit_workflow_step_recovery_result",
+  )
 }
