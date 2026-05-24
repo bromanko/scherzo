@@ -12,6 +12,7 @@ classify_fetch_stderr() {
   saw_agent_communication=false
   saw_agent_refused=false
   saw_public_identity_invalid_format=false
+  saw_public_identity_libcrypto_unsupported=false
   saw_publickey_denied=false
   line=
 
@@ -41,6 +42,9 @@ classify_fetch_stderr() {
       *'Load key "'*'.pub": invalid format'*)
         saw_public_identity_invalid_format=true
         ;;
+      *'Load key "'*'.pub": error in libcrypto: unsupported'*)
+        saw_public_identity_libcrypto_unsupported=true
+        ;;
       *'Permission denied (publickey)'*)
         saw_publickey_denied=true
         ;;
@@ -53,6 +57,8 @@ classify_fetch_stderr() {
     printf 'ssh_agent_refused_operation\n' >"$transient_kind_file"
   elif [ "$saw_public_identity_invalid_format" = true ] && [ "$saw_publickey_denied" = true ]; then
     printf 'ssh_public_identity_invalid_format\n' >"$transient_kind_file"
+  elif [ "$saw_public_identity_libcrypto_unsupported" = true ] && [ "$saw_publickey_denied" = true ]; then
+    printf 'ssh_public_identity_libcrypto_unsupported\n' >"$transient_kind_file"
   fi
 }
 
@@ -143,21 +149,64 @@ while :; do
   esac
 done
 
+printf 'ORIGIN_SYNC_STEP=inspect_main_policy\n'
 if ! jj log -r "$destination" --no-graph -T commit_id --color=never >/dev/null 2>&1; then
   printf 'ORIGIN_SYNC_STATUS=destination_missing\n'
   printf 'ORIGIN_SYNC_MESSAGE=destination revision not found after fetch: %s\n' "$destination"
   exit 1
 fi
 
+if ! jj log -r "$branch" --no-graph -T commit_id --color=never >/dev/null 2>&1; then
+  printf 'ORIGIN_SYNC_STATUS=local_main_missing\n'
+  printf 'ORIGIN_SYNC_MESSAGE=local bookmark %s is missing; create or restore it before scheduled origin sync can enforce %s == %s\n' "$branch" "$branch" "$destination"
+  exit 1
+fi
+
+main_conflict_revset="conflicts() & (${branch})"
+if ! local_main_conflicts=$(jj log -r "$main_conflict_revset" --no-graph -T 'change_id.short() ++ "\n"' --color=never); then
+  printf 'ORIGIN_SYNC_STATUS=local_main_conflict_inspection_failed\n'
+  printf 'ORIGIN_SYNC_MESSAGE=could not inspect local bookmark %s for jj conflicts\n' "$branch"
+  exit 1
+fi
+
+if [ -n "$local_main_conflicts" ]; then
+  printf 'ORIGIN_SYNC_STATUS=local_main_conflicted\n'
+  printf 'ORIGIN_SYNC_MESSAGE=local bookmark %s points at jj conflicts; manual attention required before syncing to %s\n' "$branch" "$destination"
+  printf 'ORIGIN_SYNC_CONFLICTED_CHANGES:\n'
+  printf '%s\n' "$local_main_conflicts"
+  exit 1
+fi
+
+printf 'ORIGIN_SYNC_STEP=advance_main\n'
+if ! jj bookmark advance "$branch" --to "$destination" --color=never; then
+  printf 'ORIGIN_SYNC_STATUS=local_main_advance_failed\n'
+  printf 'ORIGIN_SYNC_MESSAGE=jj bookmark advance %s --to %s failed; local %s is diverged, conflicted, or would require a sideways/backward move\n' "$branch" "$destination" "$branch"
+  exit 1
+fi
+
+main_equals_destination_revset="(${branch}) & (${destination})"
+if ! main_equals_destination=$(jj log -r "$main_equals_destination_revset" --no-graph -T 'change_id.short() ++ "\n"' --color=never); then
+  printf 'ORIGIN_SYNC_STATUS=local_main_verification_failed\n'
+  printf 'ORIGIN_SYNC_MESSAGE=could not verify local bookmark %s after jj bookmark advance\n' "$branch"
+  exit 1
+fi
+
+if [ -z "$main_equals_destination" ]; then
+  printf 'ORIGIN_SYNC_STATUS=local_main_not_equal_origin\n'
+  printf 'ORIGIN_SYNC_MESSAGE=local bookmark %s still does not equal %s after jj bookmark advance; manual attention required\n' "$branch" "$destination"
+  exit 1
+fi
+
 printf 'ORIGIN_SYNC_STEP=inspect_working_copy\n'
-if ! current_conflicts=$(jj log -r 'conflicts() & (@)' --no-graph -T 'change_id.short() ++ "\n"' --color=never); then
+stack_conflict_revset="conflicts() & (${stack_revset})"
+if ! current_conflicts=$(jj log -r "$stack_conflict_revset" --no-graph -T 'change_id.short() ++ "\n"' --color=never); then
   printf 'ORIGIN_SYNC_STATUS=conflict_inspection_failed\n'
   exit 1
 fi
 
 if [ -n "$current_conflicts" ]; then
   printf 'ORIGIN_SYNC_STATUS=blocked_existing_conflicts\n'
-  printf 'ORIGIN_SYNC_MESSAGE=fetch completed; current working-copy change already has jj conflicts and needs manual attention\n'
+  printf 'ORIGIN_SYNC_MESSAGE=fetch completed; root working-copy stack already has jj conflicts and needs manual attention\n'
   printf 'ORIGIN_SYNC_CONFLICTED_CHANGES:\n'
   printf '%s\n' "$current_conflicts"
   exit 1
@@ -183,7 +232,7 @@ if ! jj rebase -r "$stack_revset" -d "$destination" --color=never; then
   exit 1
 fi
 
-conflict_revset="conflicts() & (${destination}..@)"
+conflict_revset="conflicts() & (${stack_revset})"
 if ! conflicted_changes=$(jj log -r "$conflict_revset" --no-graph -T 'change_id.short() ++ "\n"' --color=never); then
   printf 'ORIGIN_SYNC_STATUS=conflict_inspection_failed\n'
   printf 'ORIGIN_SYNC_MESSAGE=rebase completed but conflict inspection failed; inspect jj status manually\n'

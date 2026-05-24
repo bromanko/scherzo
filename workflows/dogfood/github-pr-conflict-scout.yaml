@@ -1,7 +1,11 @@
 version: 1
 id: github-pr-conflict-scout
 description: Scan open same-repository GitHub pull requests and enqueue Linear merge-conflict resolver issues.
-workspace_profile: dogfood-jj
+# Default to noop because the scheduled path passes --skip-local-preflight and
+# only needs the repository root for config/remote discovery. If local preflight
+# is enabled, the command still cd's to SCHERZO_REPO_ROOT; use a custom workflow
+# profile only when that mode needs an isolated jj workspace.
+workspace_profile: noop
 max_parallel_steps: 1
 steps:
   - id: scan_open_prs

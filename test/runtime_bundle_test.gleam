@@ -461,10 +461,13 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
       "execplan-revision",
       "execplan-implementation",
       "merge-conflict-resolution",
-      "github-pr-conflict-scout",
     ],
     bundle.workflows,
   )
+  let assert Ok(conflict_scout) =
+    dict.get(bundle.workflows, "github-pr-conflict-scout")
+  assert conflict_scout.workspace_profile == Some("noop")
+  assert conflict_scout.workspace_capabilities == []
 }
 
 fn assert_dogfood_workflows_select_profile(
@@ -722,13 +725,16 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
       "execplan-revision",
       "execplan-implementation",
       "merge-conflict-resolution",
-      "github-pr-conflict-scout",
     ],
     fn(workflow_id) {
       let assert Ok(dag) = dict.get(bundle.workflows, workflow_id)
       assert dag.workspace_profile == Some("dogfood-jj")
     },
   )
+
+  let assert Ok(conflict_scout) =
+    dict.get(bundle.workflows, "github-pr-conflict-scout")
+  assert conflict_scout.workspace_profile == Some("noop")
 }
 
 pub fn routing_rejects_missing_unknown_and_multiple_labels_test() {
