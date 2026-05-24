@@ -163,7 +163,7 @@ fn write_lifecycle_driver(dir: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       driver,
-      "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
+      "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') test -d \"$SCHERZO_RUN_ROOT\"; if [ -f \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 23; fi; rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
     )
   chmod_executable(driver)
 }
@@ -201,6 +201,104 @@ pub fn driver_profile_invokes_lifecycle_create_before_after_and_remove_test() {
     log,
     "|profile=dogfood-jj|driver=./driver.sh|caps=status assert-only",
   )
+}
+
+pub fn cleanup_invokes_remove_for_each_run_workspace_before_delete_test() {
+  let dir = "test/tmp/workspace-run-cleanup-multiple-driver-workspaces"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-cleanup-multiple",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(review) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-cleanup-multiple",
+      "review",
+      workflow_dag.WorkspaceRef(name: "review", from: Some("main")),
+      orchestrator,
+      profile,
+      dict.from_list([#("main", main)]),
+    )
+
+  let assert Ok(Nil) =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+
+  assert main.run_root == review.run_root
+  let assert Ok(False) = simplifile.is_directory(main.run_root)
+  let assert Ok(log) = simplifile.read(orchestrator.config_dir <> "/driver.log")
+  assert string.contains(
+    log,
+    "lifecycle remove|pwd="
+      <> orchestrator.config_dir
+      <> "|workspace="
+      <> main.path,
+  )
+  assert string.contains(
+    log,
+    "lifecycle remove|pwd="
+      <> orchestrator.config_dir
+      <> "|workspace="
+      <> review.path,
+  )
+}
+
+pub fn cleanup_remove_failure_returns_error_and_keeps_run_root_test() {
+  let dir = "test/tmp/workspace-run-cleanup-remove-failure"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-cleanup-failure",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(review) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-cleanup-failure",
+      "review",
+      workflow_dag.WorkspaceRef(name: "review", from: Some("main")),
+      orchestrator,
+      profile,
+      dict.from_list([#("main", main)]),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      orchestrator.config_dir <> "/remove-fail-workspace",
+      "review\n",
+    )
+
+  let assert Error(error.WorkspaceIo(cleanup_error)) =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+
+  assert string.contains(cleanup_error, "workspace review at " <> review.path)
+  assert string.contains(cleanup_error, "hook_failed")
+  assert string.contains(cleanup_error, "exited 23")
+  assert main.run_root == review.run_root
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+  let assert Ok(True) = simplifile.is_directory(review.path)
+  let assert Ok(log) = simplifile.read(orchestrator.config_dir <> "/driver.log")
+  assert string.contains(log, "lifecycle remove|")
 }
 
 pub fn scheduled_run_paths_and_hook_env_are_issue_free_test() {

@@ -1099,6 +1099,36 @@ pub fn durable_finished_runs_request_cleanup_once_for_each_terminal_outcome_test
   assert plan(dag, cleaned_run, current_ok()).cleanup_run_roots == []
 }
 
+pub fn finished_cleanup_failure_run_root_is_retried_until_cleanup_recorded_test() {
+  let dag = parse_dag(single_step_yaml())
+  let run =
+    planner.WorkflowRunFacts(
+      ..base_run([]),
+      run_status: planner.RunFinished(planner.WorkflowFailedFatal, 1, 1),
+      run_root: "test/tmp/workflow-cleanup-failed-run-root",
+      cleanup_recorded: False,
+    )
+  let recovery = plan(dag, run, current_ok())
+
+  assert recovery.outcome == planner.TerminalFailed
+  assert recovery.cleanup_run_roots
+    == [
+      planner.CleanupRunRoot(
+        run_id: "run-1",
+        issue_id: "issue-1",
+        run_root: "test/tmp/workflow-cleanup-failed-run-root",
+      ),
+    ]
+
+  let cleaned_recovery =
+    plan(
+      dag,
+      planner.WorkflowRunFacts(..run, cleanup_recorded: True),
+      current_ok(),
+    )
+  assert cleaned_recovery.cleanup_run_roots == []
+}
+
 pub fn run_interrupted_and_superseded_are_terminal_for_planner_but_not_cleaned_test() {
   let dag = parse_dag(single_step_yaml())
   let interrupted_run =
