@@ -1,6 +1,7 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/result_artifact
+import scherzo/structured_output_tool_spec
 import scherzo/workflow_step_recovery
 
 fn recovery_call(
@@ -13,6 +14,26 @@ fn recovery_call(
     sibling_count: 1,
     receipt_json: None,
   )
+}
+
+pub fn tool_spec_builds_provider_compatible_recovery_tool_test() {
+  let assert Ok(tool_spec) =
+    workflow_step_recovery.tool_spec(
+      "implementation",
+      "run-1",
+      "repair",
+      1,
+      ".",
+    )
+
+  assert tool_spec.tool_name == workflow_step_recovery.tool_name
+  let encoded = structured_output_tool_spec.to_string(tool_spec)
+  assert string.contains(
+    encoded,
+    "\"tool_name\":\"submit_workflow_step_recovery_result\"",
+  )
+  assert string.contains(encoded, "\"parameters_schema\":")
+  assert !string.contains(encoded, "\"enum\"")
 }
 
 pub fn parses_retry_requested_decision_test() {

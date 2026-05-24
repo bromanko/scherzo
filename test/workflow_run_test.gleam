@@ -681,6 +681,78 @@ fn prepare_fake_step(
   ))
 }
 
+fn deps_with_prepared_run_root(
+  subject: process.Subject(String),
+  failing_command: Option(String),
+  run_root: String,
+) -> workflow_run.Dependencies {
+  let base = deps(subject, failing_command)
+  workflow_run.Dependencies(
+    ..base,
+    prepare_step: fn(
+      _issue,
+      workflow_id,
+      run_id,
+      step_id,
+      attempt_index,
+      workspace_ref,
+      _orchestrator,
+      profile,
+      known,
+    ) {
+      use prepared <- result.try(prepare_fake_step(
+        subject,
+        workflow_id,
+        run_id,
+        step_id,
+        attempt_index,
+        workspace_ref,
+        known,
+        profile,
+        "prepare",
+      ))
+      Ok(
+        workspace_run.PreparedStepWorkspace(
+          ..prepared,
+          run_root: run_root,
+          path: run_root <> "/" <> workspace_ref.name,
+        ),
+      )
+    },
+    prepare_recovered_step: fn(
+      _issue,
+      workflow_id,
+      run_id,
+      _expected_run_root,
+      step_id,
+      attempt_index,
+      workspace_ref,
+      _orchestrator,
+      profile,
+      known,
+    ) {
+      use prepared <- result.try(prepare_fake_step(
+        subject,
+        workflow_id,
+        run_id,
+        step_id,
+        attempt_index,
+        workspace_ref,
+        known,
+        profile,
+        "prepare_recovered",
+      ))
+      Ok(
+        workspace_run.PreparedStepWorkspace(
+          ..prepared,
+          run_root: run_root,
+          path: run_root <> "/" <> workspace_ref.name,
+        ),
+      )
+    },
+  )
+}
+
 pub fn default_command_step_receives_profile_driver_env_test() {
   let root = "test/tmp/workflow-run/profile-driver-env-command"
   reset_dir(root)
@@ -5751,6 +5823,20 @@ pub fn fatal_command_step_recovery_retries_original_step_test() {
         _command_ready,
         _record_pi_session,
       ) {
+        let assert Ok(spec_path) =
+          list.key_find(
+            context.extra_pi_env,
+            structured_output_tool_spec.spec_env_var,
+          )
+        let assert Ok(spec_contents) = simplifile.read(spec_path)
+        assert string.contains(
+          spec_path,
+          "artifacts/structured-output-specs/fixable-attempt-1.json",
+        )
+        assert string.contains(
+          spec_contents,
+          "submit_workflow_step_recovery_result",
+        )
         process.send(
           subject,
           "agent:"
@@ -5933,6 +6019,36 @@ fn recovery_records(root: String) -> List(record.LedgerRecord) {
     kind == "workflow_step_recovery_started"
     || kind == "workflow_step_recovery_finished"
   })
+}
+
+fn assert_recovery_tool_spec_unavailable_record(
+  root: String,
+  expected_code: String,
+) -> Nil {
+  let finished_records =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "tool_spec_unavailable",
+      "Recovery tool spec unavailable",
+      reason,
+      None,
+    ),
+  ] = finished_records
+  assert string.contains(
+    reason,
+    "recovery_tool_spec_unavailable:" <> expected_code,
+  )
 }
 
 fn broken_command_recovery_dag(extra_yaml: String) -> workflow_dag.WorkflowDag {
@@ -7323,6 +7439,136 @@ pub fn recovery_started_checkpoint_failure_preserves_original_failure_test() {
 
   assert failure.reason == "workflow_step_failed"
   assert recovery_records(root) == []
+  test_async.assert_no_extra_message_within(agent_subject, 50)
+}
+
+pub fn recovery_tool_spec_build_failure_does_not_launch_agent_test() {
+  let root = "test/tmp/workflow-run/recovery-tool-spec-build-failure"
+  reset_dir(root)
+  let bad_repo = root <> "/bad-repo"
+  let schema_dir = bad_repo <> "/.scherzo/workflows/schemas/provider"
+  let script_dir = bad_repo <> "/.scherzo/workflows/scripts"
+  let assert Ok(Nil) = simplifile.create_directory_all(schema_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(script_dir)
+  let assert Ok(Nil) =
+    simplifile.write(script_dir <> "/scherzo-review", "#!/bin/sh\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_dir <> "/workflow-step-recovery-result.v1.schema.json",
+      "{\"type\":\"object\",\"properties\":{\"decision\":{\"type\":\"string\",\"enum\":[\"retry_requested\"]}}}\n",
+    )
+  let agent_subject = process.new_subject()
+  let base = deps(process.new_subject(), Some("broken"))
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(agent_subject, "agent_called")
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+  let base_orchestrator = orchestrator()
+  let bad_orchestrator =
+    config_types.OrchestratorConfig(
+      ..base_orchestrator,
+      config_dir: bad_repo <> "/.scherzo",
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      bad_orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert_recovery_tool_spec_unavailable_record(
+    root,
+    "structured_output_tool_spec_provider_incompatible_schema",
+  )
+  test_async.assert_no_extra_message_within(agent_subject, 50)
+}
+
+pub fn recovery_tool_spec_write_failure_does_not_launch_agent_test() {
+  let root = "test/tmp/workflow-run/recovery-tool-spec-write-failure"
+  reset_dir(root)
+  let run_root = root <> "/prepared-run"
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root <> "/artifacts")
+  let assert Ok(Nil) =
+    simplifile.write(
+      run_root <> "/artifacts/structured-output-specs",
+      "not a directory\n",
+    )
+  let agent_subject = process.new_subject()
+  let base =
+    deps_with_prepared_run_root(process.new_subject(), Some("broken"), run_root)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(agent_subject, "agent_called")
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recover:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert_recovery_tool_spec_unavailable_record(
+    root,
+    "structured_output_tool_spec_write_failed",
+  )
   test_async.assert_no_extra_message_within(agent_subject, 50)
 }
 
