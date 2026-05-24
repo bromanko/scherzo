@@ -1,6 +1,6 @@
 version: 1
 id: origin-sync
-description: Fetch origin and auto-rebase the root jj stack when the working-copy change is empty.
+description: Fetch origin, advance local main to main@origin when safe, and auto-rebase the empty root jj stack.
 workspace_profile: noop
 max_parallel_steps: 1
 steps:
