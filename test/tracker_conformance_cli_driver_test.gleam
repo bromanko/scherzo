@@ -163,6 +163,7 @@ fn fixture_manifest(
         profile.TaskSourceRefreshByRefs,
         profile.TaskSourceLookupByOperatorRef,
       ],
+      retry_behavior: None,
     ),
     fixtures: types.FixtureConfig(
       task_file: "test/fixtures/tracker_conformance/task-source-fetch.response.json",

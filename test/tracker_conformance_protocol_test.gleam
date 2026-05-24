@@ -34,6 +34,7 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
     capabilities: capabilities,
     requested_packs: requested_packs,
     adapter_operations: operations,
+    retry_behavior: retry_behavior,
   ) = manifest_profile
   let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
   let types.ReportConfig(redact: redact) = report
@@ -57,6 +58,7 @@ pub fn manifest_decoder_accepts_minimal_task_source_profile_test() {
       profile.TaskSourceRefreshByRefs,
       profile.TaskSourceLookupByOperatorRef,
     ]
+  assert retry_behavior == None
   assert task_file
     == "test/fixtures/tracker_conformance/task-source-fetch.response.json"
   assert fixture_tasks == []
@@ -282,13 +284,95 @@ pub fn request_roundtrip_for_task_source_fetch_candidates_test() {
     ))
 }
 
-pub fn request_roundtrip_for_comments_and_state_transition_payloads_test() {
+pub fn manifest_decoder_accepts_remote_commands_retry_behavior_test() {
+  let assert Ok(contents) =
+    simplifile.read(
+      "test/fixtures/tracker_conformance/claimed-remote-handoff-not-requested.manifest.json",
+    )
+  let assert Ok(manifest) = conformance.decode_manifest(contents)
+  let types.Manifest(profile: manifest_profile, ..) = manifest
+  let types.ProfileConfig(
+    capabilities: capabilities,
+    requested_packs: requested_packs,
+    adapter_operations: operations,
+    retry_behavior: retry_behavior,
+    ..,
+  ) = manifest_profile
+
+  assert capabilities
+    == [
+      profile.TaskSourceCapability,
+      profile.CommentsCreateCapability,
+      profile.RemoteCommandsCapability,
+      profile.HandoffCapability,
+    ]
+  assert requested_packs == [profile.TaskSourcePack]
+  assert operations
+    == [
+      profile.TaskSourceFetchCandidates,
+      profile.TaskSourceRefreshByRefs,
+      profile.TaskSourceLookupByOperatorRef,
+      profile.RemoteCommandsFetchEvents,
+      profile.RemoteCommandsPostAck,
+      profile.HandoffReport,
+    ]
+  assert retry_behavior
+    == Some(types.RetryBehaviorConfig(
+      remote_command_ack: Some(types.IdempotentUpdateOrDedupe),
+      handoff_report: Some(types.DuplicateVisible),
+    ))
+}
+
+pub fn manifest_decoder_rejects_missing_retry_behavior_for_side_effect_packs_test() {
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-remote-commands-without-capability.manifest.json",
+    code: "missing_requested_pack_capability",
+    message: "profile.requested_packs includes remote_commands but profile.capabilities is missing remote_commands",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-remote-commands-without-comments.manifest.json",
+    code: "missing_requested_pack_capability",
+    message: "profile.requested_packs includes remote_commands but profile.capabilities is missing comments.create",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-handoff-without-capability.manifest.json",
+    code: "missing_requested_pack_capability",
+    message: "profile.requested_packs includes handoff but profile.capabilities is missing handoff",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-remote-commands-without-retry-behavior.manifest.json",
+    code: "missing_retry_behavior",
+    message: "profile.requested_packs includes remote_commands but profile.retry_behavior.remote_command_ack is missing",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-handoff-without-retry-behavior.manifest.json",
+    code: "missing_retry_behavior",
+    message: "profile.requested_packs includes handoff but profile.retry_behavior.handoff_report is missing",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-handoff-without-probe.manifest.json",
+    code: "missing_probe",
+    message: "profile.requested_packs includes handoff but probes must include at least one backend-visibility check",
+  )
+}
+
+pub fn request_roundtrip_for_comments_state_transition_remote_commands_and_handoff_payloads_test() {
   let task_ref =
     task.TaskRef(
       backend_kind: "test-memory",
       remote_id: "card-1",
       key: Some("CARD-1"),
       url: Some("https://tracker.example/tasks/CARD-1"),
+    )
+  let remote_event =
+    types.RemoteCommandEventPayload(
+      event_id: "event-1",
+      task: task_ref,
+      author_id: "user-1",
+      body: "/retry SECRET_TOKEN",
+      command_name: "retry",
+      excerpt: "retry excerpt",
+      observed_at_ms: 123,
     )
   let comment_request =
     types.DriverRequest(
@@ -306,6 +390,31 @@ pub fn request_roundtrip_for_comments_and_state_transition_payloads_test() {
         ),
       ),
     )
+  let remote_fetch_request =
+    types.DriverRequest(
+      schema_version: 1,
+      request_id: "req-remote-fetch-1",
+      operation: profile.RemoteCommandsFetchEvents,
+      payload: types.RemoteCommandsFetchPayload(
+        fetch: types.RemoteCommandFetchPayload(
+          task_refs: [task_ref],
+          since_event_ids: ["event-0"],
+          limit_per_task: 10,
+        ),
+      ),
+    )
+  let remote_ack_request =
+    types.DriverRequest(
+      schema_version: 1,
+      request_id: "req-remote-ack-1",
+      operation: profile.RemoteCommandsPostAck,
+      payload: types.RemoteCommandsPostAckPayload(
+        ack: types.RemoteCommandAckPayload(
+          event: remote_event,
+          body: "ack body SECRET_TOKEN",
+        ),
+      ),
+    )
   let transition_request =
     types.DriverRequest(
       schema_version: 1,
@@ -320,18 +429,44 @@ pub fn request_roundtrip_for_comments_and_state_transition_payloads_test() {
         ),
       ),
     )
+  let handoff_request =
+    types.DriverRequest(
+      schema_version: 1,
+      request_id: "req-handoff-1",
+      operation: profile.HandoffReport,
+      payload: types.HandoffReportPayload(event: types.HandoffClaimEvent(
+        task: task_ref,
+        workspace_path: "workspace/main",
+        run_id: "run-1",
+      )),
+    )
 
   let assert Ok(decoded_comment_request) =
     comment_request
+    |> conformance.request_to_string
+    |> conformance.decode_request
+  let assert Ok(decoded_remote_fetch_request) =
+    remote_fetch_request
+    |> conformance.request_to_string
+    |> conformance.decode_request
+  let assert Ok(decoded_remote_ack_request) =
+    remote_ack_request
     |> conformance.request_to_string
     |> conformance.decode_request
   let assert Ok(decoded_transition_request) =
     transition_request
     |> conformance.request_to_string
     |> conformance.decode_request
+  let assert Ok(decoded_handoff_request) =
+    handoff_request
+    |> conformance.request_to_string
+    |> conformance.decode_request
 
   assert decoded_comment_request == comment_request
+  assert decoded_remote_fetch_request == remote_fetch_request
+  assert decoded_remote_ack_request == remote_ack_request
   assert decoded_transition_request == transition_request
+  assert decoded_handoff_request == handoff_request
 }
 
 pub fn success_response_roundtrip_for_task_source_payload_test() {
@@ -352,13 +487,23 @@ pub fn success_response_roundtrip_for_task_source_payload_test() {
     )
 }
 
-pub fn success_response_roundtrip_for_comments_and_state_transition_payloads_test() {
+pub fn success_response_roundtrip_for_comments_remote_commands_state_transition_and_handoff_payloads_test() {
   let task_ref =
     task.TaskRef(
       backend_kind: "test-memory",
       remote_id: "card-1",
       key: Some("CARD-1"),
       url: Some("https://tracker.example/tasks/CARD-1"),
+    )
+  let remote_event =
+    types.RemoteCommandEventPayload(
+      event_id: "event-1",
+      task: task_ref,
+      author_id: "user-1",
+      body: "/retry SECRET_TOKEN",
+      command_name: "retry",
+      excerpt: "retry excerpt",
+      observed_at_ms: 123,
     )
   let comment_response =
     types.DriverResponseSuccess(
@@ -369,6 +514,23 @@ pub fn success_response_roundtrip_for_comments_and_state_transition_payloads_tes
         task: task_ref,
         url: Some("https://tracker.example/comments/comment-1"),
         created: False,
+      )),
+    )
+  let remote_events_response =
+    types.DriverResponseSuccess(
+      schema_version: 1,
+      request_id: "req-remote-fetch-1",
+      result: types.RemoteCommandEventsResult(events: [remote_event]),
+    )
+  let remote_ack_response =
+    types.DriverResponseSuccess(
+      schema_version: 1,
+      request_id: "req-remote-ack-1",
+      result: types.RemoteCommandAckResult(comment: types.CommentReceiptPayload(
+        id: "ack-1",
+        task: task_ref,
+        url: Some("https://tracker.example/comments/ack-1"),
+        created: True,
       )),
     )
   let transition_response =
@@ -386,18 +548,41 @@ pub fn success_response_roundtrip_for_comments_and_state_transition_payloads_tes
         ),
       ),
     )
+  let handoff_response =
+    types.DriverResponseSuccess(
+      schema_version: 1,
+      request_id: "req-handoff-1",
+      result: types.HandoffReportResult(
+        receipt: types.HandoffReportReceiptPayload(reported: True),
+      ),
+    )
 
   let assert Ok(decoded_comment_response) =
     comment_response
+    |> conformance.response_to_string
+    |> conformance.decode_response
+  let assert Ok(decoded_remote_events_response) =
+    remote_events_response
+    |> conformance.response_to_string
+    |> conformance.decode_response
+  let assert Ok(decoded_remote_ack_response) =
+    remote_ack_response
     |> conformance.response_to_string
     |> conformance.decode_response
   let assert Ok(decoded_transition_response) =
     transition_response
     |> conformance.response_to_string
     |> conformance.decode_response
+  let assert Ok(decoded_handoff_response) =
+    handoff_response
+    |> conformance.response_to_string
+    |> conformance.decode_response
 
   assert decoded_comment_response == comment_response
+  assert decoded_remote_events_response == remote_events_response
+  assert decoded_remote_ack_response == remote_ack_response
   assert decoded_transition_response == transition_response
+  assert decoded_handoff_response == handoff_response
 }
 
 pub fn normalized_error_response_roundtrip_test() {

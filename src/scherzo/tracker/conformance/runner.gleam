@@ -4,8 +4,10 @@ import scherzo/task
 import scherzo/tracker/conformance
 import scherzo/tracker/conformance/comments_pack
 import scherzo/tracker/conformance/fixtures
+import scherzo/tracker/conformance/handoff_pack
 import scherzo/tracker/conformance/probes
 import scherzo/tracker/conformance/profile
+import scherzo/tracker/conformance/remote_commands_pack
 import scherzo/tracker/conformance/report
 import scherzo/tracker/conformance/routing_metadata_pack
 import scherzo/tracker/conformance/state_transition_pack
@@ -99,13 +101,25 @@ fn run_profile(
           list_append(
             run_requested_pack(
               requested_packs,
-              profile.StateTransitionsPack,
-              fn() { state_transition_pack.run(manifest, fixture_tasks) },
+              profile.RemoteCommandsPack,
+              fn() { remote_commands_pack.run(manifest, fixture_tasks) },
             ),
-            run_requested_pack(
-              requested_packs,
-              profile.RoutingMetadataPack,
-              fn() { routing_metadata_pack.run(manifest, fixture_tasks) },
+            list_append(
+              run_requested_pack(
+                requested_packs,
+                profile.StateTransitionsPack,
+                fn() { state_transition_pack.run(manifest, fixture_tasks) },
+              ),
+              list_append(
+                run_requested_pack(
+                  requested_packs,
+                  profile.RoutingMetadataPack,
+                  fn() { routing_metadata_pack.run(manifest, fixture_tasks) },
+                ),
+                run_requested_pack(requested_packs, profile.HandoffPack, fn() {
+                  handoff_pack.run(manifest, fixture_tasks)
+                }),
+              ),
             ),
           ),
         ),

@@ -45,6 +45,37 @@ pub fn claimed_comments_not_requested_runs_only_task_source_cases_test() {
     ]
 }
 
+pub fn claimed_remote_commands_and_handoff_not_requested_runs_only_task_source_cases_test() {
+  let report_path =
+    "test/tmp/tracker-conformance/claimed-remote-handoff-not-requested.report.json"
+  reset_report_dir()
+
+  let assert Ok(types.RunResult(report: run_report, exit_code: exit_code, ..)) =
+    runner.run_manifest_path(
+      "test/fixtures/tracker_conformance/claimed-remote-handoff-not-requested.manifest.json",
+      report_path,
+    )
+
+  let types.Report(
+    passed: passed,
+    failed: failed,
+    case_results: case_results,
+    ..,
+  ) = run_report
+
+  assert exit_code == 0
+  assert passed == 5
+  assert failed == 0
+  assert case_ids(case_results)
+    == [
+      "task_source.fetch.backend_kind",
+      "task_source.refresh.stable_identity",
+      "task_source.refresh.wrong_backend_ref",
+      "task_source.lookup.empty_operator_ref",
+      "task_source.lookup.known_operator_ref",
+    ]
+}
+
 pub fn requested_comments_without_capability_fails_manifest_validation_test() {
   reset_report_dir()
 
@@ -61,6 +92,30 @@ pub fn requested_comments_without_capability_fails_manifest_validation_test() {
     simplifile.read(
       "test/tmp/tracker-conformance/invalid-requested-comments-without-capability.report.json",
     )
+}
+
+pub fn requested_remote_commands_and_handoff_without_retry_behavior_fail_manifest_validation_test() {
+  reset_report_dir()
+
+  let assert Error(runner.RunError(code: code, message: message)) =
+    runner.run_manifest_path(
+      "test/fixtures/tracker_conformance/invalid-requested-remote-commands-without-retry-behavior.manifest.json",
+      "test/tmp/tracker-conformance/invalid-requested-remote-commands-without-retry-behavior.report.json",
+    )
+
+  assert code == "missing_retry_behavior"
+  assert message
+    == "profile.requested_packs includes remote_commands but profile.retry_behavior.remote_command_ack is missing"
+
+  let assert Error(runner.RunError(code: handoff_code, message: handoff_message)) =
+    runner.run_manifest_path(
+      "test/fixtures/tracker_conformance/invalid-requested-handoff-without-retry-behavior.manifest.json",
+      "test/tmp/tracker-conformance/invalid-requested-handoff-without-retry-behavior.report.json",
+    )
+
+  assert handoff_code == "missing_retry_behavior"
+  assert handoff_message
+    == "profile.requested_packs includes handoff but profile.retry_behavior.handoff_report is missing"
 }
 
 fn reset_report_dir() -> Nil {

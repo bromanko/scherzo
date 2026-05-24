@@ -18,9 +18,9 @@ A conformance manifest is a JSON document with `schema_version: 1` and these top
 - `hooks`: optional setup and cleanup commands.
 - `report`: report redaction configuration.
 
-The runner still uses `profile.name = "task_source"`, `driver.transport = "cli"`, and `driver.timeout_ms` from 1 through 60,000 milliseconds. `profile.capabilities` must include `task_source` and may additionally claim optional-pack capabilities such as `comments.create`, `comments.update`, `comments.allow_create_fallback`, `state_transitions.transition`, `state_transitions.reason`, `routing_metadata.workflow_labels`, and `routing_metadata.blocker_refs`.
+The runner still uses `profile.name = "task_source"`, `driver.transport = "cli"`, and `driver.timeout_ms` from 1 through 60,000 milliseconds. `profile.capabilities` must include `task_source` and may additionally claim optional-pack capabilities such as `comments.create`, `comments.update`, `comments.allow_create_fallback`, `remote_commands`, `state_transitions.transition`, `state_transitions.reason`, `routing_metadata.workflow_labels`, `routing_metadata.blocker_refs`, and `handoff`.
 
-`profile.requested_packs` is optional and defaults to `["task_source"]`. It must always include `task_source`. Claimed-but-unrequested optional capabilities do not select extra cases. Requested optional packs are validated against their required claimed capabilities before setup hooks, probes, cleanup hooks, or adapter driver operations run. For example, requesting `comments` without `comments.create` is a manifest validation error.
+`profile.requested_packs` is optional and defaults to `["task_source"]`. It must always include `task_source`. Claimed-but-unrequested optional capabilities do not select extra cases. Requested optional packs are validated against their required claimed capabilities before setup hooks, probes, cleanup hooks, or adapter driver operations run. For example, requesting `comments` without `comments.create` is a manifest validation error. Requesting `remote_commands` also requires `comments.create` because acknowledgement receipts are visible comments, and requesting `remote_commands` or `handoff` requires `profile.retry_behavior` to declare `remote_command_ack` or `handoff_report` as either `idempotent_update_or_dedupe` or `duplicate_visible`. Because `handoff` retry classification is probe-backed rather than receipt-backed, manifests that request `handoff` must also configure at least one backend-visibility probe.
 
 `profile.adapter_operations` must declare all three required task-source operations. It may also list future optional-pack adapter operations such as `comments.post_or_update` and `state_transitions.transition`. Adapter operation names must stay inside the public adapter namespace. Fixture, probe, and hook namespaces are reserved for non-conformance support paths and are rejected inside `profile.adapter_operations`.
 
@@ -43,7 +43,10 @@ The supported operations are:
 - `task_source.refresh_by_refs`
 - `task_source.lookup_by_operator_ref`
 - `comments.post_or_update`
+- `remote_commands.fetch_events`
+- `remote_commands.post_ack`
 - `state_transitions.transition`
+- `handoff.report`
 
 ## Driver response envelope
 
@@ -64,9 +67,13 @@ When `profile.requested_packs` selects optional packs and the manifest claims th
 
 `comments` adds `comments.post_or_update.create_only`, `comments.post_or_update.update_existing`, `comments.post_or_update.update_missing_no_fallback`, and `comments.post_or_update.update_missing_allow_create_fallback`. Successful comment receipts must carry a non-empty `id`, the same fixture task identity, and the expected `created` flag. The stale-update-without-fallback case passes only on a normalized `not_found` error.
 
+`remote_commands` adds `remote_commands.fetch.normalized_events`, `remote_commands.fetch.since_event_ids`, `remote_commands.fetch.limit_per_task`, `remote_commands.post_ack.receipt`, `remote_commands.post_ack.same_event_retry`, and `remote_commands.post_ack.failure_visibility`. Fetch cases prove normalized event ids, fixture-task coverage, bounded fields, `since_event_ids`, and `limit_per_task`. Bounded event fields currently cap `event_id`, `author_id`, and `command_name` at 128 characters and cap `body` and `excerpt` at 128 characters; oversized fields fail conformance instead of being retained in reports. Acknowledgement cases prove normalized receipts and retain the declared retry classification in case summaries while probes verify backend-visible duplicate handling.
+
 `state_transitions` adds `state_transitions.transition.target_id_precedence`, `state_transitions.transition.target_name_only`, `state_transitions.transition.unknown_target`, and `state_transitions.transition.reason_propagation`. Successful transition receipts must carry the same fixture task identity and the expected normalized target state. The unknown-target case passes only on a normalized `permanent` error.
 
 `routing_metadata` adds `routing_metadata.fetch.workflow_labels` and `routing_metadata.refresh.blocker_refs`. These cases reuse public task-source reads to prove workflow labels and blocker refs from adapter-returned normalized tasks. Probe commands remain support evidence only and are still rejected inside `profile.adapter_operations`.
+
+`handoff` adds generic `handoff.report.claim`, `handoff.report.success`, `handoff.report.failure`, `handoff.report.park`, legacy `handoff.report.legacy_*` cases, and per-event retry cases under `handoff.report.retry.*`. Successful handoff receipts must return `reported=true`; retry summaries retain the declared classification while probes verify backend-visible duplicate handling for each generic and legacy event class, so manifests without backend-visibility probes are rejected before execution.
 
 ## `task_source` MVP cases
 

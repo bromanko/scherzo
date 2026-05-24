@@ -8,10 +8,15 @@ pub fn validate_profile(
   capabilities: List(profile.Capability),
   requested_packs: List(profile.PackName),
   operations: List(profile.AdapterOperation),
+  retry_behavior: Option(types.RetryBehaviorConfig),
 ) -> Result(Nil, types.ManifestError) {
   use Nil <- result.try(validate_profile_name(name))
   use Nil <- result.try(validate_capabilities(capabilities))
-  use Nil <- result.try(validate_requested_packs(requested_packs, capabilities))
+  use Nil <- result.try(validate_requested_packs(
+    requested_packs,
+    capabilities,
+    retry_behavior,
+  ))
   validate_operations(name, requested_packs, operations)
 }
 
@@ -78,6 +83,7 @@ fn validate_unique_capabilities(
 fn validate_requested_packs(
   requested_packs: List(profile.PackName),
   capabilities: List(profile.Capability),
+  retry_behavior: Option(types.RetryBehaviorConfig),
 ) -> Result(Nil, types.ManifestError) {
   use Nil <- result.try(validate_known_requested_packs(requested_packs))
   use Nil <- result.try(validate_unique_requested_packs(requested_packs))
@@ -91,7 +97,11 @@ fn validate_requested_packs(
         ))
     },
   )
-  validate_requested_pack_capabilities(requested_packs, capabilities)
+  use Nil <- result.try(validate_requested_pack_capabilities(
+    requested_packs,
+    capabilities,
+  ))
+  validate_requested_pack_retry_behavior(requested_packs, retry_behavior)
 }
 
 fn validate_known_requested_packs(
@@ -178,6 +188,91 @@ fn missing_required_capability(
   }
 }
 
+fn validate_requested_pack_retry_behavior(
+  requested_packs: List(profile.PackName),
+  retry_behavior: Option(types.RetryBehaviorConfig),
+) -> Result(Nil, types.ManifestError) {
+  use Nil <- result.try(require_retry_behavior_for_requested_pack(
+    requested_packs,
+    retry_behavior,
+    profile.RemoteCommandsPack,
+    "remote_command_ack",
+  ))
+  require_retry_behavior_for_requested_pack(
+    requested_packs,
+    retry_behavior,
+    profile.HandoffPack,
+    "handoff_report",
+  )
+}
+
+pub fn validate_probe_requirements(
+  requested_packs: List(profile.PackName),
+  probes: List(types.ProbeConfig),
+) -> Result(Nil, types.ManifestError) {
+  case pack_in_list(requested_packs, profile.HandoffPack) {
+    True ->
+      case probes {
+        [] ->
+          Error(types.ManifestError(
+            "missing_probe",
+            "profile.requested_packs includes handoff but probes must include at least one backend-visibility check",
+          ))
+        _ -> Ok(Nil)
+      }
+    False -> Ok(Nil)
+  }
+}
+
+fn require_retry_behavior_for_requested_pack(
+  requested_packs: List(profile.PackName),
+  retry_behavior: Option(types.RetryBehaviorConfig),
+  requested_pack: profile.PackName,
+  field_name: String,
+) -> Result(Nil, types.ManifestError) {
+  case pack_in_list(requested_packs, requested_pack) {
+    False -> Ok(Nil)
+    True ->
+      case retry_behavior_present(retry_behavior, field_name) {
+        True -> Ok(Nil)
+        False ->
+          Error(types.ManifestError(
+            "missing_retry_behavior",
+            "profile.requested_packs includes "
+              <> profile.pack_name_to_string(requested_pack)
+              <> " but profile.retry_behavior."
+              <> field_name
+              <> " is missing",
+          ))
+      }
+  }
+}
+
+fn retry_behavior_present(
+  retry_behavior: Option(types.RetryBehaviorConfig),
+  field_name: String,
+) -> Bool {
+  case retry_behavior {
+    None -> False
+    Some(types.RetryBehaviorConfig(
+      remote_command_ack: remote_command_ack,
+      handoff_report: handoff_report,
+    )) ->
+      case field_name {
+        "remote_command_ack" -> option_is_some(remote_command_ack)
+        "handoff_report" -> option_is_some(handoff_report)
+        _ -> False
+      }
+  }
+}
+
+fn option_is_some(value: Option(a)) -> Bool {
+  case value {
+    Some(_) -> True
+    None -> False
+  }
+}
+
 fn validate_operations(
   name: profile.ProfileName,
   requested_packs: List(profile.PackName),
@@ -208,11 +303,29 @@ fn validate_required_requested_pack_operations(
     profile.CommentsPack,
     profile.CommentsPostOrUpdate,
   ))
-  require_operation_for_requested_pack(
+  use Nil <- result.try(require_operation_for_requested_pack(
+    requested_packs,
+    operations,
+    profile.RemoteCommandsPack,
+    profile.RemoteCommandsFetchEvents,
+  ))
+  use Nil <- result.try(require_operation_for_requested_pack(
+    requested_packs,
+    operations,
+    profile.RemoteCommandsPack,
+    profile.RemoteCommandsPostAck,
+  ))
+  use Nil <- result.try(require_operation_for_requested_pack(
     requested_packs,
     operations,
     profile.StateTransitionsPack,
     profile.StateTransitionsTransition,
+  ))
+  require_operation_for_requested_pack(
+    requested_packs,
+    operations,
+    profile.HandoffPack,
+    profile.HandoffReport,
   )
 }
 
