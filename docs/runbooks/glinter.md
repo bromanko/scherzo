@@ -1,24 +1,25 @@
 # Glinter baseline, rule tiers, and ratchet policy
 
-This note records the LIV-101 rollout baseline, the LIV-102 ratchet decision, the LIV-131 `unwrap_used` audit, and how agents should treat the warning set. The checked gate is:
+This note records the LIV-101 rollout baseline, the LIV-102 ratchet decision, the LIV-131 `unwrap_used` audit, the LIV-533 subsystem triage, and how agents should treat the warning set. The checked production lint gates are:
 
 ```sh
 direnv exec . gleam run -m glinter
+direnv exec . gleam run -m scherzo_lint
 ```
 
 ## Checked policy
 
-- The checked glinter run is a production-source gate: `gleam.toml` includes `src/` and explicitly excludes `test/`.
-- Tests are excluded intentionally from that checked command. Test code uses `let assert`, fixture helpers, helper processes, and deliberately crashing paths that are useful for concise deterministic tests but conflict with several production-only rules.
+- The checked `glinter`/`scherzo_lint` runs are production-source gates: `gleam.toml` includes `src/` and explicitly excludes `test/`.
+- Tests are excluded intentionally from those checked commands. Test code uses `let assert`, fixture helpers, helper processes, and deliberately crashing paths that are useful for concise deterministic tests but conflict with several production-only rules.
 - The repository now has a documented test-source policy below, but it is not wired into `gleam.toml` or SelfCI. Do not add `test/` to the production gate; a future rollout should use a separate test lint command or project config so test severities can differ from production severities.
-- `direnv exec . gleam run -m glinter` must continue to exit successfully. Errors are blocking. Warnings are tracked debt and should not be converted wholesale to `warnings_as_errors = true`; instead, promote individual high-signal rules after a clean baseline.
-- SelfCI already runs the same glinter command via `.config/selfci/ci.sh`, so rule promotions in `gleam.toml` automatically become PR-blocking validation failures for production source.
+- `direnv exec . gleam run -m glinter` and `direnv exec . gleam run -m scherzo_lint` must continue to exit successfully. Errors are blocking. Warnings are tracked debt and should not be converted wholesale to `warnings_as_errors = true`; instead, promote individual high-signal rules after a clean baseline.
+- SelfCI already runs both production lint commands via `.config/selfci/ci.sh`, so rule promotions in `gleam.toml` and custom Scherzo lint rules automatically become PR-blocking validation failures for production source.
 
 ## Current rule tiers
 
 ### Error
 
-These rules are release-blocking in production `src/` code:
+These rules are configured or intended to be release-blocking in production `src/` code:
 
 | Rule | Why it blocks |
 | --- | --- |
@@ -26,19 +27,21 @@ These rules are release-blocking in production `src/` code:
 | `avoid_panic` | LIV-95 safety gate: production code should return or log structured errors instead of crashing intentionally. |
 | `avoid_todo` | LIV-95 safety gate: unfinished production paths must not ship. |
 | `division_by_zero` | LIV-95 safety gate: deterministic runtime failure with no acceptable production use. |
-| `error_context_lost` | LIV-102 ratchet: discarding the original error in `map_error(fn(_) { ... })` hides boundary context. Preserve or wrap the error when it matters; use `result.replace_error` only when intentionally replacing it with a stable public error. |
+| `error_context_lost` | LIV-102 ratchet intent: discarding the original error in `map_error(fn(_) { ... })` hides boundary context. Preserve or wrap the error when it matters; use `result.replace_error` only when intentionally replacing it with a stable public error. The LIV-533 refresh found two current findings reported as warning severity; treat that as high-signal baseline drift to fix before relying on the promotion as clean. |
 | `missing_type_annotation` | LIV-102 ratchet: explicit production function signatures make API drift, durable boundary changes, and agent edits easier to review. The `src/` baseline is clean, so new omissions can fail fast without churn. |
+| `scherzo_public_function_labels` | LIV-123 Scherzo-specific style gate: public two-parameter production functions with unlabelled `Bool` parameters must use labels or document a narrow suppression. |
 
 ### Warning
 
-These rules remain visible but non-blocking because the baseline is still too broad for a safe one-shot cleanup. Note: glinter 2.16.0 renders explicitly enabled rules at their built-in default severity, so `unwrap_used` findings currently display as `[off]` even though `gleam.toml` configures the rule as warning inventory.
+These rules remain visible but non-blocking because the baseline is still too broad for a safe one-shot cleanup. Note: glinter 2.16.0 renders explicitly enabled rules at their built-in default severity, so `unwrap_used` findings currently display as `[off]` even though `gleam.toml` configures the rule as warning inventory. The LIV-533 refresh also found two `error_context_lost` findings reported as warnings despite the intended error-tier policy; they are counted here as urgent drift, not as a new acceptable warning class.
 
-| Rule | Current count | Why it stays warning |
-| --- | ---: | --- |
-| `thrown_away_error` | 178 | Many findings are parser/decoder fallback chains or boundary checks that need case-by-case review before blocking. |
-| `discarded_result` | 119 | Safety-relevant, but current findings include process sends, cleanup, and command-boundary best-effort work that must be triaged by subsystem. |
-| `unwrap_used` | 79 | LIV-131 audit: mostly intentional defaults, path canonicalization fallbacks, and domain-map defaults. Keep visible as warning-equivalent inventory, but do not block until the remaining patterns have narrower helpers or suppressions. |
-| `stringly_typed_error` | 60 | Mostly FFI and boundary modules. Prefer typed errors for durable/domain APIs, but migrate gradually to avoid large interface churn. |
+| Rule | Current count | Drift from prior documented baseline | Why it stays warning/inventory |
+| --- | ---: | ---: | --- |
+| `thrown_away_error` | 168 | -10 | Many findings are parser/decoder fallback chains or boundary checks that need case-by-case review before blocking. |
+| `discarded_result` | 69 | -50 | Safety-relevant, but current findings include process sends, cleanup, and command-boundary best-effort work that must be triaged by subsystem. |
+| `unwrap_used` | 104 | +25 | LIV-131 audit categories still apply, but the inventory grew in recovery, workspace, workflow, and config path/default code. Keep visible as warning-equivalent inventory until domain-map and path-boundary helpers or narrow suppressions exist. |
+| `stringly_typed_error` | 78 | +18 | Mostly FFI, tracker/control, workflow contract, and state boundary modules. Prefer typed errors for durable/domain APIs, but migrate gradually to avoid large interface churn. |
+| `error_context_lost` | 2 | +2 | High-signal drift in workflow recovery/output manifest handling. Fix or explicitly replace errors before treating the LIV-102 promotion as clean again. |
 
 ### Off
 
@@ -54,37 +57,99 @@ The current production baseline can be refreshed with:
 
 ```sh
 direnv exec . gleam run -m glinter -- --format json --stats > tmp/glinter-current.json
+direnv exec . gleam run -m scherzo_lint -- --format json --stats > tmp/scherzo-lint-current.json
 ```
+
+To regenerate the subsystem triage tables, keep the raw JSON output with the ticket or workflow artifacts and derive file/rule counts from `tmp/glinter-current.json` (or from the `scherzo_lint` JSON when custom-rule findings appear):
+
+```sh
+jq -r '.results[] | [.file, .rule] | @tsv' tmp/glinter-current.json \
+  | sort \
+  | uniq -c \
+  > tmp/glinter-file-rule-counts.tsv
+
+jq '.summary, .stats' tmp/glinter-current.json
+```
+
+Assign each finding to exactly one subsystem using this file-owner map, then verify subsystem row totals sum to `.summary.total` and rule columns match the top-level rule counts. The `Primary files` column below is a hotspot summary, not the exhaustive ownership source.
+
+| Subsystem | File ownership used for counts |
+| --- | --- |
+| Orchestrator / daemon / transition / effect runner | `src/scherzo/orchestrator/*`, `src/scherzo/session/hub.gleam`, `src/scherzo/hooks.gleam`, `src/scherzo/instance_lock.gleam`, `src/scherzo/signal.gleam` |
+| Workflow execution | `src/scherzo/command_step.gleam`, `src/scherzo/local_workflow_run.gleam`, `src/scherzo/template.gleam`, `src/scherzo/workflow_*.gleam` |
+| State ledger / projection / recovery / artifacts | `src/scherzo/state/*`, `src/scherzo/step_artifact.gleam`, `src/scherzo/handoff_format.gleam` |
+| Tracker / Linear / control boundaries | `src/scherzo/control/*`, `src/scherzo/ctl/*`, `src/scherzo/linear*.gleam`, `src/scherzo/port.gleam` |
+| Config / parsing / operator CLI | `src/scherzo/config.gleam`, `src/scherzo/config/*`, `src/scherzo/doctor.gleam`, `src/scherzo/model_config.gleam`, `src/scherzo/review_lane_preflight_policy.gleam`, `src/scherzo/terminal/*`, `src/scherzo/version.gleam` |
+| Workspace / workspace drivers | `src/scherzo/workspace*.gleam` |
+| Agent / pi execution | `src/scherzo/agent/*`, `src/scherzo/pi/*` |
 
 A broader exploratory baseline was captured during LIV-101 with a temporary project config that enabled every built-in glinter rule for measurement and pointed at this repository's `src/` tree. The same temporary config was also run with both `src/` and `test/` included to evaluate test policy.
 
 ## Production warning baseline
 
-After the LIV-131 `unwrap_used` inventory promotion, the checked `src/` gate scans 101 files and reports 436 findings with no errors: 357 warning-severity findings plus 79 `unwrap_used` findings that glinter currently prints as `[off]` despite the `warning` config override.
+LIV-533 refreshed the production baseline on 2026-05-23 with both JSON/stat commands above. `glinter` and `scherzo_lint` reported the same built-in inventory over 200 files / 109,897 lines: 421 findings, 0 errors, 317 warning-severity findings, and 104 `unwrap_used` findings rendered as `[off]`. `scherzo_lint` adds the custom `scherzo_public_function_labels` rule and currently has no additional findings.
 
-| Rule | Count | Classification |
-| --- | ---: | --- |
-| `thrown_away_error` | 178 | Keep as warning only; many are parser/decoder fallback chains that need case-by-case review. |
-| `discarded_result` | 119 | Keep as warning only; prioritize process sends, filesystem cleanup, and command boundary handling when touching related code. |
-| `unwrap_used` | 79 | Keep as warning-equivalent inventory only; the audit found mostly intentional defaults and domain fallbacks, with a few high-signal cases fixed before enabling the rule. |
-| `stringly_typed_error` | 60 | Keep as warning only; mostly FFI and boundary modules that should move to typed error variants gradually. |
-| `error_context_lost` | 0 | Promoted to error in LIV-102 after fixing the only current finding. |
-| `missing_type_annotation` | 0 | Promoted to error in LIV-102 after a clean `src/` baseline. |
+| Rule | Prior documented count | Current count | Drift | Classification |
+| --- | ---: | ---: | ---: | --- |
+| `thrown_away_error` | 178 | 168 | -10 | Keep as warning only; review fallback chains and runtime-boundary catches by subsystem. |
+| `discarded_result` | 119 | 69 | -50 | Keep as warning only; prioritize process sends, filesystem cleanup, hooks, and command/control boundaries. |
+| `unwrap_used` | 79 | 104 | +25 | Keep as warning-equivalent inventory; growth is concentrated in recovery, workspace, workflow, and config path/default code. |
+| `stringly_typed_error` | 60 | 78 | +18 | Keep as warning only while durable/domain APIs migrate gradually to typed errors. |
+| `error_context_lost` | 0 | 2 | +2 | High-signal drift; narrow fix or explicit replacement should happen before relying on the LIV-102 ratchet as clean. |
+| `missing_type_annotation` | 0 | 0 | 0 | Clean error-tier baseline. |
+| `scherzo_public_function_labels` | 0 | 0 | 0 | Clean custom Scherzo lint baseline. |
 
-No `// nolint:` suppressions were added for the LIV-101, LIV-102, or LIV-131 rollouts.
+No `// nolint:` suppressions were added for the LIV-101, LIV-102, LIV-131, or LIV-533 rollouts.
+
+## LIV-533 subsystem hardening triage
+
+Warning ownership should follow runtime boundaries rather than rule names. The table below assigns every current production finding to one subsystem; totals sum to the 421-finding baseline above.
+
+| Subsystem | Total | `thrown_away_error` | `discarded_result` | `stringly_typed_error` | `unwrap_used` | `error_context_lost` | Primary files |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Orchestrator / daemon / transition / effect runner | 112 | 79 | 20 | 9 | 4 | 0 | `orchestrator/daemon.gleam`, `orchestrator/core.gleam`, `orchestrator/worker_registry.gleam`, `orchestrator/transition.gleam`, `session/hub.gleam` |
+| Workflow execution | 77 | 25 | 5 | 23 | 22 | 2 | `workflow_run.gleam`, `workflow_repair.gleam`, `workflow_scheduler.gleam`, `command_step.gleam`, `template.gleam` |
+| State ledger / projection / recovery / artifacts | 65 | 26 | 0 | 15 | 24 | 0 | `state/recovery.gleam`, `state/projection.gleam`, `step_artifact.gleam`, `state/artifact_store.gleam`, `state/local_artifacts.gleam` |
+| Tracker / Linear / control boundaries | 53 | 19 | 4 | 26 | 4 | 0 | `linear_body_data.gleam`, `linear.gleam`, `linear_contract.gleam`, `control/*`, `port.gleam` |
+| Config / parsing / operator CLI | 41 | 7 | 3 | 5 | 26 | 0 | `config.gleam`, `config/types.gleam`, `doctor.gleam`, `review_lane_preflight_policy.gleam`, `terminal/*`, `version.gleam` |
+| Workspace / workspace drivers | 40 | 4 | 12 | 0 | 24 | 0 | `workspace_run.gleam`, `workspace.gleam`, `workspace_driver_lifecycle.gleam`, `workspace_driver_command.gleam` |
+| Agent / pi execution | 33 | 8 | 25 | 0 | 0 | 0 | `agent/run_attempt.gleam`, `agent/context_exhaustion.gleam`, `agent/probe.gleam`, `pi/client.gleam`, `pi/protocol.gleam` |
+
+Classification by warning pattern:
+
+| Pattern | Classification | Triage guidance |
+| --- | --- | --- |
+| `error_context_lost` in workflow recovery/output manifest handling | Mechanical fix candidate / high-signal drift | Preserve or wrap the original projection/manifest error when useful. Use `result.replace_error` only if the stable public error intentionally hides details. |
+| `discarded_result` around process sends, hooks, cleanup, and filesystem work | Needs design at runtime boundaries; mechanical only for clearly best-effort diagnostics | Decide per subsystem whether to propagate, log, retry, or explicitly document best-effort behavior. Avoid mass binding to `_` just to silence lint. |
+| `thrown_away_error` in parsers, decoders, projections, and transition fallbacks | Mixed: acceptable fallback chains, but needs design for daemon/state/workflow boundaries | Parser fallback chains may be acceptable with explicit `result.or`-style intent; runtime recovery and projection paths should preserve enough context for repair/debugging. |
+| `stringly_typed_error` at FFI/control/tracker/workflow/state APIs | Needs design | Migrate durable/domain APIs to typed errors by boundary. Leaf FFI shims can remain stringly only if they normalize immediately into typed domain errors. |
+| `unwrap_used` for config defaults, domain-map defaults, and path fallbacks | Mostly acceptable with explicit reason; path/workspace/recovery cases need design | Introduce named lookup/default helpers or narrow suppressions for true invariants. Do not promote until path-boundary fallbacks distinguish recoverable failure from intentional default. |
+| Custom `scherzo_public_function_labels` | Clean | No backlog needed unless new findings appear. |
+
+High-signal clusters for derivative backlog:
+
+| Priority | Proposed follow-up | Rationale |
+| --- | --- | --- |
+| P0 | Workflow recovery and contract-output error-context hardening | The only current `error_context_lost` findings are in workflow repair/output manifest paths, where lost provenance can make repair failures opaque. |
+| P0/P1 | Orchestrator daemon/transition error-handling hardening | Largest cluster (112 findings), mostly thrown-away errors and discarded results in the daemon control loop, worker registry, transition evaluation, and session hub. Requires behavior decisions for logging, retries, and operator-visible failures. |
+| P1 | State projection/recovery/artifact typed-error and default-helper hardening | 65 findings affect ledger replay, projection, artifact reads/writes, and recovery defaults. These are restart/repair-sensitive and should be handled together. |
+| P1 | Workspace driver filesystem-boundary hardening | 40 findings, including many path/default `unwrap_used` and discarded cleanup/driver results. Clarify which cleanup failures are best-effort and which should stop or park a workflow. |
+| P1 | Agent/pi attempt lifecycle result-handling hardening | 33 findings but concentrated in `agent/run_attempt.gleam`, where dropped sends, cleanup failures, or pi protocol failures can hide failed aborts or lost updates. |
+| P2 | Tracker/Linear/control typed-boundary migration | 53 findings, led by stringly typed FFI/control/Linear errors. This should be a gradual boundary-by-boundary typed-error migration to avoid wide interface churn. |
+| P2 | Config/default helper and suppression audit | 41 findings, mostly explicit config/operator defaults. Convert repeated defaults to named helpers and add narrow `// nolint:` reasons only for stable invariants. |
 
 ## Triage summary
 
-- **Promoted to error:** `error_context_lost` and `missing_type_annotation`.
+- **Promoted/intended error tier:** `missing_type_annotation`, `error_context_lost`, and the custom `scherzo_public_function_labels` rule. `missing_type_annotation` and `scherzo_public_function_labels` remain clean; `error_context_lost` currently has two high-signal workflow findings reported as warnings by the current glinter run and should be fixed or made explicit before treating the ratchet as clean.
 - **Promoted to visible warning-equivalent inventory:** `unwrap_used` after the LIV-131 audit. It has useful signal when touching nearby code, but the remaining baseline is not appropriate for blocking PRs. In glinter 2.16.0, these findings still display as `[off]` because the rule's built-in default severity is `Off`.
-- **Fixed for promotion:** one new `error_context_lost` finding in schedule parsing was changed from `result.map_error(fn(_) { ... })` to `result.replace_error(...)`, making the intentional context replacement explicit. LIV-131 also fixed high-signal `unwrap_used` cases in command/hook diagnostics, prompt-file path resolution, and workflow fingerprint representation before enabling the warning.
-- **Suppress:** none. Future suppressions must be narrow `// nolint:` comments with reasons, as described below.
-- **Keep as warning only:** `discarded_result`, `thrown_away_error`, and `stringly_typed_error`; keep `unwrap_used` as visible warning-equivalent inventory.
+- **Fixed for earlier promotion:** one schedule parsing `error_context_lost` finding was changed from `result.map_error(fn(_) { ... })` to `result.replace_error(...)`, making the intentional context replacement explicit. LIV-131 also fixed high-signal `unwrap_used` cases in command/hook diagnostics, prompt-file path resolution, and workflow fingerprint representation before enabling the warning.
+- **Suppress:** none. Future suppressions must be narrow `// nolint:` comments with reasons, as described below. LIV-533 did not add suppressions.
+- **Keep as warning only:** `discarded_result`, `thrown_away_error`, and `stringly_typed_error`; keep `unwrap_used` as visible warning-equivalent inventory. Triage and backlog them by subsystem rather than doing blanket cleanup.
 - **Keep off:** style, complexity, broad export, and FFI rules until a separate rollout proves acceptable signal.
 
 ## LIV-131 `unwrap_used` audit
 
-The initial LIV-131 inventory found 88 production `unwrap_used` findings across 19 files. After fixing high-signal cases, the enabled baseline is 79 findings across 17 files. The main categories are:
+The initial LIV-131 inventory found 88 production `unwrap_used` findings across 19 files. After fixing high-signal cases, the enabled baseline at the time was 79 findings across 17 files; the LIV-533 refresh records the current drift above. The main categories are:
 
 | Category | Examples | Classification | Policy |
 | --- | --- | --- | --- |
@@ -118,7 +183,7 @@ With all built-in rules enabled for measurement, `src/` produced 3,734 findings.
 
 ## Test-source lint policy
 
-Current enforcement remains: `test/` is formatted and executed by `direnv exec . gleam format --check src test` and `direnv exec . gleam test`, but it is not linted by the checked `direnv exec . gleam run -m glinter` production gate. The policy in this section is the contract for a future separate test lint command; it should not be implemented by directly adding `test/` to the existing production-source gate.
+Current enforcement remains: `test/` is formatted and executed by `direnv exec . gleam format --check src test` and `direnv exec . gleam test`, but it is not linted by the checked production lint gates. The policy in this section is the contract for a future separate test lint command; it should not be implemented by directly adding `test/` to the existing production-source gate.
 
 ### Test errors
 
@@ -190,7 +255,7 @@ The documented test profile above currently reduces that to 132 non-blocking war
 
 ## Agent guidance
 
-- Treat glinter errors as release-blocking.
+- Treat `glinter` and `scherzo_lint` errors as release-blocking.
 - Treat warnings as a ratchet inventory: avoid adding new warnings, and fix nearby warnings when you are already editing the same function or the fix is clearly mechanical.
 - Do not do large unrelated refactors solely to reduce warning counts.
 - Prefer a real fix over a suppression. For intentionally ignored `Result` values, make the boundary explicit by logging, returning the error, or binding to a named value with a clear comment when appropriate.
@@ -206,7 +271,8 @@ The documented test profile above currently reduces that to 132 non-blocking war
 
 ## Follow-up candidates
 
-1. Reduce `discarded_result` and `thrown_away_error` by subsystem (`orchestrator/daemon`, `orchestrator/service`, `workflow_run`, and `control/server` are large clusters) before considering promotion.
-2. Gradually migrate durable/domain `Result(_, String)` APIs to typed errors before promoting `stringly_typed_error`.
-3. Reduce the remaining `unwrap_used` path-boundary and domain-map default clusters before considering error promotion; many current uses provide explicit defaults and should not be churned without domain review.
-4. If tests are linted, implement the documented test-source policy as a separate command/profile instead of applying the production gate directly to `test/`.
+1. Create a P0 workflow recovery/contract-output hardening ticket for the two current `error_context_lost` findings and adjacent typed contract errors.
+2. Create a P0/P1 orchestrator daemon/transition hardening ticket to decide logging, retry, propagation, and operator visibility for the 112-finding daemon/control-loop cluster.
+3. Create P1 subsystem tickets for state projection/recovery/artifacts, workspace driver filesystem boundaries, and agent/pi attempt lifecycle result handling.
+4. Create P2 typed-boundary migration tickets for tracker/Linear/control APIs and a config/default helper audit for stable invariants and narrow suppressions.
+5. If tests are linted, implement the documented test-source policy as a separate command/profile instead of applying the production gate directly to `test/`.
