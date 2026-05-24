@@ -273,6 +273,36 @@ steps:
   config_path
 }
 
+fn write_scheduled_capacity_workflow(
+  dir: String,
+  max_concurrent: Int,
+) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      workflow_text(root, max_concurrent)
+        <> "scheduled_jobs:\n  - id: capacity-a\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n  - id: capacity-b\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n  - id: capacity-c\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: capacity_command
+    kind: command
+    run: echo capacity
+    workspace: main
+",
+    )
+  config_path
+}
+
 fn write_real_failing_command_workflow(dir: String) -> String {
   reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
@@ -880,6 +910,65 @@ fn blocking_command_workflow_run_dependencies(
   )
 }
 
+fn retry_failure_and_blocking_command_workflow_run_dependencies(
+  command_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(command_subject)
+  workflow_run.Dependencies(
+    ..base,
+    command_step: fn(
+      context: workflow_run.StepContext,
+      _command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
+      case string.starts_with(context.issue_id, "retry-") {
+        True -> {
+          process.send(
+            command_subject,
+            "issue_command_failed:" <> context.issue_id,
+          )
+          step_artifact.from_command_result(
+            context.step_id,
+            1,
+            "",
+            "forced retry failure",
+            False,
+            secrets,
+            limits,
+          )
+        }
+        False -> {
+          case context.run_kind {
+            "scheduled" ->
+              process.send(
+                command_subject,
+                "scheduled_command:" <> context.scheduled_job_id,
+              )
+            _ ->
+              process.send(
+                command_subject,
+                "issue_command:" <> context.issue_id,
+              )
+          }
+          test_async.block_until_released(barrier)
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "stdout:" <> context.step_id,
+            "",
+            False,
+            secrets,
+            limits,
+          )
+        }
+      }
+    },
+  )
+}
+
 fn blocking_command_ready_workflow_run_dependencies(
   log_subject: process.Subject(String),
   barrier: test_async.Barrier,
@@ -1102,12 +1191,41 @@ fn wait_for_event(
   }
 }
 
+fn wait_for_events(
+  subject: process.Subject(String),
+  events: List(String),
+  quiet_attempts: Int,
+) -> Bool {
+  case events, quiet_attempts <= 0 {
+    [], _ -> True
+    _, True -> False
+    _, False ->
+      case process.receive(subject, within: 500) {
+        Ok(received) ->
+          wait_for_events(
+            subject,
+            list.filter(events, fn(event) { event != received }),
+            quiet_attempts,
+          )
+        Error(_) -> wait_for_events(subject, events, quiet_attempts - 1)
+      }
+  }
+}
+
 fn wait_for_event_result(
   subject: process.Subject(String),
   event: String,
   quiet_attempts: Int,
 ) -> Result(List(String), List(String)) {
   wait_for_event_result_loop(subject, event, quiet_attempts, [])
+}
+
+fn wait_for_event_prefix(
+  subject: process.Subject(String),
+  prefix: String,
+  quiet_attempts: Int,
+) -> Result(String, List(String)) {
+  wait_for_event_prefix_loop(subject, prefix, quiet_attempts, [])
 }
 
 fn wait_for_log_fields(
@@ -1149,6 +1267,30 @@ fn wait_for_event_result_loop(
         }
         Error(_) ->
           wait_for_event_result_loop(subject, event, quiet_attempts - 1, seen)
+      }
+  }
+}
+
+fn wait_for_event_prefix_loop(
+  subject: process.Subject(String),
+  prefix: String,
+  quiet_attempts: Int,
+  seen: List(String),
+) -> Result(String, List(String)) {
+  case quiet_attempts <= 0 {
+    True -> Error(list.reverse(seen))
+    False ->
+      case process.receive(subject, within: 500) {
+        Ok(received) -> {
+          let seen = [received, ..seen]
+          case string.starts_with(received, prefix) {
+            True -> Ok(received)
+            False ->
+              wait_for_event_prefix_loop(subject, prefix, quiet_attempts, seen)
+          }
+        }
+        Error(_) ->
+          wait_for_event_prefix_loop(subject, prefix, quiet_attempts - 1, seen)
       }
   }
 }
@@ -1423,6 +1565,32 @@ fn has_scheduled_started(
       _ -> False
     }
   })
+}
+
+fn scheduled_started_count(records: List(record.LedgerRecord)) -> Int {
+  records
+  |> list.filter(fn(entry) {
+    case entry.body {
+      record.ScheduledRunStarted(_, _, _, _, _, _, _, _) -> True
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
+fn scheduled_blocked_count(
+  records: List(record.LedgerRecord),
+  reason: String,
+) -> Int {
+  records
+  |> list.filter(fn(entry) {
+    case entry.body {
+      record.ScheduledRunPendingBlocked(_, _, _, _, body_reason, _) ->
+        body_reason == reason
+      _ -> False
+    }
+  })
+  |> list.length
 }
 
 fn has_scheduled_succeeded(
@@ -2352,6 +2520,108 @@ pub fn daemon_scheduled_overlap_records_skip_without_second_start_test() {
 
   test_async.release_barrier(barrier)
   assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_capacity_starts_one_and_leaves_retry_headroom_test() {
+  let dir = "test/tmp/daemon-scheduled-capacity-headroom"
+  let workflow_path = write_scheduled_capacity_workflow(dir, 4)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let active_a =
+    tracker_issue.Issue(..issue("active-a", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let active_b =
+    tracker_issue.Issue(..issue("active-b", "ABC-2", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let retry_a =
+    tracker_issue.Issue(..issue("retry-a", "ABC-3", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let retry_b =
+    tracker_issue.Issue(..issue("retry-b", "ABC-4", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let candidates = [active_a, active_b, retry_a, retry_b]
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok(candidates) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(ids) {
+        Ok(
+          list.filter(candidates, fn(candidate) {
+            list.contains(ids, candidate.id)
+          }),
+        )
+      },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let barrier = test_async.new_barrier()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: retry_failure_and_blocking_command_workflow_run_dependencies(
+        command_subject,
+        barrier,
+      ),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_events(
+    command_subject,
+    [
+      "issue_command:active-a",
+      "issue_command:active-b",
+      "issue_command_failed:retry-a",
+      "issue_command_failed:retry-b",
+    ],
+    20,
+  )
+  assert wait_for_event(log_subject, "retry_scheduled", 20)
+  assert wait_for_event(log_subject, "retry_scheduled", 20)
+  let _ = test_async.drain_subject(command_subject)
+  let _ = test_async.drain_subject(log_subject)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(2))
+  let assert Ok(_) =
+    wait_for_event_prefix(command_subject, "scheduled_command:", 20)
+  assert wait_for_records(
+    root,
+    fn(records) {
+      scheduled_started_count(records) == 1
+      && scheduled_blocked_count(records, "waiting_for_global_slot") == 2
+    },
+    20,
+  )
+  let _ = test_async.drain_subject(log_subject)
+
+  process.send(started.data, daemon.RetryTick("retry-a", 1))
+  assert wait_for_event_without_event(
+    log_subject,
+    "retry_scheduled",
+    "retry_deferred_dispatch_unavailable",
+    20,
+  )
+  let _ = test_async.drain_subject(log_subject)
+
+  process.send(started.data, daemon.RetryTick("retry-b", 1))
+  assert wait_for_event_without_event(
+    log_subject,
+    "retry_scheduled",
+    "retry_deferred_dispatch_unavailable",
+    20,
+  )
+
+  test_async.release_barrier(barrier)
+  test_async.release_barrier(barrier)
+  test_async.release_barrier(barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
 }

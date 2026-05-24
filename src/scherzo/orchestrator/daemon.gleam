@@ -3409,8 +3409,7 @@ fn transition_dispatch_context(
     state.operator_paused,
     worker_registry.worker_issue_ids(state.registry),
     worker_registry.worker_issues(state.registry),
-    list.length(worker_registry.scheduled_worker_handles(state.registry))
-      + dict.size(state.pending_scheduled_starts),
+    list.length(worker_registry.scheduled_worker_handles(state.registry)),
     state.workflow.effective.workspace.root,
     state.dependencies.now_ms(),
     state.recovery_by_issue,
@@ -4471,7 +4470,7 @@ fn start_pending_scheduled_run(
   case state.operator_paused {
     True -> block_pending_scheduled_run(state, pending, "paused")
     False ->
-      case scheduled_slot_available_for_start(state, pending.job_id) {
+      case scheduled_slot_available_for_start(state) {
         False ->
           block_pending_scheduled_run(state, pending, "waiting_for_global_slot")
         True -> spawn_scheduled_worker_for_pending(state, pending)
@@ -4515,30 +4514,30 @@ fn block_pending_scheduled_run(
   }
 }
 
-fn scheduled_slot_available_for_start(state: State, job_id: String) -> Bool {
-  scheduled_dispatch_slots_used_excluding(state, job_id)
-  < state.workflow.effective.agent.max_concurrent_agents
-}
-
-fn scheduled_dispatch_slots_used_excluding(
-  state: State,
-  job_id: String,
-) -> Int {
+fn scheduled_slot_available_for_start(state: State) -> Bool {
   active_run_count(state)
   + dict.size(state.pending_claims)
   + dict.size(state.pending_dispatch_validations)
   + list.length(worker_registry.scheduled_worker_handles(state.registry))
-  + pending_scheduled_count_excluding(state.pending_scheduled_starts, job_id)
+  + pending_issue_retry_headroom(state)
+  < state.workflow.effective.agent.max_concurrent_agents
 }
 
-fn pending_scheduled_count_excluding(
-  pending: Dict(String, ScheduledPendingStart),
-  job_id: String,
-) -> Int {
-  pending
+fn pending_issue_retry_headroom(state: State) -> Int {
+  case has_pending_issue_retry(state) {
+    True -> 1
+    False -> 0
+  }
+}
+
+fn has_pending_issue_retry(state: State) -> Bool {
+  state.runtime.retry_attempts
   |> dict.keys
-  |> list.filter(fn(id) { id != job_id })
-  |> list.length
+  |> list.any(fn(issue_id) {
+    !list.contains(active_run_issue_ids(state), issue_id)
+    && !dict.has_key(state.pending_claims, issue_id)
+    && !dict.has_key(state.pending_dispatch_validations, issue_id)
+  })
 }
 
 fn handle_retry_refresh_finished(
@@ -5861,8 +5860,7 @@ fn handle_scheduled_retry_tick(
         True -> state
         False ->
           case
-            state.operator_paused
-            || !scheduled_slot_available_for_start(state, entry.job_id)
+            state.operator_paused || !scheduled_slot_available_for_start(state)
           {
             True -> defer_scheduled_retry(state, entry)
             False -> start_scheduled_retry_now(state, entry)
