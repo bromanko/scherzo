@@ -168,6 +168,99 @@ pub fn retry_step_appends_repair_records_before_spawning_recovered_worker_test()
   hub.stop(hub_subject)
 }
 
+pub fn retry_step_accepts_non_active_issue_state_for_retained_run_test() {
+  let dir = "test/tmp/daemon-retry-step-non-active"
+  let issue = issue("issue-1", "LIV-510", "Triage")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _effective) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_reason(result.status) == None
+  assert command.status_to_string(result.status) == "applied"
+  assert contains_kind_sequence(root, [
+    "workflow_repair_requested",
+    "step_attempt_superseded",
+    "workflow_run_started",
+  ])
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 20)
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_rejects_terminal_issue_state_for_retained_run_test() {
+  let dir = "test/tmp/daemon-retry-step-terminal"
+  let issue = issue("issue-1", "LIV-511", "Done")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let before = ledger_bodies(root)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status)
+    == Some("issue_state_drift:terminal_state")
+  assert ledger_bodies(root) == before
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir)

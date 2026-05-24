@@ -71,7 +71,7 @@ scripts/scherzoctl retry-step run:<run-id> --step <step-id>
 
 This path is fail-closed. Scherzo accepts it only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
 
-If the issue is parked, unpark it first and then rerun `retry-step`. `retry-step` does not silently override operator park policy.
+If the issue is parked, unpark it first and then rerun `retry-step`. `retry-step` does not silently override operator park policy. Because this is an explicit repair command, the issue does not need to be in an active or dispatch state, but terminal states are still rejected.
 
 If drift or retained artifact recovery cannot be proven safe, fall back to manual salvage or a full task retry with `scripts/scherzoctl retry <task>`.
 

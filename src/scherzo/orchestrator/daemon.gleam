@@ -2243,7 +2243,10 @@ fn retry_workflow_step_for_operator(
                                 state.workflow.effective.workspace.root,
                               ),
                               state.dependencies.now_ms(),
-                              state.workflow.effective,
+                              config_types.with_additional_active_state(
+                                state.workflow.effective,
+                                issue.state,
+                              ),
                             )
                           {
                             Error(error) -> #(

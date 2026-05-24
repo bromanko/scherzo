@@ -570,6 +570,19 @@ pub type EffectiveConfig {
   )
 }
 
+pub fn with_additional_active_state(
+  config: EffectiveConfig,
+  state: issue_state.IssueState,
+) -> EffectiveConfig {
+  EffectiveConfig(
+    ..config,
+    tracker: TrackerConfig(..config.tracker, active_states: [
+      state,
+      ..config.tracker.active_states
+    ]),
+  )
+}
+
 pub type ResolveReport {
   ResolveReport(config: EffectiveConfig, warnings: List(ConfigWarning))
 }
