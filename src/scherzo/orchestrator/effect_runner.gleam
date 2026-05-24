@@ -13,13 +13,13 @@ import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/task
-import scherzo/tracker
 import scherzo/tracker/adapter
+import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
 pub type Effect {
-  FetchCandidates(generation: Int, client: tracker.Client)
+  FetchCandidates(generation: Int, tracker_adapter: adapter.TrackerAdapter)
   FetchRemoteCommands(
     generation: Int,
     task_refs: List(task.TaskRef),
@@ -28,12 +28,20 @@ pub type Effect {
     capability: adapter.RemoteCommandCapability,
     limit_per_task: Int,
   )
-  RefreshRunning(generation: Int, ids: List(String), client: tracker.Client)
-  RefreshRetry(issue_id: String, generation: Int, client: tracker.Client)
+  RefreshRunning(
+    generation: Int,
+    ids: List(String),
+    tracker_adapter: adapter.TrackerAdapter,
+  )
+  RefreshRetry(
+    issue_id: String,
+    generation: Int,
+    tracker_adapter: adapter.TrackerAdapter,
+  )
   ValidateDispatchClaim(
     issue_id: String,
     generation: Int,
-    client: tracker.Client,
+    tracker_adapter: adapter.TrackerAdapter,
   )
   ClaimIssue(
     issue: tracker_issue.Issue,
@@ -538,6 +546,22 @@ fn adapter_result(
   }
 }
 
+fn fetch_candidate_issues(
+  tracker_adapter: adapter.TrackerAdapter,
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
+  adapter_result(adapter_legacy.fetch_runtime_candidate_issues(tracker_adapter))
+}
+
+fn refresh_issue_states_by_ids(
+  tracker_adapter: adapter.TrackerAdapter,
+  ids: List(String),
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
+  adapter_result(adapter_legacy.refresh_runtime_issues_by_ids(
+    tracker_adapter,
+    ids,
+  ))
+}
+
 fn adapter_error_to_tracker_error(
   err: adapter.TrackerError,
 ) -> error.TrackerError {
@@ -711,8 +735,11 @@ fn try_tracker_adapter(
 
 fn run_side_effect(effect: Effect) -> EffectResult {
   case effect {
-    FetchCandidates(generation, client) ->
-      CandidateFetchFinished(generation, client.fetch_candidate_issues())
+    FetchCandidates(generation, tracker_adapter) ->
+      CandidateFetchFinished(
+        generation,
+        fetch_candidate_issues(tracker_adapter),
+      )
     FetchRemoteCommands(
       generation,
       task_refs,
@@ -733,21 +760,24 @@ fn run_side_effect(effect: Effect) -> EffectResult {
           )),
         ),
       )
-    RefreshRunning(generation, ids, client) ->
-      RunningRefreshFinished(generation, client.fetch_issue_states_by_ids(ids))
-    RefreshRetry(issue_id, generation, client) ->
+    RefreshRunning(generation, ids, tracker_adapter) ->
+      RunningRefreshFinished(
+        generation,
+        refresh_issue_states_by_ids(tracker_adapter, ids),
+      )
+    RefreshRetry(issue_id, generation, tracker_adapter) ->
       RetryRefreshFinished(
         issue_id,
         generation,
-        client.fetch_issue_states_by_ids([issue_id]),
+        refresh_issue_states_by_ids(tracker_adapter, [issue_id]),
       )
-    ValidateDispatchClaim(issue_id, generation, client) ->
+    ValidateDispatchClaim(issue_id, generation, tracker_adapter) ->
       DispatchClaimValidationFinished(
         issue_id: issue_id,
         generation: generation,
         result: normalize_dispatch_claim_validation(
           issue_id,
-          client.fetch_issue_states_by_ids([issue_id]),
+          refresh_issue_states_by_ids(tracker_adapter, [issue_id]),
         ),
       )
     ClaimIssue(issue, workspace_path, run_id, capability) ->

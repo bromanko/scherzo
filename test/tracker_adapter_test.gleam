@@ -57,7 +57,7 @@ fn read_only_adapter() -> adapter.TrackerAdapter {
 fn all_requirements() -> adapter.TrackerRequirements {
   adapter.TrackerRequirements(
     remote_commands_enabled: True,
-    remote_commands_config_path: Some("linear_commands.enabled"),
+    remote_commands_config_path: Some("remote_commands.enabled"),
     handoff_comments_enabled: True,
     handoff_state_moves_enabled: True,
     handoff_config_path: None,
@@ -249,8 +249,8 @@ pub fn read_only_adapter_reports_all_required_missing_capabilities_test() {
 
   assert validation_messages(errors)
     == [
-      "tracker_capability_missing feature=remote_commands capability=remote_commands path=linear_commands.enabled backend=test-memory message=\"linear_commands.enabled requires tracker adapter test-memory to expose remote_commands\"",
-      "tracker_capability_missing feature=remote_command_ack capability=comments path=linear_commands.enabled backend=test-memory message=\"remote command acknowledgements require comments capability\"",
+      "tracker_capability_missing feature=remote_commands capability=remote_commands path=remote_commands.enabled backend=test-memory message=\"remote_commands.enabled requires tracker adapter test-memory to expose remote_commands\"",
+      "tracker_capability_missing feature=remote_command_ack capability=comments path=remote_commands.enabled backend=test-memory message=\"remote command acknowledgements require comments capability\"",
       "tracker_capability_missing feature=handoff_comments capability=handoff path=handoff.comments backend=test-memory message=\"handoff comments require handoff capability\"",
       "tracker_capability_missing feature=handoff_state_moves capability=state_transitions path=handoff.states backend=test-memory message=\"handoff state moves require state_transitions capability\"",
       "tracker_capability_missing feature=workflow_label_routing capability=routing_metadata path=workflows.<id>.label backend=test-memory message=\"workflow label routing requires routing_metadata capability\"",

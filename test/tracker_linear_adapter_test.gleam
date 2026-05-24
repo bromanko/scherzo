@@ -96,6 +96,30 @@ pub fn linear_adapter_fetch_candidates_matches_linear_parser_test() {
   assert candidate.blockers_complete == True
 }
 
+pub fn linear_adapter_lookup_operator_ref_falls_back_to_candidate_identifier_test() {
+  let phases = process.new_subject()
+  process.send(phases, FirstSearch)
+  process.send(phases, SecondSearch)
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      let assert Ok(phase) = process.receive(phases, within: 1000)
+      case phase {
+        FirstSearch -> {
+          assert string.contains(request.body, "IssueStates")
+          Ok(linear.Response(status: 200, body: empty_issues_response()))
+        }
+        SecondSearch -> {
+          assert string.contains(request.body, "CandidateIssues")
+          Ok(linear.Response(status: 200, body: candidate_response()))
+        }
+      }
+    })
+
+  let assert Ok(Some(found)) =
+    linear_tracker.task_source.lookup_by_operator_ref("LIV-266")
+  assert found.ref == linear_task_ref()
+}
+
 pub fn linear_adapter_posts_comment_with_existing_linear_body_test() {
   let captured = process.new_subject()
   let linear_tracker =
@@ -255,6 +279,10 @@ fn scheduled_failure_backend(
       Ok(Nil)
     },
   )
+}
+
+fn empty_issues_response() -> String {
+  "{\"data\":{\"issues\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
 }
 
 fn candidate_response() -> String {

@@ -98,6 +98,10 @@ fn shell_quote(value: String) -> String {
   "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
 
+fn discovery_timeout_ms() -> Int {
+  5000
+}
+
 fn limits() -> config_types.ArtifactLimits {
   config_types.ArtifactLimits(
     command_stream_max_chars: 4000,
@@ -160,7 +164,7 @@ pub fn discovery_receives_profile_env_without_workspace_values_test() {
 
   let assert Ok(enriched) =
     workspace_driver_discovery.enrich_orchestrator(
-      orchestrator_with_env(dir, "./driver.sh", 1000, [
+      orchestrator_with_env(dir, "./driver.sh", discovery_timeout_ms(), [
         #("SCHERZO_JJ_WORKSPACE_BASE", "profile-base"),
       ]),
     )
@@ -184,7 +188,9 @@ pub fn discovery_profile_path_overrides_process_path_test() {
 
   let assert Ok(enriched) =
     workspace_driver_discovery.enrich_orchestrator(
-      orchestrator_with_env(dir, "./driver.sh", 1000, [#("PATH", "./bin")]),
+      orchestrator_with_env(dir, "./driver.sh", discovery_timeout_ms(), [
+        #("PATH", "./bin"),
+      ]),
     )
   assert selected_driver(enriched).capabilities == []
 }
@@ -199,7 +205,7 @@ pub fn discovery_errors_redact_sensitive_profile_env_values_test() {
   )
   let assert Error(error) =
     workspace_driver_discovery.enrich_orchestrator(
-      orchestrator_with_env(dir, "./driver.sh", 1000, [
+      orchestrator_with_env(dir, "./driver.sh", discovery_timeout_ms(), [
         #("DRIVER_SECRET_TOKEN", "driver-env-redaction-token"),
         #("SCHERZO_JJ_WORKSPACE_BASE", "@"),
       ]),
@@ -211,7 +217,7 @@ pub fn discovery_errors_redact_sensitive_profile_env_values_test() {
 }
 
 fn discovery_error_for(dir: String, body: String) -> #(String, String) {
-  discovery_error_for_timeout(dir, body, 1000)
+  discovery_error_for_timeout(dir, body, discovery_timeout_ms())
 }
 
 fn discovery_error_for_timeout(
@@ -245,7 +251,7 @@ pub fn enrich_orchestrator_discovers_and_canonicalizes_capabilities_test() {
     workspace_driver_discovery.enrich_orchestrator(orchestrator(
       dir,
       "./driver.sh",
-      1000,
+      discovery_timeout_ms(),
     ))
   assert selected_driver(enriched).capabilities
     == [
@@ -262,7 +268,7 @@ pub fn enrich_orchestrator_accepts_empty_capability_list_test() {
     workspace_driver_discovery.enrich_orchestrator(orchestrator(
       dir,
       "./driver.sh",
-      1000,
+      discovery_timeout_ms(),
     ))
   assert selected_driver(enriched).capabilities == []
 }

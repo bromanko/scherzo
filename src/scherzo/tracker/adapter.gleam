@@ -328,7 +328,7 @@ fn validate_remote_commands(
     ..,
   ) = requirements
   let path =
-    option_with_default(remote_commands_config_path, "linear_commands.enabled")
+    option_with_default(remote_commands_config_path, "remote_commands.enabled")
 
   case remote_commands_enabled {
     False -> errors
@@ -342,7 +342,8 @@ fn validate_remote_commands(
             "remote_commands",
             "remote_commands",
             path,
-            "linear_commands.enabled requires tracker adapter "
+            path
+              <> " requires tracker adapter "
               <> adapter.kind
               <> " to expose remote_commands",
           ),

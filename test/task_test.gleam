@@ -27,6 +27,27 @@ fn legacy_issue_with_blockers(
   tracker_issue.Issue(..legacy_issue(), blocked_by: blockers)
 }
 
+pub fn task_identity_uses_backend_kind_and_remote_id_test() {
+  let linear =
+    task.TaskRef(
+      backend_kind: "linear",
+      remote_id: "issue-1",
+      key: Some("LIV-266"),
+      url: None,
+    )
+  let fake =
+    task.TaskRef(
+      backend_kind: "test-memory",
+      remote_id: "issue-1",
+      key: Some("CARD-1"),
+      url: None,
+    )
+
+  assert task.identity(linear) == #("linear", "issue-1")
+  assert task.identity(fake) == #("test-memory", "issue-1")
+  assert task.identity(linear) != task.identity(fake)
+}
+
 pub fn task_display_key_prefers_key_test() {
   let ref =
     task.TaskRef(
@@ -73,6 +94,12 @@ pub fn task_display_key_trims_key_test() {
     )
 
   assert task.display_key(ref) == "LIV-266"
+}
+
+pub fn issue_to_task_sets_linear_identity_test() {
+  let converted = task.from_legacy_issue(legacy_issue())
+
+  assert task.identity(converted.ref) == #("linear", "issue-1")
 }
 
 pub fn issue_to_task_preserves_linear_fields_test() {
@@ -235,6 +262,36 @@ pub fn non_linear_task_cannot_convert_to_legacy_issue_test() {
     )
 
   assert task.to_legacy_issue(non_linear) == Error(task.RequiresLinearTask)
+}
+
+pub fn non_linear_task_can_project_to_runtime_issue_test() {
+  let non_linear =
+    task.Task(
+      ref: task.TaskRef(
+        backend_kind: "test-memory",
+        remote_id: "card-1",
+        key: Some("CARD-1"),
+        url: None,
+      ),
+      title: "Fake card",
+      description: None,
+      priority: None,
+      state: task.TaskState(id: None, name: "Todo", category: task.Ready),
+      branch_hint: Some("fake-card-branch"),
+      labels: [task.TaskLabel(id: None, name: "workflow:test")],
+      blockers: [],
+      blockers_complete: True,
+      created_at: None,
+      updated_at: None,
+    )
+
+  let issue = task.to_runtime_issue(non_linear)
+
+  assert issue.id == "card-1"
+  assert issue.identifier == "CARD-1"
+  assert issue.title == "Fake card"
+  assert issue.branch_name == Some("fake-card-branch")
+  assert issue.labels == ["workflow:test"]
 }
 
 pub fn linear_task_requires_key_for_legacy_issue_test() {

@@ -46,7 +46,7 @@ pub fn enabled_config_requires_authorized_linear_user_ids_test() {
 pub fn parses_custom_prefix_and_trims_authorized_user_ids_test() {
   let front =
     minimal_front()
-    <> "linear_commands:\n  enabled: true\n  prefix: \"!s\"\n  authorized_user_ids:\n    - \" lin_user_1 \"\n    - \"\"\n    - lin_user_2\n  poll_limit_per_issue: 7\n  max_comments_per_tick: 8\n  acknowledge_success: false\n  acknowledge_rejection: true\n"
+    <> "remote_commands:\n  enabled: true\n  prefix: \"!s\"\n  authorized_user_ids:\n    - \" lin_user_1 \"\n    - \"\"\n    - lin_user_2\n  poll_limit_per_issue: 7\n  max_comments_per_tick: 8\n  acknowledge_success: false\n  acknowledge_rejection: true\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   assert configured.linear_commands.enabled == True
@@ -59,9 +59,31 @@ pub fn parses_custom_prefix_and_trims_authorized_user_ids_test() {
   assert configured.linear_commands.acknowledge_rejection == True
 }
 
+pub fn legacy_linear_commands_alias_still_parses_test() {
+  let front =
+    minimal_front()
+    <> "linear_commands:\n  enabled: true\n  authorized_user_ids:\n    - lin_user_1\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.linear_commands.enabled == True
+  assert configured.linear_commands.authorized_user_ids == ["lin_user_1"]
+}
+
+pub fn remote_commands_takes_precedence_over_legacy_alias_test() {
+  let front =
+    minimal_front()
+    <> "linear_commands:\n  enabled: true\n  prefix: \"!legacy\"\n  authorized_user_ids:\n    - lin_legacy\nremote_commands:\n  enabled: true\n  prefix: \"!remote\"\n  authorized_user_ids:\n    - remote_user\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.linear_commands.prefix == "!remote"
+  assert configured.linear_commands.authorized_user_ids == ["remote_user"]
+}
+
 pub fn rejects_invalid_linear_command_limits_and_prefix_test() {
   let invalid_prefix =
-    minimal_front() <> "linear_commands:\n  prefix: \"   \"\n"
+    minimal_front() <> "remote_commands:\n  prefix: \"   \"\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_prefix),
@@ -70,7 +92,7 @@ pub fn rejects_invalid_linear_command_limits_and_prefix_test() {
     )
 
   let invalid_poll_limit =
-    minimal_front() <> "linear_commands:\n  poll_limit_per_issue: 0\n"
+    minimal_front() <> "remote_commands:\n  poll_limit_per_issue: 0\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_poll_limit),
@@ -79,7 +101,7 @@ pub fn rejects_invalid_linear_command_limits_and_prefix_test() {
     )
 
   let invalid_tick_limit =
-    minimal_front() <> "linear_commands:\n  max_comments_per_tick: 0\n"
+    minimal_front() <> "remote_commands:\n  max_comments_per_tick: 0\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_tick_limit),
