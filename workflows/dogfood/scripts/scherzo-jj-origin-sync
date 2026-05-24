@@ -62,13 +62,13 @@ classify_fetch_stderr() {
   fi
 }
 
-remote=${SCHERZO_ORIGIN_SYNC_REMOTE:-origin}
-branch=${SCHERZO_ORIGIN_SYNC_BRANCH:-main}
+remote=${SCHERZO_ORIGIN_SYNC_REMOTE:-${SCHERZO_JJ_WORKSPACE_REMOTE:-origin}}
+branch=${SCHERZO_ORIGIN_SYNC_BRANCH:-${SCHERZO_JJ_WORKSPACE_BASE_BRANCH:-main}}
 destination=${SCHERZO_ORIGIN_SYNC_DESTINATION:-${branch}@${remote}}
 stack_revset=${SCHERZO_ORIGIN_SYNC_REBASE_REVSET:-${destination}..@}
 
-[ -n "$remote" ] || fail "SCHERZO_ORIGIN_SYNC_REMOTE must not be empty"
-[ -n "$branch" ] || fail "SCHERZO_ORIGIN_SYNC_BRANCH must not be empty"
+[ -n "$remote" ] || fail "SCHERZO_ORIGIN_SYNC_REMOTE or SCHERZO_JJ_WORKSPACE_REMOTE must not be empty"
+[ -n "$branch" ] || fail "SCHERZO_ORIGIN_SYNC_BRANCH or SCHERZO_JJ_WORKSPACE_BASE_BRANCH must not be empty"
 [ -n "$destination" ] || fail "SCHERZO_ORIGIN_SYNC_DESTINATION must not be empty"
 [ -n "$stack_revset" ] || fail "SCHERZO_ORIGIN_SYNC_REBASE_REVSET must not be empty"
 

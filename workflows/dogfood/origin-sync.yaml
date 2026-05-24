@@ -1,7 +1,7 @@
 version: 1
 id: origin-sync
-description: Fetch origin, advance local main to main@origin when safe, and auto-rebase the empty root jj stack.
-workspace_profile: noop
+description: Fetch the configured root remote, advance local main to the configured base when safe, and auto-rebase the empty root jj stack.
+workspace_profile: origin-sync
 max_parallel_steps: 1
 steps:
   - id: sync_origin

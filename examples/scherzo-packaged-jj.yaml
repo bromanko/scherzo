@@ -29,6 +29,7 @@ workspace:
         #   SCHERZO_JJ_WORKSPACE_REMOTE: upstream
         #   SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
         #   SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
+        #   SCHERZO_GITHUB_REPO: your-org/your-repo
         #   SCHERZO_PR_DRAFT: "true"
 agent:
   max_concurrent_agents: 1

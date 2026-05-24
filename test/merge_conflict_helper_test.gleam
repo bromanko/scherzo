@@ -68,6 +68,63 @@ pub fn extract_target_accepts_local_pr_reference_test() {
   assert string.contains(artifact.stdout, "PR_NUMBER=51")
 }
 
+pub fn extract_target_uses_canonical_repo_env_when_arg_omitted_test() {
+  let dir = "test/tmp/merge-conflict-extract-canonical-repo-env"
+  reset_dir(dir)
+  let text_path = dir <> "/issue.txt"
+  let assert Ok(Nil) =
+    simplifile.write(text_path, "Please resolve conflicts for PR #51.\n")
+
+  let artifact =
+    run_helper_in(
+      ".",
+      "SCHERZO_GITHUB_REPO=example/repo .scherzo/workflows/scripts/scherzo-merge-conflict extract-target "
+        <> text_path,
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "REPO=example/repo")
+}
+
+pub fn extract_target_uses_legacy_repo_env_when_canonical_unset_test() {
+  let dir = "test/tmp/merge-conflict-extract-legacy-repo-env"
+  reset_dir(dir)
+  let text_path = dir <> "/issue.txt"
+  let assert Ok(Nil) =
+    simplifile.write(text_path, "Please resolve conflicts for PR #52.\n")
+
+  let artifact =
+    run_helper_in(
+      ".",
+      "SCHERZO_PR_REPO=legacy/repo .scherzo/workflows/scripts/scherzo-merge-conflict extract-target "
+        <> text_path,
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "REPO=legacy/repo")
+}
+
+pub fn extract_target_uses_github_repository_when_scherzo_repo_env_unset_test() {
+  let dir = "test/tmp/merge-conflict-extract-github-repository-env"
+  reset_dir(dir)
+  let text_path = dir <> "/issue.txt"
+  let assert Ok(Nil) =
+    simplifile.write(text_path, "Please resolve conflicts for PR #53.\n")
+
+  let artifact =
+    run_helper_in(
+      ".",
+      "GITHUB_REPOSITORY=github/env-repo .scherzo/workflows/scripts/scherzo-merge-conflict extract-target "
+        <> text_path,
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "REPO=github/env-repo")
+}
+
 pub fn extract_target_prefers_issue_fields_over_diagnostic_comments_test() {
   let dir = "test/tmp/merge-conflict-extract-pr-with-diagnostic-comment"
   reset_dir(dir)

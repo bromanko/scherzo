@@ -68,10 +68,10 @@ publish       Fast-forward the target branch with the validated merge commit,
 Test helper:
 extract-target <text-file> [repo]
               Extract one PR or branch target from a text fixture and print it.
-              If repo is omitted, use SCHERZO_PR_REPO, SCHERZO_GITHUB_REPO, or GITHUB_REPOSITORY.
+              If repo is omitted, use SCHERZO_GITHUB_REPO, SCHERZO_PR_REPO, or GITHUB_REPOSITORY.
 extract-target-issue <json-file> [repo]
               Extract one PR or branch target from an issue JSON fixture and print it.
-              If repo is omitted, use SCHERZO_PR_REPO, SCHERZO_GITHUB_REPO, or GITHUB_REPOSITORY.
+              If repo is omitted, use SCHERZO_GITHUB_REPO, SCHERZO_PR_REPO, or GITHUB_REPOSITORY.
 """,
         file=sys.stderr,
     )
@@ -260,16 +260,24 @@ def issue_texts(issue: dict[str, Any]) -> list[tuple[str, str]]:
     return texts
 
 
+def githubish_host(host: str) -> bool:
+    normalized = host.lower()
+    return normalized == "github.com" or normalized.startswith("github")
+
+
 def owner_repo_from_url(url: str) -> str | None:
     if url.startswith("https://github.com/"):
         value = url.removeprefix("https://github.com/")
-    elif url.startswith("git@github.com:"):
-        value = url.removeprefix("git@github.com:")
-    elif url.startswith("ssh://git@github.com/"):
-        value = url.removeprefix("ssh://git@github.com/")
     else:
-        return None
-    value = value.removesuffix(".git")
+        scp_match = re.match(r"^git@([^:]+):(.+)$", url)
+        ssh_match = re.match(r"^ssh://(?:git@)?([^/]+)/(.+)$", url)
+        if scp_match and githubish_host(scp_match.group(1)):
+            value = scp_match.group(2)
+        elif ssh_match and githubish_host(ssh_match.group(1)):
+            value = ssh_match.group(2)
+        else:
+            return None
+    value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/").removesuffix(".git")
     parts = value.split("/")
     if len(parts) >= 2 and parts[0] and parts[1]:
         return f"{parts[0]}/{parts[1]}"
@@ -285,17 +293,35 @@ def remote_url(remote: str) -> str | None:
     return None
 
 
+def explicit_repo_env() -> tuple[str, str] | None:
+    for name in ["SCHERZO_GITHUB_REPO", "SCHERZO_PR_REPO"]:
+        explicit = os.environ.get(name, "").strip()
+        if explicit:
+            return name, explicit
+    return None
+
+
 def default_repo(remote: str) -> str:
-    explicit = os.environ.get("SCHERZO_PR_REPO", "").strip()
-    if explicit:
-        return explicit
     url = remote_url(remote)
     if not url:
         fail(f"could not find jj git remote: {remote}")
-    repo = owner_repo_from_url(url)
-    if not repo:
-        fail(f"could not infer GitHub owner/repo from remote URL: {url}")
-    return repo
+    remote_repo = owner_repo_from_url(url)
+    explicit = explicit_repo_env()
+    if explicit:
+        name, repo = explicit
+        if remote_repo and repo.lower() != remote_repo.lower():
+            fail(
+                f"{name}={repo} does not match selected jj remote "
+                f"'{remote}' ({remote_repo}); update {name} or "
+                "SCHERZO_JJ_WORKSPACE_REMOTE"
+            )
+        return repo
+    if remote_repo:
+        return remote_repo
+    github_repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if github_repo:
+        return github_repo
+    fail(f"could not infer GitHub owner/repo from remote URL: {url}")
 
 
 def clean_branch_ref(value: str) -> str | None:
@@ -468,7 +494,7 @@ def fetch_pr(candidate: dict[str, Any], expected_repo: str) -> dict[str, Any]:
     if repo.lower() != expected_repo.lower():
         fail(
             f"PR reference points at {repo}, but this workflow is configured for "
-            f"{expected_repo}. Set SCHERZO_PR_REPO to override intentionally."
+            f"{expected_repo}. Set SCHERZO_GITHUB_REPO to override intentionally."
         )
 
     fields = ",".join(
@@ -511,7 +537,7 @@ def branch_target(candidate: dict[str, Any], expected_repo: str) -> dict[str, An
     if repo.lower() != expected_repo.lower():
         fail(
             f"branch reference points at {repo}, but this workflow is configured "
-            f"for {expected_repo}. Set SCHERZO_PR_REPO to override intentionally."
+            f"for {expected_repo}. Set SCHERZO_GITHUB_REPO to override intentionally."
         )
     base_branch = os.environ.get("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main").strip() or "main"
     head_branch = candidate["branch"]
@@ -995,7 +1021,7 @@ def project_validation_env() -> dict[str, str]:
     # nested helper invocations; otherwise fixture helpers can infer or publish
     # against the outer workflow context.
     for key in list(env):
-        if key.startswith(WORKFLOW_CONTEXT_ENV_PREFIX):
+        if key == "GITHUB_REPOSITORY" or key.startswith(WORKFLOW_CONTEXT_ENV_PREFIX):
             env.pop(key, None)
     return env
 
@@ -1230,13 +1256,13 @@ def print_target(target: dict[str, Any]) -> None:
 def configured_repo(args: list[str]) -> str:
     if len(args) == 2:
         return args[1]
-    for name in ["SCHERZO_PR_REPO", "SCHERZO_GITHUB_REPO", "GITHUB_REPOSITORY"]:
+    for name in ["SCHERZO_GITHUB_REPO", "SCHERZO_PR_REPO", "GITHUB_REPOSITORY"]:
         value = os.environ.get(name, "").strip()
         if value:
             return value
     fail(
-        "missing GitHub repository; pass owner/repo or set SCHERZO_PR_REPO, "
-        "SCHERZO_GITHUB_REPO, or GITHUB_REPOSITORY"
+        "missing GitHub repository; pass owner/repo or set SCHERZO_GITHUB_REPO, "
+        "SCHERZO_PR_REPO, or GITHUB_REPOSITORY"
     )
 
 

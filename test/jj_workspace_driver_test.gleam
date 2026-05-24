@@ -234,6 +234,38 @@ fn env_path(bin: String) -> String {
   }
 }
 
+fn env_has_key(env: List(#(String, String)), key: String) -> Bool {
+  list.any(env, fn(entry) {
+    let #(candidate, _) = entry
+    candidate == key
+  })
+}
+
+fn scrubbed_driver_env(
+  extra: List(#(String, String)),
+) -> List(#(String, String)) {
+  let scrubbed =
+    [
+      #("GITHUB_REPOSITORY", ""),
+      #("SCHERZO_GITHUB_REPO", ""),
+      #("SCHERZO_JJ_WORKSPACE_BASE", ""),
+      #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", ""),
+      #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", ""),
+      #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", ""),
+      #("SCHERZO_JJ_WORKSPACE_REMOTE", ""),
+      #("SCHERZO_PR_BASE", ""),
+      #("SCHERZO_PR_DRAFT", ""),
+      #("SCHERZO_PR_REMOTE", ""),
+      #("SCHERZO_PR_REPO", ""),
+    ]
+    |> list.filter(fn(entry) {
+      let #(key, _) = entry
+      !env_has_key(extra, key)
+    })
+
+  list.append(scrubbed, extra)
+}
+
 fn fake_env(
   workspace: String,
   bin: String,
@@ -245,7 +277,7 @@ fn fake_env(
     #("SCHERZO_FAKE_JJ_LOG", log),
     #("PATH", env_path(bin)),
   ]
-  |> list.append(extra)
+  |> list.append(scrubbed_driver_env(extra))
 }
 
 fn fake_env_without_workspace(
@@ -254,7 +286,7 @@ fn fake_env_without_workspace(
   extra: List(#(String, String)),
 ) -> List(#(String, String)) {
   [#("SCHERZO_FAKE_JJ_LOG", log), #("PATH", env_path(bin))]
-  |> list.append(extra)
+  |> list.append(scrubbed_driver_env(extra))
 }
 
 fn fake_env_with_exact_path(
@@ -268,7 +300,7 @@ fn fake_env_with_exact_path(
     #("SCHERZO_FAKE_JJ_LOG", log),
     #("PATH", bin),
   ]
-  |> list.append(extra)
+  |> list.append(scrubbed_driver_env(extra))
 }
 
 fn fake_env_without_workspace_exact_path(
@@ -277,7 +309,7 @@ fn fake_env_without_workspace_exact_path(
   extra: List(#(String, String)),
 ) -> List(#(String, String)) {
   [#("SCHERZO_FAKE_JJ_LOG", log), #("PATH", bin)]
-  |> list.append(extra)
+  |> list.append(scrubbed_driver_env(extra))
 }
 
 fn run_jj(
@@ -352,7 +384,7 @@ fn run_publish_change_with_pr_draft(
   let base_env = [
     #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
     #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
-    #("SCHERZO_PR_REPO", "example/repo"),
+    #("SCHERZO_GITHUB_REPO", "example/repo"),
   ]
   let env = case draft {
     Some(value) -> list.append(base_env, [#("SCHERZO_PR_DRAFT", value)])
@@ -524,6 +556,8 @@ pub fn jj_driver_legacy_pr_base_names_are_ignored_test() {
       "lifecycle create",
       fake_env(workspace, bin, log, [
         #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", ""),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", ""),
         #("SCHERZO_PR_REMOTE", "upstream"),
         #("SCHERZO_PR_BASE", "develop"),
       ]),
@@ -775,6 +809,8 @@ pub fn jj_driver_refresh_base_ignores_legacy_pr_names_test() {
       "jj_driver_refresh_legacy_ignored",
       "refresh-base --stage pre-validation --json",
       fake_env(workspace, bin, log, [
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", ""),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", ""),
         #("SCHERZO_PR_REMOTE", "fork"),
         #("SCHERZO_PR_BASE", "develop"),
       ]),
@@ -805,7 +841,9 @@ pub fn jj_driver_publish_remote_is_separate_from_base_remote_test() {
         #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
         #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_GITHUB_REPO", ""),
         #("SCHERZO_PR_REPO", ""),
+        #("GITHUB_REPOSITORY", ""),
       ]),
     )
 
@@ -814,6 +852,125 @@ pub fn jj_driver_publish_remote_is_separate_from_base_remote_test() {
   assert string.contains(logged, "git remote list")
   assert string.contains(logged, "git push --remote origin")
   assert !string.contains(logged, "git push --remote upstream")
+}
+
+pub fn jj_driver_publish_rejects_explicit_repo_mismatch_before_push_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-repo-mismatch"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_repo_mismatch",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_GITHUB_REPO", "wrong/repo"),
+        #("SCHERZO_PR_REPO", ""),
+        #("GITHUB_REPOSITORY", ""),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"repo_remote_mismatch\"",
+  )
+  assert string.contains(artifact.stdout, "SCHERZO_GITHUB_REPO=wrong/repo")
+  let logged = log_text(log)
+  assert string.contains(logged, "git remote list")
+  assert !string.contains(logged, "git push")
+  assert !string.contains(logged, "gh: pr")
+}
+
+pub fn jj_driver_publish_uses_legacy_repo_alias_when_canonical_repo_unset_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-legacy-repo"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_legacy_repo_alias",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #(
+          "SCHERZO_FAKE_JJ_REMOTES",
+          "origin git@github-scherzo-agent:legacy/repo.git",
+        ),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_GITHUB_REPO", ""),
+        #("SCHERZO_PR_REPO", "legacy/repo"),
+        #("GITHUB_REPOSITORY", ""),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(log_text(log), "--repo legacy/repo")
+}
+
+pub fn jj_driver_publish_prefers_remote_inference_over_github_repository_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-github-repository"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_github_repository",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_GITHUB_REPO", ""),
+        #("SCHERZO_PR_REPO", ""),
+        #("GITHUB_REPOSITORY", "github/env-repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert string.contains(logged, "git remote list")
+  assert string.contains(logged, "--repo example/repo")
+  assert !string.contains(logged, "--repo github/env-repo")
+}
+
+pub fn jj_driver_publish_uses_github_repository_when_remote_repo_unparseable_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-github-repository-fallback"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_github_repository_fallback",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #(
+          "SCHERZO_FAKE_JJ_REMOTES",
+          "origin ssh://git@git.example.invalid/scm/repo.git",
+        ),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_GITHUB_REPO", ""),
+        #("SCHERZO_PR_REPO", ""),
+        #("GITHUB_REPOSITORY", "github/env-repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(log_text(log), "--repo github/env-repo")
 }
 
 pub fn jj_driver_publish_legacy_remote_without_canonical_fails_closed_test() {
@@ -830,6 +987,7 @@ pub fn jj_driver_publish_legacy_remote_without_canonical_fails_closed_test() {
       "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base develop@fork --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", ""),
         #("SCHERZO_PR_REMOTE", "fork"),
         #("SCHERZO_PR_REPO", ""),
       ]),
@@ -914,6 +1072,7 @@ pub fn jj_driver_pr_draft_env_controls_create_flag_test() {
     )
   assert_exit(draft_artifact, 0)
   assert string.contains(draft_log, "gh: pr create")
+  assert string.contains(draft_log, "--repo example/repo")
   assert string.contains(draft_log, "--draft")
 
   let #(ready_artifact, ready_log) =

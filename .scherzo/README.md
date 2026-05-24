@@ -11,7 +11,7 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Put runtime jj workspaces under `.scherzo/workspaces/<workflow-name>/`; they are ignored by git.
 - Config-relative paths are resolved from `.scherzo/scherzo.yaml`, so this repository uses `workspace.root: workspaces` to land at repo-root `.scherzo/workspaces`.
 - Populate Scherzo workspaces with `jj workspace add`, not separate `git clone` checkouts. New root workspaces use the canonical `SCHERZO_JJ_WORKSPACE_*` driver env configured under `.scherzo/scherzo.yaml` (`main@scherzo-agent` for this dogfood profile) and fall back through the selected local base branch and finally `@` only when no canonical base remote/branch is configured; set `SCHERZO_JJ_WORKSPACE_BASE` to override this for deliberate local dogfooding.
-- Keep dogfood workspace lifecycle policy explicit: `.scherzo/scherzo.yaml` defines `workspace.profiles.dogfood-jj.driver` as the documented default, and implementation/review workflows select it with top-level `workspace_profile: dogfood-jj`. Command-only root-maintenance schedules may select `workspace_profile: noop` and then explicitly resolve `SCHERZO_REPO_ROOT` before touching the root checkout.
+- Keep dogfood workspace lifecycle policy explicit: `.scherzo/scherzo.yaml` defines `workspace.profiles.dogfood-jj.driver` as the documented default, and implementation/review workflows select it with top-level `workspace_profile: dogfood-jj`. Command-only root-maintenance schedules use no-op profiles and explicitly resolve `SCHERZO_REPO_ROOT` before touching the root checkout; `origin-sync` has its own no-op profile so its configured remote is not launcher-only environment.
 - The `dogfood-jj` workspace driver uses the trusted command `$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj` for lifecycle operations and self-describes the dogfood capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. The normative driver contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../docs/specs/WORKSPACE_DRIVER_SPEC.md); hook-backed profile configuration is unsupported legacy migration material covered by [`docs/runbooks/workspace-driver-migration.md`](../docs/runbooks/workspace-driver-migration.md). Do not add new dogfood hook snippets as the current convention.
 - Use `scripts/scherzo-pi` as the checked-in `pi.command` wrapper so workflows such as research and bundle-based ExecPlan can select `openai-codex/gpt-5.5:xhigh` while other workflows keep the default pi model.
 - Keep machine-specific variants as `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, `.scherzo/scherzo.local.yaml`, or `.scherzo/scherzo.local.yml`; they are ignored by git.
@@ -58,21 +58,17 @@ export LINEAR_DEFAULT_PROJECT="Scherzo Core"
 export SCHERZO_RESEARCH_PI_MODEL=openai-codex/gpt-5.5:xhigh
 # Optional. Defaults to openai-codex/gpt-5.5:xhigh for bundle-based ExecPlan drafting, revision, and implementation workflows.
 export SCHERZO_EXECPLAN_PI_MODEL=openai-codex/gpt-5.5:xhigh
-# Optional. Historical legacy PR remote name. Current dogfood jj driver and workflow helpers use
-# SCHERZO_JJ_WORKSPACE_* values from workspace.profiles.dogfood-jj.driver.env instead.
-export SCHERZO_PR_REMOTE=origin
-# Optional. Historical legacy PR base name. Current dogfood jj driver and workflow helpers use
-# SCHERZO_JJ_WORKSPACE_BASE_BRANCH from workspace.profiles.dogfood-jj.driver.env instead.
-export SCHERZO_PR_BASE=main
-# Optional. Defaults to the owner/repo inferred from the selected publication remote.
-export SCHERZO_PR_REPO=scherzo-systems/scherzo
+# Optional. Defaults to the GitHub owner/repo configured in workspace driver env.
+# Set this only when running a local override profile or workflow bundle outside this checked-in config.
+export SCHERZO_GITHUB_REPO=scherzo-systems/scherzo
 # Optional. Defaults to the current non-draft PR behavior when unset.
 # Set true to create draft PRs; set false to force ready-for-review PRs.
 export SCHERZO_PR_DRAFT=false
 # Optional. Defaults to the repository root inferred from .scherzo/scherzo.yaml.
 export SCHERZO_REPO_ROOT=$(pwd)
-# Optional. Defaults for the scheduled origin-sync job.
-export SCHERZO_ORIGIN_SYNC_REMOTE=origin
+# Optional local overrides for the scheduled origin-sync job. The checked-in
+# origin-sync profile configures these to scherzo-agent/main.
+export SCHERZO_ORIGIN_SYNC_REMOTE=scherzo-agent
 export SCHERZO_ORIGIN_SYNC_BRANCH=main
 # Optional. Defaults for the scheduled workspace-cleanup job.
 export SCHERZO_CLEANUP_WORKSPACE_ROOT="$SCHERZO_REPO_ROOT/.scherzo/workspaces"
@@ -96,13 +92,18 @@ SCHERZO_AGENT_GIT_NAME="Scherzo Agent"
 SCHERZO_AGENT_GIT_EMAIL=agent-email@example.invalid
 # Optional. Defaults to github-scherzo-agent.
 SCHERZO_AGENT_SSH_HOST=github-scherzo-agent
-# Optional. Defaults to scherzo-agent. Keep this aligned with dogfood-jj driver.env
-# (`SCHERZO_JJ_WORKSPACE_REMOTE` and `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`) unless
-# you also change the checked-in or local Scherzo config.
-SCHERZO_AGENT_PR_REMOTE=scherzo-agent
+# Optional. Defaults to scherzo-agent. This is the expected remote validated by
+# the helper scripts; checked-in driver behavior comes from .scherzo/scherzo.yaml.
+SCHERZO_AGENT_JJ_WORKSPACE_REMOTE=scherzo-agent
+# Optional. Defaults to SCHERZO_AGENT_JJ_WORKSPACE_REMOTE.
+SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE=scherzo-agent
+# Optional. Defaults to main.
+SCHERZO_AGENT_JJ_WORKSPACE_BASE_BRANCH=main
 # Optional. Defaults to scherzo-systems/scherzo.
-SCHERZO_AGENT_PR_REPO=scherzo-systems/scherzo
+SCHERZO_AGENT_GITHUB_REPO=scherzo-systems/scherzo
 ```
+
+The older local aliases `SCHERZO_AGENT_PR_REMOTE` and `SCHERZO_AGENT_PR_REPO` are still accepted by the helper scripts when the new agent names are unset, but they no longer act as the primary jj driver configuration boundary. Keep non-secret driver policy in `.scherzo/scherzo.yaml` `driver.env`.
 
 `SCHERZO_AGENT_GITHUB_TOKEN` should be a fine-grained GitHub token limited to `scherzo-systems/scherzo`. It needs metadata read access, pull request read/write access, and issue read/write access for PR creation, PR lookup, feedback collection, and PR comments. The scripts map this value to `GH_TOKEN` and `GITHUB_TOKEN` only inside the profile and set `GH_CONFIG_DIR` to ignored `.scherzo/gh-agent/`; they do not run `gh auth login` or write the token to GitHub CLI config.
 
@@ -138,7 +139,7 @@ With real credentials and the agent remote in place, run the live identity check
 direnv exec . devenv shell -P scherzo-agent scherzo-agent-whoami
 ```
 
-This command verifies that `gh api user` returns `SCHERZO_AGENT_GITHUB_LOGIN`, the token can read `SCHERZO_AGENT_PR_REPO`, the Linear viewer query succeeds with the agent API key, git and jj show the agent identity, the configured remote uses the expected SSH host alias, and `ssh -T git@$SCHERZO_AGENT_SSH_HOST` authenticates as the same GitHub login.
+This command verifies that `gh api user` returns `SCHERZO_AGENT_GITHUB_LOGIN`, the token can read `SCHERZO_AGENT_GITHUB_REPO`, the Linear viewer query succeeds with the agent API key, git and jj show the agent identity, the configured publication remote uses the expected SSH host alias, and `ssh -T git@$SCHERZO_AGENT_SSH_HOST` authenticates as the same GitHub login.
 
 Start Scherzo through the guarded run command only when the operator is ready for the daemon to poll Linear and dispatch work:
 
@@ -190,7 +191,7 @@ The checked-in workflows are:
 - `workflow:execplan-revision` — consumes a task containing `Bundle ref:` / `Bundle sha256:` plus actionable feedback, validates the retained ExecPlan bundle, revises the review document and implementation pack only when needed, and emits a superseding retained bundle.
 - `workflow:execplan-implementation` — validates a retained ExecPlan bundle from task context, implements from the prepared review document plus implementation pack, fails closed if they conflict, publishes a PR, and emits a retained `code_change_bundle` artifact.
 - `workflow:merge-conflict-resolution` — manually resolves merge conflicts for one same-repository GitHub PR or branch referenced by a Linear-backed task. The task should include an unambiguous target such as `Resolve conflicts for PR #51`, `scherzo-systems/scherzo#51`, a full GitHub PR URL, or `Branch: feature/name`. The workflow creates a merge commit from the target branch and the configured base branch, lets the agent edit only files that jj reports as conflicted, fails if non-conflicted tracked files change or ambiguity requires a behavior choice, validates through direnv, and fast-forwards the target branch only after validation passes.
-- scheduled `origin-sync` — every 15 minutes, runs `.scherzo/workflows/scripts/scherzo-jj-origin-sync` from the repository root. It always fetches `origin`, rebases the local root stack onto `main@origin` only when the working-copy change `@` has no file changes, skips successfully when `@` is dirty, and fails for existing or newly-created jj conflicts so the scheduled failure reporter can surface manual attention.
+- scheduled `origin-sync` — every 15 minutes, runs `.scherzo/workflows/scripts/scherzo-jj-origin-sync` from the repository root. The checked-in `origin-sync` profile sets `SCHERZO_ORIGIN_SYNC_REMOTE=scherzo-agent` and `SCHERZO_ORIGIN_SYNC_BRANCH=main`, so it fetches the same agent remote used by the jj workspace driver, rebases the local root stack onto `main@scherzo-agent` only when the working-copy change `@` has no file changes, skips successfully when `@` is dirty, and fails for existing or newly-created jj conflicts so the scheduled failure reporter can surface manual attention.
 - scheduled `workspace-cleanup` — every hour, runs `scherzoctl cleanup --root <workspace-root> --json --yes` from a no-op scratch workspace. It defaults to `.scherzo/workspaces`, honors `SCHERZO_CLEANUP_WORKSPACE_ROOT` and the legacy `SCHERZO_WORKSPACE_CLEANUP_ROOT` override, and resolves `scherzoctl` through `SCHERZO_CTL`, `PATH`, or the repository `scripts/scherzoctl` wrapper so it does not depend on the step workspace current directory.
 
 Use the research workflow for the first supervised run:

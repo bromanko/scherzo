@@ -101,7 +101,7 @@ pub fn checked_in_origin_sync_schedule_loads_test() {
   assert dict.has_key(bundle.orchestrator.routing.workflows, "origin-sync")
   let assert Ok(dag) = dict.get(bundle.workflows, "origin-sync")
   assert dag.id == "origin-sync"
-  assert dag.workspace_profile == Some("noop")
+  assert dag.workspace_profile == Some("origin-sync")
   let assert [step] = dag.steps
   assert step.id == "sync_origin"
   assert step.workspace.name == "main"

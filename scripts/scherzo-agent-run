@@ -16,9 +16,9 @@ if [ "$LINEAR_API_KEY" != "$SCHERZO_AGENT_LINEAR_API_KEY" ]; then
   fail "LINEAR_API_KEY was not derived from SCHERZO_AGENT_LINEAR_API_KEY"
 fi
 
-echo "Scherzo agent identity checks passed for GitHub login $SCHERZO_AGENT_GITHUB_LOGIN and repo $SCHERZO_PR_REPO"
+echo "Scherzo agent identity checks passed for GitHub login $SCHERZO_AGENT_GITHUB_LOGIN and repo $SCHERZO_GITHUB_REPO"
 echo "Linear key source=SCHERZO_AGENT_LINEAR_API_KEY"
-echo "SCHERZO_PR_REMOTE=$SCHERZO_PR_REMOTE"
+echo "SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE=$SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE"
 echo "remote url=$(require_agent_remote)"
 show_identities
 

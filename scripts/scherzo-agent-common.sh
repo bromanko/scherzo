@@ -62,11 +62,17 @@ write_jj_config() {
 }
 
 prepare_agent_env() {
-  if [ -z "$SCHERZO_AGENT_PR_REMOTE" ]; then
-    SCHERZO_AGENT_PR_REMOTE=scherzo-agent
+  if [ -z "$SCHERZO_AGENT_JJ_WORKSPACE_REMOTE" ]; then
+    SCHERZO_AGENT_JJ_WORKSPACE_REMOTE=${SCHERZO_AGENT_PR_REMOTE:-scherzo-agent}
   fi
-  if [ -z "$SCHERZO_AGENT_PR_REPO" ]; then
-    SCHERZO_AGENT_PR_REPO=scherzo-systems/scherzo
+  if [ -z "$SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE" ]; then
+    SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE=$SCHERZO_AGENT_JJ_WORKSPACE_REMOTE
+  fi
+  if [ -z "$SCHERZO_AGENT_JJ_WORKSPACE_BASE_BRANCH" ]; then
+    SCHERZO_AGENT_JJ_WORKSPACE_BASE_BRANCH=main
+  fi
+  if [ -z "$SCHERZO_AGENT_GITHUB_REPO" ]; then
+    SCHERZO_AGENT_GITHUB_REPO=${SCHERZO_AGENT_PR_REPO:-scherzo-systems/scherzo}
   fi
   if [ -z "$SCHERZO_AGENT_GIT_NAME" ]; then
     SCHERZO_AGENT_GIT_NAME="Scherzo Agent"
@@ -103,8 +109,9 @@ prepare_agent_env() {
     unset LINEAR_API_KEY
   fi
 
-  SCHERZO_PR_REMOTE=$SCHERZO_AGENT_PR_REMOTE
-  SCHERZO_PR_REPO=$SCHERZO_AGENT_PR_REPO
+  SCHERZO_GITHUB_REPO=$SCHERZO_AGENT_GITHUB_REPO
+  # Keep the legacy publication repository alias available for older local helper paths.
+  SCHERZO_PR_REPO=$SCHERZO_GITHUB_REPO
   GIT_AUTHOR_NAME=$SCHERZO_AGENT_GIT_NAME
   GIT_AUTHOR_EMAIL=$SCHERZO_AGENT_GIT_EMAIL
   GIT_COMMITTER_NAME=$SCHERZO_AGENT_GIT_NAME
@@ -119,8 +126,9 @@ prepare_agent_env() {
   unset GIT_SSH_COMMAND
 
   export GH_CONFIG_DIR JJ_AGENT_CONFIG JJ_CONFIG SCHERZO_REPO_ROOT
-  export SCHERZO_AGENT_PR_REMOTE SCHERZO_AGENT_PR_REPO SCHERZO_AGENT_GIT_NAME SCHERZO_AGENT_SSH_HOST
-  export SCHERZO_PR_REMOTE SCHERZO_PR_REPO
+  export SCHERZO_AGENT_JJ_WORKSPACE_REMOTE SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE SCHERZO_AGENT_JJ_WORKSPACE_BASE_BRANCH
+  export SCHERZO_AGENT_GITHUB_REPO SCHERZO_AGENT_GIT_NAME SCHERZO_AGENT_SSH_HOST
+  export SCHERZO_GITHUB_REPO SCHERZO_PR_REPO
   export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 }
 
@@ -148,10 +156,10 @@ remote_host() {
 }
 
 require_agent_remote() {
-  remote_name=$SCHERZO_PR_REMOTE
+  remote_name=$SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE
   url=$(remote_url "$remote_name" || true)
   if [ -z "$url" ]; then
-    fail "remote '$remote_name' was not found; add it with: jj git remote add $remote_name git@$SCHERZO_AGENT_SSH_HOST:$SCHERZO_PR_REPO.git"
+    fail "remote '$remote_name' was not found; add it with: jj git remote add $remote_name git@$SCHERZO_AGENT_SSH_HOST:$SCHERZO_GITHUB_REPO.git"
   fi
   case "$url" in
     git@*:*) ;;
@@ -178,8 +186,10 @@ show_identities() {
 
 print_local_environment() {
   echo "Scherzo agent local environment check"
-  echo "SCHERZO_PR_REMOTE=$SCHERZO_PR_REMOTE"
-  echo "SCHERZO_PR_REPO=$SCHERZO_PR_REPO"
+  echo "SCHERZO_AGENT_JJ_WORKSPACE_REMOTE=$SCHERZO_AGENT_JJ_WORKSPACE_REMOTE"
+  echo "SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE=$SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE"
+  echo "SCHERZO_AGENT_JJ_WORKSPACE_BASE_BRANCH=$SCHERZO_AGENT_JJ_WORKSPACE_BASE_BRANCH"
+  echo "SCHERZO_GITHUB_REPO=$SCHERZO_GITHUB_REPO"
   echo "SCHERZO_REPO_ROOT=$SCHERZO_REPO_ROOT"
   echo "SCHERZO_AGENT_GIT_NAME=$SCHERZO_AGENT_GIT_NAME"
   echo "SCHERZO_AGENT_GIT_EMAIL=$SCHERZO_AGENT_GIT_EMAIL"
@@ -235,9 +245,9 @@ require_github_identity() {
 }
 
 require_github_repo_access() {
-  repo_full_name=$(gh api "repos/$SCHERZO_PR_REPO" --jq .full_name 2>/dev/null || true)
-  if [ "$repo_full_name" != "$SCHERZO_PR_REPO" ]; then
-    fail "GitHub token cannot read repository '$SCHERZO_PR_REPO'"
+  repo_full_name=$(gh api "repos/$SCHERZO_GITHUB_REPO" --jq .full_name 2>/dev/null || true)
+  if [ "$repo_full_name" != "$SCHERZO_GITHUB_REPO" ]; then
+    fail "GitHub token cannot read repository '$SCHERZO_GITHUB_REPO'"
   fi
 }
 
@@ -262,7 +272,7 @@ EOF_REQUEST
     -o "$body_file" \
     -D "$headers_file" \
     -w "%{http_code}" \
-    -X POST "https://api.github.com/repos/$SCHERZO_PR_REPO/pulls" \
+    -X POST "https://api.github.com/repos/$SCHERZO_GITHUB_REPO/pulls" \
     -H "Authorization: Bearer $GH_TOKEN" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -283,7 +293,7 @@ EOF_REQUEST
       pr_url=$(jq -r '.html_url // empty' "$body_file" 2>/dev/null || true)
       if [ -n "$pr_number" ]; then
         curl -fsS \
-          -X PATCH "https://api.github.com/repos/$SCHERZO_PR_REPO/pulls/$pr_number" \
+          -X PATCH "https://api.github.com/repos/$SCHERZO_GITHUB_REPO/pulls/$pr_number" \
           -H "Authorization: Bearer $GH_TOKEN" \
           -H "Accept: application/vnd.github+json" \
           -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -301,9 +311,9 @@ EOF_REQUEST
         echo "scherzo-agent: GitHub PR permission probe header: $accepted" >&2
       fi
       if [ -n "$message" ]; then
-        fail "GitHub token cannot create pull requests for '$SCHERZO_PR_REPO' (HTTP ${status:-unknown}): $message"
+        fail "GitHub token cannot create pull requests for '$SCHERZO_GITHUB_REPO' (HTTP ${status:-unknown}): $message"
       fi
-      fail "GitHub token cannot create pull requests for '$SCHERZO_PR_REPO' (HTTP ${status:-unknown})"
+      fail "GitHub token cannot create pull requests for '$SCHERZO_GITHUB_REPO' (HTTP ${status:-unknown})"
       ;;
   esac
 }
