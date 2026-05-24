@@ -14,6 +14,9 @@ Copy these files into the target repository's Scherzo workflow directory:
 
 - `examples/workflows/research.yaml`
 - `examples/workflows/prompts/research.md`
+- `examples/workflows/prompts/research-recover-failed-step.md`
+- `examples/workflows/schemas/provider/workflow-step-recovery-result.v1.schema.json`
+- `examples/workflows/schemas/workflow-step-recovery-result.v1.schema.json`
 
 The workflow selects `workspace_profile: noop` and declares `workspace_capabilities: [assert-only]`. You may rename the profile in your config, but if you do, update the workflow's `workspace_profile` to match.
 
@@ -63,7 +66,7 @@ For a jj workspace, `scripts/scherzo-workspace-jj` implements `assert-only` from
 
 Research commands can write files even when the agent only meant to inspect behavior. Common examples include language build caches, dependency downloads, generated indexes, snapshots, coverage output, temporary metadata, and lockfile updates. The prompt tells agents to avoid commands likely to write those files unless they are necessary.
 
-If `assert-only` fails, inspect the driver's diagnostic. Remove only artifacts you recognize as generated side effects. Do not remove source files or repository metadata to force the assertion to pass. If your workflow runner supports retrying the final command step, clean up the side effects and retry the collection step. Otherwise, rerun the task from a clean workspace.
+If `assert-only` fails, inspect the driver's diagnostic. Remove only artifacts you recognize as generated side effects. Do not remove source files or repository metadata to force the assertion to pass. The example workflow wires one bounded recovery attempt only on the final `collect_findings` step. That recovery worker may clean obvious generated side effects or repair `research-findings.md` from already-retained local evidence, then ask Scherzo to retry the unchanged collection step. It must give up on driver/configuration errors, ambiguous source changes, missing evidence, or unsafe cleanup. If recovery is unavailable or gives up, rerun the task from a clean workspace.
 
 If a command would be useful but would create artifacts that cannot be cleaned safely, the agent should skip it and record the skipped command under `Issues encountered` in `research-findings.md`.
 

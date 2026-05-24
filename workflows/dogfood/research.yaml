@@ -12,6 +12,9 @@ steps:
   - id: collect_findings
     kind: command
     depends_on: [research]
+    recover:
+      attempts: 1
+      prompt: prompts/research-recover-failed-step.md
     run: |
       set -eu
       findings=research-findings.md

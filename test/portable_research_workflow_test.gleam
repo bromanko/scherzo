@@ -144,10 +144,29 @@ pub fn example_research_workflow_is_driver_portable_test() {
     workflow_dag.PromptFile("prompts/research.md"),
     None,
   ) = research.kind
+  assert research.recover == None
 
   let collect = collect_findings_step()
   assert collect.depends_on == ["research"]
   assert collect.workspace == workflow_dag.WorkspaceRef("main", None)
+  let assert Some(collect_recover) = collect.recover
+  assert collect_recover
+    == workflow_dag.RecoveryConfigPatch(
+      enabled: None,
+      attempts: Some(1),
+      model: None,
+      prompt: Some(workflow_dag.PromptFile(
+        "prompts/research-recover-failed-step.md",
+      )),
+    )
+  let assert Ok(Some(effective_recover)) =
+    workflow_dag.effective_recovery_config(dag, collect)
+  assert effective_recover
+    == workflow_dag.EffectiveRecoveryConfig(
+      attempts: 1,
+      model: None,
+      prompt: workflow_dag.PromptFile("prompts/research-recover-failed-step.md"),
+    )
   let assert workflow_dag.CommandStep(run, _) = collect.kind
   assert_contains(run, "SCHERZO_WORKSPACE_DRIVER")
   assert_contains(run, "assert-only --path")
@@ -177,6 +196,24 @@ pub fn example_research_prompt_is_tracker_and_vcs_neutral_test() {
   assert_not_contains(prompt, "Linear")
   assert_not_contains(prompt, "jj")
   assert_not_contains(prompt, "jj status")
+  assert_not_contains(prompt, "git status")
+  assert_not_contains(prompt, "git diff")
+  assert_not_contains(prompt, "pull request")
+}
+
+pub fn example_research_recovery_prompt_is_bounded_to_collection_test() {
+  let prompt =
+    read_file("examples/workflows/prompts/research-recover-failed-step.md")
+  assert_contains(prompt, "collect_findings")
+  assert_contains(prompt, "research-findings.md")
+  assert_contains(prompt, "one-artifact contract")
+  assert_contains(prompt, "submit_workflow_step_recovery_result")
+  assert_contains(prompt, "retry_requested")
+  assert_contains(prompt, "gave_up")
+  assert_contains(prompt, "missing workspace driver")
+  assert_contains(prompt, "unsafe unexpected source change")
+  assert_not_contains(prompt, "Linear")
+  assert_not_contains(prompt, "jj")
   assert_not_contains(prompt, "git status")
   assert_not_contains(prompt, "git diff")
   assert_not_contains(prompt, "pull request")
