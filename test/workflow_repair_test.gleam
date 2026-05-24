@@ -3,6 +3,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/state/artifact_store
@@ -599,6 +600,81 @@ pub fn retry_step_finalization_rejects_missing_workspace_test() {
   )
 }
 
+pub fn retry_step_finalization_accepts_guarded_recovery_then_rejects_later_corruption_test() {
+  let root = "test/tmp/workflow-repair-guarded-recovery"
+  let run_root = recovery_run_root(root)
+  reset_dir(root)
+  ensure_directory(run_root <> "/workspaces/seed")
+  let store = artifact_store.new(root)
+  let assert Ok(seed_artifact) =
+    artifact_store.write_step_artifact(
+      store,
+      "run-1",
+      "implementation",
+      "seed",
+      1,
+      command_artifact("seed", "ok"),
+    )
+  let assert Ok(_failed_artifact) =
+    artifact_store.write_step_artifact(
+      store,
+      "run-1",
+      "implementation",
+      "apply_feedback",
+      1,
+      command_artifact("apply_feedback", "failed"),
+    )
+  let projection =
+    projection.fold(guarded_failed_after_recovery_run_records(
+      run_root,
+      seed_artifact.ref,
+      seed_artifact.sha256,
+    ))
+  let assert Ok(dag) = workflow_dag.parse(recovery_ready_workflow_yaml())
+  let observation = current_recovery_workflow(dag, root)
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      observation,
+    )
+  let assert Ok(finalized) =
+    recovery.finalize_workflow_candidates_with_config(
+      projection,
+      [plan.candidate],
+      dict.from_list([#(plan.run_id, observation)]),
+      store,
+      99,
+      recovery_effective_config(root),
+    )
+
+  assert list.length(finalized.resumptions) == 1
+  assert finalized.records_to_append == []
+
+  let assert Ok(Nil) =
+    simplifile.write(
+      artifact_path_for_root(root, seed_artifact.ref),
+      "corrupted after guard completed",
+    )
+  let assert Ok(corrupt_finalized) =
+    recovery.finalize_workflow_candidates_with_config(
+      projection,
+      [plan.candidate],
+      dict.from_list([#(plan.run_id, observation)]),
+      store,
+      100,
+      recovery_effective_config(root),
+    )
+
+  assert corrupt_finalized.resumptions == []
+  assert has_park_reason(
+    corrupt_finalized.records_to_append,
+    "artifact_recovery_failed",
+  )
+}
+
 fn assert_selected_non_repairable(status: String) {
   let projection = projection.fold(selected_non_repairable_run_records(status))
   let assert Ok(dag) =
@@ -774,6 +850,30 @@ fn current_recovery_workflow(
     dag: dag,
     workspace_root: root,
   )
+}
+
+fn recovery_effective_config(root: String) -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: config_types.TrackerConfig(
+      ..config.default_tracker_config(),
+      project_slug: Some("TEST"),
+      active_states: issue_state.list_from_strings(["Todo"]),
+      dispatch_states: issue_state.list_from_strings(["Todo"]),
+      terminal_states: issue_state.list_from_strings(["Done"]),
+    ),
+    polling: config.default_polling_config(),
+    workspace: config_types.WorkspaceConfig(root: root),
+    hooks: config.default_hooks_config(),
+    agent: config.default_agent_config(),
+    pi: config.default_pi_config(),
+    handoff: config.default_handoff_config(),
+    linear_contract: config.default_linear_contract_config(),
+    linear_commands: config.default_linear_command_config(),
+  )
+}
+
+fn artifact_path_for_root(root: String, ref: String) -> String {
+  root <> "/.scherzo-state/artifacts/" <> ref
 }
 
 fn interrupted_run_records() -> List(record.LedgerRecord) {
@@ -1189,6 +1289,147 @@ fn recovery_ready_run_records(
       ),
     ),
     workflow_interrupted_record(8),
+  ]
+}
+
+fn guarded_failed_after_recovery_run_records(
+  run_root: String,
+  seed_artifact_ref: String,
+  seed_sha256: String,
+) -> List(record.LedgerRecord) {
+  [
+    record.with_id(
+      "run-started",
+      1,
+      record.WorkflowRunStartedWithTask(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        workflow_fingerprint: "workflow-fp-1",
+        issue_id: "issue-1",
+        issue_identifier: "LIV-509",
+        task_ref: record.linear_task_ref_fields(
+          "issue-1",
+          Some("LIV-509"),
+          None,
+        ),
+        issue_fingerprint: tracker_issue.content_fingerprint(issue()),
+        observed_updated_at_ms: 100,
+        run_root: run_root,
+      ),
+    ),
+    record.with_id(
+      "seed-prepared",
+      2,
+      record.StepAttemptPrepared(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "seed",
+        attempt_index: 1,
+        workspace_name: "seed",
+        workspace_path: run_root <> "/workspaces/seed",
+        run_root: run_root,
+        source_workspace_name: None,
+        source_workspace_path: None,
+      ),
+    ),
+    record.with_id(
+      "seed-started",
+      3,
+      record.StepAttemptStarted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "seed",
+        attempt_index: 1,
+        operator_session_id: "session-seed-1",
+        external_session_ref: None,
+        continuation_capable: False,
+      ),
+    ),
+    record.with_id(
+      "seed-finished",
+      4,
+      record.StepAttemptFinished(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "seed",
+        attempt_index: 1,
+        outcome: "completed",
+        artifact_ref: seed_artifact_ref,
+        artifact_sha256: seed_sha256,
+        workspace_name: "seed",
+        workspace_path: run_root <> "/workspaces/seed",
+        token_total: 1,
+        turns: 1,
+      ),
+    ),
+    record.with_id(
+      "apply-feedback-prepared",
+      5,
+      record.StepAttemptPrepared(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        workspace_name: "derived",
+        workspace_path: run_root <> "/workspaces/derived",
+        run_root: run_root,
+        source_workspace_name: Some("seed"),
+        source_workspace_path: Some(run_root <> "/workspaces/seed"),
+      ),
+    ),
+    record.with_id(
+      "apply-feedback-started",
+      6,
+      record.StepAttemptStarted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        operator_session_id: "session-apply-feedback-1",
+        external_session_ref: None,
+        continuation_capable: True,
+      ),
+    ),
+    record.with_id(
+      "apply-feedback-finished",
+      7,
+      record.StepAttemptFinished(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        outcome: "failed_fatal",
+        artifact_ref: "runs/run-1/apply_feedback/attempt-1.json",
+        artifact_sha256: "failed-attempt-sha",
+        workspace_name: "derived",
+        workspace_path: run_root <> "/workspaces/derived",
+        token_total: 1,
+        turns: 1,
+      ),
+    ),
+    step_recovery_started_record("run-1", "apply_feedback", 8),
+    record.with_id(
+      "step-recovery-finished-run-1-apply_feedback",
+      9,
+      record.WorkflowStepRecoveryFinished(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        failed_attempt_index: 1,
+        recovery_attempt_number: 1,
+        recovery_session_id: "recovery-session-1",
+        result: "gave_up",
+        summary: "not fixable",
+        reason: "needs human help; protected_checkpoint_restored kind=step_attempt_artifact ref="
+          <> seed_artifact_ref,
+        retry_attempt_index: None,
+      ),
+    ),
+    workflow_finished_record_for_run(
+      "run-1",
+      workflow_outcome.failed_after_recovery,
+      10,
+    ),
   ]
 }
 

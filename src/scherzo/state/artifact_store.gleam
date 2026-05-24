@@ -977,6 +977,14 @@ pub fn write_atomic(
   |> result.map_error(fn(error) { raw_write_error("write_atomic", error) })
 }
 
+pub fn write_atomic_bytes(
+  final_path: String,
+  contents: BitArray,
+) -> Result(Nil, ArtifactWriteError) {
+  ffi_write_atomic_bytes(final_path, contents)
+  |> result.map_error(fn(error) { raw_write_error("write_atomic_bytes", error) })
+}
+
 pub fn read_file_bytes(path: String) -> Result(BitArray, ArtifactError) {
   ffi_read_file(path)
   |> result.map_error(fn(error) {
@@ -1005,6 +1013,26 @@ pub fn write_immutable(
         "unexpected status: " <> status,
       ))
     Error(error) -> Error(raw_write_error("write_immutable", error))
+  }
+}
+
+pub fn restore_filesystem_artifact_bytes(
+  workspace_root: String,
+  ref: String,
+  contents: BitArray,
+) -> Result(Nil, ArtifactError) {
+  use valid_ref <- result.try(validated_ref(ref))
+  let final_path = path.join(artifact_root(workspace_root), valid_ref)
+  use Nil <- result.try(ensure_parent(final_path))
+  use Nil <- result.try(
+    write_atomic_bytes(final_path, contents)
+    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
+  )
+  use final <- result.try(read_file_bytes(final_path))
+  case final == contents {
+    True -> Ok(Nil)
+    False ->
+      Error(ArtifactIo("restored bytes did not match for ref: " <> valid_ref))
   }
 }
 
@@ -1048,6 +1076,12 @@ fn split_tag(error: String) -> #(String, String) {
 
 @external(erlang, "scherzo_artifact_store_ffi", "write_atomic")
 fn ffi_write_atomic(final_path: String, contents: String) -> Result(Nil, String)
+
+@external(erlang, "scherzo_artifact_store_ffi", "write_atomic")
+fn ffi_write_atomic_bytes(
+  final_path: String,
+  contents: BitArray,
+) -> Result(Nil, String)
 
 @external(erlang, "scherzo_artifact_store_ffi", "read_file")
 fn ffi_read_file(path: String) -> Result(BitArray, String)

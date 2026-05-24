@@ -43,6 +43,7 @@ pub fn original_step_session_renders_retry_requested_history_test() {
   )
   assert string.contains(transcript, "summary: Fixed tests ⏎ with details")
   assert string.contains(transcript, "reason: ")
+  assert string.contains(transcript, "protected_checkpoint_restored")
   assert string.contains(transcript, "…")
 }
 
@@ -233,7 +234,7 @@ fn sample_success_records() -> List(record.LedgerRecord) {
         recovery_session_id: "recover-1",
         result: "retry_requested",
         summary: "Fixed tests\nwith details",
-        reason: string.repeat("retry-ready ", times: 20),
+        reason: "retry-ready; protected_checkpoint_restored kind=step_attempt_artifact ref=runs/run-1/implement/attempt-1.json expected_sha256=abc observed=mutated",
         retry_attempt_index: Some(2),
       ),
     ),

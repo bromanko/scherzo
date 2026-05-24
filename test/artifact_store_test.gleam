@@ -408,3 +408,38 @@ pub fn artifact_store_writes_contract_manifests_and_output_blobs_test() {
     artifact_store.read_artifact_unverified(store, blob.ref)
   assert blob_contents == "# Findings"
 }
+
+pub fn restore_filesystem_artifact_bytes_restores_deleted_ref_test() {
+  let root = "test/tmp/artifact-store/restore-deleted"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+  let ref = "runs/run-1/upstream/attempt-1.json"
+  let original = bit_array.from_string("{\"status\":\"ok\"}")
+
+  let assert Ok(artifact_store.ImmutableWritten) =
+    artifact_store.write_immutable_artifact_bytes(store, ref, original)
+  let full_path = artifact_root(root) <> "/" <> ref
+  let assert Ok(Nil) = simplifile.delete_file(at: full_path)
+
+  let assert Ok(Nil) =
+    artifact_store.restore_filesystem_artifact_bytes(root, ref, original)
+  let assert Ok(restored) = artifact_store.read_file_bytes(full_path)
+  assert restored == original
+}
+
+pub fn restore_filesystem_artifact_bytes_reports_obstructing_directory_test() {
+  let root = "test/tmp/artifact-store/restore-obstructed"
+  reset_dir(root)
+  let ref = "runs/run-1/upstream/attempt-1.json"
+  let full_path = artifact_root(root) <> "/" <> ref
+  let parent = path.dirname(full_path) |> result.unwrap(full_path)
+  let assert Ok(Nil) = simplifile.create_directory_all(full_path)
+  let assert Ok(Nil) = simplifile.create_directory_all(parent)
+
+  let assert Error(artifact_store.ArtifactWriteFailed(_)) =
+    artifact_store.restore_filesystem_artifact_bytes(
+      root,
+      ref,
+      bit_array.from_string("{\"status\":\"ok\"}"),
+    )
+}
