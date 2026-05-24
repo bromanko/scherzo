@@ -259,6 +259,41 @@ pub fn projection_records_step_recoveries_test() {
   )) = dict.get(folded.step_recoveries, key)
 }
 
+pub fn projection_snapshot_round_trips_started_recovery_without_finish_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "recovery-started",
+        1000,
+        record.WorkflowStepRecoveryStarted(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          step_id: "implement",
+          failed_attempt_index: 1,
+          recovery_attempt_number: 1,
+          recovery_session_id: "recover-1",
+          model: Some("gpt-5"),
+          prompt_ref: ".scherzo/workflows/prompts/recover_failed_step.md",
+        ),
+      ),
+    ])
+
+  let key = projection.step_recovery_key("run-1", "implement", 1, 1)
+  let assert Ok(projection.StepRecoveryStartedStatus(
+    recovery_session_id: "recover-1",
+    started_at_ms: 1000,
+    ..,
+  )) = dict.get(folded.step_recoveries, key)
+
+  let assert Ok(decoded) =
+    projection.decode_string(projection.to_string(folded))
+  let assert Ok(projection.StepRecoveryStartedStatus(
+    recovery_session_id: "recover-1",
+    started_at_ms: 1000,
+    ..,
+  )) = dict.get(decoded.step_recoveries, key)
+}
+
 pub fn workflow_run_provenance_survives_interrupted_and_snapshot_round_trip_test() {
   let folded =
     projection.fold([

@@ -267,6 +267,118 @@ fn temp_entries(dir: String) -> List(String) {
   })
 }
 
+pub fn recovery_artifact_rewrite_with_identical_bytes_is_idempotent_test() {
+  let root = "test/tmp/artifact-store/recovery-artifact-identical"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+  let payload =
+    "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"gave_up\",\"summary\":\"No fix\",\"reason\":\"Needs a human\"}"
+
+  let assert Ok(first) =
+    artifact_store.write_recovery_artifact_json(
+      store,
+      "run-1",
+      "implement",
+      1,
+      1,
+      "workflow_step_recovery_result",
+      payload,
+    )
+  let assert Ok(second) =
+    artifact_store.write_recovery_artifact_json(
+      store,
+      "run-1",
+      "implement",
+      1,
+      1,
+      "workflow_step_recovery_result",
+      payload,
+    )
+
+  assert second.ref == first.ref
+  assert second.sha256 == first.sha256
+  assert second.bytes == first.bytes
+  let assert Ok(stored) =
+    artifact_store.read_artifact_unverified(store, first.ref)
+  assert stored == payload
+}
+
+pub fn recovery_artifact_rewrite_with_different_bytes_conflicts_test() {
+  let root = "test/tmp/artifact-store/recovery-artifact-conflict"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+  let first_payload =
+    "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"gave_up\",\"summary\":\"No fix\",\"reason\":\"Needs a human\"}"
+  let second_payload =
+    "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"retry_requested\",\"summary\":\"Patched\",\"reason\":\"Ready\"}"
+
+  let assert Ok(first) =
+    artifact_store.write_recovery_artifact_json(
+      store,
+      "run-1",
+      "implement",
+      1,
+      1,
+      "workflow_step_recovery_result",
+      first_payload,
+    )
+  let assert Error(artifact_store.DecodeArtifactFailed(
+    "immutable_recovery_artifact_conflict",
+  )) =
+    artifact_store.write_recovery_artifact_json(
+      store,
+      "run-1",
+      "implement",
+      1,
+      1,
+      "workflow_step_recovery_result",
+      second_payload,
+    )
+
+  let assert Ok(stored) =
+    artifact_store.read_artifact_unverified(store, first.ref)
+  assert stored == first_payload
+}
+
+pub fn recovery_artifact_refs_distinguish_sanitized_step_collisions_test() {
+  let root = "test/tmp/artifact-store/recovery-artifact-step-collisions"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+  let first_payload =
+    "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"gave_up\",\"summary\":\"First\",\"reason\":\"Needs a human\"}"
+  let second_payload =
+    "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"gave_up\",\"summary\":\"Second\",\"reason\":\"Needs a human\"}"
+
+  let assert Ok(first) =
+    artifact_store.write_recovery_artifact_json(
+      store,
+      "run-1",
+      "review/fix",
+      1,
+      1,
+      "workflow_step_recovery_result",
+      first_payload,
+    )
+  let assert Ok(second) =
+    artifact_store.write_recovery_artifact_json(
+      store,
+      "run-1",
+      "review_fix",
+      1,
+      1,
+      "workflow_step_recovery_result",
+      second_payload,
+    )
+
+  assert first.ref != second.ref
+  let assert Ok(first_stored) =
+    artifact_store.read_artifact_unverified(store, first.ref)
+  let assert Ok(second_stored) =
+    artifact_store.read_artifact_unverified(store, second.ref)
+  assert first_stored == first_payload
+  assert second_stored == second_payload
+}
+
 pub fn artifact_store_writes_contract_manifests_and_output_blobs_test() {
   let root = "test/tmp/artifact-store/contract-manifests"
   reset_dir(root)

@@ -55,6 +55,47 @@ pub fn rejects_duplicate_recovery_results_test() {
     == "recovery_result_duplicate"
 }
 
+pub fn rejects_sibling_tool_calls_test() {
+  let artifact =
+    result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+      result_artifact.ToolCallSubmission(
+        ..recovery_call(Some(
+          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"gave_up\",\"summary\":\"No fix\",\"reason\":\"Needs a human\"}",
+        )),
+        sibling_count: 2,
+      ),
+    ])
+
+  let assert Error(error) =
+    workflow_step_recovery.decision_from_result(artifact)
+  assert workflow_step_recovery.describe_error(error)
+    == "recovery_result_has_sibling_tool_calls"
+}
+
+pub fn rejects_missing_arguments_test() {
+  let artifact =
+    result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+      recovery_call(None),
+    ])
+
+  let assert Error(error) =
+    workflow_step_recovery.decision_from_result(artifact)
+  assert workflow_step_recovery.describe_error(error)
+    == "recovery_result_missing_arguments"
+}
+
+pub fn rejects_malformed_json_test() {
+  let artifact =
+    result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+      recovery_call(Some("{")),
+    ])
+
+  let assert Error(error) =
+    workflow_step_recovery.decision_from_result(artifact)
+  assert workflow_step_recovery.describe_error(error)
+    == "recovery_result_malformed"
+}
+
 pub fn rejects_wrong_artifact_type_test() {
   let artifact =
     result_artifact.from_final_response_with_tool_calls(None, False, "test", [
@@ -67,6 +108,34 @@ pub fn rejects_wrong_artifact_type_test() {
     workflow_step_recovery.decision_from_result(artifact)
   assert workflow_step_recovery.describe_error(error)
     == "recovery_result_wrong_artifact_type"
+}
+
+pub fn rejects_wrong_schema_version_test() {
+  let artifact =
+    result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+      recovery_call(Some(
+        "{\"schema_version\":2,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"gave_up\",\"summary\":\"No fix\",\"reason\":\"Needs a human\"}",
+      )),
+    ])
+
+  let assert Error(error) =
+    workflow_step_recovery.decision_from_result(artifact)
+  assert workflow_step_recovery.describe_error(error)
+    == "recovery_result_wrong_schema_version"
+}
+
+pub fn parses_gave_up_decision_test() {
+  let artifact =
+    result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+      recovery_call(Some(
+        "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"gave_up\",\"summary\":\"No fix\",\"reason\":\"Needs a human\"}",
+      )),
+    ])
+
+  let assert Ok(workflow_step_recovery.GaveUp(
+    summary: "No fix",
+    reason: "Needs a human",
+  )) = workflow_step_recovery.decision_from_result(artifact)
 }
 
 pub fn artifact_json_uses_decision_field_and_redacts_test() {

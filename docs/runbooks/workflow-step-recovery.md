@@ -18,11 +18,12 @@ Implemented in this slice:
 - retrying the original step unchanged after `retry_requested`;
 - ledger record types for recovery start/finish events and retained recovery result artifacts;
 - projection fields for stored step-recovery history;
-- runtime coverage for no-op paths plus invalid-output and artifact-conflict failure preservation.
+- runtime hardening for malformed or invalid recovery output, worker failures and timeouts, artifact-write failures, immutable artifact conflicts, and interrupted start-without-finish recovery visibility.
 
 Still intentionally deferred:
 
-- deeper interruption and crash-resume hardening beyond preserving the original failure result.
+- automatic resumption of an interrupted nested recovery worker after daemon restart;
+- richer browser/operator timeline presentation beyond the retained `scherzoctl session` history block.
 
 ## YAML shape
 
@@ -60,15 +61,17 @@ Default protocol assets:
 
 Retained recovery artifacts live under the failed attempt:
 
-- `runs/<run>/<step>/attempt-<n>.json`
-- `runs/<run>/<step>/attempt-<n>/recovery-<m>/workflow_step_recovery_result.json`
+- `runs/<run>/<step-ref>/attempt-<n>.json`
+- `runs/<run>/<step-ref>/attempt-<n>/recovery-<m>/workflow_step_recovery_result.json`
+
+`<step-ref>` is the collision-resistant sanitized step-artifact path component used for step-scoped retained artifacts.
 
 Durable history records written by the runtime are:
 
 - `workflow_step_recovery_started`
 - `workflow_step_recovery_finished`
 
-These records link the failed attempt, recovery attempt number, recovery session id, decision (`retry_requested` or `gave_up`), and optional retry attempt index.
+These records link the failed attempt, recovery attempt number, recovery session id, result (`retry_requested`, `gave_up`, or a non-retry diagnostic such as `worker_failed`, `invalid_output`, or `artifact_write_failed`), and optional retry attempt index.
 
 Use the human session view to inspect that history quickly:
 
@@ -76,7 +79,7 @@ Use the human session view to inspect that history quickly:
 scripts/scherzoctl session <session-ref>
 ```
 
-The output appends a `workflow_step_recovery_history` block for the original failed step session, the retry continuation session, or the nested recovery session. A successful recovered timeline looks like:
+The output appends a `workflow_step_recovery_history` block for the original failed step session, the retry continuation session, or the nested recovery session. The block now links the original failed attempt artifact, the retained recovery result artifact when one was durably written, and the retry attempt artifact when a retry was scheduled. A successful recovered timeline looks like:
 
 ```text
 workflow_step_recovery_history:
@@ -87,10 +90,13 @@ workflow_step_recovery_history:
     recovery_attempt_number: 1
     recovery_session_id: workflow-run-1-implement-recovery-1
     status: finished
+    failed_attempt_artifact_ref: runs/run-1/<step-ref>/attempt-1.json
+    recovery_result_artifact_ref: runs/run-1/<step-ref>/attempt-1/recovery-1/workflow_step_recovery_result.json
     decision: retry_requested
     summary: Fixed tests
     reason: The workspace is ready for a retry.
     retry_attempt_index: 2
+    retry_attempt_artifact_ref: runs/run-1/<step-ref>/attempt-2.json
     retry_result: succeeded
     final_workflow_outcome: succeeded_after_recovery
 ```

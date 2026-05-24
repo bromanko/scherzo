@@ -5,11 +5,13 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/session/event
+import scherzo/state/artifact_store
 import scherzo/state/ledger
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/terminal/sanitize
 import scherzo/workflow_outcome
+import scherzo/workflow_step_recovery
 
 const max_detail_chars = 120
 
@@ -26,10 +28,13 @@ type HistoryEntry {
     recovery_attempt_number: Int,
     recovery_session_id: String,
     entry_status: EntryStatus,
+    failed_attempt_artifact_ref: String,
+    recovery_result_artifact_ref: Option(String),
     decision: Option(String),
     summary: Option(String),
     reason: Option(String),
     retry_attempt_index: Option(Int),
+    retry_attempt_artifact_ref: Option(String),
     retry_result: Option(String),
     final_workflow_outcome: Option(String),
   )
@@ -193,10 +198,27 @@ fn history_entry(
         recovery_attempt_number: recovery_attempt_number,
         recovery_session_id: recovery_session_id,
         entry_status: Finished,
+        failed_attempt_artifact_ref: artifact_store.artifact_ref(
+          run_id,
+          step_id,
+          failed_attempt_index,
+        ),
+        recovery_result_artifact_ref: recovery_result_artifact_ref(
+          run_id,
+          step_id,
+          failed_attempt_index,
+          recovery_attempt_number,
+          result,
+        ),
         decision: Some(result),
         summary: optional_text(summary),
         reason: optional_text(reason),
         retry_attempt_index: retry_attempt_index,
+        retry_attempt_artifact_ref: retry_attempt_artifact_ref(
+          run_id,
+          step_id,
+          retry_attempt_index,
+        ),
         retry_result: retry_result(folded, run_id, step_id, retry_attempt_index),
         final_workflow_outcome: final_workflow_outcome(folded, run_id),
       )
@@ -209,10 +231,17 @@ fn history_entry(
         recovery_attempt_number: recovery_attempt_number,
         recovery_session_id: recovery_session_id,
         entry_status: Incomplete,
+        failed_attempt_artifact_ref: artifact_store.artifact_ref(
+          run_id,
+          step_id,
+          failed_attempt_index,
+        ),
+        recovery_result_artifact_ref: None,
         decision: None,
         summary: None,
         reason: None,
         retry_attempt_index: None,
+        retry_attempt_artifact_ref: None,
         retry_result: None,
         final_workflow_outcome: final_workflow_outcome(folded, run_id),
       )
@@ -434,6 +463,38 @@ fn retry_result(
   }
 }
 
+fn retry_attempt_artifact_ref(
+  run_id: String,
+  step_id: String,
+  retry_attempt_index: Option(Int),
+) -> Option(String) {
+  case retry_attempt_index {
+    Some(retry_attempt_index) ->
+      Some(artifact_store.artifact_ref(run_id, step_id, retry_attempt_index))
+    None -> None
+  }
+}
+
+fn recovery_result_artifact_ref(
+  run_id: String,
+  step_id: String,
+  failed_attempt_index: Int,
+  recovery_attempt_number: Int,
+  result: String,
+) -> Option(String) {
+  case result == "retry_requested" || result == "gave_up" {
+    True ->
+      Some(artifact_store.recovery_artifact_ref(
+        run_id,
+        step_id,
+        failed_attempt_index,
+        recovery_attempt_number,
+        workflow_step_recovery.artifact_name,
+      ))
+    False -> None
+  }
+}
+
 fn final_workflow_outcome(
   folded: projection.Projection,
   run_id: String,
@@ -491,13 +552,23 @@ fn render_entry(entry: HistoryEntry) -> List(String) {
       <> int.to_string(entry.recovery_attempt_number),
     "    recovery_session_id: " <> sanitize.text(entry.recovery_session_id),
     "    status: " <> entry_status_to_string(entry.entry_status),
+    "    failed_attempt_artifact_ref: "
+      <> sanitize.text(entry.failed_attempt_artifact_ref),
   ]
 
   base
+  |> append_optional(
+    "    recovery_result_artifact_ref: ",
+    entry.recovery_result_artifact_ref,
+  )
   |> append_optional("    decision: ", entry.decision)
   |> append_optional("    summary: ", entry.summary)
   |> append_optional("    reason: ", entry.reason)
   |> append_optional_int("    retry_attempt_index: ", entry.retry_attempt_index)
+  |> append_optional(
+    "    retry_attempt_artifact_ref: ",
+    entry.retry_attempt_artifact_ref,
+  )
   |> append_optional("    retry_result: ", entry.retry_result)
   |> append_optional(
     "    final_workflow_outcome: ",

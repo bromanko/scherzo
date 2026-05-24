@@ -174,7 +174,7 @@ fn decode_call(
   case call.sibling_count > 1 {
     True ->
       Error(ProtocolError(
-        "recovery_result_duplicate",
+        "recovery_result_has_sibling_tool_calls",
         "recovery result included sibling tool calls",
       ))
     False ->
