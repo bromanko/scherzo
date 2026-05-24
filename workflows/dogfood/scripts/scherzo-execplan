@@ -101,8 +101,8 @@ COMPLETION_PREFLIGHT_PACK_CUES = [
     ),
     (
         "idempotency or duplicate-conflict coverage",
-        re.compile(r"\b(?:idempotent|idempotency|duplicate|same-stable-record-id|same record id|conflict)\b", re.IGNORECASE),
-        re.compile(r"\b(?:idempotent|idempotency|duplicate|same-stable-record-id|same record id|conflict)\b", re.IGNORECASE),
+        re.compile(r"(?:idempotent|idempotency|idempotence|\b(?:duplicate|same-stable-record-id|same record id|conflict)\b)", re.IGNORECASE),
+        re.compile(r"(?:idempotent|idempotency|idempotence|\b(?:duplicate|same-stable-record-id|same record id|conflict)\b)", re.IGNORECASE),
     ),
     (
         "manual/browser/dogfood evidence timing",

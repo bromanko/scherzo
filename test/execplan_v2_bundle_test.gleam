@@ -1344,6 +1344,42 @@ pub fn materialize_pack_rejects_unrecognized_validation_commands_test() {
   )
 }
 
+pub fn materialize_pack_accepts_camel_case_idempotent_test_name_test() {
+  let dir = "test/tmp/execplan-pack-camel-case-idempotent"
+  reset_dir(dir)
+  let review_path = dir <> "/review.md"
+  let submission_path = dir <> "/submission.json"
+  let output_path = dir <> "/pack.json"
+  let review =
+    review_doc_with_validation(
+      "Acceptance requires idempotent migration evidence before implementation is complete.",
+    )
+  let assert Ok(Nil) = simplifile.write(review_path, review)
+  let assert Ok(Nil) =
+    simplifile.write(
+      submission_path,
+      pack_submission_with_commands_and_testing(
+        "Camel-case idempotent evidence",
+        "[\"go test ./internal/store/sqlite -run TestMigrateIsIdempotent\"]",
+        "Run the named Go test and assert the migration rerun leaves data readable.",
+      ),
+    )
+
+  let artifact =
+    run_helper(
+      "materialize-pack --review-doc "
+      <> review_path
+      <> " --submission "
+      <> submission_path
+      <> " --output "
+      <> output_path,
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(_) = simplifile.read(output_path)
+}
+
 pub fn materialize_pack_accepts_manual_screenshot_evidence_without_commands_test() {
   let dir = "test/tmp/execplan-pack-manual-evidence"
   reset_dir(dir)
