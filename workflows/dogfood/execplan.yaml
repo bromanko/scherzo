@@ -4,6 +4,9 @@ description: Draft a concise ExecPlan review doc, retain the mechanical implemen
 workspace_profile: dogfood-jj
 workspace_capabilities: [status, diff, changed-files, publish-change]
 max_parallel_steps: 1
+recover:
+  attempts: 1
+  prompt: prompts/execplan-recover-failed-step.md
 contract:
   version: 1
   inputs:
@@ -132,6 +135,8 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" publish-review-doc --review-doc-path-file tmp/execplan-review-doc.path --publish-context tmp/scherzo-execplan-publish-context.json --pack tmp/execplan-implementation-pack.json'
     timeout_ms: 300000
     workspace: main
+    recover:
+      enabled: false
 
   - id: materialize_bundle
     kind: command
@@ -139,3 +144,5 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" materialize-bundle --review-doc-path-file tmp/execplan-review-doc.path --pack tmp/execplan-implementation-pack.json --publish-context tmp/scherzo-execplan-publish-context.json --output tmp/execplan-bundle.json'
     timeout_ms: 300000
     workspace: main
+    recover:
+      enabled: false
