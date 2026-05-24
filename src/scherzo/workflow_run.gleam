@@ -323,6 +323,7 @@ type PrepareReadyFailure {
     reason: String,
     agent_reason: Option(error.AgentRunnerError),
     run_root: Option(String),
+    prepared_starts: List(PreparedStart),
   )
 }
 
@@ -2210,6 +2211,7 @@ fn loop(
             issue.id,
             tokens.total,
             turns,
+            [],
           )
           let cleanup_suffix =
             cleanup_failure_suffix(cleanup_if_allowed(
@@ -2256,7 +2258,12 @@ fn loop(
               profile,
             )
           {
-            Error(PrepareReadyFailure(reason, agent_reason, prepared_run_root)) -> {
+            Error(PrepareReadyFailure(
+              reason,
+              agent_reason,
+              prepared_run_root,
+              prepared_starts,
+            )) -> {
               let failure_run_root = option.or(prepared_run_root, run_root)
               mark_workflow_failed_terminal(
                 dependencies,
@@ -2266,6 +2273,7 @@ fn loop(
                 issue.id,
                 tokens.total,
                 turns,
+                prepared_starts,
               )
               let cleanup_suffix =
                 cleanup_failure_suffix(cleanup_if_allowed(
@@ -2462,12 +2470,14 @@ fn prepare_ready_steps(
             "workspace_failed:" <> error.workspace_code(err),
             None,
             option.or(prepared_run_root(acc), current_run_root),
+            list.reverse(acc),
           ))
         Error(workspace_run.HookFailure(err)) ->
           Error(PrepareReadyFailure(
             hook_failure_report(err, secrets),
             Some(error.WorkflowHookFailed(err)),
             option.or(prepared_run_root(acc), current_run_root),
+            list.reverse(acc),
           ))
         Ok(prepared) -> {
           case
@@ -2484,6 +2494,10 @@ fn prepare_ready_steps(
                   <> workflow_checkpoint.describe_error(error),
                 None,
                 prepared_run_root([
+                  PreparedStart(step: step, workspace: prepared),
+                  ..acc
+                ]),
+                list.reverse([
                   PreparedStart(step: step, workspace: prepared),
                   ..acc
                 ]),
@@ -2637,6 +2651,7 @@ fn execute_prepared_steps(
             issue.id,
             tokens.total,
             turns,
+            starts,
           )
           let cleanup_suffix =
             cleanup_failure_suffix(cleanup_if_allowed(
@@ -3386,11 +3401,12 @@ fn terminal_fatal_batch_failure(
         Error(error) -> "; workflow_output_manifest_failed:" <> error
       }
   }
-  mark_unfinished_siblings_interrupted(
+  mark_prepared_attempts_interrupted(
     starts,
-    result.step_id,
     dependencies,
     dag.id,
+    "fatal_sibling_finished",
+    Some(result.step_id),
   )
   ignore_secondary_checkpoint_result(
     dependencies.checkpoint.workflow_finished(
@@ -3872,33 +3888,35 @@ fn workflow_step_failed_reason(result: StepExecutionResult) -> String {
   }
 }
 
-fn mark_unfinished_siblings_interrupted(
+fn mark_prepared_attempts_interrupted(
   starts: List(PreparedStart),
-  finished_step_id: String,
   dependencies: Dependencies,
   workflow_id: String,
+  reason: String,
+  skipped_step_id: Option(String),
 ) -> Nil {
   case starts {
     [] -> Nil
     [PreparedStart(step: step, workspace: workspace), ..rest] -> {
-      case step.id == finished_step_id {
-        True -> Nil
-        False ->
+      case skipped_step_id != Some(step.id) {
+        True ->
           ignore_secondary_checkpoint_result(
             dependencies.checkpoint.step_interrupted(
               workspace.run_id,
               workflow_id,
               step.id,
               workspace.attempt_index,
-              "fatal_sibling_finished",
+              reason,
             ),
           )
+        False -> Nil
       }
-      mark_unfinished_siblings_interrupted(
+      mark_prepared_attempts_interrupted(
         rest,
-        finished_step_id,
         dependencies,
         workflow_id,
+        reason,
+        skipped_step_id,
       )
     }
   }
@@ -3983,6 +4001,7 @@ fn apply_prepared_results(
             issue.id,
             tokens.total,
             turns,
+            starts,
           )
           let cleanup_suffix =
             cleanup_failure_suffix(cleanup_if_allowed(
@@ -4033,6 +4052,7 @@ fn apply_prepared_results(
                 issue.id,
                 tokens.total + result.tokens.total,
                 turns + result.turns,
+                starts,
               )
               let cleanup_suffix =
                 cleanup_failure_suffix(cleanup_if_allowed(
@@ -4072,6 +4092,7 @@ fn apply_prepared_results(
                     issue.id,
                     tokens.total + result.tokens.total,
                     turns + result.turns,
+                    starts,
                   )
                   let cleanup_suffix =
                     cleanup_failure_suffix(cleanup_if_allowed(
@@ -4105,6 +4126,7 @@ fn apply_prepared_results(
                         issue.id,
                         tokens.total + result.tokens.total,
                         turns + result.turns,
+                        starts,
                       )
                       let cleanup_suffix =
                         cleanup_failure_suffix(cleanup_if_allowed(
@@ -5360,7 +5382,15 @@ fn mark_workflow_failed_terminal(
   issue_id: String,
   token_total: Int,
   turns: Int,
+  active_attempts: List(PreparedStart),
 ) -> Nil {
+  mark_prepared_attempts_interrupted(
+    active_attempts,
+    dependencies,
+    workflow_id,
+    "terminal_failure",
+    None,
+  )
   ignore_secondary_checkpoint_result(
     dependencies.checkpoint.workflow_finished(
       workflow_checkpoint.WorkflowFinished(

@@ -43,11 +43,16 @@ type SelectedRun {
     run_root: String,
     task_ref: record.TaskRefFields,
     recovery_evidence: workflow_outcome.RecoveryEvidence,
+    terminal_failed: Bool,
   )
 }
 
 type RepairBoundary {
-  RepairBoundary(step_id: String, attempt_index: Int)
+  RepairBoundary(
+    step_id: String,
+    attempt_index: Int,
+    normalization_records: List(record.RecordBody),
+  )
 }
 
 type IssueTarget {
@@ -104,6 +109,7 @@ pub fn plan(
       ))
       let attempts = attempts_for_run(projection_state, run.run_id)
       use failed_attempt <- result.try(select_repair_boundary(
+        run,
         attempts,
         dag,
         selected_step_id,
@@ -317,17 +323,16 @@ fn selected_run_from_status(
             Some("workflow run is not repairable"),
           ))
         True ->
-          Ok(
-            selected_run_from_provenance(
-              run_id,
-              provenance,
-              finished_at_ms,
-              case outcome == workflow_outcome.failed_after_recovery {
-                True -> workflow_outcome.StepRecoveryRan
-                False -> workflow_outcome.NoStepRecovery
-              },
-            ),
-          )
+          Ok(selected_run_from_provenance(
+            run_id,
+            provenance,
+            finished_at_ms,
+            case outcome == workflow_outcome.failed_after_recovery {
+              True -> workflow_outcome.StepRecoveryRan
+              False -> workflow_outcome.NoStepRecovery
+            },
+            True,
+          ))
       }
     projection.WorkflowRunInterrupted(interrupted_at_ms: interrupted_at_ms, ..) ->
       Ok(selected_run_from_provenance(
@@ -335,6 +340,7 @@ fn selected_run_from_status(
         provenance,
         interrupted_at_ms,
         recovery.step_recovery_evidence_for_run(projection_state, run_id),
+        False,
       ))
     _ ->
       Error(RepairError(
@@ -349,6 +355,7 @@ fn selected_run_from_provenance(
   provenance: projection.WorkflowRunProvenance,
   repairable_at_ms: Int,
   recovery_evidence: workflow_outcome.RecoveryEvidence,
+  terminal_failed: Bool,
 ) -> SelectedRun {
   SelectedRun(
     run_id: run_id,
@@ -362,6 +369,7 @@ fn selected_run_from_provenance(
     run_root: provenance.run_root,
     task_ref: provenance.task_ref,
     recovery_evidence: recovery_evidence,
+    terminal_failed: terminal_failed,
   )
 }
 
@@ -512,8 +520,9 @@ fn attempts_for_run(
 }
 
 fn select_repair_boundary(
+  run: SelectedRun,
   attempts: List(projection.StepAttemptStatus),
-  _dag: workflow_dag.WorkflowDag,
+  dag: workflow_dag.WorkflowDag,
   selected_step_id: Option(String),
 ) -> Result(RepairBoundary, RepairError) {
   let repairable =
@@ -524,18 +533,39 @@ fn select_repair_boundary(
       case find_repair_boundary(repairable, step_id) {
         Some(candidate) -> Ok(candidate)
         None ->
-          Error(RepairError(
-            "step_not_repairable",
-            Some("selected step is not failed or interrupted"),
-          ))
+          case run.terminal_failed {
+            True -> select_stale_active_boundary(attempts, dag, step_id)
+            False ->
+              Error(RepairError(
+                "step_not_repairable",
+                Some("selected step is not failed or interrupted"),
+              ))
+          }
       }
     None ->
       case repairable {
         [] ->
-          Error(RepairError(
-            "no_failed_workflow_run",
-            Some("workflow run has no failed or interrupted step"),
-          ))
+          case run.terminal_failed {
+            True ->
+              case stale_active_repair_boundaries(attempts, dag) {
+                [] ->
+                  Error(RepairError(
+                    "no_failed_workflow_run",
+                    Some("workflow run has no failed or interrupted step"),
+                  ))
+                [candidate] -> Ok(candidate)
+                _ ->
+                  Error(RepairError(
+                    "ambiguous_repair_step",
+                    Some("multiple stale active steps match; use --step"),
+                  ))
+              }
+            False ->
+              Error(RepairError(
+                "no_failed_workflow_run",
+                Some("workflow run has no failed or interrupted step"),
+              ))
+          }
         [candidate] -> Ok(candidate)
         _ ->
           Error(RepairError(
@@ -559,14 +589,14 @@ fn repair_boundaries(
         ..,
       ) ->
         case workflow_outcome.is_terminal_failure(outcome) {
-          True -> [RepairBoundary(step_id, attempt_index), ..acc]
+          True -> [RepairBoundary(step_id, attempt_index, []), ..acc]
           False -> acc
         }
       projection.StepAttemptInterruptedStatus(
         step_id: step_id,
         attempt_index: attempt_index,
         ..,
-      ) -> [RepairBoundary(step_id, attempt_index), ..acc]
+      ) -> [RepairBoundary(step_id, attempt_index, []), ..acc]
       _ -> acc
     }
   })
@@ -593,6 +623,105 @@ fn find_repair_boundary(
         True -> Some(candidate)
         False -> find_repair_boundary(rest, step_id)
       }
+  }
+}
+
+fn stale_active_repair_boundaries(
+  attempts: List(projection.StepAttemptStatus),
+  dag: workflow_dag.WorkflowDag,
+) -> List(RepairBoundary) {
+  attempts
+  |> list.fold([], fn(acc, status) {
+    case stale_active_repair_boundary(status, dag) {
+      Some(boundary) -> [boundary, ..acc]
+      None -> acc
+    }
+  })
+  |> list.sort(by: compare_repair_boundaries_desc)
+}
+
+fn select_stale_active_boundary(
+  attempts: List(projection.StepAttemptStatus),
+  dag: workflow_dag.WorkflowDag,
+  selected_step_id: String,
+) -> Result(RepairBoundary, RepairError) {
+  case
+    find_repair_boundary(
+      stale_active_repair_boundaries(attempts, dag),
+      selected_step_id,
+    )
+  {
+    Some(candidate) -> Ok(candidate)
+    None ->
+      Error(RepairError(
+        "step_not_repairable",
+        Some("selected step is not safely repairable"),
+      ))
+  }
+}
+
+fn stale_active_repair_boundary(
+  status: projection.StepAttemptStatus,
+  dag: workflow_dag.WorkflowDag,
+) -> Option(RepairBoundary) {
+  case status {
+    projection.StepAttemptPending(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      ..,
+    ) ->
+      stale_active_boundary_for_step(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        dag,
+      )
+    projection.StepAttemptRunning(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) ->
+      stale_active_boundary_for_step(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        dag,
+      )
+    _ -> None
+  }
+}
+
+fn stale_active_boundary_for_step(
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
+  dag: workflow_dag.WorkflowDag,
+) -> Option(RepairBoundary) {
+  case workflow_dag.step_by_id(dag, step_id) {
+    Ok(workflow_dag.WorkflowStep(kind: workflow_dag.AgentStep(..), ..)) ->
+      Some(
+        RepairBoundary(
+          step_id: step_id,
+          attempt_index: attempt_index,
+          normalization_records: [
+            record.StepAttemptInterrupted(
+              run_id,
+              workflow_id,
+              step_id,
+              attempt_index,
+              "terminal_failure_repair_normalized",
+            ),
+          ],
+        ),
+      )
+    _ -> None
   }
 }
 
@@ -688,20 +817,21 @@ fn repair_records(
   let workspace_path =
     projection.known_workspace_for_issue(projection_state, issue.id)
     |> result.unwrap(run.run_root)
-  let prefix = [
-    record.WorkflowRepairRequested(
-      run.run_id,
-      run.workflow_id,
-      issue.id,
-      issue.identifier,
-      command.retry_workflow_step_target_to_string(target),
-      requested_step_id,
-      failed_attempt.step_id,
-      failed_attempt.attempt_index,
-      next_attempt_index,
-      "retry-step",
-    ),
-  ]
+  let prefix =
+    list.append(failed_attempt.normalization_records, [
+      record.WorkflowRepairRequested(
+        run.run_id,
+        run.workflow_id,
+        issue.id,
+        issue.identifier,
+        command.retry_workflow_step_target_to_string(target),
+        requested_step_id,
+        failed_attempt.step_id,
+        failed_attempt.attempt_index,
+        next_attempt_index,
+        "retry-step",
+      ),
+    ])
   let middle =
     supersede_records(
       attempts,
