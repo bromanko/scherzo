@@ -4,6 +4,9 @@ description: Implement a focused Scherzo task from Linear-fetched context, revie
 workspace_profile: dogfood-jj
 workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]
 max_parallel_steps: 4
+recover:
+  attempts: 1
+  prompt: prompts/implementation-recover-failed-step.md
 steps:
   - id: prepare_context
     kind: command
@@ -406,3 +409,5 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
     timeout_ms: 300000
     workspace: main
+    recover:
+      enabled: false
