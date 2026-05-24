@@ -1,6 +1,6 @@
 ---
 name: scherzo-operator
-description: Operate a running Scherzo daemon from pi by using scherzoctl to inspect sessions, summarize worker progress, perform operator controls, inspect retained workflow artifacts, and use the repository Linear CLI. Use when the user asks to inspect Scherzo, summarize sessions, attach to workers, pause or resume dispatch, abort or stop workers, send follow-up prompts, retry, park or unpark issues, answer Scherzo UI requests, inspect retained runs, or read/update Linear.
+description: Operate a running Scherzo daemon from pi by using scherzoctl to inspect sessions, summarize worker progress, perform operator controls, inspect retained workflow artifacts, and use the repository Linear CLI. Use when the user asks to inspect Scherzo, summarize sessions, attach to workers, pause or resume dispatch, abort or stop workers, send follow-up prompts, retry whole tasks or individual workflow steps, park or unpark issues, answer Scherzo UI requests, inspect retained runs, or read/update Linear.
 ---
 
 # Scherzo Operator
@@ -19,7 +19,9 @@ Use command-first forms. The Scherzo subcommand comes immediately after `scripts
 
 Choose the right session. Top-level issue sessions are workflow run ids such as `ABC-123-1700000000000-1`; workflow step sessions start with `workflow-step-...` and include the step id and attempt. For `prompt`, `stop-after-turn`, `ui respond`, and `abort`, inspect `ps --json`/`session --json` and disambiguate whether the user means the top-level issue run or a concrete step session. A top-level prompt or stop can route to the active step only when Scherzo has exactly one active step command subject; a top-level abort stops the whole run and its step sessions.
 
-Use inspected identifiers for operator controls such as `pause`, `resume`, `reload`, `retry`, `park`, `unpark`, `abort`, `stop-after-turn`, `prompt`, and `ui respond`.
+Prefer step-level recovery before whole-task retry. When a workflow failed or was interrupted after producing retained upstream artifacts, inspect the top-level session, step-session events, and run artifacts to identify the failed/interrupted `run_id` and `step_id`. Use `scripts/scherzoctl retry-step <target> --json` to retry the selected step and its descendants while preserving completed upstream work. Target by issue identifier for the latest repairable run, by `id:<issue-id>` for a Linear issue id, or by `run:<run-id>` when multiple failed runs could match; add `--step <step-id>` when multiple failed/interrupted step boundaries exist or the user names a step. If `retry-step` is rejected because there is no repairable failed/interrupted run, the issue is active or parked, workflow/issue drift is detected, the selected step is not repairable, or upstream artifacts/workspace recovery fail, report that reason and only then consider whole-task `retry`.
+
+Use inspected identifiers for operator controls such as `pause`, `resume`, `reload`, `retry`, `retry-step`, `park`, `unpark`, `abort`, `stop-after-turn`, `prompt`, and `ui respond`. Prefer salvaging retained workflow work with `retry-step` when only a failed or interrupted workflow DAG step needs repair; reserve whole-task `retry` for cases where step repair is unavailable, rejected, unsafe, or explicitly requested.
 
 Never reveal secrets. The control file contains a `token`; never reveal token values or paste the raw control file. Never print `LINEAR_API_KEY`, `SCHERZO_AGENT_LINEAR_API_KEY`, or other API keys. Summarize raw JSON, event payloads, command artifacts, and Linear comments by default; redact sensitive issue or repository content; quote raw excerpts only when the user explicitly asks for them.
 

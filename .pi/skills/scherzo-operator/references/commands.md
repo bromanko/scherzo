@@ -52,14 +52,29 @@ Before sending `prompt`, `stop-after-turn`, `abort`, or `ui respond`, disambigua
 - `abort` on a top-level issue session stops the whole workflow run and its step sessions. `abort` on a step session sends the abort to that step command subject when available.
 - Command steps do not run pi, but they still get `workflow-step-...` sessions and failure events.
 
+## Step-level workflow retry
+
+Prefer `retry-step` over whole-task `retry` when a workflow failed or was interrupted after completing useful upstream steps. It preserves completed upstream attempts and retries the selected failed/interrupted step plus downstream descendants.
+
+Select targets from inspected session/events/artifacts:
+
+- `retry-step ABC-123` selects the latest repairable failed/interrupted run for an issue identifier.
+- `retry-step id:<issue-id>` targets by Linear issue id.
+- `retry-step run:<run-id>` targets a specific retained workflow run and is the safest choice when multiple failed runs may match.
+- Add `--step <step-id>` if multiple failed/interrupted step boundaries exist, or when the user names a specific step.
+
+`retry-step` may be rejected if no failed/interrupted run or step is repairable, the issue already has an active/pending workflow, the issue is parked, workflow or issue fingerprint drift is detected, the selected step is not failed/interrupted, or upstream artifacts/workspace recovery fail. Report that reason; only fall back to full `retry` when step repair is unavailable, unsafe, rejected in a way a full retry can address, or explicitly requested.
+
 ## Operator controls
 
-Use exact issue ids, session ids, and request ids from JSON inspection. Commands with `--yes` are destructive confirmations at the CLI layer.
+Use exact issue ids, run ids, step ids, session ids, and request ids from JSON inspection. Commands with `--yes` are destructive confirmations at the CLI layer.
 
 ```sh
 scripts/scherzoctl pause --json
 scripts/scherzoctl resume --json
 scripts/scherzoctl reload --json
+scripts/scherzoctl retry-step ABC-123 --json
+scripts/scherzoctl retry-step run:<run-id> --step <step-id> --json
 scripts/scherzoctl retry ABC-123 --json
 scripts/scherzoctl park ABC-123 --reason "manual cleanup" --yes --json
 scripts/scherzoctl unpark ABC-123 --json
