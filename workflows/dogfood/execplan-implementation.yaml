@@ -4,6 +4,9 @@ description: Validate an ExecPlan bundle, implement from the prepared review doc
 workspace_profile: dogfood-jj
 workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]
 max_parallel_steps: 4
+recover:
+  attempts: 1
+  prompt: prompts/execplan-implementation-recover-failed-step.md
 contract:
   version: 1
   inputs:
@@ -140,6 +143,8 @@ steps:
     depends_on: [gate_plan_completion_after_late_repair]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2'
     workspace: main
+    recover:
+      enabled: false
 
   - id: validate_before_native_review
     kind: command
@@ -537,6 +542,8 @@ steps:
     depends_on: [final_plan_completion_gate]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase final --attempt 2 --max-attempts 2'
     workspace: main
+    recover:
+      enabled: false
 
   - id: finalize_review_dispositions
     kind: command
@@ -550,9 +557,13 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
     timeout_ms: 300000
     workspace: main
+    recover:
+      enabled: false
 
   - id: materialize_code_change_bundle
     kind: command
     depends_on: [publish_pr]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; bundle_path=${SCHERZO_RUN_ROOT:-}/state/implementation/execplan-bundle.json; if [ ! -f "$bundle_path" ]; then bundle_path=tmp/execplan-bundle.json; fi; "$bundle_dir/scripts/scherzo-execplan" materialize-code-change-bundle --bundle "$bundle_path" --output tmp/execplan-code-change-bundle.json'
     workspace: main
+    recover:
+      enabled: false
