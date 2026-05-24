@@ -357,6 +357,56 @@ fn step_finished_outcome(root: String, step_id: String) -> String {
   }
 }
 
+fn has_step_interrupted_before_workflow_finished(
+  root: String,
+  step_id: String,
+  reason: String,
+) -> Bool {
+  has_step_interrupted_before_workflow_finished_loop(
+    ledger_records(root),
+    step_id,
+    reason,
+    False,
+  )
+}
+
+fn has_step_interrupted_before_workflow_finished_loop(
+  records: List(record.LedgerRecord),
+  step_id: String,
+  reason: String,
+  interrupted_seen: Bool,
+) -> Bool {
+  case records {
+    [] -> False
+    [ledger_record, ..rest] ->
+      case ledger_record.body {
+        record.StepAttemptInterrupted(
+          step_id: interrupted_step_id,
+          reason: interrupted_reason,
+          ..,
+        ) ->
+          has_step_interrupted_before_workflow_finished_loop(
+            rest,
+            step_id,
+            reason,
+            interrupted_seen
+              || {
+              interrupted_step_id == step_id && interrupted_reason == reason
+            },
+          )
+        record.WorkflowRunFinished(..)
+        | record.WorkflowRunFinishedWithTask(..) -> interrupted_seen
+        _ ->
+          has_step_interrupted_before_workflow_finished_loop(
+            rest,
+            step_id,
+            reason,
+            interrupted_seen,
+          )
+      }
+  }
+}
+
 fn recording_checkpoint(
   root: String,
   subject: process.Subject(String),
@@ -2975,6 +3025,46 @@ pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test()
   test_async.assert_no_extra_message_within(subject, 50)
 }
 
+pub fn recovered_prepare_failure_interrupts_stale_prepared_attempt_before_terminal_failure_test() {
+  let root =
+    "test/tmp/workflow-run/recovered-prepare-failure-interrupts-stale-attempt"
+  let subject = process.new_subject()
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: docs\n    kind: command\n    run: docs\n    workspace: docs\n  - id: tests\n    kind: command\n    run: tests\n    workspace: tests\n  - id: finish\n    kind: command\n    depends_on: [docs, tests]\n    run: finish\n    workspace: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps_with_prepare_recovered_failure(subject, "tests"),
+      checkpoint: recording_checkpoint(root, subject),
+    )
+  let context =
+    recovered_context(dag.id, dict.new(), dict.new(), dict.new(), dict.new())
+
+  let assert Error(failure) =
+    workflow_run.execute_with_context(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      workflow_run.RecoveredRun(context),
+      dependencies,
+    )
+
+  assert failure.reason == "workspace_failed:workspace_io"
+  assert receive_event(subject) == "prepare_recovered:docs:docs:"
+  assert receive_event(subject) == "prepare_recovered_failed:tests"
+  assert receive_event_with_prefix(subject, "workflow_finished:", 20)
+    == "workflow_finished:failed_fatal"
+  assert has_step_interrupted_before_workflow_finished(
+    root,
+    "docs",
+    "terminal_failure",
+  )
+}
+
 pub fn parallel_recovery_runs_only_interrupted_branch_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -3667,6 +3757,48 @@ fn deps_with_prepare_failure(
             issue,
             workflow_id,
             run_id,
+            step_id,
+            attempt_index,
+            workspace_ref,
+            orchestrator,
+            profile,
+            known,
+          )
+      }
+    },
+  )
+}
+
+fn deps_with_prepare_recovered_failure(
+  subject: process.Subject(String),
+  fail_step_id: String,
+) -> workflow_run.Dependencies {
+  let base = deps(subject, None)
+  workflow_run.Dependencies(
+    ..base,
+    prepare_recovered_step: fn(
+      issue,
+      workflow_id,
+      run_id,
+      expected_run_root,
+      step_id,
+      attempt_index,
+      workspace_ref,
+      orchestrator,
+      profile,
+      known,
+    ) {
+      case step_id == fail_step_id {
+        True -> {
+          process.send(subject, "prepare_recovered_failed:" <> step_id)
+          Error(workspace_run.WorkspaceFailure(error.WorkspaceIo("boom")))
+        }
+        False ->
+          base.prepare_recovered_step(
+            issue,
+            workflow_id,
+            run_id,
+            expected_run_root,
             step_id,
             attempt_index,
             workspace_ref,

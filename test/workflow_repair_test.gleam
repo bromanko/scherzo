@@ -183,6 +183,92 @@ pub fn retry_step_issue_target_accepts_failed_after_recovery_run_test() {
   assert auto_plan.run_id == "run-1"
 }
 
+pub fn retry_step_normalizes_terminal_failed_stale_agent_attempt_test() {
+  let projection = projection.fold(terminal_failed_stale_agent_run_records())
+  let assert Ok(dag) = workflow_dag.parse(recovery_ready_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_workflow(dag),
+    )
+
+  assert plan.selected_step_id == "apply_feedback"
+  assert plan.failed_attempt_index == 1
+  assert plan.next_attempt_index == 2
+  assert has_normalization_interruption(
+    plan.records_to_append,
+    "apply_feedback",
+    1,
+    "terminal_failure_repair_normalized",
+  )
+  assert normalization_precedes_repair_request(plan.records_to_append)
+  assert has_superseded_attempt(plan.records_to_append, "apply_feedback", 1, 2)
+  assert has_superseded_candidate_attempt(
+    plan.candidate.attempts,
+    "apply_feedback",
+    1,
+    2,
+  )
+}
+
+pub fn retry_step_auto_selects_single_terminal_failed_stale_agent_test() {
+  let projection = projection.fold(terminal_failed_stale_agent_run_records())
+  let assert Ok(dag) = workflow_dag.parse(recovery_ready_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      None,
+      current_workflow(dag),
+    )
+
+  assert plan.selected_step_id == "apply_feedback"
+  assert plan.failed_attempt_index == 1
+  assert plan.next_attempt_index == 2
+  assert has_normalization_interruption(
+    plan.records_to_append,
+    "apply_feedback",
+    1,
+    "terminal_failure_repair_normalized",
+  )
+  assert normalization_precedes_repair_request(plan.records_to_append)
+}
+
+pub fn retry_step_requires_step_when_terminal_failed_run_has_multiple_stale_agents_test() {
+  let projection =
+    projection.fold(terminal_failed_stale_multi_agent_run_records())
+  let assert Ok(dag) = workflow_dag.parse(multiple_stale_agent_workflow_yaml())
+
+  let assert Error(error) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      None,
+      current_workflow(dag),
+    )
+
+  assert workflow_repair.describe_error(error) == "ambiguous_repair_step"
+}
+
+pub fn retry_step_rejects_terminal_failed_stale_command_attempt_test() {
+  let projection = projection.fold(terminal_failed_stale_command_run_records())
+  let assert Ok(dag) = workflow_dag.parse(stale_command_workflow_yaml())
+
+  let assert Error(error) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_workflow(dag),
+    )
+
+  assert workflow_repair.describe_error(error) == "step_not_repairable"
+}
+
 pub fn retry_step_rejects_non_failed_terminal_outcomes_test() {
   let assert Ok(dag) = workflow_dag.parse(single_step_workflow_yaml())
 
@@ -630,6 +716,37 @@ steps:
 "
 }
 
+fn multiple_stale_agent_workflow_yaml() -> String {
+  "version: 1
+id: implementation
+steps:
+  - id: first_agent
+    kind: agent
+    prompt: prompts/first.md
+    workspace: main
+  - id: second_agent
+    kind: agent
+    prompt: prompts/second.md
+    workspace: review
+  - id: finish
+    kind: command
+    depends_on: [first_agent, second_agent]
+    run: finish
+    workspace: main
+"
+}
+
+fn stale_command_workflow_yaml() -> String {
+  "version: 1
+id: implementation
+steps:
+  - id: apply_feedback
+    kind: command
+    run: apply
+    workspace: main
+"
+}
+
 fn current_workflow(
   dag: workflow_dag.WorkflowDag,
 ) -> recovery.CurrentWorkflowObservation {
@@ -788,6 +905,91 @@ fn failed_after_recovery_run_records() -> List(record.LedgerRecord) {
       workflow_outcome.failed_after_recovery,
       20,
     ),
+  ]
+}
+
+fn terminal_failed_stale_agent_run_records() -> List(record.LedgerRecord) {
+  [
+    base_workflow_started_record("workflow-terminal-stale-agent"),
+    finished_attempt_record_for_run(
+      "run-1",
+      "seed",
+      1,
+      workflow_outcome.completed,
+      "seed",
+      10,
+    ),
+    prepared_attempt_record_for_run("run-1", "apply_feedback", 1, "derived", 20),
+    record.with_id(
+      "apply-feedback-started",
+      21,
+      record.StepAttemptStarted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        operator_session_id: "session-apply-feedback-1",
+        external_session_ref: None,
+        continuation_capable: True,
+      ),
+    ),
+    workflow_finished_record_for_run("run-1", workflow_outcome.failed_fatal, 30),
+  ]
+}
+
+fn terminal_failed_stale_multi_agent_run_records() -> List(record.LedgerRecord) {
+  [
+    base_workflow_started_record("workflow-terminal-stale-multi-agent"),
+    prepared_attempt_record_for_run("run-1", "first_agent", 1, "main", 10),
+    record.with_id(
+      "first-agent-started",
+      11,
+      record.StepAttemptStarted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "first_agent",
+        attempt_index: 1,
+        operator_session_id: "session-first-agent-1",
+        external_session_ref: None,
+        continuation_capable: True,
+      ),
+    ),
+    prepared_attempt_record_for_run("run-1", "second_agent", 1, "review", 20),
+    record.with_id(
+      "second-agent-started",
+      21,
+      record.StepAttemptStarted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "second_agent",
+        attempt_index: 1,
+        operator_session_id: "session-second-agent-1",
+        external_session_ref: None,
+        continuation_capable: True,
+      ),
+    ),
+    workflow_finished_record_for_run("run-1", workflow_outcome.failed_fatal, 30),
+  ]
+}
+
+fn terminal_failed_stale_command_run_records() -> List(record.LedgerRecord) {
+  [
+    base_workflow_started_record("workflow-terminal-stale-command"),
+    prepared_attempt_record_for_run("run-1", "apply_feedback", 1, "main", 10),
+    record.with_id(
+      "apply-feedback-command-started",
+      11,
+      record.StepAttemptStarted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        operator_session_id: "session-apply-feedback-1",
+        external_session_ref: None,
+        continuation_capable: False,
+      ),
+    ),
+    workflow_finished_record_for_run("run-1", workflow_outcome.failed_fatal, 20),
   ]
 }
 
@@ -1412,6 +1614,44 @@ fn has_superseded_candidate_attempt(
       _ -> False
     }
   })
+}
+
+fn has_normalization_interruption(
+  records: List(record.RecordBody),
+  step_id: String,
+  attempt_index: Int,
+  reason: String,
+) -> Bool {
+  list.any(records, fn(body) {
+    case body {
+      record.StepAttemptInterrupted(
+        step_id: body_step_id,
+        attempt_index: body_attempt_index,
+        reason: body_reason,
+        ..,
+      ) ->
+        body_step_id == step_id
+        && body_attempt_index == attempt_index
+        && body_reason == reason
+      _ -> False
+    }
+  })
+}
+
+fn normalization_precedes_repair_request(
+  records: List(record.RecordBody),
+) -> Bool {
+  case records {
+    [
+      record.StepAttemptInterrupted(
+        reason: "terminal_failure_repair_normalized",
+        ..,
+      ),
+      record.WorkflowRepairRequested(..),
+      ..
+    ] -> True
+    _ -> False
+  }
 }
 
 fn repair_request_matches(

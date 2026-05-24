@@ -122,7 +122,21 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = root ]; then pwd -P; exit 0; fi\n"
-        <> "if [ \"$1\" = status ]; then printf '%s' \"${SCHERZO_FAKE_JJ_STATUS:-}\"; exit 0; fi\n"
+        <> "if [ \"$1\" = status ]; then\n"
+        <> "  count=1\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_JJ_STATUS_COUNT_FILE:-}\" ]; then\n"
+        <> "    if [ -f \"$SCHERZO_FAKE_JJ_STATUS_COUNT_FILE\" ]; then count=$(cat \"$SCHERZO_FAKE_JJ_STATUS_COUNT_FILE\"); count=$((count + 1)); fi\n"
+        <> "    printf '%s' \"$count\" > \"$SCHERZO_FAKE_JJ_STATUS_COUNT_FILE\"\n"
+        <> "  fi\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_STATUS_FAIL_ONCE:-}\" = 1 ] && [ \"$count\" = 1 ]; then printf '%s' \"${SCHERZO_FAKE_JJ_STATUS_FAIL_OUTPUT:-}\" >&2; exit 1; fi\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_STATUS_FAIL_ON_RETRY:-}\" = 1 ] && [ \"$count\" -gt 1 ]; then printf '%s' \"${SCHERZO_FAKE_JJ_STATUS_RETRY_FAIL_OUTPUT:-${SCHERZO_FAKE_JJ_STATUS_FAIL_OUTPUT:-}}\" >&2; exit 1; fi\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_STATUS_EXIT_CODE:-0}\" != 0 ]; then printf '%s' \"${SCHERZO_FAKE_JJ_STATUS:-}\"; exit \"$SCHERZO_FAKE_JJ_STATUS_EXIT_CODE\"; fi\n"
+        <> "  printf '%s' \"${SCHERZO_FAKE_JJ_STATUS:-}\"; exit 0; fi\n"
+        <> "if [ \"$1\" = workspace ] && [ \"$2\" = update-stale ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_UPDATE_STALE_FAIL:-}\" = 1 ]; then printf '%s' \"${SCHERZO_FAKE_JJ_UPDATE_STALE_OUTPUT:-update stale failed\\n}\" >&2; exit 1; fi\n"
+        <> "  printf '%s' \"${SCHERZO_FAKE_JJ_UPDATE_STALE_OUTPUT:-}\"\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "if [ \"$1\" = diff ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_JJ_FAIL_ON_AT_MINUS:-}\" = 1 ]; then\n"
         <> "    for arg in \"$@\"; do if [ \"$arg\" = @- ]; then echo 'ambiguous @-' >&2; exit 1; fi; done\n"
@@ -1109,6 +1123,119 @@ pub fn jj_driver_status_and_diff_use_human_jj_commands_test() {
       "status --color=never",
       "diff --color=never",
       "diff --git --color=never",
+    ]
+}
+
+pub fn jj_driver_status_human_updates_stale_workspace_once_test() {
+  let dir = "test/tmp/jj-workspace-driver-status-stale"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let count_file = absolute(dir <> "/status-count")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let status =
+    run_jj(
+      "jj_driver_status_stale_once",
+      "status --human",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_STATUS_COUNT_FILE", count_file),
+        #("SCHERZO_FAKE_JJ_STATUS_FAIL_ONCE", "1"),
+        #(
+          "SCHERZO_FAKE_JJ_STATUS_FAIL_OUTPUT",
+          "working copy is stale; run `jj workspace update-stale`\n",
+        ),
+        #("SCHERZO_FAKE_JJ_STATUS", "working copy clean\n"),
+      ]),
+    )
+
+  assert_exit(status, 0)
+  assert status.stdout == "working copy clean\n"
+  assert string.contains(status.stderr, "jj workspace update-stale")
+  assert log_lines(log)
+    == [
+      "status --color=never",
+      "workspace update-stale",
+      "status --color=never",
+    ]
+}
+
+pub fn jj_driver_status_human_does_not_retry_non_stale_failure_test() {
+  let dir = "test/tmp/jj-workspace-driver-status-non-stale-failure"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let count_file = absolute(dir <> "/status-count")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let status =
+    run_jj(
+      "jj_driver_status_non_stale_failure",
+      "status --human",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_STATUS_COUNT_FILE", count_file),
+        #("SCHERZO_FAKE_JJ_STATUS_FAIL_ONCE", "1"),
+        #("SCHERZO_FAKE_JJ_STATUS_FAIL_OUTPUT", "plain status failure\n"),
+      ]),
+    )
+
+  assert_exit(status, 1)
+  assert string.contains(status.stderr, "plain status failure")
+  assert log_lines(log) == ["status --color=never"]
+}
+
+pub fn jj_driver_status_human_fails_when_update_stale_fails_test() {
+  let dir = "test/tmp/jj-workspace-driver-status-update-fails"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let count_file = absolute(dir <> "/status-count")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let status =
+    run_jj(
+      "jj_driver_status_update_failure",
+      "status --human",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_STATUS_COUNT_FILE", count_file),
+        #("SCHERZO_FAKE_JJ_STATUS_FAIL_ONCE", "1"),
+        #(
+          "SCHERZO_FAKE_JJ_STATUS_FAIL_OUTPUT",
+          "working copy is stale; run `jj workspace update-stale`\n",
+        ),
+        #("SCHERZO_FAKE_JJ_UPDATE_STALE_FAIL", "1"),
+        #("SCHERZO_FAKE_JJ_UPDATE_STALE_OUTPUT", "update stale failed\n"),
+      ]),
+    )
+
+  assert_exit(status, 1)
+  assert string.contains(status.stderr, "update stale failed")
+  assert log_lines(log) == ["status --color=never", "workspace update-stale"]
+}
+
+pub fn jj_driver_status_human_fails_when_retried_status_fails_test() {
+  let dir = "test/tmp/jj-workspace-driver-status-retry-fails"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let count_file = absolute(dir <> "/status-count")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let status =
+    run_jj(
+      "jj_driver_status_retry_failure",
+      "status --human",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_STATUS_COUNT_FILE", count_file),
+        #("SCHERZO_FAKE_JJ_STATUS_FAIL_ONCE", "1"),
+        #(
+          "SCHERZO_FAKE_JJ_STATUS_FAIL_OUTPUT",
+          "working copy is stale; run `jj workspace update-stale`\n",
+        ),
+        #("SCHERZO_FAKE_JJ_STATUS_FAIL_ON_RETRY", "1"),
+        #("SCHERZO_FAKE_JJ_STATUS_RETRY_FAIL_OUTPUT", "still stale\n"),
+      ]),
+    )
+
+  assert_exit(status, 1)
+  assert string.contains(status.stderr, "still stale")
+  assert log_lines(log)
+    == [
+      "status --color=never",
+      "workspace update-stale",
+      "status --color=never",
     ]
 }
 

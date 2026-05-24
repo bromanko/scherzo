@@ -822,6 +822,13 @@ def ensure_workspace(root: Path) -> None:
         fail("workspace directory does not exist")
 
 
+def write_process_output(completed: subprocess.CompletedProcess[str]) -> None:
+    if completed.stdout:
+        sys.stdout.write(completed.stdout)
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
+
+
 def run_jj_stream(root: Path, args: list[str]) -> None:
     ensure_workspace(root)
     try:
@@ -829,6 +836,36 @@ def run_jj_stream(root: Path, args: list[str]) -> None:
     except FileNotFoundError:
         fail("jj executable not found")
     raise SystemExit(0 if status == 0 else 1)
+
+
+def run_jj_status_human(root: Path) -> None:
+    status_args = ["status", "--color=never"]
+    completed = run_jj_proc(root, status_args)
+    if completed.returncode == 0:
+        write_process_output(completed)
+        raise SystemExit(0)
+
+    combined_output = f"{completed.stdout}{completed.stderr}"
+    if (
+        "jj workspace update-stale" not in combined_output
+        and "workspace update-stale" not in combined_output
+    ):
+        write_process_output(completed)
+        raise SystemExit(1)
+
+    sys.stderr.write(
+        "scherzo-workspace-jj: running "
+        "`jj workspace update-stale` before retrying status\n"
+    )
+    update = run_jj_proc(root, ["workspace", "update-stale"])
+    if update.returncode != 0:
+        write_process_output(completed)
+        write_process_output(update)
+        raise SystemExit(1)
+
+    retried = run_jj_proc(root, status_args)
+    write_process_output(retried)
+    raise SystemExit(0 if retried.returncode == 0 else 1)
 
 
 def run_jj_proc(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1462,7 +1499,7 @@ def main(argv: list[str]) -> None:
     if command == "status":
         if rest != ["--human"]:
             usage_error("status requires --human")
-        run_jj_stream(root, ["status", "--color=never"])
+        run_jj_status_human(root)
         return
 
     if command == "diff":
