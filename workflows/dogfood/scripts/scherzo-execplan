@@ -1611,7 +1611,7 @@ def publish_review_doc(args: list[str]) -> None:
             "--branch-prefix",
             branch,
             "--base",
-            os.environ.get("SCHERZO_PR_BASE", "main"),
+            env_value("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main"),
         ]
         if revision_target:
             target_branch, target_pr = revision_target
@@ -2400,10 +2400,10 @@ def safe_revision_remote(value: str) -> bool:
 
 
 def revision_remote() -> str:
-    remote = env_value("SCHERZO_JJ_WORKSPACE_REMOTE") or env_value("SCHERZO_PR_REMOTE") or "origin"
+    remote = env_value("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin")
     if not safe_revision_remote(remote):
         fail(
-            f"revision remote {remote!r} is not a safe remote name for refresh-base",
+            f"revision publication remote {remote!r} is not a safe remote name for refresh-base",
             code="execplan_revision_base_missing",
         )
     return remote

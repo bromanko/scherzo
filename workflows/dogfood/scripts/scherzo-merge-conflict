@@ -513,7 +513,7 @@ def branch_target(candidate: dict[str, Any], expected_repo: str) -> dict[str, An
             f"branch reference points at {repo}, but this workflow is configured "
             f"for {expected_repo}. Set SCHERZO_PR_REPO to override intentionally."
         )
-    base_branch = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
+    base_branch = os.environ.get("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main").strip() or "main"
     head_branch = candidate["branch"]
     if head_branch == base_branch:
         fail(f"target branch and base branch are both {head_branch}; refusing")
@@ -710,7 +710,7 @@ def prepare_command() -> None:
     require_command("gh")
     require_command("python3")
 
-    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    remote = os.environ.get("SCHERZO_JJ_WORKSPACE_REMOTE", "origin").strip() or "origin"
     repo = default_repo(remote)
     issue_identifier = infer_issue_identifier()
     issue = fetch_linear_issue(issue_identifier)

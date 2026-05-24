@@ -723,14 +723,14 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
         <> "  printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"head not local\"}'\n"
         <> "  exit 1\n"
         <> "fi\n"
-        <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = execplan/liv-314-unmerged@origin ]; then\n"
+        <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = execplan/liv-314-unmerged@fork ]; then\n"
         <> "  mkdir -p "
         <> shell_quote(dir <> "/docs/plans")
         <> "\n"
         <> "  cp test/fixtures/execplan_v2/review-doc.valid.md "
         <> shell_quote(review_path)
         <> "\n"
-        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\",\"stage\":\"prepare_revision\",\"base_ref\":\"execplan/liv-314-unmerged@origin\",\"base_revision\":\"execplan/liv-314-unmerged@origin\",\"before_revision\":\"main\",\"after_revision\":\"branch\",\"conflict_files\":[]}'\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\",\"stage\":\"prepare_revision\",\"base_ref\":\"execplan/liv-314-unmerged@fork\",\"base_revision\":\"execplan/liv-314-unmerged@fork\",\"before_revision\":\"main\",\"after_revision\":\"branch\",\"conflict_files\":[]}'\n"
         <> "  exit 0\n"
         <> "fi\n"
         <> "printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"missing revision base\"}'\n"
@@ -747,7 +747,7 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
       <> shell_quote(dir <> "/repo")
       <> " SCHERZO_WORKSPACE_DRIVER="
       <> shell_quote(driver)
-      <> " SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_ISSUE_CONTEXT="
+      <> " SCHERZO_JJ_WORKSPACE_REMOTE=upstream SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_PR_REMOTE=legacy SCHERZO_ISSUE_CONTEXT="
       <> shell_quote(issue_context)
       <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
       <> shell_quote(dir <> "/previous-bundle.json")
@@ -771,7 +771,11 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
   )
   assert string.contains(
     driver_log,
-    "refresh-base --stage prepare_revision --target execplan/liv-314-unmerged@origin --json",
+    "refresh-base --stage prepare_revision --target execplan/liv-314-unmerged@fork --json",
+  )
+  assert !string.contains(
+    driver_log,
+    "refresh-base --stage prepare_revision --target execplan/liv-314-unmerged@upstream --json",
   )
 }
 
@@ -1847,7 +1851,7 @@ pub fn publish_review_doc_revision_targets_existing_pr_test() {
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER="
       <> shell_quote(driver)
-      <> " SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      <> " SCHERZO_JJ_WORKSPACE_BASE_BRANCH=trunk SCHERZO_PR_BASE=legacy SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path)
@@ -1862,7 +1866,7 @@ pub fn publish_review_doc_revision_targets_existing_pr_test() {
   assert string.contains(driver_log, "changed-files --json")
   assert string.contains(
     driver_log,
-    "publish-change --kind execplan-revision --title-file tmp/execplan-pr-title.txt --body-file tmp/execplan-pr-body.md --branch-prefix execplan/liv-314-fixture-v2-execplan-bundle --base main --target-branch execplan/liv-314 --target-pr 314 --allow-no-changes true --json",
+    "publish-change --kind execplan-revision --title-file tmp/execplan-pr-title.txt --body-file tmp/execplan-pr-body.md --branch-prefix execplan/liv-314-fixture-v2-execplan-bundle --base trunk --target-branch execplan/liv-314 --target-pr 314 --allow-no-changes true --json",
   )
   let assert Ok(context) = simplifile.read(context_path)
   assert string.contains(

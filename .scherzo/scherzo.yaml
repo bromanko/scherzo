@@ -24,6 +24,11 @@ workspace:
         command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
         lifecycle: [create, before-step, after-step, remove]
         timeout_ms: 60000
+        env:
+          SCHERZO_JJ_WORKSPACE_REMOTE: scherzo-agent
+          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: main
+          SCHERZO_JJ_WORKSPACE_FETCH_BASE: "true"
+          SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: scherzo-agent
     noop:
       driver:
         command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop"

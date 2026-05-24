@@ -108,15 +108,32 @@ def env_is_present(name: str) -> bool:
 
 
 def selected_workspace_base_branch() -> str:
-    return env_value("SCHERZO_JJ_WORKSPACE_BASE_BRANCH") or env_value("SCHERZO_PR_BASE") or "main"
+    return env_value("SCHERZO_JJ_WORKSPACE_BASE_BRANCH") or "main"
 
 
 def selected_workspace_base_remote() -> str:
-    return env_value("SCHERZO_JJ_WORKSPACE_REMOTE") or env_value("SCHERZO_PR_REMOTE") or "origin"
+    return env_value("SCHERZO_JJ_WORKSPACE_REMOTE") or "origin"
 
 
 def selected_publication_remote() -> str:
-    return env_value("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE") or env_value("SCHERZO_PR_REMOTE") or "origin"
+    return env_value("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE") or "origin"
+
+
+def reject_legacy_publication_remote_without_canonical() -> None:
+    if env_is_present("SCHERZO_PR_REMOTE") and not env_is_present(
+        "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE"
+    ):
+        json_failure(
+            status="configuration_error",
+            failure_code="legacy_publication_remote_unsupported",
+            message=(
+                "SCHERZO_PR_REMOTE is no longer a jj driver publication remote; "
+                "set SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE for publish-change, "
+                "or unset SCHERZO_PR_REMOTE to use origin"
+            ),
+            legacy_env="SCHERZO_PR_REMOTE",
+            canonical_env="SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE",
+        )
 
 
 def base_selection_was_configured() -> bool:
@@ -125,8 +142,6 @@ def base_selection_was_configured() -> bool:
         for name in [
             "SCHERZO_JJ_WORKSPACE_REMOTE",
             "SCHERZO_JJ_WORKSPACE_BASE_BRANCH",
-            "SCHERZO_PR_REMOTE",
-            "SCHERZO_PR_BASE",
         ]
     )
 
@@ -370,9 +385,7 @@ def fetch_workspace_base(repo_root: Path, branch: str, remote: str) -> None:
             f"'{remote}' before creating root workspace; for local-only use set "
             "SCHERZO_JJ_WORKSPACE_BASE=@ or SCHERZO_JJ_WORKSPACE_FETCH_BASE=false, "
             "for non-main branches set SCHERZO_JJ_WORKSPACE_BASE_BRANCH, and for "
-            "alternate remotes set SCHERZO_JJ_WORKSPACE_REMOTE. Legacy "
-            "SCHERZO_PR_REMOTE and SCHERZO_PR_BASE remain supported when the "
-            "jj-specific names are absent."
+            "alternate remotes set SCHERZO_JJ_WORKSPACE_REMOTE."
         )
 
 
@@ -616,10 +629,9 @@ def workspace_base_revision(repo_root: Path) -> str:
         fail(
             f"configured workspace base did not resolve for branch '{branch}' "
             f"from remote '{remote}'; tried {tried}. Set "
-            "SCHERZO_JJ_WORKSPACE_BASE to an explicit local revision, use "
+            "SCHERZO_JJ_WORKSPACE_BASE to an explicit local revision, or use "
             "SCHERZO_JJ_WORKSPACE_BASE_BRANCH and SCHERZO_JJ_WORKSPACE_REMOTE "
-            "for jj-specific base policy, or update legacy SCHERZO_PR_BASE and "
-            "SCHERZO_PR_REMOTE."
+            "for jj workspace base policy."
         )
     fail("could not resolve any default workspace base candidate: main@origin, main, @")
 
@@ -1323,6 +1335,7 @@ def run_capture(args: list[str], root: Path) -> subprocess.CompletedProcess[str]
 
 def publish_change(root: Path, args: list[str]) -> None:
     values = parse_publish_args(args)
+    reject_legacy_publication_remote_without_canonical()
     draft = pr_draft_setting()
     title = read_required_file(values["title-file"], "title-file").strip().splitlines()
     title_text = title[0].strip() if title else "Scherzo change"

@@ -335,6 +335,22 @@ pub fn project_validation_wrapper_skips_command_when_no_conflicts_test() {
 pub fn publish_requires_recorded_project_validation_test() {
   let dir = "test/tmp/merge-conflict-publish-project-validation-gate"
   write_validation_fixture(dir, "safe\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-merge-conflict.json",
+      "{\n"
+        <> "  \"linear_issue_identifier\": \"LIV-123\",\n"
+        <> "  \"repo\": \"scherzo-systems/scherzo\",\n"
+        <> "  \"remote\": \"upstream\",\n"
+        <> "  \"target_kind\": \"branch\",\n"
+        <> "  \"head_branch\": \"feature/conflicted-branch\",\n"
+        <> "  \"base_branch\": \"trunk\",\n"
+        <> "  \"conflicted_files\": [\"conflicted.txt\"],\n"
+        <> "  \"non_conflict_fingerprints\": {\n"
+        <> "    \"safe.txt\": {\"type\": \"file\", \"sha256\": \"93d868f3b59590f611d7646894ce8def1cea5ad63a9af0d9ccc56e9bc6968c11\", \"size\": 5}\n"
+        <> "  }\n"
+        <> "}\n",
+    )
   write_fake_workspace_driver(dir <> "/bin/workspace-driver")
   chmod_executable(dir <> "/bin/workspace-driver")
 
@@ -345,11 +361,19 @@ pub fn publish_requires_recorded_project_validation_test() {
     )
   assert validate.status == step_artifact.StepSucceeded
 
+  let driver_env =
+    "SCHERZO_WORKSPACE_DRIVER=./bin/workspace-driver "
+    <> "SCHERZO_JJ_WORKSPACE_REMOTE=upstream "
+    <> "SCHERZO_JJ_WORKSPACE_BASE_BRANCH=trunk "
+    <> "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork "
+    <> "SCHERZO_PR_REMOTE=legacy "
+    <> "SCHERZO_PR_BASE=legacy "
+    <> "PATH=\"$PWD/bin:$PATH\" "
+
   let blocked =
     run_helper_in(
       dir,
-      "SCHERZO_WORKSPACE_DRIVER=./bin/workspace-driver "
-        <> "PATH=\"$PWD/bin:$PATH\" "
+      driver_env
         <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict publish",
     )
 
@@ -371,8 +395,7 @@ pub fn publish_requires_recorded_project_validation_test() {
   let published =
     run_helper_in(
       dir,
-      "SCHERZO_WORKSPACE_DRIVER=./bin/workspace-driver "
-        <> "PATH=\"$PWD/bin:$PATH\" "
+      driver_env
         <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict publish",
     )
 
@@ -381,7 +404,13 @@ pub fn publish_requires_recorded_project_validation_test() {
   assert string.contains(published.stdout, "PUSHED=true")
   assert string.contains(published.stdout, "PROJECT_VALIDATION=passed")
   let assert Ok(driver_log) = simplifile.read(dir <> "/workspace-driver.log")
+  assert string.contains(
+    driver_log,
+    "env remote=upstream base=trunk publish=fork legacy_remote=legacy legacy_base=legacy",
+  )
   assert string.contains(driver_log, "publish-change")
+  assert string.contains(driver_log, "--base trunk")
+  assert !string.contains(driver_log, "--base main")
 }
 
 pub fn validate_accepts_prepare_metadata_with_jj_conflict_status_suffix_test() {
@@ -577,6 +606,7 @@ fn write_fake_workspace_driver(path: String) -> Nil {
     simplifile.write(
       path,
       "#!/bin/sh\n"
+        <> "printf 'env remote=%s base=%s publish=%s legacy_remote=%s legacy_base=%s\\n' \"${SCHERZO_JJ_WORKSPACE_REMOTE:-}\" \"${SCHERZO_JJ_WORKSPACE_BASE_BRANCH:-}\" \"${SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE:-}\" \"${SCHERZO_PR_REMOTE:-}\" \"${SCHERZO_PR_BASE:-}\" >> workspace-driver.log\n"
         <> "printf '%s\\n' \"$*\" >> workspace-driver.log\n"
         <> "if [ \"$1\" = publish-change ]; then\n"
         <> "  printf '%s\\n' '{\"version\":1,\"head_revision\":\"abc123\"}'\n"
