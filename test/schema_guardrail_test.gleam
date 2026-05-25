@@ -476,6 +476,20 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "WorkflowRunDiagnostic",
+      "workflow_run_diagnostic",
+      record.with_id(
+        "record-workflow-run-diagnostic",
+        1005,
+        record.WorkflowRunDiagnostic(
+          run_id: "workflow-run-1",
+          workflow_id: "implementation",
+          issue_id: "issue-1",
+          reason: "artifact_recovery_failed: step_id=seed artifact_ref=runs/run-1/seed/attempt-1.json reason=missing",
+        ),
+      ),
+    ),
+    LedgerExample(
       "WorkflowRunInterrupted",
       "workflow_run_interrupted",
       record.with_id(

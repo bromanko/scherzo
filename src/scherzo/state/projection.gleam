@@ -875,6 +875,7 @@ pub fn apply(
           ),
         ),
       )
+    record.WorkflowRunDiagnostic(..) -> projection
     record.WorkflowRepairRequested(
       run_id,
       workflow_id,
