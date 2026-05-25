@@ -57,9 +57,16 @@ fn limits() -> config_types.ArtifactLimits {
   )
 }
 
-fn chmod_executable(path: String) -> Nil {
+fn chmod_path(path: String, mode: String) -> Nil {
   let artifact =
-    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
+    command_step.run(
+      "chmod",
+      "chmod " <> mode <> " " <> path,
+      ".",
+      5000,
+      [],
+      limits(),
+    )
   assert artifact.status == step_artifact.StepSucceeded
 }
 
@@ -88,6 +95,10 @@ fn log_line_before_loop(
       }
     }
   }
+}
+
+fn chmod_executable(path: String) -> Nil {
+  chmod_path(path, "+x")
 }
 
 fn orchestrator(
@@ -120,6 +131,14 @@ fn named_profile(
   let assert Ok(profile) =
     dict.get(orchestrator.workspace_profiles.profiles, name)
   profile
+}
+
+fn no_driver_profile() -> config_types.WorkspaceHookProfile {
+  config_types.WorkspaceHookProfile(
+    name: "default",
+    driver: None,
+    source: config_types.SyntheticDefaultWorkspace,
+  )
 }
 
 pub fn prepares_logical_workspace_paths_under_run_root_test() {
@@ -192,7 +211,7 @@ fn write_lifecycle_driver(dir: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       driver,
-      "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') if [ -f \"$SCHERZO_CONFIG_DIR/create-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/create-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 17; fi; mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') test -d \"$SCHERZO_RUN_ROOT\"; if [ -f \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 23; fi; rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
+      "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') if [ -f \"$SCHERZO_CONFIG_DIR/create-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/create-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 17; fi; mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') if [ -f \"$SCHERZO_CONFIG_DIR/before-step-fail\" ]; then exit 19; fi; test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') test -d \"$SCHERZO_RUN_ROOT\"; if [ -f \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 23; fi; rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
     )
   chmod_executable(driver)
 }
@@ -341,6 +360,60 @@ pub fn cleanup_remove_failure_returns_error_and_keeps_run_root_test() {
   assert string.contains(log, "lifecycle remove|")
 }
 
+pub fn prepare_cleanup_failure_returns_cleanup_error_and_keeps_run_root_test() {
+  let dir = "test/tmp/workspace-run-prepare-cleanup-failure"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(Nil) =
+    simplifile.write(orchestrator.config_dir <> "/before-step-fail", "1")
+  let assert Ok(Nil) =
+    simplifile.write(
+      orchestrator.config_dir <> "/remove-fail-workspace",
+      "main\n",
+    )
+
+  let assert Error(workspace_run.WorkspaceFailure(error.WorkspaceIo(message))) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-prepare-cleanup-failure",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+
+  assert string.contains(
+    message,
+    "cleanup after workspace prepare failure failed",
+  )
+  assert string.contains(message, "driver_lifecycle_before_step")
+  assert string.contains(
+    message,
+    "driver lifecycle remove failed for workspace main",
+  )
+  let assert Ok(run_root) =
+    workspace_run.run_root_for(
+      issue(),
+      "implementation",
+      "run-prepare-cleanup-failure",
+      orchestrator,
+    )
+  let assert Ok(workspace_path) =
+    workspace_run.workspace_path_for(
+      issue(),
+      "implementation",
+      "run-prepare-cleanup-failure",
+      "main",
+      orchestrator,
+    )
+  let assert Ok(True) = simplifile.is_directory(run_root)
+  let assert Ok(True) = simplifile.is_directory(workspace_path)
+}
+
 pub fn scheduled_run_paths_and_hook_env_are_issue_free_test() {
   let dir = "test/tmp/workspace-run-scheduled"
   reset_dir(dir)
@@ -474,6 +547,63 @@ pub fn cleanup_rejects_paths_outside_workspace_root_test() {
       orchestrator,
       default_profile(orchestrator),
     )
+}
+
+pub fn cleanup_retention_marker_inspect_failure_returns_error_test() {
+  let dir = "test/tmp/workspace-run-retention-inspect-failure"
+  reset_dir(dir)
+  let orchestrator =
+    orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
+  let profile = default_profile(orchestrator)
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-retention-inspect-failure",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(Nil) = simplifile.delete(main.run_root)
+  let assert Ok(Nil) = simplifile.write(main.run_root, "not a directory")
+
+  let assert Error(error.WorkspaceIo(message)) =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+
+  assert string.contains(message, "inspect workspace retention marker failed")
+  let assert Ok(True) = simplifile.is_file(main.run_root)
+}
+
+pub fn cleanup_delete_run_root_failure_returns_error_test() {
+  let dir = "test/tmp/workspace-run-delete-failure"
+  reset_dir(dir)
+  let orchestrator =
+    orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
+  let profile = no_driver_profile()
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-delete-failure",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+
+  let assert Ok(run_parent) = path.dirname(main.run_root)
+  chmod_path(run_parent, "u-w")
+  let cleanup_result =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  chmod_path(run_parent, "u+w")
+
+  let assert Error(error.WorkspaceIo(message)) = cleanup_result
+  assert string.contains(message, "delete workspace run root failed")
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+  let assert Ok(Nil) = simplifile.delete(main.run_root)
 }
 
 pub fn cleanup_retention_marker_skips_delete_until_removed_test() {

@@ -11,6 +11,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workspace
+import scherzo/workspace_boundary as boundary
 import scherzo/workspace_driver_lifecycle
 import scherzo/workspace_manifest
 import scherzo/workspace_profile
@@ -243,16 +244,17 @@ fn prepare_step_attempt_with_cleanup(
         finish_prepare_step(issue, step_id, prepared, orchestrator, profile)
       {
         Ok(prepared) -> Ok(prepared)
-        Error(err) -> {
+        Error(err) ->
           case cleanup_on_error {
-            True -> {
-              let _ = cleanup_run(run_root, orchestrator, profile)
-              Nil
-            }
-            False -> Nil
+            True ->
+              prepare_failure_after_cleanup(
+                err,
+                run_root,
+                orchestrator,
+                profile,
+              )
+            False -> Error(err)
           }
-          Error(err)
-        }
       }
     }
   }
@@ -377,10 +379,14 @@ pub fn cleanup_run(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, error.WorkspaceError) {
-  let root_abs =
-    path.absolute(orchestrator.effective.workspace.root)
-    |> result.unwrap(orchestrator.effective.workspace.root)
-  let target_abs = path.absolute(run_root) |> result.unwrap(run_root)
+  use root_abs <- try_workspace(boundary.resolve_absolute_path(
+    orchestrator.effective.workspace.root,
+    "workspace root",
+  ))
+  use target_abs <- try_workspace(boundary.resolve_absolute_path(
+    run_root,
+    "workspace run root",
+  ))
   case
     string.trim(target_abs) == ""
     || !path.contains(root_abs, target_abs)
@@ -388,7 +394,8 @@ pub fn cleanup_run(
   {
     True -> Error(error.WorkspaceOutsideRoot(target_abs))
     False -> {
-      case retain_cleanup(target_abs) {
+      use should_retain <- result.try(retain_cleanup(target_abs))
+      case should_retain {
         True -> Ok(Nil)
         False -> {
           use _ <- result.try(run_remove_lifecycle(
@@ -396,14 +403,42 @@ pub fn cleanup_run(
             orchestrator,
             profile,
           ))
-          case simplifile.delete(target_abs) {
-            Ok(Nil) -> Ok(Nil)
-            Error(simplifile.Enoent) -> Ok(Nil)
-            Error(_) -> Error(error.WorkspaceIo("delete failed"))
-          }
+          delete_run_root(target_abs)
         }
       }
     }
+  }
+}
+
+fn prepare_failure_after_cleanup(
+  err: PrepareError,
+  run_root: String,
+  orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
+) -> Result(a, PrepareError) {
+  case cleanup_run(run_root, orchestrator, profile) {
+    Ok(Nil) -> Error(err)
+    Error(cleanup_error) ->
+      Error(
+        WorkspaceFailure(error.WorkspaceIo(
+          "cleanup after workspace prepare failure failed: "
+          <> prepare_error_summary(err)
+          <> "; cleanup: "
+          <> boundary.workspace_error_summary(cleanup_error),
+        )),
+      )
+  }
+}
+
+fn delete_run_root(target_abs: String) -> Result(Nil, error.WorkspaceError) {
+  case simplifile.delete(target_abs) {
+    Ok(Nil) -> Ok(Nil)
+    Error(simplifile.Enoent) -> Ok(Nil)
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "delete workspace run root failed: "
+        <> simplifile.describe_error(file_error),
+      ))
   }
 }
 
@@ -518,10 +553,8 @@ pub fn prepare_scheduled_step_attempt(
         )
       {
         Ok(prepared) -> Ok(prepared)
-        Error(err) -> {
-          let _ = cleanup_run(run_root, orchestrator, profile)
-          Error(err)
-        }
+        Error(err) ->
+          prepare_failure_after_cleanup(err, run_root, orchestrator, profile)
       }
     }
   }
@@ -573,12 +606,16 @@ pub fn run_root_for(
   use issue_key <- try_workspace(workspace.sanitize(issue.identifier))
   use workflow_key <- try_workspace(workspace.sanitize(workflow_id))
   use run_key <- try_workspace(workspace.sanitize(run_id))
-  let root_abs =
-    path.absolute(orchestrator.effective.workspace.root)
-    |> result.unwrap(orchestrator.effective.workspace.root)
+  use root_abs <- try_workspace(boundary.resolve_absolute_path(
+    orchestrator.effective.workspace.root,
+    "workspace root",
+  ))
   let issue_root = path.join(path.join(root_abs, workflow_key), issue_key)
   let run_root = path.join(issue_root, run_key)
-  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
+  use run_root_abs <- try_workspace(boundary.resolve_absolute_path(
+    run_root,
+    "workspace run root",
+  ))
   case path.contains(root_abs, run_root_abs) {
     True -> Ok(run_root_abs)
     False -> Error(error.WorkspaceOutsideRoot(run_root_abs))
@@ -598,8 +635,10 @@ fn validate_expected_run_root(
     run_id,
     orchestrator,
   ))
-  let expected_abs =
-    path.absolute(expected_run_root) |> result.unwrap(expected_run_root)
+  use expected_abs <- try_workspace(boundary.resolve_absolute_path(
+    expected_run_root,
+    "expected recovered run root",
+  ))
   case computed == expected_abs {
     True -> Ok(Nil)
     False -> Error(error.WorkspaceIo("recovered run root mismatch"))
@@ -615,15 +654,22 @@ fn validate_recovered_workspace(
   profile_name: String,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(Nil, error.WorkspaceError) {
-  let expected_abs =
-    path.absolute(expected_run_root) |> result.unwrap(expected_run_root)
-  let prepared_run_root_abs =
-    path.absolute(prepared.run_root) |> result.unwrap(prepared.run_root)
-  let root_abs =
-    path.absolute(orchestrator.effective.workspace.root)
-    |> result.unwrap(orchestrator.effective.workspace.root)
-  let prepared_path_abs =
-    path.absolute(prepared.path) |> result.unwrap(prepared.path)
+  use expected_abs <- try_workspace(boundary.resolve_absolute_path(
+    expected_run_root,
+    "expected recovered run root",
+  ))
+  use prepared_run_root_abs <- try_workspace(boundary.resolve_absolute_path(
+    prepared.run_root,
+    "prepared run root",
+  ))
+  use root_abs <- try_workspace(boundary.resolve_absolute_path(
+    orchestrator.effective.workspace.root,
+    "workspace root",
+  ))
+  use prepared_path_abs <- try_workspace(boundary.resolve_absolute_path(
+    prepared.path,
+    "prepared workspace path",
+  ))
   case
     prepared.workflow_id == workflow_id
     && prepared.run_id == run_id
@@ -653,7 +699,7 @@ fn validate_recovered_source_workspace(
     None -> Ok(Nil)
     Some(name) ->
       case dict.get(known_workspaces, name) {
-        Error(_) -> Ok(Nil)
+        Error(Nil) -> Ok(Nil)
         Ok(prepared) ->
           validate_recovered_workspace(
             prepared,
@@ -700,16 +746,22 @@ fn workspace_paths(
   use workflow_key <- try_workspace(workspace.sanitize(workflow_id))
   use run_key <- try_workspace(workspace.sanitize(run_id))
   use workspace_key <- try_workspace(workspace.sanitize(workspace_name))
-  let root_abs =
-    path.absolute(orchestrator.effective.workspace.root)
-    |> result.unwrap(orchestrator.effective.workspace.root)
+  use root_abs <- try_workspace(boundary.resolve_absolute_path(
+    orchestrator.effective.workspace.root,
+    "workspace root",
+  ))
   let issue_root = path.join(path.join(root_abs, workflow_key), issue_key)
   let run_root = path.join(issue_root, run_key)
   let workspace_path =
     path.join(path.join(run_root, "workspaces"), workspace_key)
-  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
-  let workspace_abs =
-    path.absolute(workspace_path) |> result.unwrap(workspace_path)
+  use run_root_abs <- try_workspace(boundary.resolve_absolute_path(
+    run_root,
+    "workspace run root",
+  ))
+  use workspace_abs <- try_workspace(boundary.resolve_absolute_path(
+    workspace_path,
+    "workspace path",
+  ))
   case
     path.contains(root_abs, run_root_abs)
     && path.contains(root_abs, workspace_abs)
@@ -730,17 +782,23 @@ fn scheduled_workspace_paths(
   use workflow_key <- try_workspace(workspace.sanitize(workflow_id))
   use run_key <- try_workspace(workspace.sanitize(run_id))
   use workspace_key <- try_workspace(workspace.sanitize(workspace_name))
-  let root_abs =
-    path.absolute(orchestrator.effective.workspace.root)
-    |> result.unwrap(orchestrator.effective.workspace.root)
+  use root_abs <- try_workspace(boundary.resolve_absolute_path(
+    orchestrator.effective.workspace.root,
+    "workspace root",
+  ))
   let scheduled_root = path.join(path.join(root_abs, workflow_key), "scheduled")
   let job_root = path.join(scheduled_root, job_key)
   let run_root = path.join(job_root, run_key)
   let workspace_path =
     path.join(path.join(run_root, "workspaces"), workspace_key)
-  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
-  let workspace_abs =
-    path.absolute(workspace_path) |> result.unwrap(workspace_path)
+  use run_root_abs <- try_workspace(boundary.resolve_absolute_path(
+    run_root,
+    "workspace run root",
+  ))
+  use workspace_abs <- try_workspace(boundary.resolve_absolute_path(
+    workspace_path,
+    "workspace path",
+  ))
   case
     path.contains(root_abs, run_root_abs)
     && path.contains(root_abs, workspace_abs)
@@ -750,10 +808,15 @@ fn scheduled_workspace_paths(
   }
 }
 
-fn retain_cleanup(run_root: String) -> Bool {
+fn retain_cleanup(run_root: String) -> Result(Bool, error.WorkspaceError) {
   case simplifile.is_file(cleanup_retention_marker(run_root)) {
-    Ok(True) -> True
-    _ -> False
+    Ok(True) -> Ok(True)
+    Ok(False) | Error(simplifile.Enoent) -> Ok(False)
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "inspect workspace retention marker failed: "
+        <> simplifile.describe_error(file_error),
+      ))
   }
 }
 
@@ -770,7 +833,7 @@ fn reusable_workspace(
     True ->
       case dict.get(known_workspaces, workspace_ref.name) {
         Ok(prepared) -> Some(prepared)
-        Error(_) -> None
+        Error(Nil) -> None
       }
   }
 }
@@ -864,7 +927,7 @@ fn source_workspace(
           ))
           Ok(#(Some(name), Some(prepared.path)))
         }
-        Error(_) ->
+        Error(Nil) ->
           Error(error.WorkspaceIo("source workspace is not prepared: " <> name))
       }
   }
@@ -1098,11 +1161,11 @@ fn base_hook_env(
     #("SCHERZO_WORKSPACE_PATH", prepared.path),
     #(
       "SCHERZO_SOURCE_WORKSPACE_NAME",
-      option.unwrap(prepared.source_workspace_name, ""),
+      optional_env_value(prepared.source_workspace_name),
     ),
     #(
       "SCHERZO_SOURCE_WORKSPACE_PATH",
-      option.unwrap(prepared.source_workspace_path, ""),
+      optional_env_value(prepared.source_workspace_path),
     ),
   ]
 }
@@ -1193,8 +1256,27 @@ fn ensure_directory_after_create(
 ) -> Result(Nil, error.WorkspaceError) {
   case simplifile.is_directory(path) {
     Ok(True) -> Ok(Nil)
-    Ok(False) -> Error(error.PartialWorkspace(path))
-    Error(_) -> Error(error.PartialWorkspace(path))
+    Ok(False) | Error(simplifile.Enoent) -> Error(error.PartialWorkspace(path))
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "inspect prepared workspace failed: "
+        <> simplifile.describe_error(file_error),
+      ))
+  }
+}
+
+fn optional_env_value(value: Option(String)) -> String {
+  case value {
+    Some(text) -> text
+    None -> ""
+  }
+}
+
+fn prepare_error_summary(err: PrepareError) -> String {
+  case err {
+    WorkspaceFailure(workspace_error) ->
+      boundary.workspace_error_summary(workspace_error)
+    HookFailure(hook_error) -> boundary.hook_error_summary(hook_error)
   }
 }
 
