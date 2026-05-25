@@ -186,6 +186,7 @@ pub type RemoteCommandCompletion {
 
 pub type WorkerStart {
   WorkerStart(
+    task_ref: task.TaskRef,
     issue_id: String,
     run_id: String,
     session_id: String,
@@ -200,6 +201,7 @@ pub type WorkerStart {
 
 pub type WorkerIdentity {
   WorkerIdentity(
+    task_ref: task.TaskRef,
     issue_id: String,
     run_id: String,
     session_id: String,

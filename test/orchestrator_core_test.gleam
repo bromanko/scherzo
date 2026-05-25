@@ -6,6 +6,7 @@ import scherzo/orchestrator/core
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
+import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -163,6 +164,32 @@ fn issue(
   )
 }
 
+fn task_item(
+  backend_kind: String,
+  remote_id: String,
+  identifier: String,
+  state: String,
+) -> task.Task {
+  task.Task(
+    ref: task.TaskRef(
+      backend_kind: backend_kind,
+      remote_id: remote_id,
+      key: Some(identifier),
+      url: None,
+    ),
+    title: "Title " <> identifier,
+    description: None,
+    priority: None,
+    state: task.TaskState(id: None, name: state, category: task.Unknown),
+    branch_hint: None,
+    labels: [],
+    blockers: [],
+    blockers_complete: True,
+    created_at: Some(birl.from_unix(0)),
+    updated_at: Some(birl.from_unix(0)),
+  )
+}
+
 fn rich_issue() -> tracker_issue.Issue {
   tracker_issue.Issue(
     ..issue("a", "ABC-1", "Todo", Some(1)),
@@ -192,6 +219,7 @@ fn auto_parked_entry(
   reason: reason.ParkReason,
 ) -> orchestrator_state.ParkedEntry {
   orchestrator_state.ParkedEntry(
+    task_ref: task.from_legacy_issue(issue).ref,
     issue_id: issue.id,
     identifier: issue.identifier,
     reason: reason,
@@ -207,6 +235,7 @@ fn explicit_parked_entry(
   reason: reason.ParkReason,
 ) -> orchestrator_state.ParkedEntry {
   orchestrator_state.ParkedEntry(
+    task_ref: task.from_legacy_issue(issue).ref,
     issue_id: issue.id,
     identifier: issue.identifier,
     reason: reason,
@@ -222,8 +251,94 @@ fn state_with_parked(
 ) -> orchestrator_state.RuntimeState {
   orchestrator_state.RuntimeState(
     ..state,
-    parked: dict.insert(state.parked, issue.id, parked),
+    parked: dict.insert(
+      state.parked,
+      orchestrator_state.issue_identity(issue),
+      parked,
+    ),
   )
+}
+
+pub fn running_state_distinguishes_duplicate_remote_ids_by_backend_test() {
+  let linear_issue = issue("shared", "ABC-1", "Todo", Some(1))
+  let memory_task = task_item("test-memory", "shared", "MEM-1", "Todo")
+  let task.Task(ref: memory_ref, ..) = memory_task
+
+  let state =
+    core.new_state(config())
+    |> core.apply_worker_start(linear_issue, "/tmp/linear")
+    |> core.apply_task_start(memory_task, "/tmp/memory")
+
+  let linear_identity = orchestrator_state.issue_identity(linear_issue)
+  let memory_identity = orchestrator_state.task_ref_identity(memory_ref)
+  assert linear_identity != memory_identity
+  assert dict.size(state.running) == 2
+  assert dict.has_key(state.running, linear_identity)
+  assert dict.has_key(state.running, memory_identity)
+}
+
+pub fn worker_success_uses_task_ref_with_duplicate_remote_ids_test() {
+  let linear_issue = issue("shared", "ABC-1", "Todo", Some(1))
+  let memory_task = task_item("test-memory", "shared", "MEM-1", "Done")
+  let task.Task(ref: memory_ref, ..) = memory_task
+  let memory_issue = task.to_runtime_issue(memory_task)
+  let state =
+    core.new_state(config())
+    |> core.apply_worker_start(linear_issue, "/tmp/linear")
+    |> core.apply_task_start(memory_task, "/tmp/memory")
+
+  let core.Transition(state: next, effects:) =
+    core.apply_task_workflow_success(
+      state,
+      config(),
+      memory_ref,
+      memory_issue.id,
+      memory_issue,
+      session_tokens.zero_token_totals(),
+      100,
+      core.AlreadyCleaned,
+    )
+
+  let linear_identity = orchestrator_state.issue_identity(linear_issue)
+  let memory_identity = orchestrator_state.task_ref_identity(memory_ref)
+  assert dict.has_key(next.running, linear_identity)
+  assert !dict.has_key(next.running, memory_identity)
+  assert !dict.has_key(next.completed, linear_identity)
+  assert dict.get(next.completed, memory_identity) == Ok(memory_issue)
+  assert effects == [core.ReleaseClaim(memory_issue.id)]
+}
+
+pub fn worker_failure_retry_uses_task_ref_with_duplicate_remote_ids_test() {
+  let linear_issue = issue("shared", "ABC-1", "Todo", Some(1))
+  let memory_task = task_item("test-memory", "shared", "MEM-1", "Todo")
+  let task.Task(ref: memory_ref, ..) = memory_task
+  let memory_issue = task.to_runtime_issue(memory_task)
+  let state =
+    core.new_state(config())
+    |> core.apply_worker_start(linear_issue, "/tmp/linear")
+    |> core.apply_task_start(memory_task, "/tmp/memory")
+
+  let core.Transition(state: next, effects:) =
+    core.apply_task_worker_failure(
+      state,
+      config(),
+      memory_ref,
+      memory_issue.id,
+      memory_issue,
+      100,
+    )
+
+  let linear_identity = orchestrator_state.issue_identity(linear_issue)
+  let memory_identity = orchestrator_state.task_ref_identity(memory_ref)
+  assert dict.has_key(next.running, linear_identity)
+  assert !dict.has_key(next.running, memory_identity)
+  assert !dict.has_key(next.retry_attempts, linear_identity)
+  assert dict.has_key(next.retry_attempts, memory_identity)
+  assert effects
+    == [
+      core.CancelRetry(memory_issue.id, 1, "reschedule_retry"),
+      core.ScheduleRetry(memory_issue.id, 10_000, 1, reason.RetryAfterFailure),
+    ]
 }
 
 pub fn issue_fingerprint_ignores_timestamps_url_labels_and_state_test() {
@@ -396,8 +511,9 @@ pub fn retry_policy_invalid_can_stop_retry_test() {
     == None
   let core.Transition(state: stopped, effects:) =
     core.stop_retry_for_policy_invalid(retry_state, "a")
-  assert !dict.has_key(stopped.retry_attempts, "a")
-  assert !dict.has_key(stopped.claimed, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert !dict.has_key(stopped.retry_attempts, identity)
+  assert !dict.has_key(stopped.claimed, identity)
   assert effects
     == [core.CancelRetry("a", 1, "policy_invalid"), core.ReleaseClaim("a")]
 }
@@ -472,7 +588,11 @@ pub fn invalid_workflow_report_fingerprint_helpers_test() {
       ),
       "noop",
     )
-  let assert Ok(report) = dict.get(updated.invalid_workflow_reports, issue.id)
+  let assert Ok(report) =
+    dict.get(
+      updated.invalid_workflow_reports,
+      orchestrator_state.issue_identity(issue),
+    )
   assert report.last_result == "noop"
 
   let failed =
@@ -493,7 +613,10 @@ pub fn invalid_workflow_report_fingerprint_helpers_test() {
   )
 
   let cleared = core.clear_invalid_workflow_report(updated, issue.id)
-  assert !dict.has_key(cleared.invalid_workflow_reports, issue.id)
+  assert !dict.has_key(
+    cleared.invalid_workflow_reports,
+    orchestrator_state.issue_identity(issue),
+  )
 }
 
 pub fn running_claimed_parked_and_slots_reject_dispatch_test() {
@@ -505,7 +628,9 @@ pub fn running_claimed_parked_and_slots_reject_dispatch_test() {
   let claimed =
     orchestrator_state.RuntimeState(
       ..state,
-      claimed: dict.from_list([#("a", "ABC-1")]),
+      claimed: dict.from_list([
+        #(orchestrator_state.issue_identity(issue), "ABC-1"),
+      ]),
     )
   assert !core.should_dispatch(claimed, config(), issue)
 
@@ -728,8 +853,9 @@ pub fn worker_success_terminal_cleans_and_releases_test() {
       session_tokens.zero_token_totals(),
       100,
     )
-  assert dict.has_key(next.running, "a") == False
-  assert dict.has_key(next.claimed, "a") == False
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.has_key(next.running, identity) == False
+  assert dict.has_key(next.claimed, identity) == False
   assert effects == [core.CleanupWorkspace("/tmp/ws"), core.ReleaseClaim("a")]
 }
 
@@ -756,12 +882,13 @@ pub fn workflow_success_active_state_completes_without_retry_test() {
       core.AlreadyCleaned,
     )
 
-  assert !dict.has_key(next.running, "a")
-  assert !dict.has_key(next.claimed, "a")
-  assert dict.has_key(next.completed, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert !dict.has_key(next.running, identity)
+  assert !dict.has_key(next.claimed, identity)
+  assert dict.has_key(next.completed, identity)
   assert next.aggregate_pi_totals.total == 10
   assert next.aggregate_pi_totals.input == 1
-  assert !dict.has_key(next.retry_attempts, "a")
+  assert !dict.has_key(next.retry_attempts, identity)
   assert effects == [core.ReleaseClaim("a")]
 }
 
@@ -796,8 +923,9 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
       session_tokens.zero_token_totals(),
       200,
     )
-  assert dict.has_key(parked.parked, "a")
-  let assert Ok(parked_entry) = dict.get(parked.parked, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.has_key(parked.parked, identity)
+  let assert Ok(parked_entry) = dict.get(parked.parked, identity)
   assert parked_entry.release_policy
     == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
   assert park_effects
@@ -827,7 +955,10 @@ pub fn worker_success_in_progress_remains_lifecycle_active_test() {
       100,
     )
 
-  assert dict.has_key(next.completed, "a")
+  assert dict.has_key(
+    next.completed,
+    orchestrator_state.issue_identity(initial),
+  )
   assert effects
     == [
       core.CancelRetry("a", 1, "reschedule_retry"),
@@ -858,8 +989,9 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
   let state = core.apply_worker_start(two, issue, "/tmp/ws")
   let core.Transition(state: parked, effects: effects3) =
     core.apply_worker_failure(state, config(), "a", latest, 300)
-  assert dict.has_key(parked.parked, "a")
-  let assert Ok(parked_entry) = dict.get(parked.parked, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.has_key(parked.parked, identity)
+  let assert Ok(parked_entry) = dict.get(parked.parked, identity)
   assert parked_entry.release_policy
     == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(latest))
   assert parked_entry.release_policy
@@ -897,10 +1029,17 @@ pub fn worker_failure_uses_dispatched_issue_id_for_lifecycle_test() {
       100,
     )
 
-  assert !dict.has_key(parked.running, "a")
-  assert !dict.has_key(parked.running, "different-id")
-  assert dict.has_key(parked.parked, "a")
-  assert !dict.has_key(parked.parked, "different-id")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert !dict.has_key(parked.running, identity)
+  assert !dict.has_key(
+    parked.running,
+    orchestrator_state.linear_issue_id_identity("different-id"),
+  )
+  assert dict.has_key(parked.parked, identity)
+  assert !dict.has_key(
+    parked.parked,
+    orchestrator_state.linear_issue_id_identity("different-id"),
+  )
   assert effects
     == [
       core.ParkIssue("a", reason.ParkMaxRetryAttempts),
@@ -924,8 +1063,9 @@ pub fn retry_candidate_can_dispatch_self_claimed_issue_test() {
       core.CancelRetry("a", 1, "retry_dispatch"),
       core.Dispatch(updated),
     ]
-  assert !dict.has_key(next.retry_attempts, "a")
-  assert dict.has_key(next.claimed, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert !dict.has_key(next.retry_attempts, identity)
+  assert dict.has_key(next.claimed, identity)
 }
 
 pub fn continuation_retry_can_dispatch_self_claimed_issue_test() {
@@ -951,8 +1091,9 @@ pub fn continuation_retry_can_dispatch_self_claimed_issue_test() {
       core.CancelRetry("a", 1, "retry_dispatch"),
       core.Dispatch(issue),
     ]
-  assert !dict.has_key(next.retry_attempts, "a")
-  assert dict.has_key(next.claimed, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert !dict.has_key(next.retry_attempts, identity)
+  assert dict.has_key(next.claimed, identity)
 }
 
 pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
@@ -975,8 +1116,9 @@ pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
       core.CancelRetry("a", 1, "retry_terminal_state:Done"),
       core.ReleaseClaim("a"),
     ]
-  assert !dict.has_key(next.retry_attempts, "a")
-  assert !dict.has_key(next.claimed, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert !dict.has_key(next.retry_attempts, identity)
+  assert !dict.has_key(next.claimed, identity)
 }
 
 pub fn retry_candidate_non_dispatch_failure_state_can_dispatch_test() {
@@ -999,8 +1141,9 @@ pub fn retry_candidate_non_dispatch_failure_state_can_dispatch_test() {
       core.CancelRetry("a", 1, "retry_dispatch"),
       core.Dispatch(triage),
     ]
-  assert !dict.has_key(next.retry_attempts, "a")
-  assert dict.has_key(next.claimed, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert !dict.has_key(next.retry_attempts, identity)
+  assert dict.has_key(next.claimed, identity)
 }
 
 pub fn retry_candidate_non_retryable_state_clears_retry_test() {
@@ -1023,8 +1166,9 @@ pub fn retry_candidate_non_retryable_state_clears_retry_test() {
       core.CancelRetry("a", 1, "retry_non_retryable_state:Backlog"),
       core.ReleaseClaim("a"),
     ]
-  assert !dict.has_key(next.retry_attempts, "a")
-  assert !dict.has_key(next.claimed, "a")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert !dict.has_key(next.retry_attempts, identity)
+  assert !dict.has_key(next.claimed, identity)
 }
 
 pub fn retry_candidate_without_slot_capacity_retries_no_slots_test() {
@@ -1061,8 +1205,9 @@ pub fn retry_candidate_without_slot_capacity_retries_no_slots_test() {
       core.CancelRetry("a", 2, "reschedule_retry"),
       core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
     ]
-  assert dict.has_key(next.retry_attempts, "a")
-  assert dict.has_key(next.claimed, "a")
+  let identity = orchestrator_state.issue_identity(retry_issue)
+  assert dict.has_key(next.retry_attempts, identity)
+  assert dict.has_key(next.claimed, identity)
 }
 
 pub fn retry_timer_handling_test() {
@@ -1073,7 +1218,7 @@ pub fn retry_timer_handling_test() {
     core.apply_worker_failure(state, config(), "a", issue, 100)
   let core.Transition(effects: poll_failed, state: kept) =
     core.handle_retry_candidate(retry_state, config(), "a", Error("tracker"))
-  assert dict.has_key(kept.claimed, "a")
+  assert dict.has_key(kept.claimed, orchestrator_state.issue_identity(issue))
   assert poll_failed
     == [
       core.CancelRetry("a", 2, "reschedule_retry"),
@@ -1095,7 +1240,10 @@ pub fn retry_timer_handling_test() {
       core.CancelRetry("a", 3, "retry_issue_missing"),
       core.ReleaseClaim("a"),
     ]
-  assert !dict.has_key(released.claimed, "a")
+  assert !dict.has_key(
+    released.claimed,
+    orchestrator_state.issue_identity(issue),
+  )
 }
 
 pub fn retry_candidate_without_slots_uses_backoff_test() {
@@ -1134,7 +1282,7 @@ pub fn explicit_park_blocks_even_when_issue_changes_test() {
     )
 
   let kept = core.unpark_if_issue_changed(state, changed)
-  assert dict.has_key(kept.parked, issue.id)
+  assert dict.has_key(kept.parked, orchestrator_state.issue_identity(issue))
   assert !core.should_dispatch(kept, config(), changed)
 }
 
@@ -1196,7 +1344,10 @@ pub fn auto_park_clears_on_blocker_change_test() {
     ])
 
   let unparked = core.unpark_if_issue_changed(state, blockers_satisfied)
-  assert !dict.has_key(unparked.parked, issue.id)
+  assert !dict.has_key(
+    unparked.parked,
+    orchestrator_state.issue_identity(issue),
+  )
   assert core.should_dispatch(unparked, config(), blockers_satisfied)
 }
 
@@ -1205,7 +1356,7 @@ fn assert_auto_park_blocks(
   changed: tracker_issue.Issue,
 ) -> Nil {
   let kept = core.unpark_if_issue_changed(state, changed)
-  assert dict.has_key(kept.parked, changed.id)
+  assert dict.has_key(kept.parked, orchestrator_state.issue_identity(changed))
   assert !core.should_dispatch(kept, config(), changed)
 }
 
@@ -1214,13 +1365,23 @@ pub fn auto_park_clears_on_core_issue_change_test() {
   let state =
     orchestrator_state.RuntimeState(
       ..core.new_state(config()),
-      claimed: dict.from_list([#(issue.id, issue.identifier)]),
+      claimed: dict.from_list([
+        #(orchestrator_state.issue_identity(issue), issue.identifier),
+      ]),
       retry_attempts: dict.from_list([
-        #(issue.id, orchestrator_state.RetryEntry(issue.id, 1000, 1)),
+        #(
+          orchestrator_state.issue_identity(issue),
+          orchestrator_state.RetryEntry(
+            task_ref: task.from_legacy_issue(issue).ref,
+            issue_id: issue.id,
+            delay_ms: 1000,
+            timer_generation: 1,
+          ),
+        ),
       ]),
       issue_counters: dict.from_list([
         #(
-          issue.id,
+          orchestrator_state.issue_identity(issue),
           orchestrator_state.IssueCounter(
             failure_attempts: 1,
             worker_sessions: 1,
@@ -1228,7 +1389,10 @@ pub fn auto_park_clears_on_core_issue_change_test() {
         ),
       ]),
       parked: dict.from_list([
-        #(issue.id, auto_parked_entry(issue, reason.ParkMaxRetryAttempts)),
+        #(
+          orchestrator_state.issue_identity(issue),
+          auto_parked_entry(issue, reason.ParkMaxRetryAttempts),
+        ),
       ]),
     )
   let changed =
@@ -1241,10 +1405,22 @@ pub fn auto_park_clears_on_core_issue_change_test() {
     )
 
   let unparked = core.unpark_if_issue_changed(state, changed)
-  assert !dict.has_key(unparked.parked, issue.id)
-  assert !dict.has_key(unparked.claimed, issue.id)
-  assert !dict.has_key(unparked.retry_attempts, issue.id)
-  assert !dict.has_key(unparked.issue_counters, issue.id)
+  assert !dict.has_key(
+    unparked.parked,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    unparked.claimed,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    unparked.retry_attempts,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    unparked.issue_counters,
+    orchestrator_state.issue_identity(issue),
+  )
   assert core.should_dispatch(unparked, config(), changed)
 }
 
@@ -1264,7 +1440,7 @@ pub fn reconciliation_and_token_accounting_test() {
       core.StopWorker("a", reason.StopTerminal),
       core.CleanupWorkspace("/tmp/ws"),
     ]
-  assert !dict.has_key(next.running, "a")
+  assert !dict.has_key(next.running, orchestrator_state.issue_identity(issue))
 
   let totals =
     core.add_tokens(

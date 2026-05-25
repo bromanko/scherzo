@@ -2260,7 +2260,7 @@ fn restore_counters(
     |> list.map(fn(entry) {
       let #(issue_id, counter) = entry
       #(
-        issue_id,
+        orchestrator_state.linear_issue_id_identity(issue_id),
         orchestrator_state.IssueCounter(
           counter.failure_attempts,
           counter.worker_sessions,
@@ -2288,8 +2288,11 @@ fn restore_parked(
       )
     {
       True -> {
+        let task_ref = orchestrator_state.linear_issue_id_ref(issue_id)
+        let identity = orchestrator_state.task_ref_identity(task_ref)
         let parked_entry =
           orchestrator_state.ParkedEntry(
+            task_ref: task_ref,
             issue_id: issue_id,
             identifier: parked.issue_identifier,
             reason: park_reason_from_string(parked.reason),
@@ -2303,20 +2306,21 @@ fn restore_parked(
           ..build,
           runtime: orchestrator_state.RuntimeState(
             ..build.runtime,
-            parked: dict.insert(build.runtime.parked, issue_id, parked_entry),
-            claimed: dict.delete(build.runtime.claimed, issue_id),
+            parked: dict.insert(build.runtime.parked, identity, parked_entry),
+            claimed: dict.delete(build.runtime.claimed, identity),
           ),
         )
       }
-      False ->
+      False -> {
+        let identity = orchestrator_state.linear_issue_id_identity(issue_id)
         Build(
           ..build,
           runtime: orchestrator_state.RuntimeState(
             ..build.runtime,
-            parked: dict.delete(build.runtime.parked, issue_id),
-            retry_attempts: dict.delete(build.runtime.retry_attempts, issue_id),
-            issue_counters: dict.delete(build.runtime.issue_counters, issue_id),
-            claimed: dict.delete(build.runtime.claimed, issue_id),
+            parked: dict.delete(build.runtime.parked, identity),
+            retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
+            issue_counters: dict.delete(build.runtime.issue_counters, identity),
+            claimed: dict.delete(build.runtime.claimed, identity),
           ),
           record_bodies: [
             record.IssueUnparked(
@@ -2336,6 +2340,7 @@ fn restore_parked(
           ],
           auto_unparked_issue_ids: [issue_id, ..build.auto_unparked_issue_ids],
         )
+      }
     }
   })
 }
@@ -2389,7 +2394,12 @@ fn restore_scheduled_retry(
         "recovery_auto_unparked",
       )
     False ->
-      case dict.has_key(build.runtime.parked, issue_id) {
+      case
+        dict.has_key(
+          build.runtime.parked,
+          orchestrator_state.linear_issue_id_identity(issue_id),
+        )
+      {
         True ->
           cancel_recovered_retry(build, issue_id, generation, "recovery_parked")
         False ->
@@ -2422,11 +2432,16 @@ fn restore_scheduled_retry(
                     True -> {
                       let remaining =
                         workflow_attempt.remaining_retry_delay(status, now_ms)
+                      let task_ref =
+                        orchestrator_state.linear_issue_id_ref(issue_id)
+                      let identity =
+                        orchestrator_state.task_ref_identity(task_ref)
                       let retry =
                         orchestrator_state.RetryEntry(
-                          issue_id,
-                          remaining,
-                          generation,
+                          task_ref: task_ref,
+                          issue_id: issue_id,
+                          delay_ms: remaining,
+                          timer_generation: generation,
                         )
                       Build(
                         ..build,
@@ -2434,12 +2449,12 @@ fn restore_scheduled_retry(
                           ..build.runtime,
                           retry_attempts: dict.insert(
                             build.runtime.retry_attempts,
-                            issue_id,
+                            identity,
                             retry,
                           ),
                           claimed: dict.insert(
                             build.runtime.claimed,
-                            issue_id,
+                            identity,
                             issue_identifier,
                           ),
                         ),
@@ -2468,12 +2483,13 @@ fn cancel_recovered_retry(
   generation: Int,
   reason: String,
 ) -> Build {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   Build(
     ..build,
     runtime: orchestrator_state.RuntimeState(
       ..build.runtime,
-      retry_attempts: dict.delete(build.runtime.retry_attempts, issue_id),
-      claimed: dict.delete(build.runtime.claimed, issue_id),
+      retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
+      claimed: dict.delete(build.runtime.claimed, identity),
     ),
     record_bodies: [
       record.RetryCancelled(issue_id, generation, reason),
@@ -2599,13 +2615,14 @@ fn recover_terminal_interrupted(
       ..build.cleanup_workspaces
     ]
   }
+  let identity = orchestrator_state.issue_identity(issue)
   Build(
     ..build,
     runtime: orchestrator_state.RuntimeState(
       ..build.runtime,
-      completed: dict.insert(build.runtime.completed, issue_id, issue),
-      claimed: dict.delete(build.runtime.claimed, issue_id),
-      retry_attempts: dict.delete(build.runtime.retry_attempts, issue_id),
+      completed: dict.insert(build.runtime.completed, identity, issue),
+      claimed: dict.delete(build.runtime.claimed, identity),
+      retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
     ),
     cleanup_workspaces: cleanup_workspaces,
   )
@@ -2642,7 +2659,7 @@ fn recover_active_interrupted(
             ..build.runtime,
             issue_counters: dict.insert(
               build.runtime.issue_counters,
-              issue_id,
+              orchestrator_state.issue_identity(issue),
               counter,
             ),
           ),
@@ -2680,12 +2697,20 @@ fn ensure_retry_or_park_for_counter(
   let counter = counter_for_runtime(build.runtime, issue_id)
   case counter.failure_attempts >= config.agent.max_retry_attempts {
     True ->
-      case dict.has_key(build.runtime.parked, issue_id) {
+      case
+        dict.has_key(
+          build.runtime.parked,
+          orchestrator_state.issue_identity(issue),
+        )
+      {
         True -> build
         False -> {
           let fingerprint = core.issue_fingerprint(issue)
+          let task_ref = orchestrator_state.issue_ref(issue)
+          let identity = orchestrator_state.task_ref_identity(task_ref)
           let parked =
             orchestrator_state.ParkedEntry(
+              task_ref: task_ref,
               issue_id: issue_id,
               identifier: issue_identifier,
               reason: reason.ParkMaxRetryAttempts,
@@ -2698,12 +2723,12 @@ fn ensure_retry_or_park_for_counter(
             ..build,
             runtime: orchestrator_state.RuntimeState(
               ..build.runtime,
-              parked: dict.insert(build.runtime.parked, issue_id, parked),
+              parked: dict.insert(build.runtime.parked, identity, parked),
               retry_attempts: dict.delete(
                 build.runtime.retry_attempts,
-                issue_id,
+                identity,
               ),
-              claimed: dict.delete(build.runtime.claimed, issue_id),
+              claimed: dict.delete(build.runtime.claimed, identity),
             ),
             record_bodies: [
               record.IssueParkedV2(
@@ -2720,7 +2745,12 @@ fn ensure_retry_or_park_for_counter(
         }
       }
     False ->
-      case dict.has_key(build.runtime.retry_attempts, issue_id) {
+      case
+        dict.has_key(
+          build.runtime.retry_attempts,
+          orchestrator_state.issue_identity(issue),
+        )
+      {
         True -> build
         False -> {
           let delay_ms =
@@ -2729,20 +2759,27 @@ fn ensure_retry_or_park_for_counter(
               config.agent.max_retry_backoff_ms,
             )
           let generation = 1
+          let task_ref = orchestrator_state.issue_ref(issue)
+          let identity = orchestrator_state.task_ref_identity(task_ref)
           let retry =
-            orchestrator_state.RetryEntry(issue_id, delay_ms, generation)
+            orchestrator_state.RetryEntry(
+              task_ref: task_ref,
+              issue_id: issue_id,
+              delay_ms: delay_ms,
+              timer_generation: generation,
+            )
           Build(
             ..build,
             runtime: orchestrator_state.RuntimeState(
               ..build.runtime,
               retry_attempts: dict.insert(
                 build.runtime.retry_attempts,
-                issue_id,
+                identity,
                 retry,
               ),
               claimed: dict.insert(
                 build.runtime.claimed,
-                issue_id,
+                identity,
                 issue_identifier,
               ),
             ),
@@ -2799,7 +2836,12 @@ fn counter_for_runtime(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.IssueCounter {
-  case dict.get(runtime.issue_counters, issue_id) {
+  case
+    dict.get(
+      runtime.issue_counters,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
     Ok(counter) -> counter
     Error(Nil) -> orchestrator_state.new_issue_counter()
   }

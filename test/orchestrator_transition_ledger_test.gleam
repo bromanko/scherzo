@@ -2,9 +2,11 @@ import gleam/dict
 import gleam/option.{None}
 import orchestrator_transition_test
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/state/ledger
+import scherzo/task
 
 pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
   let issue = orchestrator_transition_test.fixture_issue()
@@ -25,19 +27,21 @@ pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
       state,
     )
 
-  assert dict.get(next.pending_claims, "issue-1") == Error(Nil)
-  let assert Ok(running_entry) = dict.get(next.runtime.running, "issue-1")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.get(next.pending_claims, identity) == Error(Nil)
+  let assert Ok(running_entry) = dict.get(next.runtime.running, identity)
   assert running_entry.issue == issue
   assert running_entry.workspace_path == "test/tmp/workspaces/ABC-1"
   assert running_entry.session == None
-  let assert Ok(worker_entry) = dict.get(next.workers.by_issue, "issue-1")
+  let assert Ok(worker_entry) = dict.get(next.workers.by_issue, identity)
   assert worker_entry.status == transition_types.WorkerStarting
-  assert next.workers.by_session == dict.from_list([#("session-1", "issue-1")])
+  assert next.workers.by_session == dict.from_list([#("session-1", identity)])
   assert next.workers.route_to_session
     == dict.from_list([#("worker:run-1:1", "session-1")])
   assert effects
     == [
       effects_types.StartWorker(effects_types.WorkerStart(
+        task_ref: task.from_legacy_issue(issue).ref,
         issue_id: "issue-1",
         run_id: "run-1",
         session_id: "session-1",
@@ -70,9 +74,10 @@ pub fn ledger_spawn_continuation_failure_clears_pending_without_starting_test() 
       state,
     )
 
-  assert dict.get(next.pending_claims, "issue-1") == Error(Nil)
-  assert dict.get(next.runtime.running, "issue-1") == Error(Nil)
-  assert dict.get(next.workers.by_issue, "issue-1") == Error(Nil)
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.get(next.pending_claims, identity) == Error(Nil)
+  assert dict.get(next.runtime.running, identity) == Error(Nil)
+  assert dict.get(next.workers.by_issue, identity) == Error(Nil)
   assert effects
     == [
       effects_types.Log("warn", "ledger_append_failed", [

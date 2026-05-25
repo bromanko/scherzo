@@ -462,8 +462,9 @@ fn expect_issue_parked(
   subject: process.Subject(daemon.Message),
   issue_id: String,
 ) -> orchestrator_state.RuntimeState {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   let assert Ok(snapshot) = wait_for_parked(subject, issue_id, 20)
-  assert dict.has_key(snapshot.parked, issue_id)
+  assert dict.has_key(snapshot.parked, identity)
   snapshot
 }
 
@@ -471,7 +472,8 @@ fn expect_explicit_unpark_only(
   snapshot: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Nil {
-  let assert Ok(parked_entry) = dict.get(snapshot.parked, issue_id)
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let assert Ok(parked_entry) = dict.get(snapshot.parked, identity)
   assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
 }
 
@@ -789,8 +791,9 @@ pub fn park_command_suppresses_invalid_workflow_triage_test() {
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(fetched_ids) = process.receive(fetch_subject, within: 1000)
   assert fetched_ids == ["issue-1"]
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
   let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
-  assert dict.has_key(snapshot.parked, "issue-1")
+  assert dict.has_key(snapshot.parked, identity)
   test_async.assert_no_extra_message_within(triage_subject, 100)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -881,8 +884,9 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
   assert string.contains(ack, "| Command | `abort` |")
   assert string.contains(ack, "| Status | `applied` |")
 
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
   let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
-  let assert Ok(parked_entry) = dict.get(snapshot.parked, "issue-1")
+  let assert Ok(parked_entry) = dict.get(snapshot.parked, identity)
   assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
   assert dict.size(snapshot.running) == 0
   let post_abort_logs = test_async.drain_subject(log_subject)
@@ -1186,8 +1190,9 @@ pub fn started_uncompleted_command_gets_unknown_ack_without_reapplying_test() {
     expect_ack_contains(harness, ["| Status | `unknown_after_restart` |"])
   let command_logs = test_async.drain_subject(harness.log_subject)
   assert !list.contains(command_logs, "linear_operator_command:park:applied")
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert !dict.has_key(snapshot.parked, "issue-1")
+  assert !dict.has_key(snapshot.parked, identity)
   assert wait_for_command_record_kinds(
     workspace_root,
     "c-unknown",
@@ -1369,8 +1374,9 @@ fn wait_for_parked(
   case attempts <= 0 {
     True -> Error(Nil)
     False -> {
+      let identity = orchestrator_state.linear_issue_id_identity(issue_id)
       let assert Ok(snapshot) = daemon.get_snapshot(subject, 1000)
-      case dict.has_key(snapshot.parked, issue_id) {
+      case dict.has_key(snapshot.parked, identity) {
         True -> Ok(snapshot)
         False -> {
           process.sleep(50)

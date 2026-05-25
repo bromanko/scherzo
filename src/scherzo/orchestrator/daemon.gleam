@@ -1512,8 +1512,11 @@ fn spawn_recovered_workflow_resumption(
         Some("recovered_workflow"),
       )
       hub.update_status(state.event_hub, session_id, session_event.Running)
+      let task_ref = task.from_legacy_issue(recovered.issue).ref
+      let task_identity = orchestrator_state.task_ref_identity(task_ref)
       let handle =
         worker_registry.WorkerHandle(
+          task_ref: task_ref,
           issue_id: recovered.issue.id,
           issue: recovered.issue,
           run_id: recovered.run_id,
@@ -1526,6 +1529,7 @@ fn spawn_recovered_workflow_resumption(
       let command_route_id = "worker:" <> recovered.run_id <> ":recovered"
       let worker_entry =
         transition_types.WorkerEntry(
+          task_ref: task_ref,
           issue_id: recovered.issue.id,
           run_id: recovered.run_id,
           session_id: session_id,
@@ -1541,13 +1545,13 @@ fn spawn_recovered_workflow_resumption(
           ..state.workers,
           by_issue: dict.insert(
             state.workers.by_issue,
-            recovered.issue.id,
+            task_identity,
             worker_entry,
           ),
           by_session: dict.insert(
             state.workers.by_session,
             session_id,
-            recovered.issue.id,
+            task_identity,
           ),
           route_to_session: dict.insert(
             state.workers.route_to_session,
@@ -2254,7 +2258,12 @@ fn retry_workflow_step_for_operator(
               ),
             )
             False ->
-              case dict.get(state.runtime.parked, issue_id) {
+              case
+                dict.get(
+                  state.runtime.parked,
+                  orchestrator_state.linear_issue_id_identity(issue_id),
+                )
+              {
                 Ok(parked) -> #(
                   state,
                   command.rejected(
@@ -2421,10 +2430,11 @@ fn replay_projection_for_operator(
 }
 
 fn issue_is_active_or_pending(state: State, issue_id: String) -> Bool {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   has_active_run(state, issue_id)
-  || dict.has_key(state.runtime.running, issue_id)
-  || dict.has_key(state.pending_claims, issue_id)
-  || dict.has_key(state.pending_dispatch_validations, issue_id)
+  || dict.has_key(state.runtime.running, identity)
+  || dict.has_key(state.pending_claims, identity)
+  || dict.has_key(state.pending_dispatch_validations, identity)
 }
 
 fn ledger_record_bodies(
@@ -2951,7 +2961,11 @@ fn active_run_count(state: State) -> Int {
 
 fn active_run_issue_ids(state: State) -> List(String) {
   []
-  |> append_unique_list(dict.keys(state.runtime.running))
+  |> append_unique_list(
+    state.runtime.running
+    |> dict.values
+    |> list.map(fn(entry) { entry.issue.id }),
+  )
   |> append_unique_list(worker_registry.worker_issue_ids(state.registry))
 }
 
@@ -2970,16 +2984,17 @@ fn issue_for_id(
   state: State,
   issue_id: String,
 ) -> Result(tracker_issue.Issue, command.CommandStatus) {
-  case dict.get(state.runtime.running, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(state.runtime.running, identity) {
     Ok(entry) -> Ok(entry.issue)
     Error(Nil) ->
-      case dict.get(state.pending_claims, issue_id) {
+      case dict.get(state.pending_claims, identity) {
         Ok(pending) -> Ok(pending.issue)
         Error(Nil) ->
-          case dict.get(state.pending_dispatch_validations, issue_id) {
+          case dict.get(state.pending_dispatch_validations, identity) {
             Ok(pending) -> Ok(pending.issue)
             Error(Nil) ->
-              case dict.get(state.runtime.completed, issue_id) {
+              case dict.get(state.runtime.completed, identity) {
                 Ok(issue) -> Ok(issue)
                 Error(Nil) -> fetch_issue_by_id(state, issue_id)
               }
@@ -3076,7 +3091,12 @@ fn parked_issue_id_for_ref(
 ) -> Result(String, command.CommandStatus) {
   case issue_ref {
     command.IssueId(issue_id) ->
-      case dict.has_key(state.runtime.parked, issue_id) {
+      case
+        dict.has_key(
+          state.runtime.parked,
+          orchestrator_state.linear_issue_id_identity(issue_id),
+        )
+      {
         True -> Ok(issue_id)
         False -> Error(command.NotFound)
       }
@@ -3312,7 +3332,7 @@ fn remote_events_to_transition(
       state.linear_command_state,
       state.workflow.effective.linear_commands,
       events,
-      worker_registry.issue_sessions(state.registry),
+      worker_registry.linear_issue_sessions(state.registry),
     )
   let state = State(..state, linear_command_state: transport_state)
   fold_remote_transport_actions(state, actions)
@@ -3810,6 +3830,7 @@ fn transition_start_worker(
   #(
     spawn_worker(
       state,
+      request.task_ref,
       request.issue,
       request.workspace_path,
       request.run_id,
@@ -3832,9 +3853,9 @@ fn transition_worker_start_failed(
   ])
   State(
     ..state,
-    registry: worker_registry.forget_issue_session(
+    registry: worker_registry.forget_task_ref_session(
       state.registry,
-      request.issue_id,
+      request.task_ref,
     ),
     recovery_by_issue: dict.delete(state.recovery_by_issue, request.issue_id),
   )
@@ -3845,13 +3866,13 @@ fn transition_remove_worker(
   identity: transition_effects.WorkerIdentity,
   demonitor: Bool,
 ) -> State {
-  case worker_registry.worker_for_issue(state.registry, identity.issue_id) {
+  case worker_registry.worker_for_task_ref(state.registry, identity.task_ref) {
     Error(Nil) ->
       State(
         ..state,
-        registry: worker_registry.forget_issue_session(
+        registry: worker_registry.forget_task_ref_session(
           state.registry,
-          identity.issue_id,
+          identity.task_ref,
         ),
       )
     Ok(handle) -> {
@@ -4041,12 +4062,7 @@ fn enqueue_parked_entry_report(
     state,
     effect_runner.ReportPark(
       adapter.ParkReport(
-        task: task.TaskRef(
-          backend_kind: state.tracker_adapter.kind,
-          remote_id: parked.issue_id,
-          key: Some(parked.identifier),
-          url: None,
-        ),
+        task: parked.task_ref,
         issue_identifier: parked.identifier,
         reason: reason_text,
         release_policy: Some(park_release_policy_to_string(
@@ -4065,7 +4081,7 @@ fn transition_stop_worker(
   reason: session_reason.WorkerExitReason,
 ) -> State {
   let reason_text = session_reason.to_string(reason)
-  case worker_registry.worker_for_issue(state.registry, identity.issue_id) {
+  case worker_registry.worker_for_task_ref(state.registry, identity.task_ref) {
     Error(Nil) -> state
     Ok(handle) -> {
       hub.update_status(
@@ -4102,7 +4118,7 @@ fn transition_stop_worker_after_issue_refresh(
   reason: orchestrator_reason.StopReason,
 ) -> State {
   let reason_text = orchestrator_reason.stop_to_string(reason)
-  case worker_registry.worker_for_issue(state.registry, identity.issue_id) {
+  case worker_registry.worker_for_task_ref(state.registry, identity.task_ref) {
     Error(Nil) -> state
     Ok(handle) -> {
       hub.update_status(
@@ -4633,11 +4649,12 @@ fn pending_issue_retry_headroom(state: State) -> Int {
 
 fn has_pending_issue_retry(state: State) -> Bool {
   state.runtime.retry_attempts
-  |> dict.keys
-  |> list.any(fn(issue_id) {
-    !list.contains(active_run_issue_ids(state), issue_id)
-    && !dict.has_key(state.pending_claims, issue_id)
-    && !dict.has_key(state.pending_dispatch_validations, issue_id)
+  |> dict.to_list
+  |> list.any(fn(entry) {
+    let #(identity, retry) = entry
+    !list.contains(active_run_issue_ids(state), retry.issue_id)
+    && !dict.has_key(state.pending_claims, identity)
+    && !dict.has_key(state.pending_dispatch_validations, identity)
   })
 }
 
@@ -4769,6 +4786,7 @@ fn lifecycle_name_for_recovery(
 
 fn spawn_worker(
   state: State,
+  ref: task.TaskRef,
   issue: tracker_issue.Issue,
   workspace_path: String,
   run_id: String,
@@ -4813,7 +4831,8 @@ fn spawn_worker(
     #("run_id", run_id),
     #("workspace_path", workspace_path),
   ])
-  let runtime = core.apply_worker_start(state.runtime, issue, workspace_path)
+  let runtime =
+    core.apply_task_ref_start(state.runtime, ref, issue, workspace_path)
   let subject = state.subject
   let dependencies = state.dependencies
   let tracker_client = state.tracker_client
@@ -4847,6 +4866,7 @@ fn spawn_worker(
   hub.update_status(state.event_hub, session_id, session_event.Running)
   let handle =
     worker_registry.WorkerHandle(
+      task_ref: ref,
       issue_id: issue.id,
       issue: issue,
       run_id: run_id,
@@ -7011,7 +7031,12 @@ fn counter_for_runtime(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.IssueCounter {
-  case dict.get(runtime.issue_counters, issue_id) {
+  case
+    dict.get(
+      runtime.issue_counters,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
     Ok(counter) -> counter
     Error(Nil) -> orchestrator_state.new_issue_counter()
   }

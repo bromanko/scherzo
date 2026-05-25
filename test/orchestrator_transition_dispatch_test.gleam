@@ -11,6 +11,7 @@ import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
+import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
@@ -66,8 +67,14 @@ pub fn automatic_retry_non_dispatch_state_dispatches_test() {
       state_with_retry(issue),
     )
 
-  assert dict.has_key(next.pending_claims, issue.id)
-  assert !dict.has_key(next.runtime.retry_attempts, issue.id)
+  assert dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    next.runtime.retry_attempts,
+    orchestrator_state.issue_identity(issue),
+  )
   assert has_claim_issue(effects)
   assert has_cancel_retry_reason(effects, "retry_dispatch")
   assert !has_cancel_retry_reason(effects, "retry_not_dispatchable")
@@ -91,9 +98,18 @@ pub fn automatic_retry_non_retryable_state_is_rejected_test() {
       state_with_retry(issue),
     )
 
-  assert !dict.has_key(next.pending_claims, issue.id)
-  assert !dict.has_key(next.runtime.retry_attempts, issue.id)
-  assert !dict.has_key(next.runtime.claimed, issue.id)
+  assert !dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    next.runtime.retry_attempts,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    next.runtime.claimed,
+    orchestrator_state.issue_identity(issue),
+  )
   assert !has_claim_issue(effects)
   assert has_cancel_retry_reason(effects, "retry_non_retryable_state:Backlog")
 }
@@ -112,8 +128,14 @@ pub fn automatic_retry_dispatch_state_dispatches_test() {
       state_with_retry(issue),
     )
 
-  assert dict.has_key(next.pending_claims, issue.id)
-  assert !dict.has_key(next.runtime.retry_attempts, issue.id)
+  assert dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    next.runtime.retry_attempts,
+    orchestrator_state.issue_identity(issue),
+  )
   assert has_claim_issue(effects)
   assert has_cancel_retry_reason(effects, "retry_dispatch")
 }
@@ -137,7 +159,10 @@ pub fn explicit_retry_non_dispatch_state_dispatches_test() {
       orchestrator_transition_test.fixture_state(),
     )
 
-  assert dict.has_key(next.pending_claims, issue.id)
+  assert dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
   assert has_claim_issue(effects)
   assert has_finished_operator_applied(effects)
 }
@@ -161,7 +186,10 @@ pub fn explicit_retry_non_retryable_state_is_rejected_test() {
       orchestrator_transition_test.fixture_state(),
     )
 
-  assert !dict.has_key(next.pending_claims, issue.id)
+  assert !dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
   assert !has_claim_issue(effects)
   assert has_finished_operator_rejected(
     effects,
@@ -180,6 +208,7 @@ pub fn explicit_retry_auto_unparks_changed_issue_test() {
   let request = retry_request(issue.id)
   let parked =
     orchestrator_state.ParkedEntry(
+      task_ref: task.from_legacy_issue(original).ref,
       issue_id: original.id,
       identifier: original.identifier,
       reason: orchestrator_reason.ParkMaxRetryAttempts,
@@ -191,7 +220,9 @@ pub fn explicit_retry_auto_unparks_changed_issue_test() {
   let runtime =
     orchestrator_state.RuntimeState(
       ..orchestrator_transition_test.fixture_runtime(),
-      parked: dict.from_list([#(original.id, parked)]),
+      parked: dict.from_list([
+        #(orchestrator_state.issue_identity(original), parked),
+      ]),
     )
   let state =
     transition_types.State(
@@ -210,8 +241,14 @@ pub fn explicit_retry_auto_unparks_changed_issue_test() {
       state,
     )
 
-  assert dict.has_key(next.pending_claims, issue.id)
-  assert !dict.has_key(next.runtime.parked, issue.id)
+  assert dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    next.runtime.parked,
+    orchestrator_state.issue_identity(issue),
+  )
   assert has_claim_issue(effects)
   assert has_finished_operator_applied(effects)
 }
@@ -221,6 +258,7 @@ pub fn explicit_retry_preserves_parked_safety_test() {
   let request = retry_request(issue.id)
   let parked =
     orchestrator_state.ParkedEntry(
+      task_ref: task.from_legacy_issue(issue).ref,
       issue_id: issue.id,
       identifier: issue.identifier,
       reason: orchestrator_reason.ParkOperator("operator_hold"),
@@ -230,7 +268,9 @@ pub fn explicit_retry_preserves_parked_safety_test() {
   let runtime =
     orchestrator_state.RuntimeState(
       ..orchestrator_transition_test.fixture_runtime(),
-      parked: dict.from_list([#(issue.id, parked)]),
+      parked: dict.from_list([
+        #(orchestrator_state.issue_identity(issue), parked),
+      ]),
     )
   let state =
     transition_types.State(
@@ -249,8 +289,14 @@ pub fn explicit_retry_preserves_parked_safety_test() {
       state,
     )
 
-  assert !dict.has_key(next.pending_claims, issue.id)
-  assert dict.has_key(next.runtime.parked, issue.id)
+  assert !dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert dict.has_key(
+    next.runtime.parked,
+    orchestrator_state.issue_identity(issue),
+  )
   assert !has_claim_issue(effects)
   assert has_finished_operator_rejected(effects, "retry_issue_parked")
 }
@@ -293,7 +339,10 @@ pub fn invalid_workflow_candidate_reported_test() {
       orchestrator_transition_test.fixture_state(),
     )
 
-  assert dict.has_key(next.runtime.invalid_workflow_reports, candidate.id)
+  assert dict.has_key(
+    next.runtime.invalid_workflow_reports,
+    orchestrator_state.issue_identity(candidate),
+  )
   assert list.any(effects, fn(effect) {
     case effect {
       effects_types.ReportInvalidWorkflow(issue, _, _, _) ->
@@ -311,8 +360,9 @@ pub fn no_dispatch_slot_available_skips_validation_test() {
       ..orchestrator_transition_test.fixture_runtime(),
       running: dict.from_list([
         #(
-          running.id,
+          orchestrator_state.issue_identity(running),
           orchestrator_state.RunningEntry(
+            task: task.from_legacy_issue(running),
             issue: running,
             workspace_path: "test/tmp/workspaces/ABC-1",
             session: None,
@@ -383,7 +433,10 @@ pub fn review_lane_preflight_blocks_claim_before_tracker_claim_test() {
     )
 
   assert dict.size(next.pending_claims) == 0
-  assert dict.has_key(next.runtime.parked, candidate.id)
+  assert dict.has_key(
+    next.runtime.parked,
+    orchestrator_state.issue_identity(candidate),
+  )
   assert !has_claim_issue(effects)
   assert !has_start_worker(effects)
   assert has_park_issue(effects)
@@ -421,7 +474,10 @@ pub fn review_lane_preflight_park_off_blocks_without_tracker_mutation_test() {
     )
 
   assert dict.size(next.pending_claims) == 0
-  assert !dict.has_key(next.runtime.parked, candidate.id)
+  assert !dict.has_key(
+    next.runtime.parked,
+    orchestrator_state.issue_identity(candidate),
+  )
   assert !has_claim_issue(effects)
   assert !has_start_worker(effects)
   assert !has_park_issue(effects)
@@ -458,7 +514,10 @@ pub fn review_lane_preflight_off_mode_allows_claim_test() {
       state,
     )
 
-  assert dict.has_key(next.pending_claims, candidate.id)
+  assert dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(candidate),
+  )
   assert has_claim_issue(effects)
   assert !has_park_issue(effects)
   assert !has_preflight_failure_log(effects)
@@ -494,7 +553,10 @@ pub fn review_lane_preflight_nonblocking_warning_allows_claim_test() {
       state,
     )
 
-  assert dict.has_key(next.pending_claims, candidate.id)
+  assert dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(candidate),
+  )
   assert has_claim_issue(effects)
   assert !has_park_issue(effects)
   assert !has_preflight_failure_log(effects)
@@ -605,8 +667,10 @@ pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
       ),
       now_ms: 456,
     )
+  let task_ref = task.from_legacy_issue(candidate).ref
   let pending =
     transition_types.PendingDispatchValidation(
+      task_ref: task_ref,
       issue: candidate,
       remaining_candidates: [],
       generation: 1,
@@ -615,7 +679,9 @@ pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
   let state =
     transition_types.State(
       ..orchestrator_transition_test.fixture_state(),
-      pending_dispatch_validations: dict.from_list([#(candidate.id, pending)]),
+      pending_dispatch_validations: dict.from_list([
+        #(orchestrator_state.task_ref_identity(task_ref), pending),
+      ]),
       next_session_sequence: 3,
     )
 
@@ -630,7 +696,8 @@ pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
       state,
     )
 
-  let assert Ok(claim) = dict.get(next.pending_claims, candidate.id)
+  let assert Ok(claim) =
+    dict.get(next.pending_claims, orchestrator_state.issue_identity(candidate))
   assert claim.workflow_id == "review"
   assert list.any(effects, fn(effect) {
     case effect {
@@ -653,8 +720,9 @@ fn state_with_pending_dispatch_validation(
     ..orchestrator_transition_test.fixture_state(),
     pending_dispatch_validations: dict.from_list([
       #(
-        candidate.id,
+        orchestrator_state.issue_identity(candidate),
         transition_types.PendingDispatchValidation(
+          task_ref: task.from_legacy_issue(candidate).ref,
           issue: candidate,
           remaining_candidates: [],
           generation: 1,
@@ -669,11 +737,14 @@ fn state_with_retry(issue: tracker_issue.Issue) -> transition_types.State {
   let runtime =
     orchestrator_state.RuntimeState(
       ..orchestrator_transition_test.fixture_runtime(),
-      claimed: dict.from_list([#(issue.id, issue.identifier)]),
+      claimed: dict.from_list([
+        #(orchestrator_state.issue_identity(issue), issue.identifier),
+      ]),
       retry_attempts: dict.from_list([
         #(
-          issue.id,
+          orchestrator_state.issue_identity(issue),
           orchestrator_state.RetryEntry(
+            task_ref: task.from_legacy_issue(issue).ref,
             issue_id: issue.id,
             delay_ms: 1000,
             timer_generation: 1,

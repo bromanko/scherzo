@@ -13,6 +13,7 @@ import scherzo/session/reason as session_reason
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/state/recovery
+import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
@@ -172,6 +173,7 @@ pub type WorkerDirectory {
 
 pub type WorkerEntry {
   WorkerEntry(
+    task_ref: task.TaskRef,
     issue_id: String,
     run_id: String,
     session_id: String,
@@ -247,6 +249,7 @@ pub type ParkedIssueResolution {
 
 pub type PendingClaim {
   PendingClaim(
+    task_ref: task.TaskRef,
     issue_id: String,
     run_id: String,
     session_id: String,
@@ -263,6 +266,7 @@ pub type PendingClaim {
 
 pub type PendingDispatchValidation {
   PendingDispatchValidation(
+    task_ref: task.TaskRef,
     issue: tracker_issue.Issue,
     remaining_candidates: List(tracker_issue.Issue),
     generation: Int,

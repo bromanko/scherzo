@@ -3,6 +3,7 @@ import gleam/option.{None}
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
+import scherzo/task
 
 pub fn default_issue_counter_is_zero_test() {
   let counter = orchestrator_state.new_issue_counter()
@@ -10,9 +11,35 @@ pub fn default_issue_counter_is_zero_test() {
   assert counter.worker_sessions == 0
 }
 
+pub fn task_ref_identity_includes_backend_kind_test() {
+  let linear =
+    task.TaskRef(
+      backend_kind: "linear",
+      remote_id: "shared",
+      key: None,
+      url: None,
+    )
+  let memory =
+    task.TaskRef(
+      backend_kind: "test-memory",
+      remote_id: "shared",
+      key: None,
+      url: None,
+    )
+
+  assert orchestrator_state.task_ref_identity(linear)
+    != orchestrator_state.task_ref_identity(memory)
+}
+
 pub fn parked_issue_records_release_policy_test() {
   let parked =
     orchestrator_state.ParkedEntry(
+      task_ref: task.TaskRef(
+        backend_kind: "linear",
+        remote_id: "issue-id",
+        key: None,
+        url: None,
+      ),
       issue_id: "issue-id",
       identifier: "ABC-123",
       reason: reason.ParkMaxRetryAttempts,

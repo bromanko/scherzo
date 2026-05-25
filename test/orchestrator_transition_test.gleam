@@ -10,6 +10,7 @@ import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight_policy
 import scherzo/session/tokens as session_tokens
+import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
@@ -136,12 +137,14 @@ pub fn state_with_pending_claim(
   issue: tracker_issue.Issue,
 ) -> transition_types.State {
   let state = fixture_state()
+  let task_ref = task.from_legacy_issue(issue).ref
   transition_types.State(
     ..state,
     pending_claims: dict.insert(
       state.pending_claims,
-      issue.id,
+      orchestrator_state.task_ref_identity(task_ref),
       transition_types.PendingClaim(
+        task_ref: task_ref,
         issue_id: issue.id,
         run_id: "run-1",
         session_id: "session-1",
@@ -172,10 +175,19 @@ pub fn retry_refresh_failure_logs_error_before_reschedule_test() {
       ..runtime,
       retry_attempts: dict.insert(
         runtime.retry_attempts,
-        issue.id,
-        orchestrator_state.RetryEntry(issue.id, 1000, 7),
+        orchestrator_state.issue_identity(issue),
+        orchestrator_state.RetryEntry(
+          task_ref: task.from_legacy_issue(issue).ref,
+          issue_id: issue.id,
+          delay_ms: 1000,
+          timer_generation: 7,
+        ),
       ),
-      claimed: dict.insert(runtime.claimed, issue.id, issue.identifier),
+      claimed: dict.insert(
+        runtime.claimed,
+        orchestrator_state.issue_identity(issue),
+        issue.identifier,
+      ),
     )
   let state = transition_types.State(..fixture_state(), runtime: runtime)
 

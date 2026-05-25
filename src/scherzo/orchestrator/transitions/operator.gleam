@@ -12,6 +12,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/claims
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 
 pub type Callbacks {
@@ -305,11 +306,12 @@ fn reset_issue_for_operator_retry(
   state: transition_types.State,
   issue: tracker_issue.Issue,
 ) -> transition_types.State {
+  let identity = orchestrator_state.issue_identity(issue)
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
-      retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
-      issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
+      issue_counters: dict.delete(state.runtime.issue_counters, identity),
     )
   transition_types.State(..state, runtime: runtime)
 }
@@ -380,8 +382,11 @@ fn park_issue(
   issue: tracker_issue.Issue,
   reason: String,
 ) -> transition_types.Outcome {
+  let task_ref = task.from_legacy_issue(issue).ref
+  let identity = orchestrator_state.task_ref_identity(task_ref)
   let parked =
     orchestrator_state.ParkedEntry(
+      task_ref: task_ref,
       issue_id: issue.id,
       identifier: issue.identifier,
       reason: orchestrator_reason.ParkOperator(reason),
@@ -391,11 +396,11 @@ fn park_issue(
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
-      running: dict.delete(state.runtime.running, issue.id),
-      claimed: dict.delete(state.runtime.claimed, issue.id),
-      retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
-      issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
-      parked: dict.insert(state.runtime.parked, issue.id, parked),
+      running: dict.delete(state.runtime.running, identity),
+      claimed: dict.delete(state.runtime.claimed, identity),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
+      issue_counters: dict.delete(state.runtime.issue_counters, identity),
+      parked: dict.insert(state.runtime.parked, identity, parked),
     )
   let state = transition_types.State(..state, runtime: runtime)
   let reason_text = orchestrator_reason.park_to_string(parked.reason)
@@ -446,13 +451,14 @@ fn handle_unpark(
   {
     Error(result) -> finish(state, request, result)
     Ok(issue_id) -> {
+      let identity = orchestrator_state.linear_issue_id_identity(issue_id)
       let issue_identifier = identifier_for_runtime(state.runtime, issue_id)
       let runtime =
         orchestrator_state.RuntimeState(
           ..state.runtime,
-          parked: dict.delete(state.runtime.parked, issue_id),
-          retry_attempts: dict.delete(state.runtime.retry_attempts, issue_id),
-          issue_counters: dict.delete(state.runtime.issue_counters, issue_id),
+          parked: dict.delete(state.runtime.parked, identity),
+          retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
+          issue_counters: dict.delete(state.runtime.issue_counters, identity),
         )
       let state = transition_types.State(..state, runtime: runtime)
       transition_types.Outcome(state: state, effects: [
@@ -526,13 +532,14 @@ fn identifier_for_runtime(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> String {
-  case dict.get(runtime.claimed, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(runtime.claimed, identity) {
     Ok(identifier) -> identifier
     Error(Nil) ->
-      case dict.get(runtime.completed, issue_id) {
+      case dict.get(runtime.completed, identity) {
         Ok(issue) -> issue.identifier
         Error(Nil) ->
-          case dict.get(runtime.parked, issue_id) {
+          case dict.get(runtime.parked, identity) {
             Ok(parked) -> parked.identifier
             Error(Nil) -> issue_id
           }
