@@ -26,9 +26,12 @@ pub type PiEvent {
   OperatorUiTimeout
   PiAbortSent
   PiAbortFailed
+  PiTerminateFailed
+  AfterRunHookFailed
   ContextRecoveryStarted
   ContextRecoverySucceeded
   ContextRecoveryFailed
+  ContextRecoveryArtifactWriteFailed
   UnknownPiEvent(name: String)
 }
 
@@ -59,9 +62,13 @@ pub fn to_string(event: PiEvent) -> String {
     OperatorUiTimeout -> "operator_ui_timeout"
     PiAbortSent -> "pi_abort_sent"
     PiAbortFailed -> "pi_abort_failed"
+    PiTerminateFailed -> "pi_terminate_failed"
+    AfterRunHookFailed -> "after_run_hook_failed"
     ContextRecoveryStarted -> "context_recovery_started"
     ContextRecoverySucceeded -> "context_recovery_succeeded"
     ContextRecoveryFailed -> "context_recovery_failed"
+    ContextRecoveryArtifactWriteFailed ->
+      "context_recovery_artifact_write_failed"
     UnknownPiEvent(name) -> name
   }
 }
@@ -93,9 +100,13 @@ pub fn from_string(name: String) -> PiEvent {
     "operator_ui_timeout" -> OperatorUiTimeout
     "pi_abort_sent" -> PiAbortSent
     "pi_abort_failed" -> PiAbortFailed
+    "pi_terminate_failed" -> PiTerminateFailed
+    "after_run_hook_failed" -> AfterRunHookFailed
     "context_recovery_started" -> ContextRecoveryStarted
     "context_recovery_succeeded" -> ContextRecoverySucceeded
     "context_recovery_failed" -> ContextRecoveryFailed
+    "context_recovery_artifact_write_failed" ->
+      ContextRecoveryArtifactWriteFailed
     _ -> UnknownPiEvent(name)
   }
 }

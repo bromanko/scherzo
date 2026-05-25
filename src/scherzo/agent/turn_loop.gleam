@@ -133,7 +133,7 @@ fn active_turn_loop(
         state.pending_auto_retry,
       )
     }
-    Error(_) -> {
+    Error(Nil) -> {
       let base_stall_deadline = case pending_ui {
         Some(ui) -> ui.deadline_ms
         None -> stall_deadline_ms

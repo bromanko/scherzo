@@ -77,10 +77,7 @@ pub fn launch_spec(
         )
       {
         Ok(session) -> Ok(session)
-        Error(err) -> {
-          let _ = port.terminate(process)
-          Error(err)
-        }
+        Error(err) -> Error(terminate_after_failure(session, err))
       }
     }
   }
@@ -127,10 +124,7 @@ pub fn reopen_session_for_continuation(
   ))
   case validate_reopened_state(session, expected_session_file, cwd) {
     Ok(Nil) -> Ok(session)
-    Error(err) -> {
-      let _ = terminate(session)
-      Error(err)
-    }
+    Error(err) -> Error(terminate_after_failure(session, err))
   }
 }
 
@@ -416,6 +410,28 @@ pub fn get_session_stats(
 
 pub fn terminate(session: Session) -> Result(Nil, error.PiRpcError) {
   port.terminate(session.process) |> map_port_error
+}
+
+pub fn terminate_after_failure(
+  session: Session,
+  primary: error.PiRpcError,
+) -> error.PiRpcError {
+  case terminate(session) {
+    Ok(Nil) -> primary
+    Error(cleanup) -> cleanup_error(primary, cleanup)
+  }
+}
+
+fn cleanup_error(
+  primary: error.PiRpcError,
+  cleanup: error.PiRpcError,
+) -> error.PiRpcError {
+  error.PiProtocolError(
+    "pi cleanup failed after primary error; primary="
+    <> error.pi_rpc_detail(primary)
+    <> "; cleanup="
+    <> error.pi_rpc_detail(cleanup),
+  )
 }
 
 fn send_expect_success(

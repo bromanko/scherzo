@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/error
 import scherzo/json_value.{type JsonValue}
@@ -206,13 +207,13 @@ type EmbeddedProviderError {
 fn extract_embedded_provider_error(
   message: String,
 ) -> Option(EmbeddedProviderError) {
-  case string.split_once(message, on: "{") {
-    Error(_) -> None
-    Ok(#(_, json_suffix)) -> {
+  case string.split_once(message, on: "{") |> result_to_option {
+    None -> None
+    Some(#(_, json_suffix)) -> {
       let candidate = "{" <> json_suffix
-      case json_value.parse(candidate) {
-        Error(_) -> None
-        Ok(value) -> {
+      case json_value.parse(candidate) |> result_to_option {
+        None -> None
+        Some(value) -> {
           let provider =
             first_non_empty([
               json_string_at(["provider"])(value),
@@ -304,8 +305,8 @@ fn option_map(value: Option(a), next: fn(a) -> b) -> Option(b) {
 }
 
 fn result_to_option(value: Result(a, b)) -> Option(a) {
-  case value {
-    Ok(value) -> Some(value)
-    Error(_) -> None
+  case value |> result.map(Some) |> result.replace_error(None) {
+    Ok(value) -> value
+    Error(fallback) -> fallback
   }
 }

@@ -414,9 +414,9 @@ pub fn compaction_reason(record: RpcRecord) -> Option(String) {
   case record.type_ == "compaction_start" || record.type_ == "compaction_end" {
     False -> None
     True ->
-      case json_value.parse(record.raw_json) {
-        Error(_) -> None
-        Ok(value) ->
+      case list.filter_map([record.raw_json], json_value.parse) {
+        [] -> None
+        [value, ..] ->
           first_non_empty([
             json_string_at(value, ["reason"]),
             json_string_at(value, ["data", "reason"]),

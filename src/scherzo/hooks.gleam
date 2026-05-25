@@ -8,6 +8,11 @@ pub type HookMode {
   BestEffort
 }
 
+pub type BestEffortHookOutcome {
+  BestEffortHookSucceeded(diagnostic: String)
+  BestEffortHookFailed(diagnostic: String)
+}
+
 pub fn run_hook(
   name: String,
   script: String,
@@ -74,7 +79,17 @@ pub fn run_best_effort(
   cwd: String,
   timeout_ms: Int,
 ) -> String {
-  run_best_effort_with_env(name, script, cwd, timeout_ms, [])
+  run_best_effort_outcome(name, script, cwd, timeout_ms)
+  |> best_effort_hook_diagnostic
+}
+
+pub fn run_best_effort_outcome(
+  name: String,
+  script: String,
+  cwd: String,
+  timeout_ms: Int,
+) -> BestEffortHookOutcome {
+  run_best_effort_with_env_outcome(name, script, cwd, timeout_ms, [])
 }
 
 pub fn run_best_effort_with_env(
@@ -84,14 +99,33 @@ pub fn run_best_effort_with_env(
   timeout_ms: Int,
   env: List(#(String, String)),
 ) -> String {
+  run_best_effort_with_env_outcome(name, script, cwd, timeout_ms, env)
+  |> best_effort_hook_diagnostic
+}
+
+pub fn run_best_effort_with_env_outcome(
+  name: String,
+  script: String,
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> BestEffortHookOutcome {
   case run_hook_with_env(name, script, cwd, timeout_ms, env) {
-    Ok(Nil) -> log.info("hook_succeeded", [#("hook", name), #("cwd", cwd)])
+    Ok(Nil) ->
+      BestEffortHookSucceeded(
+        log.info("hook_succeeded", [
+          #("hook", name),
+          #("cwd", cwd),
+        ]),
+      )
     Error(err) ->
-      log.warn("hook_failed", [
-        #("hook", name),
-        #("cwd", cwd),
-        #("error", hook_error_to_string(err)),
-      ])
+      BestEffortHookFailed(
+        log.warn("hook_failed", [
+          #("hook", name),
+          #("cwd", cwd),
+          #("error", hook_error_to_string(err)),
+        ]),
+      )
   }
 }
 
@@ -134,13 +168,29 @@ pub fn run_best_effort_argv_with_env_redacting(
       secrets,
     )
   {
-    Ok(Nil) -> log.info("hook_succeeded", [#("hook", name), #("cwd", cwd)])
+    Ok(Nil) ->
+      BestEffortHookSucceeded(
+        log.info("hook_succeeded", [
+          #("hook", name),
+          #("cwd", cwd),
+        ]),
+      )
     Error(err) ->
-      log.warn("hook_failed", [
-        #("hook", name),
-        #("cwd", cwd),
-        #("error", hook_error_to_string(err)),
-      ])
+      BestEffortHookFailed(
+        log.warn("hook_failed", [
+          #("hook", name),
+          #("cwd", cwd),
+          #("error", hook_error_to_string(err)),
+        ]),
+      )
+  }
+  |> best_effort_hook_diagnostic
+}
+
+fn best_effort_hook_diagnostic(outcome: BestEffortHookOutcome) -> String {
+  case outcome {
+    BestEffortHookSucceeded(diagnostic) | BestEffortHookFailed(diagnostic) ->
+      diagnostic
   }
 }
 
