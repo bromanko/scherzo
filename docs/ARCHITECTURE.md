@@ -259,7 +259,7 @@ Use direnv-backed commands from the repository root.
 | `direnv exec . gleam test` | Default deterministic unit suite; run for normal source changes and before handoff when cheap. |
 | `direnv exec . gleam format --check src test` | Source/test formatting check. Docs-only changes normally do not need it, but SelfCI runs it. |
 | `direnv exec . scherzo-test-unit` | Explicit alias for the default unit suite. |
-| `direnv exec . scherzo-test-contract` | Shell-heavy helper-script, workflow, renderer, and workspace-driver contract coverage excluded from the default unit loop. SelfCI runs this suite for the final dogfood gate. |
+| `direnv exec . scherzo-test-contract` | Shell-heavy helper-script, workflow, renderer, daemon/service, port/process, pi-client, and workspace-driver contract coverage excluded from the default unit loop. SelfCI runs this suite for the final dogfood gate. |
 | `direnv exec . scherzo-test-local-integration` | Workspace drivers, jj workspace behavior, local integration paths. |
 | `direnv exec . scherzo-test-real-pi-validation` | Real pi/session-persistence changes only; uses the devenv-provided pi and requires credentials, network, and time. |
 | `LINEAR_API_KEY=... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` | Real-board readiness after config, workflow, tracker/Linear contract, workspace lifecycle, or pi launch changes. |
@@ -538,8 +538,10 @@ Must preserve:
 
 - `direnv exec . gleam test` remains deterministic, unit-scoped, and free of real
   Linear/pi/network dependencies.
-- Shell-heavy contract coverage stays explicit via `scherzo-test-contract` and is
-  included in SelfCI rather than the default unit loop.
+- Shell-heavy daemon/service, port/process, pi-client, workflow, helper-script,
+  renderer, and workspace-driver contract coverage stays explicit via
+  `scherzo-test-contract` and is included in SelfCI rather than the default unit
+  loop.
 - Local integration and real-pi suites stay opt-in explicit suites.
 - SelfCI remains the final gate used by Scherzo implementation workflows.
 - Test fixtures do not require secrets.

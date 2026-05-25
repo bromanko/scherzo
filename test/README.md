@@ -2,7 +2,7 @@
 
 ## Suite selection
 
-`direnv exec . gleam test` and `direnv exec . scherzo-test-unit` run the deterministic unit suite. Shell-heavy helper-script, workflow, renderer, and workspace-driver contract tests are excluded from that default loop and run with `direnv exec . scherzo-test-contract` (or `gleam test -- --suite contract`).
+`direnv exec . gleam test` and `direnv exec . scherzo-test-unit` run the deterministic unit suite. Shell-heavy helper-script, workflow, renderer, daemon/service, port/process, pi-client, and workspace-driver contract tests are excluded from that default loop and run with `direnv exec . scherzo-test-contract` (or `gleam test -- --suite contract`).
 
 The local integration and real pi validation suites remain explicit: use `direnv exec . scherzo-test-local-integration` for local jj/workspace integration and `direnv exec . scherzo-test-real-pi-validation` only when `pi` plus provider credentials are available.
 
