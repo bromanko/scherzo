@@ -2309,18 +2309,29 @@ fn retry_workflow_step_for_operator(
                                     }
                                   }
                                 }
-                                _ -> #(
-                                  state,
-                                  command.rejected(
-                                    operator_command,
-                                    rejection_reason_from_finalization(
-                                      finalization,
-                                    ),
-                                    Some(
-                                      "retry-step repair was rejected by recovery validation",
-                                    ),
-                                  ),
-                                )
+                                _ ->
+                                  case
+                                    append_ledger_bodies(
+                                      state,
+                                      retry_step_rejection_diagnostic_bodies(
+                                        finalization,
+                                      ),
+                                      "retry_step_rejection_diagnostic_append_failed",
+                                    )
+                                  {
+                                    False | True -> #(
+                                      state,
+                                      command.rejected(
+                                        operator_command,
+                                        rejection_reason_from_finalization(
+                                          finalization,
+                                        ),
+                                        rejection_message_from_finalization(
+                                          finalization,
+                                        ),
+                                      ),
+                                    )
+                                  }
                               }
                           }
                       }
@@ -2359,22 +2370,49 @@ fn ledger_record_bodies(
   |> list.map(fn(ledger_record) { ledger_record.body })
 }
 
+fn rejection_message_from_finalization(
+  finalization: recovery.WorkflowFinalization,
+) -> Option(String) {
+  case finalization.diagnostics {
+    [diagnostic, ..] ->
+      Some(
+        "retry-step repair was rejected by recovery validation: "
+        <> recovery.workflow_recovery_diagnostic_message(diagnostic),
+      )
+    [] -> Some("retry-step repair was rejected by recovery validation")
+  }
+}
+
+fn retry_step_rejection_diagnostic_bodies(
+  finalization: recovery.WorkflowFinalization,
+) -> List(record.RecordBody) {
+  finalization.diagnostics
+  |> list.map(recovery.workflow_recovery_diagnostic_record_body)
+}
+
 fn rejection_reason_from_finalization(
   finalization: recovery.WorkflowFinalization,
 ) -> String {
-  case finalization.records_to_append {
-    [
-      record.LedgerRecord(body: record.IssueParkedV2(reason: reason, ..), ..),
-      ..
-    ] -> reason
-    [
-      record.LedgerRecord(
-        body: record.WorkflowRunInterrupted(reason: reason, ..),
-        ..,
-      ),
-      ..
-    ] -> reason
-    _ -> "artifact_recovery_failed"
+  case finalization.diagnostics {
+    [diagnostic, ..] -> recovery.workflow_recovery_diagnostic_reason(diagnostic)
+    [] ->
+      case finalization.records_to_append {
+        [
+          record.LedgerRecord(
+            body: record.IssueParkedV2(reason: reason, ..),
+            ..,
+          ),
+          ..
+        ] -> reason
+        [
+          record.LedgerRecord(
+            body: record.WorkflowRunInterrupted(reason: reason, ..),
+            ..,
+          ),
+          ..
+        ] -> reason
+        _ -> "artifact_recovery_failed"
+      }
   }
 }
 

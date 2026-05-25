@@ -111,6 +111,12 @@ pub type RecordBody {
     artifact_sha256: String,
     artifact_bytes: Int,
   )
+  WorkflowRunDiagnostic(
+    run_id: String,
+    workflow_id: String,
+    issue_id: String,
+    reason: String,
+  )
   WorkflowRunInterrupted(
     run_id: String,
     workflow_id: String,
@@ -652,6 +658,7 @@ pub fn kind(body: RecordBody) -> String {
     WorkflowRunFinishedWithTask(..) -> "workflow_run_finished"
     WorkflowRunInputsRecorded(..) -> "workflow_run_inputs_recorded"
     WorkflowRunOutputsRecorded(..) -> "workflow_run_outputs_recorded"
+    WorkflowRunDiagnostic(..) -> "workflow_run_diagnostic"
     WorkflowRunInterrupted(..) -> "workflow_run_interrupted"
     WorkflowRunSuperseded(..) -> "workflow_run_superseded"
     WorkflowRepairRequested(..) -> "workflow_repair_requested"
@@ -878,6 +885,12 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         artifact_sha256,
         artifact_bytes,
       )
+    WorkflowRunDiagnostic(run_id, workflow_id, issue_id, reason) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("issue_id", json.string(issue_id)),
+      #("reason", json.string(reason)),
+    ]
     WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason) -> [
       #("run_id", json.string(run_id)),
       #("workflow_id", json.string(workflow_id)),
@@ -1731,6 +1744,16 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       decode_workflow_contract_record(fields, WorkflowRunInputsRecorded)
     "workflow_run_outputs_recorded" ->
       decode_workflow_contract_record(fields, WorkflowRunOutputsRecorded)
+    "workflow_run_diagnostic" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(WorkflowRunDiagnostic(run_id, workflow_id, issue_id, reason))
+    }
     "workflow_run_interrupted" -> {
       use run_id <- result.try(required_string(fields.run_id, "run_id"))
       use workflow_id <- result.try(required_string(

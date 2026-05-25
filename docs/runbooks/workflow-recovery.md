@@ -71,6 +71,19 @@ scripts/scherzoctl retry-step run:<run-id> --step <step-id>
 
 This path is fail-closed. Scherzo accepts it only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
 
+When `retry-step` rejects with `artifact_recovery_failed`, the result message names the step, retained artifact ref, and failure reason. A hash mismatch also includes the ledger sha and current file sha, for example:
+
+```json
+{
+  "status": "rejected",
+  "command": "retry_step",
+  "reason": "artifact_recovery_failed",
+  "message": "retry-step repair was rejected by recovery validation: artifact_recovery_failed: step_id=incorporate_review artifact_ref=runs/run-1/incorporate_review-edd312798e29/attempt-1.json reason=sha_mismatch expected_sha256=<ledger-sha> current_sha256=<current-sha>"
+}
+```
+
+Interpret `reason=missing` as an artifact ref that is absent under `.scherzo-state/artifacts`, `reason=unreadable` as a local permission or I/O failure, `reason=invalid_json` as retained artifact bytes that match the ledger hash but are not a valid step artifact, and `reason=sha_mismatch` as retained bytes that no longer match the ledger `artifact_sha256`. Fix or restore the named artifact from backup or from the retained workspace evidence, then rerun `retry-step`. The same bounded detail is retained as a projection-neutral `workflow_run_diagnostic` ledger record so later operators can inspect the failed repair without recomputing hashes manually.
+
 If the issue is parked, unpark it first and then rerun `retry-step`. `retry-step` does not silently override operator park policy. Because this is an explicit repair command, the issue does not need to be in an active or dispatch state, but terminal states are still rejected.
 
 If drift or retained artifact recovery cannot be proven safe, fall back to manual salvage or a full task retry with `scripts/scherzoctl retry <task>`.

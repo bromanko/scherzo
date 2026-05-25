@@ -6,6 +6,8 @@ import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
+import scherzo/hash
+import scherzo/path
 import scherzo/state/artifact_store
 import scherzo/state/projection
 import scherzo/state/record
@@ -519,6 +521,10 @@ pub fn retry_step_finalization_rejects_missing_upstream_artifact_test() {
     finalized.records_to_append,
     "artifact_recovery_failed",
   )
+  assert has_artifact_recovery_detail(
+    finalized,
+    "artifact_recovery_failed: step_id=seed artifact_ref=runs/run-1/seed/attempt-1.json reason=missing",
+  )
 }
 
 pub fn retry_step_finalization_rejects_corrupt_upstream_artifact_test() {
@@ -559,6 +565,184 @@ pub fn retry_step_finalization_rejects_corrupt_upstream_artifact_test() {
     finalized.records_to_append,
     "artifact_recovery_failed",
   )
+  assert has_artifact_recovery_detail(
+    finalized,
+    "artifact_recovery_failed: step_id=seed artifact_ref="
+      <> stored.ref
+      <> " reason=sha_mismatch expected_sha256=wrong-sha current_sha256="
+      <> stored.sha256,
+  )
+}
+
+pub fn retry_step_finalization_rejects_unreadable_upstream_artifact_test() {
+  let root = "test/tmp/workflow-repair-unreadable-artifact"
+  let run_root = recovery_run_root(root)
+  let artifact_ref = "runs/run-1/seed/attempt-1.json"
+  reset_dir(root)
+  ensure_directory(run_root <> "/workspaces/seed")
+  let projection =
+    projection.fold(recovery_ready_run_records(
+      run_root,
+      artifact_ref,
+      "seed-sha",
+    ))
+  let assert Ok(dag) = workflow_dag.parse(recovery_ready_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_recovery_workflow(dag, root),
+    )
+
+  let assert Ok(finalized) =
+    finalize_repair_plan_with_store(
+      plan,
+      projection,
+      dag,
+      root,
+      unreadable_artifact_store(),
+    )
+
+  assert finalized.resumptions == []
+  assert has_park_reason(
+    finalized.records_to_append,
+    "artifact_recovery_failed",
+  )
+  assert has_artifact_recovery_detail(
+    finalized,
+    "artifact_recovery_failed: step_id=seed artifact_ref="
+      <> artifact_ref
+      <> " reason=unreadable",
+  )
+}
+
+pub fn retry_step_finalization_rejects_invalid_upstream_artifact_json_test() {
+  let root = "test/tmp/workflow-repair-invalid-artifact-json"
+  let run_root = recovery_run_root(root)
+  let artifact_ref = "runs/run-1/seed/attempt-1.json"
+  let invalid_json = "{not valid step artifact json"
+  reset_dir(root)
+  ensure_directory(run_root <> "/workspaces/seed")
+  ensure_artifact_parent(root, artifact_ref)
+  let assert Ok(Nil) =
+    simplifile.write(artifact_path_for_root(root, artifact_ref), invalid_json)
+  let projection =
+    projection.fold(recovery_ready_run_records(
+      run_root,
+      artifact_ref,
+      hash.sha256_hex(invalid_json),
+    ))
+  let assert Ok(dag) = workflow_dag.parse(recovery_ready_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_recovery_workflow(dag, root),
+    )
+
+  let assert Ok(finalized) = finalize_repair_plan(plan, projection, dag, root)
+
+  assert finalized.resumptions == []
+  assert has_park_reason(
+    finalized.records_to_append,
+    "artifact_recovery_failed",
+  )
+  assert has_artifact_recovery_detail(
+    finalized,
+    "artifact_recovery_failed: step_id=seed artifact_ref="
+      <> artifact_ref
+      <> " reason=invalid_json",
+  )
+}
+
+pub fn retry_step_finalization_redacts_local_artifact_ref_details_test() {
+  let cases = [
+    #("empty", "   ", "invalid_ref", "<empty>"),
+    #(
+      "absolute",
+      "/secret/local/attempt-1.json",
+      "invalid_ref",
+      "<redacted-local-artifact-ref>",
+    ),
+    #(
+      "home",
+      "~/secret/attempt-1.json",
+      "missing",
+      "<redacted-local-artifact-ref>",
+    ),
+    #(
+      "parent",
+      "../secret/attempt-1.json",
+      "invalid_ref",
+      "<redacted-local-artifact-ref>",
+    ),
+    #(
+      "nested-parent",
+      "runs/run-1/../secret/attempt-1.json",
+      "invalid_ref",
+      "<redacted-local-artifact-ref>",
+    ),
+    #(
+      "file-uri",
+      "file:///Users/alice/secret/attempt-1.json",
+      "missing",
+      "<redacted-local-artifact-ref>",
+    ),
+    #(
+      "windows-absolute",
+      "C:\\Users\\alice\\secret\\attempt-1.json",
+      "missing",
+      "<redacted-local-artifact-ref>",
+    ),
+    #(
+      "backslash-parent",
+      "runs\\..\\secret\\attempt-1.json",
+      "missing",
+      "<redacted-local-artifact-ref>",
+    ),
+    #(
+      "control-character",
+      "runs/run-1/seed/attempt-1.json\n/secret",
+      "missing",
+      "<redacted-local-artifact-ref>",
+    ),
+  ]
+
+  list.each(cases, fn(entry) {
+    let #(label, artifact_ref, reason, display_ref) = entry
+    let root = "test/tmp/workflow-repair-redacted-artifact-ref-" <> label
+    let run_root = recovery_run_root(root)
+    reset_dir(root)
+    ensure_directory(run_root <> "/workspaces/seed")
+    let projection =
+      projection.fold(recovery_ready_run_records(
+        run_root,
+        artifact_ref,
+        "seed-sha",
+      ))
+    let assert Ok(dag) = workflow_dag.parse(recovery_ready_workflow_yaml())
+    let assert Ok(plan) =
+      workflow_repair.plan(
+        projection,
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+        current_recovery_workflow(dag, root),
+      )
+    let assert Ok(finalized) = finalize_repair_plan(plan, projection, dag, root)
+
+    assert finalized.resumptions == []
+    assert has_artifact_recovery_detail(
+      finalized,
+      "artifact_recovery_failed: step_id=seed artifact_ref="
+        <> display_ref
+        <> " reason="
+        <> reason,
+    )
+  })
 }
 
 pub fn retry_step_finalization_rejects_missing_workspace_test() {
@@ -1742,13 +1926,29 @@ fn finalize_repair_plan(
   dag: workflow_dag.WorkflowDag,
   root: String,
 ) -> Result(recovery.WorkflowFinalization, recovery.RecoveryError) {
+  finalize_repair_plan_with_store(
+    plan,
+    projection_state,
+    dag,
+    root,
+    artifact_store.new(root),
+  )
+}
+
+fn finalize_repair_plan_with_store(
+  plan: workflow_repair.RepairPlan,
+  projection_state: projection.Projection,
+  dag: workflow_dag.WorkflowDag,
+  root: String,
+  store: artifact_store.Store,
+) -> Result(recovery.WorkflowFinalization, recovery.RecoveryError) {
   recovery.finalize_workflow_candidates(
     projection_state,
     [plan.candidate],
     dict.from_list([
       #(plan.run_id, current_recovery_workflow(dag, root)),
     ]),
-    artifact_store.new(root),
+    store,
     99,
   )
 }
@@ -1768,6 +1968,11 @@ fn ensure_directory(path: String) -> Nil {
   Nil
 }
 
+fn ensure_artifact_parent(root: String, ref: String) -> Nil {
+  let assert Ok(parent) = path.dirname(artifact_path_for_root(root, ref))
+  ensure_directory(parent)
+}
+
 fn command_artifact(
   step_id: String,
   stdout: String,
@@ -1780,6 +1985,30 @@ fn command_artifact(
     False,
     [],
     artifact_limits(),
+  )
+}
+
+fn unreadable_artifact_store() -> artifact_store.Store {
+  artifact_store.custom(
+    "unreadable-test",
+    artifact_store.StoreCallbacks(
+      write: fn(_, _) { Ok(Nil) },
+      read: fn(_) {
+        Error(artifact_store.ArtifactIo("permission denied: /secret/local/path"))
+      },
+      write_immutable_bytes: fn(_, _) { Ok(artifact_store.ImmutableWritten) },
+      read_bytes: fn(_) {
+        Error(artifact_store.ArtifactIo("permission denied: /secret/local/path"))
+      },
+      locate: fn(ref) {
+        Ok(artifact_store.ArtifactLocation(
+          ref: ref,
+          uri: "artifact://test/" <> ref,
+          display_path: ".scherzo-state/artifacts/" <> ref,
+          local_path: None,
+        ))
+      },
+    ),
   )
 }
 
@@ -1909,6 +2138,22 @@ fn repair_request_matches(
       ) ->
         body_requested_target == requested_target
         && body_requested_step_id == requested_step_id
+      _ -> False
+    }
+  })
+}
+
+fn has_artifact_recovery_detail(
+  finalized: recovery.WorkflowFinalization,
+  expected_detail: String,
+) -> Bool {
+  list.any(finalized.warnings, fn(warning) {
+    string.contains(warning, expected_detail)
+  })
+  && list.any(finalized.records_to_append, fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowRunInterrupted(reason: body_reason, ..) ->
+        body_reason == expected_detail
       _ -> False
     }
   })
