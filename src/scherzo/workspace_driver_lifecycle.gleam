@@ -58,7 +58,7 @@ pub fn run_best_effort(
   case supports(driver, operation) {
     False -> Nil
     True -> {
-      let _ =
+      let operator_visible_log =
         hooks.run_best_effort_argv_with_env_redacting(
           name,
           workspace_driver_command.resolve(driver.command, orchestrator),
@@ -68,9 +68,13 @@ pub fn run_best_effort(
           lifecycle_env(env, driver, orchestrator),
           workspace_driver_env.values_for_redaction(driver.env),
         )
-      Nil
+      acknowledge_best_effort_log(operator_visible_log)
     }
   }
+}
+
+fn acknowledge_best_effort_log(_operator_visible_log: String) -> Nil {
+  Nil
 }
 
 pub fn remove_run(

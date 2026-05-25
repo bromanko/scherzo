@@ -1,5 +1,4 @@
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/path
@@ -33,7 +32,17 @@ pub fn default_repo_root(
 
 pub fn inferred_repo_root(config_dir: String) -> String {
   case string.ends_with(config_dir, "/.scherzo") {
-    True -> path.dirname(config_dir) |> result.unwrap(config_dir)
+    True -> stable_parent_or_config_dir(config_dir)
     False -> config_dir
+  }
+}
+
+fn stable_parent_or_config_dir(config_dir: String) -> String {
+  case path.dirname(config_dir) {
+    Ok(parent) -> parent
+    // `path.dirname` is backed by an infallible runtime path helper today; if
+    // that boundary ever reports failure, keep the historical stable default
+    // rather than inventing a repo root outside the configured directory.
+    Error(Nil) -> config_dir
   }
 }

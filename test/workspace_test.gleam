@@ -1,6 +1,7 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/error
 import scherzo/workspace
 import simplifile
 
@@ -86,6 +87,68 @@ pub fn failing_after_create_removes_new_workspace_test() {
     workspace.prepare("ABC-123", config, hook_config)
   let assert Ok(#(_, path)) = workspace.workspace_path(root, "ABC-123")
   let assert Ok(False) = simplifile.is_directory(path)
+}
+
+pub fn population_marker_inspect_failure_aborts_prepare_test() {
+  let root = "test/tmp/workspace-marker-inspect-failure"
+  reset_dir(root)
+  let assert Ok(Nil) = simplifile.write(root <> "/.scherzo-state", "file")
+  let config = config_types.WorkspaceConfig(root: root)
+  let hook_config = hooks(Some("printf populated > POPULATED"), None)
+
+  let assert Error(workspace.WorkspaceFailure(error.WorkspaceIo(message))) =
+    workspace.prepare("ABC-123", config, hook_config)
+
+  assert string.contains(message, "inspect population marker failed")
+  let assert Ok(#(_, workspace_path)) =
+    workspace.workspace_path(root, "ABC-123")
+  let assert Ok(False) = simplifile.is_directory(workspace_path)
+}
+
+pub fn population_marker_write_failure_does_not_poison_retries_test() {
+  let root = "test/tmp/workspace-marker-write-failure"
+  reset_dir(root)
+  let assert Ok(#(key, workspace_path)) =
+    workspace.workspace_path(root, "ABC-123")
+  let marker = root <> "/.scherzo-state/" <> key <> ".populating"
+  let assert Ok(Nil) = simplifile.create_directory_all(marker)
+  let config = config_types.WorkspaceConfig(root: root)
+  let hook_config = hooks(Some("printf populated > POPULATED"), None)
+
+  let assert Error(workspace.WorkspaceFailure(error.WorkspaceIo(first))) =
+    workspace.prepare("ABC-123", config, hook_config)
+  assert string.contains(first, "write population marker failed")
+  let assert Ok(False) = simplifile.is_directory(workspace_path)
+
+  let assert Error(workspace.WorkspaceFailure(error.WorkspaceIo(second))) =
+    workspace.prepare("ABC-123", config, hook_config)
+  assert string.contains(second, "write population marker failed")
+  let assert Ok(False) = simplifile.is_directory(workspace_path)
+}
+
+pub fn failing_after_create_cleanup_failure_is_operator_visible_test() {
+  let root = "test/tmp/workspace-failing-hook-cleanup-failure"
+  reset_dir(root)
+  let config = config_types.WorkspaceConfig(root: root)
+  let hook_config =
+    hooks(
+      Some(
+        "rm ../.scherzo-state/ABC-123.populating && mkdir ../.scherzo-state/ABC-123.populating; exit 3",
+      ),
+      None,
+    )
+
+  let assert Error(workspace.WorkspaceFailure(error.WorkspaceIo(message))) =
+    workspace.prepare("ABC-123", config, hook_config)
+
+  assert string.contains(message, "after_create failed and cleanup failed")
+  assert string.contains(message, "hook_failed")
+  assert string.contains(message, "delete population marker failed")
+  let assert Ok(#(_, workspace_path)) =
+    workspace.workspace_path(root, "ABC-123")
+  let assert Ok(False) = simplifile.is_directory(workspace_path)
+  let assert Ok(True) =
+    simplifile.is_directory(root <> "/.scherzo-state/ABC-123.populating")
 }
 
 pub fn sidecar_marker_forces_repopulation_test() {

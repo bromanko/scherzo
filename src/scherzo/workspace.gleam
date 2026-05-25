@@ -7,6 +7,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/hooks
 import scherzo/path
+import scherzo/workspace_boundary as boundary
 import simplifile
 
 pub type PreparedWorkspace {
@@ -43,9 +44,15 @@ pub fn workspace_path(
   identifier: String,
 ) -> Result(#(String, String), error.WorkspaceError) {
   use key <- try_workspace(sanitize(identifier))
-  let root_abs = path.absolute(root) |> result.unwrap(root)
+  use root_abs <- try_workspace(boundary.resolve_absolute_path(
+    root,
+    "workspace root",
+  ))
   let joined = path.join(root_abs, key)
-  let workspace_abs = path.absolute(joined) |> result.unwrap(joined)
+  use workspace_abs <- try_workspace(boundary.resolve_absolute_path(
+    joined,
+    "workspace path",
+  ))
   case path.contains(root_abs, workspace_abs) {
     True -> Ok(#(key, workspace_abs))
     False -> Error(error.WorkspaceOutsideRoot(workspace_abs))
@@ -62,17 +69,18 @@ pub fn prepare(
     identifier,
   ))
   let #(key, workspace_path) = key_and_path
-  let root_abs = path.absolute(workspace.root) |> result.unwrap(workspace.root)
+  use root_abs <- try_prepare_workspace(boundary.resolve_absolute_path(
+    workspace.root,
+    "workspace root",
+  ))
   let marker = population_marker(root_abs, key)
-  let marker_exists = file_exists(marker)
-
-  case marker_exists {
-    True -> {
-      let _ = safe_delete(root_abs, workspace_path)
-      Nil
-    }
-    False -> Nil
-  }
+  use marker_exists <- try_prepare_workspace(population_marker_exists(marker))
+  use _ <- try_prepare_workspace(cleanup_stale_population(
+    marker_exists,
+    root_abs,
+    workspace_path,
+    marker,
+  ))
 
   use created <- try_prepare_workspace(ensure_directory(workspace_path))
   let should_populate = created || marker_exists
@@ -89,34 +97,39 @@ fn run_after_create(
   hooks_config: config_types.HooksConfig,
 ) -> Result(PreparedWorkspace, PrepareError) {
   let marker = population_marker(root_abs, key)
-  let _ = simplifile.create_directory_all(path.join(root_abs, ".scherzo-state"))
-  let _ = simplifile.write(marker, "populating")
   case hooks_config.after_create {
-    Some(script) ->
-      case
-        hooks.run_hook(
-          "after_create",
-          script,
-          workspace_path,
-          hooks_config.timeout_ms,
-        )
-      {
-        Ok(Nil) -> {
-          let _ = simplifile.delete_file(at: marker)
-          run_before_run(key, workspace_path, hooks_config, True, True)
-        }
-        Error(err) -> {
-          let cleanup = safe_delete(root_abs, workspace_path)
-          case cleanup {
+    Some(script) -> {
+      case mark_population_started(root_abs, marker) {
+        Error(err) ->
+          fail_population_start_with_cleanup(
+            err,
+            root_abs,
+            workspace_path,
+            marker,
+          )
+        Ok(Nil) ->
+          case
+            hooks.run_hook(
+              "after_create",
+              script,
+              workspace_path,
+              hooks_config.timeout_ms,
+            )
+          {
             Ok(Nil) -> {
-              let _ = simplifile.delete_file(at: marker)
-              Nil
+              use _ <- try_prepare_workspace(delete_population_marker(marker))
+              run_before_run(key, workspace_path, hooks_config, True, True)
             }
-            Error(_) -> Nil
+            Error(err) ->
+              fail_after_create_with_cleanup(
+                err,
+                root_abs,
+                workspace_path,
+                marker,
+              )
           }
-          Error(HookFailure(err))
-        }
       }
+    }
     None -> run_before_run(key, workspace_path, hooks_config, True, False)
   }
 }
@@ -203,10 +216,19 @@ fn ensure_directory(
     Ok(False) ->
       case simplifile.is_file(workspace_path) {
         Ok(True) -> Error(error.WorkspaceCollision(workspace_path))
-        _ -> create_directory(workspace_path)
+        Ok(False) | Error(simplifile.Enoent) -> create_directory(workspace_path)
+        Error(file_error) ->
+          Error(error.WorkspaceIo(
+            "stat workspace file failed: "
+            <> simplifile.describe_error(file_error),
+          ))
       }
     Error(simplifile.Enoent) -> create_directory(workspace_path)
-    Error(_) -> Error(error.WorkspaceIo("stat directory failed"))
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "stat workspace directory failed: "
+        <> simplifile.describe_error(file_error),
+      ))
   }
 }
 
@@ -215,7 +237,11 @@ fn create_directory(
 ) -> Result(Bool, error.WorkspaceError) {
   case simplifile.create_directory_all(workspace_path) {
     Ok(Nil) -> Ok(True)
-    Error(_) -> Error(error.WorkspaceIo("create directory failed"))
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "create workspace directory failed: "
+        <> simplifile.describe_error(file_error),
+      ))
   }
 }
 
@@ -227,28 +253,27 @@ fn safe_cleanup(
   case string.trim(workspace_path) == "" {
     True -> Error(error.WorkspaceOutsideRoot(workspace_path))
     False -> {
-      let root_abs =
-        path.absolute(workspace_root) |> result.unwrap(workspace_root)
-      let target_abs =
-        path.absolute(workspace_path) |> result.unwrap(workspace_path)
+      use root_abs <- try_workspace(boundary.resolve_absolute_path(
+        workspace_root,
+        "workspace root",
+      ))
+      use target_abs <- try_workspace(boundary.resolve_absolute_path(
+        workspace_path,
+        "workspace cleanup target",
+      ))
       case path.contains(root_abs, target_abs) && target_abs != root_abs {
         False -> Error(error.WorkspaceOutsideRoot(target_abs))
         True -> {
           case hooks_config.before_remove {
-            Some(script) -> {
-              let _ =
-                hooks.run_best_effort(
-                  "before_remove",
-                  script,
-                  target_abs,
-                  hooks_config.timeout_ms,
-                )
-              Nil
-            }
+            Some(script) ->
+              run_before_remove_best_effort(
+                script,
+                target_abs,
+                hooks_config.timeout_ms,
+              )
             None -> Nil
           }
-          simplifile.delete(target_abs)
-          |> result.replace_error(error.WorkspaceIo("delete failed"))
+          delete_path_if_present(target_abs)
         }
       }
     }
@@ -259,12 +284,144 @@ fn safe_delete(
   root_abs: String,
   target: String,
 ) -> Result(Nil, error.WorkspaceError) {
-  let target_abs = path.absolute(target) |> result.unwrap(target)
+  use target_abs <- try_workspace(boundary.resolve_absolute_path(
+    target,
+    "workspace cleanup target",
+  ))
   case path.contains(root_abs, target_abs) {
     False -> Error(error.WorkspaceOutsideRoot(target_abs))
-    True ->
-      simplifile.delete(target_abs)
-      |> result.replace_error(error.WorkspaceIo("delete failed"))
+    True -> delete_path_if_present(target_abs)
+  }
+}
+
+fn cleanup_stale_population(
+  marker_exists: Bool,
+  root_abs: String,
+  workspace_path: String,
+  marker: String,
+) -> Result(Nil, error.WorkspaceError) {
+  case marker_exists {
+    True -> cleanup_failed_population(root_abs, workspace_path, marker)
+    False -> Ok(Nil)
+  }
+}
+
+fn mark_population_started(
+  root_abs: String,
+  marker: String,
+) -> Result(Nil, error.WorkspaceError) {
+  use _ <- result.try(create_state_directory(root_abs))
+  case simplifile.write(marker, "populating") {
+    Ok(Nil) -> Ok(Nil)
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "write population marker failed: "
+        <> simplifile.describe_error(file_error),
+      ))
+  }
+}
+
+fn create_state_directory(
+  root_abs: String,
+) -> Result(Nil, error.WorkspaceError) {
+  case simplifile.create_directory_all(path.join(root_abs, ".scherzo-state")) {
+    Ok(Nil) -> Ok(Nil)
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "create workspace state directory failed: "
+        <> simplifile.describe_error(file_error),
+      ))
+  }
+}
+
+fn delete_population_marker(
+  marker: String,
+) -> Result(Nil, error.WorkspaceError) {
+  case simplifile.delete_file(at: marker) {
+    Ok(Nil) -> Ok(Nil)
+    Error(simplifile.Enoent) -> Ok(Nil)
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "delete population marker failed: "
+        <> simplifile.describe_error(file_error),
+      ))
+  }
+}
+
+fn fail_population_start_with_cleanup(
+  start_error: error.WorkspaceError,
+  root_abs: String,
+  workspace_path: String,
+  marker: String,
+) -> Result(PreparedWorkspace, PrepareError) {
+  case cleanup_failed_population(root_abs, workspace_path, marker) {
+    Ok(Nil) -> Error(WorkspaceFailure(start_error))
+    Error(cleanup_error) ->
+      Error(
+        WorkspaceFailure(error.WorkspaceIo(
+          "start population failed and cleanup failed: "
+          <> boundary.workspace_error_summary(start_error)
+          <> "; cleanup: "
+          <> boundary.workspace_error_summary(cleanup_error),
+        )),
+      )
+  }
+}
+
+fn fail_after_create_with_cleanup(
+  hook_error: error.HookError,
+  root_abs: String,
+  workspace_path: String,
+  marker: String,
+) -> Result(PreparedWorkspace, PrepareError) {
+  case cleanup_failed_population(root_abs, workspace_path, marker) {
+    Ok(Nil) -> Error(HookFailure(hook_error))
+    Error(cleanup_error) ->
+      Error(
+        WorkspaceFailure(error.WorkspaceIo(
+          "after_create failed and cleanup failed: "
+          <> boundary.hook_error_summary(hook_error)
+          <> "; cleanup: "
+          <> boundary.workspace_error_summary(cleanup_error),
+        )),
+      )
+  }
+}
+
+fn cleanup_failed_population(
+  root_abs: String,
+  workspace_path: String,
+  marker: String,
+) -> Result(Nil, error.WorkspaceError) {
+  use _ <- result.try(safe_delete(root_abs, workspace_path))
+  delete_population_marker(marker)
+}
+
+fn run_before_remove_best_effort(
+  script: String,
+  target_abs: String,
+  timeout_ms: Int,
+) -> Nil {
+  let operator_visible_log =
+    hooks.run_best_effort("before_remove", script, target_abs, timeout_ms)
+  acknowledge_best_effort_log(operator_visible_log)
+}
+
+fn acknowledge_best_effort_log(_operator_visible_log: String) -> Nil {
+  Nil
+}
+
+fn delete_path_if_present(
+  target_abs: String,
+) -> Result(Nil, error.WorkspaceError) {
+  case simplifile.delete(target_abs) {
+    Ok(Nil) -> Ok(Nil)
+    Error(simplifile.Enoent) -> Ok(Nil)
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "delete workspace path failed: "
+        <> simplifile.describe_error(file_error),
+      ))
   }
 }
 
@@ -272,10 +429,17 @@ fn population_marker(root_abs: String, key: String) -> String {
   path.join(path.join(root_abs, ".scherzo-state"), key <> ".populating")
 }
 
-fn file_exists(file: String) -> Bool {
+fn population_marker_exists(
+  file: String,
+) -> Result(Bool, error.WorkspaceError) {
   case simplifile.is_file(file) {
-    Ok(True) -> True
-    _ -> False
+    Ok(True) -> Ok(True)
+    Ok(False) | Error(simplifile.Enoent) -> Ok(False)
+    Error(file_error) ->
+      Error(error.WorkspaceIo(
+        "inspect population marker failed: "
+        <> simplifile.describe_error(file_error),
+      ))
   }
 }
 
