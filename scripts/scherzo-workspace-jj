@@ -765,7 +765,12 @@ def forget_workspace_at(target: Path) -> None:
     root_proc = run_backend_proc(["jj", "root"], cwd=target)
     if root_proc.returncode != 0:
         return
-    status = run_backend_stream(["jj", "workspace", "forget"], cwd=target)
+    # Cleanup must be able to forget workspaces left stale by concurrent
+    # workflow lanes. We are deleting the workspace tree anyway, so avoid
+    # snapshot/update of the working copy during this metadata operation.
+    status = run_backend_stream(
+        ["jj", "--ignore-working-copy", "workspace", "forget"], cwd=target
+    )
     if status != 0:
         fail(f"could not forget jj workspace: {target}")
 
