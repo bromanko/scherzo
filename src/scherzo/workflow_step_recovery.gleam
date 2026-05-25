@@ -3,6 +3,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/log
@@ -10,7 +11,9 @@ import scherzo/result_artifact
 import scherzo/step_artifact
 import scherzo/structured_output_source
 import scherzo/structured_output_tool_spec
+import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
+import scherzo/workspace_run
 
 pub const tool_name = "submit_workflow_step_recovery_result"
 
@@ -31,6 +34,11 @@ pub type Decision {
 
 pub type ProtocolError {
   ProtocolError(code: String, message: String)
+}
+
+pub type DecisionRecordError {
+  RecoveryDecisionArtifactWriteFailed(workflow_checkpoint.CheckpointError)
+  RecoveryDecisionFinishedCheckpointFailed(workflow_checkpoint.CheckpointError)
 }
 
 type Payload {
@@ -128,6 +136,152 @@ pub fn tool_spec(
     repository_root: repository_root,
     spec: spec,
   ))
+}
+
+pub fn tool_spec_env(
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  repository_root: String,
+  run_root: String,
+) -> Result(#(String, String), structured_output_tool_spec.ToolSpecError) {
+  use spec <- result.try(tool_spec(
+    workflow_id,
+    run_id,
+    step_id,
+    attempt_index,
+    repository_root,
+  ))
+  use written <- result.try(structured_output_tool_spec.write(spec, run_root))
+  Ok(structured_output_tool_spec.env_pair(written))
+}
+
+pub fn detail(detail: String, redaction_secrets: List(String)) -> String {
+  log.redact("workflow_step_recovery", detail, redaction_secrets)
+  |> log.truncate(4000)
+}
+
+pub fn tool_spec_unavailable_reason(
+  error: structured_output_tool_spec.ToolSpecError,
+  redaction_secrets: List(String),
+) -> String {
+  detail(
+    "recovery_tool_spec_unavailable:" <> error.code <> ":" <> error.message,
+    redaction_secrets,
+  )
+}
+
+pub fn record_finished(
+  checkpoint: workflow_checkpoint.Writer,
+  workspace: workspace_run.PreparedStepWorkspace,
+  step_id: String,
+  recovery_attempt_number: Int,
+  recovery_session_id: String,
+  result_text: String,
+  summary: String,
+  reason: String,
+  retry_attempt_index: Option(Int),
+) -> Result(Nil, workflow_checkpoint.CheckpointError) {
+  checkpoint.step_recovery_finished(workflow_checkpoint.StepRecoveryFinished(
+    run_id: workspace.run_id,
+    workflow_id: workspace.workflow_id,
+    step_id: step_id,
+    failed_attempt_index: workspace.attempt_index,
+    recovery_attempt_number: recovery_attempt_number,
+    recovery_session_id: recovery_session_id,
+    result: result_text,
+    summary: summary,
+    reason: reason,
+    retry_attempt_index: retry_attempt_index,
+  ))
+}
+
+pub fn record_decision(
+  checkpoint: workflow_checkpoint.Writer,
+  step_id: String,
+  workspace: workspace_run.PreparedStepWorkspace,
+  recovery_attempt_number: Int,
+  recovery_session_id: String,
+  result_text: String,
+  summary: String,
+  reason: String,
+  retry_attempt_index: Option(Int),
+  redaction_secrets: List(String),
+) -> Result(Nil, DecisionRecordError) {
+  let payload = artifact_json(result_text, summary, reason, redaction_secrets)
+  let redacted_summary =
+    log.redact("workflow_step_recovery", summary, redaction_secrets)
+  let redacted_reason =
+    log.redact("workflow_step_recovery", reason, redaction_secrets)
+  let write =
+    workflow_checkpoint.RecoveryArtifactWrite(
+      run_id: workspace.run_id,
+      workflow_id: workspace.workflow_id,
+      step_id: step_id,
+      failed_attempt_index: workspace.attempt_index,
+      recovery_attempt_number: recovery_attempt_number,
+      artifact_name: artifact_name,
+      payload_json: payload,
+    )
+  case checkpoint.write_recovery_artifact(write) {
+    Error(error) -> {
+      let reason =
+        "artifact_write_failed:"
+        <> workflow_checkpoint.describe_error(error)
+        |> detail(redaction_secrets)
+      let Nil =
+        ignore_checkpoint_result(record_finished(
+          checkpoint,
+          workspace,
+          step_id,
+          recovery_attempt_number,
+          recovery_session_id,
+          "artifact_write_failed",
+          "Recovery artifact write failed",
+          reason,
+          None,
+        ))
+      Error(RecoveryDecisionArtifactWriteFailed(error))
+    }
+    Ok(_) ->
+      case
+        record_finished(
+          checkpoint,
+          workspace,
+          step_id,
+          recovery_attempt_number,
+          recovery_session_id,
+          result_text,
+          redacted_summary,
+          redacted_reason,
+          retry_attempt_index,
+        )
+      {
+        Ok(Nil) -> Ok(Nil)
+        Error(error) -> {
+          let Nil =
+            note_ignored_checkpoint_error(workflow_checkpoint.describe_error(
+              error,
+            ))
+          Error(RecoveryDecisionFinishedCheckpointFailed(error))
+        }
+      }
+  }
+}
+
+fn ignore_checkpoint_result(
+  result: Result(Nil, workflow_checkpoint.CheckpointError),
+) -> Nil {
+  case result {
+    Ok(Nil) -> Nil
+    Error(error) ->
+      note_ignored_checkpoint_error(workflow_checkpoint.describe_error(error))
+  }
+}
+
+fn note_ignored_checkpoint_error(_message: String) -> Nil {
+  Nil
 }
 
 pub fn decision(
