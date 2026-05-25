@@ -52,7 +52,7 @@ pub fn to_json(
     hook_results: hook_results,
     probe_results: probe_results,
   ) = report
-  json.object([
+  let base_fields = [
     #("schema_version", json.int(schema_version)),
     #("adapter_kind", json.string(redact_string(adapter_kind, secrets))),
     #("profile", json.string(redact_string(profile_name, secrets))),
@@ -91,7 +91,20 @@ pub fn to_json(
         probe_result_to_json(probe_result, secrets)
       }),
     ),
-  ])
+  ]
+  let fields = case
+    scheduled_failures_summary_json(
+      case_results,
+      hook_results,
+      probe_results,
+      secrets,
+    )
+  {
+    Some(summary_json) ->
+      list_append(base_fields, [#("scheduled_failures", summary_json)])
+    None -> base_fields
+  }
+  json.object(fields)
 }
 
 pub fn summary(report: types.Report, redact secrets: List(String)) -> String {
@@ -130,10 +143,16 @@ pub fn summary(report: types.Report, redact secrets: List(String)) -> String {
     <> int.to_string(cleanup_failed)
   let guidance_lines =
     recovery_guidance_lines(case_results, hook_results, probe_results, secrets)
+  let base_with_summary = case
+    scheduled_failures_summary_text(case_results, hook_results, probe_results)
+  {
+    Some(summary_text) -> base <> "\n" <> summary_text
+    None -> base
+  }
   case guidance_lines {
-    [] -> base
+    [] -> base_with_summary
     _ ->
-      base
+      base_with_summary
       <> "\nrecovery guidance:\n"
       <> string.join(guidance_lines, with: "\n")
   }
@@ -414,6 +433,212 @@ fn list_append(left: List(a), right: List(a)) -> List(a) {
   case left {
     [] -> right
     [first, ..rest] -> [first, ..list_append(rest, right)]
+  }
+}
+
+fn scheduled_failures_summary_json(
+  case_results: List(types.CaseResult),
+  hook_results: List(types.HookResult),
+  probe_results: List(types.ProbeResult),
+  secrets: List(String),
+) -> Option(json.Json) {
+  let scheduled_cases = scheduled_failure_cases(case_results)
+  case scheduled_cases {
+    [] -> None
+    _ -> {
+      let scheduled_probes = scheduled_failure_probes(probe_results)
+      let remote_ids =
+        extract_created_case_remote_ids(scheduled_cases) |> dedupe_lines
+      let retry_classes =
+        extract_case_tokens(scheduled_cases, "retry_classification=")
+        |> dedupe_lines
+      Some(
+        json.object([
+          #(
+            "created_remote_ids",
+            json.array(remote_ids, of: fn(remote_id) {
+              json.string(redact_string(remote_id, secrets))
+            }),
+          ),
+          #(
+            "retry_classifications",
+            json.array(retry_classes, of: fn(classification) {
+              json.string(redact_string(classification, secrets))
+            }),
+          ),
+          #("duplicate_count", json.int(duplicate_count(scheduled_probes))),
+          #(
+            "visible_task_count",
+            json.int(visible_task_count(scheduled_probes)),
+          ),
+          #("cleanup_status", json.string(cleanup_status_text(hook_results))),
+          #("probe_status", json.string(scheduled_probe_status(probe_results))),
+        ]),
+      )
+    }
+  }
+}
+
+fn scheduled_failures_summary_text(
+  case_results: List(types.CaseResult),
+  hook_results: List(types.HookResult),
+  probe_results: List(types.ProbeResult),
+) -> Option(String) {
+  let scheduled_cases = scheduled_failure_cases(case_results)
+  case scheduled_cases {
+    [] -> None
+    _ -> {
+      let scheduled_probes = scheduled_failure_probes(probe_results)
+      Some(
+        "scheduled_failures duplicate_count="
+        <> int.to_string(duplicate_count(scheduled_probes))
+        <> " visible_task_count="
+        <> int.to_string(visible_task_count(scheduled_probes))
+        <> " cleanup_status="
+        <> cleanup_status_text(hook_results)
+        <> " probe_status="
+        <> scheduled_probe_status(probe_results),
+      )
+    }
+  }
+}
+
+fn scheduled_failure_cases(
+  case_results: List(types.CaseResult),
+) -> List(types.CaseResult) {
+  case case_results {
+    [] -> []
+    [case_result, ..rest] -> {
+      let types.CaseResult(id: id, ..) = case_result
+      case string.starts_with(id, "scheduled_failures.publish.") {
+        True -> [case_result, ..scheduled_failure_cases(rest)]
+        False -> scheduled_failure_cases(rest)
+      }
+    }
+  }
+}
+
+fn extract_case_tokens(
+  case_results: List(types.CaseResult),
+  prefix: String,
+) -> List(String) {
+  case case_results {
+    [] -> []
+    [types.CaseResult(actual_summary: actual_summary, ..), ..rest] ->
+      case extract_token(actual_summary, prefix) {
+        Some(value) -> [value, ..extract_case_tokens(rest, prefix)]
+        None -> extract_case_tokens(rest, prefix)
+      }
+  }
+}
+
+fn extract_created_case_remote_ids(
+  case_results: List(types.CaseResult),
+) -> List(String) {
+  case case_results {
+    [] -> []
+    [types.CaseResult(actual_summary: actual_summary, ..), ..rest] ->
+      case extract_token(actual_summary, "created=") == Some("true") {
+        True ->
+          case extract_token(actual_summary, "task_remote_id=") {
+            Some(value) -> [value, ..extract_created_case_remote_ids(rest)]
+            None -> extract_created_case_remote_ids(rest)
+          }
+        False -> extract_created_case_remote_ids(rest)
+      }
+  }
+}
+
+fn duplicate_count(probe_results: List(types.ProbeResult)) -> Int {
+  max_probe_token(probe_results, "duplicate_count=")
+}
+
+fn visible_task_count(probe_results: List(types.ProbeResult)) -> Int {
+  max_probe_token(probe_results, "visible_task_count=")
+}
+
+fn max_probe_token(
+  probe_results: List(types.ProbeResult),
+  prefix: String,
+) -> Int {
+  case probe_results {
+    [] -> 0
+    [types.ProbeResult(diagnostics: diagnostics, message: message, ..), ..rest] -> {
+      let current =
+        first_int_from_text(
+          diagnostics,
+          prefix,
+          first_int_from_text(message, prefix, 0),
+        )
+      let remaining = max_probe_token(rest, prefix)
+      case current > remaining {
+        True -> current
+        False -> remaining
+      }
+    }
+  }
+}
+
+fn first_int_from_text(text: String, prefix: String, fallback: Int) -> Int {
+  case extract_token(text, prefix) {
+    Some(value) ->
+      case int.parse(value) {
+        Ok(parsed) -> parsed
+        Error(_) -> fallback
+      }
+    None -> fallback
+  }
+}
+
+fn cleanup_status_text(hook_results: List(types.HookResult)) -> String {
+  case hook_results {
+    [] -> "not_run"
+    [types.HookResult(phase: phase, status: status, ..), ..rest] ->
+      case phase == "cleanup" {
+        True -> status_to_string(status)
+        False -> cleanup_status_text(rest)
+      }
+  }
+}
+
+fn scheduled_probe_status(probe_results: List(types.ProbeResult)) -> String {
+  case scheduled_failure_probes(probe_results) {
+    [] -> "not_run"
+    [types.ProbeResult(status: status, ..), ..] -> status_to_string(status)
+  }
+}
+
+fn scheduled_failure_probes(
+  probe_results: List(types.ProbeResult),
+) -> List(types.ProbeResult) {
+  case probe_results {
+    [] -> []
+    [probe_result, ..rest] -> {
+      let types.ProbeResult(name: name, ..) = probe_result
+      case string.starts_with(name, "scheduled-failures") {
+        True -> [probe_result, ..scheduled_failure_probes(rest)]
+        False -> scheduled_failure_probes(rest)
+      }
+    }
+  }
+}
+
+fn extract_token(text: String, prefix: String) -> Option(String) {
+  case string.split(text, on: prefix) {
+    [_, suffix] -> first_token(suffix)
+    [_, suffix, ..] -> first_token(suffix)
+    _ -> None
+  }
+}
+
+fn first_token(text: String) -> Option(String) {
+  case string.split(text, on: " ") {
+    [first, ..] ->
+      case first == "" {
+        True -> None
+        False -> Some(first)
+      }
+    [] -> None
   }
 }
 

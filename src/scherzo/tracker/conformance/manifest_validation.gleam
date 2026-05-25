@@ -1,5 +1,6 @@
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/tracker/conformance/profile
 import scherzo/tracker/conformance/types
 
@@ -210,17 +211,48 @@ pub fn validate_probe_requirements(
   requested_packs: List(profile.PackName),
   probes: List(types.ProbeConfig),
 ) -> Result(Nil, types.ManifestError) {
-  case pack_in_list(requested_packs, profile.HandoffPack) {
+  use Nil <- result.try(require_handoff_probe(requested_packs, probes))
+  require_scheduled_failures_probe(requested_packs, probes)
+}
+
+fn require_handoff_probe(
+  requested_packs: List(profile.PackName),
+  probes: List(types.ProbeConfig),
+) -> Result(Nil, types.ManifestError) {
+  case pack_in_list(requested_packs, profile.HandoffPack) && probes == [] {
     True ->
-      case probes {
-        [] ->
+      Error(types.ManifestError(
+        "missing_probe",
+        "profile.requested_packs includes handoff but probes must include at least one backend-visibility check",
+      ))
+    False -> Ok(Nil)
+  }
+}
+
+fn require_scheduled_failures_probe(
+  requested_packs: List(profile.PackName),
+  probes: List(types.ProbeConfig),
+) -> Result(Nil, types.ManifestError) {
+  case pack_in_list(requested_packs, profile.ScheduledFailuresPack) {
+    False -> Ok(Nil)
+    True ->
+      case has_scheduled_failures_probe(probes) {
+        True -> Ok(Nil)
+        False ->
           Error(types.ManifestError(
             "missing_probe",
-            "profile.requested_packs includes handoff but probes must include at least one backend-visibility check",
+            "profile.requested_packs includes scheduled_failures but probes must include at least one scheduled-failures backend-visibility check",
           ))
-        _ -> Ok(Nil)
       }
-    False -> Ok(Nil)
+  }
+}
+
+fn has_scheduled_failures_probe(probes: List(types.ProbeConfig)) -> Bool {
+  case probes {
+    [] -> False
+    [types.ProbeConfig(name: name, ..), ..rest] ->
+      string.starts_with(name, "scheduled-failures")
+      || has_scheduled_failures_probe(rest)
   }
 }
 
@@ -321,11 +353,17 @@ fn validate_required_requested_pack_operations(
     profile.StateTransitionsPack,
     profile.StateTransitionsTransition,
   ))
-  require_operation_for_requested_pack(
+  use Nil <- result.try(require_operation_for_requested_pack(
     requested_packs,
     operations,
     profile.HandoffPack,
     profile.HandoffReport,
+  ))
+  require_operation_for_requested_pack(
+    requested_packs,
+    operations,
+    profile.ScheduledFailuresPack,
+    profile.ScheduledFailuresPublish,
   )
 }
 

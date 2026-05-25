@@ -11,6 +11,7 @@ pub type PackName {
   StateTransitionsPack
   RoutingMetadataPack
   HandoffPack
+  ScheduledFailuresPack
   UnknownPack(name: String)
 }
 
@@ -25,6 +26,7 @@ pub type Capability {
   RoutingMetadataWorkflowLabelsCapability
   RoutingMetadataBlockerRefsCapability
   HandoffCapability
+  ScheduledFailuresCapability
   UnknownCapability(name: String)
 }
 
@@ -37,6 +39,7 @@ pub type AdapterOperation {
   RemoteCommandsPostAck
   StateTransitionsTransition
   HandoffReport
+  ScheduledFailuresPublish
   FixtureNamespaceOperation(name: String)
   UnknownAdapterOperation(name: String)
 }
@@ -62,6 +65,7 @@ pub fn pack_name_to_string(name: PackName) -> String {
     StateTransitionsPack -> "state_transitions"
     RoutingMetadataPack -> "routing_metadata"
     HandoffPack -> "handoff"
+    ScheduledFailuresPack -> "scheduled_failures"
     UnknownPack(name) -> name
   }
 }
@@ -74,6 +78,7 @@ pub fn pack_name_from_string(value: String) -> PackName {
     "state_transitions" -> StateTransitionsPack
     "routing_metadata" -> RoutingMetadataPack
     "handoff" -> HandoffPack
+    "scheduled_failures" -> ScheduledFailuresPack
     other -> UnknownPack(other)
   }
 }
@@ -100,6 +105,7 @@ pub fn required_capabilities_for_pack(pack: PackName) -> List(Capability) {
       RoutingMetadataBlockerRefsCapability,
     ]
     HandoffPack -> [HandoffCapability]
+    ScheduledFailuresPack -> [ScheduledFailuresCapability]
     UnknownPack(_) -> []
   }
 }
@@ -117,6 +123,7 @@ pub fn capability_to_string(capability: Capability) -> String {
       "routing_metadata.workflow_labels"
     RoutingMetadataBlockerRefsCapability -> "routing_metadata.blocker_refs"
     HandoffCapability -> "handoff"
+    ScheduledFailuresCapability -> "scheduled_failures"
     UnknownCapability(name) -> name
   }
 }
@@ -134,6 +141,7 @@ pub fn capability_from_string(value: String) -> Capability {
       RoutingMetadataWorkflowLabelsCapability
     "routing_metadata.blocker_refs" -> RoutingMetadataBlockerRefsCapability
     "handoff" -> HandoffCapability
+    "scheduled_failures" -> ScheduledFailuresCapability
     other -> UnknownCapability(other)
   }
 }
@@ -148,6 +156,7 @@ pub fn operation_to_string(operation: AdapterOperation) -> String {
     RemoteCommandsPostAck -> "remote_commands.post_ack"
     StateTransitionsTransition -> "state_transitions.transition"
     HandoffReport -> "handoff.report"
+    ScheduledFailuresPublish -> "scheduled_failures.publish"
     FixtureNamespaceOperation(name) -> name
     UnknownAdapterOperation(name) -> name
   }
@@ -164,6 +173,7 @@ pub fn operation_from_string(value: String) -> AdapterOperation {
     "remote_commands.post_ack" -> RemoteCommandsPostAck
     "state_transitions.transition" -> StateTransitionsTransition
     "handoff.report" -> HandoffReport
+    "scheduled_failures.publish" -> ScheduledFailuresPublish
     _ ->
       case operation_name_has_fixture_namespace(trimmed) {
         True -> FixtureNamespaceOperation(trimmed)
@@ -197,7 +207,8 @@ pub fn operation_is_allowed_for_profile(
         | RemoteCommandsFetchEvents
         | RemoteCommandsPostAck
         | StateTransitionsTransition
-        | HandoffReport -> True
+        | HandoffReport
+        | ScheduledFailuresPublish -> True
       }
   }
 }

@@ -10,6 +10,7 @@ import scherzo/tracker/conformance/profile
 import scherzo/tracker/conformance/remote_commands_pack
 import scherzo/tracker/conformance/report
 import scherzo/tracker/conformance/routing_metadata_pack
+import scherzo/tracker/conformance/scheduled_failures_pack
 import scherzo/tracker/conformance/state_transition_pack
 import scherzo/tracker/conformance/task_source_pack
 import scherzo/tracker/conformance/types
@@ -116,9 +117,18 @@ fn run_profile(
                   profile.RoutingMetadataPack,
                   fn() { routing_metadata_pack.run(manifest, fixture_tasks) },
                 ),
-                run_requested_pack(requested_packs, profile.HandoffPack, fn() {
-                  handoff_pack.run(manifest, fixture_tasks)
-                }),
+                list_append(
+                  run_requested_pack(requested_packs, profile.HandoffPack, fn() {
+                    handoff_pack.run(manifest, fixture_tasks)
+                  }),
+                  run_requested_pack(
+                    requested_packs,
+                    profile.ScheduledFailuresPack,
+                    fn() {
+                      scheduled_failures_pack.run(manifest, fixture_tasks)
+                    },
+                  ),
+                ),
               ),
             ),
           ),
