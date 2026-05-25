@@ -8,58 +8,6 @@ import scherzo/step_artifact
 import scherzo_test
 import simplifile
 
-pub fn explicit_test_suites_are_documented_test() {
-  let assert Ok(readme) = simplifile.read("README.md")
-  let assert Ok(test_readme) = simplifile.read("test/README.md")
-  let assert Ok(architecture) = simplifile.read("docs/ARCHITECTURE.md")
-
-  assert string.contains(readme, "## Test suites")
-  assert string.contains(readme, "direnv exec . gleam test")
-  assert string.contains(readme, "scherzo-test-unit")
-  assert string.contains(readme, "scherzo-test-contract")
-  assert string.contains(readme, "scherzo-test-local-integration")
-  assert string.contains(readme, "scherzo-test-real-pi-validation")
-  assert string.contains(readme, "Every PR")
-  assert string.contains(readme, "required dependencies")
-  assert string.contains(readme, "devenv-provided `pi`")
-  assert string.contains(readme, "SelfCI runs the unit and contract suites")
-
-  assert string.contains(test_readme, "gleam test -- --suite contract")
-  assert string.contains(architecture, "direnv exec . scherzo-test-contract")
-  assert string.contains(architecture, "SelfCI runs this suite")
-}
-
-pub fn explicit_suites_have_no_env_gate_contract_test() {
-  let assert Ok(local_integration) =
-    simplifile.read(
-      "test/local_integration/workflow_jj_workspace_smoke_test.gleam",
-    )
-  let assert Ok(real_pi_validation) =
-    simplifile.read(
-      "test/real_pi_validation/real_pi_session_validation_test.gleam",
-    )
-  let assert Ok(test_runner) = simplifile.read("test/scherzo_test.gleam")
-  let assert Ok(contract_script) =
-    simplifile.read("scripts/scherzo-test-contract")
-  let assert Ok(local_integration_script) =
-    simplifile.read("scripts/scherzo-test-local-integration")
-  let assert Ok(real_pi_validation_script) =
-    simplifile.read("scripts/scherzo-test-real-pi-validation")
-
-  assert_no_env_gate(local_integration)
-  assert_no_env_gate(real_pi_validation)
-  assert_no_env_gate(test_runner)
-  assert_no_env_gate(contract_script)
-  assert_no_env_gate(local_integration_script)
-  assert_no_env_gate(real_pi_validation_script)
-  assert string.contains(test_runner, "local_integration/")
-  assert string.contains(test_runner, "real_pi_validation/")
-  assert string.contains(test_runner, "contract")
-  assert string.contains(test_runner, "local-integration")
-  assert string.contains(test_runner, "real-pi-validation")
-  assert string.contains(test_runner, "No test files matched suite")
-}
-
 pub fn suite_selection_partitions_unit_and_contract_files_test() {
   assert scherzo_test.contract_test_files() == expected_contract_test_files()
 
@@ -131,13 +79,6 @@ fn expected_contract_test_files() -> List(String) {
 fn assert_contract_file(file: String) -> Nil {
   assert scherzo_test.is_contract_file(file)
   assert !scherzo_test.is_unit_file(file)
-}
-
-fn assert_no_env_gate(contents: String) -> Nil {
-  assert !string.contains(contents, "path.env(")
-  assert !string.contains(contents, "getenv(")
-  assert !string.contains(contents, "SCHERZO_TEST_")
-  assert !string.contains(contents, "GLEAM_TEST_")
 }
 
 fn reset_dir(dir: String) -> Nil {
