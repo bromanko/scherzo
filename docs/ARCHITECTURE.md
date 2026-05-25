@@ -71,6 +71,34 @@ scripts/scherzoctl / scherzo ctl
 | FFI | `src/*_ffi.erl` plus `@external` declarations in Gleam files | Erlang boundaries for ports, TCP, filesystem sync/locking, signals, terminal, hashing, paths/env, shutdown, time. See `docs/ffi.md` for the contract every FFI export and wrapper must preserve. |
 | Examples/docs | `.scherzo/scherzo.yaml`, `.scherzo/workflows/*.yaml`, `examples/`, `README.md`, `docs/specs/`, `docs/runbooks/`, `docs/plans/` | Dogfood workflows and reusable examples must track user-visible config/schema changes. |
 
+## Import-boundary guardrails
+
+The deterministic test suite includes `test/architecture_guardrail_test.gleam`,
+which scans `src/**/*.gleam` imports and fails when dependencies cross selected
+architecture boundaries in the wrong direction. Failure messages name the
+importing file, forbidden import, rule id, and remediation guidance.
+
+Current guarded boundaries:
+
+- `src/scherzo/state/**` must not import `scherzo/orchestrator/**`.
+- `src/scherzo/tracker/**` must not import `scherzo/linear*` unless the file is
+  an explicit Linear adapter seam.
+- `src/scherzo/orchestrator/**` subsystem modules must not import
+  `scherzo/orchestrator/daemon`; startup edges that launch the daemon must be
+  allowlisted.
+- Workflow execution/core modules must not import `scherzo/control/server`,
+  `scherzo/control/client`, or `scherzo/orchestrator/daemon`.
+- Imports of `scherzo/tracker/adapter_legacy` are compatibility seams and must
+  have an explicit allowlist entry.
+
+When a new exception is intentional, prefer moving shared types or pure helpers
+to a neutral module first. If that is out of scope, add the narrowest possible
+entry to `boundary_allowlist()` in `test/architecture_guardrail_test.gleam` with
+the exact importing file, exact imported module, matching rule id, and a rationale
+that explains the migration or compatibility seam. The guardrail also fails stale
+or rationale-free allowlist entries, so remove entries as soon as the dependency
+is eliminated.
+
 ## Core invariants
 
 ### Runtime config and routing
