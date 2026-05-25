@@ -4,6 +4,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/json_decode_error
 import scherzo/log
 import scherzo/path
 import scherzo/session/event
@@ -105,6 +106,16 @@ pub type StateMutationResult {
     message: String,
     archive_path: Option(String),
   )
+}
+
+type TombstoneWriteError {
+  TombstonePathUnsafe(String)
+  TombstoneDirectoryCreateFailed(String)
+  TombstoneWriteFailed(String)
+}
+
+type SchemaVersionDecodeError {
+  MalformedSchemaMarker(json.DecodeError)
 }
 
 pub fn artifact_type_to_string(artifact_type: ArtifactType) -> String {
@@ -320,7 +331,7 @@ pub fn inventory(
   dry_run: Bool,
 ) -> CleanupResult {
   case ledger.path_for_workspace_root(workspace_root) {
-    Error(_) ->
+    Error(error) ->
       CleanupResult(
         dry_run: dry_run,
         now_ms: now_ms,
@@ -329,7 +340,7 @@ pub fn inventory(
         would_delete: [],
         deleted: [],
         retained: [],
-        warnings: ["workspace root is invalid"],
+        warnings: ["workspace root is invalid: " <> ledger_error_message(error)],
       )
     Ok(paths) -> {
       let roots = [
@@ -421,9 +432,12 @@ fn delete_decisions(
           ])
         PathSafe(path) ->
           case write_tombstone(workspace_root, decision, now_ms) {
-            Error(reason) ->
+            Error(error) ->
               delete_decisions(workspace_root, rest, now_ms, deleted, [
-                "tombstone failed for " <> decision.id <> ": " <> reason,
+                "tombstone failed for "
+                  <> decision.id
+                  <> ": "
+                  <> tombstone_write_error_message(error),
                 ..warnings
               ])
             Ok(Nil) ->
@@ -465,7 +479,7 @@ fn write_tombstone(
   workspace_root: String,
   decision: LocalArtifactDecision,
   now_ms: Int,
-) -> Result(Nil, String) {
+) -> Result(Nil, TombstoneWriteError) {
   let tombstone_dir =
     path.join(workspace_root, ".scherzo-state/cleanup/tombstones")
   let tombstone_path =
@@ -474,10 +488,13 @@ fn write_tombstone(
       int.to_string(now_ms) <> "-" <> safe_filename(decision.id) <> ".json",
     )
   case check_path_safety(workspace_root, tombstone_path) {
-    PathUnsafe(reason) -> Error(reason)
+    PathUnsafe(reason) -> Error(TombstonePathUnsafe(reason))
     PathSafe(_) ->
       case simplifile.create_directory_all(tombstone_dir) {
-        Error(error) -> Error(simplifile.describe_error(error))
+        Error(error) ->
+          Error(
+            TombstoneDirectoryCreateFailed(simplifile.describe_error(error)),
+          )
         Ok(Nil) ->
           case
             simplifile.write(
@@ -486,9 +503,19 @@ fn write_tombstone(
             )
           {
             Ok(Nil) -> Ok(Nil)
-            Error(error) -> Error(simplifile.describe_error(error))
+            Error(error) ->
+              Error(TombstoneWriteFailed(simplifile.describe_error(error)))
           }
       }
+  }
+}
+
+fn tombstone_write_error_message(error: TombstoneWriteError) -> String {
+  case error {
+    TombstonePathUnsafe(reason) -> reason
+    TombstoneDirectoryCreateFailed(reason) ->
+      "create tombstone directory failed: " <> reason
+    TombstoneWriteFailed(reason) -> "write tombstone failed: " <> reason
   }
 }
 
@@ -605,8 +632,15 @@ fn discover_tombstone_candidates(
 fn file_mtime_ms(file_path: String) -> Option(Int) {
   case simplifile.file_info(file_path) {
     Ok(info) -> Some(info.mtime_seconds * 1000)
-    Error(_) -> None
+    Error(error) -> missing_file_mtime(file_path, error)
   }
+}
+
+fn missing_file_mtime(
+  _file_path: String,
+  _error: simplifile.FileError,
+) -> Option(Int) {
+  None
 }
 
 pub fn cleanup_result_to_json(result: CleanupResult) -> json.Json {
@@ -653,7 +687,7 @@ fn optional_int(value: Option(Int)) -> json.Json {
 
 pub fn inspect_state(workspace_root: String) -> StateStatusResult {
   case ledger.path_for_workspace_root(workspace_root) {
-    Error(_) ->
+    Error(error) ->
       StateStatusResult(
         status: StateCorrupt("workspace root is invalid"),
         workspace_root: workspace_root,
@@ -661,7 +695,7 @@ pub fn inspect_state(workspace_root: String) -> StateStatusResult {
         current_path: "",
         snapshot_path: "",
         archive_dir: "",
-        message: "workspace root is invalid",
+        message: "workspace root is invalid: " <> ledger_error_message(error),
         warnings: [],
       )
     Ok(paths) -> inspect_ledger_paths(paths)
@@ -706,8 +740,15 @@ fn scheduled_records_present(paths: ledger.LedgerPath) -> Bool {
 fn file_contains(path: String, needle: String) -> Bool {
   case simplifile.read(path) {
     Ok(contents) -> string.contains(contents, needle)
-    Error(_) -> False
+    Error(error) -> file_contains_read_failed(path, error)
   }
+}
+
+fn file_contains_read_failed(
+  _path: String,
+  _error: simplifile.FileError,
+) -> Bool {
+  False
 }
 
 fn state_status_for_paths(paths: ledger.LedgerPath) -> StateStatus {
@@ -750,7 +791,8 @@ fn unsupported_or_corrupt_current(current_path: String) -> Option(StateStatus) {
                       <> int.to_string(version),
                   ))
               }
-            Error(reason) -> Some(StateCorrupt(reason))
+            Error(error) ->
+              Some(StateCorrupt(schema_version_error_message(error)))
           }
       }
     }
@@ -778,16 +820,51 @@ fn unsupported_or_corrupt_snapshot(
                       <> int.to_string(version),
                   ))
               }
-            Error(reason) -> Some(StateCorrupt(reason))
+            Error(error) ->
+              Some(StateCorrupt(schema_version_error_message(error)))
           }
       }
   }
 }
 
-fn schema_version_from_json(contents: String) -> Result(Int, String) {
+fn schema_version_from_json(
+  contents: String,
+) -> Result(Int, SchemaVersionDecodeError) {
   case json.parse(contents, schema_version_decoder()) {
     Ok(version) -> Ok(version)
-    Error(_) -> Error("malformed schema marker")
+    Error(error) -> Error(MalformedSchemaMarker(error))
+  }
+}
+
+fn schema_version_error_message(error: SchemaVersionDecodeError) -> String {
+  case error {
+    MalformedSchemaMarker(error) ->
+      "malformed schema marker: " <> json_decode_error.to_string(error)
+  }
+}
+
+fn ledger_error_message(error: ledger.LedgerError) -> String {
+  case error {
+    ledger.Io(message) -> message
+    ledger.LedgerFfiFailed(error) -> ledger_ffi_error_message(error)
+    ledger.UnsupportedVersion(version) ->
+      "unsupported schema version " <> int.to_string(version)
+    ledger.CorruptRecord(line, reason) ->
+      "corrupt record line " <> int.to_string(line) <> ": " <> reason
+  }
+}
+
+fn ledger_ffi_error_message(error: ledger.LedgerFfiError) -> String {
+  case error {
+    ledger.OpenFailed(reason) -> "open failed: " <> reason
+    ledger.WriteFailed(reason) -> "write failed: " <> reason
+    ledger.SyncFailed(reason) -> "sync failed: " <> reason
+    ledger.CloseFailed(reason) -> "close failed: " <> reason
+    ledger.ReadFailed(reason) -> "read failed: " <> reason
+    ledger.StepFailed(reason) -> "step failed: " <> reason
+    ledger.LockFailed(reason) -> "lock failed: " <> reason
+    ledger.UnexpectedFfiFailure(function, detail) ->
+      function <> " failed unexpectedly: " <> detail
   }
 }
 
@@ -996,12 +1073,12 @@ pub fn reinitialize_state(
       )
     True ->
       case ledger.path_for_workspace_root(workspace_root) {
-        Error(_) ->
+        Error(error) ->
           StateMutationResult(
             "reinitialize",
             "failed",
             workspace_root,
-            "workspace root is invalid",
+            "workspace root is invalid: " <> ledger_error_message(error),
             None,
           )
         Ok(paths) ->

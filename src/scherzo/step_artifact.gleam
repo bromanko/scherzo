@@ -4,10 +4,10 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
+import scherzo/json_decode_error
 import scherzo/log
 import scherzo/path
 import scherzo/result_artifact
@@ -110,6 +110,11 @@ pub type StepArtifact {
   )
 }
 
+pub type DecodeError {
+  InvalidStepArtifactJson(json.DecodeError)
+  UnknownStepStatus(String)
+}
+
 pub fn status_to_string(status: StepStatus) -> String {
   case status {
     StepSucceeded -> "success"
@@ -162,18 +167,26 @@ pub fn to_string(artifact: StepArtifact) -> String {
   artifact |> to_json |> json.to_string
 }
 
-pub fn decode_string(contents: String) -> Result(StepArtifact, String) {
+pub fn decode_string(contents: String) -> Result(StepArtifact, DecodeError) {
   case json.parse(contents, decoder()) {
     Ok(artifact) -> Ok(artifact)
-    Error(_) -> Error("invalid_step_artifact_json")
+    Error(error) -> Error(InvalidStepArtifactJson(error))
   }
 }
 
-pub fn status_from_string(status: String) -> Result(StepStatus, String) {
+pub fn describe_decode_error(error: DecodeError) -> String {
+  case error {
+    InvalidStepArtifactJson(error) ->
+      "invalid_step_artifact_json:" <> json_decode_error.to_string(error)
+    UnknownStepStatus(status) -> "unknown_step_status:" <> status
+  }
+}
+
+pub fn status_from_string(status: String) -> Result(StepStatus, DecodeError) {
   case status {
     "success" -> Ok(StepSucceeded)
     "failure" -> Ok(StepFailed)
-    _ -> Error("unknown_step_status:" <> status)
+    _ -> Error(UnknownStepStatus(status))
   }
 }
 
@@ -249,7 +262,8 @@ fn status_decoder() -> decode.Decoder(StepStatus) {
   use status_text <- decode.then(decode.string)
   case status_from_string(status_text) {
     Ok(status) -> decode.success(status)
-    Error(_) -> decode.failure(StepFailed, expected: "StepStatus")
+    Error(error) ->
+      decode.failure(StepFailed, expected: describe_decode_error(error))
   }
 }
 
@@ -904,7 +918,7 @@ pub fn command_failure_details(artifact: StepArtifact) -> String {
     <> artifact.step_id
     <> failure_code_detail(artifact.failure_code)
     <> "\ncommand: "
-    <> option.unwrap(artifact.command, "<not recorded>")
+    <> optional_command_detail(artifact.command)
     <> "\n"
     <> exit_detail(artifact.exit_code)
     <> "\n"
@@ -1069,12 +1083,12 @@ fn repo_relative_path(value: String) -> Option(String) {
 fn cwd_relative_path(value: String) -> Option(String) {
   case path.absolute(".") {
     Ok(root) -> relative_to_root(value, root)
-    Error(_) -> None
+    Error(Nil) -> None
   }
 }
 
 fn relative_to_root(value: String, root: String) -> Option(String) {
-  let root_abs = path.absolute(root) |> result.unwrap(root)
+  let root_abs = path.absolute_or_original(root)
   let root_abs = trim_trailing_slash(root_abs)
   case path.contains(root_abs, value) {
     True ->
@@ -1089,7 +1103,7 @@ fn relative_to_root(value: String, root: String) -> Option(String) {
 fn scherzo_workspace_relative_path(value: String) -> Option(String) {
   case string.split_once(value, on: "/.scherzo/workspaces/") {
     Ok(#(_, rest)) -> Some(".scherzo/workspaces/" <> rest)
-    Error(_) -> None
+    Error(Nil) -> None
   }
 }
 
@@ -1108,6 +1122,13 @@ fn inline(value: String, max_chars: Int) -> String {
   case string.length(compact) > max_chars {
     True -> string.slice(compact, 0, max_chars) <> "…"
     False -> compact
+  }
+}
+
+fn optional_command_detail(command: Option(String)) -> String {
+  case command {
+    Some(command) -> command
+    None -> "<not recorded>"
   }
 }
 
@@ -1188,11 +1209,11 @@ pub fn to_template_locals(
   case dict.get(artifacts, "prepare_context") {
     Ok(artifact) ->
       list.append(artifact_locals("source_preparation", artifact), locals)
-    Error(_) ->
+    Error(Nil) ->
       case dict.get(artifacts, "prepare_plan") {
         Ok(artifact) ->
           list.append(artifact_locals("source_preparation", artifact), locals)
-        Error(_) -> locals
+        Error(Nil) -> locals
       }
   }
 }
@@ -1443,7 +1464,7 @@ fn primary_text(
     None -> ""
     Some(step) ->
       case dict.get(artifacts, step.id) {
-        Error(_) -> ""
+        Error(Nil) -> ""
         Ok(artifact) -> artifact_primary_text(artifact)
       }
   }
@@ -1470,7 +1491,7 @@ fn summary_for_dag(
     [step, ..rest] -> {
       let acc = case dict.get(artifacts, step.id) {
         Ok(artifact) -> [artifact.summary_text, ..acc]
-        Error(_) -> acc
+        Error(Nil) -> acc
       }
       summary_for_dag(rest, artifacts, acc)
     }

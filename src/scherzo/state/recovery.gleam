@@ -172,6 +172,13 @@ pub type RecoveryError {
   WorkspaceRecoveryFailed(reason: String)
 }
 
+type UnsafeRecoveryReason {
+  RecoverySessionFactMissing
+  RecoverySessionFactAmbiguous
+  UnknownInterruptedStep(step_id: String)
+  UnsafeInterruptedCommandStep(step_id: String)
+}
+
 type Build {
   Build(
     runtime: orchestrator_state.RuntimeState,
@@ -233,9 +240,10 @@ pub fn workflow_candidates(
           issue_fingerprint: issue_fingerprint,
           observed_updated_at_ms: observed_updated_at_ms,
           run_root: run_root,
-          recovery_evidence: recovery_evidence_by_run
-            |> dict.get(run_id)
-            |> result.unwrap(workflow_outcome.NoStepRecovery),
+          recovery_evidence: recovery_evidence_or_default(
+            recovery_evidence_by_run,
+            run_id,
+          ),
           attempts: attempts_for_run(projection, run_id),
           contract_input_manifest: projection.workflow_input_manifest(
             projection,
@@ -399,6 +407,16 @@ pub fn describe_error(error: RecoveryError) -> String {
   }
 }
 
+fn unsafe_recovery_reason_to_string(reason: UnsafeRecoveryReason) -> String {
+  case reason {
+    RecoverySessionFactMissing -> "recovery_session_fact_missing"
+    RecoverySessionFactAmbiguous -> "recovery_session_fact_ambiguous"
+    UnknownInterruptedStep(step_id) -> "unknown_interrupted_step:" <> step_id
+    UnsafeInterruptedCommandStep(step_id) ->
+      "unsafe_interrupted_command_step:" <> step_id
+  }
+}
+
 pub fn workflow_recovery_diagnostic_reason(
   diagnostic: WorkflowRecoveryDiagnostic,
 ) -> String {
@@ -436,11 +454,31 @@ fn workflow_task_ref_or_legacy(
   issue_id: String,
   issue_identifier: String,
 ) -> record.TaskRefFields {
-  projection.workflow_task_ref(projection, run_id)
-  |> result.unwrap(record.legacy_linear_task_ref_fields(
-    issue_id,
-    issue_identifier,
-  ))
+  case projection.workflow_task_ref(projection, run_id) {
+    Ok(task_ref) -> task_ref
+    Error(Nil) ->
+      record.legacy_linear_task_ref_fields(issue_id, issue_identifier)
+  }
+}
+
+fn recovery_evidence_or_default(
+  evidence_by_run: Dict(String, workflow_outcome.RecoveryEvidence),
+  run_id: String,
+) -> workflow_outcome.RecoveryEvidence {
+  case dict.get(evidence_by_run, run_id) {
+    Ok(evidence) -> evidence
+    Error(Nil) -> workflow_outcome.NoStepRecovery
+  }
+}
+
+fn observation_or_issue_unavailable(
+  observations: Dict(String, CurrentWorkflowObservation),
+  run_id: String,
+) -> CurrentWorkflowObservation {
+  case dict.get(observations, run_id) {
+    Ok(observation) -> observation
+    Error(Nil) -> IssueUnavailable
+  }
 }
 
 fn attempts_for_run(
@@ -460,8 +498,7 @@ pub fn step_recovery_evidence_for_run(
   run_id: String,
 ) -> workflow_outcome.RecoveryEvidence {
   step_recovery_evidence_by_run(projection)
-  |> dict.get(run_id)
-  |> result.unwrap(workflow_outcome.NoStepRecovery)
+  |> recovery_evidence_or_default(run_id)
 }
 
 fn step_recovery_evidence_by_run(
@@ -471,10 +508,7 @@ fn step_recovery_evidence_by_run(
   |> dict.values
   |> list.fold(dict.new(), fn(evidence_by_run, status) {
     let run_id = step_recovery_status_run_id(status)
-    let evidence =
-      evidence_by_run
-      |> dict.get(run_id)
-      |> result.unwrap(workflow_outcome.NoStepRecovery)
+    let evidence = recovery_evidence_or_default(evidence_by_run, run_id)
     dict.insert(
       evidence_by_run,
       run_id,
@@ -541,8 +575,7 @@ fn finalize_workflow_candidates_loop(
       ))
     [candidate, ..rest] -> {
       let observation =
-        dict.get(observations, candidate.run_id)
-        |> result.unwrap(IssueUnavailable)
+        observation_or_issue_unavailable(observations, candidate.run_id)
       use finalized <- result.try(finalize_one_workflow_candidate(
         candidate,
         observation,
@@ -1177,7 +1210,10 @@ fn recover_attempts_loop(
         }
         projection.StepAttemptPending(workflow_id: workflow_id, ..) ->
           case interrupted_step_is_safe_to_retry(dag, step_id) {
-            Error(reason) -> Error(UnsafeWorkflowRecovery(reason))
+            Error(reason) ->
+              Error(
+                UnsafeWorkflowRecovery(unsafe_recovery_reason_to_string(reason)),
+              )
             Ok(Nil) ->
               recover_attempts_loop(
                 rest,
@@ -1316,7 +1352,10 @@ fn recover_running_or_interrupted_attempt(
     }
     False ->
       case interrupted_step_is_safe_to_retry(dag, step_id) {
-        Error(reason) -> Error(UnsafeWorkflowRecovery(reason))
+        Error(reason) ->
+          Error(
+            UnsafeWorkflowRecovery(unsafe_recovery_reason_to_string(reason)),
+          )
         Ok(Nil) ->
           recover_attempts_loop(
             rest,
@@ -1358,7 +1397,10 @@ fn build_continuation(
       Error(UnsafeWorkflowRecovery("recovery_session_persistence_disabled"))
     True ->
       case continuation_fields(attempt) {
-        Error(reason) -> Error(UnsafeWorkflowRecovery(reason))
+        Error(reason) ->
+          Error(
+            UnsafeWorkflowRecovery(unsafe_recovery_reason_to_string(reason)),
+          )
         Ok(fields) -> {
           let #(
             step_id,
@@ -1434,7 +1476,10 @@ fn attempt_continuation_capable(status: projection.StepAttemptStatus) -> Bool {
 
 fn continuation_fields(
   status: projection.StepAttemptStatus,
-) -> Result(#(String, Int, String, String, String, String, Int), String) {
+) -> Result(
+  #(String, Int, String, String, String, String, Int),
+  UnsafeRecoveryReason,
+) {
   case status {
     projection.StepAttemptRunning(
       step_id: step_id,
@@ -1474,7 +1519,7 @@ fn continuation_fields(
         pi_session_file,
         fact_count,
       )
-    _ -> Error("recovery_session_fact_missing")
+    _ -> Error(RecoverySessionFactMissing)
   }
 }
 
@@ -1486,9 +1531,12 @@ fn require_session_fields(
   pi_session_id: Option(String),
   pi_session_file: Option(String),
   fact_count: Int,
-) -> Result(#(String, Int, String, String, String, String, Int), String) {
+) -> Result(
+  #(String, Int, String, String, String, String, Int),
+  UnsafeRecoveryReason,
+) {
   case fact_count {
-    0 -> Error("recovery_session_fact_missing")
+    0 -> Error(RecoverySessionFactMissing)
     1 ->
       case pi_session_id, pi_session_file {
         Some(session_id), Some(session_file) ->
@@ -1501,9 +1549,9 @@ fn require_session_fields(
             session_file,
             fact_count,
           ))
-        _, _ -> Error("recovery_session_fact_missing")
+        _, _ -> Error(RecoverySessionFactMissing)
       }
-    _ -> Error("recovery_session_fact_ambiguous")
+    _ -> Error(RecoverySessionFactAmbiguous)
   }
 }
 
@@ -1546,10 +1594,9 @@ fn validate_continuation_workspace(
   run_root: String,
   workspace_path: String,
 ) -> Result(Nil, RecoveryError) {
-  let root_abs = path.absolute(workspace_root) |> result.unwrap(workspace_root)
-  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
-  let workspace_abs =
-    path.absolute(workspace_path) |> result.unwrap(workspace_path)
+  let root_abs = path.absolute_or_original(workspace_root)
+  let run_root_abs = path.absolute_or_original(run_root)
+  let workspace_abs = path.absolute_or_original(workspace_path)
   case
     string.trim(workspace_abs) == ""
     || workspace_abs == root_abs
@@ -1583,13 +1630,13 @@ fn is_agent_step(dag: workflow_dag.WorkflowDag, step_id: String) -> Bool {
 fn interrupted_step_is_safe_to_retry(
   dag: workflow_dag.WorkflowDag,
   step_id: String,
-) -> Result(Nil, String) {
+) -> Result(Nil, UnsafeRecoveryReason) {
   case workflow_dag.step_by_id(dag, step_id) {
-    Error(_) -> Error("unknown_interrupted_step:" <> step_id)
+    Error(Nil) -> Error(UnknownInterruptedStep(step_id))
     Ok(step) ->
       case step.kind {
         workflow_dag.CommandStep(_, _) ->
-          Error("unsafe_interrupted_command_step:" <> step_id)
+          Error(UnsafeInterruptedCommandStep(step_id))
         workflow_dag.AgentStep(_, _) -> Ok(Nil)
       }
   }
@@ -1618,9 +1665,8 @@ fn validate_recovered_run_root(
   candidate: WorkflowRecoveryCandidate,
   workspace_root: String,
 ) -> Result(#(String, String), RecoveryError) {
-  let root_abs = path.absolute(workspace_root) |> result.unwrap(workspace_root)
-  let run_root_abs =
-    path.absolute(candidate.run_root) |> result.unwrap(candidate.run_root)
+  let root_abs = path.absolute_or_original(workspace_root)
+  let run_root_abs = path.absolute_or_original(candidate.run_root)
   case
     string.trim(run_root_abs) == ""
     || run_root_abs == root_abs
@@ -1667,10 +1713,8 @@ fn validate_completed_workspace_summary(
   root_abs: String,
   run_root_abs: String,
 ) -> Result(Nil, RecoveryError) {
-  let workspace_run_root_abs =
-    path.absolute(workspace.run_root) |> result.unwrap(workspace.run_root)
-  let workspace_path_abs =
-    path.absolute(workspace.path) |> result.unwrap(workspace.path)
+  let workspace_run_root_abs = path.absolute_or_original(workspace.run_root)
+  let workspace_path_abs = path.absolute_or_original(workspace.path)
   case
     workspace.workflow_id == candidate.workflow_id
     && workspace.run_id == candidate.run_id
@@ -1725,10 +1769,10 @@ fn validate_pending_step_source(
       case dict.get(workspaces, source) {
         Ok(workspace) ->
           validate_existing_recovered_directory(
-            path.absolute(workspace.path) |> result.unwrap(workspace.path),
+            path.absolute_or_original(workspace.path),
             "missing_source_workspace:" <> source <> ":for_step:" <> step.id,
           )
-        Error(_) ->
+        Error(Nil) ->
           case
             source_workspace_can_be_produced_later(
               source,
@@ -1769,7 +1813,7 @@ fn source_workspace_can_be_produced_later(
           )
         False ->
           case workflow_dag.step_by_id(dag, dependency_id) {
-            Error(_) ->
+            Error(Nil) ->
               source_workspace_can_be_produced_later(
                 source,
                 rest,
@@ -1932,10 +1976,20 @@ fn update_next_index(
   step_id: String,
   value: Int,
 ) -> Dict(String, Int) {
-  let current = dict.get(indexes, step_id) |> result.unwrap(1)
+  let current = next_attempt_index_or_first(indexes, step_id)
   case value > current {
     True -> dict.insert(indexes, step_id, value)
     False -> indexes
+  }
+}
+
+fn next_attempt_index_or_first(
+  indexes: Dict(String, Int),
+  step_id: String,
+) -> Int {
+  case dict.get(indexes, step_id) {
+    Ok(index) -> index
+    Error(Nil) -> 1
   }
 }
 
@@ -2496,7 +2550,7 @@ fn recover_one_interrupted_run(
     False -> build
   }
   case dict.get(issue_by_id, issue_id) {
-    Error(_) -> warn(build, "missing_issue_for_interrupted_run:" <> issue_id)
+    Error(Nil) -> warn(build, "missing_issue_for_interrupted_run:" <> issue_id)
     Ok(issue) ->
       case core.is_terminal(config, issue.state) {
         True ->
@@ -2745,8 +2799,10 @@ fn counter_for_runtime(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.IssueCounter {
-  dict.get(runtime.issue_counters, issue_id)
-  |> result.unwrap(orchestrator_state.new_issue_counter())
+  case dict.get(runtime.issue_counters, issue_id) {
+    Ok(counter) -> counter
+    Error(Nil) -> orchestrator_state.new_issue_counter()
+  }
 }
 
 fn park_reason_from_string(text: String) -> reason.ParkReason {
@@ -2764,13 +2820,13 @@ fn identifier_for_issue(
 ) -> String {
   case dict.get(issue_by_id, issue_id) {
     Ok(issue) -> issue.identifier
-    Error(_) ->
+    Error(Nil) ->
       case dict.get(projection.known_workspaces, issue_id) {
         Ok(workspace) -> workspace.issue_identifier
-        Error(_) ->
+        Error(Nil) ->
           case dict.get(projection.issue_counters, issue_id) {
             Ok(counter) -> counter.issue_identifier
-            Error(_) -> issue_id
+            Error(Nil) -> issue_id
           }
       }
   }
@@ -2780,8 +2836,10 @@ fn workspace_for_issue(
   projection: projection.Projection,
   issue_id: String,
 ) -> String {
-  projection.known_workspace_for_issue(projection, issue_id)
-  |> result.unwrap("")
+  case projection.known_workspace_for_issue(projection, issue_id) {
+    Ok(workspace_path) -> workspace_path
+    Error(Nil) -> ""
+  }
 }
 
 fn warn(build: Build, warning: String) -> Build {

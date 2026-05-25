@@ -186,6 +186,17 @@ pub fn artifact_store_fails_closed_for_missing_and_corrupt_artifacts_test() {
     artifact_store.read_step_artifact(store, ref.ref, ref.sha256)
 }
 
+pub fn decode_step_artifact_contents_reports_json_decode_context_test() {
+  let malformed =
+    "{\"schema_version\":2,\"run_id\":1,\"workflow_id\":\"workflow-alpha\",\"step_id\":\"build\",\"attempt_index\":1,\"artifact\":{}}"
+
+  let assert Error(artifact_store.DecodeArtifactFailed(message)) =
+    artifact_store.decode_step_artifact_contents(malformed)
+  assert string.starts_with(message, "invalid_stored_step_artifact:")
+  assert string.contains(message, "path=run_id")
+  assert string.contains(message, "expected=String")
+}
+
 pub fn artifact_store_rejects_unsafe_refs_test() {
   let root = "test/tmp/artifact-store/invalid-ref"
   reset_dir(root)

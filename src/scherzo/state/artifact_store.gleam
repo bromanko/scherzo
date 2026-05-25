@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/hash
+import scherzo/json_decode_error
 import scherzo/json_value
 import scherzo/path
 import scherzo/step_artifact
@@ -107,6 +108,10 @@ pub type ArtifactError {
   InvalidArtifactRef(String)
   DecodeArtifactFailed(String)
   DirectorySyncUnsupported(String)
+}
+
+type StoredArtifactDecodeError {
+  InvalidStoredStepArtifact(json.DecodeError)
 }
 
 type StoredArtifact {
@@ -279,7 +284,7 @@ pub fn write_recovery_artifact_json(
       use artifact_location <- result.try(location(store, ref))
       Ok(ImmutableArtifactRef(
         ref: ref,
-        path: option.unwrap(artifact_location.local_path, ref),
+        path: location_path_or_ref(artifact_location, ref),
         uri: artifact_location.uri,
         display_path: artifact_location.display_path,
         local_path: artifact_location.local_path,
@@ -338,7 +343,8 @@ pub fn decode_step_artifact_contents(
 ) -> Result(step_artifact.StepArtifact, ArtifactError) {
   case decode_stored_string(contents) {
     Ok(stored) -> Ok(stored.artifact)
-    Error(reason) -> Error(DecodeArtifactFailed(reason))
+    Error(error) ->
+      Error(DecodeArtifactFailed(stored_artifact_decode_error_to_string(error)))
   }
 }
 
@@ -580,6 +586,16 @@ fn write_ref(
   }
 }
 
+fn location_path_or_ref(
+  location: ArtifactLocation,
+  fallback_ref: String,
+) -> String {
+  case location.local_path {
+    Some(local_path) -> local_path
+    None -> fallback_ref
+  }
+}
+
 fn structured_ref_from_artifact(
   artifact: ArtifactRef,
   artifact_location: ArtifactLocation,
@@ -660,8 +676,11 @@ fn decode_structured_output_contents(
 ) -> Result(StructuredOutputArtifact, ArtifactError) {
   case json.parse(contents, structured_output_decoder()) {
     Ok(artifact) -> Ok(artifact)
-    Error(_) ->
-      Error(DecodeArtifactFailed("invalid_structured_output_artifact"))
+    Error(error) ->
+      Error(DecodeArtifactFailed(
+        "invalid_structured_output_artifact:"
+        <> json_decode_error.to_string(error),
+      ))
   }
 }
 
@@ -756,10 +775,21 @@ fn empty_structured_output_artifact() -> StructuredOutputArtifact {
   )
 }
 
-fn decode_stored_string(contents: String) -> Result(StoredArtifact, String) {
+fn decode_stored_string(
+  contents: String,
+) -> Result(StoredArtifact, StoredArtifactDecodeError) {
   case json.parse(contents, stored_decoder()) {
     Ok(stored) -> Ok(stored)
-    Error(_) -> Error("invalid_stored_step_artifact")
+    Error(error) -> Error(InvalidStoredStepArtifact(error))
+  }
+}
+
+fn stored_artifact_decode_error_to_string(
+  error: StoredArtifactDecodeError,
+) -> String {
+  case error {
+    InvalidStoredStepArtifact(error) ->
+      "invalid_stored_step_artifact:" <> json_decode_error.to_string(error)
   }
 }
 
@@ -960,13 +990,20 @@ fn has_parent_segment(value: String) -> Bool {
 }
 
 fn ensure_parent(final_path: String) -> Result(Nil, ArtifactError) {
-  let dir = path.dirname(final_path) |> result.unwrap(final_path)
+  let dir = dirname_or_original(final_path)
   simplifile.create_directory_all(dir)
   |> result.map_error(fn(error) {
     ArtifactIo(
       "create artifact directory: " <> simplifile.describe_error(error),
     )
   })
+}
+
+fn dirname_or_original(final_path: String) -> String {
+  case path.dirname(final_path) {
+    Ok(directory) -> directory
+    Error(Nil) -> final_path
+  }
 }
 
 pub fn write_atomic(
@@ -1074,18 +1111,22 @@ fn split_tag(error: String) -> #(String, String) {
   }
 }
 
+// nolint: stringly_typed_error -- leaf FFI returns tagged strings that write_atomic immediately normalizes into ArtifactWriteError.
 @external(erlang, "scherzo_artifact_store_ffi", "write_atomic")
 fn ffi_write_atomic(final_path: String, contents: String) -> Result(Nil, String)
 
+// nolint: stringly_typed_error -- leaf FFI returns tagged strings that write_atomic_bytes immediately normalizes into ArtifactWriteError.
 @external(erlang, "scherzo_artifact_store_ffi", "write_atomic")
 fn ffi_write_atomic_bytes(
   final_path: String,
   contents: BitArray,
 ) -> Result(Nil, String)
 
+// nolint: stringly_typed_error -- leaf FFI returns tagged strings that read_file_bytes immediately normalizes into ArtifactError.
 @external(erlang, "scherzo_artifact_store_ffi", "read_file")
 fn ffi_read_file(path: String) -> Result(BitArray, String)
 
+// nolint: stringly_typed_error -- leaf FFI returns tagged strings that write_immutable immediately normalizes into ArtifactWriteError.
 @external(erlang, "scherzo_artifact_store_ffi", "write_immutable")
 fn ffi_write_immutable(
   final_path: String,

@@ -1,6 +1,6 @@
 # Glinter baseline, rule tiers, and ratchet policy
 
-This note records the LIV-101 rollout baseline, the LIV-102 ratchet decision, the LIV-131 `unwrap_used` audit, the LIV-533 subsystem triage, the LIV-543 orchestrator daemon/transition hardening update, the LIV-545 workspace boundary hardening, the LIV-546 agent/Pi hardening update, and how agents should treat the warning set. The checked production lint gates are:
+This note records the LIV-101 rollout baseline, the LIV-102 ratchet decision, the LIV-131 `unwrap_used` audit, the LIV-533 subsystem triage, the LIV-543 orchestrator daemon/transition hardening update, the LIV-544 state projection/recovery/artifact hardening update, the LIV-545 workspace boundary hardening, the LIV-546 agent/Pi hardening update, and how agents should treat the warning set. The checked production lint gates are:
 
 ```sh
 direnv exec . gleam run -m glinter
@@ -37,11 +37,11 @@ These rules remain visible but non-blocking because the baseline is still too br
 
 | Rule | Current count | Drift from prior documented baseline | Why it stays warning/inventory |
 | --- | ---: | ---: | --- |
-| `thrown_away_error` | 85 | -93 | Many findings are parser/decoder fallback chains or boundary checks that need case-by-case review before blocking. |
+| `thrown_away_error` | 59 | -119 | Many findings are parser/decoder fallback chains or boundary checks that need case-by-case review before blocking. |
 | `discarded_result` | 14 | -105 | Safety-relevant, but current findings include process sends, cleanup, and command-boundary best-effort work that must be triaged by subsystem. |
-| `unwrap_used` | 83 | +4 | LIV-131 audit categories still apply. Keep visible as warning-equivalent inventory until the remaining domain-map and path-boundary helpers or narrow suppressions exist. |
-| `stringly_typed_error` | 80 | +20 | Mostly FFI, tracker/control, workflow contract, and state boundary modules. Prefer typed errors for durable/domain APIs, but migrate gradually to avoid large interface churn. |
-| `error_context_lost` | 7 | +7 | High-signal drift in workflow recovery/output manifest and workspace manifest handling. Fix or explicitly replace errors before treating the LIV-102 promotion as clean again. |
+| `unwrap_used` | 60 | -19 | LIV-131 audit categories still apply, with remaining inventory concentrated in workflow, workspace manifest, tracker, config, and one residual state record default. Keep visible as warning-equivalent inventory until domain-map and path-boundary helpers or narrow suppressions exist. |
+| `stringly_typed_error` | 66 | +6 | Mostly FFI, tracker/control, workflow contract, and residual state boundary modules. Prefer typed errors for durable/domain APIs, but migrate gradually to avoid large interface churn. |
+| `error_context_lost` | 7 | +7 | High-signal drift in workflow recovery/output manifest handling and workspace manifest paths. Fix or explicitly replace errors before treating the LIV-102 promotion as clean again. |
 
 ### Off
 
@@ -87,35 +87,35 @@ A broader exploratory baseline was captured during LIV-101 with a temporary proj
 
 ## Production warning baseline
 
-LIV-533 refreshed the production baseline on 2026-05-23 with both JSON/stat commands above, and LIV-543, LIV-545, and LIV-546 refreshed it again on 2026-05-25 after orchestrator daemon/transition, workspace/workspace-driver filesystem-boundary, and agent/Pi attempt-lifecycle hardening. `glinter` and `scherzo_lint` report the current built-in inventory over 208 files / 116,949 lines: 269 findings, 0 errors, 186 warning-severity findings, and 83 `unwrap_used` findings rendered as `[off]`. `scherzo_lint` adds the custom `scherzo_public_function_labels` rule and currently has no additional findings.
+LIV-533 refreshed the production baseline on 2026-05-23 with both JSON/stat commands above, and LIV-543, LIV-544, LIV-545, and LIV-546 refreshed it again on 2026-05-25 after orchestrator daemon/transition, state projection/recovery/artifact, workspace/workspace-driver filesystem-boundary, and agent/Pi attempt-lifecycle hardening. `glinter` reports the current built-in inventory over 209 files / 118,062 lines: 206 findings, 0 errors, 146 warning-severity findings, and 60 `unwrap_used` findings rendered as `[off]`. `scherzo_lint` adds the custom `scherzo_public_function_labels` rule and currently has no additional findings.
 
 | Rule | Prior documented count | Current count | Drift | Classification |
 | --- | ---: | ---: | ---: | --- |
-| `thrown_away_error` | 178 | 85 | -93 | Keep as warning only; review fallback chains and runtime-boundary catches by subsystem. |
+| `thrown_away_error` | 178 | 59 | -119 | Keep as warning only; review fallback chains and runtime-boundary catches by subsystem. |
 | `discarded_result` | 119 | 14 | -105 | Keep as warning only; prioritize process sends, filesystem cleanup, hooks, and command/control boundaries. |
-| `unwrap_used` | 79 | 83 | +4 | Keep as warning-equivalent inventory; remaining findings are concentrated in recovery, workflow, workspace manifest, and config path/default code. |
-| `stringly_typed_error` | 60 | 80 | +20 | Keep as warning only while durable/domain APIs migrate gradually to typed errors. |
+| `unwrap_used` | 79 | 60 | -19 | Keep as warning-equivalent inventory; remaining findings are concentrated in workflow, workspace manifest, tracker, config path/default code, and one residual state record default. |
+| `stringly_typed_error` | 60 | 66 | +6 | Keep as warning only while durable/domain APIs migrate gradually to typed errors. |
 | `error_context_lost` | 0 | 7 | +7 | High-signal drift; narrow fix or explicit replacement should happen before relying on the LIV-102 ratchet as clean. |
 | `missing_type_annotation` | 0 | 0 | 0 | Clean error-tier baseline. |
 | `scherzo_public_function_labels` | 0 | 0 | 0 | Clean custom Scherzo lint baseline. |
 
-No `// nolint:` suppressions were added for the LIV-101, LIV-102, LIV-131, LIV-533, LIV-543, LIV-545, or LIV-546 rollouts.
+LIV-544 added four narrow `// nolint: stringly_typed_error` suppressions on leaf Erlang artifact-store FFI declarations; their public wrappers immediately normalize tagged strings into `ArtifactWriteError` or `ArtifactError`. No suppressions were added for the LIV-101, LIV-102, LIV-131, LIV-533, LIV-543, LIV-545, or LIV-546 rollouts.
 
-## LIV-533/LIV-543/LIV-545/LIV-546 subsystem hardening triage
+## LIV-533/LIV-543/LIV-544/LIV-545/LIV-546 subsystem hardening triage
 
-Warning ownership should follow runtime boundaries rather than rule names. The table below assigns every current production finding to one subsystem; totals sum to the 269-finding baseline above. LIV-543 reduced the orchestrator-owned row from 112 findings (`thrown_away_error`: 79, `discarded_result`: 20, `stringly_typed_error`: 9, `unwrap_used`: 4) to 18 findings (`thrown_away_error`: 7, `discarded_result`: 2, `stringly_typed_error`: 9). LIV-545 removed the prior workspace/workspace-driver filesystem-boundary cluster from the driver and workspace-run files; the current workspace row is 12 `workspace_manifest.gleam` findings after rebasing. LIV-546 reduced the agent/Pi row from 34 findings (`thrown_away_error`: 9, `discarded_result`: 25) to 0 findings.
+Warning ownership should follow runtime boundaries rather than rule names. The table below assigns every current production finding to one subsystem; totals sum to the 206-finding baseline above. LIV-543 reduced the orchestrator-owned row from 112 findings (`thrown_away_error`: 79, `discarded_result`: 20, `stringly_typed_error`: 9, `unwrap_used`: 4) to 18 findings (`thrown_away_error`: 7, `discarded_result`: 2, `stringly_typed_error`: 9). LIV-544 reduced the state projection/recovery/artifact row from 66 findings (`thrown_away_error`: 26, `stringly_typed_error`: 16, `unwrap_used`: 24) to 3 residual ledger/record findings. LIV-545 removed the prior workspace/workspace-driver filesystem-boundary cluster from the driver and workspace-run files; the current workspace row is 12 `workspace_manifest.gleam` findings after rebasing. LIV-546 reduced the agent/Pi row from 34 findings (`thrown_away_error`: 9, `discarded_result`: 25) to 0 findings.
 
 | Subsystem | Total | `thrown_away_error` | `discarded_result` | `stringly_typed_error` | `unwrap_used` | `error_context_lost` | Primary files |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | Orchestrator / daemon / transition / effect runner | 18 | 7 | 2 | 9 | 0 | 0 | `orchestrator/daemon.gleam`, `orchestrator/core.gleam`, `orchestrator/worker_registry.gleam`, `orchestrator/transition.gleam`, `session/hub.gleam` |
 | Workflow execution | 71 | 20 | 4 | 23 | 22 | 2 | `workflow_run.gleam`, `workflow_repair.gleam`, `workflow_scheduler.gleam`, `command_step.gleam`, `template.gleam` |
-| State ledger / projection / recovery / artifacts | 66 | 26 | 0 | 16 | 24 | 0 | `state/recovery.gleam`, `state/projection.gleam`, `step_artifact.gleam`, `state/artifact_store.gleam`, `state/local_artifacts.gleam` |
+| State ledger / projection / recovery / artifacts | 3 | 0 | 0 | 2 | 1 | 0 | residual `state/ledger.gleam` FFI declarations and one `state/record.gleam` compatibility default |
 | Tracker / Linear / control boundaries | 59 | 22 | 5 | 27 | 5 | 0 | `linear_body_data.gleam`, `linear.gleam`, `linear_contract.gleam`, `control/*`, `port.gleam`, `task.gleam`, `tracker/*` |
 | Config / parsing / operator CLI | 43 | 9 | 3 | 5 | 26 | 0 | `config.gleam`, `config/types.gleam`, `doctor.gleam`, `review_lane_preflight_policy.gleam`, `terminal/*`, `version.gleam` |
 | Workspace / workspace drivers | 12 | 1 | 0 | 0 | 6 | 5 | `workspace_manifest.gleam` |
 | Agent / pi execution | 0 | 0 | 0 | 0 | 0 | 0 | Clean after LIV-546 agent/Pi attempt-lifecycle hardening. |
 
-LIV-543 orchestrator daemon/transition hardening reduced that subsystem to the residual stringly typed daemon/transition helpers plus a few fallback-chain findings in adjacent orchestrator support files. LIV-545 workspace/workspace-driver hardening removed the targeted 36-finding filesystem-boundary cluster (`thrown_away_error`: 3, `discarded_result`: 9, `unwrap_used`: 24); the current workspace row is 12 `workspace_manifest.gleam` findings after rebasing. LIV-546 agent/Pi hardening started from the checked-run subsystem count of 34 findings (`discarded_result`: 25, `thrown_away_error`: 9) across the agent/Pi attempt lifecycle files above and reduced that subsystem to 0 findings. No suppressions were added; workspace cleanup/setup and driver boundary failures now return or surface explicit errors, and agent cleanup, abort, artifact-write, and protocol fallback paths now either return the primary error, emit a lifecycle update, or explicitly use parser fallback helpers.
+LIV-543 orchestrator daemon/transition hardening reduced that subsystem to the residual stringly typed daemon/transition helpers plus a few fallback-chain findings in adjacent orchestrator support files. LIV-544 state hardening started from the checked-run subsystem count of 66 findings and reduced the scoped projection/recovery/artifact files to zero findings by adding typed decode/recovery errors, named default helpers, contextual artifact decode messages, and four documented leaf-FFI suppressions. LIV-545 workspace/workspace-driver hardening removed the targeted 36-finding filesystem-boundary cluster (`thrown_away_error`: 3, `discarded_result`: 9, `unwrap_used`: 24); the current workspace row is 12 `workspace_manifest.gleam` findings after rebasing. LIV-546 agent/Pi hardening started from the checked-run subsystem count of 34 findings (`discarded_result`: 25, `thrown_away_error`: 9) across the agent/Pi attempt lifecycle files above and reduced that subsystem to 0 findings. Workspace cleanup/setup and driver boundary failures now return or surface explicit errors, agent cleanup, abort, artifact-write, and protocol fallback paths now either return the primary error, emit a lifecycle update, or explicitly use parser fallback helpers, and state artifact FFI suppressions document immediate normalization into typed domain errors.
 
 Classification by warning pattern:
 
@@ -134,10 +134,10 @@ High-signal clusters for derivative backlog:
 | --- | --- | --- |
 | P0 | Workflow recovery, workspace manifest, and contract-output error-context hardening | Current `error_context_lost` findings are in workflow repair/output manifest and workspace manifest paths, where lost provenance can make repair failures opaque. |
 | P0/P1 | Residual orchestrator daemon/transition error-handling hardening | LIV-543 reduced this cluster to 18 findings. Remaining work is mostly stringly typed daemon/transition helpers plus a few fallback-chain findings in adjacent orchestrator support files. |
-| P1 | State projection/recovery/artifact typed-error and default-helper hardening | 66 findings affect ledger replay, projection, artifact reads/writes, and recovery defaults. These are restart/repair-sensitive and should be handled together. |
+| Done (LIV-544) | State projection/recovery/artifact typed-error and default-helper hardening | The scoped projection/recovery/artifact files were reduced from 66 subsystem findings to zero; three residual state findings remain in ledger FFI declarations and one record compatibility default. |
 | P1 | Workspace manifest warning triage | Current workspace subsystem findings are 12 `workspace_manifest.gleam` warnings (`thrown_away_error`: 1, `unwrap_used`: 6, `error_context_lost`: 5) after the LIV-545 driver-boundary cleanup. |
-| Done in LIV-545 | Workspace driver filesystem-boundary hardening | The original workspace/workspace-driver boundary findings in the driver and workspace-run files were handled by making cleanup/setup failures explicit and naming stable defaults. |
-| Done in LIV-546 | Agent/pi attempt lifecycle result-handling hardening | The checked-run subsystem count moved from 34 findings to 0 by making cleanup/artifact/protocol failures visible or explicit. |
+| Done (LIV-545) | Workspace driver filesystem-boundary hardening | The original workspace/workspace-driver boundary findings in the driver and workspace-run files were handled by making cleanup/setup failures explicit and naming stable defaults. |
+| Done (LIV-546) | Agent/pi attempt lifecycle result-handling hardening | The checked-run subsystem count moved from 34 findings to 0 by making cleanup/artifact/protocol failures visible or explicit. |
 | P2 | Tracker/Linear/control typed-boundary migration | 59 findings, led by stringly typed FFI/control/Linear errors. This should be a gradual boundary-by-boundary typed-error migration to avoid wide interface churn. |
 | P2 | Config/default helper and suppression audit | 43 findings, mostly explicit config/operator defaults. Convert repeated defaults to named helpers and add narrow `// nolint:` reasons only for stable invariants. |
 
@@ -146,13 +146,13 @@ High-signal clusters for derivative backlog:
 - **Promoted/intended error tier:** `missing_type_annotation`, `error_context_lost`, and the custom `scherzo_public_function_labels` rule. `missing_type_annotation` and `scherzo_public_function_labels` remain clean; `error_context_lost` currently has seven high-signal workflow/workspace manifest findings reported as warnings by the current glinter run and should be fixed or made explicit before treating the ratchet as clean.
 - **Promoted to visible warning-equivalent inventory:** `unwrap_used` after the LIV-131 audit. It has useful signal when touching nearby code, but the remaining baseline is not appropriate for blocking PRs. In glinter 2.16.0, these findings still display as `[off]` because the rule's built-in default severity is `Off`.
 - **Fixed for earlier promotion:** one schedule parsing `error_context_lost` finding was changed from `result.map_error(fn(_) { ... })` to `result.replace_error(...)`, making the intentional context replacement explicit. LIV-131 also fixed high-signal `unwrap_used` cases in command/hook diagnostics, prompt-file path resolution, and workflow fingerprint representation before enabling the warning.
-- **Suppress:** none. Future suppressions must be narrow `// nolint:` comments with reasons, as described below. LIV-533, LIV-543, LIV-545, and LIV-546 did not add suppressions.
+- **Suppress:** only the four LIV-544 artifact-store leaf FFI `stringly_typed_error` suppressions described above. Future suppressions must be narrow `// nolint:` comments with reasons, as described below. No other rollout in this baseline (LIV-101, LIV-102, LIV-131, LIV-533, LIV-543, LIV-545, or LIV-546) added suppressions.
 - **Keep as warning only:** `discarded_result`, `thrown_away_error`, and `stringly_typed_error`; keep `unwrap_used` as visible warning-equivalent inventory. Triage and backlog them by subsystem rather than doing blanket cleanup.
 - **Keep off:** style, complexity, broad export, and FFI rules until a separate rollout proves acceptable signal.
 
 ## LIV-131 `unwrap_used` audit
 
-The initial LIV-131 inventory found 88 production `unwrap_used` findings across 19 files. After fixing high-signal cases, the enabled baseline at the time was 79 findings across 17 files; the current LIV-543/LIV-545/LIV-546 refresh records the drift above. The main categories are:
+The initial LIV-131 inventory found 88 production `unwrap_used` findings across 19 files. After fixing high-signal cases, the enabled baseline at the time was 79 findings across 17 files; the current LIV-543/LIV-544/LIV-545/LIV-546 refresh records the drift above. The main categories are:
 
 | Category | Examples | Classification | Policy |
 | --- | --- | --- | --- |
@@ -276,6 +276,6 @@ The documented test profile above currently reduces that to 132 non-blocking war
 
 1. Create a P0 workflow recovery/workspace manifest/contract-output hardening ticket for the seven current `error_context_lost` findings and adjacent typed contract errors.
 2. Create a P0/P1 residual orchestrator daemon/transition hardening ticket for the 18-finding post-LIV-543 daemon/transition cluster.
-3. Create P1 subsystem tickets for state projection/recovery/artifacts and workspace manifest warning triage; workspace driver filesystem boundaries were completed by LIV-545, and agent/pi attempt lifecycle result handling was completed by LIV-546.
+3. Create P1 subsystem tickets for residual state ledger/record findings and workspace manifest warning triage; scoped state projection/recovery/artifact hardening was completed by LIV-544, workspace driver filesystem boundaries were completed by LIV-545, and agent/pi attempt lifecycle result handling was completed by LIV-546.
 4. Create P2 typed-boundary migration tickets for tracker/Linear/control APIs and a config/default helper audit for stable invariants and narrow suppressions.
 5. If tests are linted, implement the documented test-source policy as a separate command/profile instead of applying the production gate directly to `test/`.
