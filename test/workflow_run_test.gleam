@@ -341,6 +341,40 @@ fn workflow_finished_outcome(root: String) -> String {
   }
 }
 
+fn workflow_finished_outcomes(root: String) -> List(String) {
+  ledger_records(root)
+  |> list.filter(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowRunFinished(..) | record.WorkflowRunFinishedWithTask(..) ->
+        True
+      _ -> False
+    }
+  })
+  |> list.map(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowRunFinished(outcome: outcome, ..)
+      | record.WorkflowRunFinishedWithTask(outcome: outcome, ..) -> outcome
+      _ -> ""
+    }
+  })
+}
+
+fn workflow_diagnostic_reasons(root: String) -> List(String) {
+  ledger_records(root)
+  |> list.filter(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowRunDiagnostic(..) -> True
+      _ -> False
+    }
+  })
+  |> list.map(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowRunDiagnostic(reason: reason, ..) -> reason
+      _ -> ""
+    }
+  })
+}
+
 fn step_finished_outcome(root: String, step_id: String) -> String {
   let records = ledger_records(root)
   let assert Ok(ledger_record) =
@@ -2760,12 +2794,15 @@ pub fn workflow_without_structured_output_behaves_unchanged_test() {
   assert status == template.VString("not_configured")
 }
 
-pub fn workflow_run_completed_cleanup_failure_marks_failed_terminal_test() {
+pub fn workflow_run_completed_cleanup_failure_keeps_success_and_appends_diagnostic_test() {
   let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/post-success-cleanup-warning"
+  reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
     )
+  let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let dependencies =
     workflow_run.Dependencies(
       ..deps(subject, None),
@@ -2774,12 +2811,65 @@ pub fn workflow_run_completed_cleanup_failure_marks_failed_terminal_test() {
         Error(error.WorkspaceIo("delete failed"))
       },
       checkpoint: workflow_checkpoint.Writer(
-        ..workflow_checkpoint.noop_writer(),
+        ..base_checkpoint,
         workflow_finished: fn(finished: workflow_checkpoint.WorkflowFinished) {
           process.send(subject, "workflow_finished:" <> finished.outcome)
-          Ok(Nil)
+          base_checkpoint.workflow_finished(finished)
+        },
+        workflow_diagnostic: fn(
+          diagnostic: workflow_checkpoint.WorkflowDiagnostic,
+        ) {
+          process.send(subject, "workflow_diagnostic:" <> diagnostic.reason)
+          base_checkpoint.workflow_diagnostic(diagnostic)
         },
       ),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert success.run_root
+    == "test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  let assert Some(workflow_run.PostSuccessCleanupWarning(code: code, ..)) =
+    success.cleanup_warning
+  assert code == "workspace_io"
+  assert receive_event(subject) == "prepare:collect:main:"
+  assert receive_event(subject) == "run:collect"
+  assert receive_event(subject) == "after:collect"
+  assert receive_event(subject) == "workflow_finished:completed"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  assert receive_event(subject)
+    == "workflow_diagnostic:post_success_cleanup_failed:workspace_io; run_root=test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+  assert workflow_finished_outcomes(root) == ["completed"]
+  assert workflow_diagnostic_reasons(root)
+    == [
+      "post_success_cleanup_failed:workspace_io; run_root=test/tmp/workflow-run/workspaces/implementation/ABC-123",
+    ]
+}
+
+pub fn workflow_run_failure_cleanup_failure_preserves_primary_reason_test() {
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, Some("collect")),
+      cleanup_run: fn(run_root, _orchestrator, _profile) {
+        process.send(subject, "cleanup:" <> run_root)
+        Error(error.WorkspaceIo("delete failed"))
+      },
     )
 
   let assert Error(failure) =
@@ -2793,14 +2883,12 @@ pub fn workflow_run_completed_cleanup_failure_marks_failed_terminal_test() {
       dependencies,
     )
 
-  assert failure.reason == "cleanup_failed:workspace_io"
+  assert failure.reason == "workflow_step_failed; cleanup_failed:workspace_io"
   assert receive_event(subject) == "prepare:collect:main:"
   assert receive_event(subject) == "run:collect"
   assert receive_event(subject) == "after:collect"
-  assert receive_event(subject) == "workflow_finished:completed"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
-  assert receive_event(subject) == "workflow_finished:failed_fatal"
   test_async.assert_no_extra_message_within(subject, 50)
 }
 

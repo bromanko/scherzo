@@ -119,6 +119,15 @@ pub type WorkflowFinished {
   )
 }
 
+pub type WorkflowDiagnostic {
+  WorkflowDiagnostic(
+    run_id: String,
+    workflow_id: String,
+    issue_id: String,
+    reason: String,
+  )
+}
+
 pub type WorkflowContractManifestRecorded {
   WorkflowContractManifestRecorded(
     run_id: String,
@@ -155,6 +164,7 @@ pub type Writer {
   Writer(
     now_ms: fn() -> Int,
     workflow_finished: fn(WorkflowFinished) -> Result(Nil, CheckpointError),
+    workflow_diagnostic: fn(WorkflowDiagnostic) -> Result(Nil, CheckpointError),
     step_prepared: fn(
       String,
       String,
@@ -211,6 +221,7 @@ pub fn noop_writer() -> Writer {
   Writer(
     now_ms: fn() { 0 },
     workflow_finished: fn(_) { Ok(Nil) },
+    workflow_diagnostic: fn(_) { Ok(Nil) },
     step_prepared: fn(_, _, _, _) { Ok(Nil) },
     step_started: fn(_, _, _, _, _, _, _) { Ok(Nil) },
     step_continuation_started: fn(_, _, _, _, _) { Ok(Nil) },
@@ -354,6 +365,18 @@ pub fn ledger_writer_with_artifact_store(
     now_ms: now_ms,
     workflow_finished: fn(finished) {
       append_body(workspace_root, now_ms, workflow_finished_body(finished))
+    },
+    workflow_diagnostic: fn(diagnostic) {
+      append_body(
+        workspace_root,
+        now_ms,
+        record.WorkflowRunDiagnostic(
+          diagnostic.run_id,
+          diagnostic.workflow_id,
+          diagnostic.issue_id,
+          diagnostic.reason,
+        ),
+      )
     },
     step_prepared: fn(run_id, workflow_id, step_id, workspace) {
       append_body(

@@ -1496,6 +1496,7 @@ fn spawn_recovered_workflow_resumption(
               dependencies.workflow_run_dependencies,
               subject,
               event_hub,
+              session_id,
               dependencies.now_ms,
             )
           process.send(
@@ -1572,6 +1573,7 @@ fn run_recovered_workflow_worker(
   workflow_dependencies: workflow_run.Dependencies,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
+  session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   case runtime_bundle.select_workflow(bundle, recovered.issue) {
@@ -1649,7 +1651,14 @@ fn run_recovered_workflow_worker(
                   resume,
                 )
               {
-                Ok(success) -> Ok(success.worker_success)
+                Ok(success) -> {
+                  publish_post_success_cleanup_warning(
+                    event_hub,
+                    session_id,
+                    success.cleanup_warning,
+                  )
+                  Ok(success.worker_success)
+                }
                 Error(failure) ->
                   Error(yaml_workflow_failure(failure, recovered.issue))
               }
@@ -4713,6 +4722,34 @@ fn publish_recovery_lifecycle(
   }
 }
 
+fn publish_post_success_cleanup_warning(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  warning: Option(workflow_run.PostSuccessCleanupWarning),
+) -> Nil {
+  case warning {
+    None -> Nil
+    Some(workflow_run.PostSuccessCleanupWarning(message: message, ..)) -> {
+      let recovery =
+        session_recovery.cleanup_metadata(
+          "workflow.post_success_cleanup",
+          message,
+          session_event.Retained,
+          None,
+          None,
+        )
+      hub.update_recovery(event_hub, session_id, Some(recovery))
+      event_publisher.lifecycle_with_recovery(
+        event_hub,
+        session_id,
+        session_event.RecoveryCleanup,
+        Some(message),
+        Some(recovery),
+      )
+    }
+  }
+}
+
 fn lifecycle_name_for_recovery(
   status: session_event.RecoveryStatus,
 ) -> session_event.LifecycleEventName {
@@ -4795,6 +4832,7 @@ fn spawn_worker(
           dependencies.workflow_run_dependencies,
           subject,
           event_hub,
+          session_id,
           dependencies.now_ms,
         )
       process.send(subject, WorkerFinished(issue.id, run_id, result))
@@ -4988,6 +5026,7 @@ fn spawn_scheduled_worker_with_run_root(
           dependencies.workflow_run_dependencies,
           subject,
           event_hub,
+          session_id,
           dependencies.now_ms,
         )
       process.send(subject, ScheduledWorkerFinished(pending.run_id, result))
@@ -5032,6 +5071,7 @@ fn run_scheduled_workflow_worker(
   workflow_dependencies: workflow_run.Dependencies,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
+  session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(workflow_run.WorkflowRunSuccess, workflow_run.WorkflowRunFailure) {
   let workflow_dependencies =
@@ -5042,20 +5082,32 @@ fn run_scheduled_workflow_worker(
         now_ms,
       ),
     )
-  workflow_run.execute_scheduled(
-    scheduled,
-    dag,
-    bundle.orchestrator,
-    tracker_client,
-    secrets,
-    yaml_scheduled_workflow_dependencies(
-      workflow_dependencies,
+  case
+    workflow_run.execute_scheduled(
       scheduled,
-      daemon_subject,
-      event_hub,
-      now_ms,
-    ),
-  )
+      dag,
+      bundle.orchestrator,
+      tracker_client,
+      secrets,
+      yaml_scheduled_workflow_dependencies(
+        workflow_dependencies,
+        scheduled,
+        daemon_subject,
+        event_hub,
+        now_ms,
+      ),
+    )
+  {
+    Ok(success) -> {
+      publish_post_success_cleanup_warning(
+        event_hub,
+        session_id,
+        success.cleanup_warning,
+      )
+      Ok(success)
+    }
+    Error(failure) -> Error(failure)
+  }
 }
 
 fn scheduled_session_id(run_id: String, attempt: Int) -> String {
@@ -5071,6 +5123,7 @@ fn run_workflow_worker(
   workflow_dependencies: workflow_run.Dependencies,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
+  session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   case runtime_bundle.select_workflow(bundle, issue) {
@@ -5103,7 +5156,14 @@ fn run_workflow_worker(
           ),
         )
       {
-        Ok(success) -> Ok(success.worker_success)
+        Ok(success) -> {
+          publish_post_success_cleanup_warning(
+            event_hub,
+            session_id,
+            success.cleanup_warning,
+          )
+          Ok(success.worker_success)
+        }
         Error(failure) -> Error(yaml_workflow_failure(failure, issue))
       }
     }
