@@ -81,7 +81,13 @@ fn write_fake_jj(path: String) -> Nil {
       path,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> \"$SCHERZO_FAKE_JJ_LOG\"\n"
-        <> "if [ \"$1\" = --repository ]; then shift 2; fi\n"
+        <> "while [ $# -gt 0 ]; do\n"
+        <> "  case \"$1\" in\n"
+        <> "    --repository) shift 2 ;;\n"
+        <> "    --ignore-working-copy) shift ;;\n"
+        <> "    *) break ;;\n"
+        <> "  esac\n"
+        <> "done\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_JJ_FETCH_FAIL:-}\" = 1 ]; then echo 'simulated fetch failure' >&2; exit 1; fi\n"
         <> "  exit 0\n"
@@ -1539,7 +1545,7 @@ pub fn jj_driver_lifecycle_remove_skips_portable_scherzo_bridge_test() {
     )
 
   assert_exit(artifact, 0)
-  assert log_lines(log) == ["root", "workspace forget"]
+  assert log_lines(log) == ["root", "--ignore-working-copy workspace forget"]
 }
 
 pub fn jj_driver_lifecycle_remove_forgets_run_workspaces_test() {
@@ -1557,7 +1563,7 @@ pub fn jj_driver_lifecycle_remove_forgets_run_workspaces_test() {
     )
 
   assert_exit(artifact, 0)
-  assert log_lines(log) == ["root", "workspace forget"]
+  assert log_lines(log) == ["root", "--ignore-working-copy workspace forget"]
 }
 
 pub fn jj_driver_lifecycle_remove_surfaces_forget_failure_test() {
@@ -1581,7 +1587,7 @@ pub fn jj_driver_lifecycle_remove_surfaces_forget_failure_test() {
   assert string.contains(artifact.stderr, "simulated forget failure")
   assert string.contains(artifact.stderr, "could not forget jj workspace")
   assert simplifile.is_directory(run_root) == Ok(True)
-  assert log_lines(log) == ["root", "workspace forget"]
+  assert log_lines(log) == ["root", "--ignore-working-copy workspace forget"]
 }
 
 pub fn jj_driver_lifecycle_remove_rejects_unsafe_targets_test() {
