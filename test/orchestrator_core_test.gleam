@@ -9,6 +9,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 import scherzo/workflow_policy
 
 fn config() -> config_types.EffectiveConfig {
@@ -110,6 +111,31 @@ fn enforcing_config() -> config_types.EffectiveConfig {
       ..config().linear_contract,
       workflow_labels: ["bugfix", "research"],
       enforce_issue_workflow_labels: True,
+    ),
+  )
+}
+
+fn config_with_failure_state(
+  state_name: String,
+) -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    ..config(),
+    handoff: config_types.HandoffConfig(
+      ..config().handoff,
+      completion_states: Some(workflow_completion_policy.CompletionStatePolicy(
+        default_completion_state: workflow_completion_policy.StateByName(
+          "In Review",
+        ),
+        no_review_completion_state: Some(workflow_completion_policy.StateByName(
+          "Done",
+        )),
+        failure_state: workflow_completion_policy.StateByName(state_name),
+        partial_success_state: workflow_completion_policy.StateByName(
+          state_name,
+        ),
+        cancellation_state: None,
+        workflows: dict.new(),
+      )),
     ),
   )
 }
@@ -301,6 +327,14 @@ pub fn candidate_sorting_and_eligibility_test() {
   assert !core.should_dispatch(
     state,
     config(),
+    tracker_issue.Issue(
+      ..b,
+      state: issue_state.from_string_unchecked("In Progress"),
+    ),
+  )
+  assert !core.should_dispatch(
+    state,
+    config(),
     tracker_issue.Issue(..b, state: issue_state.from_string_unchecked("Done")),
   )
 }
@@ -353,12 +387,13 @@ pub fn retry_policy_invalid_can_stop_retry_test() {
     )
   let core.Transition(state: retry_state, effects: _) =
     core.apply_worker_failure(running, enforcing_config(), "a", issue, 100)
-  assert core.retry_candidate_preconditions_satisfied(
-    retry_state,
-    enforcing_config(),
-    "a",
-    issue,
-  )
+  assert core.retry_candidate_precondition_failure(
+      retry_state,
+      enforcing_config(),
+      "a",
+      issue,
+    )
+    == None
   let core.Transition(state: stopped, effects:) =
     core.stop_retry_for_policy_invalid(retry_state, "a")
   assert !dict.has_key(stopped.retry_attempts, "a")
@@ -937,19 +972,43 @@ pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
 
   assert effects
     == [
-      core.CancelRetry("a", 1, "retry_not_dispatchable"),
+      core.CancelRetry("a", 1, "retry_terminal_state:Done"),
       core.ReleaseClaim("a"),
     ]
   assert !dict.has_key(next.retry_attempts, "a")
   assert !dict.has_key(next.claimed, "a")
 }
 
-pub fn retry_candidate_non_active_issue_clears_retry_without_no_slots_test() {
+pub fn retry_candidate_non_dispatch_failure_state_can_dispatch_test() {
+  let config = config_with_failure_state("Triage")
   let issue = issue("a", "ABC-1", "Todo", Some(1))
-  let state =
-    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
+  let state = core.apply_worker_start(core.new_state(config), issue, "/tmp/ws")
   let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config(), "a", issue, 100)
+    core.apply_worker_failure(state, config, "a", issue, 100)
+  let triage =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Triage"),
+    )
+
+  let core.Transition(state: next, effects: effects) =
+    core.handle_retry_candidate(retry_state, config, "a", Ok(Some(triage)))
+
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_dispatch"),
+      core.Dispatch(triage),
+    ]
+  assert !dict.has_key(next.retry_attempts, "a")
+  assert dict.has_key(next.claimed, "a")
+}
+
+pub fn retry_candidate_non_retryable_state_clears_retry_test() {
+  let config = config_with_failure_state("Triage")
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let state = core.apply_worker_start(core.new_state(config), issue, "/tmp/ws")
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, config, "a", issue, 100)
   let backlog =
     tracker_issue.Issue(
       ..issue,
@@ -957,11 +1016,11 @@ pub fn retry_candidate_non_active_issue_clears_retry_without_no_slots_test() {
     )
 
   let core.Transition(state: next, effects: effects) =
-    core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(backlog)))
+    core.handle_retry_candidate(retry_state, config, "a", Ok(Some(backlog)))
 
   assert effects
     == [
-      core.CancelRetry("a", 1, "retry_not_dispatchable"),
+      core.CancelRetry("a", 1, "retry_non_retryable_state:Backlog"),
       core.ReleaseClaim("a"),
     ]
   assert !dict.has_key(next.retry_attempts, "a")

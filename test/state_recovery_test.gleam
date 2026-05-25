@@ -15,6 +15,7 @@ import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 import scherzo/workflow_outcome
 
 pub fn current_projection_sources_emit_only_backed_recovery_metadata_test() {
@@ -494,7 +495,7 @@ pub fn retry_for_missing_issue_is_cancelled_during_recovery_test() {
   )
 }
 
-pub fn retry_for_non_active_issue_is_cancelled_during_recovery_test() {
+pub fn retry_for_configured_failure_state_is_restored_during_recovery_test() {
   let projection =
     projection.fold([
       record.with_id(
@@ -511,6 +512,81 @@ pub fn retry_for_non_active_issue_is_cancelled_during_recovery_test() {
     ])
   let refreshed = issue("issue-1", "ABC-1", "Triage")
 
+  let assert Ok(plan) =
+    recovery.plan(
+      projection,
+      config_with_failure_state("Triage"),
+      [refreshed],
+      7000,
+    )
+
+  let assert [recovery.RecoveredRetry(delay_ms: 0, generation: 2, ..)] =
+    plan.retry_timers
+  assert dict.has_key(plan.runtime.retry_attempts, "issue-1")
+  assert dict.has_key(plan.runtime.claimed, "issue-1")
+  assert plan.warnings == []
+  assert !has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_non_retryable_state:Triage",
+  )
+}
+
+pub fn retry_for_non_retryable_issue_is_cancelled_during_recovery_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+    ])
+  let refreshed = issue("issue-1", "ABC-1", "Backlog")
+
+  let assert Ok(plan) =
+    recovery.plan(
+      projection,
+      config_with_failure_state("Triage"),
+      [refreshed],
+      7000,
+    )
+
+  assert plan.retry_timers == []
+  assert !dict.has_key(plan.runtime.retry_attempts, "issue-1")
+  assert !dict.has_key(plan.runtime.claimed, "issue-1")
+  assert plan.warnings == []
+  assert has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_non_retryable_state:Backlog",
+  )
+}
+
+pub fn retry_for_terminal_issue_is_cancelled_during_recovery_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+    ])
+  let refreshed = issue("issue-1", "ABC-1", "Done")
+
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
   assert plan.retry_timers == []
@@ -521,7 +597,7 @@ pub fn retry_for_non_active_issue_is_cancelled_during_recovery_test() {
     plan.records_to_append,
     "issue-1",
     2,
-    "recovery_non_active_issue",
+    "recovery_terminal_issue",
   )
 }
 
@@ -947,6 +1023,31 @@ fn config() -> config_types.EffectiveConfig {
       max_comments_per_tick: 50,
       acknowledge_success: True,
       acknowledge_rejection: True,
+    ),
+  )
+}
+
+fn config_with_failure_state(
+  state_name: String,
+) -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    ..config(),
+    handoff: config_types.HandoffConfig(
+      ..config().handoff,
+      completion_states: Some(workflow_completion_policy.CompletionStatePolicy(
+        default_completion_state: workflow_completion_policy.StateByName(
+          "In Review",
+        ),
+        no_review_completion_state: Some(workflow_completion_policy.StateByName(
+          "Done",
+        )),
+        failure_state: workflow_completion_policy.StateByName(state_name),
+        partial_success_state: workflow_completion_policy.StateByName(
+          state_name,
+        ),
+        cancellation_state: None,
+        workflows: dict.new(),
+      )),
     ),
   )
 }

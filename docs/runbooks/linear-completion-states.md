@@ -28,6 +28,8 @@ handoff:
         requires_review: true
 ```
 
+The failure state does not need to be listed in `tracker.dispatch_states`. Dispatch states gate only new initial issue pickup; automatic failure retries and explicit operator retries can resume the same issue from `tracker.active_states` or a configured retry handoff state such as the failure, partial-success, or cancellation state while still enforcing parked, active/pending, terminal, workflow drift, and recovery safety checks.
+
 If your Linear team uses different names, configure those names instead. If names are ambiguous or unstable, use ids:
 
 ```yaml

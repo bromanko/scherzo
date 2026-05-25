@@ -2035,13 +2035,13 @@ fn restore_scheduled_retry(
                     "recovery_terminal_issue",
                   )
                 False ->
-                  case core.is_active(config, issue.state) {
+                  case config_types.retry_state_allowed(config, issue.state) {
                     False ->
                       cancel_recovered_retry(
                         build,
                         issue_id,
                         generation,
-                        "recovery_non_active_issue",
+                        config_types.recovery_non_retryable_reason(issue.state),
                       )
                     True -> {
                       let remaining =

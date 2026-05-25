@@ -1167,15 +1167,15 @@ fn handle_retry_issue_candidate(
           ),
         )
       case
-        core.retry_candidate_preconditions_satisfied_without_slot_capacity(
+        core.retry_candidate_precondition_failure(
           state.runtime,
           context.effective,
           issue_id,
           issue,
         )
       {
-        False -> release_retry_claim(state, issue_id, "retry_not_dispatchable")
-        True ->
+        Some(reason) -> release_retry_claim(state, issue_id, reason)
+        None ->
           case
             workflow_policy.classify_issue(
               context.effective.linear_contract,
