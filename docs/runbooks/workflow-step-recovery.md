@@ -107,4 +107,14 @@ For deeper transcript inspection, replay the nested recovery session directly:
 scripts/scherzoctl events --pretty <recovery-session-id>
 ```
 
+## Protected retry checkpoints
+
+Self-healing recovery may edit the normal retained workspace under `StepContext.workspace_path`, but it must not leave ledger-addressed retry checkpoints mutated. Scherzo protects these retained artifact paths for the current run:
+
+- `.scherzo-state/artifacts/runs/<run>/<step>/attempt-<n>.json`
+- `.scherzo-state/artifacts/runs/<run>/inputs.v1.json`
+- `.scherzo-state/artifacts/runs/<run>/outputs.v1.json` when an output manifest was already recorded
+
+If a recovery worker changes or deletes one of those protected files, Scherzo restores the original bytes before the recovery result is accepted and appends the `protected_checkpoint_restored` diagnostic to recovery history. If Scherzo cannot read, hash, or restore a protected checkpoint, recovery stops early with `recovery_artifact_restore_failed` instead of proceeding to a later retry-step validation failure.
+
 Workflow terminal outcomes remain `completed` and `failed_fatal` for clean runs. When same-run step-recovery evidence exists, terminal workflow outcomes may instead be `succeeded_after_recovery` or `failed_after_recovery`.

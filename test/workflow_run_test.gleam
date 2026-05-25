@@ -5944,6 +5944,95 @@ fn broken_command_recovery_dag(extra_yaml: String) -> workflow_dag.WorkflowDag {
   dag
 }
 
+fn checkpoint_guard_recovery_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: upstream\n    kind: command\n    run: upstream\n    workspace: main\n  - id: broken\n    kind: command\n    run: broken\n    depends_on: [upstream]\n    workspace: main\n    recover:\n      attempts: 1\n      prompt: repair\n",
+    )
+  dag
+}
+
+fn checkpoint_guard_contract_recovery_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    task:\n      type: document.markdown\n      source: issue_context\nsteps:\n  - id: upstream\n    kind: command\n    run: upstream\n    workspace: main\n  - id: broken\n    kind: command\n    run: broken\n    depends_on: [upstream]\n    workspace: main\n    recover:\n      attempts: 1\n      prompt: repair\n",
+    )
+  dag
+}
+
+fn checkpoint_guard_orchestrator(
+  root: String,
+) -> config_types.OrchestratorConfig {
+  let base = orchestrator()
+  config_types.OrchestratorConfig(
+    ..base,
+    config_dir: root,
+    effective: config_types.EffectiveConfig(
+      ..base.effective,
+      workspace: config_types.WorkspaceConfig(root: root),
+    ),
+  )
+}
+
+fn artifact_path(root: String, ref: String) -> String {
+  artifact_root(root) <> "/" <> ref
+}
+
+fn run_workspace_path(root: String, workspace_name: String) -> String {
+  absolute_path(root)
+  <> "/implementation/ABC-123/run-1/workspaces/"
+  <> workspace_name
+}
+
+fn recorded_artifact_sha(
+  root: String,
+  step_id: String,
+  attempt_index: Int,
+) -> String {
+  let assert Ok(sha256) =
+    ledger_records(root)
+    |> list.find_map(fn(ledger_record) {
+      case ledger_record.body {
+        record.StepAttemptFinished(
+          step_id: finished_step_id,
+          attempt_index: finished_attempt_index,
+          artifact_sha256: artifact_sha256,
+          ..,
+        )
+          if finished_step_id == step_id
+          && finished_attempt_index == attempt_index
+        -> Ok(artifact_sha256)
+        _ -> Error(Nil)
+      }
+    })
+  sha256
+}
+
+fn recorded_input_manifest_sha(root: String) -> String {
+  let assert Ok(sha256) =
+    ledger_records(root)
+    |> list.find_map(fn(ledger_record) {
+      case ledger_record.body {
+        record.WorkflowRunInputsRecorded(artifact_sha256: artifact_sha256, ..) ->
+          Ok(artifact_sha256)
+        _ -> Error(Nil)
+      }
+    })
+  sha256
+}
+
+fn prepared_attempt_count(root: String, step_id: String) -> Int {
+  ledger_records(root)
+  |> list.filter(fn(ledger_record) {
+    case ledger_record.body {
+      record.StepAttemptPrepared(step_id: prepared_step_id, ..) ->
+        prepared_step_id == step_id
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
 fn prompt_mode_name(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
     workflow_attempt.OriginalPrompt(_) -> "original"
@@ -6213,6 +6302,514 @@ pub fn step_recovery_gave_up_preserves_original_failure_test() {
       record.kind(ledger_record.body) == "workflow_step_recovery_finished"
     })
     |> list.map(fn(ledger_record) { ledger_record.body })
+}
+
+pub fn recovery_checkpoint_preflight_failure_stops_before_worker_and_retry_test() {
+  let root = "test/tmp/workflow-run/recovery-checkpoint-preflight"
+  let subject = process.new_subject()
+  reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base = workflow_run.default_dependencies()
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        case context.step_id, context.attempt_index {
+          "upstream", _ ->
+            step_artifact.from_command_result(
+              context.step_id,
+              0,
+              "stdout:upstream",
+              "",
+              False,
+              secrets,
+              limits,
+            )
+          "broken", 1 -> {
+            let ref = artifact_store.artifact_ref("run-1", "upstream", 1)
+            let assert Ok(Nil) =
+              simplifile.write(
+                artifact_path(root, ref),
+                "corrupted before recovery",
+              )
+            step_artifact.from_command_result(
+              context.step_id,
+              1,
+              "stdout:broken",
+              "",
+              False,
+              secrets,
+              limits,
+            )
+          }
+          _, _ -> panic as "unexpected broken retry"
+        }
+      },
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(subject, "recovery-worker-called")
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      checkpoint_guard_recovery_dag(),
+      checkpoint_guard_orchestrator(root),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert prepared_attempt_count(root, "broken") == 1
+  test_async.assert_no_extra_message_within(subject, 50)
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "recovery_artifact_restore_failed",
+      "Protected checkpoint preflight failed",
+      reason,
+      None,
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  assert string.contains(reason, "hash mismatch")
+}
+
+pub fn recovery_checkpoint_restore_preserves_workspace_edits_before_retry_test() {
+  let root = "test/tmp/workflow-run/recovery-checkpoint-restore"
+  reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base = workflow_run.default_dependencies()
+  let workspace_marker =
+    run_workspace_path(root, "main") <> "/recovery-marker.txt"
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        case context.step_id, context.attempt_index {
+          "upstream", _ ->
+            step_artifact.from_command_result(
+              context.step_id,
+              0,
+              "stdout:upstream",
+              "",
+              False,
+              secrets,
+              limits,
+            )
+          "broken", 1 ->
+            step_artifact.from_command_result(
+              context.step_id,
+              1,
+              "stdout:broken",
+              "",
+              False,
+              secrets,
+              limits,
+            )
+          "broken", 2 -> {
+            let ref = artifact_store.artifact_ref("run-1", "upstream", 1)
+            let assert Ok(contents) = simplifile.read(artifact_path(root, ref))
+            let expected_sha = recorded_artifact_sha(root, "upstream", 1)
+            assert hash.sha256_hex(contents) == expected_sha
+            let assert Ok("marker") = simplifile.read(workspace_marker)
+            step_artifact.from_command_result(
+              context.step_id,
+              0,
+              "stdout:broken-fixed",
+              "",
+              False,
+              secrets,
+              limits,
+            )
+          }
+          _, _ -> panic as "unexpected step"
+        }
+      },
+      agent_step: fn(
+        _issue,
+        _context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        let ref = artifact_store.artifact_ref("run-1", "upstream", 1)
+        let assert Ok(Nil) =
+          simplifile.write(
+            artifact_path(root, ref),
+            "corrupted during recovery",
+          )
+        let assert Ok(Nil) = simplifile.write(workspace_marker, "marker")
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      checkpoint_guard_recovery_dag(),
+      checkpoint_guard_orchestrator(root),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "broken")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "retry_requested",
+      "patched",
+      reason,
+      Some(2),
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  assert string.contains(reason, "protected_checkpoint_restored")
+  assert string.contains(
+    reason,
+    artifact_store.artifact_ref("run-1", "upstream", 1),
+  )
+}
+
+pub fn recovery_checkpoint_restores_mutated_input_manifest_test() {
+  let root = "test/tmp/workflow-run/recovery-checkpoint-input-manifest"
+  reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base = workflow_run.default_dependencies()
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let exit_code = case context.step_id {
+          "broken" -> 1
+          _ -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> context.step_id,
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        let ref = artifact_store.input_manifest_ref("run-1")
+        let assert Ok(Nil) =
+          simplifile.write(artifact_path(root, ref), "corrupted input manifest")
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "gave_up",
+            "not fixable",
+            "needs human help",
+          )),
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      checkpoint_guard_contract_recovery_dag(),
+      checkpoint_guard_orchestrator(root),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  let ref = artifact_store.input_manifest_ref("run-1")
+  let assert Ok(contents) = simplifile.read(artifact_path(root, ref))
+  assert hash.sha256_hex(contents) == recorded_input_manifest_sha(root)
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "gave_up",
+      _,
+      reason,
+      None,
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  assert string.contains(reason, "protected_checkpoint_restored")
+  assert string.contains(reason, "runs/run-1/inputs.v1.json")
+}
+
+pub fn recovery_checkpoint_restore_failure_stops_before_retry_test() {
+  let root = "test/tmp/workflow-run/recovery-checkpoint-restore-failure"
+  reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base = workflow_run.default_dependencies()
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let exit_code = case context.step_id {
+          "broken" -> 1
+          _ -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> context.step_id,
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        let ref = artifact_store.artifact_ref("run-1", "upstream", 1)
+        let path = artifact_path(root, ref)
+        let _ = simplifile.delete(path)
+        let assert Ok(Nil) = simplifile.create_directory_all(path)
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "retry_requested",
+            "patched",
+            "ready for retry",
+          )),
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      checkpoint_guard_recovery_dag(),
+      checkpoint_guard_orchestrator(root),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert prepared_attempt_count(root, "broken") == 1
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "recovery_artifact_restore_failed",
+      "Protected checkpoint restoration failed",
+      reason,
+      None,
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  assert string.contains(reason, "protected checkpoint")
+}
+
+pub fn recovery_checkpoint_worker_failure_restores_mutated_artifact_test() {
+  let root = "test/tmp/workflow-run/recovery-checkpoint-worker-failure"
+  reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base = workflow_run.default_dependencies()
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let exit_code = case context.step_id {
+          "broken" -> 1
+          _ -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> context.step_id,
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        let ref = artifact_store.artifact_ref("run-1", "upstream", 1)
+        let assert Ok(Nil) =
+          simplifile.write(
+            artifact_path(root, ref),
+            "corrupted before worker failure",
+          )
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("recovery failed")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: Some(issue()),
+        ))
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      checkpoint_guard_recovery_dag(),
+      checkpoint_guard_orchestrator(root),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert prepared_attempt_count(root, "broken") == 1
+  let ref = artifact_store.artifact_ref("run-1", "upstream", 1)
+  let assert Ok(contents) = simplifile.read(artifact_path(root, ref))
+  assert hash.sha256_hex(contents) == recorded_artifact_sha(root, "upstream", 1)
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "worker_failed",
+      "Recovery worker failed",
+      reason,
+      None,
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  assert string.contains(reason, "protected_checkpoint_restored")
+  assert string.contains(reason, ref)
 }
 
 pub fn failed_recovery_worker_preserves_original_failure_test() {
