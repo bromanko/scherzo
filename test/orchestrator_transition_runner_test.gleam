@@ -115,6 +115,7 @@ pub fn transition_runner_retry_continue_regardless_keeps_timer_after_append_fail
   assert interpreter.data(shell)
     == [
       "retry:finish:issue-1",
+      "log:retry_refresh_failed",
       "append:retry_cancel:issue-1:2",
       "retry:cancel:issue-1",
       "append:retry_schedule:issue-1:2",
