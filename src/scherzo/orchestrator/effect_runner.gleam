@@ -442,7 +442,7 @@ fn spawn_effect_worker(
             subject,
             WorkerFinished(queued.id, run_side_effect(queued.effect)),
           )
-        Error(_) -> Nil
+        Error(Nil) -> Nil
       }
     })
   case process.receive(ready, within: 1000) {
@@ -451,13 +451,13 @@ fn spawn_effect_worker(
       process.send(start, Nil)
       #(pid, monitor)
     }
-    Error(_) -> #(pid, process.monitor(pid))
+    Error(Nil) -> #(pid, process.monitor(pid))
   }
 }
 
 fn finish_effect(state: State, id: Int, result: EffectResult) -> State {
   case dict.get(state.in_flight, id) {
-    Error(_) -> state
+    Error(Nil) -> state
     Ok(in_flight) -> {
       process.demonitor_process(in_flight.monitor)
       let state =
@@ -476,10 +476,10 @@ fn handle_worker_down(state: State, down: process.Down) -> State {
   case down {
     process.ProcessDown(monitor, _, reason) ->
       case dict.get(state.monitors, monitor) {
-        Error(_) -> state
+        Error(Nil) -> state
         Ok(id) ->
           case dict.get(state.in_flight, id) {
-            Error(_) ->
+            Error(Nil) ->
               State(..state, monitors: dict.delete(state.monitors, monitor))
             Ok(in_flight) -> {
               let reason = down_reason(reason)

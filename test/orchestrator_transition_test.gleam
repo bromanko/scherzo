@@ -1,8 +1,10 @@
 import gleam/dict
+import gleam/list
 import gleam/option.{None, Some}
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
@@ -160,4 +162,48 @@ pub fn snapshot_returns_runtime_state_test() {
   let state = fixture_state()
 
   assert transition.snapshot(state) == state.runtime
+}
+
+pub fn retry_refresh_failure_logs_error_before_reschedule_test() {
+  let issue = fixture_issue()
+  let runtime = fixture_runtime()
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..runtime,
+      retry_attempts: dict.insert(
+        runtime.retry_attempts,
+        issue.id,
+        orchestrator_state.RetryEntry(issue.id, 1000, 7),
+      ),
+      claimed: dict.insert(runtime.claimed, issue.id, issue.identifier),
+    )
+  let state = transition_types.State(..fixture_state(), runtime: runtime)
+
+  let outcome =
+    transition.handle(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        7,
+        Error("tracker_unavailable"),
+        fixture_context(),
+      ),
+      state,
+    )
+
+  assert list.any(outcome.effects, fn(effect) {
+    case effect {
+      effects_types.Log(
+        "warn",
+        "retry_refresh_failed",
+        [#("issue_id", "issue-1"), #("error", "tracker_unavailable")],
+      ) -> True
+      _ -> False
+    }
+  })
+  assert list.any(outcome.effects, fn(effect) {
+    case effect {
+      effects_types.ScheduleRetryTimer("issue-1", _, _, _) -> True
+      _ -> False
+    }
+  })
 }
