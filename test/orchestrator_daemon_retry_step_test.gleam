@@ -6,6 +6,7 @@ import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/error
 import scherzo/handoff
+import scherzo/hash
 import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/session/hub
@@ -164,6 +165,65 @@ pub fn retry_step_appends_repair_records_before_spawning_recovered_worker_test()
   ])
 
   test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnostic_test() {
+  let dir = "test/tmp/daemon-retry-step-artifact-detail"
+  let issue = issue("issue-1", "LIV-509", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let artifact_ref = artifact_store.artifact_ref("run-1", "seed", 1)
+  let artifact_path = root <> "/.scherzo-state/artifacts/" <> artifact_ref
+  let assert Ok(original_contents) = simplifile.read(artifact_path)
+  let expected_sha256 = hash.sha256_hex(original_contents)
+  let corrupt_contents = "corrupted retained artifact"
+  let current_sha256 = hash.sha256_hex(corrupt_contents)
+  let assert Ok(Nil) = simplifile.write(artifact_path, corrupt_contents)
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  let detail =
+    "artifact_recovery_failed: step_id=seed artifact_ref="
+    <> artifact_ref
+    <> " reason=sha_mismatch expected_sha256="
+    <> expected_sha256
+    <> " current_sha256="
+    <> current_sha256
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status)
+    == Some("artifact_recovery_failed")
+  assert result.message
+    == Some("retry-step repair was rejected by recovery validation: " <> detail)
+  assert retained_workflow_diagnostic_reason(root, detail)
+  assert !retained_workflow_interruption_reason(root, detail)
+
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -624,6 +684,27 @@ fn ledger_bodies(root: String) -> List(record.RecordBody) {
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(read) = ledger.read_records(ledger_path)
   list.map(read.records, fn(ledger_record) { ledger_record.body })
+}
+
+fn retained_workflow_diagnostic_reason(root: String, expected: String) -> Bool {
+  list.any(ledger_bodies(root), fn(body) {
+    case body {
+      record.WorkflowRunDiagnostic(reason: reason, ..) -> reason == expected
+      _ -> False
+    }
+  })
+}
+
+fn retained_workflow_interruption_reason(
+  root: String,
+  expected: String,
+) -> Bool {
+  list.any(ledger_bodies(root), fn(body) {
+    case body {
+      record.WorkflowRunInterrupted(reason: reason, ..) -> reason == expected
+      _ -> False
+    }
+  })
 }
 
 fn contains_kind_sequence(root: String, expected: List(String)) -> Bool {

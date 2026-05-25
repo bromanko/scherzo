@@ -333,7 +333,7 @@ pub fn read_step_artifact_unverified(
   decode_step_artifact_contents(contents)
 }
 
-fn decode_step_artifact_contents(
+pub fn decode_step_artifact_contents(
   contents: String,
 ) -> Result(step_artifact.StepArtifact, ArtifactError) {
   case decode_stored_string(contents) {

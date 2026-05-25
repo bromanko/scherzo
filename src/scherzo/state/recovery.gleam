@@ -6,6 +6,7 @@ import gleam/order.{type Order, Eq}
 import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/hash
 import scherzo/orchestrator/core
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
@@ -128,6 +129,26 @@ pub type WorkflowFinalization {
     records_to_append: List(record.LedgerRecord),
     resumptions: List(RecoveredWorkflowRun),
     warnings: List(String),
+    diagnostics: List(WorkflowRecoveryDiagnostic),
+  )
+}
+
+pub opaque type ArtifactRecoveryFailure {
+  ArtifactRecoveryFailure(
+    step_id: String,
+    artifact_ref: String,
+    reason: String,
+    expected_sha256: Option(String),
+    current_sha256: Option(String),
+  )
+}
+
+pub opaque type WorkflowRecoveryDiagnostic {
+  ArtifactRecoveryDiagnostic(
+    run_id: String,
+    workflow_id: String,
+    issue_id: String,
+    detail: ArtifactRecoveryFailure,
   )
 }
 
@@ -146,7 +167,7 @@ pub type RecoveryPlan {
 pub type RecoveryError {
   MissingOutboxPayload(outbox_id: String)
   InvalidRecordSemantics(reason: String)
-  StepArtifactRecoveryFailed(reason: String)
+  StepArtifactRecoveryFailed(detail: ArtifactRecoveryFailure)
   UnsafeWorkflowRecovery(reason: String)
   WorkspaceRecoveryFailed(reason: String)
 }
@@ -325,6 +346,7 @@ fn finalize_workflow_candidates_with_config_and_mode(
     [],
     [],
     [],
+    [],
   )
 }
 
@@ -370,9 +392,41 @@ pub fn describe_error(error: RecoveryError) -> String {
   case error {
     MissingOutboxPayload(outbox_id) -> "outbox_payload_missing:" <> outbox_id
     InvalidRecordSemantics(reason) -> reason
-    StepArtifactRecoveryFailed(reason) -> reason
+    StepArtifactRecoveryFailed(detail) ->
+      artifact_recovery_failure_message(detail)
     UnsafeWorkflowRecovery(reason) -> "unsafe_workflow_recovery:" <> reason
     WorkspaceRecoveryFailed(reason) -> "workspace_recovery_failed:" <> reason
+  }
+}
+
+pub fn workflow_recovery_diagnostic_reason(
+  diagnostic: WorkflowRecoveryDiagnostic,
+) -> String {
+  case diagnostic {
+    ArtifactRecoveryDiagnostic(..) -> "artifact_recovery_failed"
+  }
+}
+
+pub fn workflow_recovery_diagnostic_message(
+  diagnostic: WorkflowRecoveryDiagnostic,
+) -> String {
+  case diagnostic {
+    ArtifactRecoveryDiagnostic(detail: detail, ..) ->
+      artifact_recovery_failure_message(detail)
+  }
+}
+
+pub fn workflow_recovery_diagnostic_record_body(
+  diagnostic: WorkflowRecoveryDiagnostic,
+) -> record.RecordBody {
+  case diagnostic {
+    ArtifactRecoveryDiagnostic(run_id, workflow_id, issue_id, detail) ->
+      record.WorkflowRunDiagnostic(
+        run_id,
+        workflow_id,
+        issue_id,
+        artifact_recovery_failure_message(detail),
+      )
   }
 }
 
@@ -475,6 +529,7 @@ fn finalize_workflow_candidates_loop(
   record_bodies: List(record.RecordBody),
   resumptions: List(RecoveredWorkflowRun),
   warnings: List(String),
+  diagnostics: List(WorkflowRecoveryDiagnostic),
 ) -> Result(WorkflowFinalization, RecoveryError) {
   case candidates {
     [] ->
@@ -482,6 +537,7 @@ fn finalize_workflow_candidates_loop(
         records_to_append: ledger_records(now_ms, list.reverse(record_bodies)),
         resumptions: list.reverse(resumptions),
         warnings: list.reverse(warnings),
+        diagnostics: list.reverse(diagnostics),
       ))
     [candidate, ..rest] -> {
       let observation =
@@ -495,7 +551,8 @@ fn finalize_workflow_candidates_loop(
         session_recovery,
         mode,
       ))
-      let #(bodies, resumption, candidate_warnings) = finalized
+      let #(bodies, resumption, candidate_warnings, candidate_diagnostics) =
+        finalized
       finalize_workflow_candidates_loop(
         rest,
         observations,
@@ -507,6 +564,7 @@ fn finalize_workflow_candidates_loop(
         list.append(list.reverse(bodies), record_bodies),
         append_optional_resumption(resumptions, resumption),
         list.append(list.reverse(candidate_warnings), warnings),
+        list.append(list.reverse(candidate_diagnostics), diagnostics),
       )
     }
   }
@@ -520,7 +578,12 @@ fn finalize_one_workflow_candidate(
   session_recovery: SessionRecoveryConfig,
   mode: WorkflowRecoveryMode,
 ) -> Result(
-  #(List(record.RecordBody), Option(RecoveredWorkflowRun), List(String)),
+  #(
+    List(record.RecordBody),
+    Option(RecoveredWorkflowRun),
+    List(String),
+    List(WorkflowRecoveryDiagnostic),
+  ),
   RecoveryError,
 ) {
   case observation {
@@ -538,6 +601,7 @@ fn finalize_one_workflow_candidate(
           [
             "workflow_recovery_parked_issue_unavailable:" <> candidate.run_id,
           ],
+          [],
         ),
       )
     WorkflowUnavailable(reason) ->
@@ -554,6 +618,7 @@ fn finalize_one_workflow_candidate(
           [
             "workflow_recovery_parked_workflow_unavailable:" <> candidate.run_id,
           ],
+          [],
         ),
       )
     CurrentWorkflow(
@@ -587,6 +652,7 @@ fn finalize_one_workflow_candidate(
               ),
               None,
               [warning],
+              [],
             ),
           )
         None ->
@@ -605,6 +671,7 @@ fn finalize_one_workflow_candidate(
                   [
                     "workflow_recovery_parked_disabled:" <> candidate.run_id,
                   ],
+                  [],
                 ),
               )
             ResumeRecoveredWorkflows ->
@@ -627,6 +694,7 @@ fn finalize_one_workflow_candidate(
                       ),
                       None,
                       [warning],
+                      [],
                     ),
                   )
                 None ->
@@ -654,7 +722,12 @@ fn finalize_resumable_workflow_candidate(
   workspace_root: String,
   session_recovery: SessionRecoveryConfig,
 ) -> Result(
-  #(List(record.RecordBody), Option(RecoveredWorkflowRun), List(String)),
+  #(
+    List(record.RecordBody),
+    Option(RecoveredWorkflowRun),
+    List(String),
+    List(WorkflowRecoveryDiagnostic),
+  ),
   RecoveryError,
 ) {
   case
@@ -669,25 +742,21 @@ fn finalize_resumable_workflow_candidate(
   {
     Ok(recovered) -> {
       let #(resumption, bodies) = recovered
-      Ok(#(bodies, Some(resumption), []))
+      Ok(#(bodies, Some(resumption), [], []))
     }
-    Error(StepArtifactRecoveryFailed(reason)) ->
+    Error(StepArtifactRecoveryFailed(detail)) ->
       Ok(
         #(
-          park_candidate_bodies(
+          artifact_recovery_park_candidate_bodies(
             candidate,
             issue.identifier,
-            "artifact_recovery_failed",
+            detail,
             issue_fingerprint,
             candidate.observed_updated_at_ms,
           ),
           None,
-          [
-            "workflow_recovery_parked_artifact_recovery_failed:"
-            <> candidate.run_id
-            <> ":"
-            <> reason,
-          ],
+          [artifact_recovery_failure_warning(candidate.run_id, detail)],
+          [artifact_recovery_diagnostic(candidate, detail)],
         ),
       )
     Error(UnsafeWorkflowRecovery(reason)) ->
@@ -704,6 +773,7 @@ fn finalize_resumable_workflow_candidate(
           [
             "workflow_recovery_parked_" <> reason <> ":" <> candidate.run_id,
           ],
+          [],
         ),
       )
     Error(WorkspaceRecoveryFailed(reason)) ->
@@ -723,6 +793,7 @@ fn finalize_resumable_workflow_candidate(
             <> ":"
             <> reason,
           ],
+          [],
         ),
       )
     Error(error) -> Error(error)
@@ -752,6 +823,253 @@ fn recover_completed_attempts(
     [],
     session_recovery,
   )
+}
+
+fn recover_step_artifact(
+  store: artifact_store.Store,
+  step_id: String,
+  artifact_ref: String,
+  expected_sha256: String,
+) -> Result(step_artifact.StepArtifact, RecoveryError) {
+  case artifact_store.read_artifact_unverified(store, artifact_ref) {
+    Error(error) ->
+      Error(
+        StepArtifactRecoveryFailed(artifact_read_failure_detail(
+          step_id,
+          artifact_ref,
+          error,
+        )),
+      )
+    Ok(contents) -> {
+      let current_sha256 = hash.sha256_hex(contents)
+      case current_sha256 == expected_sha256 {
+        False ->
+          Error(
+            StepArtifactRecoveryFailed(ArtifactRecoveryFailure(
+              step_id: step_id,
+              artifact_ref: artifact_ref,
+              reason: "sha_mismatch",
+              expected_sha256: Some(expected_sha256),
+              current_sha256: Some(current_sha256),
+            )),
+          )
+        True ->
+          artifact_store.decode_step_artifact_contents(contents)
+          |> result.map_error(fn(error) {
+            StepArtifactRecoveryFailed(artifact_decode_failure_detail(
+              step_id,
+              artifact_ref,
+              error,
+            ))
+          })
+      }
+    }
+  }
+}
+
+fn artifact_read_failure_detail(
+  step_id: String,
+  artifact_ref: String,
+  error: artifact_store.ArtifactError,
+) -> ArtifactRecoveryFailure {
+  ArtifactRecoveryFailure(
+    step_id: step_id,
+    artifact_ref: artifact_ref,
+    reason: artifact_read_failure_reason(error),
+    expected_sha256: None,
+    current_sha256: None,
+  )
+}
+
+fn artifact_decode_failure_detail(
+  step_id: String,
+  artifact_ref: String,
+  error: artifact_store.ArtifactError,
+) -> ArtifactRecoveryFailure {
+  ArtifactRecoveryFailure(
+    step_id: step_id,
+    artifact_ref: artifact_ref,
+    reason: artifact_decode_failure_reason(error),
+    expected_sha256: None,
+    current_sha256: None,
+  )
+}
+
+fn artifact_read_failure_reason(error: artifact_store.ArtifactError) -> String {
+  case error {
+    artifact_store.MissingStepArtifact(_) -> "missing"
+    artifact_store.ArtifactIo(_) -> "unreadable"
+    artifact_store.InvalidArtifactRef(_) -> "invalid_ref"
+    artifact_store.DecodeArtifactFailed(_) -> "invalid_json"
+    artifact_store.CorruptStepArtifact(_) -> "sha_mismatch"
+    artifact_store.ArtifactWriteFailed(_) -> "read_failed"
+    artifact_store.DirectorySyncUnsupported(_) -> "read_failed"
+  }
+}
+
+fn artifact_decode_failure_reason(
+  error: artifact_store.ArtifactError,
+) -> String {
+  case error {
+    artifact_store.DecodeArtifactFailed(_) -> "invalid_json"
+    _ -> artifact_read_failure_reason(error)
+  }
+}
+
+fn artifact_recovery_failure_message(
+  detail: ArtifactRecoveryFailure,
+) -> String {
+  "artifact_recovery_failed: step_id="
+  <> detail.step_id
+  <> " artifact_ref="
+  <> sanitized_artifact_ref(detail.artifact_ref)
+  <> " reason="
+  <> detail.reason
+  <> optional_detail_field("expected_sha256", detail.expected_sha256)
+  <> optional_detail_field("current_sha256", detail.current_sha256)
+}
+
+fn artifact_recovery_failure_warning(
+  run_id: String,
+  detail: ArtifactRecoveryFailure,
+) -> String {
+  "workflow_recovery_parked_artifact_recovery_failed:"
+  <> run_id
+  <> ":"
+  <> artifact_recovery_failure_message(detail)
+}
+
+fn artifact_recovery_diagnostic(
+  candidate: WorkflowRecoveryCandidate,
+  detail: ArtifactRecoveryFailure,
+) -> WorkflowRecoveryDiagnostic {
+  ArtifactRecoveryDiagnostic(
+    run_id: candidate.run_id,
+    workflow_id: candidate.workflow_id,
+    issue_id: candidate.issue_id,
+    detail: detail,
+  )
+}
+
+fn optional_detail_field(name: String, value: Option(String)) -> String {
+  case value {
+    Some(value) -> " " <> name <> "=" <> value
+    None -> ""
+  }
+}
+
+fn sanitized_artifact_ref(ref: String) -> String {
+  let trimmed = string.trim(ref)
+  case trimmed == "" {
+    True -> "<empty>"
+    False ->
+      case artifact_ref_looks_local(trimmed) {
+        True -> "<redacted-local-artifact-ref>"
+        False -> trimmed
+      }
+  }
+}
+
+fn artifact_ref_looks_local(ref: String) -> Bool {
+  let lower = string.lowercase(ref)
+  string.starts_with(ref, "/")
+  || string.starts_with(ref, "~")
+  || string.starts_with(ref, "\\")
+  || string.contains(lower, "://")
+  || string.starts_with(lower, "file:")
+  || has_forward_parent_segment(ref)
+  || has_backslash_parent_segment(ref)
+  || has_windows_absolute_prefix(ref)
+  || contains_control_character(ref)
+}
+
+fn has_forward_parent_segment(value: String) -> Bool {
+  value == ".."
+  || string.starts_with(value, "../")
+  || string.ends_with(value, "/..")
+  || string.contains(value, "/../")
+}
+
+fn has_backslash_parent_segment(value: String) -> Bool {
+  value == ".."
+  || string.starts_with(value, "..\\")
+  || string.ends_with(value, "\\..")
+  || string.contains(value, "\\..\\")
+}
+
+fn has_windows_absolute_prefix(value: String) -> Bool {
+  string.length(value) >= 3
+  && is_ascii_letter(string.slice(value, 0, 1))
+  && string.slice(value, 1, 1) == ":"
+  && windows_separator(string.slice(value, 2, 1))
+}
+
+fn windows_separator(value: String) -> Bool {
+  value == "\\" || value == "/"
+}
+
+fn contains_control_character(value: String) -> Bool {
+  string.contains(value, "\n")
+  || string.contains(value, "\r")
+  || string.contains(value, "\t")
+}
+
+fn is_ascii_letter(value: String) -> Bool {
+  case value {
+    "A"
+    | "B"
+    | "C"
+    | "D"
+    | "E"
+    | "F"
+    | "G"
+    | "H"
+    | "I"
+    | "J"
+    | "K"
+    | "L"
+    | "M"
+    | "N"
+    | "O"
+    | "P"
+    | "Q"
+    | "R"
+    | "S"
+    | "T"
+    | "U"
+    | "V"
+    | "W"
+    | "X"
+    | "Y"
+    | "Z"
+    | "a"
+    | "b"
+    | "c"
+    | "d"
+    | "e"
+    | "f"
+    | "g"
+    | "h"
+    | "i"
+    | "j"
+    | "k"
+    | "l"
+    | "m"
+    | "n"
+    | "o"
+    | "p"
+    | "q"
+    | "r"
+    | "s"
+    | "t"
+    | "u"
+    | "v"
+    | "w"
+    | "x"
+    | "y"
+    | "z" -> True
+    _ -> False
+  }
 }
 
 fn recover_attempts_loop(
@@ -812,16 +1130,12 @@ fn recover_attempts_loop(
           source_workspace_path: source_workspace_path,
           ..,
         ) -> {
-          use artifact <- result.try(
-            artifact_store.read_step_artifact(
-              store,
-              artifact_ref,
-              artifact_sha256,
-            )
-            |> result.map_error(fn(error) {
-              StepArtifactRecoveryFailed(describe_artifact_error(error))
-            }),
-          )
+          use artifact <- result.try(recover_step_artifact(
+            store,
+            step_id,
+            artifact_ref,
+            artifact_sha256,
+          ))
           let artifacts = dict.insert(artifacts, step_id, artifact)
           let run_root = case string.trim(run_root) == "" {
             True -> candidate.run_root
@@ -1505,6 +1819,29 @@ fn dag_has_workspace_name(
   }
 }
 
+fn artifact_recovery_park_candidate_bodies(
+  candidate: WorkflowRecoveryCandidate,
+  issue_identifier: String,
+  detail: ArtifactRecoveryFailure,
+  issue_fingerprint: String,
+  observed_updated_at_ms: Int,
+) -> List(record.RecordBody) {
+  [
+    record.IssueParkedV2(
+      candidate.issue_id,
+      issue_identifier,
+      "artifact_recovery_failed",
+      "explicit_unpark_only",
+      issue_fingerprint,
+      observed_updated_at_ms,
+    ),
+    ..interrupt_candidate_bodies(
+      candidate,
+      artifact_recovery_failure_message(detail),
+    )
+  ]
+}
+
 fn park_candidate_bodies(
   candidate: WorkflowRecoveryCandidate,
   issue_identifier: String,
@@ -1695,21 +2032,6 @@ fn attempt_workflow_id(status: projection.StepAttemptStatus) -> String {
       workflow_id
     projection.StepAttemptSupersededStatus(workflow_id: workflow_id, ..) ->
       workflow_id
-  }
-}
-
-fn describe_artifact_error(error: artifact_store.ArtifactError) -> String {
-  case error {
-    artifact_store.ArtifactIo(message) -> message
-    artifact_store.ArtifactWriteFailed(error) ->
-      artifact_store.artifact_write_error_to_string(error)
-    artifact_store.MissingStepArtifact(ref) -> "missing_step_artifact:" <> ref
-    artifact_store.CorruptStepArtifact(ref) -> "corrupt_step_artifact:" <> ref
-    artifact_store.InvalidArtifactRef(ref) -> "invalid_artifact_ref:" <> ref
-    artifact_store.DecodeArtifactFailed(reason) ->
-      "decode_artifact_failed:" <> reason
-    artifact_store.DirectorySyncUnsupported(reason) ->
-      "directory_sync_unsupported:" <> reason
   }
 }
 
