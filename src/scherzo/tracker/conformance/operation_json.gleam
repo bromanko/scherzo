@@ -446,6 +446,137 @@ pub fn handoff_report_receipt_decoder() -> decode.Decoder(
   decode.success(types.HandoffReportReceiptPayload(reported: reported))
 }
 
+pub fn scheduled_failure_publication_to_json(
+  publication: types.ScheduledFailurePublicationPayload,
+) -> json.Json {
+  let types.ScheduledFailurePublicationPayload(
+    job_id: job_id,
+    workflow_id: workflow_id,
+    due_at_ms: due_at_ms,
+    run_id: run_id,
+    attempt: attempt,
+    max_attempts: max_attempts,
+    reason: reason,
+    run_root: run_root,
+    session_id: session_id,
+    dedupe_key: dedupe_key,
+    title: title,
+    body: body,
+    labels: labels,
+    target_state_name: target_state_name,
+    previous_task_remote_id: previous_task_remote_id,
+  ) = publication
+  json.object([
+    #("job_id", json.string(job_id)),
+    #("workflow_id", json.string(workflow_id)),
+    #("due_at_ms", json.int(due_at_ms)),
+    #("run_id", json.string(run_id)),
+    #("attempt", json.int(attempt)),
+    #("max_attempts", json.int(max_attempts)),
+    #("reason", json.string(reason)),
+    #("run_root", option_json(run_root, json.string)),
+    #("session_id", option_json(session_id, json.string)),
+    #("dedupe_key", json.string(dedupe_key)),
+    #("title", json.string(title)),
+    #("body", json.string(body)),
+    #("labels", json.array(labels, of: json.string)),
+    #("target_state_name", option_json(target_state_name, json.string)),
+    #(
+      "previous_task_remote_id",
+      option_json(previous_task_remote_id, json.string),
+    ),
+  ])
+}
+
+pub fn scheduled_failure_publication_payload_decoder() -> decode.Decoder(
+  types.RequestPayload,
+) {
+  use job_id <- decode.field("job_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use due_at_ms <- decode.field("due_at_ms", decode.int)
+  use run_id <- decode.field("run_id", decode.string)
+  use attempt <- decode.field("attempt", decode.int)
+  use max_attempts <- decode.field("max_attempts", decode.int)
+  use reason <- decode.field("reason", decode.string)
+  use run_root <- decode.optional_field(
+    "run_root",
+    None,
+    decode.optional(decode.string),
+  )
+  use session_id <- decode.optional_field(
+    "session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use dedupe_key <- decode.field("dedupe_key", decode.string)
+  use title <- decode.field("title", decode.string)
+  use body <- decode.field("body", decode.string)
+  use labels <- decode.optional_field("labels", [], decode.list(decode.string))
+  use target_state_name <- decode.optional_field(
+    "target_state_name",
+    None,
+    decode.optional(decode.string),
+  )
+  use previous_task_remote_id <- decode.optional_field(
+    "previous_task_remote_id",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(
+    types.ScheduledFailurePublishPayload(
+      publication: types.ScheduledFailurePublicationPayload(
+        job_id: job_id,
+        workflow_id: workflow_id,
+        due_at_ms: due_at_ms,
+        run_id: run_id,
+        attempt: attempt,
+        max_attempts: max_attempts,
+        reason: reason,
+        run_root: run_root,
+        session_id: session_id,
+        dedupe_key: dedupe_key,
+        title: title,
+        body: body,
+        labels: labels,
+        target_state_name: target_state_name,
+        previous_task_remote_id: previous_task_remote_id,
+      ),
+    ),
+  )
+}
+
+pub fn scheduled_failure_receipt_to_json(
+  receipt: types.ScheduledFailureReceiptPayload,
+) -> json.Json {
+  let types.ScheduledFailureReceiptPayload(
+    task: task,
+    created: created,
+    comment_id: comment_id,
+  ) = receipt
+  json.object([
+    #("task", task_ref_to_json(task)),
+    #("created", json.bool(created)),
+    #("comment_id", option_json(comment_id, json.string)),
+  ])
+}
+
+pub fn scheduled_failure_receipt_decoder() -> decode.Decoder(
+  types.ScheduledFailureReceiptPayload,
+) {
+  use task <- decode.field("task", task_ref_decoder())
+  use created <- decode.field("created", decode.bool)
+  use comment_id <- decode.optional_field(
+    "comment_id",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(types.ScheduledFailureReceiptPayload(
+    task: task,
+    created: created,
+    comment_id: comment_id,
+  ))
+}
+
 fn comment_write_mode_to_json(mode: types.CommentWriteMode) -> json.Json {
   case mode {
     types.CreateOnlyComment ->

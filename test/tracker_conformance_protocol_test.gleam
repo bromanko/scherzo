@@ -323,6 +323,38 @@ pub fn manifest_decoder_accepts_remote_commands_retry_behavior_test() {
     ))
 }
 
+pub fn manifest_decoder_accepts_claimed_scheduled_failures_not_requested_test() {
+  let assert Ok(contents) =
+    simplifile.read(
+      "test/fixtures/tracker_conformance/claimed-scheduled-failures-not-requested.manifest.json",
+    )
+  let assert Ok(manifest) = conformance.decode_manifest(contents)
+  let types.Manifest(profile: manifest_profile, probes: probes, ..) = manifest
+  let types.ProfileConfig(
+    capabilities: capabilities,
+    requested_packs: requested_packs,
+    adapter_operations: operations,
+    retry_behavior: retry_behavior,
+    ..,
+  ) = manifest_profile
+
+  assert capabilities
+    == [
+      profile.TaskSourceCapability,
+      profile.ScheduledFailuresCapability,
+    ]
+  assert requested_packs == [profile.TaskSourcePack]
+  assert operations
+    == [
+      profile.TaskSourceFetchCandidates,
+      profile.TaskSourceRefreshByRefs,
+      profile.TaskSourceLookupByOperatorRef,
+      profile.ScheduledFailuresPublish,
+    ]
+  assert retry_behavior == None
+  assert probes == []
+}
+
 pub fn manifest_decoder_rejects_missing_retry_behavior_for_side_effect_packs_test() {
   assert_manifest_error(
     fixture: "test/fixtures/tracker_conformance/invalid-requested-remote-commands-without-capability.manifest.json",
@@ -353,6 +385,26 @@ pub fn manifest_decoder_rejects_missing_retry_behavior_for_side_effect_packs_tes
     fixture: "test/fixtures/tracker_conformance/invalid-requested-handoff-without-probe.manifest.json",
     code: "missing_probe",
     message: "profile.requested_packs includes handoff but probes must include at least one backend-visibility check",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-scheduled-failures-without-capability.manifest.json",
+    code: "missing_requested_pack_capability",
+    message: "profile.requested_packs includes scheduled_failures but profile.capabilities is missing scheduled_failures",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-scheduled-failures-without-probe.manifest.json",
+    code: "missing_probe",
+    message: "profile.requested_packs includes scheduled_failures but probes must include at least one scheduled-failures backend-visibility check",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-scheduled-failures-without-scheduled-probe.manifest.json",
+    code: "missing_probe",
+    message: "profile.requested_packs includes scheduled_failures but probes must include at least one scheduled-failures backend-visibility check",
+  )
+  assert_manifest_error(
+    fixture: "test/fixtures/tracker_conformance/invalid-requested-scheduled-failures-without-operation.manifest.json",
+    code: "missing_operation",
+    message: "profile.adapter_operations must include scheduled_failures.publish",
   )
 }
 
@@ -440,6 +492,31 @@ pub fn request_roundtrip_for_comments_state_transition_remote_commands_and_hando
         run_id: "run-1",
       )),
     )
+  let scheduled_failure_request =
+    types.DriverRequest(
+      schema_version: 1,
+      request_id: "req-scheduled-failure-1",
+      operation: profile.ScheduledFailuresPublish,
+      payload: types.ScheduledFailurePublishPayload(
+        publication: types.ScheduledFailurePublicationPayload(
+          job_id: "job-1",
+          workflow_id: "workflow-1",
+          due_at_ms: 123,
+          run_id: "run-1",
+          attempt: 2,
+          max_attempts: 5,
+          reason: "job failed",
+          run_root: Some("workspace/main"),
+          session_id: Some("session-1"),
+          dedupe_key: "scheduled-failure:job-1",
+          title: "Scheduled failure",
+          body: "body SECRET_TOKEN",
+          labels: ["workflow:execplan", "scheduled_failure"],
+          target_state_name: Some("Todo"),
+          previous_task_remote_id: Some("task-1"),
+        ),
+      ),
+    )
 
   let assert Ok(decoded_comment_request) =
     comment_request
@@ -461,12 +538,17 @@ pub fn request_roundtrip_for_comments_state_transition_remote_commands_and_hando
     handoff_request
     |> conformance.request_to_string
     |> conformance.decode_request
+  let assert Ok(decoded_scheduled_failure_request) =
+    scheduled_failure_request
+    |> conformance.request_to_string
+    |> conformance.decode_request
 
   assert decoded_comment_request == comment_request
   assert decoded_remote_fetch_request == remote_fetch_request
   assert decoded_remote_ack_request == remote_ack_request
   assert decoded_transition_request == transition_request
   assert decoded_handoff_request == handoff_request
+  assert decoded_scheduled_failure_request == scheduled_failure_request
 }
 
 pub fn success_response_roundtrip_for_task_source_payload_test() {
@@ -556,6 +638,18 @@ pub fn success_response_roundtrip_for_comments_remote_commands_state_transition_
         receipt: types.HandoffReportReceiptPayload(reported: True),
       ),
     )
+  let scheduled_failure_response =
+    types.DriverResponseSuccess(
+      schema_version: 1,
+      request_id: "req-scheduled-failure-1",
+      result: types.ScheduledFailureResult(
+        receipt: types.ScheduledFailureReceiptPayload(
+          task: task_ref,
+          created: False,
+          comment_id: Some("comment-1"),
+        ),
+      ),
+    )
 
   let assert Ok(decoded_comment_response) =
     comment_response
@@ -577,12 +671,17 @@ pub fn success_response_roundtrip_for_comments_remote_commands_state_transition_
     handoff_response
     |> conformance.response_to_string
     |> conformance.decode_response
+  let assert Ok(decoded_scheduled_failure_response) =
+    scheduled_failure_response
+    |> conformance.response_to_string
+    |> conformance.decode_response
 
   assert decoded_comment_response == comment_response
   assert decoded_remote_events_response == remote_events_response
   assert decoded_remote_ack_response == remote_ack_response
   assert decoded_transition_response == transition_response
   assert decoded_handoff_response == handoff_response
+  assert decoded_scheduled_failure_response == scheduled_failure_response
 }
 
 pub fn normalized_error_response_roundtrip_test() {

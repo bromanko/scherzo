@@ -25,14 +25,12 @@ request_id_from_input() {
 write_state_file() {
   file=$1
   body=$2
-  mkdir -p "$(dirname "$file")"
   printf '%s\n' "$body" >"$file"
 }
 
 append_state_file() {
   file=$1
   body=$2
-  mkdir -p "$(dirname "$file")"
   printf '%s\n' "$body" >>"$file"
 }
 
@@ -68,10 +66,17 @@ ack_receipt_dupe_1='{"id":"ack-retry-1","task":{"backend_kind":"test-memory","re
 ack_receipt_dupe_2='{"id":"ack-retry-2","task":{"backend_kind":"test-memory","remote_id":"card-1","key":"CARD-1","url":"https://tracker.example/tasks/CARD-1"},"url":"https://tracker.example/comments/ack-retry-2","created":true}'
 ack_receipt_failure_visible='{"id":"ack-visible","task":{"backend_kind":"test-memory","remote_id":"card-1","key":"CARD-1","url":"https://tracker.example/tasks/CARD-1"},"url":"https://tracker.example/comments/ack-visible","created":true}'
 handoff_receipt='{"reported":true}'
+scheduled_failure_receipt_created='{"task":{"backend_kind":"test-memory","remote_id":"scheduled-failure-task-1","key":"SCHED-FAIL-1","url":"https://tracker.example/tasks/SCHED-FAIL-1"},"created":true,"comment_id":null}'
+scheduled_failure_receipt_retry='{"task":{"backend_kind":"test-memory","remote_id":"scheduled-failure-task-1","key":"SCHED-FAIL-1","url":"https://tracker.example/tasks/SCHED-FAIL-1"},"created":false,"comment_id":"scheduled-failure-comment-1"}'
+scheduled_failure_receipt_recovery='{"task":{"backend_kind":"test-memory","remote_id":"scheduled-failure-task-1","key":"SCHED-FAIL-1","url":"https://tracker.example/tasks/SCHED-FAIL-1"},"created":false,"comment_id":"scheduled-failure-comment-2"}'
+scheduled_failure_receipt_wrong_identity='{"task":{"backend_kind":"wrong-backend","remote_id":"scheduled-failure-task-1","key":"SCHED-FAIL-1","url":"https://tracker.example/tasks/SCHED-FAIL-1"},"created":false,"comment_id":"scheduled-failure-comment-1"}'
+scheduled_failure_receipt_wrong_created='{"task":{"backend_kind":"test-memory","remote_id":"scheduled-failure-task-1","key":"SCHED-FAIL-1","url":"https://tracker.example/tasks/SCHED-FAIL-1"},"created":true,"comment_id":"scheduled-failure-comment-2"}'
+scheduled_failure_receipt_dynamic_created='{"task":{"backend_kind":"test-memory","remote_id":"scheduled-failure-task-generated","key":"SCHED-GENERATED-1","url":"https://tracker.example/tasks/SCHED-GENERATED-1"},"created":true,"comment_id":null}'
+scheduled_failure_receipt_dynamic_retry='{"task":{"backend_kind":"test-memory","remote_id":"scheduled-failure-task-generated","key":"SCHED-GENERATED-1","url":"https://tracker.example/tasks/SCHED-GENERATED-1"},"created":false,"comment_id":"scheduled-failure-comment-dynamic-1"}'
+scheduled_failure_receipt_dynamic_recovery='{"task":{"backend_kind":"test-memory","remote_id":"scheduled-failure-task-generated","key":"SCHED-GENERATED-1","url":"https://tracker.example/tasks/SCHED-GENERATED-1"},"created":false,"comment_id":"scheduled-failure-comment-dynamic-2"}'
 
 case "$input" in
   *'"operation":"comments.post_or_update"'*)
-    mkdir -p "$state_dir/comments"
     case "$request_id" in
       req-comments-create-only)
         case "$scenario" in
@@ -146,7 +151,6 @@ case "$input" in
     esac
     ;;
   *'"operation":"remote_commands.post_ack"'*)
-    mkdir -p "$state_dir/remote"
     case "$request_id" in
       req-remote-ack-receipt)
         write_state_file "$state_dir/remote/ack-receipt.txt" '[marker remote-ack-receipt] ack receipt SECRET_TOKEN'
@@ -201,7 +205,6 @@ case "$input" in
     esac
     ;;
   *'"operation":"handoff.report"'*)
-    mkdir -p "$state_dir/handoff"
     case "$request_id" in
       req-handoff-claim)
         write_state_file "$state_dir/handoff/claim.txt" 'workspace/main/SECRET_TOKEN'
@@ -423,8 +426,98 @@ case "$input" in
         ;;
     esac
     ;;
+  *'"operation":"scheduled_failures.publish"'*)
+    case "$request_id" in
+      req-scheduled-failures-create)
+        case "$scenario" in
+          scheduled-failures-created-flag-defective)
+            write_state_file "$state_dir/scheduled/task-ids.txt" 'scheduled-failure-task-1'
+            write_state_file "$state_dir/scheduled/task-count.txt" 'scheduled-failure-task-1'
+            write_state_file "$state_dir/scheduled/metadata.txt" 'target_state=Todo labels=workflow:execplan-implementation,scheduled-failure-marker due_at_ms=1710000001000 run_id=scheduled-run-1 attempt=1 max_attempts=3 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":{"task":{"backend_kind":"test-memory","remote_id":"scheduled-failure-task-1","key":"SCHED-FAIL-1","url":"https://tracker.example/tasks/SCHED-FAIL-1"},"created":false,"comment_id":null}}}\n' "$request_id"
+            ;;
+          scheduled-failures-dynamic-id)
+            write_state_file "$state_dir/scheduled/task-ids.txt" 'scheduled-failure-task-generated'
+            write_state_file "$state_dir/scheduled/task-count.txt" 'scheduled-failure-task-generated'
+            write_state_file "$state_dir/scheduled/metadata.txt" 'target_state=Todo labels=workflow:execplan-implementation,scheduled-failure-marker due_at_ms=1710000001000 run_id=scheduled-run-1 attempt=1 max_attempts=3 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_dynamic_created"
+            ;;
+          scheduled-failures-no-visible-task)
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_created"
+            ;;
+          *)
+            write_state_file "$state_dir/scheduled/task-ids.txt" 'scheduled-failure-task-1'
+            write_state_file "$state_dir/scheduled/task-count.txt" 'scheduled-failure-task-1'
+            write_state_file "$state_dir/scheduled/metadata.txt" 'target_state=Todo labels=workflow:execplan-implementation,scheduled-failure-marker due_at_ms=1710000001000 run_id=scheduled-run-1 attempt=1 max_attempts=3 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_created"
+            ;;
+        esac
+        ;;
+      req-scheduled-failures-remembered-retry)
+        case "$scenario" in
+          scheduled-failures-wrong-receipt)
+            append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-1 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_wrong_identity"
+            ;;
+          scheduled-failures-created-flag-defective)
+            append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-1 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_retry"
+            ;;
+          scheduled-failures-duplicate-defective)
+            append_state_file "$state_dir/scheduled/task-count.txt" 'scheduled-failure-task-duplicate'
+            append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-1 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_retry"
+            ;;
+          scheduled-failures-dynamic-id)
+            case "$input" in
+              *'"previous_task_remote_id":"scheduled-failure-task-generated"'*)
+                append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-dynamic-1 SECRET_TOKEN'
+                printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_dynamic_retry"
+                ;;
+              *)
+                printf '{"schema_version":1,"request_id":"%s","ok":false,"error":{"kind":"permanent","message":"previous_task_remote_id was not captured from create receipt","ref":null,"capability":null}}\n' "$request_id"
+                ;;
+            esac
+            ;;
+          scheduled-failures-metadata-loss)
+            write_state_file "$state_dir/scheduled/metadata.txt" 'target_state= labels= due_at_ms=0 run_id= attempt=0 max_attempts=0 SECRET_TOKEN'
+            append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-1 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_retry"
+            ;;
+          scheduled-failures-no-visible-task)
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_retry"
+            ;;
+          *)
+            append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-1 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_retry"
+            ;;
+        esac
+        ;;
+      req-scheduled-failures-dedupe-recovery)
+        case "$scenario" in
+          scheduled-failures-created-flag-defective)
+            append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-2 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_wrong_created"
+            ;;
+          scheduled-failures-no-visible-task)
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_recovery"
+            ;;
+          scheduled-failures-dynamic-id)
+            append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-dynamic-2 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_dynamic_recovery"
+            ;;
+          *)
+            append_state_file "$state_dir/scheduled/retry-comments.txt" 'scheduled-failure-comment-2 SECRET_TOKEN'
+            printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"scheduled_failure":%s}}\n' "$request_id" "$scheduled_failure_receipt_recovery"
+            ;;
+        esac
+        ;;
+      *)
+        printf '{"schema_version":1,"request_id":"%s","ok":false,"error":{"kind":"decode_failed","message":"unknown scheduled failure request","ref":null,"capability":null}}\n' "$request_id"
+        ;;
+    esac
+    ;;
   *'"operation":"state_transitions.transition"'*)
-    mkdir -p "$state_dir"
     case "$request_id" in
       req-state-transition-target-id)
         write_state_file "$state_dir/current-state.txt" 'doing'
@@ -474,7 +567,7 @@ case "$input" in
       explicit-fixtures)
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$task_2"
         ;;
-      remote-pass|remote-ack-duplicate-visible|remote-ack-defective|remote-defective|remote-oversized-body|remote-probe-failure|remote-cleanup-failure|handoff-pass|handoff-duplicate-visible|handoff-defective|handoff-probe-failure|handoff-cleanup-failure)
+      remote-pass|remote-ack-duplicate-visible|remote-ack-defective|remote-defective|remote-oversized-body|remote-probe-failure|remote-cleanup-failure|handoff-pass|handoff-duplicate-visible|handoff-defective|handoff-probe-failure|handoff-cleanup-failure|scheduled-failures-pass|scheduled-failures-duplicate-defective|scheduled-failures-wrong-receipt|scheduled-failures-no-visible-task|scheduled-failures-created-flag-defective|scheduled-failures-metadata-loss|scheduled-failures-probe-fails|scheduled-failures-cleanup-fails)
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s,%s]}}\n' "$request_id" "$task" "$task_2"
         ;;
       secret-transcripts)
@@ -513,7 +606,7 @@ case "$input" in
       explicit-fixtures)
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s]}}\n' "$request_id" "$task_2"
         ;;
-      remote-pass|remote-ack-duplicate-visible|remote-ack-defective|remote-defective|remote-oversized-body|remote-probe-failure|remote-cleanup-failure|handoff-pass|handoff-duplicate-visible|handoff-defective|handoff-probe-failure|handoff-cleanup-failure)
+      remote-pass|remote-ack-duplicate-visible|remote-ack-defective|remote-defective|remote-oversized-body|remote-probe-failure|remote-cleanup-failure|handoff-pass|handoff-duplicate-visible|handoff-defective|handoff-probe-failure|handoff-cleanup-failure|scheduled-failures-pass|scheduled-failures-duplicate-defective|scheduled-failures-wrong-receipt|scheduled-failures-no-visible-task|scheduled-failures-created-flag-defective|scheduled-failures-metadata-loss|scheduled-failures-probe-fails|scheduled-failures-cleanup-fails)
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"tasks":[%s,%s]}}\n' "$request_id" "$task" "$task_2"
         ;;
       secret-transcripts)
@@ -542,7 +635,7 @@ case "$input" in
       explicit-fixtures)
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"task":%s}}\n' "$request_id" "$task_2"
         ;;
-      remote-pass|remote-ack-duplicate-visible|remote-ack-defective|remote-defective|remote-oversized-body|remote-probe-failure|remote-cleanup-failure|handoff-pass|handoff-duplicate-visible|handoff-defective|handoff-probe-failure|handoff-cleanup-failure)
+      remote-pass|remote-ack-duplicate-visible|remote-ack-defective|remote-defective|remote-oversized-body|remote-probe-failure|remote-cleanup-failure|handoff-pass|handoff-duplicate-visible|handoff-defective|handoff-probe-failure|handoff-cleanup-failure|scheduled-failures-pass|scheduled-failures-duplicate-defective|scheduled-failures-wrong-receipt|scheduled-failures-no-visible-task|scheduled-failures-created-flag-defective|scheduled-failures-metadata-loss|scheduled-failures-probe-fails|scheduled-failures-cleanup-fails)
         printf '{"schema_version":1,"request_id":"%s","ok":true,"result":{"task":%s}}\n' "$request_id" "$task"
         ;;
       routing-pass|routing-missing-label|routing-wrong-blocker-ref|routing-nonmatching-label|routing-duplicate-blocker-ref)

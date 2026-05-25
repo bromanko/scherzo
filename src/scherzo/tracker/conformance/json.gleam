@@ -528,6 +528,8 @@ fn request_payload_to_json(payload: types.RequestPayload) -> json.Json {
       manifest_support.state_transition_request_to_json(transition)
     types.HandoffReportPayload(event: event) ->
       manifest_support.handoff_event_to_json(event)
+    types.ScheduledFailurePublishPayload(publication: publication) ->
+      manifest_support.scheduled_failure_publication_to_json(publication)
   }
 }
 
@@ -565,6 +567,8 @@ fn request_payload_decoder(
     profile.StateTransitionsTransition ->
       manifest_support.state_transition_payload_decoder()
     profile.HandoffReport -> manifest_support.handoff_report_payload_decoder()
+    profile.ScheduledFailuresPublish ->
+      manifest_support.scheduled_failure_publication_payload_decoder()
     _ ->
       decode.failure(
         types.FetchCandidatesPayload(task_search: types.TaskSearchPayload(
@@ -671,6 +675,13 @@ fn response_result_to_json(result_value: types.ResponseResult) -> json.Json {
       json.object([
         #("handoff", manifest_support.handoff_report_receipt_to_json(receipt)),
       ])
+    types.ScheduledFailureResult(receipt: receipt) ->
+      json.object([
+        #(
+          "scheduled_failure",
+          manifest_support.scheduled_failure_receipt_to_json(receipt),
+        ),
+      ])
   }
 }
 
@@ -736,22 +747,38 @@ fn response_result_decoder() -> decode.Decoder(types.ResponseResult) {
     None,
     decode.optional(manifest_support.handoff_report_receipt_decoder()),
   )
-  case tasks, maybe_task, comment, events, ack, transition, handoff {
-    Some(tasks), _, _, _, _, _, _ ->
+  use scheduled_failure <- decode.optional_field(
+    "scheduled_failure",
+    None,
+    decode.optional(manifest_support.scheduled_failure_receipt_decoder()),
+  )
+  case
+    tasks,
+    maybe_task,
+    comment,
+    events,
+    ack,
+    transition,
+    handoff,
+    scheduled_failure
+  {
+    Some(tasks), _, _, _, _, _, _, _ ->
       decode.success(types.TaskListResult(tasks: tasks))
-    None, Some(task_value), _, _, _, _, _ ->
+    None, Some(task_value), _, _, _, _, _, _ ->
       decode.success(types.OptionalTaskResult(task: Some(task_value)))
-    None, None, Some(comment_value), _, _, _, _ ->
+    None, None, Some(comment_value), _, _, _, _, _ ->
       decode.success(types.CommentResult(comment: comment_value))
-    None, None, None, Some(events_value), _, _, _ ->
+    None, None, None, Some(events_value), _, _, _, _ ->
       decode.success(types.RemoteCommandEventsResult(events: events_value))
-    None, None, None, None, Some(comment_value), _, _ ->
+    None, None, None, None, Some(comment_value), _, _, _ ->
       decode.success(types.RemoteCommandAckResult(comment: comment_value))
-    None, None, None, None, None, Some(transition_value), _ ->
+    None, None, None, None, None, Some(transition_value), _, _ ->
       decode.success(types.StateTransitionResult(transition: transition_value))
-    None, None, None, None, None, None, Some(receipt) ->
+    None, None, None, None, None, None, Some(receipt), _ ->
       decode.success(types.HandoffReportResult(receipt: receipt))
-    None, None, None, None, None, None, None ->
+    None, None, None, None, None, None, None, Some(receipt) ->
+      decode.success(types.ScheduledFailureResult(receipt: receipt))
+    None, None, None, None, None, None, None, None ->
       decode.success(types.OptionalTaskResult(task: None))
   }
 }
@@ -828,6 +855,7 @@ fn operation_decoder() -> decode.Decoder(profile.AdapterOperation) {
     profile.RemoteCommandsPostAck -> decode.success(operation)
     profile.StateTransitionsTransition -> decode.success(operation)
     profile.HandoffReport -> decode.success(operation)
+    profile.ScheduledFailuresPublish -> decode.success(operation)
     _ ->
       decode.failure(
         profile.TaskSourceFetchCandidates,

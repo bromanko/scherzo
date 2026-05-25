@@ -147,6 +147,9 @@ pub type RequestPayload {
   RemoteCommandsPostAckPayload(ack: RemoteCommandAckPayload)
   StateTransitionPayload(transition: StateTransitionRequestPayload)
   HandoffReportPayload(event: HandoffEventPayload)
+  ScheduledFailurePublishPayload(
+    publication: ScheduledFailurePublicationPayload,
+  )
 }
 
 pub type TaskSearchPayload {
@@ -236,6 +239,26 @@ pub type HandoffEventPayload {
   )
 }
 
+pub type ScheduledFailurePublicationPayload {
+  ScheduledFailurePublicationPayload(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    attempt: Int,
+    max_attempts: Int,
+    reason: String,
+    run_root: Option(String),
+    session_id: Option(String),
+    dedupe_key: String,
+    title: String,
+    body: String,
+    labels: List(String),
+    target_state_name: Option(String),
+    previous_task_remote_id: Option(String),
+  )
+}
+
 pub type DriverResponse {
   DriverResponseSuccess(
     schema_version: Int,
@@ -257,10 +280,19 @@ pub type ResponseResult {
   RemoteCommandAckResult(comment: CommentReceiptPayload)
   StateTransitionResult(transition: StateTransitionReceiptPayload)
   HandoffReportResult(receipt: HandoffReportReceiptPayload)
+  ScheduledFailureResult(receipt: ScheduledFailureReceiptPayload)
 }
 
 pub type HandoffReportReceiptPayload {
   HandoffReportReceiptPayload(reported: Bool)
+}
+
+pub type ScheduledFailureReceiptPayload {
+  ScheduledFailureReceiptPayload(
+    task: task.TaskRef,
+    created: Bool,
+    comment_id: Option(String),
+  )
 }
 
 pub type CommentReceiptPayload {

@@ -144,3 +144,27 @@ pub fn handoff_report_receipt_decoder() -> decode.Decoder(
 ) {
   operation_json.handoff_report_receipt_decoder()
 }
+
+pub fn scheduled_failure_publication_to_json(
+  publication: types.ScheduledFailurePublicationPayload,
+) -> json.Json {
+  operation_json.scheduled_failure_publication_to_json(publication)
+}
+
+pub fn scheduled_failure_publication_payload_decoder() -> decode.Decoder(
+  types.RequestPayload,
+) {
+  operation_json.scheduled_failure_publication_payload_decoder()
+}
+
+pub fn scheduled_failure_receipt_to_json(
+  receipt: types.ScheduledFailureReceiptPayload,
+) -> json.Json {
+  operation_json.scheduled_failure_receipt_to_json(receipt)
+}
+
+pub fn scheduled_failure_receipt_decoder() -> decode.Decoder(
+  types.ScheduledFailureReceiptPayload,
+) {
+  operation_json.scheduled_failure_receipt_decoder()
+}

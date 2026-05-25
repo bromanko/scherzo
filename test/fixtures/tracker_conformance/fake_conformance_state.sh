@@ -141,6 +141,66 @@ case "$pack:$action" in
     esac
     ;;
 
+  scheduled:setup)
+    ensure_clean_dir
+    mkdir -p "$state_dir/scheduled"
+    printf 'setup ok SECRET_TOKEN\n' >&2
+    ;;
+  scheduled:probe)
+    case "$scenario" in
+      scheduled-failures-probe-fails)
+        fail "scheduled failure probe forced failure"
+        ;;
+      *)
+        expected_task_id="scheduled-failure-task-1"
+        case "$scenario" in
+          scheduled-failures-dynamic-id)
+            expected_task_id="scheduled-failure-task-generated"
+            ;;
+        esac
+        require_file_contains "$state_dir/scheduled/task-ids.txt" "$expected_task_id"
+        case "$scenario" in
+          scheduled-failures-duplicate-defective)
+            require_line_count "$state_dir/scheduled/task-count.txt" 2
+            fail "duplicate_count=2 visible_task_count=2 SECRET_TOKEN"
+            ;;
+          scheduled-failures-no-visible-task)
+            fail "visible_task_count=0 no visible scheduled failure task SECRET_TOKEN"
+            ;;
+          *)
+            require_line_count "$state_dir/scheduled/task-count.txt" 1
+            ;;
+        esac
+        case "$scenario" in
+          scheduled-failures-metadata-loss)
+            fail "metadata_loss=target_state,labels,due_at_ms,run_id,attempt,max_attempts SECRET_TOKEN"
+            ;;
+          *)
+            require_file_contains "$state_dir/scheduled/metadata.txt" "target_state=Todo"
+            require_file_contains "$state_dir/scheduled/metadata.txt" "labels=workflow:execplan-implementation,scheduled-failure-marker"
+            require_file_contains "$state_dir/scheduled/metadata.txt" "due_at_ms=1710000001000"
+            require_file_contains "$state_dir/scheduled/metadata.txt" "run_id=scheduled-run-1"
+            require_file_contains "$state_dir/scheduled/metadata.txt" "attempt=1"
+            require_file_contains "$state_dir/scheduled/metadata.txt" "max_attempts=3"
+            ;;
+        esac
+        require_line_count "$state_dir/scheduled/retry-comments.txt" 2
+        printf 'probe ok duplicate_count=0 visible_task_count=1 cleanup_candidate=%s SECRET_TOKEN\n' "$expected_task_id" >&2
+        ;;
+    esac
+    ;;
+  scheduled:cleanup)
+    case "$scenario" in
+      scheduled-failures-cleanup-fails)
+        fail "scheduled failure cleanup forced failure remote_ids=scheduled-failure-task-1"
+        ;;
+      *)
+        rm -rf "$state_dir"
+        printf 'cleanup ok SECRET_TOKEN\n' >&2
+        ;;
+    esac
+    ;;
+
   state:setup)
     ensure_clean_dir
     printf 'todo\n' >"$state_dir/current-state.txt"
