@@ -19,6 +19,7 @@ workflows/dogfood/**/*.local.yml
 workflows/dogfood/**/.scherzo/
 .scherzo/scherzo.local.yaml
 .scherzo/scherzo.local.yml
+.scherzo-state/
 .scherzo/workflows/**/*.local.yaml
 .scherzo/workflows/**/*.local.yml
 .scherzo/workflows/**/.scherzo/

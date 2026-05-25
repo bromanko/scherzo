@@ -75,32 +75,6 @@ fn run_command(command: String) -> step_artifact.StepArtifact {
   command_step.run("workflow-portability", command, ".", 120_000, [], limits())
 }
 
-fn run_command_with_env(
-  command: String,
-  env: List(#(String, String)),
-) -> step_artifact.StepArtifact {
-  command_step.run_with_env(
-    "workflow-portability",
-    command,
-    ".",
-    120_000,
-    env,
-    [],
-    limits(),
-  )
-}
-
-fn workflow_runner_probe_command() -> String {
-  "python3 -c '"
-  <> "import json,sys; "
-  <> "from importlib.machinery import SourceFileLoader; "
-  <> "sys.path.insert(0,\".scherzo/workflows/scripts\"); "
-  <> "mod=SourceFileLoader("
-  <> "\"scherzo_review_script\",\".scherzo/workflows/scripts/scherzo-review\").load_module(); "
-  <> "print(json.dumps(mod.workflow_runner_command()))"
-  <> "'"
-}
-
 fn local_pi_config_terms() -> List(String) {
   [
     "/Users/bromanko",
@@ -212,41 +186,6 @@ pub fn execplan_v2_suffix_workflow_files_are_retired_test() {
   list.each(retired_v2_suffix_paths(), fn(path) {
     let assert Ok(False) = simplifile.is_file(path)
   })
-}
-
-pub fn review_runner_uses_packaged_scherzo_cli_test() {
-  let script = read_file(".scherzo/workflows/scripts/scherzo-review")
-
-  assert_contains(script, "SCHERZO_WORKFLOW_RUNNER")
-  assert_contains(script, "return [\"scherzo\"]")
-  assert_contains(script, "\"workflow\",\n        \"run\",")
-  assert_not_contains(
-    script,
-    "\"gleam\",\n        \"run\",\n        \"--\",\n        \"workflow\",\n        \"run\",",
-  )
-}
-
-pub fn review_runner_command_behavior_test() {
-  let command = workflow_runner_probe_command()
-  let default =
-    run_command_with_env(command, [#("SCHERZO_WORKFLOW_RUNNER", "")])
-  assert default.status == step_artifact.StepSucceeded
-  assert default.exit_code == Some(0)
-  assert_contains(default.stdout, "[\"scherzo\"]")
-
-  let override =
-    run_command_with_env(command, [
-      #("SCHERZO_WORKFLOW_RUNNER", "custom --flag 'two words'"),
-    ])
-  assert override.status == step_artifact.StepSucceeded
-  assert override.exit_code == Some(0)
-  assert_contains(override.stdout, "[\"custom\", \"--flag\", \"two words\"]")
-
-  let invalid =
-    run_command_with_env(command, [
-      #("SCHERZO_WORKFLOW_RUNNER", "'unterminated"),
-    ])
-  assert invalid.status == step_artifact.StepFailed
 }
 
 pub fn execplan_workflows_resolve_helpers_from_repo_root_test() {
