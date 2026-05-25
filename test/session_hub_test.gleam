@@ -76,6 +76,83 @@ pub fn hub_registers_lists_and_finishes_session_test() {
   hub.stop(subject)
 }
 
+pub fn hub_finish_session_finalizes_running_turn_summary_test() {
+  let assert Ok(subject) = hub.start(10, fn() { 2500 })
+  hub.register_session(
+    subject,
+    event.SessionSummary(
+      ..summary("session-running-turn"),
+      current_turn: 2,
+      current_turn_status: Some(turn_telemetry.StatusRunning),
+      current_turn_started_at_ms: Some(1000),
+    ),
+  )
+
+  hub.finish_session(subject, "session-running-turn", reason.Failed)
+
+  let assert Ok(Some(finished)) =
+    hub.get_session(subject, "session-running-turn", 1000)
+  assert finished.status == event.Exited(reason.Failed)
+  assert finished.current_turn_status == Some(turn_telemetry.StatusFailed)
+  assert finished.last_turn_reason == Some(turn_telemetry.ReasonPiError)
+  assert finished.last_turn_finished_at_ms == Some(2500)
+  assert finished.last_turn_duration_ms == Some(1500)
+  hub.stop(subject)
+}
+
+pub fn hub_finish_session_preserves_operator_abort_turn_reason_test() {
+  let assert Ok(subject) = hub.start(10, fn() { 2500 })
+  hub.register_session(
+    subject,
+    event.SessionSummary(
+      ..summary("session-operator-abort-turn"),
+      current_turn: 2,
+      current_turn_status: Some(turn_telemetry.StatusRunning),
+      current_turn_started_at_ms: Some(1000),
+    ),
+  )
+
+  hub.finish_session(
+    subject,
+    "session-operator-abort-turn",
+    reason.OperatorAbort,
+  )
+
+  let assert Ok(Some(finished)) =
+    hub.get_session(subject, "session-operator-abort-turn", 1000)
+  assert finished.status == event.Exited(reason.OperatorAbort)
+  assert finished.current_turn_status == Some(turn_telemetry.StatusStopped)
+  assert finished.last_turn_reason == Some(turn_telemetry.ReasonOperatorAbort)
+  assert finished.last_turn_finished_at_ms == Some(2500)
+  assert finished.last_turn_duration_ms == Some(1500)
+  hub.stop(subject)
+}
+
+pub fn hub_finish_session_preserves_stopped_turn_reason_test() {
+  let assert Ok(subject) = hub.start(10, fn() { 2500 })
+  hub.register_session(
+    subject,
+    event.SessionSummary(
+      ..summary("session-stopped-turn"),
+      current_turn: 2,
+      current_turn_status: Some(turn_telemetry.StatusRunning),
+      current_turn_started_at_ms: Some(1000),
+    ),
+  )
+
+  hub.finish_session(subject, "session-stopped-turn", reason.Stopped)
+
+  let assert Ok(Some(finished)) =
+    hub.get_session(subject, "session-stopped-turn", 1000)
+  assert finished.status == event.Exited(reason.Stopped)
+  assert finished.current_turn_status == Some(turn_telemetry.StatusStopped)
+  assert finished.last_turn_reason
+    == Some(turn_telemetry.ReasonOperatorStopAfterCurrentTurn)
+  assert finished.last_turn_finished_at_ms == Some(2500)
+  assert finished.last_turn_duration_ms == Some(1500)
+  hub.stop(subject)
+}
+
 pub fn hub_assigns_monotonic_cursors_and_timestamps_test() {
   let assert Ok(subject) = hub.start(10, fn() { 456 })
   hub.register_session(subject, summary("session-1"))

@@ -224,6 +224,18 @@ while IFS= read -r line; do
       fi
       jq -cn '{type:"agent_start"}'
       jq -cn '{type:"turn_start"}'
+      if [[ -n "${FAKE_PI_AGENT_END_WITHOUT_TURN_END:-}" ]]; then
+        jq -cn --arg turns "$prompt_seen" '{cursor:15045,type:"agent_end",turns:($turns|tonumber)}'
+        continue
+      fi
+      if [[ -n "${FAKE_PI_EXIT_AFTER_MESSAGE_START:-}" ]]; then
+        jq -cn '{cursor:15044,type:"message_start",message:{role:"assistant",provider:"openai-codex-responses",stopReason:"stop",content:[]}}'
+        exit "${FAKE_PI_EXIT_AFTER_MESSAGE_START_STATUS:-0}"
+      fi
+      if [[ -n "${FAKE_PI_HANG_AFTER_MESSAGE_START:-}" ]]; then
+        jq -cn '{cursor:15044,type:"message_start",message:{role:"assistant",provider:"openai-codex-responses",stopReason:"stop",content:[]}}'
+        while true; do sleep 60; done
+      fi
       if [[ -n "${FAKE_PI_AUTO_RETRY_SUCCESS:-}" ]]; then
         jq -cn '{type:"message_update",delta:"first attempt"}'
         jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'

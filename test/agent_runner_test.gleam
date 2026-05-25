@@ -550,6 +550,120 @@ pub fn runner_fails_when_pi_reports_stop_reason_error_test() {
   assert find_update(updates, "auto_retry_end") == None
 }
 
+pub fn runner_fails_when_pi_exits_zero_after_message_start_without_turn_end_test() {
+  let root = "test/tmp/runner-stream-exit-without-turn-end"
+  reset_dir(root)
+  let command = "FAKE_PI_EXIT_AFTER_MESSAGE_START=1 " <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert error.agent_code(failure.reason) == "agent_pi_failed"
+  let assert error.PiFailed(error.PiProtocolError(message)) = failure.reason
+  assert string.contains(message, "pi_stream_ended_without_turn_end")
+  assert string.contains(message, "child_exited status=0")
+  assert string.contains(message, "last_event_cursor=15044")
+  assert string.contains(message, "last_event_kind=assistant_message")
+  assert string.contains(message, "last_event_type=message_start")
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_failed"]
+  let assert Some(_) = find_update(updates, "message_start")
+}
+
+pub fn runner_fails_when_pi_exits_nonzero_after_message_start_without_turn_end_test() {
+  let root = "test/tmp/runner-stream-exit-nonzero-without-turn-end"
+  reset_dir(root)
+  let command =
+    "FAKE_PI_EXIT_AFTER_MESSAGE_START=1 FAKE_PI_EXIT_AFTER_MESSAGE_START_STATUS=7 "
+    <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  let assert error.PiFailed(error.PiProtocolError(message)) = failure.reason
+  assert string.contains(message, "pi_stream_ended_without_turn_end")
+  assert string.contains(message, "child_exited status=7")
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_failed"]
+}
+
+pub fn runner_fails_when_agent_end_arrives_before_turn_end_test() {
+  let root = "test/tmp/runner-agent-end-without-turn-end"
+  reset_dir(root)
+  let command = "FAKE_PI_AGENT_END_WITHOUT_TURN_END=1 " <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  let assert error.PiFailed(error.PiProtocolError(message)) = failure.reason
+  assert string.contains(
+    message,
+    "agent_end received before successful turn_end",
+  )
+  assert string.contains(message, "last_event_cursor=15045")
+  assert string.contains(message, "last_event_type=agent_end")
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_failed"]
+  let assert Some(_) = find_update(updates, "agent_end")
+}
+
+pub fn runner_stall_times_out_after_message_start_without_turn_end_test() {
+  let root = "test/tmp/runner-message-start-stall-timeout"
+  reset_dir(root)
+  let command = "FAKE_PI_HANG_AFTER_MESSAGE_START=1 " <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      pi: config_types.PiConfig(
+        ..base.pi,
+        read_timeout_ms: 100,
+        stall_timeout_ms: 50,
+        turn_timeout_ms: 1000,
+      ),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.reason == error.PiFailed(error.PiStallTimeout)
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_timed_out"]
+  let assert Some(_) = find_update(updates, "message_start")
+}
+
 pub fn runner_recovers_context_exhaustion_with_pi_compaction_test() {
   let root = "test/tmp/runner-context-recovery-compact"
   reset_dir(root)

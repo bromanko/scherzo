@@ -1,11 +1,11 @@
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 import scherzo/agent/auto_retry
 import scherzo/agent/context_exhaustion
 import scherzo/agent/operator_control
 import scherzo/agent/pi_event
+import scherzo/agent/turn_protocol as turn_check
 import scherzo/agent/turn_result_buffer as turn_buffer
 import scherzo/agent/turn_update
 import scherzo/agent/types
@@ -194,7 +194,12 @@ fn active_turn_loop(
               }
           }
         Error(err) ->
-          Error(recoverable_or_final(context, session, prompt_queue, err))
+          Error(recoverable_or_final(
+            context,
+            session,
+            prompt_queue,
+            turn_check.read_error(err, turn_buffer.to_records(turn_records)),
+          ))
         Ok(#(session, None)) ->
           active_turn_loop(
             context,
@@ -526,10 +531,14 @@ fn handle_turn_record(
       )
     Some(retry_event.AutoRetryEnd(success: True, ..)) ->
       case auto_retry.agent_end_seen(pending_auto_retry) {
-        True -> {
-          let records = turn_buffer.to_records(turn_records)
-          Ok(ActiveTurn(session, prompt_queue, stop_after_turn, records))
-        }
+        True ->
+          finish_active_turn_after_agent_end(
+            context,
+            session,
+            prompt_queue,
+            stop_after_turn,
+            turn_records,
+          )
         False ->
           active_turn_loop(
             context,
@@ -551,7 +560,7 @@ fn handle_turn_record(
         final_error,
       ))
     None ->
-      case stop_reason_failure(record) {
+      case turn_check.stop_reason_failure(record) {
         Some(err) ->
           case auto_retry.should_defer(context.config.pi, err) {
             True ->
@@ -640,10 +649,14 @@ fn handle_agent_end_record(
       )
     None ->
       case pending_auto_retry {
-        auto_retry.NoPendingAutoRetry -> {
-          let records = turn_buffer.to_records(turn_records)
-          Ok(ActiveTurn(session, prompt_queue, stop_after_turn, records))
-        }
+        auto_retry.NoPendingAutoRetry ->
+          finish_active_turn_after_agent_end(
+            context,
+            session,
+            prompt_queue,
+            stop_after_turn,
+            turn_records,
+          )
         auto_retry.PendingAutoRetry(..) ->
           active_turn_loop(
             context,
@@ -665,21 +678,27 @@ fn handle_agent_end_record(
   }
 }
 
-fn stop_reason_failure(record: protocol.RpcRecord) -> Option(error.PiRpcError) {
-  case context_exhaustion.from_rpc_record(record) {
-    Some(context) -> Some(context_exhaustion.to_pi_rpc_error(context))
-    None ->
-      case record.stop_reason {
-        None -> None
-        Some(reason) -> {
-          let normalized = reason |> string.trim |> string.lowercase
-          case normalized == "error" {
-            True ->
-              Some(error.PiProtocolError(stop_reason_failure_message(record)))
-            False -> None
-          }
-        }
-      }
+fn finish_active_turn_after_agent_end(
+  context: Context,
+  session: client.Session,
+  prompt_queue: List(String),
+  stop_after_turn: Bool,
+  turn_records: turn_buffer.Buffer,
+) -> Result(ActiveTurn, ActiveTurnFailure) {
+  case turn_check.finish_after_agent_end(turn_buffer.to_records(turn_records)) {
+    Ok(records) ->
+      Ok(ActiveTurn(session, prompt_queue, stop_after_turn, records))
+    Error(err) ->
+      Error(
+        FinalFailure(context.cleanup_failure(
+          session,
+          context.issue_id,
+          prompt_queue,
+          error.PiFailed(err),
+          context.totals,
+          None,
+        )),
+      )
   }
 }
 
@@ -706,20 +725,6 @@ fn recoverable_or_final(
         context.totals,
         None,
       ))
-  }
-}
-
-fn stop_reason_failure_message(record: protocol.RpcRecord) -> String {
-  let base = "pi " <> record.type_ <> " reported stopReason=error"
-  case record.error_message {
-    None -> base
-    Some(message) -> {
-      let message = string.trim(message)
-      case message == "" {
-        True -> base
-        False -> base <> ": " <> message
-      }
-    }
   }
 }
 
