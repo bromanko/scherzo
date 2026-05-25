@@ -113,6 +113,80 @@ steps:
   #(config_path, root)
 }
 
+fn write_scheduled_workflow(dir: String) -> #(String, String) {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
+  let root = dir <> "/workspaces"
+  let assert Ok(root) = path.absolute(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      workflow_text(root)
+        <> "scheduled_jobs:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
+    )
+  let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/task.md
+    workspace: main
+",
+    )
+  #(config_path, root)
+}
+
+pub type TestClockMessage {
+  GetNow(process.Subject(Int))
+  SetNow(Int)
+  StopClock
+}
+
+fn start_test_clock(initial_ms: Int) -> process.Subject(TestClockMessage) {
+  let ready = process.new_subject()
+  let _ =
+    process.spawn(fn() {
+      let subject = process.new_subject()
+      process.send(ready, subject)
+      test_clock_loop(subject, initial_ms)
+    })
+  let assert Ok(subject) = process.receive(ready, within: 1000)
+  subject
+}
+
+fn test_clock_loop(
+  subject: process.Subject(TestClockMessage),
+  now_ms: Int,
+) -> Nil {
+  case process.receive(subject, within: 5000) {
+    Ok(GetNow(reply)) -> {
+      process.send(reply, now_ms)
+      test_clock_loop(subject, now_ms)
+    }
+    Ok(SetNow(next_ms)) -> test_clock_loop(subject, next_ms)
+    Ok(StopClock) -> Nil
+    Error(_) -> Nil
+  }
+}
+
+fn clock_now(clock: process.Subject(TestClockMessage)) -> Int {
+  let reply = process.new_subject()
+  process.send(clock, GetNow(reply))
+  let assert Ok(now_ms) = process.receive(reply, within: 1000)
+  now_ms
+}
+
+fn set_clock(clock: process.Subject(TestClockMessage), now_ms: Int) -> Nil {
+  process.send(clock, SetNow(now_ms))
+}
+
 fn success(
   final: tracker_issue.Issue,
   workspace_path: String,
@@ -660,6 +734,126 @@ pub fn daemon_startup_recovery_attaches_interrupted_metadata_to_retry_session_te
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
+}
+
+pub fn daemon_post_success_cleanup_warning_publishes_recovery_cleanup_event_test() {
+  let #(workflow_path, root) =
+    write_workflow("test/tmp/daemon-post-success-cleanup-warning")
+  let candidate = issue("cleanup-id", "ABC-CLEANUP", "Todo")
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
+  let base =
+    dependencies(
+      client_with(candidate),
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, _, _, _) {
+        let assert Ok(#(_, expected_workspace)) =
+          workspace.workspace_path(root, issue.identifier)
+        Ok(success(
+          tracker_issue.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          expected_workspace,
+        ))
+      },
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base,
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..base.workflow_run_dependencies,
+        cleanup_run: fn(_run_root, _orchestrator, _profile) {
+          Error(error.WorkspaceIo("delete failed"))
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "worker_exited", 20)
+
+  let assert Ok(summary) = wait_for_session(hub_subject, "ABC-CLEANUP-42-1", 20)
+  assert summary.status == event.Exited(reason.Normal)
+  let assert Some(recovery) = summary.recovery
+  assert recovery.status == event.Cleanup
+  assert recovery.source == "workflow.post_success_cleanup"
+
+  let assert Ok(page) =
+    wait_for_event_name(hub_subject, "ABC-CLEANUP-42-1", "recovery_cleanup", 20)
+  let assert Some(cleanup_event) = find_event(page.events, "recovery_cleanup")
+  let assert Some(event_recovery) = cleanup_event.payload.recovery
+  assert event_recovery.status == event.Cleanup
+  assert event_recovery.source == "workflow.post_success_cleanup"
+  assert list.contains(event_names(page.events), "worker_exited")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_scheduled_post_success_cleanup_warning_publishes_recovery_cleanup_event_test() {
+  let #(workflow_path, _root) =
+    write_scheduled_workflow(
+      "test/tmp/daemon-scheduled-post-success-cleanup-warning",
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
+  let clock = start_test_clock(100)
+  let base =
+    dependencies(
+      tracker.Client(
+        fetch_candidate_issues: fn() { Ok([]) },
+        fetch_issues_by_states: fn(_) { Ok([]) },
+        fetch_issue_states_by_ids: fn(_) { Ok([]) },
+      ),
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, _, _, _) {
+        Ok(success(
+          tracker_issue.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          "",
+        ))
+      },
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base,
+      now_ms: fn() { clock_now(clock) },
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..base.workflow_run_dependencies,
+        cleanup_run: fn(_run_root, _orchestrator, _profile) {
+          Error(error.WorkspaceIo("delete failed"))
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "scheduled_worker_exited", 20)
+
+  let session_id = "schedule-scheduled-job-19700101T000001Z-a1"
+  let assert Ok(summary) = wait_for_session(hub_subject, session_id, 20)
+  assert summary.status == event.Exited(reason.Normal)
+  let assert Some(recovery) = summary.recovery
+  assert recovery.status == event.Cleanup
+  assert recovery.source == "workflow.post_success_cleanup"
+
+  let assert Ok(page) =
+    wait_for_event_name(hub_subject, session_id, "recovery_cleanup", 20)
+  let assert Some(cleanup_event) = find_event(page.events, "recovery_cleanup")
+  let assert Some(event_recovery) = cleanup_event.payload.recovery
+  assert event_recovery.status == event.Cleanup
+  assert event_recovery.source == "workflow.post_success_cleanup"
+  assert list.contains(event_names(page.events), "worker_exited")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+  process.send(clock, StopClock)
 }
 
 pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test() {

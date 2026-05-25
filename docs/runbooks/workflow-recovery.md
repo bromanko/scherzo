@@ -12,7 +12,7 @@ Backed statuses in this release are `recovered`, `interrupted`, `parked`, `clean
 
 `parked` means dispatch is suppressed for the task. Inspect the park reason, release policy, parked time, and task fingerprint when present. Safe actions are to inspect, view events, or unpark when the reason has been resolved.
 
-`cleanup` is artifact lifecycle state. It means no new runtime work is expected for the artifact and retention classification is `retained`, `eligible`, `deleting`, or `deleted`. It is not proof that the workflow succeeded.
+`cleanup` is artifact lifecycle state. It means no new runtime work is expected for the artifact and retention classification is `retained`, `eligible`, `deleting`, or `deleted`. It is not proof that the workflow succeeded. When a workflow already succeeded but post-success workspace cleanup fails, Scherzo keeps the successful terminal outcome, appends a durable `workflow_run_diagnostic`, emits a live `recovery_cleanup` event, and retains the run-local managed-workspace manifest at `<run-root>/.scherzo/managed-workspaces.json` as the cleanup source of truth.
 
 `old_state_reset_required` means local ledger or snapshot schema markers are unsupported by this tree. Backward compatibility is intentionally not provided for unsupported old local state. Safe choices are archive, discard, or reinitialize after old state is moved aside or removed.
 

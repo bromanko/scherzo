@@ -5,11 +5,13 @@ import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/path
 import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workspace_driver_discovery
+import scherzo/workspace_manifest
 import scherzo/workspace_run
 import simplifile
 import yay
@@ -59,6 +61,33 @@ fn chmod_executable(path: String) -> Nil {
   let artifact =
     command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
   assert artifact.status == step_artifact.StepSucceeded
+}
+
+fn log_line_before(log: String, first: String, second: String) -> Bool {
+  log_line_before_loop(string.split(log, on: "\n"), first, second, False)
+}
+
+fn log_line_before_loop(
+  lines: List(String),
+  first: String,
+  second: String,
+  seen_first: Bool,
+) -> Bool {
+  case lines {
+    [] -> False
+    [line, ..rest] -> {
+      case string.contains(line, second) {
+        True -> seen_first
+        False ->
+          log_line_before_loop(
+            rest,
+            first,
+            second,
+            seen_first || string.contains(line, first),
+          )
+      }
+    }
+  }
 }
 
 fn orchestrator(
@@ -163,7 +192,7 @@ fn write_lifecycle_driver(dir: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       driver,
-      "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') test -d \"$SCHERZO_RUN_ROOT\"; if [ -f \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 23; fi; rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
+      "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') if [ -f \"$SCHERZO_CONFIG_DIR/create-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/create-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 17; fi; mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') test -d \"$SCHERZO_RUN_ROOT\"; if [ -f \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 23; fi; rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
     )
   chmod_executable(driver)
 }
@@ -251,6 +280,17 @@ pub fn cleanup_invokes_remove_for_each_run_workspace_before_delete_test() {
       <> orchestrator.config_dir
       <> "|workspace="
       <> review.path,
+  )
+  assert log_line_before(
+    log,
+    "lifecycle remove|pwd="
+      <> orchestrator.config_dir
+      <> "|workspace="
+      <> review.path,
+    "lifecycle remove|pwd="
+      <> orchestrator.config_dir
+      <> "|workspace="
+      <> main.path,
   )
 }
 
@@ -473,4 +513,425 @@ pub fn cleanup_retention_marker_skips_delete_until_removed_test() {
       default_profile(orchestrator),
     )
   let assert Ok(False) = simplifile.is_directory(main.run_root)
+}
+
+pub fn managed_workspace_manifest_round_trip_and_upsert_test() {
+  let contents =
+    workspace_manifest.encode_manifest(
+      [
+        workspace_manifest.Entry(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          step_id: "review",
+          attempt_index: 2,
+          workspace_name: "main",
+          relative_path: "workspaces/main",
+          workspace_profile: "dogfood-jj",
+          driver_command: "driver.sh",
+          driver_capabilities: ["status", "assert-only"],
+          source_workspace_name: Some("main"),
+          source_workspace_relative_path: Some("workspaces/main"),
+          state: workspace_manifest.Ready,
+        ),
+      ],
+      "run-1",
+      "implementation",
+    )
+  let assert Ok([entry]) = workspace_manifest.decode_manifest(contents)
+  assert entry.step_id == "review"
+  assert entry.attempt_index == 2
+  assert entry.source_workspace_relative_path == Some("workspaces/main")
+
+  let dir = "test/tmp/workspace-run-manifest-upsert"
+  reset_dir(dir)
+  let run_root = dir <> "/run"
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root)
+  let planned =
+    workspace_manifest.Entry(
+      run_id: "run-1",
+      workflow_id: "implementation",
+      step_id: "prepare",
+      attempt_index: 1,
+      workspace_name: "main",
+      relative_path: "workspaces/main",
+      workspace_profile: "dogfood-jj",
+      driver_command: "driver.sh",
+      driver_capabilities: ["status"],
+      source_workspace_name: None,
+      source_workspace_relative_path: None,
+      state: workspace_manifest.Planned,
+    )
+  let ready =
+    workspace_manifest.Entry(
+      run_id: planned.run_id,
+      workflow_id: planned.workflow_id,
+      step_id: planned.step_id,
+      attempt_index: planned.attempt_index,
+      workspace_name: planned.workspace_name,
+      relative_path: planned.relative_path,
+      workspace_profile: planned.workspace_profile,
+      driver_command: planned.driver_command,
+      driver_capabilities: planned.driver_capabilities,
+      source_workspace_name: planned.source_workspace_name,
+      source_workspace_relative_path: planned.source_workspace_relative_path,
+      state: workspace_manifest.Ready,
+    )
+  let assert Ok(Nil) =
+    workspace_manifest.write_entry(run_root, "run-1", "implementation", planned)
+  let assert Ok(Nil) =
+    workspace_manifest.write_entry(run_root, "run-1", "implementation", ready)
+  let assert Ok(contents) =
+    simplifile.read(workspace_manifest.manifest_path(run_root))
+  let assert Ok([written]) = workspace_manifest.decode_manifest(contents)
+  assert written.state == workspace_manifest.Ready
+}
+
+pub fn prepare_create_failure_leaves_planned_manifest_entry_test() {
+  let dir = "test/tmp/workspace-run-create-failure-manifest"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(Nil) =
+    simplifile.write(
+      orchestrator.config_dir <> "/create-fail-workspace",
+      "main",
+    )
+  let assert Ok(run_root) =
+    workspace_run.run_root_for(
+      issue(),
+      "implementation",
+      "run-create-failure",
+      orchestrator,
+    )
+
+  let assert Error(workspace_run.HookFailure(error.HookFailed(_, 17, _))) =
+    workspace_run.prepare_recovered_step_attempt(
+      issue(),
+      "implementation",
+      "run-create-failure",
+      run_root,
+      "implement",
+      1,
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(contents) =
+    simplifile.read(workspace_manifest.manifest_path(run_root))
+  let assert Ok([entry]) = workspace_manifest.decode_manifest(contents)
+  assert entry.state == workspace_manifest.Planned
+  assert entry.relative_path == "workspaces/main"
+}
+
+pub fn cleanup_uses_manifest_entries_only_test() {
+  let dir = "test/tmp/workspace-run-manifest-cleanup-only"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-cleanup-manifest",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(review) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-cleanup-manifest",
+      "review",
+      workflow_dag.WorkspaceRef(name: "review", from: Some("main")),
+      orchestrator,
+      profile,
+      dict.from_list([#("main", main)]),
+    )
+  let outside_source = dir <> "/outside-source"
+  let other_outside = dir <> "/other-outside"
+  let assert Ok(Nil) = simplifile.create_directory_all(outside_source)
+  let assert Ok(Nil) = simplifile.create_directory_all(other_outside)
+  let assert Ok(Nil) = simplifile.write(outside_source <> "/sentinel", "keep")
+  let assert Ok(Nil) = simplifile.write(other_outside <> "/sentinel", "keep")
+  let assert Ok(Nil) =
+    path.symlink(outside_source, main.run_root <> "/workspaces/scherzo")
+  let assert Ok(Nil) =
+    path.symlink(other_outside, main.run_root <> "/workspaces/outside-symlink")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(main.run_root <> "/workspaces/unmanaged")
+
+  let assert Ok(Nil) =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+
+  let assert Ok(False) = simplifile.is_directory(main.run_root)
+  let assert Ok(True) = simplifile.is_file(outside_source <> "/sentinel")
+  let assert Ok(True) = simplifile.is_file(other_outside <> "/sentinel")
+  let assert Ok(log) = simplifile.read(orchestrator.config_dir <> "/driver.log")
+  assert string.contains(
+    log,
+    "lifecycle remove|pwd="
+      <> orchestrator.config_dir
+      <> "|workspace="
+      <> main.path,
+  )
+  assert string.contains(
+    log,
+    "lifecycle remove|pwd="
+      <> orchestrator.config_dir
+      <> "|workspace="
+      <> review.path,
+  )
+  assert !string.contains(log, "workspaces/scherzo")
+  assert !string.contains(log, "workspaces/outside-symlink")
+  assert !string.contains(log, "workspaces/unmanaged")
+}
+
+pub fn cleanup_missing_manifest_returns_error_and_keeps_run_root_test() {
+  let dir = "test/tmp/workspace-run-missing-manifest"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-missing-manifest",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(Nil) =
+    simplifile.delete(workspace_manifest.manifest_path(main.run_root))
+
+  let assert Error(error.WorkspaceIo("managed workspace manifest missing")) =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+}
+
+pub fn cleanup_invalid_manifest_path_returns_error_and_keeps_run_root_test() {
+  let dir = "test/tmp/workspace-run-invalid-manifest"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-invalid-manifest",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace_manifest.manifest_path(main.run_root),
+      workspace_manifest.encode_manifest(
+        [
+          workspace_manifest.Entry(
+            run_id: "run-invalid-manifest",
+            workflow_id: "implementation",
+            step_id: "implement",
+            attempt_index: 1,
+            workspace_name: "main",
+            relative_path: "../escape",
+            workspace_profile: "dogfood-jj",
+            driver_command: "./driver.sh",
+            driver_capabilities: ["status", "assert-only"],
+            source_workspace_name: None,
+            source_workspace_relative_path: None,
+            state: workspace_manifest.Ready,
+          ),
+        ],
+        "run-invalid-manifest",
+        "implementation",
+      ),
+    )
+
+  let assert Error(error.WorkspaceIo("managed workspace path is unsafe")) =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+}
+
+fn ready_manifest_entry(
+  run_id: String,
+  workspace_name: String,
+  relative_path: String,
+) -> workspace_manifest.Entry {
+  workspace_manifest.Entry(
+    run_id: run_id,
+    workflow_id: "implementation",
+    step_id: "implement",
+    attempt_index: 1,
+    workspace_name: workspace_name,
+    relative_path: relative_path,
+    workspace_profile: "dogfood-jj",
+    driver_command: "./driver.sh",
+    driver_capabilities: ["status", "assert-only"],
+    source_workspace_name: None,
+    source_workspace_relative_path: None,
+    state: workspace_manifest.Ready,
+  )
+}
+
+fn write_manifest_entries(
+  run_root: String,
+  run_id: String,
+  entries: List(workspace_manifest.Entry),
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace_manifest.manifest_path(run_root),
+      workspace_manifest.encode_manifest(entries, run_id, "implementation"),
+    )
+  Nil
+}
+
+pub fn cleanup_rejects_manifest_driver_context_mismatch_test() {
+  let dir = "test/tmp/workspace-run-driver-context-mismatch"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-driver-context-mismatch",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  write_manifest_entries(main.run_root, "run-driver-context-mismatch", [
+    workspace_manifest.Entry(
+      ..ready_manifest_entry(
+        "run-driver-context-mismatch",
+        "main",
+        "workspaces/main",
+      ),
+      driver_command: "./other-driver.sh",
+    ),
+  ])
+
+  let assert Error(error.WorkspaceIo(
+    "managed workspace manifest driver context mismatch",
+  )) = workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+  let assert Ok(log) = simplifile.read(orchestrator.config_dir <> "/driver.log")
+  assert !string.contains(log, "lifecycle remove|")
+}
+
+pub fn cleanup_rejects_non_workspace_manifest_path_before_remove_hook_test() {
+  let dir = "test/tmp/workspace-run-non-workspace-manifest"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-non-workspace-manifest",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  write_manifest_entries(main.run_root, "run-non-workspace-manifest", [
+    ready_manifest_entry("run-non-workspace-manifest", "main", ".scherzo"),
+  ])
+
+  let assert Error(error.WorkspaceIo(
+    "managed workspace path does not match workspace name",
+  )) = workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  write_manifest_entries(main.run_root, "run-non-workspace-manifest", [
+    ready_manifest_entry(
+      "run-non-workspace-manifest",
+      "review",
+      "workspaces/main",
+    ),
+  ])
+  let assert Error(error.WorkspaceIo(
+    "managed workspace path does not match workspace name",
+  )) = workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+  let assert Ok(log) = simplifile.read(orchestrator.config_dir <> "/driver.log")
+  assert !string.contains(log, "lifecycle remove|")
+}
+
+pub fn cleanup_rejects_manifest_realpath_escape_and_keeps_run_root_test() {
+  let dir = "test/tmp/workspace-run-realpath-escape"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-realpath-escape",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let outside = dir <> "/outside-target"
+  let assert Ok(Nil) = simplifile.create_directory_all(outside)
+  let assert Ok(Nil) = simplifile.write(outside <> "/sentinel", "keep")
+  let assert Ok(Nil) = simplifile.delete(main.path)
+  let assert Ok(outside_abs) = path.absolute(outside)
+  let assert Ok(Nil) = path.symlink(outside_abs, main.path)
+
+  let assert Error(error.WorkspaceIo(
+    "managed workspace realpath escapes run root",
+  )) = workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+  let assert Ok(True) = simplifile.is_file(outside <> "/sentinel")
+  let assert Ok(log) = simplifile.read(orchestrator.config_dir <> "/driver.log")
+  assert !string.contains(log, "lifecycle remove|")
+}
+
+pub fn cleanup_rejects_oversized_manifest_and_keeps_run_root_test() {
+  let dir = "test/tmp/workspace-run-oversized-manifest"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-oversized-manifest",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace_manifest.manifest_path(main.run_root),
+      string.repeat("x", times: workspace_manifest.max_manifest_bytes + 1),
+    )
+
+  let assert Error(error.WorkspaceIo("managed workspace manifest too large")) =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+  let assert Ok(log) = simplifile.read(orchestrator.config_dir <> "/driver.log")
+  assert !string.contains(log, "lifecycle remove|")
 }

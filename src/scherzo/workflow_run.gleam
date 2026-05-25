@@ -45,11 +45,16 @@ import scherzo/workspace_run
 import scherzo/workstream/handoff_emitter
 import simplifile
 
+pub type PostSuccessCleanupWarning {
+  PostSuccessCleanupWarning(code: String, message: String, run_root: String)
+}
+
 pub type WorkflowRunSuccess {
   WorkflowRunSuccess(
     worker_success: agent_types.WorkerSuccess,
     artifacts: Dict(String, step_artifact.StepArtifact),
     run_root: String,
+    cleanup_warning: Option(PostSuccessCleanupWarning),
   )
 }
 
@@ -1997,40 +2002,48 @@ fn loop(
                     ),
                     artifacts: artifacts,
                     run_root: workspace_path,
+                    cleanup_warning: None,
                   ))
                 }
                 Error(err) -> {
-                  // Completed is checkpointed before cleanup; if cleanup fails, append
-                  // a failed terminal record so the final ledger matches the failure.
+                  let cleanup_code = error.workspace_code(err)
                   let cleanup_reason =
-                    "cleanup_failed:" <> error.workspace_code(err)
-                  let terminal_result =
-                    dependencies.checkpoint.workflow_finished(
-                      workflow_checkpoint.WorkflowFinished(
+                    "post_success_cleanup_failed:"
+                    <> cleanup_code
+                    <> "; run_root="
+                    <> workspace_path
+                  let warning_message = case
+                    dependencies.checkpoint.workflow_diagnostic(
+                      workflow_checkpoint.WorkflowDiagnostic(
                         run_id: run_id,
                         workflow_id: dag.id,
                         issue_id: issue.id,
-                        task_ref: task_ref(issue),
-                        outcome: workflow_outcome.terminal_failed_fatal(
-                          recovery_evidence,
-                        ),
-                        token_total: tokens.total,
-                        turns: turns,
+                        reason: cleanup_reason,
                       ),
                     )
-                  let reason = case terminal_result {
+                  {
                     Ok(Nil) -> cleanup_reason
                     Error(checkpoint_error) ->
                       cleanup_reason
-                      <> "; checkpoint_failed:"
+                      <> "; diagnostic_append_failed:"
                       <> workflow_checkpoint.describe_error(checkpoint_error)
                   }
-                  Error(WorkflowRunFailure(
-                    reason: reason,
-                    agent_reason: None,
+                  Ok(WorkflowRunSuccess(
+                    worker_success: agent_types.WorkerSuccess(
+                      final_issue: Some(final_issue),
+                      final_classification: agent_types.FinalTerminal,
+                      workspace_path: workspace_path,
+                      tokens: tokens,
+                      turns: turns,
+                      result: result,
+                    ),
                     artifacts: artifacts,
-                    run_root: run_root,
-                    failed_step_id: None,
+                    run_root: workspace_path,
+                    cleanup_warning: Some(PostSuccessCleanupWarning(
+                      code: cleanup_code,
+                      message: warning_message,
+                      run_root: workspace_path,
+                    )),
                   ))
                 }
               }

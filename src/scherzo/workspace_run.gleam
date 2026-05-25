@@ -12,6 +12,8 @@ import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workspace
 import scherzo/workspace_driver_lifecycle
+import scherzo/workspace_manifest
+import scherzo/workspace_profile
 import simplifile
 
 pub type PreparedStepWorkspace {
@@ -230,6 +232,13 @@ fn prepare_step_attempt_with_cleanup(
           source_workspace_path: source_path,
           workspace_profile: profile.name,
         )
+      use _ <- try_prepare(write_manifest_entry(
+        prepared,
+        step_id,
+        profile,
+        orchestrator,
+        workspace_manifest.Planned,
+      ))
       case
         finish_prepare_step(issue, step_id, prepared, orchestrator, profile)
       {
@@ -264,6 +273,13 @@ fn finish_prepare_step(
     profile,
   ))
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
+  use _ <- try_prepare(write_manifest_entry(
+    prepared,
+    step_id,
+    profile,
+    orchestrator,
+    workspace_manifest.Ready,
+  ))
   use _ <- result.try(run_before_step_hook(
     issue,
     step_id,
@@ -289,6 +305,13 @@ fn finish_prepare_scheduled_step(
     profile,
   ))
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
+  use _ <- try_prepare(write_manifest_entry(
+    prepared,
+    step_id,
+    profile,
+    orchestrator,
+    workspace_manifest.Ready,
+  ))
   use _ <- result.try(run_scheduled_before_step_hook(
     scheduled,
     step_id,
@@ -478,6 +501,13 @@ pub fn prepare_scheduled_step_attempt(
           source_workspace_path: source_path,
           workspace_profile: profile.name,
         )
+      use _ <- try_prepare(write_manifest_entry(
+        prepared,
+        step_id,
+        profile,
+        orchestrator,
+        workspace_manifest.Planned,
+      ))
       case
         finish_prepare_scheduled_step(
           scheduled,
@@ -765,6 +795,13 @@ fn reuse_prepared_workspace(
       source_workspace_path: Some(prepared.path),
     )
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
+  use _ <- try_prepare(write_manifest_entry(
+    prepared,
+    step_id,
+    profile,
+    orchestrator,
+    workspace_manifest.Ready,
+  ))
   use _ <- result.try(run_before_step_hook(
     issue,
     step_id,
@@ -794,6 +831,13 @@ fn reuse_scheduled_prepared_workspace(
       source_workspace_path: Some(prepared.path),
     )
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
+  use _ <- try_prepare(write_manifest_entry(
+    prepared,
+    step_id,
+    profile,
+    orchestrator,
+    workspace_manifest.Ready,
+  ))
   use _ <- result.try(run_scheduled_before_step_hook(
     scheduled,
     step_id,
@@ -1084,6 +1128,59 @@ fn append_scheduled_hook_env(
     #("SCHERZO_RUN_ATTEMPT", int.to_string(run_attempt)),
     ..env
   ]
+}
+
+fn write_manifest_entry(
+  prepared: PreparedStepWorkspace,
+  step_id: String,
+  profile: config_types.WorkspaceHookProfile,
+  orchestrator: config_types.OrchestratorConfig,
+  state: workspace_manifest.EntryState,
+) -> Result(Nil, error.WorkspaceError) {
+  let context = workspace_profile.driver_context(profile, orchestrator)
+  use relative_path <- try_workspace(
+    workspace_manifest.relative_path_from_run_root(
+      prepared.run_root,
+      prepared.path,
+    ),
+  )
+  use source_relative_path <- try_workspace(relative_source_path(
+    prepared.run_root,
+    prepared.source_workspace_path,
+  ))
+  workspace_manifest.write_entry(
+    prepared.run_root,
+    prepared.run_id,
+    prepared.workflow_id,
+    workspace_manifest.Entry(
+      run_id: prepared.run_id,
+      workflow_id: prepared.workflow_id,
+      step_id: step_id,
+      attempt_index: prepared.attempt_index,
+      workspace_name: prepared.workspace_name,
+      relative_path: relative_path,
+      workspace_profile: prepared.workspace_profile,
+      driver_command: context.driver,
+      driver_capabilities: config_types.workspace_capability_names(
+        context.capabilities,
+      ),
+      source_workspace_name: prepared.source_workspace_name,
+      source_workspace_relative_path: source_relative_path,
+      state: state,
+    ),
+  )
+}
+
+fn relative_source_path(
+  run_root: String,
+  source_workspace_path: Option(String),
+) -> Result(Option(String), error.WorkspaceError) {
+  case source_workspace_path {
+    None -> Ok(None)
+    Some(source_path) ->
+      workspace_manifest.relative_path_from_run_root(run_root, source_path)
+      |> result.map(Some)
+  }
 }
 
 fn create_directory(path: String) -> Result(Nil, error.WorkspaceError) {

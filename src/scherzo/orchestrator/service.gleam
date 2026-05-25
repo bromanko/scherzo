@@ -1779,12 +1779,24 @@ fn execute_dispatch_issue(
           #("reason", "normal"),
           #("workspace_path", success.run_root),
         ])
-      let cleaned =
-        log.info("workspace_cleaned", [
-          #("workspace_path", success.run_root),
-        ])
+      let cleanup_log = case success.cleanup_warning {
+        Some(workflow_run.PostSuccessCleanupWarning(
+          code: code,
+          message: message,
+          ..,
+        )) ->
+          log.warn("workspace_cleanup_failed", [
+            #("workspace_path", success.run_root),
+            #("error", code),
+            #("message", message),
+          ])
+        None ->
+          log.info("workspace_cleaned", [
+            #("workspace_path", success.run_root),
+          ])
+      }
       emit_best_effort_output(dependencies.logger(exited))
-      emit_best_effort_output(dependencies.logger(cleaned))
+      emit_best_effort_output(dependencies.logger(cleanup_log))
       let final_issue = case success.worker_success.final_issue {
         Some(i) -> i
         None -> issue
@@ -1801,7 +1813,7 @@ fn execute_dispatch_issue(
         )
       let logs =
         interpret_effects(transition.effects, bundle.effective, dependencies, [
-          cleaned,
+          cleanup_log,
           exited,
           started,
           ..logs

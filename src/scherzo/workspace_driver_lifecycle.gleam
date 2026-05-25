@@ -1,14 +1,14 @@
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, unwrap}
 import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/hooks
-import scherzo/path
 import scherzo/workspace_driver_command
 import scherzo/workspace_driver_env
-import simplifile
+import scherzo/workspace_manifest
 
 pub fn supports(
   driver: config_types.WorkspaceDriverConfig,
@@ -82,69 +82,47 @@ pub fn remove_run(
   case supports(driver, config_types.LifecycleRemove) {
     False -> Ok(Nil)
     True -> {
-      let workspaces_dir = path.join(run_root, "workspaces")
-      case simplifile.read_directory(workspaces_dir) {
-        Ok(entries) ->
-          remove_entries(
-            entries,
-            workspaces_dir,
-            run_root,
-            orchestrator,
-            profile_name,
-            driver,
-          )
-        Error(simplifile.Enoent) -> Ok(Nil)
-        Error(file_error) ->
-          Error(error.WorkspaceIo(
-            "read workspaces failed: " <> simplifile.describe_error(file_error),
-          ))
-      }
+      use entries <- result.try(workspace_manifest.cleanup_entries(
+        run_root,
+        profile_name,
+        workspace_driver_command.resolve(driver.command, orchestrator),
+        config_types.workspace_capability_names(driver.capabilities),
+      ))
+      remove_entries(list.reverse(entries), run_root, orchestrator, driver)
     }
   }
 }
 
 fn remove_entries(
-  entries: List(String),
-  workspaces_dir: String,
+  entries: List(workspace_manifest.CleanupEntry),
   run_root: String,
   orchestrator: config_types.OrchestratorConfig,
-  profile_name: String,
   driver: config_types.WorkspaceDriverConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   case entries {
     [] -> Ok(Nil)
     [entry, ..rest] -> {
-      let workspace_path = path.join(workspaces_dir, entry)
-      use _ <- result.try(remove_entry(
-        workspace_path,
-        entry,
-        run_root,
-        orchestrator,
-        profile_name,
-        driver,
-      ))
-      remove_entries(
-        rest,
-        workspaces_dir,
-        run_root,
-        orchestrator,
-        profile_name,
-        driver,
-      )
+      use _ <- result.try(remove_entry(entry, run_root, orchestrator, driver))
+      remove_entries(rest, run_root, orchestrator, driver)
     }
   }
 }
 
 fn remove_entry(
-  workspace_path: String,
-  workspace_name: String,
+  cleanup_entry: workspace_manifest.CleanupEntry,
   run_root: String,
   orchestrator: config_types.OrchestratorConfig,
-  profile_name: String,
   driver: config_types.WorkspaceDriverConfig,
 ) -> Result(Nil, error.WorkspaceError) {
-  case simplifile.is_directory(workspace_path) {
-    Ok(True) ->
+  let workspace_manifest.CleanupEntry(
+    entry: entry,
+    workspace_path: workspace_path,
+    source_workspace_path: source_workspace_path,
+    exists: exists,
+  ) = cleanup_entry
+  case exists {
+    False -> Ok(Nil)
+    True ->
       run(
         "driver_lifecycle_remove",
         config_types.LifecycleRemove,
@@ -153,20 +131,14 @@ fn remove_entry(
         remove_env(
           run_root,
           workspace_path,
-          workspace_name,
-          profile_name,
+          source_workspace_path,
+          entry,
           orchestrator,
         ),
       )
       |> result.map_error(fn(err) {
-        driver_remove_error(workspace_name, workspace_path, err)
+        driver_remove_error(entry.workspace_name, workspace_path, err)
       })
-    Ok(False) -> Ok(Nil)
-    Error(simplifile.Enoent) -> Ok(Nil)
-    Error(file_error) ->
-      Error(error.WorkspaceIo(
-        "inspect workspace failed: " <> simplifile.describe_error(file_error),
-      ))
   }
 }
 
@@ -203,27 +175,27 @@ fn hook_error_detail(err: error.HookError) -> String {
 fn remove_env(
   run_root: String,
   workspace_path: String,
-  workspace_name: String,
-  profile_name: String,
+  source_workspace_path: Option(String),
+  entry: workspace_manifest.Entry,
   orchestrator: config_types.OrchestratorConfig,
 ) -> List(#(String, String)) {
   [
     #("SCHERZO_RUN_KIND", "issue"),
     #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),
-    #("SCHERZO_WORKFLOW_ID", ""),
+    #("SCHERZO_WORKFLOW_ID", entry.workflow_id),
     #("SCHERZO_WORKFLOW_BUNDLE_DIR", ""),
-    #("SCHERZO_RUN_ID", ""),
+    #("SCHERZO_RUN_ID", entry.run_id),
     #("SCHERZO_RUN_ROOT", run_root),
     #("SCHERZO_ISSUE_ID", ""),
     #("SCHERZO_ISSUE_IDENTIFIER", ""),
-    #("SCHERZO_STEP_ID", ""),
-    #("SCHERZO_ATTEMPT_INDEX", "0"),
+    #("SCHERZO_STEP_ID", entry.step_id),
+    #("SCHERZO_ATTEMPT_INDEX", int.to_string(entry.attempt_index)),
     #("SCHERZO_WORKSPACE_ROOT", orchestrator.effective.workspace.root),
-    #("SCHERZO_WORKSPACE_PROFILE", profile_name),
-    #("SCHERZO_WORKSPACE_NAME", workspace_name),
+    #("SCHERZO_WORKSPACE_PROFILE", entry.workspace_profile),
+    #("SCHERZO_WORKSPACE_NAME", entry.workspace_name),
     #("SCHERZO_WORKSPACE_PATH", workspace_path),
-    #("SCHERZO_SOURCE_WORKSPACE_NAME", ""),
-    #("SCHERZO_SOURCE_WORKSPACE_PATH", ""),
+    #("SCHERZO_SOURCE_WORKSPACE_NAME", unwrap(entry.source_workspace_name, "")),
+    #("SCHERZO_SOURCE_WORKSPACE_PATH", unwrap(source_workspace_path, "")),
   ]
 }
 

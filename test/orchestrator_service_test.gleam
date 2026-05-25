@@ -670,6 +670,39 @@ pub fn fake_end_to_end_service_dispatch_test() {
   assert !contains_log(result.logs, "empty_path")
 }
 
+pub fn yaml_once_cleanup_warning_logs_workspace_cleanup_failed_test() {
+  let dir = "test/tmp/service-yaml-once-cleanup-warning"
+  let root = "workspaces"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(Nil) = simplifile.write(config_path, yaml_config(root, ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let candidate =
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+  let base = deps(tracker_with_candidate(candidate, candidate))
+  let deps =
+    service.Dependencies(
+      ..base,
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..base.workflow_run_dependencies,
+        cleanup_run: fn(_, _, _) { Error(error.WorkspaceIo("delete failed")) },
+      ),
+    )
+  let assert Ok(result) =
+    service.run_once_with_dependencies(Some(config_path), deps)
+  assert result.dispatched == 1
+  assert contains_log(result.logs, "dispatch_started")
+  assert contains_log(result.logs, "worker_exited")
+  assert contains_log(result.logs, "workspace_cleanup_failed")
+  assert contains_log(result.logs, "post_success_cleanup_failed")
+  assert !contains_log(result.logs, "workspace_cleaned")
+}
+
 fn empty_tracker() -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([]) },
