@@ -79,6 +79,14 @@ fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
   )
 }
 
+fn empty_tracker_client() -> tracker.Client {
+  tracker.Client(
+    fetch_candidate_issues: fn() { Ok([]) },
+    fetch_issues_by_states: fn(_) { Ok([]) },
+    fetch_issue_states_by_ids: fn(_) { Ok([]) },
+  )
+}
+
 fn workflow_text(root: String, max_concurrent: Int) -> String {
   workflow_text_with_linear_contract(root, max_concurrent, "")
 }
@@ -1348,6 +1356,20 @@ fn load_test_records(root: String) -> List(record.LedgerRecord) {
   read.records
 }
 
+fn write_corrupt_current_ledger(root: String) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(ledger_path.ledger_dir)
+  let assert Ok(Nil) =
+    simplifile.write(ledger_path.current_path, "not-json\nnot-json\n")
+  Nil
+}
+
+fn create_current_ledger_directory(root: String) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(ledger_path.current_path)
+  Nil
+}
+
 fn workflow_finished_outcomes(root: String) -> List(String) {
   load_test_records(root)
   |> list.filter_map(fn(ledger_record) {
@@ -1844,6 +1866,33 @@ pub fn daemon_shutdown_logs_event_hub_timeout_test() {
   assert daemon.shutdown(started.data, 3000) == Ok(Nil)
   assert wait_for_event(log_subject, "event_hub_shutdown_timeout", 10)
   process.kill(event_hub_pid)
+}
+
+pub fn daemon_shutdown_logs_projection_load_failure_test() {
+  let root = "test/tmp/daemon-shutdown-projection-unavailable"
+  let workflow_path = write_workflow(root, 1)
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let deps = base_dependencies(client, log_subject)
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(bundle.effective.workspace.root)
+  let assert Ok(Nil) = simplifile.create_directory_all(ledger_path.ledger_dir)
+  let assert Ok(Nil) =
+    simplifile.write(ledger_path.current_path, "not-json\nnot-json\n")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert wait_for_event(
+    log_subject,
+    "workflow_shutdown_projection_unavailable",
+    10,
+  )
 }
 
 pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {
@@ -2379,6 +2428,76 @@ pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_scheduled_startup_logs_projection_failures_and_still_runs_test() {
+  let dir = "test/tmp/daemon-scheduled-startup-projection-unavailable"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+      start_event_hub: fn() {
+        write_corrupt_current_ledger(root)
+        hub.start(10, fn() { 42 })
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_event(
+    log_subject,
+    "scheduled_next_due_projection_unavailable",
+    20,
+  )
+  assert wait_for_event(
+    log_subject,
+    "scheduled_runtime_recovery_projection_unavailable",
+    20,
+  )
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_append_failure_logs_and_continues_test() {
+  let dir = "test/tmp/daemon-scheduled-append-failure"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  create_current_ledger_directory(root)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(log_subject, "scheduled_due_append_failed", 20)
+  assert wait_for_event(log_subject, "scheduled_pending_append_failed", 20)
+  assert wait_for_event(log_subject, "scheduled_started_append_failed", 20)
+  assert wait_for_event(log_subject, "scheduled_dispatch_started", 20)
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  assert wait_for_event(log_subject, "scheduled_failure_append_failed", 20)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
 pub fn daemon_scheduled_due_tick_runs_command_workflow_test() {
   let dir = "test/tmp/daemon-scheduled-due"
   let workflow_path = write_scheduled_command_workflow(dir, 1)
@@ -2802,6 +2921,69 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
     20,
   )
 
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_report_retry_logs_projection_failure_test() {
+  let dir = "test/tmp/daemon-scheduled-report-retry-projection-unavailable"
+  let workflow_path = write_scheduled_reporting_workflow(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let report_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter_with_scheduled_reporter(
+          client,
+          scheduled_reporter_directed(report_subject),
+        )
+      },
+      workflow_run_dependencies: failing_command_workflow_run_dependencies(
+        command_subject,
+      ),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_retry_scheduled(records, run_id, 2) },
+    20,
+  )
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_retry_scheduled(records, run_id, 3) },
+    20,
+  )
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
+  let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
+    process.receive(report_subject, within: 1000)
+  process.send(first_reply, ScheduledReportError)
+  assert first_request.run_id == run_id
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_failure_report_failed(records, run_id, 1) },
+    20,
+  )
+
+  write_corrupt_current_ledger(root)
+  process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 1))
+
+  assert wait_for_event(
+    log_subject,
+    "scheduled_report_retry_projection_unavailable",
+    20,
+  )
+  test_async.assert_no_extra_message_within(report_subject, 100)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
 }

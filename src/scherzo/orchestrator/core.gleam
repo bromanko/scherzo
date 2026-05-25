@@ -3,7 +3,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
-import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/orchestrator/reason
@@ -258,7 +257,7 @@ fn is_parked_for_issue(
 ) -> Bool {
   case dict.get(state.parked, issue.id) {
     Ok(parked) -> park_blocks_dispatch(parked, issue)
-    Error(_) -> False
+    Error(Nil) -> False
   }
 }
 
@@ -293,7 +292,7 @@ fn per_state_slot_available(
 ) -> Bool {
   let key = issue_state.key(issue_state_value)
   case dict.get(config.agent.max_concurrent_agents_by_state, key) {
-    Error(_) -> True
+    Error(Nil) -> True
     Ok(limit) -> running_count_for_state(state, key) < limit
   }
 }
@@ -412,7 +411,7 @@ pub fn apply_worker_success_with_workspace_path(
     True ->
       case dict.get(state.running, issue_id) {
         Ok(entry) -> entry.workspace_path
-        Error(_) -> ""
+        Error(Nil) -> ""
       }
     False -> workspace_path
   }
@@ -523,7 +522,7 @@ pub fn schedule_retry(
 ) -> Transition {
   let generation = case dict.get(state.retry_attempts, issue_id) {
     Ok(entry) -> entry.timer_generation + 1
-    Error(_) -> 1
+    Error(Nil) -> 1
   }
   let retry =
     orchestrator_state.RetryEntry(
@@ -637,7 +636,7 @@ fn retry_backoff_delay(
 ) -> Int {
   let attempt = case dict.get(state.retry_attempts, issue_id) {
     Ok(entry) -> entry.timer_generation + 1
-    Error(_) -> 1
+    Error(Nil) -> 1
   }
   backoff_delay(attempt, config.agent.max_retry_backoff_ms)
 }
@@ -648,7 +647,7 @@ pub fn reconcile_issue(
   refreshed: tracker_issue.Issue,
 ) -> Transition {
   case dict.get(state.running, refreshed.id) {
-    Error(_) -> Transition(state: state, effects: [])
+    Error(Nil) -> Transition(state: state, effects: [])
     Ok(entry) ->
       case is_terminal(config, refreshed.state) {
         True ->
@@ -716,7 +715,7 @@ pub fn unpark_if_issue_changed(
               )
           }
       }
-    Error(_) -> state
+    Error(Nil) -> state
   }
 }
 
@@ -759,9 +758,10 @@ fn park(
   now_ms: Int,
 ) -> Transition {
   let issue_id = baseline_issue.id
-  let identifier =
-    dict.get(state.claimed, issue_id)
-    |> result.unwrap(baseline_issue.identifier)
+  let identifier = case dict.get(state.claimed, issue_id) {
+    Ok(identifier) -> identifier
+    Error(Nil) -> baseline_issue.identifier
+  }
   let parked =
     orchestrator_state.ParkedEntry(
       issue_id: issue_id,
@@ -827,7 +827,7 @@ fn retry_generation(
 ) -> Int {
   case dict.get(state.retry_attempts, issue_id) {
     Ok(entry) -> entry.timer_generation
-    Error(_) -> 0
+    Error(Nil) -> 0
   }
 }
 
@@ -872,7 +872,7 @@ pub fn already_reported_blocked_dependency(
 ) -> Bool {
   let key = blocked_dependency_report_key(issue.id, phase)
   case dict.get(state.blocked_dependency_reports, key) {
-    Error(_) -> False
+    Error(Nil) -> False
     Ok(report) ->
       report.last_result != "failed"
       && report.observed_updated_at == issue.updated_at
@@ -972,7 +972,7 @@ pub fn already_attempted_invalid_workflow(
   config: config_types.LinearContractConfig,
 ) -> Bool {
   case dict.get(state.invalid_workflow_reports, issue.id) {
-    Error(_) -> False
+    Error(Nil) -> False
     Ok(report) ->
       report.last_result != "failed"
       && report.observed_updated_at == issue.updated_at
@@ -1027,7 +1027,7 @@ pub fn mark_invalid_workflow_report_result(
   last_result: String,
 ) -> orchestrator_state.RuntimeState {
   case dict.get(state.invalid_workflow_reports, issue_id) {
-    Error(_) -> state
+    Error(Nil) -> state
     Ok(report) ->
       case
         report.violation_fingerprint == violation_fingerprint
@@ -1104,8 +1104,10 @@ fn get_counter(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.IssueCounter {
-  dict.get(state.issue_counters, issue_id)
-  |> result.unwrap(orchestrator_state.new_issue_counter())
+  case dict.get(state.issue_counters, issue_id) {
+    Ok(counter) -> counter
+    Error(Nil) -> orchestrator_state.new_issue_counter()
+  }
 }
 
 fn put_counter(

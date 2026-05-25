@@ -108,7 +108,7 @@ pub fn stop_and_wait(
   timeout_ms: Int,
 ) -> Result(Nil, Nil) {
   case process.subject_owner(subject) {
-    Error(_) -> Ok(Nil)
+    Error(Nil) -> Ok(Nil)
     Ok(pid) -> {
       let monitor = process.monitor(pid)
       case process.is_alive(pid) {
@@ -268,7 +268,7 @@ fn handle_message(
     GetSession(session_id, reply) -> {
       let summary = case dict.get(state.summaries, session_id) {
         Ok(summary) -> Some(summary)
-        Error(_) -> None
+        Error(Nil) -> None
       }
       process.send(reply, Ok(summary))
       actor.continue(state)
@@ -457,7 +457,7 @@ fn update_summary(
   change: fn(event.SessionSummary) -> event.SessionSummary,
 ) -> State {
   case dict.get(state.summaries, session_id) {
-    Error(_) -> state
+    Error(Nil) -> state
     Ok(summary) ->
       State(
         ..state,
@@ -473,7 +473,7 @@ fn publish_payload(
   payload: event.EventPayload,
 ) -> State {
   case dict.get(state.summaries, session_id) {
-    Error(_) -> state
+    Error(Nil) -> state
     Ok(summary) -> {
       let now = state.now_ms()
       let #(summary, payload) = apply_publish_payload(summary, payload, now)
@@ -488,14 +488,14 @@ fn publish_payload(
         )
       let existing_events = case dict.get(state.events, session_id) {
         Ok(events) -> events
-        Error(_) -> []
+        Error(Nil) -> []
       }
       let all_events = list.append(existing_events, [stored_event])
       let dropped_now = list.length(all_events) > retention_limit
       let retained_events = retain_latest(all_events, retention_limit)
       let dropped_before = case dict.get(state.dropped_old_events, session_id) {
         Ok(value) -> value
-        Error(_) -> False
+        Error(Nil) -> False
       }
       State(
         ..state,
@@ -828,7 +828,7 @@ fn replay_events(
         Ok(_) -> {
           let events = case dict.get(state.events, session_id) {
             Ok(events) -> events
-            Error(_) -> []
+            Error(Nil) -> []
           }
           let max_limit = min_int(limit, state.max_events_per_session)
           let page_events =
@@ -848,7 +848,7 @@ fn replay_events(
 fn next_cursor(events: List(event.SessionEvent), input_cursor: Int) -> Int {
   case list.last(events) {
     Ok(stored_event) -> stored_event.cursor
-    Error(_) -> input_cursor
+    Error(Nil) -> input_cursor
   }
 }
 
@@ -860,14 +860,14 @@ fn replay_truncated(
 ) -> Bool {
   let dropped = case dict.get(state.dropped_old_events, session_id) {
     Ok(value) -> value
-    Error(_) -> False
+    Error(Nil) -> False
   }
   case dropped {
     False -> False
     True ->
       case list.first(events) {
         Ok(first_event) -> requested_cursor < first_event.cursor
-        Error(_) -> False
+        Error(Nil) -> False
       }
   }
 }

@@ -148,7 +148,7 @@ pub fn register_worker_command_subject(
   command_subject: process.Subject(worker_command.Command),
 ) -> Registry {
   case dict.get(registry.workers, issue_id) {
-    Error(_) -> registry
+    Error(Nil) -> registry
     Ok(handle) ->
       case handle.run_id == run_id {
         False -> registry
@@ -171,7 +171,7 @@ pub fn register_scheduled_worker_command_subject(
   command_subject: process.Subject(worker_command.Command),
 ) -> Registry {
   case dict.get(registry.scheduled_workers, run_id) {
-    Error(_) -> registry
+    Error(Nil) -> registry
     Ok(handle) ->
       Registry(
         ..registry,
@@ -269,7 +269,7 @@ pub fn remove_worker(
   issue_id: String,
 ) -> #(Registry, Result(WorkerHandle, Nil)) {
   case dict.get(registry.workers, issue_id) {
-    Error(_) -> #(
+    Error(Nil) -> #(
       Registry(
         ..registry,
         issue_sessions: dict.delete(registry.issue_sessions, issue_id),
@@ -297,7 +297,7 @@ pub fn remove_scheduled_worker(
   run_id: String,
 ) -> #(Registry, Result(ScheduledWorkerHandle, Nil)) {
   case dict.get(registry.scheduled_workers, run_id) {
-    Error(_) -> #(
+    Error(Nil) -> #(
       Registry(
         ..registry,
         scheduled_sessions: dict.delete(registry.scheduled_sessions, run_id),
@@ -400,7 +400,7 @@ pub fn register_yaml_step_command_subject(
 ) -> Registry {
   let registry = clear_yaml_step_command_route(registry, session_id)
   case process.subject_owner(command_subject) {
-    Error(_) ->
+    Error(Nil) ->
       Registry(
         ..registry,
         step_command_subjects: dict.insert(
@@ -445,7 +445,7 @@ pub fn clear_yaml_step_command_route(
   session_id: String,
 ) -> Registry {
   case dict.get(registry.step_command_subject_monitors, session_id) {
-    Error(_) ->
+    Error(Nil) ->
       Registry(
         ..registry,
         step_command_subjects: dict.delete(
@@ -513,7 +513,7 @@ pub fn resolve_down(
       case dict.get(registry.workers, issue_id) {
         Ok(handle) ->
           WorkerDown(remove_worker_handle(registry, handle), issue_id, handle)
-        Error(_) ->
+        Error(Nil) ->
           WorkerDownStale(
             Registry(
               ..registry,
@@ -523,7 +523,7 @@ pub fn resolve_down(
             issue_id,
           )
       }
-    Error(_) ->
+    Error(Nil) ->
       case dict.get(registry.scheduled_worker_monitors, monitor) {
         Ok(run_id) ->
           case dict.get(registry.scheduled_workers, run_id) {
@@ -533,7 +533,7 @@ pub fn resolve_down(
                 run_id,
                 handle,
               )
-            Error(_) ->
+            Error(Nil) ->
               ScheduledWorkerDownStale(
                 Registry(
                   ..registry,
@@ -549,9 +549,9 @@ pub fn resolve_down(
                 run_id,
               )
           }
-        Error(_) ->
+        Error(Nil) ->
           case dict.get(registry.step_command_monitors, monitor) {
-            Error(_) -> UnknownDown(registry)
+            Error(Nil) -> UnknownDown(registry)
             Ok(session_id) ->
               StepCommandDown(
                 delete_step_command_route(registry, session_id, monitor),
