@@ -1,8 +1,32 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
+pub const caller_cwd_env = "SCHERZO_CALLER_CWD"
+
 pub fn absolute(path: String) -> Result(String, Nil) {
   absname(path)
+}
+
+pub fn resolve_from_caller_cwd(
+  value: String,
+  env: fn(String) -> Option(String),
+) -> String {
+  case is_absolute(value) {
+    True -> value
+    False ->
+      case env(caller_cwd_env) {
+        Some(cwd) ->
+          case cwd == "" {
+            True -> value
+            False -> join(cwd, value)
+          }
+        None -> value
+      }
+  }
+}
+
+pub fn is_absolute(value: String) -> Bool {
+  string.starts_with(value, "/")
 }
 
 pub fn dirname(path: String) -> Result(String, Nil) {

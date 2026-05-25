@@ -3,6 +3,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/path
 import simplifile
 
 pub const control_dir_name = ".scherzo-state"
@@ -39,13 +40,18 @@ pub fn path_for_workspace(workspace_root: String) -> String {
 }
 
 pub fn read(path: String) -> Result(ControlFile, ControlFileError) {
-  case simplifile.read(path) {
-    Error(err) ->
-      Error(ControlFileReadFailed(path, simplifile.describe_error(err)))
-    Ok(contents) ->
-      case json.parse(contents, control_file_decoder()) {
-        Ok(control_file) -> Ok(control_file)
-        Error(_) -> Error(ControlFileInvalid(path, "invalid control file JSON"))
+  case file_exists(path) {
+    False -> Error(ControlFileNotFound(path))
+    True ->
+      case simplifile.read(path) {
+        Error(err) ->
+          Error(ControlFileReadFailed(path, simplifile.describe_error(err)))
+        Ok(contents) ->
+          case json.parse(contents, control_file_decoder()) {
+            Ok(control_file) -> Ok(control_file)
+            Error(_) ->
+              Error(ControlFileInvalid(path, "invalid control file JSON"))
+          }
       }
   }
 }
@@ -134,21 +140,31 @@ pub fn discover_path(
   discover_path_with_default(explicit_path, env, default_discovery_path)
 }
 
+pub fn resolve_cli_path(
+  value: String,
+  env: fn(String) -> Option(String),
+) -> String {
+  path.resolve_from_caller_cwd(value, env)
+}
+
 pub fn discover_path_with_default(
   explicit_path: Option(String),
   env: fn(String) -> Option(String),
   default_path: String,
 ) -> Result(String, ControlFileError) {
   case explicit_path {
-    Some(path) -> Ok(path)
+    Some(control_path) -> Ok(path.resolve_from_caller_cwd(control_path, env))
     None ->
       case env("SCHERZO_CONTROL_FILE") {
-        Some(path) -> Ok(path)
-        None ->
-          case file_exists(default_path) {
-            True -> Ok(default_path)
-            False -> Error(ControlFileNotFound(default_path))
+        Some(control_path) ->
+          Ok(path.resolve_from_caller_cwd(control_path, env))
+        None -> {
+          let discovered_path = path.resolve_from_caller_cwd(default_path, env)
+          case file_exists(discovered_path) {
+            True -> Ok(discovered_path)
+            False -> Error(ControlFileNotFound(discovered_path))
           }
+        }
       }
   }
 }

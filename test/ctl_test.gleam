@@ -59,6 +59,23 @@ fn write_control_file_for_root(path: String, root: String) -> Nil {
   Nil
 }
 
+fn with_caller_cwd(cwd: String, action: fn() -> a) -> a {
+  let previous = path.env(path.caller_cwd_env)
+  let _ = path.set_env(path.caller_cwd_env, cwd)
+  let result = action()
+  case previous {
+    Some(value) -> {
+      let _ = path.set_env(path.caller_cwd_env, value)
+      Nil
+    }
+    None -> {
+      let _ = path.unset_env(path.caller_cwd_env)
+      Nil
+    }
+  }
+  result
+}
+
 fn session_summary(
   session_id: String,
   last_event_at_ms: Int,
@@ -519,6 +536,32 @@ pub fn schedules_doctor_reports_issue_context_template_failure_test() {
   assert string.contains(transcript, "workflow nightly")
 }
 
+pub fn schedules_doctor_root_resolves_config_path_from_caller_cwd_test() {
+  let base = "test/tmp/ctl-schedules/doctor-caller-root"
+  reset_dir(base)
+  let assert Ok(caller_abs) = path.absolute(base <> "/consumer")
+  let config_path =
+    write_schedule_doctor_config(
+      caller_abs <> "/.scherzo",
+      "Scheduled job {{ scheduled_job.id }}",
+    )
+  let subject = process.new_subject()
+
+  let result =
+    with_caller_cwd(caller_abs, fn() {
+      ctl.run_with_deps(
+        ctl.SchedulesDoctor(None, Some(".scherzo/workspaces"), False, "nightly"),
+        ps_deps([], ps_now_ms, ""),
+        output(subject),
+      )
+    })
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "config: " <> config_path)
+  assert string.contains(transcript, "config_load")
+}
+
 pub fn ps_human_table_uses_display_name_and_matches_header_order_test() {
   let path = "test/tmp/ctl-ps/table-order-control.json"
   write_control_file(path)
@@ -887,6 +930,100 @@ pub fn ctl_turn_telemetry_human_and_raw_outputs_test() {
   assert string.contains(attach_transcript, "name=turn_finished")
   assert string.contains(attach_transcript, "turn=3")
   assert string.contains(attach_transcript, "turn_status=finished")
+}
+
+pub fn ps_json_includes_target_context_without_control_token_test() {
+  let path = "test/tmp/ctl-ps/json-target-control.json"
+  write_control_file(path)
+  let raw_response =
+    protocol.success_response(
+      "1",
+      protocol.list_sessions_data(event.SessionList([], ps_now_ms)),
+    )
+    |> protocol.response_to_string
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Ps(Some(path), True),
+      ps_deps([], ps_now_ms, raw_response),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"target\":")
+  assert string.contains(transcript, "\"control_file_path\":\"" <> path <> "\"")
+  assert string.contains(
+    transcript,
+    "\"workspace_root\":\"test/tmp/ctl-ps/workspaces\"",
+  )
+  assert string.contains(transcript, "\"host\":\"127.0.0.1\"")
+  assert string.contains(transcript, "\"port\":1")
+  assert !string.contains(transcript, "token")
+}
+
+pub fn control_file_option_resolves_relative_to_caller_cwd_test() {
+  let base = "test/tmp/ctl-path-options/control-file"
+  let core_root = base <> "/core"
+  let caller_root = base <> "/consumer"
+  reset_dir(base)
+  let assert Ok(core_abs) = path.absolute(core_root)
+  let assert Ok(caller_abs) = path.absolute(caller_root)
+  let control_rel = file.default_discovery_path
+  write_control_file_for_root(core_abs <> "/" <> control_rel, core_abs)
+  write_control_file_for_root(caller_abs <> "/" <> control_rel, caller_abs)
+  let raw_response =
+    protocol.success_response(
+      "1",
+      protocol.list_sessions_data(event.SessionList([], ps_now_ms)),
+    )
+    |> protocol.response_to_string
+  let subject = process.new_subject()
+
+  let result =
+    with_caller_cwd(caller_abs, fn() {
+      ctl.run_with_deps(
+        ctl.Ps(Some(control_rel), True),
+        ps_deps([], ps_now_ms, raw_response),
+        output(subject),
+      )
+    })
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(
+    transcript,
+    "\"control_file_path\":\"" <> caller_abs <> "/" <> control_rel <> "\"",
+  )
+  assert string.contains(
+    transcript,
+    "\"workspace_root\":\"" <> caller_abs <> "\"",
+  )
+  assert !string.contains(transcript, core_abs <> "\"")
+}
+
+pub fn root_option_resolves_relative_to_caller_cwd_test() {
+  let base = "test/tmp/ctl-path-options/root"
+  reset_dir(base)
+  let assert Ok(caller_abs) = path.absolute(base <> "/consumer")
+  let subject = process.new_subject()
+
+  let result =
+    with_caller_cwd(caller_abs, fn() {
+      ctl.run_with_deps(
+        ctl.StateStatus(".scherzo/workspaces", True),
+        ps_deps([], ps_now_ms, ""),
+        output(subject),
+      )
+    })
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(
+    transcript,
+    "\"workspace_root\":\"" <> caller_abs <> "/.scherzo/workspaces\"",
+  )
 }
 
 pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {

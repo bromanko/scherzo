@@ -212,7 +212,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path; relative paths resolve from the caller working directory.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands, including target context; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -568,10 +568,10 @@ pub fn run_with_deps(
       Ok(Nil)
     }
     Ping(control_path, json) -> {
-      use control_file <- try_ctl(load_control_file(control_path))
+      use target <- try_ctl(load_control_target(control_path))
+      let control_file = target.control_file
       case json {
-        True ->
-          print_raw_request(control_file, protocol.Ping("1", ""), deps, output)
+        True -> print_raw_request(target, protocol.Ping("1", ""), deps, output)
         False ->
           case client.ping(control_file) {
             Ok(Nil) -> {
@@ -583,11 +583,12 @@ pub fn run_with_deps(
       }
     }
     Ps(control_path, json) -> {
-      use control_file <- try_ctl(load_control_file(control_path))
+      use target <- try_ctl(load_control_target(control_path))
+      let control_file = target.control_file
       case json {
         True ->
           print_raw_request(
-            control_file,
+            target,
             protocol.ListSessions("1", ""),
             deps,
             output,
@@ -603,7 +604,8 @@ pub fn run_with_deps(
       }
     }
     Session(control_path, json, session_ref) -> {
-      use control_file <- try_ctl(load_control_file(control_path))
+      use target <- try_ctl(load_control_target(control_path))
+      let control_file = target.control_file
       use session_id <- try_ctl(resolve_session_ref(
         control_file,
         deps,
@@ -612,7 +614,7 @@ pub fn run_with_deps(
       case json {
         True ->
           print_raw_request(
-            control_file,
+            target,
             protocol.GetSession("1", "", session_id),
             deps,
             output,
@@ -634,9 +636,9 @@ pub fn run_with_deps(
       }
     }
     Events(control_path, mode, color, since_cursor, verbose, session_id) -> {
-      use control_file <- try_ctl(load_control_file(control_path))
+      use target <- try_ctl(load_control_target(control_path))
       run_events(
-        control_file,
+        target,
         deps,
         output,
         mode,
@@ -647,9 +649,9 @@ pub fn run_with_deps(
       )
     }
     Attach(control_path, mode, color, follow, since_cursor, verbose, session_id) -> {
-      use control_file <- try_ctl(load_control_file(control_path))
+      use target <- try_ctl(load_control_target(control_path))
       run_attach(
-        control_file,
+        target.control_file,
         deps,
         output,
         mode,
@@ -661,7 +663,8 @@ pub fn run_with_deps(
       )
     }
     Operator(control_path, json, operator_command) -> {
-      use control_file <- try_ctl(load_control_file(control_path))
+      use target <- try_ctl(load_control_target(control_path))
+      let control_file = target.control_file
       use resolved_command <- try_ctl(resolve_operator_command(
         control_file,
         deps,
@@ -670,7 +673,7 @@ pub fn run_with_deps(
       case json {
         True ->
           print_raw_request(
-            control_file,
+            target,
             protocol.command_request("1", "", resolved_command),
             deps,
             output,
@@ -709,13 +712,14 @@ pub fn run_with_deps(
         Ok(Nil) -> Ok(Nil)
         Error(#(code, message)) -> Error(Failed(code, message))
       }
-    StateStatus(root, json) -> run_state_status(root, json, output)
+    StateStatus(root, json) ->
+      run_state_status(resolve_path_option(root), json, output)
     StateArchiveOld(root, json, yes) ->
-      run_state_archive_old(root, json, yes, output)
+      run_state_archive_old(resolve_path_option(root), json, yes, output)
     StateDiscardOld(root, json, yes) ->
-      run_state_discard_old(root, json, yes, output)
+      run_state_discard_old(resolve_path_option(root), json, yes, output)
     StateReinitialize(root, json, yes) ->
-      run_state_reinitialize(root, json, yes, output)
+      run_state_reinitialize(resolve_path_option(root), json, yes, output)
   }
 }
 
@@ -751,7 +755,7 @@ fn cleanup_workspace_root(
   explicit_root: Option(String),
 ) -> Result(String, Error) {
   case explicit_root {
-    Some(root) -> Ok(root)
+    Some(root) -> Ok(resolve_path_option(root))
     None -> {
       use control_file <- try_ctl(load_control_file(control_path))
       Ok(control_file.workspace_root)
@@ -876,10 +880,10 @@ fn run_schedules_logs(
     False ->
       case run.session_id {
         Some(session_id) ->
-          case load_control_file(control_path) {
-            Ok(control_file) ->
+          case load_control_target(control_path) {
+            Ok(target) ->
               run_events(
-                control_file,
+                target,
                 deps,
                 output,
                 Pretty,
@@ -1078,13 +1082,16 @@ fn schedule_config_path(explicit_root: Option(String)) -> Option(String) {
 }
 
 fn schedule_config_candidates(explicit_root: Option(String)) -> List(String) {
+  let caller_config = resolve_path_option("scherzo.yaml")
   case explicit_root {
-    None -> ["scherzo.yaml"]
-    Some(root) ->
+    None -> [caller_config]
+    Some(root) -> {
+      let root = resolve_path_option(root)
       list.append(
         [path.join(root, "scherzo.yaml")],
-        list.append(parent_config_candidates(root), ["scherzo.yaml"]),
+        list.append(parent_config_candidates(root), [caller_config]),
       )
+    }
   }
 }
 
@@ -1256,7 +1263,7 @@ fn schedule_workspace_root(
   explicit_root: Option(String),
 ) -> Result(String, Error) {
   case explicit_root {
-    Some(root) -> Ok(root)
+    Some(root) -> Ok(resolve_path_option(root))
     None -> {
       use control_file <- try_ctl(load_control_file(control_path))
       Ok(control_file.workspace_root)
@@ -1578,7 +1585,7 @@ fn print_state_mutation(
 }
 
 fn run_events(
-  control_file: file.ControlFile,
+  target: client.ControlTarget,
   deps: ControlClient,
   output: Output,
   mode: OutputMode,
@@ -1587,11 +1594,12 @@ fn run_events(
   verbose: Bool,
   session_ref: String,
 ) -> Result(Nil, Error) {
+  let control_file = target.control_file
   use session_id <- try_ctl(resolve_session_ref(control_file, deps, session_ref))
   case mode {
     Json ->
       print_raw_request(
-        control_file,
+        target,
         protocol.GetEvents("1", "", session_id, since_cursor, 200),
         deps,
         output,
@@ -1939,14 +1947,14 @@ fn print_chunks(output: Output, chunks: List(render.RenderChunk)) -> Nil {
 }
 
 fn print_raw_request(
-  control_file: file.ControlFile,
+  target: client.ControlTarget,
   request: protocol.Request,
   deps: ControlClient,
   output: Output,
 ) -> Result(Nil, Error) {
-  case deps.raw_request(control_file, request) {
+  case deps.raw_request(target.control_file, request) {
     Ok(line) -> {
-      output.line(line)
+      output.line(client.target_response_line(line, target))
       Ok(Nil)
     }
     Error(err) -> Error(client_error(err))
@@ -2353,10 +2361,21 @@ fn real_output() -> Output {
   Output(line: io.println, inline: io.print)
 }
 
+fn resolve_path_option(value: String) -> String {
+  file.resolve_cli_path(value, file.get_env)
+}
+
+fn load_control_target(
+  explicit_path: Option(String),
+) -> Result(client.ControlTarget, Error) {
+  client.discover_target(explicit_path, file.get_env) |> map_file_error
+}
+
 fn load_control_file(
   explicit_path: Option(String),
 ) -> Result(file.ControlFile, Error) {
-  file.discover(explicit_path, file.get_env) |> map_file_error
+  use target <- try_ctl(load_control_target(explicit_path))
+  Ok(target.control_file)
 }
 
 fn map_file_error(

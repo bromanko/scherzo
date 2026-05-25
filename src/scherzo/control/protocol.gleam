@@ -699,11 +699,22 @@ pub fn response_to_string(response: Response) -> String {
 }
 
 pub fn response_to_json(response: Response) -> json.Json {
-  let required = [
-    #("version", json.int(version)),
-    #("id", json.string(response.id)),
-    #("ok", json.bool(response.ok)),
-  ]
+  response_to_json_with_fields(response, [])
+}
+
+pub fn response_to_json_with_fields(
+  response: Response,
+  extra_fields: List(#(String, json.Json)),
+) -> json.Json {
+  let required =
+    list.append(
+      [
+        #("version", json.int(version)),
+        #("id", json.string(response.id)),
+        #("ok", json.bool(response.ok)),
+      ],
+      extra_fields,
+    )
   case response.ok {
     True ->
       [#("data", option_json(response.data)), ..required]

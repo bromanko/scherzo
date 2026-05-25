@@ -10,9 +10,10 @@ If the user provides a control file, put `--control-file <path>` after the Scher
 
 ```sh
 scripts/scherzoctl ps --json --control-file .scherzo/workspaces/.scherzo-state/control.json
+# Inspect the non-secret target fields in JSON output: target.control_file_path and target.workspace_root.
 ```
 
-If no explicit path is provided, `scherzoctl` honors `SCHERZO_CONTROL_FILE`, then falls back to the repository default when it exists:
+Relative `--control-file` paths are resolved from the directory where `scripts/scherzoctl` was invoked, even when `scripts` is a symlink into the Scherzo source checkout. If no explicit path is provided, `scherzoctl` honors `SCHERZO_CONTROL_FILE`, then falls back to the repository default in that caller directory when it exists:
 
 ```sh
 export SCHERZO_CONTROL_FILE=.scherzo/workspaces/.scherzo-state/control.json
@@ -87,7 +88,7 @@ scripts/scherzoctl ui respond <session-id> <request-id> --value "approved" --jso
 
 ## JSON response handling
 
-For daemon inspection/control commands, `--json` returns one protocol JSON document. `ok: true` means the control server accepted and decoded the request. `ok: false` means the request failed before a command result could be applied, such as authentication failure, timeout, malformed request, or protocol error; report `error.code` and `error.message` without exposing secrets.
+For daemon inspection/control commands, `--json` returns one protocol JSON document with a non-secret `target` object. Check `target.control_file_path` and `target.workspace_root` before trusting or mutating a daemon. `ok: true` means the control server accepted and decoded the request. `ok: false` means the request failed before a command result could be applied, such as authentication failure, timeout, malformed request, or protocol error; report `error.code` and `error.message` without exposing secrets.
 
 Daemon controls return command data with one of these statuses:
 
@@ -121,7 +122,7 @@ jq '.artifact | {step_id,status,exit_code,failure_code,diagnostic_path,stdout_tr
 
 ## Local cleanup and offline state maintenance
 
-Start read-only:
+Start read-only. Relative `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked:
 
 ```sh
 scripts/scherzoctl cleanup --json --dry-run
