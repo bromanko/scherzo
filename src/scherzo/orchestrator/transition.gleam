@@ -710,7 +710,7 @@ fn handle_dispatch_validation_completed(
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
   case dict.get(state.pending_dispatch_validations, issue_id) {
-    Error(_) -> stale_dispatch_validation(state, issue_id, generation)
+    Error(Nil) -> stale_dispatch_validation(state, issue_id, generation)
     Ok(pending) ->
       case pending.generation != generation {
         True -> stale_dispatch_validation(state, issue_id, generation)
@@ -923,7 +923,7 @@ fn handle_handoff_claim_completed(
   result: transition_types.HandoffClaimResult,
 ) -> transition_types.Outcome {
   case dict.get(state.pending_claims, issue_id) {
-    Error(_) ->
+    Error(Nil) ->
       transition_types.Outcome(state: state, effects: [
         effects_types.Log("warn", "handoff_claim_stale", [
           #("issue_id", issue_id),
@@ -994,7 +994,7 @@ fn handle_retry_tick(
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
   case dict.get(state.runtime.retry_attempts, issue_id) {
-    Error(_) -> retry_timer_stale(state, issue_id, generation, False)
+    Error(Nil) -> retry_timer_stale(state, issue_id, generation, False)
     Ok(entry) ->
       case entry.timer_generation != generation {
         True -> retry_timer_stale(state, issue_id, generation, True)
@@ -1062,7 +1062,7 @@ fn handle_retry_refresh_completed(
 ) -> transition_types.Outcome {
   let finish_effect = effects_types.FinishRetryRefresh(issue_id)
   let outcome = case dict.get(state.runtime.retry_attempts, issue_id) {
-    Error(_) -> retry_timer_stale(state, issue_id, generation, False)
+    Error(Nil) -> retry_timer_stale(state, issue_id, generation, False)
     Ok(entry) ->
       case entry.timer_generation != generation {
         True -> retry_timer_stale(state, issue_id, generation, True)
@@ -1110,13 +1110,22 @@ fn handle_retry_candidate_after_refresh(
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
   case candidate {
-    Error(_) ->
-      schedule_retry_with_backoff(
-        state,
-        context,
-        issue_id,
-        orchestrator_reason.RetryPollFailed,
-      )
+    Error(reason) -> {
+      let outcome =
+        schedule_retry_with_backoff(
+          state,
+          context,
+          issue_id,
+          orchestrator_reason.RetryPollFailed,
+        )
+      transition_types.Outcome(state: outcome.state, effects: [
+        effects_types.Log("warn", "retry_refresh_failed", [
+          #("issue_id", issue_id),
+          #("error", reason),
+        ]),
+        ..outcome.effects
+      ])
+    }
     Ok(None) -> release_retry_claim(state, issue_id, "retry_issue_missing")
     Ok(Some(issue)) ->
       handle_retry_issue_candidate(state, issue_id, issue, context)
@@ -2800,7 +2809,7 @@ fn per_state_dispatch_slot_available(
 ) -> Bool {
   let key = issue_state.key(issue_state_value)
   case dict.get(context.effective.agent.max_concurrent_agents_by_state, key) {
-    Error(_) -> True
+    Error(Nil) -> True
     Ok(limit) -> dispatch_count_for_state(state, context, key) < limit
   }
 }
@@ -2950,13 +2959,13 @@ fn identifier_for_runtime(
 ) -> String {
   case dict.get(runtime.claimed, issue_id) {
     Ok(identifier) -> identifier
-    Error(_) ->
+    Error(Nil) ->
       case dict.get(runtime.completed, issue_id) {
         Ok(issue) -> issue.identifier
-        Error(_) ->
+        Error(Nil) ->
           case dict.get(runtime.parked, issue_id) {
             Ok(parked) -> parked.identifier
-            Error(_) -> issue_id
+            Error(Nil) -> issue_id
           }
       }
   }
