@@ -25,14 +25,12 @@ request_id_from_input() {
 write_state_file() {
   file=$1
   body=$2
-  mkdir -p "$(dirname "$file")"
   printf '%s\n' "$body" >"$file"
 }
 
 append_state_file() {
   file=$1
   body=$2
-  mkdir -p "$(dirname "$file")"
   printf '%s\n' "$body" >>"$file"
 }
 
@@ -79,7 +77,6 @@ scheduled_failure_receipt_dynamic_recovery='{"task":{"backend_kind":"test-memory
 
 case "$input" in
   *'"operation":"comments.post_or_update"'*)
-    mkdir -p "$state_dir/comments"
     case "$request_id" in
       req-comments-create-only)
         case "$scenario" in
@@ -154,7 +151,6 @@ case "$input" in
     esac
     ;;
   *'"operation":"remote_commands.post_ack"'*)
-    mkdir -p "$state_dir/remote"
     case "$request_id" in
       req-remote-ack-receipt)
         write_state_file "$state_dir/remote/ack-receipt.txt" '[marker remote-ack-receipt] ack receipt SECRET_TOKEN'
@@ -209,7 +205,6 @@ case "$input" in
     esac
     ;;
   *'"operation":"handoff.report"'*)
-    mkdir -p "$state_dir/handoff"
     case "$request_id" in
       req-handoff-claim)
         write_state_file "$state_dir/handoff/claim.txt" 'workspace/main/SECRET_TOKEN'
@@ -432,7 +427,6 @@ case "$input" in
     esac
     ;;
   *'"operation":"scheduled_failures.publish"'*)
-    mkdir -p "$state_dir/scheduled"
     case "$request_id" in
       req-scheduled-failures-create)
         case "$scenario" in
@@ -524,7 +518,6 @@ case "$input" in
     esac
     ;;
   *'"operation":"state_transitions.transition"'*)
-    mkdir -p "$state_dir"
     case "$request_id" in
       req-state-transition-target-id)
         write_state_file "$state_dir/current-state.txt" 'doing'
