@@ -379,6 +379,39 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
     simplifile.is_file(success.workspace_path <> "/AFTER_RUN")
 }
 
+pub fn after_run_failure_is_emitted_without_overriding_success_test() {
+  let root = "test/tmp/runner-after-run-failure-visible"
+  reset_dir(root)
+  let base = config(root, fake_pi(), False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      hooks: config_types.HooksConfig(
+        ..base.hooks,
+        after_run: Some("echo cleanup failed >&2; exit 23"),
+      ),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert success.final_classification == agent_types.FinalTerminal
+  let updates = drain_updates(update_subject, [])
+  let assert Some(update) = find_update(updates, "after_run_hook_failed")
+  let assert Some(message) = update.message
+  assert string.contains(message, "hook_failed")
+  assert string.contains(message, "after_run")
+  assert string.contains(message, "23")
+}
+
 pub fn runner_completes_after_high_volume_streaming_message_updates_test() {
   let root = "test/tmp/runner-high-volume-message-updates"
   reset_dir(root)

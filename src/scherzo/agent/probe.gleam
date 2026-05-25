@@ -17,14 +17,8 @@ pub fn probe(
   {
     Ok(session) -> {
       case client.get_session_stats(session, read_timeout_ms) {
-        Ok(#(session, _)) -> {
-          let _ = client.terminate(session)
-          Ok(Nil)
-        }
-        Error(err) -> {
-          let _ = client.terminate(session)
-          Error(err)
-        }
+        Ok(#(session, _)) -> client.terminate(session)
+        Error(err) -> Error(client.terminate_after_failure(session, err))
       }
     }
     Error(err) -> Error(err)

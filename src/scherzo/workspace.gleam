@@ -13,6 +13,12 @@ pub type PreparedWorkspace {
   PreparedWorkspace(key: String, path: String, created: Bool, populated: Bool)
 }
 
+pub type AfterRunOutcome {
+  AfterRunSkipped
+  AfterRunSucceeded(diagnostic: String)
+  AfterRunFailed(diagnostic: String)
+}
+
 pub type PrepareError {
   WorkspaceFailure(error.WorkspaceError)
   HookFailure(error.HookError)
@@ -154,16 +160,22 @@ fn run_before_run(
 pub fn after_run(
   workspace_path: String,
   hooks_config: config_types.HooksConfig,
-) -> String {
+) -> AfterRunOutcome {
   case hooks_config.after_run {
     Some(script) ->
-      hooks.run_best_effort(
-        "after_run",
-        script,
-        workspace_path,
-        hooks_config.timeout_ms,
-      )
-    None -> ""
+      case
+        hooks.run_best_effort_outcome(
+          "after_run",
+          script,
+          workspace_path,
+          hooks_config.timeout_ms,
+        )
+      {
+        hooks.BestEffortHookSucceeded(diagnostic) ->
+          AfterRunSucceeded(diagnostic)
+        hooks.BestEffortHookFailed(diagnostic) -> AfterRunFailed(diagnostic)
+      }
+    None -> AfterRunSkipped
   }
 }
 

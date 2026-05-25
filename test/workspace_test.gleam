@@ -118,7 +118,7 @@ pub fn before_run_failure_aborts_attempt_and_after_run_is_best_effort_test() {
   let assert Error(workspace.HookFailure(_)) =
     workspace.prepare("ABC-123", config, hook_config)
 
-  let log_line =
+  let assert workspace.AfterRunFailed(log_line) =
     workspace.after_run(
       root,
       config_types.HooksConfig(..hook_config, after_run: Some("exit 9")),

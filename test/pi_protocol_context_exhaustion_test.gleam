@@ -2,6 +2,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/context_exhaustion
 import scherzo/pi/protocol
+import scherzo/session/tokens as session_tokens
 import simplifile
 
 pub fn decode_current_context_length_fixture_test() {
@@ -22,6 +23,11 @@ pub fn decode_rate_limit_fixture_is_not_context_exhaustion_test() {
   let assert [line] = string.split(string.trim(contents), "\n")
   let assert Ok(record) = protocol.decode_record(line)
   assert context_exhaustion.from_rpc_record(record) == None
+}
+
+pub fn compaction_reason_ignores_malformed_retained_raw_json_test() {
+  let record = minimal_record("compaction_start", "{not json")
+  assert protocol.compaction_reason(record) == None
 }
 
 pub fn compaction_command_codec_and_reason_test() {
@@ -47,4 +53,31 @@ pub fn compaction_command_codec_and_reason_test() {
     )
   assert protocol.compaction_reason(start) == Some("manual")
   assert protocol.compaction_reason(end) == Some("overflow")
+}
+
+fn minimal_record(type_: String, raw_json: String) -> protocol.RpcRecord {
+  protocol.RpcRecord(
+    type_: type_,
+    id: None,
+    command: None,
+    success: None,
+    session_id: None,
+    session_file: None,
+    cwd: None,
+    delta: None,
+    assistant_event_type: None,
+    message: None,
+    stop_reason: None,
+    error_message: None,
+    method: None,
+    tokens: session_tokens.zero_token_totals(),
+    tool_name: None,
+    tool_input: None,
+    tool_output: None,
+    tool_status: None,
+    tool_call_id: None,
+    tool_calls: [],
+    assistant_messages: [],
+    raw_json: raw_json,
+  )
 }

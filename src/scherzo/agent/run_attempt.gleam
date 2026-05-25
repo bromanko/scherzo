@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/attempt_lifecycle as lifecycle
 import scherzo/agent/context_exhaustion
 import scherzo/agent/context_recovery_artifact
 import scherzo/agent/context_recovery_prompt
@@ -171,7 +172,7 @@ pub fn run_prompt_mode_in_workspace(
       emit_update(issue.id, lifecycle_update(pi_event.ProbeStarted))
       case probe_for_config(config, workspace_path) {
         Error(err) -> {
-          let _ = workspace.after_run(workspace_path, config.hooks)
+          lifecycle.after_run(issue.id, workspace_path, config, emit_update)
           Error(worker_failure(error.ProbeFailed(err), Some(workspace_path)))
         }
         Ok(Nil) -> {
@@ -231,14 +232,9 @@ fn probe_for_config(
               case
                 client.get_session_stats(session, config.pi.read_timeout_ms)
               {
-                Ok(#(session, _)) -> {
-                  let _ = client.terminate(session)
-                  Ok(Nil)
-                }
-                Error(err) -> {
-                  let _ = client.terminate(session)
-                  Error(err)
-                }
+                Ok(#(session, _)) -> client.terminate(session)
+                Error(err) ->
+                  Error(client.terminate_after_failure(session, err))
               }
             }
             Error(err) -> Error(err)
@@ -260,7 +256,7 @@ fn run_prepared(
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   case template.render(prompt_template, issue, attempt) {
     Error(err) -> {
-      let _ = workspace.after_run(prepared.path, config.hooks)
+      lifecycle.after_run(issue.id, prepared.path, config, emit_update)
       Error(worker_failure(error.PromptFailed(err), Some(prepared.path)))
     }
     Ok(prompt) ->
@@ -269,7 +265,7 @@ fn run_prepared(
           emit_update(issue.id, lifecycle_update(pi_event.ProbeStarted))
           case probe_for_config(config, prepared.path) {
             Error(err) -> {
-              let _ = workspace.after_run(prepared.path, config.hooks)
+              lifecycle.after_run(issue.id, prepared.path, config, emit_update)
               Error(worker_failure(error.ProbeFailed(err), Some(prepared.path)))
             }
             Ok(Nil) -> {
@@ -456,7 +452,7 @@ fn run_pi_loop(
     )
   {
     Error(err) -> {
-      let _ = workspace.after_run(workspace_path, config.hooks)
+      lifecycle.after_run(issue.id, workspace_path, config, emit_update)
       Error(launch_worker_failure(first_prompt, err, workspace_path))
     }
     Ok(session) -> {
@@ -847,7 +843,7 @@ fn recover_context_exhaustion(
       recovery_method: method,
     )
   case context_recovery_artifact.write_initial(artifacts_input) {
-    Error(_) ->
+    Error(write_error) ->
       Error(cleanup_failure(
         session,
         issue.id,
@@ -856,7 +852,8 @@ fn recover_context_exhaustion(
         emit_update,
         prompt_queue,
         error.PiFailed(error.PiProtocolError(
-          "context recovery artifact write failed",
+          "context recovery artifact write failed: "
+          <> lifecycle.artifact_error_to_string(write_error),
         )),
         totals,
         None,
@@ -935,15 +932,13 @@ fn try_compacted_recovery(
           reasons,
           artifacts,
         )
-      let _ =
-        context_recovery_artifact.write_recovery_prompt(
-          artifact_store.new(config.workspace.root),
-          attempt_context.run_id,
-          attempt_context.workflow_id,
-          attempt_context.step_id,
-          attempt_context.attempt_index,
-          prompt,
-        )
+      lifecycle.write_recovery_prompt(
+        issue.id,
+        config.workspace.root,
+        attempt_context,
+        prompt,
+        emit_update,
+      )
       run_recovery_prompt(
         session,
         issue,
@@ -1035,7 +1030,7 @@ fn fresh_session_recovery(
       )),
     ),
   )
-  let _ = client.terminate(failed_session)
+  lifecycle.terminate(issue.id, failed_session, emit_update)
   let prompt =
     context_recovery_artifact.build_recovery_prompt(
       issue,
@@ -1046,15 +1041,13 @@ fn fresh_session_recovery(
       compaction_attempt.event_reasons,
       artifacts,
     )
-  let _ =
-    context_recovery_artifact.write_recovery_prompt(
-      artifact_store.new(config.workspace.root),
-      attempt_context.run_id,
-      attempt_context.workflow_id,
-      attempt_context.step_id,
-      attempt_context.attempt_index,
-      prompt,
-    )
+  lifecycle.write_recovery_prompt(
+    issue.id,
+    config.workspace.root,
+    attempt_context,
+    prompt,
+    emit_update,
+  )
   case
     launch_for_prompt_mode(
       workflow_attempt.OriginalPrompt(prompt),
@@ -1066,21 +1059,19 @@ fn fresh_session_recovery(
   {
     Error(err) -> {
       let reason = error.PiFailed(err)
-      let _ =
-        context_recovery_artifact.write_result(
-          artifact_store.new(config.workspace.root),
-          attempt_context.run_id,
-          attempt_context.workflow_id,
-          attempt_context.step_id,
-          attempt_context.attempt_index,
-          "failed",
-          context_recovery_prompt.FreshSession,
-          context_failure_reason(reason),
-          compaction_attempt.event_reasons,
-          compaction_attempt,
-          Some(context_recovery_artifact.failure_diagnostic(reason)),
-        )
-      let _ = workspace.after_run(workspace_path, config.hooks)
+      lifecycle.write_recovery_result(
+        issue.id,
+        config.workspace.root,
+        attempt_context,
+        "failed",
+        context_recovery_prompt.FreshSession,
+        context_failure_reason(reason),
+        compaction_attempt.event_reasons,
+        compaction_attempt,
+        Some(context_recovery_artifact.failure_diagnostic(reason)),
+        emit_update,
+      )
+      lifecycle.after_run(issue.id, workspace_path, config, emit_update)
       Error(worker_failure_with(reason, Some(workspace_path), totals, None))
     }
     Ok(session) -> {
@@ -1161,67 +1152,51 @@ fn run_recovery_prompt(
           ),
         ),
       )
-      let _ =
-        context_recovery_artifact.write_result(
-          artifact_store.new(config.workspace.root),
-          attempt_context.run_id,
-          attempt_context.workflow_id,
-          attempt_context.step_id,
-          attempt_context.attempt_index,
-          "succeeded",
-          method,
-          False,
-          compaction_event_reasons,
-          compaction_attempt,
-          None,
-        )
+      lifecycle.write_recovery_result(
+        issue.id,
+        config.workspace.root,
+        attempt_context,
+        "succeeded",
+        method,
+        False,
+        compaction_event_reasons,
+        compaction_attempt,
+        None,
+        emit_update,
+      )
       Ok(success)
     }
     Error(failure) -> {
-      let store = artifact_store.new(config.workspace.root)
       let recovery_exhausted = context_failure_reason(failure.reason)
       let failure_diagnostic =
         context_recovery_artifact.failure_diagnostic(failure.reason)
-      let result_write =
-        context_recovery_artifact.write_result(
-          store,
-          attempt_context.run_id,
-          attempt_context.workflow_id,
-          attempt_context.step_id,
-          attempt_context.attempt_index,
+      let #(result_ref, result_display_path) =
+        lifecycle.write_recovery_result_refs(
+          issue.id,
+          config.workspace.root,
+          attempt_context,
           "failed",
           method,
           recovery_exhausted,
           compaction_event_reasons,
           compaction_attempt,
           Some(failure_diagnostic),
+          emit_update,
         )
-      let result_ref = case result_write {
-        Ok(result_artifact) -> Some(result_artifact.ref)
-        Error(_) -> None
-      }
-      let result_display_path = case result_write {
-        Ok(result_artifact) -> Some(result_artifact.display_path)
-        Error(_) -> None
-      }
       case recovery_exhausted {
         True -> {
-          let _ =
-            context_recovery_artifact.write_terminal_exhausted(
-              context_recovery_artifact.TerminalExhaustionInput(
-                store: store,
-                run_id: attempt_context.run_id,
-                workflow_id: attempt_context.workflow_id,
-                step_id: attempt_context.step_id,
-                step_attempt_index: attempt_context.attempt_index,
-                pi_attempt: recovery_attempt,
-                context: context,
-                prompt_excerpt_ref: artifacts.prompt_excerpt_ref,
-                recovery_method: method,
-                failure: failure_diagnostic,
-                result_ref: result_ref,
-              ),
-            )
+          lifecycle.write_terminal_exhausted(
+            issue.id,
+            config.workspace.root,
+            attempt_context,
+            recovery_attempt,
+            context,
+            artifacts.prompt_excerpt_ref,
+            method,
+            failure_diagnostic,
+            result_ref,
+            emit_update,
+          )
           Nil
         }
         False -> Nil
@@ -1493,8 +1468,7 @@ fn finish_success(
   emit_update: fn(String, types.RunnerUpdate) -> Nil,
   prompt_queue: List(String),
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
-  let _ = client.terminate(session)
-  let _ = workspace.after_run(workspace_path, config.hooks)
+  lifecycle.cleanup(session, issue.id, workspace_path, config, emit_update)
   emit_dropped_prompts(
     issue.id,
     prompt_queue,
@@ -1522,7 +1496,7 @@ fn handle_between_turn_commands(
   totals: session_tokens.TokenTotals,
 ) -> BeforeTurn {
   case process.receive(command_subject, within: 0) {
-    Error(_) -> StartTurn(prompt_queue)
+    Error(Nil) -> StartTurn(prompt_queue)
     Ok(command) -> {
       let state = operator_control.from_parts(prompt_queue, False, None)
       let #(state, effects) =
@@ -1708,8 +1682,7 @@ fn handle_abort_command(
     }
   }
   emit_turn_stop_if_active(issue_id, emit_update, turn, totals)
-  let _ = client.terminate(session)
-  let _ = workspace.after_run(workspace_path, config.hooks)
+  lifecycle.cleanup(session, issue_id, workspace_path, config, emit_update)
   emit_dropped_prompts(
     issue_id,
     prompt_queue,
@@ -1731,8 +1704,7 @@ fn stop_failure(
   final_issue: Option(tracker_issue.Issue),
 ) -> types.WorkerFailure {
   emit_turn_stop_after_turn_if_active(issue_id, emit_update, turn, totals)
-  let _ = client.terminate(session)
-  let _ = workspace.after_run(workspace_path, config.hooks)
+  lifecycle.cleanup(session, issue_id, workspace_path, config, emit_update)
   emit_dropped_prompts(
     issue_id,
     prompt_queue,
@@ -1784,8 +1756,7 @@ fn cleanup_failure(
   turn: Option(Int),
 ) -> types.WorkerFailure {
   emit_turn_failure_if_active(issue_id, emit_update, turn, reason, tokens)
-  let _ = client.terminate(session)
-  let _ = workspace.after_run(workspace_path, config.hooks)
+  lifecycle.cleanup(session, issue_id, workspace_path, config, emit_update)
   emit_dropped_prompts(
     issue_id,
     prompt_queue,

@@ -2,6 +2,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/context_exhaustion
 import scherzo/agent/pi_event
@@ -135,9 +136,11 @@ fn last_record_diagnostic(records: List(protocol.RpcRecord)) -> String {
 }
 
 fn cursor_text(raw_json: String) -> String {
-  case json.parse(raw_json, cursor_decoder()) {
+  case
+    json.parse(raw_json, cursor_decoder()) |> result.replace_error("unknown")
+  {
     Ok(cursor) -> int.to_string(cursor)
-    Error(_) -> "unknown"
+    Error(fallback) -> fallback
   }
 }
 

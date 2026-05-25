@@ -1,6 +1,6 @@
 # Glinter baseline, rule tiers, and ratchet policy
 
-This note records the LIV-101 rollout baseline, the LIV-102 ratchet decision, the LIV-131 `unwrap_used` audit, the LIV-533 subsystem triage, and how agents should treat the warning set. The checked production lint gates are:
+This note records the LIV-101 rollout baseline, the LIV-102 ratchet decision, the LIV-131 `unwrap_used` audit, the LIV-533 subsystem triage, the LIV-546 agent/Pi hardening update, and how agents should treat the warning set. The checked production lint gates are:
 
 ```sh
 direnv exec . gleam run -m glinter
@@ -37,10 +37,10 @@ These rules remain visible but non-blocking because the baseline is still too br
 
 | Rule | Current count | Drift from prior documented baseline | Why it stays warning/inventory |
 | --- | ---: | ---: | --- |
-| `thrown_away_error` | 168 | -10 | Many findings are parser/decoder fallback chains or boundary checks that need case-by-case review before blocking. |
-| `discarded_result` | 69 | -50 | Safety-relevant, but current findings include process sends, cleanup, and command-boundary best-effort work that must be triaged by subsystem. |
-| `unwrap_used` | 104 | +25 | LIV-131 audit categories still apply, but the inventory grew in recovery, workspace, workflow, and config path/default code. Keep visible as warning-equivalent inventory until domain-map and path-boundary helpers or narrow suppressions exist. |
-| `stringly_typed_error` | 78 | +18 | Mostly FFI, tracker/control, workflow contract, and state boundary modules. Prefer typed errors for durable/domain APIs, but migrate gradually to avoid large interface churn. |
+| `thrown_away_error` | 159 | -19 | Many findings are parser/decoder fallback chains or boundary checks that need case-by-case review before blocking. |
+| `discarded_result` | 41 | -78 | Safety-relevant, but current findings include process sends, cleanup, and command-boundary best-effort work that must be triaged by subsystem. |
+| `unwrap_used` | 105 | +26 | LIV-131 audit categories still apply, but the inventory grew in recovery, workspace, workflow, and config path/default code. Keep visible as warning-equivalent inventory until domain-map and path-boundary helpers or narrow suppressions exist. |
+| `stringly_typed_error` | 80 | +20 | Mostly FFI, tracker/control, workflow contract, and state boundary modules. Prefer typed errors for durable/domain APIs, but migrate gradually to avoid large interface churn. |
 | `error_context_lost` | 2 | +2 | High-signal drift in workflow recovery/output manifest handling. Fix or explicitly replace errors before treating the LIV-102 promotion as clean again. |
 
 ### Off
@@ -78,8 +78,8 @@ Assign each finding to exactly one subsystem using this file-owner map, then ver
 | Orchestrator / daemon / transition / effect runner | `src/scherzo/orchestrator/*`, `src/scherzo/session/hub.gleam`, `src/scherzo/hooks.gleam`, `src/scherzo/instance_lock.gleam`, `src/scherzo/signal.gleam` |
 | Workflow execution | `src/scherzo/command_step.gleam`, `src/scherzo/local_workflow_run.gleam`, `src/scherzo/template.gleam`, `src/scherzo/workflow_*.gleam` |
 | State ledger / projection / recovery / artifacts | `src/scherzo/state/*`, `src/scherzo/step_artifact.gleam`, `src/scherzo/handoff_format.gleam` |
-| Tracker / Linear / control boundaries | `src/scherzo/control/*`, `src/scherzo/ctl/*`, `src/scherzo/linear*.gleam`, `src/scherzo/port.gleam` |
-| Config / parsing / operator CLI | `src/scherzo/config.gleam`, `src/scherzo/config/*`, `src/scherzo/doctor.gleam`, `src/scherzo/model_config.gleam`, `src/scherzo/review_lane_preflight_policy.gleam`, `src/scherzo/terminal/*`, `src/scherzo/version.gleam` |
+| Tracker / Linear / control boundaries | `src/scherzo/control/*`, `src/scherzo/ctl/*`, `src/scherzo/linear*.gleam`, `src/scherzo/tracker/*`, `src/scherzo/port.gleam` |
+| Config / parsing / operator CLI | `src/scherzo/config.gleam`, `src/scherzo/config/*`, `src/scherzo/doctor.gleam`, `src/scherzo/model_config.gleam`, `src/scherzo/review_lane_preflight_policy.gleam`, `src/scherzo/task.gleam`, `src/scherzo/terminal/*`, `src/scherzo/version.gleam` |
 | Workspace / workspace drivers | `src/scherzo/workspace*.gleam` |
 | Agent / pi execution | `src/scherzo/agent/*`, `src/scherzo/pi/*` |
 
@@ -87,33 +87,35 @@ A broader exploratory baseline was captured during LIV-101 with a temporary proj
 
 ## Production warning baseline
 
-LIV-533 refreshed the production baseline on 2026-05-23 with both JSON/stat commands above. `glinter` and `scherzo_lint` reported the same built-in inventory over 200 files / 109,897 lines: 421 findings, 0 errors, 317 warning-severity findings, and 104 `unwrap_used` findings rendered as `[off]`. `scherzo_lint` adds the custom `scherzo_public_function_labels` rule and currently has no additional findings.
+LIV-533 refreshed the production baseline on 2026-05-23 with both JSON/stat commands above, and LIV-546 refreshed it again on 2026-05-25 after agent/Pi attempt-lifecycle hardening. `glinter` reports the current built-in inventory over 206 files / 115,762 lines: 387 findings, 0 errors, 282 warning-severity findings, and 105 `unwrap_used` findings rendered as `[off]`. `scherzo_lint` adds the custom `scherzo_public_function_labels` rule and currently has no additional findings.
 
 | Rule | Prior documented count | Current count | Drift | Classification |
 | --- | ---: | ---: | ---: | --- |
-| `thrown_away_error` | 178 | 168 | -10 | Keep as warning only; review fallback chains and runtime-boundary catches by subsystem. |
-| `discarded_result` | 119 | 69 | -50 | Keep as warning only; prioritize process sends, filesystem cleanup, hooks, and command/control boundaries. |
-| `unwrap_used` | 79 | 104 | +25 | Keep as warning-equivalent inventory; growth is concentrated in recovery, workspace, workflow, and config path/default code. |
-| `stringly_typed_error` | 60 | 78 | +18 | Keep as warning only while durable/domain APIs migrate gradually to typed errors. |
+| `thrown_away_error` | 178 | 159 | -19 | Keep as warning only; review fallback chains and runtime-boundary catches by subsystem. |
+| `discarded_result` | 119 | 41 | -78 | Keep as warning only; prioritize process sends, filesystem cleanup, hooks, and command/control boundaries. |
+| `unwrap_used` | 79 | 105 | +26 | Keep as warning-equivalent inventory; growth is concentrated in recovery, workspace, workflow, and config path/default code. |
+| `stringly_typed_error` | 60 | 80 | +20 | Keep as warning only while durable/domain APIs migrate gradually to typed errors. |
 | `error_context_lost` | 0 | 2 | +2 | High-signal drift; narrow fix or explicit replacement should happen before relying on the LIV-102 ratchet as clean. |
 | `missing_type_annotation` | 0 | 0 | 0 | Clean error-tier baseline. |
 | `scherzo_public_function_labels` | 0 | 0 | 0 | Clean custom Scherzo lint baseline. |
 
-No `// nolint:` suppressions were added for the LIV-101, LIV-102, LIV-131, or LIV-533 rollouts.
+No `// nolint:` suppressions were added for the LIV-101, LIV-102, LIV-131, LIV-533, or LIV-546 rollouts.
 
 ## LIV-533 subsystem hardening triage
 
-Warning ownership should follow runtime boundaries rather than rule names. The table below assigns every current production finding to one subsystem; totals sum to the 421-finding baseline above.
+Warning ownership should follow runtime boundaries rather than rule names. The table below assigns every current production finding to one subsystem; totals sum to the 387-finding baseline above.
 
 | Subsystem | Total | `thrown_away_error` | `discarded_result` | `stringly_typed_error` | `unwrap_used` | `error_context_lost` | Primary files |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | Orchestrator / daemon / transition / effect runner | 112 | 79 | 20 | 9 | 4 | 0 | `orchestrator/daemon.gleam`, `orchestrator/core.gleam`, `orchestrator/worker_registry.gleam`, `orchestrator/transition.gleam`, `session/hub.gleam` |
-| Workflow execution | 77 | 25 | 5 | 23 | 22 | 2 | `workflow_run.gleam`, `workflow_repair.gleam`, `workflow_scheduler.gleam`, `command_step.gleam`, `template.gleam` |
-| State ledger / projection / recovery / artifacts | 65 | 26 | 0 | 15 | 24 | 0 | `state/recovery.gleam`, `state/projection.gleam`, `step_artifact.gleam`, `state/artifact_store.gleam`, `state/local_artifacts.gleam` |
-| Tracker / Linear / control boundaries | 53 | 19 | 4 | 26 | 4 | 0 | `linear_body_data.gleam`, `linear.gleam`, `linear_contract.gleam`, `control/*`, `port.gleam` |
-| Config / parsing / operator CLI | 41 | 7 | 3 | 5 | 26 | 0 | `config.gleam`, `config/types.gleam`, `doctor.gleam`, `review_lane_preflight_policy.gleam`, `terminal/*`, `version.gleam` |
-| Workspace / workspace drivers | 40 | 4 | 12 | 0 | 24 | 0 | `workspace_run.gleam`, `workspace.gleam`, `workspace_driver_lifecycle.gleam`, `workspace_driver_command.gleam` |
-| Agent / pi execution | 33 | 8 | 25 | 0 | 0 | 0 | `agent/run_attempt.gleam`, `agent/context_exhaustion.gleam`, `agent/probe.gleam`, `pi/client.gleam`, `pi/protocol.gleam` |
+| Workflow execution | 71 | 20 | 4 | 23 | 22 | 2 | `workflow_run.gleam`, `workflow_repair.gleam`, `workflow_scheduler.gleam`, `command_step.gleam`, `template.gleam` |
+| State ledger / projection / recovery / artifacts | 66 | 26 | 0 | 16 | 24 | 0 | `state/recovery.gleam`, `state/projection.gleam`, `step_artifact.gleam`, `state/artifact_store.gleam`, `state/local_artifacts.gleam` |
+| Tracker / Linear / control boundaries | 58 | 22 | 5 | 27 | 4 | 0 | `linear_body_data.gleam`, `linear.gleam`, `linear_contract.gleam`, `tracker/*`, `control/*`, `port.gleam` |
+| Config / parsing / operator CLI | 44 | 9 | 3 | 5 | 27 | 0 | `config.gleam`, `config/types.gleam`, `doctor.gleam`, `review_lane_preflight_policy.gleam`, `task.gleam`, `terminal/*`, `version.gleam` |
+| Workspace / workspace drivers | 36 | 3 | 9 | 0 | 24 | 0 | `workspace_run.gleam`, `workspace.gleam`, `workspace_driver_lifecycle.gleam`, `workspace_driver_command.gleam` |
+| Agent / pi execution | 0 | 0 | 0 | 0 | 0 | 0 | `agent/run_attempt.gleam`, `agent/context_exhaustion.gleam`, `agent/probe.gleam`, `agent/turn_loop.gleam`, `agent/turn_protocol.gleam`, `pi/client.gleam`, `pi/protocol.gleam` |
+
+LIV-546 agent/Pi hardening started from the checked-run subsystem count of 34 findings (`discarded_result`: 25, `thrown_away_error`: 9) across the agent/Pi attempt lifecycle files above and reduced that subsystem to 0 findings. No suppressions were added; cleanup, abort, artifact-write, and protocol fallback paths now either return the primary error, emit a lifecycle update, or explicitly use parser fallback helpers.
 
 Classification by warning pattern:
 
@@ -132,18 +134,18 @@ High-signal clusters for derivative backlog:
 | --- | --- | --- |
 | P0 | Workflow recovery and contract-output error-context hardening | The only current `error_context_lost` findings are in workflow repair/output manifest paths, where lost provenance can make repair failures opaque. |
 | P0/P1 | Orchestrator daemon/transition error-handling hardening | Largest cluster (112 findings), mostly thrown-away errors and discarded results in the daemon control loop, worker registry, transition evaluation, and session hub. Requires behavior decisions for logging, retries, and operator-visible failures. |
-| P1 | State projection/recovery/artifact typed-error and default-helper hardening | 65 findings affect ledger replay, projection, artifact reads/writes, and recovery defaults. These are restart/repair-sensitive and should be handled together. |
-| P1 | Workspace driver filesystem-boundary hardening | 40 findings, including many path/default `unwrap_used` and discarded cleanup/driver results. Clarify which cleanup failures are best-effort and which should stop or park a workflow. |
-| P1 | Agent/pi attempt lifecycle result-handling hardening | 33 findings but concentrated in `agent/run_attempt.gleam`, where dropped sends, cleanup failures, or pi protocol failures can hide failed aborts or lost updates. |
-| P2 | Tracker/Linear/control typed-boundary migration | 53 findings, led by stringly typed FFI/control/Linear errors. This should be a gradual boundary-by-boundary typed-error migration to avoid wide interface churn. |
-| P2 | Config/default helper and suppression audit | 41 findings, mostly explicit config/operator defaults. Convert repeated defaults to named helpers and add narrow `// nolint:` reasons only for stable invariants. |
+| P1 | State projection/recovery/artifact typed-error and default-helper hardening | 66 findings affect ledger replay, projection, artifact reads/writes, and recovery defaults. These are restart/repair-sensitive and should be handled together. |
+| P1 | Workspace driver filesystem-boundary hardening | 36 findings, including many path/default `unwrap_used` and discarded cleanup/driver results. Clarify which cleanup failures are best-effort and which should stop or park a workflow. |
+| Done (LIV-546) | Agent/pi attempt lifecycle result-handling hardening | The checked-run subsystem count moved from 34 findings to 0 by making cleanup/artifact/protocol failures visible or explicit. |
+| P2 | Tracker/Linear/control typed-boundary migration | 58 findings, led by stringly typed FFI/control/Linear errors. This should be a gradual boundary-by-boundary typed-error migration to avoid wide interface churn. |
+| P2 | Config/default helper and suppression audit | 44 findings, mostly explicit config/operator defaults. Convert repeated defaults to named helpers and add narrow `// nolint:` reasons only for stable invariants. |
 
 ## Triage summary
 
 - **Promoted/intended error tier:** `missing_type_annotation`, `error_context_lost`, and the custom `scherzo_public_function_labels` rule. `missing_type_annotation` and `scherzo_public_function_labels` remain clean; `error_context_lost` currently has two high-signal workflow findings reported as warnings by the current glinter run and should be fixed or made explicit before treating the ratchet as clean.
 - **Promoted to visible warning-equivalent inventory:** `unwrap_used` after the LIV-131 audit. It has useful signal when touching nearby code, but the remaining baseline is not appropriate for blocking PRs. In glinter 2.16.0, these findings still display as `[off]` because the rule's built-in default severity is `Off`.
 - **Fixed for earlier promotion:** one schedule parsing `error_context_lost` finding was changed from `result.map_error(fn(_) { ... })` to `result.replace_error(...)`, making the intentional context replacement explicit. LIV-131 also fixed high-signal `unwrap_used` cases in command/hook diagnostics, prompt-file path resolution, and workflow fingerprint representation before enabling the warning.
-- **Suppress:** none. Future suppressions must be narrow `// nolint:` comments with reasons, as described below. LIV-533 did not add suppressions.
+- **Suppress:** none. Future suppressions must be narrow `// nolint:` comments with reasons, as described below. LIV-533 and LIV-546 did not add suppressions.
 - **Keep as warning only:** `discarded_result`, `thrown_away_error`, and `stringly_typed_error`; keep `unwrap_used` as visible warning-equivalent inventory. Triage and backlog them by subsystem rather than doing blanket cleanup.
 - **Keep off:** style, complexity, broad export, and FFI rules until a separate rollout proves acceptable signal.
 
@@ -273,6 +275,6 @@ The documented test profile above currently reduces that to 132 non-blocking war
 
 1. Create a P0 workflow recovery/contract-output hardening ticket for the two current `error_context_lost` findings and adjacent typed contract errors.
 2. Create a P0/P1 orchestrator daemon/transition hardening ticket to decide logging, retry, propagation, and operator visibility for the 112-finding daemon/control-loop cluster.
-3. Create P1 subsystem tickets for state projection/recovery/artifacts, workspace driver filesystem boundaries, and agent/pi attempt lifecycle result handling.
+3. Create P1 subsystem tickets for state projection/recovery/artifacts and workspace driver filesystem boundaries; agent/pi attempt lifecycle result handling was completed by LIV-546.
 4. Create P2 typed-boundary migration tickets for tracker/Linear/control APIs and a config/default helper audit for stable invariants and narrow suppressions.
 5. If tests are linted, implement the documented test-source policy as a separate command/profile instead of applying the production gate directly to `test/`.
