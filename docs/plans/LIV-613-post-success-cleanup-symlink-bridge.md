@@ -1,0 +1,76 @@
+# LIV-613 post-success cleanup symlink bridge handling
+
+## Purpose / Big Picture
+
+Scherzo workflows that have completed all steps and published their result should remain successful even when best-effort workspace cleanup encounters maintenance debt. After this change, Scherzo will clean only the workspaces it explicitly managed for a run, will never offer the portable `workspaces/scherzo` symlink bridge to a workspace-driver lifecycle remover, will retain a successful workflow terminal record, and will surface cleanup debt through both a durable ledger diagnostic and a live recovery/cleanup session event.
+
+## Problem Framing and Constraints
+
+The current success path in `src/scherzo/workflow_run.gleam` checkpoints a successful workflow and then treats cleanup failure as a fatal workflow result, producing a second `failed_fatal` terminal record. Cleanup also enumerates `run_root/workspaces` in `src/scherzo/workspace_driver_lifecycle.gleam`; because directory inspection follows symlinks, helper state such as the `workspaces/scherzo` symlink bridge to the source checkout can be passed to the jj lifecycle remover even though `scripts/scherzo-workspace-jj` correctly refuses targets outside `SCHERZO_RUN_ROOT`.
+
+The design-discussion feedback changes the intended fix from a narrow symlink skip to explicit cleanup ownership. Cleanup must use a run-local managed-workspace manifest as the source of truth instead of enumerating every directory-like entry under `run_root/workspaces`. The manifest must be written before invoking driver `lifecycle create`, so partially-created workspaces can still be cleaned up, and entries must carry enough context to remove safely later: run id, workflow id, step id, attempt index, workspace name, relative path under the run root, selected workspace profile and driver context, source workspace information, and planned/ready state. The fix must preserve the jj driver's outside-root refusal as a backstop, must not make failed workflow steps appear successful, and must not change provider-live behavior, provider cache behavior, structured-output schemas, or workflow bundle helper contracts.
+
+## Strategy Overview
+
+Add a small manifest layer, for example `src/scherzo/workspace_manifest.gleam`, with a run-local JSON file at `run_root/.scherzo/managed-workspaces.json`. `src/scherzo/workspace_run.gleam` should upsert a `planned` manifest entry immediately after the run root exists and before `lifecycle create`, then mark that entry `ready` after the driver has created a real workspace and `ensure_directory_after_create` succeeds. Reusing a known workspace should validate or refresh the existing manifest entry without creating duplicate entries.
+
+Cleanup should read this manifest and pass only validated manifest entries to driver lifecycle remove. Validation must reject absolute paths, empty paths, `..` segments, paths whose absolute or real path escapes the run root, and entries whose profile or run identifiers do not match the cleanup context. There should be no directory-enumeration fallback for driver-backed run cleanup; if a driver-backed run is missing a manifest or has an invalid manifest, cleanup should fail safely, retain the run root, and expose cleanup debt. The existing jj script guard remains unchanged.
+
+The workflow success branch should checkpoint `completed` or `succeeded_after_recovery` before cleanup and should keep returning success if cleanup fails. On post-success cleanup failure it should append a non-terminal `workflow_run_diagnostic` reason such as `post_success_cleanup_failed:workspace_io; run_root=<run_root>` and publish a live `recovery_cleanup` event with `RecoveryInfo(status: Cleanup, source: "workflow.post_success_cleanup", ...)` for operator visibility. Workflow failures should continue to report their primary failure reason, with cleanup failure only as a secondary suffix where that already applies.
+
+## Alternatives Considered
+
+One alternative is to weaken `scripts/scherzo-workspace-jj` so the bridge no longer causes an error. That is rejected because the script's refusal to remove outside-root targets is the safety property we want to preserve. Another alternative is to special-case the `scherzo` symlink name or skip all symlinks during directory enumeration. That is rejected because the design feedback identified the deeper ownership bug: helper entries and arbitrary unmanifested directories are not managed workspaces and should never be cleanup inputs. A third alternative is to record only a lifecycle event for post-success cleanup failure. That is rejected because bounded session events are useful live signals but the warning must survive daemon restart and later inspection. Adding warning fields to the terminal `workflow_run_finished` record is also deferred so terminal outcomes remain simple and authoritative.
+
+## Risks and Countermeasures
+
+The main risk is hiding real workflow failures behind cleanup warnings. The countermeasure is to alter only the already-successful workflow branch and to add a failed-step regression test proving the primary failure reason remains `workflow_step_failed`, with cleanup failure only appended as `; cleanup_failed:<code>`. Another risk is losing cleanup for real workspaces if the manifest is missing or stale. The countermeasure is to write the manifest before external creation, update it idempotently, test lifecycle-create failure after the `planned` write, and fail closed with a retained run root instead of guessing from directory contents. A third risk is deleting or asking a driver to remove data outside the run root. The countermeasure is strict manifest path validation before driver invocation plus the existing driver outside-root refusal; tests must prove outside symlink sentinel files survive. A final risk is losing operator visibility when success is preserved. The countermeasure is durable `workflow_run_diagnostic` evidence plus a live `recovery_cleanup` event that includes the cleanup code and retained run root.
+
+## Scope Boundaries
+
+In scope are the manifest model and I/O in a new production module such as `src/scherzo/workspace_manifest.gleam`, manifest writes and cleanup calls in `src/scherzo/workspace_run.gleam`, manifest-driven lifecycle removal in `src/scherzo/workspace_driver_lifecycle.gleam`, typed diagnostic append support in `src/scherzo/workflow_checkpoint.gleam`, success/failure cleanup behavior in `src/scherzo/workflow_run.gleam`, live cleanup recovery publication in `src/scherzo/orchestrator/daemon.gleam` and related session helpers if needed, and focused tests in `test/workspace_run_test.gleam`, `test/workflow_run_test.gleam`, and daemon/session-event coverage where the live event is emitted.
+
+Out of scope are changing canonical workflow outcome strings, weakening `scripts/scherzo-workspace-jj`, changing retry policy for genuine workflow step failures, adding a browser/UI warning panel, changing provider-live or cache behavior, changing structured-output provider schemas, or migrating `.scherzo/workflows` helper contracts. The implementation should inventory docs/helper surfaces before publish; the expected result is no helper/schema migration, with only a small runbook note if the operator-facing cleanup diagnostic source or manifest location needs documentation.
+
+## Milestones
+
+Milestone 1 adds the managed-workspace manifest and writes it before workspace creation. At the end, `workspace_run.prepare_step_attempt`, `prepare_recovered_step_attempt` for newly-created workspaces, and `prepare_scheduled_step_attempt` all create or refresh a run-local manifest entry before any driver `lifecycle create` can produce external state. Tests prove a driver create failure still leaves a `planned` entry that cleanup can use, and normal create marks the entry `ready` without duplicating reused workspaces.
+
+Milestone 2 makes cleanup manifest-driven. At the end, driver-backed cleanup reads `run_root/.scherzo/managed-workspaces.json`, validates each entry, invokes lifecycle remove only for manifest-listed real workspaces, deletes the run root after successful removals, and never falls back to enumerating `run_root/workspaces`. Tests build real `main` and `review` workspaces plus `workspaces/scherzo`, an arbitrary outside symlink, and an unmanifested directory; cleanup must remove only the manifest entries, leave outside sentinels untouched, and retain the run root on missing or invalid manifest input.
+
+Milestone 3 preserves success while surfacing post-success cleanup debt. At the end, `workflow_run.execute` returns `Ok(WorkflowRunSuccess)` after a successful workflow even when cleanup returns `WorkspaceIo`, the ledger contains one terminal `workflow_run_finished` success record and one non-terminal `workflow_run_diagnostic`, and the daemon publishes a live `recovery_cleanup` event with source `workflow.post_success_cleanup` for the top-level workflow session. A failed diagnostic append must not turn the workflow into a failure because the cleanup warning path is itself best effort.
+
+Milestone 4 preserves primary failure semantics. At the end, failed command steps, required-output failures, and workstream-handoff failures still append fatal workflow terminal records and return the original failure reason. Cleanup failure during those failure cleanups remains a secondary suffix such as `; cleanup_failed:workspace_io` and never replaces the primary reason.
+
+Milestone 5 completes docs/helper inventory and validation. At the end, the implementer has either updated `docs/runbooks/workflow-recovery.md` with the manifest path and cleanup diagnostic source or recorded why no docs change is needed, has confirmed no `.scherzo/workflows/scripts/*`, workflow schema, provider-facing structured-output helper, provider-live, or cache behavior changed, and has run the targeted tests plus the full format, unit, contract, and production lint gates.
+
+## Progress
+
+- [x] 2026-05-25: Researched the current cleanup, workflow terminal, checkpoint, and jj lifecycle code paths and authored this review document for handoff.
+- [x] 2026-05-25: Incorporated review feedback by replacing the narrow symlink-skip approach with manifest-owned cleanup, durable diagnostics, live cleanup recovery events, explicit docs/helper non-scope, and full validation obligations.
+
+## Decision Log
+
+- 2026-05-25: Use a run-local managed-workspace manifest as the cleanup source of truth instead of enumerating `run_root/workspaces`. Rationale: helper symlinks and arbitrary unmanifested directories are not Scherzo-managed workspaces and should never be passed to lifecycle remove.
+- 2026-05-25: Write manifest entries before driver `lifecycle create` and mark them ready only after creation succeeds. Rationale: partially-created workspaces need cleanup ownership evidence even when creation fails midway.
+- 2026-05-25: Reuse the existing `workflow_run_diagnostic` ledger record for durable post-success cleanup warnings. Rationale: terminal workflow outcome strings stay unchanged while cleanup debt survives restart and later inspection.
+- 2026-05-25: Also publish a live `recovery_cleanup` lifecycle event for post-success cleanup failure. Rationale: operators watching the daemon need immediate visibility, but the event is not the only source of truth.
+- 2026-05-25: Keep provider-live behavior, provider cache behavior, structured-output schemas, and `.scherzo/workflows` helper contracts out of scope. Rationale: this is cleanup ownership and workflow outcome handling, not provider or review-lane materialization work.
+
+## Validation and Acceptance
+
+Acceptance is demonstrated by targeted tests, full gates, and observable ledger/session evidence. Manifest tests in `test/workspace_run_test.gleam` must assert that a failed driver `lifecycle create` leaves a `planned` manifest entry, a successful create marks that entry `ready`, cleanup removes only manifest-listed real workspaces, unmanifested directories and `workspaces/scherzo` are never passed to lifecycle remove, outside symlink sentinel files remain, invalid manifest paths retain the run root, and the driver script's existing outside-root refusal tests continue to pass.
+
+Workflow tests in `test/workflow_run_test.gleam` must replace the current expectation that cleanup failure marks a completed run failed. The new success test must assert event order `workflow_finished:completed`, cleanup attempt, `workflow_run_diagnostic:post_success_cleanup_failed:workspace_io`, no `workflow_finished:failed_fatal`, and `workflow_run.execute` returning success with the original run root. A failure-path test must assert a failed command returns `workflow_step_failed; cleanup_failed:workspace_io` and does not hide the command failure. Daemon or session-event coverage must assert the live event name is `recovery_cleanup`, the recovery status string is `cleanup`, and the source is `workflow.post_success_cleanup` while the session still exits normally.
+
+Run targeted suite commands from the repository root as the implementation progresses: `direnv exec . gleam test -- --suite unit` for `test/workspace_run_test.gleam`, `test/workflow_run_test.gleam`, and daemon/session-event unit coverage, plus `direnv exec . gleam test -- --suite contract` if the jj driver contract tests are touched. Before publish, run `direnv exec . scherzo-test-unit`, `direnv exec . scherzo-test-contract`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint` and expect zero exits.
+
+## Rollout, Recovery, and Idempotence
+
+The change is local and additive for new workflow runs: new runs write a manifest before creating workspaces, and cleanup reads that manifest. Existing retained runs without a manifest should not be guessed from directory contents; driver-backed cleanup should fail closed, retain the run root, and surface cleanup debt. Reverting the code restores prior cleanup enumeration and fatal post-success cleanup behavior without data migration, though any manifest files already written under run roots are harmless local metadata. Repeated cleanup attempts are safe because manifest upserts are idempotent, lifecycle remove sees the same validated workspace entries, missing already-removed workspace paths are skipped, deleting a missing run root is already treated as successful cleanup, and the jj driver continues refusing explicit outside-root targets.
+
+No browser or manual dogfood check is a pre-publish requirement for this backend cleanup change. A deferred operator check after merge may inspect a real retained run with `scripts/scherzoctl session <session-id> --json` or `scripts/scherzoctl events <session-id> --json` to confirm the `recovery_cleanup` event and ledger diagnostic are visible, but the implementation must not depend on live-provider/cache behavior or a browser UI to pass acceptance.
+
+## Open Questions and Clarifications Needed
+
+No blocking clarifications. The exact manifest module name and helper function names may differ, but the implementation must preserve the manifest-owned cleanup semantics, before-create write ordering, path validation rules, durable diagnostic, and live cleanup recovery event described above.
