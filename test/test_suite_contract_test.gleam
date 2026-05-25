@@ -14,8 +14,7 @@ pub fn suite_selection_partitions_unit_and_contract_files_test() {
   list.each(expected_contract_test_files(), assert_contract_file)
 
   assert_contract_file("contract/example_contract_test.gleam")
-  assert !scherzo_test.is_contract_file("workflow_run_test.gleam")
-  assert scherzo_test.is_unit_file("workflow_run_test.gleam")
+  assert_contract_file("workflow_run_test.gleam")
   assert !scherzo_test.is_contract_file(
     "local_integration/workflow_jj_workspace_smoke_test.gleam",
   )
@@ -64,14 +63,27 @@ pub fn contract_wrapper_invokes_contract_suite_test() {
 fn expected_contract_test_files() -> List(String) {
   [
     "agent_helper_script_test.gleam",
+    "command_step_test.gleam",
+    "control_server_test.gleam",
     "execplan_implementation_helper_test.gleam",
     "execplan_html_renderer_test.gleam",
     "jj_workspace_driver_test.gleam",
     "merge_conflict_helper_test.gleam",
+    "orchestrator_daemon_control_test.gleam",
+    "orchestrator_daemon_linear_command_test.gleam",
+    "orchestrator_daemon_retry_step_test.gleam",
+    "orchestrator_daemon_session_event_test.gleam",
+    "orchestrator_daemon_test.gleam",
+    "orchestrator_service_doctor_test.gleam",
+    "orchestrator_service_lifecycle_test.gleam",
+    "orchestrator_service_test.gleam",
+    "pi_client_test.gleam",
+    "port_test.gleam",
     "review_artifacts_test.gleam",
+    "workflow_run_test.gleam",
+    "workspace_cleanup_helper_test.gleam",
     "workspace_driver_contract_test.gleam",
     "workspace_driver_discovery_test.gleam",
-    "workspace_cleanup_helper_test.gleam",
     "workspace_driver_lifecycle_test.gleam",
   ]
 }

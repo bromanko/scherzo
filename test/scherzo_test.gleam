@@ -98,21 +98,34 @@ pub fn is_contract_file(path: String) -> Bool {
 pub fn contract_test_files() -> List(String) {
   [
     "agent_helper_script_test.gleam",
+    "command_step_test.gleam",
+    "control_server_test.gleam",
     "execplan_implementation_helper_test.gleam",
     "execplan_html_renderer_test.gleam",
     "jj_workspace_driver_test.gleam",
     "merge_conflict_helper_test.gleam",
+    "orchestrator_daemon_control_test.gleam",
+    "orchestrator_daemon_linear_command_test.gleam",
+    "orchestrator_daemon_retry_step_test.gleam",
+    "orchestrator_daemon_session_event_test.gleam",
+    "orchestrator_daemon_test.gleam",
+    "orchestrator_service_doctor_test.gleam",
+    "orchestrator_service_lifecycle_test.gleam",
+    "orchestrator_service_test.gleam",
+    "pi_client_test.gleam",
+    "port_test.gleam",
     "review_artifacts_test.gleam",
+    "workflow_run_test.gleam",
+    "workspace_cleanup_helper_test.gleam",
     "workspace_driver_contract_test.gleam",
     "workspace_driver_discovery_test.gleam",
-    "workspace_cleanup_helper_test.gleam",
     "workspace_driver_lifecycle_test.gleam",
   ]
 }
 
 fn test_usage() -> String {
   "Usage: gleam test [-- --suite unit|contract|local-integration|real-pi-validation|all]\n"
-  <> "Default with no suite runs the deterministic unit suite. Contract runs shell-heavy script/workflow/driver coverage."
+  <> "Default with no suite runs the deterministic unit suite. Contract runs shell-heavy script/workflow/daemon/process/driver coverage."
 }
 
 fn suite_name(suite: Suite) -> String {
