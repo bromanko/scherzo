@@ -321,7 +321,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
   [
     SourceLimit("src/scherzo/agent/run_attempt.gleam", 2177, 28),
     SourceLimit("src/scherzo/agent/turn_loop.gleam", 1003, 18),
-    SourceLimit("src/scherzo/config.gleam", 2619, 8),
+    SourceLimit("src/scherzo/config.gleam", 2596, 8),
     SourceLimit("src/scherzo/control/protocol.gleam", 1551, 7),
     SourceLimit("src/scherzo/ctl.gleam", 2453, 16),
     SourceLimit("src/scherzo/linear.gleam", 1496, 7),
@@ -341,7 +341,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/workflow_recovery_planner.gleam", 1194, 4),
     SourceLimit("src/scherzo/workflow_checkpoint.gleam", 1075, 14),
     SourceLimit("src/scherzo/workflow_contract.gleam", 1266, 0),
-    SourceLimit("src/scherzo/workflow_dag.gleam", 1635, 6),
+    SourceLimit("src/scherzo/workflow_dag.gleam", 1645, 6),
     SourceLimit("src/scherzo/workflow_run.gleam", 5660, 38),
     SourceLimit("src/scherzo/workspace_run.gleam", 1301, 12),
   ]

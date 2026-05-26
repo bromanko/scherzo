@@ -482,7 +482,8 @@ fn read_step_kind(
         "command" -> {
           use _ <- result.try(reject_command_structured_output(node))
           use run <- result.try(required_string(node, "run", "missing_run"))
-          Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
+          use timeout_ms <- result.try(read_command_timeout(node))
+          Ok(CommandStep(run: run, timeout_ms: timeout_ms))
         }
         other ->
           Error(DagError("unknown_step_kind", "unknown step kind: " <> other))
@@ -503,7 +504,8 @@ fn infer_step_kind(
     }
     None, Some(run) -> {
       use _ <- result.try(reject_command_structured_output(node))
-      Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
+      use timeout_ms <- result.try(read_command_timeout(node))
+      Ok(CommandStep(run: run, timeout_ms: timeout_ms))
     }
     Some(_), Some(_) ->
       Error(DagError(
@@ -569,6 +571,14 @@ fn reject_command_structured_output(node: yay.Node) -> Result(Nil, DagError) {
         "structured_output is only valid on agent steps",
       ))
   }
+}
+
+fn read_command_timeout(node: yay.Node) -> Result(Option(Int), DagError) {
+  workflow_dag_validator_parser.parse_command_step_timeout(node)
+  |> result.map_error(fn(error) {
+    let workflow_dag_validator_parser.ValidatorParseError(code, message) = error
+    DagError(code, message)
+  })
 }
 
 fn read_structured_output_format(
