@@ -13,6 +13,7 @@ import scherzo/handoff_format
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/poll_jitter
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/path
 import scherzo/result_artifact
 import scherzo/runtime_bundle
@@ -1919,9 +1920,10 @@ pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {
   process.send(started.data, daemon.PollTick(1))
   assert process.receive(triage_subject, within: 1000)
     == Ok("triage:issue-id:missing_workflow_label")
+  let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.size(snapshot.running) == 0
-  assert dict.has_key(snapshot.invalid_workflow_reports, "issue-id")
+  assert dict.has_key(snapshot.invalid_workflow_reports, identity)
 
   process.send(started.data, daemon.PollTick(2))
   test_async.assert_no_extra_message_within(triage_subject, 200)
@@ -1953,9 +1955,10 @@ pub fn daemon_ignores_unlabeled_non_dispatch_state_candidate_test() {
   process.send(started.data, daemon.PollTick(1))
   test_async.assert_no_extra_message_within(triage_subject, 200)
   test_async.assert_no_extra_message_within(refresh_subject, 200)
+  let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.size(snapshot.running) == 0
-  assert !dict.has_key(snapshot.invalid_workflow_reports, "issue-id")
+  assert !dict.has_key(snapshot.invalid_workflow_reports, identity)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -2095,9 +2098,10 @@ pub fn daemon_final_validation_blocks_new_dependency_test() {
     20,
   )
   test_async.assert_no_extra_message_within(claim_subject, 100)
+  let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.size(snapshot.running) == 0
-  assert !dict.has_key(snapshot.claimed, candidate.id)
+  assert !dict.has_key(snapshot.claimed, identity)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -2209,9 +2213,10 @@ pub fn daemon_retry_refresh_dependency_blocked_cancels_retry_test() {
   let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
   process.send(retry_refresh, blocked)
   assert wait_for_event(log_subject, "linear_dependency_retry_blocked", 20)
+  let identity = orchestrator_state.issue_identity(retried)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert !dict.has_key(snapshot.retry_attempts, "retry-id")
-  assert !dict.has_key(snapshot.claimed, "retry-id")
+  assert !dict.has_key(snapshot.retry_attempts, identity)
+  assert !dict.has_key(snapshot.claimed, identity)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -3126,8 +3131,9 @@ pub fn daemon_yaml_poll_dispatches_command_workflow_test() {
     session_ids,
     "workflow-step-ABC-1-42-1-final_test-a1-c55a07a40185",
   )
+  let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert dict.has_key(snapshot.completed, "issue-id")
+  assert dict.has_key(snapshot.completed, identity)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 

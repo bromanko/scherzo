@@ -540,9 +540,10 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
       command.ParkIssue(command.IssueIdentifier("ABC-1"), "manual"),
     )
   assert command.status_to_string(parked.status) == "applied"
+  let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot_after_park) = daemon.get_snapshot(started.data, 1000)
-  assert dict.has_key(snapshot_after_park.parked, "issue-1")
-  let assert Ok(parked_entry) = dict.get(snapshot_after_park.parked, "issue-1")
+  assert dict.has_key(snapshot_after_park.parked, identity)
+  let assert Ok(parked_entry) = dict.get(snapshot_after_park.parked, identity)
   assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
   assert process.receive(park_subject, within: 1000)
     == Ok("park:issue-1:ABC-1:manual:explicit_unpark_only:")
@@ -554,7 +555,7 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
     )
   assert command.status_to_string(unparked.status) == "applied"
   let assert Ok(snapshot_after_unpark) = daemon.get_snapshot(started.data, 1000)
-  assert !dict.has_key(snapshot_after_unpark.parked, "issue-1")
+  assert !dict.has_key(snapshot_after_unpark.parked, identity)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
@@ -723,9 +724,10 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "retry_scheduled", 20)
+  let claimed_identity = orchestrator_state.issue_identity(claimed)
   let assert Ok(claimed_snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert dict.has_key(claimed_snapshot.claimed, "claimed-issue")
-  assert !dict.has_key(claimed_snapshot.running, "claimed-issue")
+  assert dict.has_key(claimed_snapshot.claimed, claimed_identity)
+  assert !dict.has_key(claimed_snapshot.running, claimed_identity)
 
   let assert Ok(claimed_retry) =
     daemon.apply_operator_command(
@@ -764,9 +766,10 @@ pub fn park_rejects_claimed_issues_test() {
       1000,
     )
   assert command.status_to_string(parked.status) == "rejected"
+  let claimed_identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert dict.has_key(snapshot.claimed, "park-claimed")
-  assert !dict.has_key(snapshot.parked, "park-claimed")
+  assert dict.has_key(snapshot.claimed, claimed_identity)
+  assert !dict.has_key(snapshot.parked, claimed_identity)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -795,8 +798,9 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "agent_run:Title ABC-AUTO", 20)
   assert wait_for_log(log_subject, "issue_parked", 20)
+  let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(parked_snapshot) = daemon.get_snapshot(started.data, 1000)
-  let assert Ok(parked_entry) = dict.get(parked_snapshot.parked, "auto-park")
+  let assert Ok(parked_entry) = dict.get(parked_snapshot.parked, identity)
   assert parked_entry.release_policy
     == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(
       candidate,
@@ -811,9 +815,9 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   process.send(started.data, daemon.PollTick(2))
   assert wait_for_log(log_subject, "dispatch_started", 20)
   let assert Ok(running_snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert dict.has_key(running_snapshot.running, "auto-park")
-  assert !dict.has_key(running_snapshot.parked, "auto-park")
-  assert !dict.has_key(running_snapshot.retry_attempts, "auto-park")
+  assert dict.has_key(running_snapshot.running, identity)
+  assert !dict.has_key(running_snapshot.parked, identity)
+  assert !dict.has_key(running_snapshot.retry_attempts, identity)
 
   test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -858,7 +862,10 @@ pub fn startup_recovery_of_parked_issue_does_not_repost_park_comment_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert dict.has_key(snapshot.parked, "recovered-park")
+  assert dict.has_key(
+    snapshot.parked,
+    orchestrator_state.linear_issue_id_identity("recovered-park"),
+  )
   assert process.receive(park_subject, within: 100) == Error(Nil)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -901,7 +908,10 @@ pub fn startup_recovery_new_park_posts_park_comment_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert dict.has_key(snapshot.parked, "recovery-new-park")
+  assert dict.has_key(
+    snapshot.parked,
+    orchestrator_state.linear_issue_id_identity("recovery-new-park"),
+  )
   assert process.receive(park_subject, within: 1000)
     == Ok(
       "park:recovery-new-park:ABC-NEWREC:max_retry_attempts:auto_unpark_on_issue_change:ABC-NEWREC-42-1",
@@ -1083,9 +1093,10 @@ fn assert_session_stop_command(
   let assert Ok(result) =
     daemon.apply_operator_command(started.data, operator_command, 1000)
   assert command.status_to_string(result.status) == "applied"
+  let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert !dict.has_key(snapshot.running, candidate.id)
-  assert dict.has_key(snapshot.parked, candidate.id)
+  assert !dict.has_key(snapshot.running, identity)
+  assert dict.has_key(snapshot.parked, identity)
 
   let assert Ok(summary) =
     wait_for_session_exit(hub_subject, candidate.identifier <> "-42-1", 20)

@@ -158,7 +158,7 @@ pub fn unfinished_run_becomes_interrupted_retry_test() {
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
   assert plan.runtime.issue_counters
-    |> dict.get("issue-1")
+    |> dict.get(orchestrator_state.linear_issue_id_identity("issue-1"))
     |> unwrap_counter
     |> fn(counter) { counter.failure_attempts }
     == 1
@@ -316,7 +316,10 @@ pub fn parked_issue_survives_restart_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
-  assert dict.has_key(plan.runtime.parked, "issue-1")
+  assert dict.has_key(
+    plan.runtime.parked,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
 }
 
 pub fn auto_parked_issue_with_same_fingerprint_survives_restart_test() {
@@ -339,7 +342,10 @@ pub fn auto_parked_issue_with_same_fingerprint_survives_restart_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
-  assert dict.has_key(plan.runtime.parked, "issue-1")
+  assert dict.has_key(
+    plan.runtime.parked,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
 }
 
 pub fn auto_parked_legacy_stateful_fingerprint_survives_state_change_test() {
@@ -362,7 +368,10 @@ pub fn auto_parked_legacy_stateful_fingerprint_survives_state_change_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
-  assert dict.has_key(plan.runtime.parked, "issue-1")
+  assert dict.has_key(
+    plan.runtime.parked,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
   assert plan.records_to_append == []
 }
 
@@ -410,9 +419,18 @@ pub fn auto_parked_issue_with_new_fingerprint_unparks_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
-  assert !dict.has_key(plan.runtime.parked, "issue-1")
-  assert !dict.has_key(plan.runtime.retry_attempts, "issue-1")
-  assert !dict.has_key(plan.runtime.issue_counters, "issue-1")
+  assert !dict.has_key(
+    plan.runtime.parked,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert !dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert !dict.has_key(
+    plan.runtime.issue_counters,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
 }
 
 pub fn overdue_retry_is_scheduled_immediately_test() {
@@ -436,7 +454,11 @@ pub fn overdue_retry_is_scheduled_immediately_test() {
 
   let assert [recovery.RecoveredRetry(delay_ms: 0, generation: 2, ..)] =
     plan.retry_timers
-  let assert Ok(retry) = dict.get(plan.runtime.retry_attempts, "issue-1")
+  let assert Ok(retry) =
+    dict.get(
+      plan.runtime.retry_attempts,
+      orchestrator_state.linear_issue_id_identity("issue-1"),
+    )
   assert retry.delay_ms == 0
 }
 
@@ -461,7 +483,11 @@ pub fn future_retry_keeps_remaining_delay_test() {
 
   let assert [recovery.RecoveredRetry(delay_ms: 3000, generation: 2, ..)] =
     plan.retry_timers
-  let assert Ok(retry) = dict.get(plan.runtime.retry_attempts, "issue-1")
+  let assert Ok(retry) =
+    dict.get(
+      plan.runtime.retry_attempts,
+      orchestrator_state.linear_issue_id_identity("issue-1"),
+    )
   assert retry.delay_ms == 3000
 }
 
@@ -484,8 +510,14 @@ pub fn retry_for_missing_issue_is_cancelled_during_recovery_test() {
   let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
 
   assert plan.retry_timers == []
-  assert !dict.has_key(plan.runtime.retry_attempts, "issue-1")
-  assert !dict.has_key(plan.runtime.claimed, "issue-1")
+  assert !dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert !dict.has_key(
+    plan.runtime.claimed,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
   assert plan.warnings == []
   assert has_retry_cancelled(
     plan.records_to_append,
@@ -522,8 +554,14 @@ pub fn retry_for_configured_failure_state_is_restored_during_recovery_test() {
 
   let assert [recovery.RecoveredRetry(delay_ms: 0, generation: 2, ..)] =
     plan.retry_timers
-  assert dict.has_key(plan.runtime.retry_attempts, "issue-1")
-  assert dict.has_key(plan.runtime.claimed, "issue-1")
+  assert dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert dict.has_key(
+    plan.runtime.claimed,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
   assert plan.warnings == []
   assert !has_retry_cancelled(
     plan.records_to_append,
@@ -559,8 +597,14 @@ pub fn retry_for_non_retryable_issue_is_cancelled_during_recovery_test() {
     )
 
   assert plan.retry_timers == []
-  assert !dict.has_key(plan.runtime.retry_attempts, "issue-1")
-  assert !dict.has_key(plan.runtime.claimed, "issue-1")
+  assert !dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert !dict.has_key(
+    plan.runtime.claimed,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
   assert plan.warnings == []
   assert has_retry_cancelled(
     plan.records_to_append,
@@ -590,8 +634,14 @@ pub fn retry_for_terminal_issue_is_cancelled_during_recovery_test() {
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
   assert plan.retry_timers == []
-  assert !dict.has_key(plan.runtime.retry_attempts, "issue-1")
-  assert !dict.has_key(plan.runtime.claimed, "issue-1")
+  assert !dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert !dict.has_key(
+    plan.runtime.claimed,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
   assert plan.warnings == []
   assert has_retry_cancelled(
     plan.records_to_append,
@@ -1088,7 +1138,7 @@ fn counter_failure_attempts(
   issue_id: String,
 ) -> Int {
   runtime.issue_counters
-  |> dict.get(issue_id)
+  |> dict.get(orchestrator_state.linear_issue_id_identity(issue_id))
   |> unwrap_counter
   |> fn(counter) { counter.failure_attempts }
 }
@@ -1097,7 +1147,10 @@ fn has_retry(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Bool {
-  dict.has_key(runtime.retry_attempts, issue_id)
+  dict.has_key(
+    runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity(issue_id),
+  )
 }
 
 fn has_outbox_failed(

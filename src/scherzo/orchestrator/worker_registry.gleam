@@ -3,11 +3,14 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, Some}
 import scherzo/agent/worker_command
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/reason as session_reason
+import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 
 pub type WorkerHandle {
   WorkerHandle(
+    task_ref: task.TaskRef,
     issue_id: String,
     issue: tracker_issue.Issue,
     run_id: String,
@@ -69,6 +72,10 @@ pub opaque type Registry {
   )
 }
 
+fn worker_identity(handle: WorkerHandle) -> String {
+  orchestrator_state.task_ref_identity(handle.task_ref)
+}
+
 pub fn new() -> Registry {
   Registry(
     workers: dict.new(),
@@ -101,17 +108,18 @@ pub fn next_session_sequence(registry: Registry) -> Int {
 }
 
 pub fn register_worker(registry: Registry, handle: WorkerHandle) -> Registry {
+  let identity = worker_identity(handle)
   Registry(
     ..registry,
-    workers: dict.insert(registry.workers, handle.issue_id, handle),
+    workers: dict.insert(registry.workers, identity, handle),
     worker_monitors: dict.insert(
       registry.worker_monitors,
       handle.monitor,
-      handle.issue_id,
+      identity,
     ),
     issue_sessions: dict.insert(
       registry.issue_sessions,
-      handle.issue_id,
+      identity,
       handle.session_id,
     ),
   )
@@ -147,22 +155,71 @@ pub fn register_worker_command_subject(
   run_id: String,
   command_subject: process.Subject(worker_command.Command),
 ) -> Registry {
-  case dict.get(registry.workers, issue_id) {
-    Error(Nil) -> registry
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(registry.workers, identity) {
     Ok(handle) ->
       case handle.run_id == run_id {
-        False -> registry
         True ->
-          Registry(
-            ..registry,
-            workers: dict.insert(
-              registry.workers,
-              issue_id,
-              WorkerHandle(..handle, command_subject: Some(command_subject)),
-            ),
+          put_worker_command_subject(
+            registry,
+            identity,
+            handle,
+            command_subject,
+          )
+        False ->
+          register_worker_command_subject_by_run(
+            registry,
+            issue_id,
+            run_id,
+            command_subject,
           )
       }
+    Error(Nil) ->
+      register_worker_command_subject_by_run(
+        registry,
+        issue_id,
+        run_id,
+        command_subject,
+      )
   }
+}
+
+fn register_worker_command_subject_by_run(
+  registry: Registry,
+  issue_id: String,
+  run_id: String,
+  command_subject: process.Subject(worker_command.Command),
+) -> Registry {
+  case worker_for_run(registry, run_id) {
+    Ok(handle) ->
+      case handle.issue_id == issue_id {
+        True ->
+          put_worker_command_subject(
+            registry,
+            worker_identity(handle),
+            handle,
+            command_subject,
+          )
+        False -> registry
+      }
+    Error(Nil) -> registry
+  }
+}
+
+fn put_worker_command_subject(
+  registry: Registry,
+  identity: String,
+  handle: WorkerHandle,
+  command_subject: process.Subject(worker_command.Command),
+) -> Registry {
+  Registry(
+    ..registry,
+    workers: dict.insert(
+      registry.workers,
+      identity,
+      WorkerHandle(..handle, command_subject: Some(command_subject)),
+    ),
+  )
 }
 
 pub fn register_scheduled_worker_command_subject(
@@ -228,7 +285,17 @@ pub fn worker_for_issue(
   registry: Registry,
   issue_id: String,
 ) -> Result(WorkerHandle, Nil) {
-  dict.get(registry.workers, issue_id)
+  dict.get(
+    registry.workers,
+    orchestrator_state.linear_issue_id_identity(issue_id),
+  )
+}
+
+pub fn worker_for_task_ref(
+  registry: Registry,
+  ref: task.TaskRef,
+) -> Result(WorkerHandle, Nil) {
+  dict.get(registry.workers, orchestrator_state.task_ref_identity(ref))
 }
 
 pub fn worker_handles(registry: Registry) -> List(WorkerHandle) {
@@ -242,7 +309,11 @@ pub fn scheduled_worker_handles(
 }
 
 pub fn worker_issue_ids(registry: Registry) -> List(String) {
-  dict.keys(registry.workers)
+  registry.workers |> dict.values |> list.map(fn(handle) { handle.issue_id })
+}
+
+pub fn worker_task_refs(registry: Registry) -> List(task.TaskRef) {
+  registry.workers |> dict.values |> list.map(fn(handle) { handle.task_ref })
 }
 
 pub fn worker_issues(registry: Registry) -> List(tracker_issue.Issue) {
@@ -250,29 +321,60 @@ pub fn worker_issues(registry: Registry) -> List(tracker_issue.Issue) {
 }
 
 pub fn has_active_run(registry: Registry, issue_id: String) -> Bool {
-  dict.has_key(registry.workers, issue_id)
+  dict.has_key(
+    registry.workers,
+    orchestrator_state.linear_issue_id_identity(issue_id),
+  )
+}
+
+pub fn has_active_task_ref(registry: Registry, ref: task.TaskRef) -> Bool {
+  dict.has_key(registry.workers, orchestrator_state.task_ref_identity(ref))
 }
 
 pub fn issue_sessions(registry: Registry) -> Dict(String, String) {
   registry.issue_sessions
 }
 
+pub fn linear_issue_sessions(registry: Registry) -> Dict(String, String) {
+  registry.workers
+  |> dict.values
+  |> list.fold(dict.new(), fn(sessions, handle) {
+    let task.TaskRef(backend_kind: backend_kind, remote_id: remote_id, ..) =
+      handle.task_ref
+    case backend_kind {
+      "linear" -> dict.insert(sessions, remote_id, handle.session_id)
+      _ -> sessions
+    }
+  })
+}
+
 pub fn issue_session(
   registry: Registry,
   issue_id: String,
 ) -> Result(String, Nil) {
-  dict.get(registry.issue_sessions, issue_id)
+  dict.get(
+    registry.issue_sessions,
+    orchestrator_state.linear_issue_id_identity(issue_id),
+  )
+}
+
+pub fn task_ref_session(
+  registry: Registry,
+  ref: task.TaskRef,
+) -> Result(String, Nil) {
+  dict.get(registry.issue_sessions, orchestrator_state.task_ref_identity(ref))
 }
 
 pub fn remove_worker(
   registry: Registry,
   issue_id: String,
 ) -> #(Registry, Result(WorkerHandle, Nil)) {
-  case dict.get(registry.workers, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(registry.workers, identity) {
     Error(Nil) -> #(
       Registry(
         ..registry,
-        issue_sessions: dict.delete(registry.issue_sessions, issue_id),
+        issue_sessions: dict.delete(registry.issue_sessions, identity),
       ),
       Error(Nil),
     )
@@ -284,11 +386,12 @@ pub fn remove_worker_handle(
   registry: Registry,
   handle: WorkerHandle,
 ) -> Registry {
+  let identity = worker_identity(handle)
   Registry(
     ..registry,
-    workers: dict.delete(registry.workers, handle.issue_id),
+    workers: dict.delete(registry.workers, identity),
     worker_monitors: dict.delete(registry.worker_monitors, handle.monitor),
-    issue_sessions: dict.delete(registry.issue_sessions, handle.issue_id),
+    issue_sessions: dict.delete(registry.issue_sessions, identity),
   )
 }
 
@@ -329,7 +432,23 @@ pub fn remove_scheduled_worker_handle(
 pub fn forget_issue_session(registry: Registry, issue_id: String) -> Registry {
   Registry(
     ..registry,
-    issue_sessions: dict.delete(registry.issue_sessions, issue_id),
+    issue_sessions: dict.delete(
+      registry.issue_sessions,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    ),
+  )
+}
+
+pub fn forget_task_ref_session(
+  registry: Registry,
+  ref: task.TaskRef,
+) -> Registry {
+  Registry(
+    ..registry,
+    issue_sessions: dict.delete(
+      registry.issue_sessions,
+      orchestrator_state.task_ref_identity(ref),
+    ),
   )
 }
 
@@ -509,18 +628,22 @@ pub fn resolve_down(
   monitor: process.Monitor,
 ) -> DownResolution {
   case dict.get(registry.worker_monitors, monitor) {
-    Ok(issue_id) ->
-      case dict.get(registry.workers, issue_id) {
+    Ok(identity) ->
+      case dict.get(registry.workers, identity) {
         Ok(handle) ->
-          WorkerDown(remove_worker_handle(registry, handle), issue_id, handle)
+          WorkerDown(
+            remove_worker_handle(registry, handle),
+            handle.issue_id,
+            handle,
+          )
         Error(Nil) ->
           WorkerDownStale(
             Registry(
               ..registry,
               worker_monitors: dict.delete(registry.worker_monitors, monitor),
-              issue_sessions: dict.delete(registry.issue_sessions, issue_id),
+              issue_sessions: dict.delete(registry.issue_sessions, identity),
             ),
-            issue_id,
+            identity,
           )
       }
     Error(Nil) ->

@@ -668,8 +668,11 @@ fn begin_dispatch_validation(
     True -> dispatch_candidates_outcome(remaining_candidates, state, context)
     False -> {
       let generation = state.next_dispatch_validation_generation
+      let task_ref = task.from_legacy_issue(issue).ref
+      let identity = orchestrator_state.task_ref_identity(task_ref)
       let pending =
         transition_types.PendingDispatchValidation(
+          task_ref: task_ref,
           issue: issue,
           remaining_candidates: remaining_candidates,
           generation: generation,
@@ -680,7 +683,7 @@ fn begin_dispatch_validation(
           ..state,
           pending_dispatch_validations: dict.insert(
             state.pending_dispatch_validations,
-            issue.id,
+            identity,
             pending,
           ),
           next_dispatch_validation_generation: generation + 1,
@@ -709,7 +712,8 @@ fn handle_dispatch_validation_completed(
   result: Result(tracker_issue.Issue, transition_types.DispatchValidationError),
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  case dict.get(state.pending_dispatch_validations, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(state.pending_dispatch_validations, identity) {
     Error(Nil) -> stale_dispatch_validation(state, issue_id, generation)
     Ok(pending) ->
       case pending.generation != generation {
@@ -720,7 +724,7 @@ fn handle_dispatch_validation_completed(
               ..state,
               pending_dispatch_validations: dict.delete(
                 state.pending_dispatch_validations,
-                issue_id,
+                identity,
               ),
             )
           case result {
@@ -912,7 +916,10 @@ fn clear_pending_claim(
 ) -> transition_types.State {
   transition_types.State(
     ..state,
-    pending_claims: dict.delete(state.pending_claims, issue_id),
+    pending_claims: dict.delete(
+      state.pending_claims,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    ),
   )
 }
 
@@ -922,7 +929,8 @@ fn handle_handoff_claim_completed(
   run_id: String,
   result: transition_types.HandoffClaimResult,
 ) -> transition_types.Outcome {
-  case dict.get(state.pending_claims, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(state.pending_claims, identity) {
     Error(Nil) ->
       transition_types.Outcome(state: state, effects: [
         effects_types.Log("warn", "handoff_claim_stale", [
@@ -993,7 +1001,8 @@ fn handle_retry_tick(
   generation: Int,
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  case dict.get(state.runtime.retry_attempts, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(state.runtime.retry_attempts, identity) {
     Error(Nil) -> retry_timer_stale(state, issue_id, generation, False)
     Ok(entry) ->
       case entry.timer_generation != generation {
@@ -1060,8 +1069,9 @@ fn handle_retry_refresh_completed(
   result: Result(List(tracker_issue.Issue), String),
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   let finish_effect = effects_types.FinishRetryRefresh(issue_id)
-  let outcome = case dict.get(state.runtime.retry_attempts, issue_id) {
+  let outcome = case dict.get(state.runtime.retry_attempts, identity) {
     Error(Nil) -> retry_timer_stale(state, issue_id, generation, False)
     Ok(entry) ->
       case entry.timer_generation != generation {
@@ -1269,7 +1279,12 @@ fn current_retry_generation(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Int {
-  case dict.get(runtime.retry_attempts, issue_id) {
+  case
+    dict.get(
+      runtime.retry_attempts,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
     Ok(entry) -> entry.timer_generation
     Error(Nil) -> 0
   }
@@ -1346,13 +1361,19 @@ fn map_lifecycle_core_effects(
   state: transition_types.State,
   effects: List(core.Effect),
   source_run_id: Option(String),
+  source_task_ref: Option(task.TaskRef),
 ) -> transition_types.Outcome {
   list.fold(
     effects,
     transition_types.Outcome(state: state, effects: []),
     fn(outcome, effect) {
       let transition_types.Outcome(state: state, effects: mapped) =
-        map_lifecycle_core_effect(outcome.state, effect, source_run_id)
+        map_lifecycle_core_effect(
+          outcome.state,
+          effect,
+          source_run_id,
+          source_task_ref,
+        )
       transition_types.Outcome(
         state: state,
         effects: list.append(outcome.effects, mapped),
@@ -1365,17 +1386,19 @@ fn map_lifecycle_core_effect(
   state: transition_types.State,
   effect: core.Effect,
   source_run_id: Option(String),
+  source_task_ref: Option(task.TaskRef),
 ) -> transition_types.Outcome {
   case effect {
     core.ScheduleRetry(issue_id, delay_ms, generation, retry_reason) ->
       transition_types.Outcome(
         state: state,
-        effects: schedule_retry_effects(
+        effects: schedule_retry_effects_for_ref(
           state.runtime,
           issue_id,
           delay_ms,
           generation,
           retry_reason,
+          source_task_ref,
         ),
       )
     core.CancelRetry(issue_id, generation, cancel_reason) ->
@@ -1394,7 +1417,12 @@ fn map_lifecycle_core_effect(
     core.ParkIssue(issue_id, _) ->
       transition_types.Outcome(
         state: state,
-        effects: park_issue_effects(state.runtime, issue_id, source_run_id),
+        effects: park_issue_effects_for_ref(
+          state.runtime,
+          issue_id,
+          source_task_ref,
+          source_run_id,
+        ),
       )
     core.StopWorker(issue_id, reason) ->
       stop_worker_after_issue_refresh(state, issue_id, reason)
@@ -1454,7 +1482,12 @@ fn stop_worker_after_issue_refresh(
   issue_id: String,
   reason: orchestrator_reason.StopReason,
 ) -> transition_types.Outcome {
-  case dict.get(state.workers.by_issue, issue_id) {
+  case
+    dict.get(
+      state.workers.by_issue,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
     Error(Nil) -> transition_types.Outcome(state: state, effects: [])
     Ok(entry) -> {
       let identity = worker_identity(entry)
@@ -1473,6 +1506,24 @@ fn schedule_retry_effects(
   generation: Int,
   retry_reason: orchestrator_reason.RetryReason,
 ) -> List(effects_types.Effect) {
+  schedule_retry_effects_for_ref(
+    runtime,
+    issue_id,
+    delay_ms,
+    generation,
+    retry_reason,
+    None,
+  )
+}
+
+fn schedule_retry_effects_for_ref(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+  delay_ms: Int,
+  generation: Int,
+  retry_reason: orchestrator_reason.RetryReason,
+  ref: Option(task.TaskRef),
+) -> List(effects_types.Effect) {
   let reason_text = orchestrator_reason.retry_to_string(retry_reason)
   [
     effects_types.AppendLedger(effects_types.LedgerAppend(
@@ -1483,7 +1534,7 @@ fn schedule_retry_effects(
       bodies: [
         record.RetryScheduled(
           issue_id,
-          identifier_for_runtime(runtime, issue_id),
+          identifier_for_runtime_ref(runtime, issue_id, ref),
           delay_ms,
           generation,
           reason_text,
@@ -1630,7 +1681,11 @@ fn handle_worker_start_succeeded(
           let workers =
             transition_types.WorkerDirectory(
               ..state.workers,
-              by_issue: dict.insert(state.workers.by_issue, issue_id, entry),
+              by_issue: dict.insert(
+                state.workers.by_issue,
+                entry_identity(entry),
+                entry,
+              ),
             )
           transition_types.Outcome(
             state: transition_types.State(..state, workers: workers),
@@ -1667,11 +1722,12 @@ fn handle_worker_start_failed(
           )
         True -> {
           let state = remove_worker_from_directory(state, entry)
+          let identity = entry_identity(entry)
           let runtime =
             orchestrator_state.RuntimeState(
               ..state.runtime,
-              running: dict.delete(state.runtime.running, issue_id),
-              claimed: dict.delete(state.runtime.claimed, issue_id),
+              running: dict.delete(state.runtime.running, identity),
+              claimed: dict.delete(state.runtime.claimed, identity),
             )
           transition_types.Outcome(
             state: transition_types.State(..state, runtime: runtime),
@@ -1714,7 +1770,11 @@ fn handle_worker_command_ready(
       let workers =
         transition_types.WorkerDirectory(
           ..state.workers,
-          by_issue: dict.insert(state.workers.by_issue, issue_id, entry),
+          by_issue: dict.insert(
+            state.workers.by_issue,
+            entry_identity(entry),
+            entry,
+          ),
         )
       transition_types.Outcome(
         state: transition_types.State(..state, workers: workers),
@@ -1906,9 +1966,10 @@ fn finish_worker_success_entry(
     None -> entry.issue
   }
   let core.Transition(state: runtime, effects: core_effects) =
-    core.apply_workflow_success(
+    core.apply_task_workflow_success(
       state.runtime,
       context.effective,
+      entry.task_ref,
       entry.issue_id,
       final_issue,
       success.tokens,
@@ -1924,16 +1985,21 @@ fn finish_worker_success_entry(
       success.tokens.total,
       success.turns,
     ),
-    counter_record_for_runtime(
+    counter_record_for_entry(
       runtime,
-      entry.issue_id,
+      entry,
       final_issue.identifier,
       Some(entry.run_id),
       context.now_ms,
     ),
   ]
   let transition_types.Outcome(state: state, effects: follow_ups) =
-    map_lifecycle_core_effects(state, core_effects, Some(entry.run_id))
+    map_lifecycle_core_effects(
+      state,
+      core_effects,
+      Some(entry.run_id),
+      Some(entry.task_ref),
+    )
   transition_types.Outcome(state: state, effects: [
     effects_types.Log("info", "worker_exited", [
       #("issue_id", entry.issue_id),
@@ -2016,9 +2082,10 @@ fn finish_standard_worker_failure_entry(
 ) -> transition_types.Outcome {
   let baseline_issue = baseline_issue_for_failure(entry, failure)
   let core.Transition(state: runtime, effects: core_effects) =
-    core.apply_worker_failure(
+    core.apply_task_worker_failure(
       state.runtime,
       context.effective,
+      entry.task_ref,
       entry.issue_id,
       baseline_issue,
       context.now_ms,
@@ -2033,7 +2100,12 @@ fn finish_standard_worker_failure_entry(
       context.now_ms,
     )
   let transition_types.Outcome(state: state, effects: follow_ups) =
-    map_lifecycle_core_effects(state, core_effects, Some(entry.run_id))
+    map_lifecycle_core_effects(
+      state,
+      core_effects,
+      Some(entry.run_id),
+      Some(entry.task_ref),
+    )
   transition_types.Outcome(state: state, effects: [
     effects_types.Log("warn", "worker_exited", [
       #("issue_id", entry.issue_id),
@@ -2067,22 +2139,27 @@ fn finish_recovery_validation_failure_entry(
   context: transition_types.WorkerLifecycleContext,
 ) -> transition_types.Outcome {
   let baseline_issue = baseline_issue_for_failure(entry, failure)
+  let runtime_identity = entry_identity(entry)
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
-      running: dict.delete(state.runtime.running, entry.issue_id),
-      retry_attempts: dict.delete(state.runtime.retry_attempts, entry.issue_id),
+      running: dict.delete(state.runtime.running, runtime_identity),
+      retry_attempts: dict.delete(
+        state.runtime.retry_attempts,
+        runtime_identity,
+      ),
     )
   let state = transition_types.State(..state, runtime: runtime)
   let state =
     park_runtime(
       state,
+      entry.task_ref,
       baseline_issue,
       orchestrator_reason.ParkOperator(reason_text),
       context.now_ms,
     )
   let park_effects =
-    park_issue_effects(state.runtime, entry.issue_id, Some(entry.run_id))
+    park_task_ref_effects(state.runtime, entry.task_ref, Some(entry.run_id))
   transition_types.Outcome(
     state: state,
     effects: list.append(
@@ -2130,13 +2207,14 @@ fn finish_operator_worker_failure_entry(
 ) -> transition_types.Outcome {
   let reason_text = session_reason.to_string(reason)
   let final_issue = baseline_issue_for_failure(entry, failure)
+  let runtime_identity = entry_identity(entry)
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
-      running: dict.delete(state.runtime.running, entry.issue_id),
+      running: dict.delete(state.runtime.running, runtime_identity),
       completed: dict.insert(
         state.runtime.completed,
-        entry.issue_id,
+        runtime_identity,
         final_issue,
       ),
       aggregate_pi_totals: session_tokens_add(
@@ -2148,12 +2226,13 @@ fn finish_operator_worker_failure_entry(
   let state =
     park_runtime(
       state,
+      entry.task_ref,
       final_issue,
       orchestrator_reason.ParkOperator(reason_text),
       context.now_ms,
     )
   let park_effects =
-    park_issue_effects(state.runtime, entry.issue_id, Some(entry.run_id))
+    park_task_ref_effects(state.runtime, entry.task_ref, Some(entry.run_id))
   transition_types.Outcome(
     state: state,
     effects: list.append(
@@ -2274,6 +2353,7 @@ fn stop_worker_entry(
   let state =
     park_runtime(
       state,
+      entry.task_ref,
       entry.issue,
       orchestrator_reason.ParkOperator(reason_text),
       context.now_ms,
@@ -2303,7 +2383,7 @@ fn stop_worker_entry(
     effects_types.FinishYamlStepSessionsForRun(entry.run_id, reason),
     effects_types.ClearYamlStepRoutesForRun(entry.run_id),
     effects_types.RemoveWorker(identity, False),
-    ..park_issue_effects(state.runtime, entry.issue_id, Some(entry.run_id))
+    ..park_task_ref_effects(state.runtime, entry.task_ref, Some(entry.run_id))
   ])
 }
 
@@ -2359,14 +2439,37 @@ fn worker_entry_for_issue(
   issue_id: String,
   run_id: String,
 ) -> Result(transition_types.WorkerEntry, Nil) {
-  case dict.get(state.workers.by_issue, issue_id) {
-    Error(Nil) -> Error(Nil)
+  case
+    dict.get(
+      state.workers.by_issue,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
     Ok(entry) ->
       case entry.run_id == run_id {
         True -> Ok(entry)
-        False -> Error(Nil)
+        False -> worker_entry_for_issue_and_run(state.workers, issue_id, run_id)
       }
+    Error(Nil) ->
+      worker_entry_for_issue_and_run(state.workers, issue_id, run_id)
   }
+}
+
+fn worker_entry_for_issue_and_run(
+  workers: transition_types.WorkerDirectory,
+  issue_id: String,
+  run_id: String,
+) -> Result(transition_types.WorkerEntry, Nil) {
+  workers.by_issue
+  |> dict.values
+  |> list.filter(fn(entry) {
+    entry.issue_id == issue_id && entry.run_id == run_id
+  })
+  |> first_worker_entry
+}
+
+fn entry_identity(entry: transition_types.WorkerEntry) -> String {
+  orchestrator_state.task_ref_identity(entry.task_ref)
 }
 
 fn worker_for_run(
@@ -2392,6 +2495,7 @@ fn worker_identity(
   entry: transition_types.WorkerEntry,
 ) -> effects_types.WorkerIdentity {
   effects_types.WorkerIdentity(
+    task_ref: entry.task_ref,
     issue_id: entry.issue_id,
     run_id: entry.run_id,
     session_id: entry.session_id,
@@ -2406,6 +2510,7 @@ fn worker_start_from_entry(
   entry: transition_types.WorkerEntry,
 ) -> effects_types.WorkerStart {
   effects_types.WorkerStart(
+    task_ref: entry.task_ref,
     issue_id: entry.issue_id,
     run_id: entry.run_id,
     session_id: entry.session_id,
@@ -2425,7 +2530,7 @@ fn remove_worker_from_directory(
   let workers =
     transition_types.WorkerDirectory(
       ..state.workers,
-      by_issue: dict.delete(state.workers.by_issue, entry.issue_id),
+      by_issue: dict.delete(state.workers.by_issue, entry_identity(entry)),
       by_session: dict.delete(state.workers.by_session, entry.session_id),
       route_to_session: dict.delete(
         state.workers.route_to_session,
@@ -2458,9 +2563,9 @@ fn worker_failure_bodies(
 ) -> List(record.RecordBody) {
   [
     record.RunFinished(entry.run_id, entry.issue_id, "failure", token_total, 0),
-    counter_record_for_runtime(
+    counter_record_for_entry(
       runtime,
-      entry.issue_id,
+      entry,
       issue_identifier,
       Some(entry.run_id),
       now_ms,
@@ -2468,14 +2573,32 @@ fn worker_failure_bodies(
   ]
 }
 
-fn counter_record_for_runtime(
+fn counter_record_for_entry(
   runtime: orchestrator_state.RuntimeState,
+  entry: transition_types.WorkerEntry,
+  issue_identifier: String,
+  source_run_id: Option(String),
+  now_ms: Int,
+) -> record.RecordBody {
+  counter_record_for_identity(
+    runtime,
+    entry_identity(entry),
+    entry.issue_id,
+    issue_identifier,
+    source_run_id,
+    now_ms,
+  )
+}
+
+fn counter_record_for_identity(
+  runtime: orchestrator_state.RuntimeState,
+  identity: String,
   issue_id: String,
   issue_identifier: String,
   source_run_id: Option(String),
   now_ms: Int,
 ) -> record.RecordBody {
-  let counter = case dict.get(runtime.issue_counters, issue_id) {
+  let counter = case dict.get(runtime.issue_counters, identity) {
     Ok(counter) -> counter
     Error(Nil) -> orchestrator_state.new_issue_counter()
   }
@@ -2494,7 +2617,36 @@ fn park_issue_effects(
   issue_id: String,
   source_run_id: Option(String),
 ) -> List(effects_types.Effect) {
-  case dict.get(runtime.parked, issue_id) {
+  park_issue_effects_for_ref(runtime, issue_id, None, source_run_id)
+}
+
+fn park_issue_effects_for_ref(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+  ref: Option(task.TaskRef),
+  source_run_id: Option(String),
+) -> List(effects_types.Effect) {
+  case ref {
+    Some(ref) -> park_task_ref_effects(runtime, ref, source_run_id)
+    None ->
+      case
+        dict.get(
+          runtime.parked,
+          orchestrator_state.linear_issue_id_identity(issue_id),
+        )
+      {
+        Ok(parked) -> [effects_types.ParkIssue(parked, source_run_id)]
+        Error(Nil) -> []
+      }
+  }
+}
+
+fn park_task_ref_effects(
+  runtime: orchestrator_state.RuntimeState,
+  ref: task.TaskRef,
+  source_run_id: Option(String),
+) -> List(effects_types.Effect) {
+  case dict.get(runtime.parked, orchestrator_state.task_ref_identity(ref)) {
     Ok(parked) -> [effects_types.ParkIssue(parked, source_run_id)]
     Error(Nil) -> []
   }
@@ -2502,26 +2654,29 @@ fn park_issue_effects(
 
 fn park_runtime(
   state: transition_types.State,
+  ref: task.TaskRef,
   issue: tracker_issue.Issue,
   reason: orchestrator_reason.ParkReason,
   now_ms: Int,
 ) -> transition_types.State {
   let parked =
     orchestrator_state.ParkedEntry(
+      task_ref: ref,
       issue_id: issue.id,
       identifier: issue.identifier,
       reason: reason,
       release_policy: orchestrator_state.ExplicitUnparkOnly,
       parked_at_ms: now_ms,
     )
+  let identity = orchestrator_state.task_ref_identity(ref)
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
-      running: dict.delete(state.runtime.running, issue.id),
-      claimed: dict.delete(state.runtime.claimed, issue.id),
-      retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
-      issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
-      parked: dict.insert(state.runtime.parked, issue.id, parked),
+      running: dict.delete(state.runtime.running, identity),
+      claimed: dict.delete(state.runtime.claimed, identity),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
+      issue_counters: dict.delete(state.runtime.issue_counters, identity),
+      parked: dict.insert(state.runtime.parked, identity, parked),
     )
   transition_types.State(..state, runtime: runtime)
 }
@@ -2704,13 +2859,14 @@ fn dispatch_preconditions_without_slot(
   context: transition_types.DispatchContext,
   issue: tracker_issue.Issue,
 ) -> Bool {
+  let identity = orchestrator_state.issue_identity(issue)
   core.dispatch_preconditions_satisfied_without_slot_capacity(
     state.runtime,
     context.effective,
     issue,
   )
-  && !dict.has_key(state.pending_claims, issue.id)
-  && !dict.has_key(state.pending_dispatch_validations, issue.id)
+  && !dict.has_key(state.pending_claims, identity)
+  && !dict.has_key(state.pending_dispatch_validations, identity)
   && !list.contains(active_issue_ids(state, context), issue.id)
 }
 
@@ -2735,10 +2891,11 @@ fn dispatch_validation_precondition_failure(
             False ->
               case list.contains(active_issue_ids(state, context), issue.id) {
                 True -> Some("already_running")
-                False ->
+                False -> {
+                  let identity = orchestrator_state.issue_identity(issue)
                   case
-                    dict.has_key(state.runtime.claimed, issue.id)
-                    || dict.has_key(state.pending_claims, issue.id)
+                    dict.has_key(state.runtime.claimed, identity)
+                    || dict.has_key(state.pending_claims, identity)
                   {
                     True -> Some("already_claimed")
                     False ->
@@ -2753,6 +2910,7 @@ fn dispatch_validation_precondition_failure(
                         False -> Some("parked")
                       }
                   }
+                }
               }
           }
       }
@@ -2764,11 +2922,12 @@ fn issue_is_running_claimed_or_pending(
   context: transition_types.DispatchContext,
   issue_id: String,
 ) -> Bool {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   list.contains(active_issue_ids(state, context), issue_id)
-  || dict.has_key(state.runtime.running, issue_id)
-  || dict.has_key(state.runtime.claimed, issue_id)
-  || dict.has_key(state.pending_claims, issue_id)
-  || dict.has_key(state.pending_dispatch_validations, issue_id)
+  || dict.has_key(state.runtime.running, identity)
+  || dict.has_key(state.runtime.claimed, identity)
+  || dict.has_key(state.pending_claims, identity)
+  || dict.has_key(state.pending_dispatch_validations, identity)
 }
 
 fn can_reserve_dispatch_slot(
@@ -2776,9 +2935,10 @@ fn can_reserve_dispatch_slot(
   context: transition_types.DispatchContext,
   issue: tracker_issue.Issue,
 ) -> Bool {
+  let identity = orchestrator_state.issue_identity(issue)
   !list.contains(active_issue_ids(state, context), issue.id)
-  && !dict.has_key(state.pending_claims, issue.id)
-  && !dict.has_key(state.pending_dispatch_validations, issue.id)
+  && !dict.has_key(state.pending_claims, identity)
+  && !dict.has_key(state.pending_dispatch_validations, identity)
   && slots_remain(state, context)
   && per_state_dispatch_slot_available(state, context, issue.state)
 }
@@ -2850,7 +3010,11 @@ fn active_issue_ids(
   context: transition_types.DispatchContext,
 ) -> List(String) {
   []
-  |> append_unique_list(dict.keys(state.runtime.running))
+  |> append_unique_list(
+    state.runtime.running
+    |> dict.values
+    |> list.map(fn(entry) { entry.issue.id }),
+  )
   |> append_unique_list(active_context_issue_ids(state, context))
 }
 
@@ -2859,7 +3023,12 @@ fn active_context_issue_ids(
   context: transition_types.DispatchContext,
 ) -> List(String) {
   context.active_issue_ids
-  |> list.filter(fn(issue_id) { dict.has_key(state.workers.by_issue, issue_id) })
+  |> list.filter(fn(issue_id) {
+    dict.has_key(
+      state.workers.by_issue,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  })
 }
 
 fn active_issues(
@@ -2872,7 +3041,12 @@ fn active_issues(
   )
   |> append_unique_issues(
     context.active_issues
-    |> list.filter(fn(issue) { dict.has_key(state.workers.by_issue, issue.id) }),
+    |> list.filter(fn(issue) {
+      dict.has_key(
+        state.workers.by_issue,
+        orchestrator_state.issue_identity(issue),
+      )
+    }),
   )
 }
 
@@ -2884,26 +3058,30 @@ fn observed_task_refs(
   active_issues(state, context)
   |> append_unique_issues(candidates)
   |> list.map(fn(issue) { task.from_legacy_issue(issue).ref })
-  |> append_issue_id_refs(dict.keys(state.runtime.retry_attempts))
-  |> append_issue_id_refs(dict.keys(state.runtime.parked))
+  |> append_task_refs(
+    state.runtime.retry_attempts
+    |> dict.values
+    |> list.map(fn(entry) { entry.task_ref }),
+  )
+  |> append_task_refs(
+    state.runtime.parked
+    |> dict.values
+    |> list.map(fn(entry) { entry.task_ref }),
+  )
 }
 
-fn append_issue_id_refs(
+fn append_task_refs(
   existing: List(task.TaskRef),
-  issue_ids: List(String),
+  refs: List(task.TaskRef),
 ) -> List(task.TaskRef) {
-  list.fold(issue_ids, existing, fn(acc, issue_id) {
-    case list.any(acc, fn(ref) { ref.remote_id == issue_id }) {
+  list.fold(refs, existing, fn(acc, ref) {
+    case
+      list.any(acc, fn(existing_ref) {
+        task.identity(existing_ref) == task.identity(ref)
+      })
+    {
       True -> acc
-      False ->
-        list.append(acc, [
-          task.TaskRef(
-            backend_kind: "linear",
-            remote_id: issue_id,
-            key: None,
-            url: None,
-          ),
-        ])
+      False -> list.append(acc, [ref])
     }
   })
 }
@@ -2936,9 +3114,10 @@ fn clear_retry(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.RuntimeState {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   orchestrator_state.RuntimeState(
     ..state,
-    retry_attempts: dict.delete(state.retry_attempts, issue_id),
+    retry_attempts: dict.delete(state.retry_attempts, identity),
   )
 }
 
@@ -2946,24 +3125,38 @@ fn release_claim(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.RuntimeState {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   orchestrator_state.RuntimeState(
     ..state,
-    claimed: dict.delete(state.claimed, issue_id),
-    retry_attempts: dict.delete(state.retry_attempts, issue_id),
+    claimed: dict.delete(state.claimed, identity),
+    retry_attempts: dict.delete(state.retry_attempts, identity),
   )
 }
 
-fn identifier_for_runtime(
+fn identifier_for_runtime_ref(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
+  ref: Option(task.TaskRef),
 ) -> String {
-  case dict.get(runtime.claimed, issue_id) {
+  let identity = case ref {
+    Some(ref) -> orchestrator_state.task_ref_identity(ref)
+    None -> orchestrator_state.linear_issue_id_identity(issue_id)
+  }
+  identifier_for_identity(runtime, identity, issue_id)
+}
+
+fn identifier_for_identity(
+  runtime: orchestrator_state.RuntimeState,
+  identity: String,
+  issue_id: String,
+) -> String {
+  case dict.get(runtime.claimed, identity) {
     Ok(identifier) -> identifier
     Error(Nil) ->
-      case dict.get(runtime.completed, issue_id) {
+      case dict.get(runtime.completed, identity) {
         Ok(issue) -> issue.identifier
         Error(Nil) ->
-          case dict.get(runtime.parked, issue_id) {
+          case dict.get(runtime.parked, identity) {
             Ok(parked) -> parked.identifier
             Error(Nil) -> issue_id
           }

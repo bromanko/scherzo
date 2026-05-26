@@ -15,6 +15,7 @@ import scherzo/review_lane_preflight_gate
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/structured_output
+import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workspace
 
@@ -81,11 +82,14 @@ pub fn begin_for_issue(
               let run_id = helpers.make_run_id(issue, context.now_ms, sequence)
               let session_id =
                 helpers.make_session_id(issue.identifier, run_id, sequence)
+              let task_ref = task.from_legacy_issue(issue).ref
+              let identity = orchestrator_state.task_ref_identity(task_ref)
               let recovery =
                 dict.get(context.recovery_by_issue, issue.id)
                 |> option.from_result
               let pending =
                 transition_types.PendingClaim(
+                  task_ref: task_ref,
                   issue_id: issue.id,
                   run_id: run_id,
                   session_id: session_id,
@@ -106,7 +110,7 @@ pub fn begin_for_issue(
                   ..state,
                   pending_claims: dict.insert(
                     state.pending_claims,
-                    issue.id,
+                    identity,
                     pending,
                   ),
                   next_session_sequence: sequence + 1,
@@ -211,8 +215,10 @@ fn park_preflight_failure(
   issue: tracker_issue.Issue,
   now_ms: Int,
 ) -> #(transition_types.State, List(effects_types.Effect)) {
+  let task_ref = task.from_legacy_issue(issue).ref
   let parked =
     orchestrator_state.ParkedEntry(
+      task_ref: task_ref,
       issue_id: issue.id,
       identifier: issue.identifier,
       reason: orchestrator_reason.ParkOperator(
@@ -224,7 +230,11 @@ fn park_preflight_failure(
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
-      parked: dict.insert(state.runtime.parked, issue.id, parked),
+      parked: dict.insert(
+        state.runtime.parked,
+        orchestrator_state.task_ref_identity(task_ref),
+        parked,
+      ),
     )
   #(transition_types.State(..state, runtime: runtime), [
     effects_types.ParkIssue(parked, None),
@@ -268,7 +278,8 @@ pub fn handle_requested(
   bodies: List(record.RecordBody),
   failure_event: String,
 ) -> transition_types.Outcome {
-  case dict.get(state.pending_claims, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(state.pending_claims, identity) {
     Error(Nil) -> stale_continuation(state, correlation_id, issue_id, run_id)
     Ok(pending) ->
       case pending.run_id == run_id && pending.session_id == session_id {
@@ -297,7 +308,8 @@ pub fn handle_spawn(
   result: Result(Nil, ledger.LedgerError),
   callbacks: Callbacks,
 ) -> transition_types.Outcome {
-  case dict.get(state.pending_claims, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(state.pending_claims, identity) {
     Error(Nil) -> stale_continuation(state, correlation_id, issue_id, run_id)
     Ok(pending) ->
       case pending.run_id == run_id && pending.session_id == session_id {
@@ -330,6 +342,7 @@ fn start_worker(
   let Callbacks(dispatch_candidates: dispatch) = callbacks
   let worker_entry =
     transition_types.WorkerEntry(
+      task_ref: pending.task_ref,
       issue_id: pending.issue_id,
       run_id: pending.run_id,
       session_id: pending.session_id,
@@ -341,14 +354,11 @@ fn start_worker(
       recovery: pending.recovery,
     )
   let workers = state.workers
+  let identity = orchestrator_state.task_ref_identity(pending.task_ref)
   let workers =
     transition_types.WorkerDirectory(
-      by_issue: dict.insert(workers.by_issue, pending.issue_id, worker_entry),
-      by_session: dict.insert(
-        workers.by_session,
-        pending.session_id,
-        pending.issue_id,
-      ),
+      by_issue: dict.insert(workers.by_issue, identity, worker_entry),
+      by_session: dict.insert(workers.by_session, pending.session_id, identity),
       route_to_session: dict.insert(
         workers.route_to_session,
         pending.command_route_id,
@@ -360,9 +370,10 @@ fn start_worker(
   let state =
     transition_types.State(
       ..state,
-      pending_claims: dict.delete(state.pending_claims, pending.issue_id),
-      runtime: core.apply_worker_start(
+      pending_claims: dict.delete(state.pending_claims, identity),
+      runtime: core.apply_task_ref_start(
         state.runtime,
+        pending.task_ref,
         pending.issue,
         pending.workspace_path,
       ),
@@ -372,6 +383,7 @@ fn start_worker(
     dispatch(pending.remaining_candidates, state, pending.dispatch_context)
   transition_types.Outcome(state: continued.state, effects: [
     effects_types.StartWorker(effects_types.WorkerStart(
+      task_ref: pending.task_ref,
       issue_id: pending.issue_id,
       run_id: pending.run_id,
       session_id: pending.session_id,
@@ -407,7 +419,10 @@ fn clear_pending_claim(
 ) -> transition_types.State {
   transition_types.State(
     ..state,
-    pending_claims: dict.delete(state.pending_claims, issue_id),
+    pending_claims: dict.delete(
+      state.pending_claims,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    ),
   )
 }
 

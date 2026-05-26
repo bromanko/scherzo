@@ -2,6 +2,7 @@ import gleam/option.{None}
 import orchestrator_transition_test
 import scherzo/orchestrator/effects/interpreter
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/state/ledger
 
@@ -108,6 +109,7 @@ fn spawn_claim_ledger_append() -> effects_types.LedgerAppend {
 
 fn worker_start_request() -> effects_types.WorkerStart {
   effects_types.WorkerStart(
+    task_ref: orchestrator_state.linear_issue_id_ref("issue-1"),
     issue_id: "issue-1",
     run_id: "run-1",
     session_id: "session-1",

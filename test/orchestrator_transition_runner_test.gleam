@@ -42,14 +42,16 @@ pub fn transition_runner_applies_effects_and_follow_ups_in_order_test() {
   assert exhausted == False
   assert interpreter.data(shell)
     == ["append:claim:issue-1:run-1", "start:run-1"]
-  assert dict.get(next.pending_claims, "issue-1") == Error(Nil)
-  assert dict.get(next.runtime.running, "issue-1")
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.get(next.pending_claims, identity) == Error(Nil)
+  assert dict.get(next.runtime.running, identity)
     == Ok(orchestrator_state.RunningEntry(
+      task: task.from_legacy_issue(issue),
       issue: issue,
       workspace_path: "test/tmp/workspaces/ABC-1",
       session: None,
     ))
-  assert dict.get(next.runtime.claimed, "issue-1") == Ok("ABC-1")
+  assert dict.get(next.runtime.claimed, identity) == Ok("ABC-1")
 }
 
 pub fn transition_runner_applies_snapshot_reply_effect_test() {
@@ -77,11 +79,14 @@ pub fn transition_runner_retry_continue_regardless_keeps_timer_after_append_fail
   let runtime =
     orchestrator_state.RuntimeState(
       ..orchestrator_transition_test.fixture_runtime(),
-      claimed: dict.from_list([#("issue-1", "ABC-1")]),
+      claimed: dict.from_list([
+        #(orchestrator_state.linear_issue_id_identity("issue-1"), "ABC-1"),
+      ]),
       retry_attempts: dict.from_list([
         #(
-          "issue-1",
+          orchestrator_state.linear_issue_id_identity("issue-1"),
           orchestrator_state.RetryEntry(
+            task_ref: orchestrator_state.linear_issue_id_ref("issue-1"),
             issue_id: "issue-1",
             delay_ms: 10_000,
             timer_generation: 1,
@@ -374,8 +379,10 @@ pub fn worker_start_success_registers_worker_directory_test() {
     )
 
   assert exhausted == False
-  assert dict.get(next.workers.by_issue, issue.id)
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.get(next.workers.by_issue, identity)
     == Ok(transition_types.WorkerEntry(
+      task_ref: task.from_legacy_issue(issue).ref,
       issue_id: issue.id,
       run_id: "run-1",
       session_id: "session-1",
@@ -386,7 +393,7 @@ pub fn worker_start_success_registers_worker_directory_test() {
       status: transition_types.WorkerRunning,
       recovery: None,
     ))
-  assert dict.get(next.workers.by_session, "session-1") == Ok(issue.id)
+  assert dict.get(next.workers.by_session, "session-1") == Ok(identity)
   assert dict.get(next.workers.route_to_session, "worker:run-1:1")
     == Ok("session-1")
   assert interpreter.data(shell)
@@ -457,9 +464,10 @@ pub fn worker_finish_removes_running_and_reports_success_test() {
     )
 
   assert exhausted == False
-  assert dict.get(next.runtime.running, issue.id) == Error(Nil)
-  assert dict.get(next.workers.by_issue, issue.id) == Error(Nil)
-  assert dict.get(next.runtime.completed, issue.id) == Ok(issue)
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.get(next.runtime.running, identity) == Error(Nil)
+  assert dict.get(next.workers.by_issue, identity) == Error(Nil)
+  assert dict.get(next.runtime.completed, identity) == Ok(issue)
   assert interpreter.data(shell)
     == [
       "remove:issue-1",
@@ -469,6 +477,83 @@ pub fn worker_finish_removes_running_and_reports_success_test() {
       "success:issue-1",
       "release:issue-1",
     ]
+}
+
+pub fn worker_finish_uses_task_ref_with_duplicate_remote_ids_test() {
+  let #(state, linear_issue, memory_issue, memory_ref) =
+    duplicate_remote_worker_state()
+  let success =
+    agent_types.WorkerSuccess(
+      final_issue: Some(memory_issue),
+      final_classification: agent_types.FinalTerminal,
+      workspace_path: "test/tmp/workspaces/MEM-1",
+      tokens: session_tokens.zero_token_totals(),
+      turns: 1,
+      result: result_artifact.empty(),
+    )
+
+  let transition_runner.RunResult(state: next, exhausted: exhausted, ..) =
+    transition_runner.run(
+      state: state,
+      shell: event_shell(),
+      messages: [
+        transition_types.WorkerFinished(
+          memory_issue.id,
+          "run-memory",
+          Ok(success),
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  let linear_identity = orchestrator_state.issue_identity(linear_issue)
+  let memory_identity = orchestrator_state.task_ref_identity(memory_ref)
+  assert exhausted == False
+  assert dict.has_key(next.runtime.running, linear_identity)
+  assert dict.get(next.runtime.running, memory_identity) == Error(Nil)
+  assert dict.has_key(next.workers.by_issue, linear_identity)
+  assert dict.get(next.workers.by_issue, memory_identity) == Error(Nil)
+  assert dict.get(next.runtime.completed, memory_identity) == Ok(memory_issue)
+  assert dict.get(next.runtime.completed, linear_identity) == Error(Nil)
+}
+
+pub fn worker_down_uses_task_ref_with_duplicate_remote_ids_test() {
+  let #(state, linear_issue, memory_issue, memory_ref) =
+    duplicate_remote_worker_state()
+
+  let transition_runner.RunResult(state: next, exhausted: exhausted, ..) =
+    transition_runner.run(
+      state: state,
+      shell: event_shell(),
+      messages: [
+        transition_types.WorkerDown(
+          transition_types.KnownWorkerDown(
+            memory_issue.id,
+            "run-memory",
+            "session-memory",
+          ),
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  let linear_identity = orchestrator_state.issue_identity(linear_issue)
+  let memory_identity = orchestrator_state.task_ref_identity(memory_ref)
+  assert exhausted == False
+  assert dict.has_key(next.runtime.running, linear_identity)
+  assert dict.get(next.runtime.running, memory_identity) == Error(Nil)
+  assert dict.has_key(next.workers.by_issue, linear_identity)
+  assert dict.get(next.workers.by_issue, memory_identity) == Error(Nil)
+  assert dict.get(next.runtime.retry_attempts, memory_identity)
+    == Ok(orchestrator_state.RetryEntry(
+      task_ref: memory_ref,
+      issue_id: memory_issue.id,
+      delay_ms: 10_000,
+      timer_generation: 1,
+    ))
+  assert dict.get(next.runtime.retry_attempts, linear_identity) == Error(Nil)
 }
 
 pub fn worker_down_known_removes_worker_and_reports_failure_test() {
@@ -493,10 +578,12 @@ pub fn worker_down_known_removes_worker_and_reports_failure_test() {
     )
 
   assert exhausted == False
-  assert dict.get(next.runtime.running, issue.id) == Error(Nil)
-  assert dict.get(next.workers.by_issue, issue.id) == Error(Nil)
-  assert dict.get(next.runtime.retry_attempts, issue.id)
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.get(next.runtime.running, identity) == Error(Nil)
+  assert dict.get(next.workers.by_issue, identity) == Error(Nil)
+  assert dict.get(next.runtime.retry_attempts, identity)
     == Ok(orchestrator_state.RetryEntry(
+      task_ref: task.from_legacy_issue(issue).ref,
       issue_id: issue.id,
       delay_ms: 10_000,
       timer_generation: 1,
@@ -653,32 +740,37 @@ pub fn shutdown_effect_is_interpreted_by_shell_test() {
     )
 
   assert exhausted == False
-  assert dict.get(next.runtime.running, issue.id) == Error(Nil)
-  assert dict.get(next.runtime.claimed, issue.id) == Error(Nil)
-  assert dict.get(next.workers.by_issue, issue.id) == Error(Nil)
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.get(next.runtime.running, identity) == Error(Nil)
+  assert dict.get(next.runtime.claimed, identity) == Error(Nil)
+  assert dict.get(next.workers.by_issue, identity) == Error(Nil)
   assert interpreter.data(shell) == ["shutdown:True"]
 }
 
 fn state_with_running_worker(
   issue: tracker_issue.Issue,
 ) -> transition_types.State {
+  let identity = orchestrator_state.issue_identity(issue)
+  let task_ref = task.from_legacy_issue(issue).ref
   let runtime =
     orchestrator_state.RuntimeState(
       ..orchestrator_transition_test.fixture_runtime(),
       running: dict.from_list([
         #(
-          issue.id,
+          identity,
           orchestrator_state.RunningEntry(
+            task: task.from_legacy_issue(issue),
             issue: issue,
             workspace_path: "test/tmp/workspaces/ABC-1",
             session: None,
           ),
         ),
       ]),
-      claimed: dict.from_list([#(issue.id, issue.identifier)]),
+      claimed: dict.from_list([#(identity, issue.identifier)]),
     )
   let entry =
     transition_types.WorkerEntry(
+      task_ref: task_ref,
       issue_id: issue.id,
       run_id: "run-1",
       session_id: "session-1",
@@ -693,12 +785,116 @@ fn state_with_running_worker(
     ..orchestrator_transition_test.fixture_state(),
     runtime: runtime,
     workers: transition_types.WorkerDirectory(
-      by_issue: dict.from_list([#(issue.id, entry)]),
-      by_session: dict.from_list([#("session-1", issue.id)]),
+      by_issue: dict.from_list([#(identity, entry)]),
+      by_session: dict.from_list([#("session-1", identity)]),
       route_to_session: dict.from_list([#("worker:run-1:1", "session-1")]),
       yaml_step_runs: dict.new(),
       stopped_yaml_runs: dict.new(),
     ),
+  )
+}
+
+fn duplicate_remote_worker_state() -> #(
+  transition_types.State,
+  tracker_issue.Issue,
+  tracker_issue.Issue,
+  task.TaskRef,
+) {
+  let base = orchestrator_transition_test.fixture_issue()
+  let linear_issue =
+    tracker_issue.Issue(..base, id: "shared", identifier: "ABC-1")
+  let memory_issue =
+    tracker_issue.Issue(..base, id: "shared", identifier: "MEM-1")
+  let memory_ref =
+    task.TaskRef(
+      backend_kind: "test-memory",
+      remote_id: "shared",
+      key: Some("MEM-1"),
+      url: None,
+    )
+  let linear_ref = task.from_legacy_issue(linear_issue).ref
+  let linear_identity = orchestrator_state.task_ref_identity(linear_ref)
+  let memory_identity = orchestrator_state.task_ref_identity(memory_ref)
+  let memory_task =
+    task.Task(..task.from_legacy_issue(memory_issue), ref: memory_ref)
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      running: dict.from_list([
+        #(
+          linear_identity,
+          orchestrator_state.RunningEntry(
+            task: task.from_legacy_issue(linear_issue),
+            issue: linear_issue,
+            workspace_path: "test/tmp/workspaces/ABC-1",
+            session: None,
+          ),
+        ),
+        #(
+          memory_identity,
+          orchestrator_state.RunningEntry(
+            task: memory_task,
+            issue: memory_issue,
+            workspace_path: "test/tmp/workspaces/MEM-1",
+            session: None,
+          ),
+        ),
+      ]),
+      claimed: dict.from_list([
+        #(linear_identity, linear_issue.identifier),
+        #(memory_identity, memory_issue.identifier),
+      ]),
+    )
+  let linear_entry =
+    transition_types.WorkerEntry(
+      task_ref: linear_ref,
+      issue_id: linear_issue.id,
+      run_id: "run-linear",
+      session_id: "session-linear",
+      issue: linear_issue,
+      workspace_path: "test/tmp/workspaces/ABC-1",
+      workflow_id: "default",
+      command_route_id: "worker:run-linear:1",
+      status: transition_types.WorkerRunning,
+      recovery: None,
+    )
+  let memory_entry =
+    transition_types.WorkerEntry(
+      task_ref: memory_ref,
+      issue_id: memory_issue.id,
+      run_id: "run-memory",
+      session_id: "session-memory",
+      issue: memory_issue,
+      workspace_path: "test/tmp/workspaces/MEM-1",
+      workflow_id: "default",
+      command_route_id: "worker:run-memory:1",
+      status: transition_types.WorkerRunning,
+      recovery: None,
+    )
+  #(
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      runtime: runtime,
+      workers: transition_types.WorkerDirectory(
+        by_issue: dict.from_list([
+          #(linear_identity, linear_entry),
+          #(memory_identity, memory_entry),
+        ]),
+        by_session: dict.from_list([
+          #("session-linear", linear_identity),
+          #("session-memory", memory_identity),
+        ]),
+        route_to_session: dict.from_list([
+          #("worker:run-linear:1", "session-linear"),
+          #("worker:run-memory:1", "session-memory"),
+        ]),
+        yaml_step_runs: dict.new(),
+        stopped_yaml_runs: dict.new(),
+      ),
+    ),
+    linear_issue,
+    memory_issue,
+    memory_ref,
   )
 }
 

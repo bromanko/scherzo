@@ -8,6 +8,7 @@ import scherzo/error
 import scherzo/linear
 import scherzo/linear_contract
 import scherzo/orchestrator/service
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/path
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
@@ -513,7 +514,10 @@ pub fn yaml_once_runs_command_workflow_test() {
   assert contains_log(result.logs, "dispatch_started")
   assert contains_log(result.logs, "worker_exited")
   assert contains_log(result.logs, "workspace_cleaned")
-  assert dict.has_key(result.state.completed, "issue-id")
+  assert dict.has_key(
+    result.state.completed,
+    orchestrator_state.issue_identity(candidate),
+  )
   assert simplifile.is_directory(
       dir <> "/workspaces/implementation/ABC-123/ABC-123-once",
     )

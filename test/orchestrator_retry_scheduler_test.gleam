@@ -1,6 +1,21 @@
 import gleam/erlang/process
+import gleam/option.{None, Some}
 import scherzo/orchestrator/retry_scheduler
+import scherzo/task
 import test_async
+
+fn task_ref(
+  backend_kind: String,
+  remote_id: String,
+  key: String,
+) -> task.TaskRef {
+  task.TaskRef(
+    backend_kind: backend_kind,
+    remote_id: remote_id,
+    key: Some(key),
+    url: None,
+  )
+}
 
 pub fn retry_scheduler_schedules_and_cancels_timer_test() {
   let cancelled = process.new_subject()
@@ -33,6 +48,50 @@ pub fn retry_scheduler_replaces_existing_timer_when_scheduling_test() {
   assert process.receive(cancelled, within: 100) == Ok(123)
   assert retry_scheduler.timer_for_issue(state, "issue-1") == Ok(456)
   test_async.assert_no_extra_message_within(cancelled, 50)
+}
+
+pub fn retry_scheduler_distinguishes_duplicate_remote_ids_by_backend_test() {
+  let cancelled = process.new_subject()
+  let linear = task_ref("linear", "shared", "ABC-1")
+  let memory = task_ref("test-memory", "shared", "MEM-1")
+  let state =
+    retry_scheduler.new()
+    |> retry_scheduler.schedule_task_timer(linear, 101, fn(timer) {
+      process.send(cancelled, timer)
+    })
+    |> retry_scheduler.schedule_task_timer(memory, 202, fn(timer) {
+      process.send(cancelled, timer)
+    })
+
+  assert retry_scheduler.timer_for_task_ref(state, linear) == Ok(101)
+  assert retry_scheduler.timer_for_task_ref(state, memory) == Ok(202)
+
+  let state =
+    retry_scheduler.cancel_task_timer(state, linear, fn(timer) {
+      process.send(cancelled, timer)
+    })
+
+  assert process.receive(cancelled, within: 100) == Ok(101)
+  assert retry_scheduler.timer_for_task_ref(state, linear) == Error(Nil)
+  assert retry_scheduler.timer_for_task_ref(state, memory) == Ok(202)
+  test_async.assert_no_extra_message_within(cancelled, 50)
+}
+
+pub fn retry_scheduler_distinguishes_duplicate_refreshes_by_backend_test() {
+  let linear = task_ref("linear", "shared", "ABC-1")
+  let memory = task_ref("test-memory", "shared", "MEM-1")
+  let state = retry_scheduler.new()
+  let assert Ok(state) = retry_scheduler.begin_task_refresh(state, linear, 7)
+  let assert Ok(state) = retry_scheduler.begin_task_refresh(state, memory, 8)
+
+  assert retry_scheduler.refresh_generation_for_task_ref(state, linear) == Ok(7)
+  assert retry_scheduler.refresh_generation_for_task_ref(state, memory) == Ok(8)
+  assert retry_scheduler.begin_task_refresh(state, linear, 9) == Error(Nil)
+
+  let state = retry_scheduler.finish_task_refresh(state, linear)
+  assert retry_scheduler.refresh_generation_for_task_ref(state, linear)
+    == Error(Nil)
+  assert retry_scheduler.refresh_generation_for_task_ref(state, memory) == Ok(8)
 }
 
 pub fn retry_scheduler_tracks_one_refresh_per_issue_test() {

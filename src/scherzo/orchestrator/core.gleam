@@ -8,6 +8,7 @@ import scherzo/config/types as config_types
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
+import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
@@ -101,6 +102,10 @@ pub fn issues_by_id(
   |> dict.from_list
 }
 
+pub fn issue_identity(issue: tracker_issue.Issue) -> String {
+  orchestrator_state.issue_identity(issue)
+}
+
 fn encode_string(value: String) -> String {
   int.to_string(string.length(value)) <> ":" <> value
 }
@@ -166,11 +171,12 @@ pub fn dispatch_preconditions_satisfied_without_slot_capacity(
   config: config_types.EffectiveConfig,
   issue: tracker_issue.Issue,
 ) -> Bool {
+  let identity = orchestrator_state.issue_identity(issue)
   issue_has_required_fields(issue)
   && is_active(config, issue.state)
   && !is_terminal(config, issue.state)
-  && !dict.has_key(state.running, issue.id)
-  && !dict.has_key(state.claimed, issue.id)
+  && !dict.has_key(state.running, identity)
+  && !dict.has_key(state.claimed, identity)
   && !is_parked_for_issue(state, issue)
   && blockers_satisfied(config, issue)
 }
@@ -215,8 +221,8 @@ pub fn retry_candidate_precondition_failure(
     issue_has_required_fields(issue),
     is_terminal(config, issue.state),
     config_types.retry_state_allowed(config, issue.state),
-    dict.has_key(state.running, issue.id),
-    retry_claim_allowed(state, issue.id),
+    dict.has_key(state.running, orchestrator_state.issue_identity(issue)),
+    retry_claim_allowed(state, issue_id),
     is_parked_for_issue(state, issue),
     blockers_satisfied(config, issue)
   {
@@ -238,9 +244,10 @@ fn retry_claim_allowed(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Bool {
-  case dict.has_key(state.claimed, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.has_key(state.claimed, identity) {
     False -> True
-    True -> dict.has_key(state.retry_attempts, issue_id)
+    True -> dict.has_key(state.retry_attempts, identity)
   }
 }
 
@@ -255,7 +262,7 @@ fn is_parked_for_issue(
   state: orchestrator_state.RuntimeState,
   issue: tracker_issue.Issue,
 ) -> Bool {
-  case dict.get(state.parked, issue.id) {
+  case dict.get(state.parked, orchestrator_state.issue_identity(issue)) {
     Ok(parked) -> park_blocks_dispatch(parked, issue)
     Error(Nil) -> False
   }
@@ -344,37 +351,84 @@ pub fn apply_worker_start(
   issue: tracker_issue.Issue,
   workspace_path: String,
 ) -> orchestrator_state.RuntimeState {
+  apply_task_start(state, task.from_legacy_issue(issue), workspace_path)
+}
+
+pub fn apply_task_ref_start(
+  state: orchestrator_state.RuntimeState,
+  ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  workspace_path: String,
+) -> orchestrator_state.RuntimeState {
+  apply_task_start(
+    state,
+    task.Task(..task.from_legacy_issue(issue), ref: ref),
+    workspace_path,
+  )
+}
+
+pub fn apply_task_start(
+  state: orchestrator_state.RuntimeState,
+  item: task.Task,
+  workspace_path: String,
+) -> orchestrator_state.RuntimeState {
+  let task.Task(ref: ref, ..) = item
+  let issue = task.to_runtime_issue(item)
+  let identity = orchestrator_state.task_ref_identity(ref)
   orchestrator_state.RuntimeState(
     ..state,
     running: dict.insert(
       state.running,
-      issue.id,
+      identity,
       orchestrator_state.RunningEntry(
+        task: item,
         issue: issue,
         workspace_path: workspace_path,
         session: None,
       ),
     ),
-    claimed: dict.insert(state.claimed, issue.id, issue.identifier),
+    claimed: dict.insert(state.claimed, identity, issue.identifier),
   )
 }
 
 pub fn apply_workflow_success(
   state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  issue_id: String,
+  final_issue: tracker_issue.Issue,
+  tokens: session_tokens.TokenTotals,
+  now_ms: Int,
+  cleanup: WorkflowCleanupPolicy,
+) -> Transition {
+  apply_task_workflow_success(
+    state,
+    config,
+    orchestrator_state.linear_issue_id_ref(issue_id),
+    issue_id,
+    final_issue,
+    tokens,
+    now_ms,
+    cleanup,
+  )
+}
+
+pub fn apply_task_workflow_success(
+  state: orchestrator_state.RuntimeState,
   _config: config_types.EffectiveConfig,
+  ref: task.TaskRef,
   issue_id: String,
   final_issue: tracker_issue.Issue,
   tokens: session_tokens.TokenTotals,
   _now_ms: Int,
   cleanup: WorkflowCleanupPolicy,
 ) -> Transition {
-  let base = state_after_worker_exit(state, issue_id, final_issue, tokens)
+  let base = state_after_task_worker_exit(state, ref, final_issue, tokens)
   let cleanup_effect_list = case cleanup {
     AlreadyCleaned -> []
     CleanupWorkflowWorkspace(path) -> cleanup_effects(path)
   }
   Transition(
-    state: release_claim(base, issue_id),
+    state: release_task_claim(base, ref),
     effects: list.append(cleanup_effect_list, [ReleaseClaim(issue_id)]),
   )
 }
@@ -407,19 +461,42 @@ pub fn apply_worker_success_with_workspace_path(
   tokens: session_tokens.TokenTotals,
   now_ms: Int,
 ) -> Transition {
+  apply_task_worker_success_with_workspace_path(
+    state,
+    config,
+    orchestrator_state.linear_issue_id_ref(issue_id),
+    issue_id,
+    final_issue,
+    workspace_path,
+    tokens,
+    now_ms,
+  )
+}
+
+pub fn apply_task_worker_success_with_workspace_path(
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  ref: task.TaskRef,
+  issue_id: String,
+  final_issue: tracker_issue.Issue,
+  workspace_path: String,
+  tokens: session_tokens.TokenTotals,
+  now_ms: Int,
+) -> Transition {
+  let identity = orchestrator_state.task_ref_identity(ref)
   let workspace_path = case string.trim(workspace_path) == "" {
     True ->
-      case dict.get(state.running, issue_id) {
+      case dict.get(state.running, identity) {
         Ok(entry) -> entry.workspace_path
         Error(Nil) -> ""
       }
     False -> workspace_path
   }
-  let base = state_after_worker_exit(state, issue_id, final_issue, tokens)
+  let base = state_after_task_worker_exit(state, ref, final_issue, tokens)
   case is_terminal(config, final_issue.state) {
     True ->
       Transition(
-        state: release_claim(base, issue_id),
+        state: release_task_claim(base, ref),
         effects: list.append(cleanup_effects(workspace_path), [
           ReleaseClaim(issue_id),
         ]),
@@ -427,10 +504,18 @@ pub fn apply_worker_success_with_workspace_path(
     False ->
       case is_active(config, final_issue.state) {
         False ->
-          Transition(state: release_claim(base, issue_id), effects: [
+          Transition(state: release_task_claim(base, ref), effects: [
             ReleaseClaim(issue_id),
           ])
-        True -> continue_or_park(base, config, final_issue, now_ms)
+        True ->
+          continue_or_park_task(
+            base,
+            config,
+            ref,
+            issue_id,
+            final_issue,
+            now_ms,
+          )
       }
   }
 }
@@ -442,22 +527,43 @@ pub fn apply_worker_failure(
   baseline_issue: tracker_issue.Issue,
   now_ms: Int,
 ) -> Transition {
+  apply_task_worker_failure(
+    state,
+    config,
+    orchestrator_state.linear_issue_id_ref(issue_id),
+    issue_id,
+    baseline_issue,
+    now_ms,
+  )
+}
+
+pub fn apply_task_worker_failure(
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  ref: task.TaskRef,
+  issue_id: String,
+  baseline_issue: tracker_issue.Issue,
+  now_ms: Int,
+) -> Transition {
   let baseline_issue = issue_with_lifecycle_id(baseline_issue, issue_id)
+  let identity = orchestrator_state.task_ref_identity(ref)
   let state =
     orchestrator_state.RuntimeState(
       ..state,
-      running: dict.delete(state.running, issue_id),
+      running: dict.delete(state.running, identity),
     )
-  let counter = get_counter(state, issue_id)
+  let counter = get_task_counter(state, ref)
   let failures = counter.failure_attempts + 1
   let counter =
     orchestrator_state.IssueCounter(..counter, failure_attempts: failures)
-  let state = put_counter(state, issue_id, counter)
+  let state = put_task_counter(state, ref, counter)
   case failures >= config.agent.max_retry_attempts {
-    True -> park(state, baseline_issue, reason.ParkMaxRetryAttempts, now_ms)
+    True ->
+      park_task(state, ref, baseline_issue, reason.ParkMaxRetryAttempts, now_ms)
     False ->
-      schedule_retry(
+      schedule_task_retry(
         state,
+        ref,
         issue_id,
         backoff_delay(failures, config.agent.max_retry_backoff_ms),
         reason.RetryAfterFailure,
@@ -475,21 +581,36 @@ fn issue_with_lifecycle_id(
   }
 }
 
-fn continue_or_park(
+fn continue_or_park_task(
   state: orchestrator_state.RuntimeState,
   config: config_types.EffectiveConfig,
+  ref: task.TaskRef,
+  issue_id: String,
   issue: tracker_issue.Issue,
   now_ms: Int,
 ) -> Transition {
-  let counter = get_counter(state, issue.id)
+  let counter = get_task_counter(state, ref)
   let sessions = counter.worker_sessions + 1
   let counter =
     orchestrator_state.IssueCounter(..counter, worker_sessions: sessions)
-  let state = put_counter(state, issue.id, counter)
+  let state = put_task_counter(state, ref, counter)
   case sessions >= config.agent.max_sessions_per_issue {
-    True -> park(state, issue, reason.ParkMaxSessionsPerIssue, now_ms)
+    True ->
+      park_task(
+        state,
+        ref,
+        issue_with_lifecycle_id(issue, issue_id),
+        reason.ParkMaxSessionsPerIssue,
+        now_ms,
+      )
     False ->
-      schedule_retry(state, issue.id, 1000, reason.RetryAfterContinuation)
+      schedule_task_retry(
+        state,
+        ref,
+        issue_id,
+        1000,
+        reason.RetryAfterContinuation,
+      )
   }
 }
 
@@ -500,16 +621,17 @@ fn cleanup_effects(workspace_path: String) -> List(Effect) {
   }
 }
 
-fn state_after_worker_exit(
+fn state_after_task_worker_exit(
   state: orchestrator_state.RuntimeState,
-  issue_id: String,
+  ref: task.TaskRef,
   final_issue: tracker_issue.Issue,
   tokens: session_tokens.TokenTotals,
 ) -> orchestrator_state.RuntimeState {
+  let identity = orchestrator_state.task_ref_identity(ref)
   orchestrator_state.RuntimeState(
     ..state,
-    running: dict.delete(state.running, issue_id),
-    completed: dict.insert(state.completed, issue_id, final_issue),
+    running: dict.delete(state.running, identity),
+    completed: dict.insert(state.completed, identity, final_issue),
     aggregate_pi_totals: add_tokens(state.aggregate_pi_totals, tokens),
   )
 }
@@ -520,12 +642,30 @@ pub fn schedule_retry(
   delay_ms: Int,
   reason: reason.RetryReason,
 ) -> Transition {
-  let generation = case dict.get(state.retry_attempts, issue_id) {
+  schedule_task_retry(
+    state,
+    orchestrator_state.linear_issue_id_ref(issue_id),
+    issue_id,
+    delay_ms,
+    reason,
+  )
+}
+
+pub fn schedule_task_retry(
+  state: orchestrator_state.RuntimeState,
+  ref: task.TaskRef,
+  issue_id: String,
+  delay_ms: Int,
+  reason: reason.RetryReason,
+) -> Transition {
+  let identity = orchestrator_state.task_ref_identity(ref)
+  let generation = case dict.get(state.retry_attempts, identity) {
     Ok(entry) -> entry.timer_generation + 1
     Error(Nil) -> 1
   }
   let retry =
     orchestrator_state.RetryEntry(
+      task_ref: ref,
       issue_id: issue_id,
       delay_ms: delay_ms,
       timer_generation: generation,
@@ -533,7 +673,7 @@ pub fn schedule_retry(
   Transition(
     state: orchestrator_state.RuntimeState(
       ..state,
-      retry_attempts: dict.insert(state.retry_attempts, issue_id, retry),
+      retry_attempts: dict.insert(state.retry_attempts, identity, retry),
     ),
     effects: [
       CancelRetry(issue_id, generation, "reschedule_retry"),
@@ -634,7 +774,8 @@ fn retry_backoff_delay(
   config: config_types.EffectiveConfig,
   issue_id: String,
 ) -> Int {
-  let attempt = case dict.get(state.retry_attempts, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let attempt = case dict.get(state.retry_attempts, identity) {
     Ok(entry) -> entry.timer_generation + 1
     Error(Nil) -> 1
   }
@@ -646,7 +787,8 @@ pub fn reconcile_issue(
   config: config_types.EffectiveConfig,
   refreshed: tracker_issue.Issue,
 ) -> Transition {
-  case dict.get(state.running, refreshed.id) {
+  let identity = orchestrator_state.issue_identity(refreshed)
+  case dict.get(state.running, identity) {
     Error(Nil) -> Transition(state: state, effects: [])
     Ok(entry) ->
       case is_terminal(config, refreshed.state) {
@@ -655,7 +797,7 @@ pub fn reconcile_issue(
             state: release_claim(
               orchestrator_state.RuntimeState(
                 ..state,
-                running: dict.delete(state.running, refreshed.id),
+                running: dict.delete(state.running, identity),
               ),
               refreshed.id,
             ),
@@ -666,24 +808,30 @@ pub fn reconcile_issue(
           )
         False ->
           case is_active(config, refreshed.state) {
-            True ->
+            True -> {
+              let refreshed_task = task.from_legacy_issue(refreshed)
               Transition(
                 state: orchestrator_state.RuntimeState(
                   ..state,
                   running: dict.insert(
                     state.running,
-                    refreshed.id,
-                    orchestrator_state.RunningEntry(..entry, issue: refreshed),
+                    identity,
+                    orchestrator_state.RunningEntry(
+                      ..entry,
+                      task: refreshed_task,
+                      issue: refreshed,
+                    ),
                   ),
                 ),
                 effects: [],
               )
+            }
             False ->
               Transition(
                 state: release_claim(
                   orchestrator_state.RuntimeState(
                     ..state,
-                    running: dict.delete(state.running, refreshed.id),
+                    running: dict.delete(state.running, identity),
                   ),
                   refreshed.id,
                 ),
@@ -698,7 +846,8 @@ pub fn unpark_if_issue_changed(
   state: orchestrator_state.RuntimeState,
   issue: tracker_issue.Issue,
 ) -> orchestrator_state.RuntimeState {
-  case dict.get(state.parked, issue.id) {
+  let identity = orchestrator_state.issue_identity(issue)
+  case dict.get(state.parked, identity) {
     Ok(parked) ->
       case parked.release_policy {
         orchestrator_state.ExplicitUnparkOnly -> state
@@ -708,10 +857,10 @@ pub fn unpark_if_issue_changed(
             False ->
               orchestrator_state.RuntimeState(
                 ..state,
-                claimed: dict.delete(state.claimed, issue.id),
-                parked: dict.delete(state.parked, issue.id),
-                retry_attempts: dict.delete(state.retry_attempts, issue.id),
-                issue_counters: dict.delete(state.issue_counters, issue.id),
+                claimed: dict.delete(state.claimed, identity),
+                parked: dict.delete(state.parked, identity),
+                retry_attempts: dict.delete(state.retry_attempts, identity),
+                issue_counters: dict.delete(state.issue_counters, identity),
               )
           }
       }
@@ -751,19 +900,22 @@ pub fn add_tokens(
   )
 }
 
-fn park(
+fn park_task(
   state: orchestrator_state.RuntimeState,
+  ref: task.TaskRef,
   baseline_issue: tracker_issue.Issue,
   reason: reason.ParkReason,
   now_ms: Int,
 ) -> Transition {
   let issue_id = baseline_issue.id
-  let identifier = case dict.get(state.claimed, issue_id) {
+  let identity = orchestrator_state.task_ref_identity(ref)
+  let identifier = case dict.get(state.claimed, identity) {
     Ok(identifier) -> identifier
     Error(Nil) -> baseline_issue.identifier
   }
   let parked =
     orchestrator_state.ParkedEntry(
+      task_ref: ref,
       issue_id: issue_id,
       identifier: identifier,
       reason: reason,
@@ -775,9 +927,9 @@ fn park(
   Transition(
     state: orchestrator_state.RuntimeState(
       ..state,
-      claimed: dict.delete(state.claimed, issue_id),
-      parked: dict.insert(state.parked, issue_id, parked),
-      retry_attempts: dict.delete(state.retry_attempts, issue_id),
+      claimed: dict.delete(state.claimed, identity),
+      parked: dict.insert(state.parked, identity, parked),
+      retry_attempts: dict.delete(state.retry_attempts, identity),
     ),
     effects: [ParkIssue(issue_id, reason), ReleaseClaim(issue_id)],
   )
@@ -787,9 +939,17 @@ fn clear_retry(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.RuntimeState {
+  clear_task_retry(state, orchestrator_state.linear_issue_id_ref(issue_id))
+}
+
+fn clear_task_retry(
+  state: orchestrator_state.RuntimeState,
+  ref: task.TaskRef,
+) -> orchestrator_state.RuntimeState {
+  let identity = orchestrator_state.task_ref_identity(ref)
   orchestrator_state.RuntimeState(
     ..state,
-    retry_attempts: dict.delete(state.retry_attempts, issue_id),
+    retry_attempts: dict.delete(state.retry_attempts, identity),
   )
 }
 
@@ -825,7 +985,8 @@ fn retry_generation(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Int {
-  case dict.get(state.retry_attempts, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(state.retry_attempts, identity) {
     Ok(entry) -> entry.timer_generation
     Error(Nil) -> 0
   }
@@ -870,7 +1031,11 @@ pub fn already_reported_blocked_dependency(
   phase: String,
   decision: BlockerDecision,
 ) -> Bool {
-  let key = blocked_dependency_report_key(issue.id, phase)
+  let key =
+    blocked_dependency_report_key(
+      orchestrator_state.issue_identity(issue),
+      phase,
+    )
   case dict.get(state.blocked_dependency_reports, key) {
     Error(Nil) -> False
     Ok(report) ->
@@ -891,7 +1056,11 @@ pub fn mark_blocked_dependency_reported(
   decision: BlockerDecision,
   now_ms: Int,
 ) -> orchestrator_state.RuntimeState {
-  let key = blocked_dependency_report_key(issue.id, phase)
+  let key =
+    blocked_dependency_report_key(
+      orchestrator_state.issue_identity(issue),
+      phase,
+    )
   let report =
     orchestrator_state.BlockedDependencyReport(
       issue_id: issue.id,
@@ -926,17 +1095,18 @@ pub fn clear_blocked_dependency_report(
   issue_id: String,
   phase: String,
 ) -> orchestrator_state.RuntimeState {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   orchestrator_state.RuntimeState(
     ..state,
     blocked_dependency_reports: dict.delete(
       state.blocked_dependency_reports,
-      blocked_dependency_report_key(issue_id, phase),
+      blocked_dependency_report_key(identity, phase),
     ),
   )
 }
 
-fn blocked_dependency_report_key(issue_id: String, phase: String) -> String {
-  issue_id <> "|" <> phase
+fn blocked_dependency_report_key(identity: String, phase: String) -> String {
+  identity <> "|" <> phase
 }
 
 fn trim_blocked_dependency_reports(
@@ -971,7 +1141,12 @@ pub fn already_attempted_invalid_workflow(
   violation: workflow_policy.IssueWorkflowViolation,
   config: config_types.LinearContractConfig,
 ) -> Bool {
-  case dict.get(state.invalid_workflow_reports, issue.id) {
+  case
+    dict.get(
+      state.invalid_workflow_reports,
+      orchestrator_state.issue_identity(issue),
+    )
+  {
     Error(Nil) -> False
     Ok(report) ->
       report.last_result != "failed"
@@ -1012,7 +1187,7 @@ pub fn mark_invalid_workflow_report_pending(
     ..state,
     invalid_workflow_reports: dict.insert(
         state.invalid_workflow_reports,
-        issue.id,
+        orchestrator_state.issue_identity(issue),
         report,
       )
       |> trim_invalid_workflow_reports,
@@ -1026,7 +1201,8 @@ pub fn mark_invalid_workflow_report_result(
   reporting_policy_fingerprint: String,
   last_result: String,
 ) -> orchestrator_state.RuntimeState {
-  case dict.get(state.invalid_workflow_reports, issue_id) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  case dict.get(state.invalid_workflow_reports, identity) {
     Error(Nil) -> state
     Ok(report) ->
       case
@@ -1039,7 +1215,7 @@ pub fn mark_invalid_workflow_report_result(
             ..state,
             invalid_workflow_reports: dict.insert(
               state.invalid_workflow_reports,
-              issue_id,
+              identity,
               orchestrator_state.InvalidWorkflowReport(
                 ..report,
                 last_result: last_result,
@@ -1058,7 +1234,7 @@ pub fn clear_invalid_workflow_report(
     ..state,
     invalid_workflow_reports: dict.delete(
       state.invalid_workflow_reports,
-      issue_id,
+      orchestrator_state.linear_issue_id_identity(issue_id),
     ),
   )
 }
@@ -1093,30 +1269,40 @@ fn release_claim(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.RuntimeState {
+  release_task_claim(state, orchestrator_state.linear_issue_id_ref(issue_id))
+}
+
+fn release_task_claim(
+  state: orchestrator_state.RuntimeState,
+  ref: task.TaskRef,
+) -> orchestrator_state.RuntimeState {
+  let identity = orchestrator_state.task_ref_identity(ref)
   orchestrator_state.RuntimeState(
     ..state,
-    claimed: dict.delete(state.claimed, issue_id),
-    retry_attempts: dict.delete(state.retry_attempts, issue_id),
+    claimed: dict.delete(state.claimed, identity),
+    retry_attempts: dict.delete(state.retry_attempts, identity),
   )
 }
 
-fn get_counter(
+fn get_task_counter(
   state: orchestrator_state.RuntimeState,
-  issue_id: String,
+  ref: task.TaskRef,
 ) -> orchestrator_state.IssueCounter {
-  case dict.get(state.issue_counters, issue_id) {
+  let identity = orchestrator_state.task_ref_identity(ref)
+  case dict.get(state.issue_counters, identity) {
     Ok(counter) -> counter
     Error(Nil) -> orchestrator_state.new_issue_counter()
   }
 }
 
-fn put_counter(
+fn put_task_counter(
   state: orchestrator_state.RuntimeState,
-  issue_id: String,
+  ref: task.TaskRef,
   counter: orchestrator_state.IssueCounter,
 ) -> orchestrator_state.RuntimeState {
+  let identity = orchestrator_state.task_ref_identity(ref)
   orchestrator_state.RuntimeState(
     ..state,
-    issue_counters: dict.insert(state.issue_counters, issue_id, counter),
+    issue_counters: dict.insert(state.issue_counters, identity, counter),
   )
 }
