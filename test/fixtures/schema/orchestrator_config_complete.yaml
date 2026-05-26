@@ -82,14 +82,6 @@ linear_contract:
   enforce_issue_workflow_labels: true
   invalid_workflow_state_id: state-invalid
   comment_on_invalid_workflow: true
-linear_commands:
-  enabled: true
-  prefix: /scherzo
-  authorized_user_ids: [user-1]
-  poll_limit_per_issue: 10
-  max_comments_per_tick: 20
-  acknowledge_success: false
-  acknowledge_rejection: true
 routing:
   workflow_label_prefix: "workflow:"
   require_exactly_one_workflow_label: true

@@ -59,7 +59,7 @@ A `TrackerAdapter` has this public shape:
 | `display_name` | yes | Human-readable backend name for diagnostics. It MUST NOT contain secrets. |
 | `task_source` | yes | Required task-read capability. Every adapter MUST provide it. |
 | `comments` | no | Optional comment creation/update capability. |
-| `remote_commands` | no | Optional remote operator command ingestion and acknowledgement capability. |
+| `remote_commands` | no | Historical/conformance-only remote command capability; production runtime does not consume it. |
 | `state_transitions` | no | Optional task state transition capability. |
 | `routing_metadata` | no | Optional workflow-label and blocker metadata extraction capability. |
 | `links` | no | Optional external-link upsert capability. |
@@ -150,8 +150,8 @@ Capability names in this table are canonical and MUST match the public fields in
 | Capability | Required by adapter construction | Feature that requires it at startup | Notes |
 | --- | --- | --- | --- |
 | `task_source` | Yes | Always; it is a non-optional field | Reads candidate tasks, refreshes task refs, and resolves operator refs. |
-| `comments` | No | Remote command acknowledgement when remote commands are enabled | Startup validation specifically requires `comments` for `remote_command_ack`. Invalid-workflow comment reporting also uses this capability at runtime when configured. |
-| `remote_commands` | No | `remote_commands.enabled` / remote operator commands | `linear_commands` remains a compatibility alias during migration. |
+| `comments` | No | Handoff, invalid-workflow, and other outbound comment reporting when configured | Linear comment command acknowledgements are removed. Invalid-workflow comment reporting also uses this capability at runtime when configured. |
+| `remote_commands` | No | No production runtime feature today | `remote_commands` and the legacy `linear_commands` section are removed command-transport settings; leaving either section in config is a validation error. |
 | `state_transitions` | No | Handoff state moves when configured | Moves tasks to configured states. Invalid-workflow state reporting also uses this capability at runtime when configured. |
 | `routing_metadata` | No | Workflow label routing when workflow label paths are configured | Extracts labels and blocker refs from normalized tasks. |
 | `links` | No | No required startup feature today | Generic link upsert seam for future use. |
@@ -205,22 +205,11 @@ Create-only comment operations are not guaranteed exactly-once under retry unles
 
 ### 6.3 `remote_commands`
 
-`RemoteCommandCapability` exposes command-event fetch and acknowledgement posting.
+`RemoteCommandCapability` remains in the adapter API for historical conformance fixtures and possible future adapter work, but Scherzo's production runtime no longer consumes it. Linear does not expose this capability, the daemon does not fetch command events, and remote command acknowledgements are not posted. Operator control is local through `scherzoctl`.
 
-`RemoteCommandFetch(task_refs, since_event_ids, limit_per_task)` requests command-bearing events for tasks. `RemoteCommandEvent(event_id, task, author_id, body, command_name, excerpt, observed_at_ms)` is the normalized event shape.
+`RemoteCommandFetch(task_refs, since_event_ids, limit_per_task)` describes command-bearing events for tasks. `RemoteCommandEvent(event_id, task, author_id, body, command_name, excerpt, observed_at_ms)` is the normalized event shape for adapters that still exercise the optional conformance pack.
 
-- `event_id` MUST be stable and unique within the backend kind for the source event/comment.
-- `task` MUST identify the task that owns the event.
-- `author_id` MUST identify the backend author when available; empty string is permitted only for compatibility-generated events that cannot supply an author.
-- `body` MUST contain the text that the existing Scherzo command parser should inspect.
-- `excerpt` SHOULD be bounded and operator-safe.
-- `observed_at_ms` SHOULD be the backend creation time or observation time in milliseconds.
-- `since_event_ids` MUST be accepted. Current runtime may pass an empty list and rely on durable receipt replay; adapters MAY also use the list to suppress already-seen events.
-- `limit_per_task` SHOULD be honored when the backend supports a per-task limit.
-
-`RemoteCommandAck(event, body)` posts a visible acknowledgement for a processed event and returns a `CommentReceipt` as Scherzo's acknowledgement receipt. Adapters SHOULD set `CommentReceipt.id` to the backend acknowledgement comment id and SHOULD update or de-duplicate acknowledgement comments for the same `event_id` when the backend supports that behavior. The current Linear compatibility path is at-least-once: it creates a new comment for each acknowledgement post and returns `event_id` as the acknowledgement receipt id because the legacy Linear transport reports only success. Adapters MUST document whether retrying the same `event_id` updates/de-duplicates an acknowledgement or can create duplicate visible acknowledgement comments. Scherzo persists remote command receipts so completed-but-unacked commands can be acknowledged after restart.
-
-When remote commands are enabled, startup validation requires both `remote_commands` and `comments`. This is required even though `remote_commands.post_ack` performs the acknowledgement, because command acknowledgement is an operator-visible comment surface and Scherzo validates that the adapter supports comment writes.
+`RemoteCommandAck(event, body)` describes acknowledgement posting for that optional conformance pack only. It is not a production Linear command-comment transport.
 
 ### 6.4 `state_transitions`
 
@@ -339,8 +328,8 @@ The current validation rules are:
 
 | Feature | Required capability | Config path | Message |
 | --- | --- | --- | --- |
-| `remote_commands` | `remote_commands` | `remote_commands.enabled` unless caller supplied another path | `remote_commands.enabled requires tracker adapter <kind> to expose remote_commands` |
-| `remote_command_ack` | `comments` | same remote-command config path | `remote command acknowledgements require comments capability` |
+| `remote_commands` | n/a | n/a | Production startup no longer enables remote command ingestion. |
+| `remote_command_ack` | n/a | n/a | Production startup no longer posts remote command acknowledgements. |
 | `handoff_comments` | `handoff` | `handoff.comments` or caller-supplied handoff path | `handoff comments require handoff capability` |
 | `handoff_state_moves` | `state_transitions` | `handoff.states` or caller-supplied handoff path | `handoff state moves require state_transitions capability` |
 | `workflow_label_routing` | `routing_metadata` | each configured workflow label path | `workflow label routing requires routing_metadata capability` |
@@ -350,7 +339,7 @@ The current validation rules are:
 
 `task_source` is a required field in the `TrackerAdapter` type, so missing task-source support is a construction-time violation rather than an optional-capability diagnostic.
 
-If an adapter cannot perform a configured feature, Scherzo MUST fail startup validation with an actionable missing-capability diagnostic before dispatching work. Normal daemon startup currently validates remote commands, handoff, workflow label routing, and scheduled failure publication. Readiness and smoke validation is used by callers that enable those requirement flags.
+If an adapter cannot perform a configured feature, Scherzo MUST fail startup validation with an actionable missing-capability diagnostic before dispatching work. Normal daemon startup currently validates handoff, workflow label routing, and scheduled failure publication. Readiness and smoke validation is used by callers that enable those requirement flags.
 
 ## 9. Durable and recovery compatibility
 
@@ -363,7 +352,7 @@ Tracker adapters participate in durable recovery through stable task identity. I
 - Existing `issue.*` prompt variables and `SCHERZO_ISSUE_*` environment variables MUST remain compatibility aliases until explicitly migrated by a separate compatibility plan.
 - Existing Linear command ledger records (`linear_command_seen`, `linear_command_started`, `linear_command_completed`, and `linear_command_acked`) MUST remain decodable.
 - Backend-neutral remote command records (`remote_command_seen`, `remote_command_started`, `remote_command_completed`, and `remote_command_acked`) MUST use `backend_kind`, `event_id`, and `task_remote_id` as the durable remote-command identity. `task_key` is optional display metadata.
-- Remote-command acknowledgements after restart MUST be possible from durable `backend_kind`, `task_remote_id`, and `event_id` even when the original in-memory event body is unavailable.
+- Pending Linear/remote command acknowledgement outbox records from older versions MUST remain decodable and recoverable as failed/ignored local state; they MUST NOT post new Linear comments after this transport removal.
 - Scheduled failure retry/update flows MAY pass `previous_task_remote_id`; adapters MUST interpret it in the adapter's own backend kind.
 
 Adapters MUST NOT require operators to delete old Linear-shaped ledgers or checkpoints when upgrading to the backend-neutral task model.
@@ -377,7 +366,7 @@ Linear compatibility surfaces are intentionally preserved and are not generic ad
 - `backend_kind = "linear"` and Linear `remote_id` values are Linear-specific.
 - `tracker/issue.gleam` and `task.from_legacy_issue`/`task.to_legacy_issue` preserve existing Linear issue behavior.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_*`, `issue_id`, and `issue_identifier` remain compatibility names.
-- `linear_commands`, `linear_contract`, `linear-smoke`, `linear-contract`, `--linear-smoke`, and `--linear-contract-check` remain compatibility aliases or Linear-specific config/CLI surfaces.
+- `linear_contract`, `linear-smoke`, `linear-contract`, `--linear-smoke`, and `--linear-contract-check` remain compatibility aliases or Linear-specific config/CLI surfaces. `linear_commands` is a removed config surface; leaving the section in config is rejected.
 - Linear-only helper scripts and options that create, update, or inspect Linear tasks directly remain Linear-specific until replaced by generic adapter capabilities.
 
 Future Jira/Trello work MUST add production adapters and tests before docs or examples claim support. A fake or historical plan is not evidence of production conformance.
@@ -396,15 +385,15 @@ Adapters are responsible for protecting task-system credentials and operator dat
 
 ### 12.1 Minimal task-source adapter
 
-A minimal adapter provides `kind`, `display_name`, and `task_source`, with all optional capabilities set to `None`. It can support read-only candidate discovery, refresh, and operator lookup. It cannot run configurations that require workflow-label routing, remote commands, handoff, scheduled failures, readiness, or smoke checks unless those features are disabled or validated elsewhere.
+A minimal adapter provides `kind`, `display_name`, and `task_source`, with all optional capabilities set to `None`. It can support read-only candidate discovery, refresh, and operator lookup. It cannot run configurations that require workflow-label routing, handoff, scheduled failures, readiness, or smoke checks unless those features are disabled or validated elsewhere.
 
 ### 12.2 Dispatch/routing adapter
 
 A dispatch/routing adapter provides `task_source` and `routing_metadata`. It supports workflow selection by labels and blocker metadata extraction. It SHOULD populate `Task.labels`, `Task.blockers`, and `Task.blockers_complete` accurately enough for dispatch policy.
 
-### 12.3 Operator-command-capable adapter
+### 12.3 Historical remote-command conformance adapter
 
-An operator-command-capable adapter provides `task_source`, `remote_commands`, and `comments`. It MUST provide stable event ids, durable acknowledgement behavior, and visible acknowledgement comments. Startup validation MUST reject remote-command configuration if either `remote_commands` or `comments` is missing.
+A historical remote-command conformance adapter may provide `task_source`, `remote_commands`, and `comments` for the optional tracker-conformance pack. This profile is not a production operator-control path: daemon startup no longer enables remote-command ingestion, and no runtime config requires `remote_commands`.
 
 ### 12.4 Handoff/state adapter
 
@@ -420,27 +409,26 @@ A Linear-equivalent adapter for today's production behavior provides:
 
 - `task_source`
 - `comments`
-- `remote_commands`
 - `state_transitions`
 - `routing_metadata`
 - `handoff`
 - `scheduled_failures`
 - `smoke`
 
-The current Linear adapter does not expose generic `links`, `readiness`, or `attachments`. Linear readiness/contract checks still run through the `linear_contract` compatibility path, and attachment upload still uses Linear-only comment-file helpers.
+The current Linear adapter does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Linear readiness/contract checks still run through the `linear_contract` compatibility path, and attachment upload still uses Linear-only comment-file helpers.
 
 ## 13. Current adapter conformance status
 
 | Adapter | Status | Conformance summary |
 | --- | --- | --- |
-| Linear | Production | Provides `task_source`, `comments`, `remote_commands`, `state_transitions`, `routing_metadata`, `handoff`, `scheduled_failures`, and `smoke`. Does not expose generic `links`, `readiness`, or `attachments`. Contract/readiness and attachments remain Linear compatibility surfaces. |
+| Linear | Production | Provides `task_source`, `comments`, `state_transitions`, `routing_metadata`, `handoff`, `scheduled_failures`, and `smoke`. Does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Contract/readiness and attachments remain Linear compatibility surfaces. |
 | `test-memory` | Test fixture | Provides the fake non-Linear seam used by tests. It is not a production backend. |
 | Jira | Future work | No production adapter is supported today. |
 | Trello | Future work | No production adapter is supported today. |
 
 Known Linear adapter gaps:
 
-- Remote-command acknowledgements are at-least-once: the current Linear path creates a new acknowledgement comment on each post and returns the source `event_id` as the acknowledgement receipt id rather than a backend comment id.
+- Inbound command comments are removed: the Linear adapter intentionally does not expose `remote_commands`, and Scherzo posts no command acknowledgements.
 - Generic `links`, `readiness`, and `attachments` are not exposed through the adapter today; corresponding Linear behavior remains on compatibility paths where it exists.
 
 ## 14. Extension and versioning rules

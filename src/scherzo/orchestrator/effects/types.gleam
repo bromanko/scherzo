@@ -21,12 +21,6 @@ pub type Effect {
   MarkPollInFlight(generation: Int)
   ScheduleNextPoll
   FetchCandidates(generation: Int)
-  FetchRemoteCommands(
-    generation: Int,
-    task_refs: List(task.TaskRef),
-    candidates: List(tracker_issue.Issue),
-    dispatch_after: Bool,
-  )
   BeginDispatchValidation(issue_id: String, generation: Int)
   ReserveSessionSequence(sequence: Int)
   ClaimIssue(issue: tracker_issue.Issue, workspace_path: String, run_id: String)
@@ -66,13 +60,6 @@ pub type Effect {
     parked: orchestrator_state.ParkedEntry,
     source_run_id: Option(String),
   )
-  ReplayRemoteCommandAck(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    body: String,
-    outbox_kind: String,
-  )
   ReportPark(report: adapter.ParkReport)
   StopWorker(identity: WorkerIdentity, reason: session_reason.WorkerExitReason)
   StopWorkerAfterIssueRefresh(
@@ -97,13 +84,6 @@ pub type Effect {
   FinishOperatorCommand(
     request: OperatorCommandRequest,
     result: command.CommandResult,
-  )
-  PostRemoteCommandAck(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    body: String,
-    outbox_kind: String,
   )
   ReportParkEffect(
     issue_id: String,
@@ -132,22 +112,6 @@ pub type LedgerPolicy {
 pub type LedgerContinuation {
   NoLedgerContinuation
   SpawnClaimedWorker(issue_id: String, run_id: String, session_id: String)
-  ApplyRemoteCommand(request: OperatorCommandRequest)
-  EnqueueRemoteCommandAck(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    body: String,
-    outbox_kind: String,
-  )
-  PublishRemoteCommandAck(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    body: String,
-    outbox_kind: String,
-  )
-  RemoveRemoteCommandAck(task_remote_id: String, event_id: String)
   ReportParkAfterLedger(
     issue_id: String,
     issue_identifier: String,
@@ -159,13 +123,6 @@ pub type LedgerContinuation {
 
 pub type OperatorCommandSource {
   LocalOperatorCommand
-  RemoteOperatorCommand(
-    backend_kind: String,
-    event_id: String,
-    task_remote_id: String,
-    command_name: String,
-    excerpt: String,
-  )
 }
 
 pub type OperatorCommandRequest {
@@ -173,14 +130,6 @@ pub type OperatorCommandRequest {
     source: OperatorCommandSource,
     operator_command: command.OperatorCommand,
     timeout_ms: Int,
-  )
-}
-
-pub type RemoteCommandCompletion {
-  RemoteCommandCompletion(
-    result: command.CommandResult,
-    message_excerpt: String,
-    ack_body: Option(String),
   )
 }
 

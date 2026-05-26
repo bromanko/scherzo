@@ -110,7 +110,6 @@ pub fn contract_test_files() -> List(String) {
     "linear_cli_wrapper_test.gleam",
     "merge_conflict_helper_test.gleam",
     "orchestrator_daemon_control_test.gleam",
-    "orchestrator_daemon_linear_command_test.gleam",
     "orchestrator_daemon_retry_step_test.gleam",
     "orchestrator_daemon_session_event_test.gleam",
     "orchestrator_daemon_test.gleam",

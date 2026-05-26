@@ -84,11 +84,11 @@ This repository dogfoods the same shape under `.scherzo/` and keeps reusable exa
 
 ## Core concepts
 
-- **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, workspace profiles, pi settings, agent limits, handoff policy, routing, artifact limits, Linear contract compatibility checks, and optional Linear command comments.
+- **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, workspace profiles, pi settings, agent limits, handoff policy, routing, artifact limits, and Linear contract compatibility checks.
 - **Workspace profiles and drivers** decide where each step runs. Bundled packaged drivers include `scherzo-workspace-noop` for artifact-only workflows and `scherzo-workspace-jj` for jj-backed implementation workspaces. Custom drivers must follow the workspace driver spec.
 - **Workflow DAGs** are YAML files routed by task metadata, currently Linear workflow labels. Steps may be `kind: agent` steps using Markdown prompt templates or `kind: command` steps running shell validation. The `recover` stanza is currently reserved groundwork for bounded step remediation; runtime recovery is tracked as follow-up work.
 - **Structured output** lets an agent step return a required JSON artifact and validate it with baseline checks, JSON Schema validators, command validators, or both.
-- **Operator control** is through daemon logs, retained artifacts, Linear comments, and `scherzoctl` commands such as `ps`, `session`, `events`, `attach`, `pause`, `resume`, `retry`, `park`, `abort`, and `prompt`.
+- **Operator observability** includes daemon logs, retained artifacts, and outbound Linear comments. **Operator control** is local through `scherzoctl` commands such as `ps`, `session`, `events`, `attach`, `pause`, `resume`, `retry`, `park`, `abort`, and `prompt`.
 
 ## Workspace profiles and drivers
 

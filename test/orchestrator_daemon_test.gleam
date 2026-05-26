@@ -460,6 +460,77 @@ pub fn daemon_schedules_jittered_recurring_poll_after_immediate_tick_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_poll_does_not_fetch_remote_command_events_test() {
+  let workflow_path =
+    write_workflow("test/tmp/daemon-no-remote-command-fetch", 1)
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([issue("issue-1", "ABC-1", "Todo")]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let remote_command_subject = process.new_subject()
+  let timer_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter.TrackerAdapter(
+          ..legacy_adapter(client),
+          remote_commands: Some(
+            adapter.RemoteCommandCapability(
+              fetch_events: fn(_) {
+                process.send(remote_command_subject, "fetch_events")
+                Ok([
+                  adapter.RemoteCommandEvent(
+                    event_id: "comment-1",
+                    task: task.TaskRef(
+                      backend_kind: "linear",
+                      remote_id: "issue-1",
+                      key: Some("ABC-1"),
+                      url: None,
+                    ),
+                    author_id: "lin-user",
+                    body: "/scherzo retry",
+                    command_name: "retry",
+                    excerpt: "/scherzo retry",
+                    observed_at_ms: 42,
+                  ),
+                ])
+              },
+              post_ack: fn(ack) {
+                process.send(remote_command_subject, "post_ack")
+                let adapter.RemoteCommandAck(event: event, ..) = ack
+                let adapter.RemoteCommandEvent(task: command_task, ..) = event
+                Ok(adapter.CommentReceipt(
+                  id: "remote-command-ack",
+                  task: command_task,
+                  url: None,
+                  created: True,
+                ))
+              },
+            ),
+          ),
+        )
+      },
+      send_after: fn(_, delay_ms, message) {
+        process.send(timer_subject, #(delay_ms, message))
+        daemon.TestTimer(delay_ms)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(#(_, daemon.PollTick(generation))) =
+    process.receive(timer_subject, within: 1000)
+  process.send(started.data, daemon.PollTick(generation))
+  let assert Ok(#(_, daemon.PollTick(_))) =
+    process.receive(timer_subject, within: 1000)
+
+  test_async.assert_no_extra_message(remote_command_subject)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 fn legacy_adapter(client: tracker.Client) -> adapter.TrackerAdapter {
   adapter_legacy.adapter_from_legacy_client(client, "linear")
 }

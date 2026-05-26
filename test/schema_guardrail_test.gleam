@@ -263,13 +263,7 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
     == Some("state-invalid")
   assert effective.linear_contract.comment_on_invalid_workflow == True
 
-  assert effective.linear_commands.enabled == True
-  assert effective.linear_commands.prefix == "/scherzo"
-  assert effective.linear_commands.authorized_user_ids == ["user-1"]
-  assert effective.linear_commands.poll_limit_per_issue == 10
-  assert effective.linear_commands.max_comments_per_tick == 20
-  assert effective.linear_commands.acknowledge_success == False
-  assert effective.linear_commands.acknowledge_rejection == True
+  assert effective.linear_commands == config.default_linear_command_config()
 
   assert orchestrator.routing.workflow_label_prefix == "workflow:"
   assert orchestrator.routing.require_exactly_one_workflow_label == True

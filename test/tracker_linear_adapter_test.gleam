@@ -164,7 +164,16 @@ fn receive_request(subject: process.Subject(CapturedRequest)) -> String {
   body
 }
 
-pub fn linear_adapter_fetch_candidates_matches_linear_parser_test() {
+pub fn linear_adapter_does_not_expose_remote_commands_test() {
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(_) {
+      Error(error.LinearApiRequest("unexpected Linear transport call"))
+    })
+
+  let assert None = linear_tracker.remote_commands
+}
+
+pub fn linear_adapter_fetch_candidates_matches_linear_issue_decoder_test() {
   let linear_tracker =
     linear_adapter.from_tracker_config(tracker_config(), fn(request) {
       assert string.contains(request.body, "CandidateIssues")
@@ -383,9 +392,6 @@ pub fn linear_adapter_scheduled_failure_preserves_dedupe_marker_test() {
         transport: fn(_) {
           Error(error.LinearApiRequest("unexpected Linear transport call"))
         },
-        command_client: linear.command_client(tracker_config(), fn(_) {
-          Error(error.LinearApiRequest("unexpected Linear transport call"))
-        }),
         handoff_client: handoff.disabled_client(),
         scheduled_failure_client: reporter.client(scheduled_failure_backend(
           phases,

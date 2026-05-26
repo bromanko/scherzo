@@ -2,7 +2,7 @@
 
 This runbook is operator guidance for configuring and checking tracker adapters. The normative implementation contract lives in the [Tracker Adapter Specification](../specs/TRACKER_ADAPTER_SPEC.md); use that spec for required data model, capability, startup-validation, idempotency, and recovery semantics.
 
-Scherzo uses **task** as the backend-neutral word for a unit of work from an external task system. A Linear issue is the production task type today. A **tracker adapter** is the Scherzo boundary that reads tasks and performs optional task-system side effects such as comments, state transitions, remote commands, and scheduled failure publication.
+Scherzo uses **task** as the backend-neutral word for a unit of work from an external task system. A Linear issue is the production task type today. A **tracker adapter** is the Scherzo boundary that reads tasks and performs optional task-system side effects such as comments, state transitions, and scheduled failure publication. The historical `remote_commands` adapter surface is not a production operator-control path.
 
 Linear remains the only production adapter in this repository. Jira and Trello are follow-up backends, not supported runtime choices. The `test-memory` adapter is a test fixture used to prove the adapter contract without importing Linear code.
 
@@ -18,7 +18,7 @@ These Linear names remain compatibility aliases or Linear-only surfaces:
 
 - `linear-smoke` and `--linear-smoke` are compatibility aliases for tracker smoke checks.
 - `linear-contract` and `--linear-contract-check` are compatibility aliases for tracker contract checks.
-- `linear_contract` and `linear_commands` are current config sections for Linear board validation and Linear comment commands.
+- `linear_contract` remains the Linear board validation config section. `linear_commands` and `remote_commands` are removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_ID`, `SCHERZO_ISSUE_IDENTIFIER`, and issue-shaped ledger fields remain compatibility aliases until the runtime task context is fully migrated.
 - `--linear-attach-comment-file`, `.scherzo/workflows/scripts/scherzo-execplan`, and `.scherzo/workflows/scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today.
 
@@ -55,7 +55,7 @@ The matrix summarizes current operator readiness. The normative capability defin
 
 | Adapter | Status | task_source | comments | remote_commands | state_transitions | routing_metadata | links | handoff | scheduled_failures | readiness | smoke | attachments | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Linear | Production | Yes | Yes | Yes | Yes | Yes | No adapter capability | Yes | Yes | Compatibility path | Yes | No adapter capability | Linear is the only production backend. Contract/readiness checks still run through `linear_contract`; attachment upload is still exposed through the Linear-only comment-file helper rather than generic `attachments`. |
+| Linear | Production | Yes | Yes | No | Yes | Yes | No adapter capability | Yes | Yes | Compatibility path | Yes | No adapter capability | Linear is the only production backend. Contract/readiness checks still run through `linear_contract`; inbound Linear command comments are removed; attachment upload is still exposed through the Linear-only comment-file helper rather than generic `attachments`. |
 | Jira follow-up | Future | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Requires a future production adapter plan and live backend design. Do not claim support from the current architecture alone. |
 | Trello follow-up | Future | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Requires a future production adapter plan and live backend design. Do not claim support from the current architecture alone. |
 | test-memory | Test fixture | Yes | Yes | No by default | Yes | Yes | No | No | Yes | No | No | No | Test-only fake adapter for adapter contract and non-Linear seam tests. Do not use it in production examples. |
@@ -78,7 +78,7 @@ Before enabling a new production adapter, verify these facts with tests and oper
 
 1. Candidate task reads, task refresh, and operator lookup are implemented through `task_source`.
 2. Every enabled feature has a startup capability validation error when the adapter does not support it.
-3. Handoff, scheduled failure publication, and remote command acknowledgements are either implemented through capabilities or disabled in config.
+3. Handoff and scheduled failure publication are either implemented through capabilities or disabled in config; remote command ingestion remains disabled and must not be advertised as an operator control path.
 4. Readiness and smoke checks have backend-neutral operator names and Linear aliases only where they are truly compatibility aliases.
 5. Prompt examples use task language while explicitly documenting any remaining `issue.*` compatibility variables.
 

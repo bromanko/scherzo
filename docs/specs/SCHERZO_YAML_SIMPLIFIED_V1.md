@@ -405,8 +405,8 @@ rejected so users do not have to guess whether a value is milliseconds or second
 ## Removed public functionality
 
 Linear comment command controls are removed. There is no replacement for the old
-`linear_commands` section. Local and operator controls through `scherzoctl` remain the
-supported control path.
+`linear_commands` or `remote_commands` sections. Local and operator controls through
+`scherzoctl` remain the supported control path.
 
 Top-level `hooks` are removed. Workspace lifecycle customization belongs in workspace
 drivers, especially `workspace.drivers.<name>.type: custom`.
@@ -465,6 +465,7 @@ drivers, especially `workspace.drivers.<name>.type: custom`.
 | `open_issue_per_job` | `open_task_per_schedule` |
 | `artifact_limits` | `artifacts.limits` |
 | `linear_commands` | Removed. |
+| `remote_commands` | Removed. |
 | root `hooks` | Removed. |
 | workflow `workspace_profile` | workflow `workspace.driver` |
 | workflow `workspace_capabilities` | workflow `workspace.requires` |
