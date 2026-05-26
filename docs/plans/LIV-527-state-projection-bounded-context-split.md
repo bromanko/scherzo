@@ -63,6 +63,9 @@ Milestone 5 completes compatibility hardening, helper-boundary inventory, and fu
 - [x] (2026-05-25) Prepared this review document for `docs/plans/` and the structured implementation-pack handoff for Scherzo bundle materialization.
 - [x] (2026-05-25) Validated the review document with `python3 workflows/dogfood/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-527-state-projection-bounded-context-split.md` before and after incorporating review feedback.
 - [x] (2026-05-25) Incorporated review feedback by making acceptance evidence, milestone specificity, test obligations, manual pre-publish reducer review, docs/helper and provider-live/cache non-scope, full validation, and lint gates explicit in this document and the updated structured implementation-pack submission.
+- [x] (2026-05-26) Created the bounded-context module scaffold under `src/scherzo/state/record/` and `src/scherzo/state/projection/` so slices can move logic behind stable facade paths without changing callers.
+- [x] (2026-05-26) Moved scheduled-job encode/decode and reducer helpers into the new `scheduled` context modules while preserving schema fixtures and facade APIs.
+- [x] (2026-05-26) Wired the remaining bounded-context record encode helpers, projection reducer helpers, and query helper behavior through the production `record.gleam` and `projection.gleam` facades.
 
 ## Decision Log
 
@@ -70,6 +73,7 @@ Milestone 5 completes compatibility hardening, helper-boundary inventory, and fu
 - Decision: Keep projection snapshots flat and schema-version 2 during extraction. Rationale: modular code ownership does not require a stored-data migration. Date: 2026-05-25.
 - Decision: Use scheduled jobs as the first extraction slice. Rationale: it is cohesive, has a single projection field, and already has targeted tests and optional snapshot decoding. Date: 2026-05-25.
 - Decision: Treat review feedback about evidence, tests, manual checks, helper boundaries, provider-live/cache boundaries, full validation, and linting as implementation-pack obligations. Rationale: Scherzo materializes the follow-up implementation plan from the structured pack, so prose-only obligations would be easy for later implementers to miss. Date: 2026-05-25.
+- Decision: Keep the parent `record` and `projection` modules as the schema-owning dispatch points while moving context-specific helpers into child modules. Rationale: this preserves public facade APIs and flat snapshot shape while giving each bounded context an explicit implementation home. Date: 2026-05-26.
 
 ## Validation and Acceptance
 
@@ -84,6 +88,10 @@ Repository validation evidence includes these repository-root commands exiting z
 Manual pre-publish evidence is a short reviewer note confirming that `projection.apply` composes context reducers deterministically, snapshot encode/decode still accepts old optional omissions, unsupported-version or corrupt-record diagnostics remain observable, and the facade APIs did not churn. No browser check is needed. A post-implementation dogfood run against a live Scherzo daemon is deferred to a human/operator after implementation and should be recorded as an optional observation, not as a blocker for the state-only code split.
 
 Docs/helper evidence is an inventory rather than a migration: if the later implementation does not touch workflow helper scripts, provider-facing structured-output helpers, review-lane contract files, provider-live probes, or cache behavior, the acceptance note says they were unchanged. If it does touch any of those surfaces, helper or contract tests and provider-live/cache stale-read, invalidation, and TTL-disabling coverage become part of that separate change before acceptance.
+
+## Outcomes & Retrospective
+
+The implementation is complete for the state-only split: the repository now has explicit bounded-context module paths for ledger record helpers and projection helpers, while durable behavior still flows through the existing `record.gleam` and `projection.gleam` facades. The flat ledger and projection snapshot schemas are unchanged, and validation covered formatting, unit/schema/replay tests, glinter, and Scherzo-specific linting. No workflow helper scripts, provider-live probes, or review-lane cache behavior changed.
 
 ## Rollout, Recovery, and Idempotence
 

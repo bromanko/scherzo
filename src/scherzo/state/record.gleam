@@ -4,6 +4,14 @@ import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/log
+import scherzo/state/record/commands as command_record
+import scherzo/state/record/issue_recovery as issue_recovery_record
+import scherzo/state/record/legacy_runs as legacy_run_record
+import scherzo/state/record/outbox as outbox_record
+import scherzo/state/record/scheduled as scheduled_record
+import scherzo/state/record/steps as step_record
+import scherzo/state/record/workflow_runs as workflow_run_record
+import scherzo/state/record/workstreams as workstream_record
 
 pub const schema_version = 2
 
@@ -757,24 +765,23 @@ pub fn describe_error(error: DecodeError) -> String {
 
 fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
   case body {
-    RunStarted(run_id, issue_id, issue_identifier, workspace_path) -> [
-      #("run_id", json.string(run_id)),
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("workspace_path", json.string(workspace_path)),
-    ]
-    RunFinished(run_id, issue_id, classification, token_total, turns) -> [
-      #("run_id", json.string(run_id)),
-      #("issue_id", json.string(issue_id)),
-      #("classification", json.string(classification)),
-      #("token_total", json.int(token_total)),
-      #("turns", json.int(turns)),
-    ]
-    RunInterrupted(run_id, issue_id, reason) -> [
-      #("run_id", json.string(run_id)),
-      #("issue_id", json.string(issue_id)),
-      #("reason", json.string(reason)),
-    ]
+    RunStarted(run_id, issue_id, issue_identifier, workspace_path) ->
+      legacy_run_record.run_started_entries(
+        run_id,
+        issue_id,
+        issue_identifier,
+        workspace_path,
+      )
+    RunFinished(run_id, issue_id, classification, token_total, turns) ->
+      legacy_run_record.run_finished_entries(
+        run_id,
+        issue_id,
+        classification,
+        token_total,
+        turns,
+      )
+    RunInterrupted(run_id, issue_id, reason) ->
+      legacy_run_record.run_interrupted_entries(run_id, issue_id, reason)
     WorkflowRunStarted(
       run_id,
       workflow_id,
@@ -784,16 +791,17 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       issue_fingerprint,
       observed_updated_at_ms,
       run_root,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("workflow_fingerprint", json.string(workflow_fingerprint)),
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("issue_fingerprint", json.string(issue_fingerprint)),
-      #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
-      #("run_root", json.string(run_root)),
-    ]
+    ) ->
+      workflow_run_record.started_entries(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        issue_id,
+        issue_identifier,
+        issue_fingerprint,
+        observed_updated_at_ms,
+        run_root,
+      )
     WorkflowRunStartedWithTask(
       run_id,
       workflow_id,
@@ -805,19 +813,17 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       observed_updated_at_ms,
       run_root,
     ) ->
-      [
-        #("run_id", json.string(run_id)),
-        #("workflow_id", json.string(workflow_id)),
-        #("workflow_fingerprint", json.string(workflow_fingerprint)),
-        #("issue_id", json.string(issue_id)),
-        #("issue_identifier", json.string(issue_identifier)),
-      ]
-      |> append_json_entries(task_ref_entries(task_ref))
-      |> append_json_entries([
-        #("issue_fingerprint", json.string(issue_fingerprint)),
-        #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
-        #("run_root", json.string(run_root)),
-      ])
+      workflow_run_record.started_with_task_entries(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        issue_id,
+        issue_identifier,
+        task_ref_entries(task_ref),
+        issue_fingerprint,
+        observed_updated_at_ms,
+        run_root,
+      )
     WorkflowRunFinished(
       run_id,
       workflow_id,
@@ -825,14 +831,15 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       outcome,
       token_total,
       turns,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("issue_id", json.string(issue_id)),
-      #("outcome", json.string(outcome)),
-      #("token_total", json.int(token_total)),
-      #("turns", json.int(turns)),
-    ]
+    ) ->
+      workflow_run_record.finished_entries(
+        run_id,
+        workflow_id,
+        issue_id,
+        outcome,
+        token_total,
+        turns,
+      )
     WorkflowRunFinishedWithTask(
       run_id,
       workflow_id,
@@ -842,17 +849,15 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       token_total,
       turns,
     ) ->
-      [
-        #("run_id", json.string(run_id)),
-        #("workflow_id", json.string(workflow_id)),
-        #("issue_id", json.string(issue_id)),
-      ]
-      |> append_json_entries(task_ref_entries(task_ref))
-      |> append_json_entries([
-        #("outcome", json.string(outcome)),
-        #("token_total", json.int(token_total)),
-        #("turns", json.int(turns)),
-      ])
+      workflow_run_record.finished_with_task_entries(
+        run_id,
+        workflow_id,
+        issue_id,
+        task_ref_entries(task_ref),
+        outcome,
+        token_total,
+        turns,
+      )
     WorkflowRunInputsRecorded(
       run_id,
       workflow_id,
@@ -885,31 +890,34 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         artifact_sha256,
         artifact_bytes,
       )
-    WorkflowRunDiagnostic(run_id, workflow_id, issue_id, reason) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("issue_id", json.string(issue_id)),
-      #("reason", json.string(reason)),
-    ]
-    WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("issue_id", json.string(issue_id)),
-      #("reason", json.string(reason)),
-    ]
+    WorkflowRunDiagnostic(run_id, workflow_id, issue_id, reason) ->
+      workflow_run_record.diagnostic_entries(
+        run_id,
+        workflow_id,
+        issue_id,
+        reason,
+      )
+    WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason) ->
+      workflow_run_record.interrupted_entries(
+        run_id,
+        workflow_id,
+        issue_id,
+        reason,
+      )
     WorkflowRunSuperseded(
       run_id,
       workflow_id,
       issue_id,
       superseded_by_run_id,
       reason,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("issue_id", json.string(issue_id)),
-      #("superseded_by_run_id", json.string(superseded_by_run_id)),
-      #("reason", json.string(reason)),
-    ]
+    ) ->
+      workflow_run_record.superseded_entries(
+        run_id,
+        workflow_id,
+        issue_id,
+        superseded_by_run_id,
+        reason,
+      )
     WorkflowRepairRequested(
       run_id,
       workflow_id,
@@ -921,18 +929,19 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       failed_attempt_index,
       next_attempt_index,
       reason,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("requested_target", json.string(requested_target)),
-      #("requested_step_id", option_string_to_json(requested_step_id)),
-      #("selected_step_id", json.string(selected_step_id)),
-      #("failed_attempt_index", json.int(failed_attempt_index)),
-      #("next_attempt_index", json.int(next_attempt_index)),
-      #("reason", json.string(reason)),
-    ]
+    ) ->
+      workflow_run_record.repair_requested_entries(
+        run_id,
+        workflow_id,
+        issue_id,
+        issue_identifier,
+        requested_target,
+        requested_step_id,
+        selected_step_id,
+        failed_attempt_index,
+        next_attempt_index,
+        reason,
+      )
     StepAttemptPrepared(
       run_id,
       workflow_id,
@@ -943,17 +952,18 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       run_root,
       source_workspace_name,
       source_workspace_path,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("step_id", json.string(step_id)),
-      #("attempt_index", json.int(attempt_index)),
-      #("workspace_name", json.string(workspace_name)),
-      #("workspace_path", json.string(workspace_path)),
-      #("run_root", json.string(run_root)),
-      #("source_workspace_name", option_string_to_json(source_workspace_name)),
-      #("source_workspace_path", option_string_to_json(source_workspace_path)),
-    ]
+    ) ->
+      step_record.prepared_entries(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        workspace_name,
+        workspace_path,
+        run_root,
+        source_workspace_name,
+        source_workspace_path,
+      )
     StepAttemptStarted(
       run_id,
       workflow_id,
@@ -962,28 +972,30 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       operator_session_id,
       external_session_ref,
       continuation_capable,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("step_id", json.string(step_id)),
-      #("attempt_index", json.int(attempt_index)),
-      #("operator_session_id", json.string(operator_session_id)),
-      #("external_session_ref", option_string_to_json(external_session_ref)),
-      #("continuation_capable", json.bool(continuation_capable)),
-    ]
+    ) ->
+      step_record.started_entries(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        operator_session_id,
+        external_session_ref,
+        continuation_capable,
+      )
     StepAttemptContinuationStarted(
       run_id,
       workflow_id,
       step_id,
       attempt_index,
       session_id,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("step_id", json.string(step_id)),
-      #("attempt_index", json.int(attempt_index)),
-      #("session_id", json.string(session_id)),
-    ]
+    ) ->
+      step_record.continuation_started_entries(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        session_id,
+      )
     StepAttemptPiSessionRecorded(
       run_id,
       issue_id,
@@ -996,19 +1008,20 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       workspace_path,
       session_id,
       session_file,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("workflow_id", json.string(workflow_id)),
-      #("workflow_fingerprint", json.string(workflow_fingerprint)),
-      #("step_id", json.string(step_id)),
-      #("workspace_name", json.string(workspace_name)),
-      #("attempt_index", json.int(attempt_index)),
-      #("workspace_path", json.string(workspace_path)),
-      #("session_id", json.string(session_id)),
-      #("session_file", json.string(session_file)),
-    ]
+    ) ->
+      step_record.pi_session_recorded_entries(
+        run_id,
+        issue_id,
+        issue_identifier,
+        workflow_id,
+        workflow_fingerprint,
+        step_id,
+        workspace_name,
+        attempt_index,
+        workspace_path,
+        session_id,
+        session_file,
+      )
     StepAttemptPiSessionRecordedWithTask(
       run_id,
       issue_id,
@@ -1023,22 +1036,20 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       session_id,
       session_file,
     ) ->
-      [
-        #("run_id", json.string(run_id)),
-        #("issue_id", json.string(issue_id)),
-        #("issue_identifier", json.string(issue_identifier)),
-      ]
-      |> append_json_entries(task_ref_entries(task_ref))
-      |> append_json_entries([
-        #("workflow_id", json.string(workflow_id)),
-        #("workflow_fingerprint", json.string(workflow_fingerprint)),
-        #("step_id", json.string(step_id)),
-        #("workspace_name", json.string(workspace_name)),
-        #("attempt_index", json.int(attempt_index)),
-        #("workspace_path", json.string(workspace_path)),
-        #("session_id", json.string(session_id)),
-        #("session_file", json.string(session_file)),
-      ])
+      step_record.pi_session_recorded_with_task_entries(
+        run_id,
+        issue_id,
+        issue_identifier,
+        task_ref_entries(task_ref),
+        workflow_id,
+        workflow_fingerprint,
+        step_id,
+        workspace_name,
+        attempt_index,
+        workspace_path,
+        session_id,
+        session_file,
+      )
     StepAttemptFinished(
       run_id,
       workflow_id,
@@ -1051,19 +1062,20 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       workspace_path,
       token_total,
       turns,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("step_id", json.string(step_id)),
-      #("attempt_index", json.int(attempt_index)),
-      #("outcome", json.string(outcome)),
-      #("artifact_ref", json.string(artifact_ref)),
-      #("artifact_sha256", json.string(artifact_sha256)),
-      #("workspace_name", json.string(workspace_name)),
-      #("workspace_path", json.string(workspace_path)),
-      #("token_total", json.int(token_total)),
-      #("turns", json.int(turns)),
-    ]
+    ) ->
+      step_record.finished_entries(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        outcome,
+        artifact_ref,
+        artifact_sha256,
+        workspace_name,
+        workspace_path,
+        token_total,
+        turns,
+      )
     WorkflowStepRecoveryStarted(
       run_id,
       workflow_id,
@@ -1073,16 +1085,17 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       recovery_session_id,
       model,
       prompt_ref,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("step_id", json.string(step_id)),
-      #("failed_attempt_index", json.int(failed_attempt_index)),
-      #("recovery_attempt_number", json.int(recovery_attempt_number)),
-      #("recovery_session_id", json.string(recovery_session_id)),
-      #("model", option_string_to_json(model)),
-      #("prompt_ref", json.string(prompt_ref)),
-    ]
+    ) ->
+      step_record.recovery_started_entries(
+        run_id,
+        workflow_id,
+        step_id,
+        failed_attempt_index,
+        recovery_attempt_number,
+        recovery_session_id,
+        model,
+        prompt_ref,
+      )
     WorkflowStepRecoveryFinished(
       run_id,
       workflow_id,
@@ -1094,25 +1107,27 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       summary,
       reason,
       retry_attempt_index,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("step_id", json.string(step_id)),
-      #("failed_attempt_index", json.int(failed_attempt_index)),
-      #("recovery_attempt_number", json.int(recovery_attempt_number)),
-      #("recovery_session_id", json.string(recovery_session_id)),
-      #("result", json.string(result)),
-      #("summary", json.string(summary)),
-      #("reason", json.string(reason)),
-      #("retry_attempt_index", option_int_to_json(retry_attempt_index)),
-    ]
-    StepAttemptInterrupted(run_id, workflow_id, step_id, attempt_index, reason) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("step_id", json.string(step_id)),
-      #("attempt_index", json.int(attempt_index)),
-      #("reason", json.string(reason)),
-    ]
+    ) ->
+      step_record.recovery_finished_entries(
+        run_id,
+        workflow_id,
+        step_id,
+        failed_attempt_index,
+        recovery_attempt_number,
+        recovery_session_id,
+        result,
+        summary,
+        reason,
+        retry_attempt_index,
+      )
+    StepAttemptInterrupted(run_id, workflow_id, step_id, attempt_index, reason) ->
+      step_record.interrupted_entries(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        reason,
+      )
     StepAttemptSuperseded(
       run_id,
       workflow_id,
@@ -1120,26 +1135,29 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       attempt_index,
       superseded_by_attempt_index,
       reason,
-    ) -> [
-      #("run_id", json.string(run_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("step_id", json.string(step_id)),
-      #("attempt_index", json.int(attempt_index)),
-      #("superseded_by_attempt_index", json.int(superseded_by_attempt_index)),
-      #("reason", json.string(reason)),
-    ]
-    RetryScheduled(issue_id, issue_identifier, delay_ms, generation, reason) -> [
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("delay_ms", json.int(delay_ms)),
-      #("generation", json.int(generation)),
-      #("reason", json.string(reason)),
-    ]
-    RetryCancelled(issue_id, generation, reason) -> [
-      #("issue_id", json.string(issue_id)),
-      #("generation", json.int(generation)),
-      #("reason", json.string(reason)),
-    ]
+    ) ->
+      step_record.superseded_entries(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        superseded_by_attempt_index,
+        reason,
+      )
+    RetryScheduled(issue_id, issue_identifier, delay_ms, generation, reason) ->
+      issue_recovery_record.retry_scheduled_entries(
+        issue_id,
+        issue_identifier,
+        delay_ms,
+        generation,
+        reason,
+      )
+    RetryCancelled(issue_id, generation, reason) ->
+      issue_recovery_record.retry_cancelled_entries(
+        issue_id,
+        generation,
+        reason,
+      )
     IssueCounterUpdated(
       issue_id,
       issue_identifier,
@@ -1147,25 +1165,28 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       worker_sessions,
       observed_updated_at_ms,
       source_run_id,
-    ) -> [
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("failure_attempts", json.int(failure_attempts)),
-      #("worker_sessions", json.int(worker_sessions)),
-      #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
-      #("source_run_id", option_string_to_json(source_run_id)),
-    ]
-    KnownWorkspace(issue_id, issue_identifier, workspace_path) -> [
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("workspace_path", json.string(workspace_path)),
-    ]
-    IssueParked(issue_id, issue_identifier, reason, observed_updated_at_ms) -> [
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("reason", json.string(reason)),
-      #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
-    ]
+    ) ->
+      issue_recovery_record.issue_counter_entries(
+        issue_id,
+        issue_identifier,
+        failure_attempts,
+        worker_sessions,
+        observed_updated_at_ms,
+        source_run_id,
+      )
+    KnownWorkspace(issue_id, issue_identifier, workspace_path) ->
+      issue_recovery_record.known_workspace_entries(
+        issue_id,
+        issue_identifier,
+        workspace_path,
+      )
+    IssueParked(issue_id, issue_identifier, reason, observed_updated_at_ms) ->
+      issue_recovery_record.issue_parked_entries(
+        issue_id,
+        issue_identifier,
+        reason,
+        observed_updated_at_ms,
+      )
     IssueParkedV2(
       issue_id,
       issue_identifier,
@@ -1173,41 +1194,40 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       release_policy,
       issue_fingerprint,
       observed_updated_at_ms,
-    ) -> [
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("reason", json.string(reason)),
-      #("release_policy", json.string(release_policy)),
-      #("issue_fingerprint", json.string(issue_fingerprint)),
-      #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
-    ]
-    IssueUnparked(issue_id, issue_identifier, reason) -> [
-      #("issue_id", json.string(issue_id)),
-      #("issue_identifier", json.string(issue_identifier)),
-      #("reason", json.string(reason)),
-    ]
-    LinearCommandSeen(comment_id, issue_id, author_id, command_name, excerpt) -> [
-      #("comment_id", json.string(comment_id)),
-      #("issue_id", json.string(issue_id)),
-      #("author_id", json.string(author_id)),
-      #("command_name", json.string(command_name)),
-      #("excerpt", json.string(excerpt)),
-    ]
-    LinearCommandStarted(comment_id, issue_id, command_name) -> [
-      #("comment_id", json.string(comment_id)),
-      #("issue_id", json.string(issue_id)),
-      #("command_name", json.string(command_name)),
-    ]
-    LinearCommandCompleted(comment_id, issue_id, status, message_excerpt) -> [
-      #("comment_id", json.string(comment_id)),
-      #("issue_id", json.string(issue_id)),
-      #("status", json.string(status)),
-      #("message_excerpt", json.string(message_excerpt)),
-    ]
-    LinearCommandAcked(comment_id, issue_id) -> [
-      #("comment_id", json.string(comment_id)),
-      #("issue_id", json.string(issue_id)),
-    ]
+    ) ->
+      issue_recovery_record.issue_parked_v2_entries(
+        issue_id,
+        issue_identifier,
+        reason,
+        release_policy,
+        issue_fingerprint,
+        observed_updated_at_ms,
+      )
+    IssueUnparked(issue_id, issue_identifier, reason) ->
+      issue_recovery_record.issue_unparked_entries(
+        issue_id,
+        issue_identifier,
+        reason,
+      )
+    LinearCommandSeen(comment_id, issue_id, author_id, command_name, excerpt) ->
+      command_record.linear_seen_entries(
+        comment_id,
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+      )
+    LinearCommandStarted(comment_id, issue_id, command_name) ->
+      command_record.linear_started_entries(comment_id, issue_id, command_name)
+    LinearCommandCompleted(comment_id, issue_id, status, message_excerpt) ->
+      command_record.linear_completed_entries(
+        comment_id,
+        issue_id,
+        status,
+        message_excerpt,
+      )
+    LinearCommandAcked(comment_id, issue_id) ->
+      command_record.linear_acked_entries(comment_id, issue_id)
     RemoteCommandSeen(
       backend_kind,
       event_id,
@@ -1216,42 +1236,51 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       author_id,
       command_name,
       excerpt,
-    ) -> [
-      #("backend_kind", json.string(backend_kind)),
-      #("event_id", json.string(event_id)),
-      #("task_remote_id", json.string(task_remote_id)),
-      #("task_key", option_string_to_json(task_key)),
-      #("author_id", json.string(author_id)),
-      #("command_name", json.string(command_name)),
-      #("excerpt", json.string(excerpt)),
-    ]
-    RemoteCommandStarted(backend_kind, event_id, task_remote_id, command_name) -> [
-      #("backend_kind", json.string(backend_kind)),
-      #("event_id", json.string(event_id)),
-      #("task_remote_id", json.string(task_remote_id)),
-      #("command_name", json.string(command_name)),
-    ]
+    ) ->
+      command_record.remote_seen_entries(
+        backend_kind,
+        event_id,
+        task_remote_id,
+        task_key,
+        author_id,
+        command_name,
+        excerpt,
+      )
+    RemoteCommandStarted(backend_kind, event_id, task_remote_id, command_name) ->
+      command_record.remote_started_entries(
+        backend_kind,
+        event_id,
+        task_remote_id,
+        command_name,
+      )
     RemoteCommandCompleted(
       backend_kind,
       event_id,
       task_remote_id,
       status,
       message_excerpt,
-    ) -> [
-      #("backend_kind", json.string(backend_kind)),
-      #("event_id", json.string(event_id)),
-      #("task_remote_id", json.string(task_remote_id)),
-      #("status", json.string(status)),
-      #("message_excerpt", json.string(message_excerpt)),
-    ]
-    RemoteCommandAcked(backend_kind, event_id, task_remote_id) -> [
-      #("backend_kind", json.string(backend_kind)),
-      #("event_id", json.string(event_id)),
-      #("task_remote_id", json.string(task_remote_id)),
-    ]
+    ) ->
+      command_record.remote_completed_entries(
+        backend_kind,
+        event_id,
+        task_remote_id,
+        status,
+        message_excerpt,
+      )
+    RemoteCommandAcked(backend_kind, event_id, task_remote_id) ->
+      command_record.remote_acked_entries(
+        backend_kind,
+        event_id,
+        task_remote_id,
+      )
     ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([#("trigger", json.string(trigger))])
+      scheduled_record.job_due_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        trigger,
+      )
     ScheduledJobSkipped(
       job_id,
       workflow_id,
@@ -1260,11 +1289,14 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       reason,
       skipped_count,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("reason", json.string(reason)),
-        #("skipped_count", json.int(skipped_count)),
-      ])
+      scheduled_record.job_skipped_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        reason,
+        skipped_count,
+      )
     ScheduledRunPending(
       job_id,
       workflow_id,
@@ -1273,11 +1305,14 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       trigger,
       requested_at_ms,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("trigger", json.string(trigger)),
-        #("requested_at_ms", json.int(requested_at_ms)),
-      ])
+      scheduled_record.run_pending_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        trigger,
+        requested_at_ms,
+      )
     ScheduledRunPendingBlocked(
       job_id,
       workflow_id,
@@ -1286,11 +1321,14 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       reason,
       observed_at_ms,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("reason", json.string(reason)),
-        #("observed_at_ms", json.int(observed_at_ms)),
-      ])
+      scheduled_record.run_pending_blocked_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        reason,
+        observed_at_ms,
+      )
     ScheduledRunPendingCancelled(
       job_id,
       workflow_id,
@@ -1299,11 +1337,14 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       reason,
       cancelled_at_ms,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("reason", json.string(reason)),
-        #("cancelled_at_ms", json.int(cancelled_at_ms)),
-      ])
+      scheduled_record.run_pending_cancelled_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        reason,
+        cancelled_at_ms,
+      )
     ScheduledRunStarted(
       job_id,
       workflow_id,
@@ -1314,13 +1355,16 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       session_id,
       run_root,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("started_at_ms", json.int(started_at_ms)),
-        #("attempt", json.int(attempt)),
-        #("session_id", json.string(session_id)),
-        #("run_root", json.string(run_root)),
-      ])
+      scheduled_record.run_started_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        started_at_ms,
+        run_id,
+        attempt,
+        session_id,
+        run_root,
+      )
     ScheduledRunSucceeded(
       job_id,
       workflow_id,
@@ -1331,13 +1375,16 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       token_total,
       turns,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("attempt", json.int(attempt)),
-        #("finished_at_ms", json.int(finished_at_ms)),
-        #("token_total", json.int(token_total)),
-        #("turns", json.int(turns)),
-      ])
+      scheduled_record.run_succeeded_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        finished_at_ms,
+        token_total,
+        turns,
+      )
     ScheduledRunFailed(
       job_id,
       workflow_id,
@@ -1349,14 +1396,17 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       retry_exhausted,
       run_root,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("attempt", json.int(attempt)),
-        #("finished_at_ms", json.int(finished_at_ms)),
-        #("reason", json.string(reason)),
-        #("retry_exhausted", json.bool(retry_exhausted)),
-        #("run_root", option_string_to_json(run_root)),
-      ])
+      scheduled_record.run_failed_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        finished_at_ms,
+        reason,
+        retry_exhausted,
+        run_root,
+      )
     ScheduledRunRetryScheduled(
       job_id,
       workflow_id,
@@ -1367,19 +1417,23 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       generation,
       reason,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("next_attempt", json.int(next_attempt)),
-        #("delay_ms", json.int(delay_ms)),
-        #("generation", json.int(generation)),
-        #("reason", json.string(reason)),
-      ])
-    ScheduledRunRetryCancelled(job_id, run_id, generation, reason) -> [
-      #("job_id", json.string(job_id)),
-      #("run_id", json.string(run_id)),
-      #("generation", json.int(generation)),
-      #("reason", json.string(reason)),
-    ]
+      scheduled_record.run_retry_scheduled_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        next_attempt,
+        delay_ms,
+        generation,
+        reason,
+      )
+    ScheduledRunRetryCancelled(job_id, run_id, generation, reason) ->
+      scheduled_record.run_retry_cancelled_entries(
+        job_id,
+        run_id,
+        generation,
+        reason,
+      )
     ScheduledFailureReported(
       job_id,
       workflow_id,
@@ -1390,13 +1444,16 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       linear_issue_id,
       action,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("attempt", json.int(attempt)),
-        #("dedupe_key", json.string(dedupe_key)),
-        #("linear_issue_id", json.string(linear_issue_id)),
-        #("action", json.string(action)),
-      ])
+      scheduled_record.failure_reported_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        dedupe_key,
+        linear_issue_id,
+        action,
+      )
     ScheduledFailureReportFailed(
       job_id,
       workflow_id,
@@ -1409,45 +1466,43 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       next_retry_at_ms,
       generation,
     ) ->
-      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
-      |> append_json_entries([
-        #("attempt", json.int(attempt)),
-        #("dedupe_key", json.string(dedupe_key)),
-        #("error_code", json.string(error_code)),
-        #("error_message", json.string(error_message)),
-        #("next_retry_at_ms", json.int(next_retry_at_ms)),
-        #("generation", json.int(generation)),
-      ])
-    OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key) -> [
-      #("outbox_id", json.string(outbox_id)),
-      #("issue_id", json.string(issue_id)),
-      #("outbox_kind", json.string(outbox_kind)),
-      #("dedupe_key", json.string(dedupe_key)),
-    ]
-    OutboxPendingV2(outbox_id, issue_id, outbox_kind, dedupe_key, payload_json) -> [
-      #("outbox_id", json.string(outbox_id)),
-      #("issue_id", json.string(issue_id)),
-      #("outbox_kind", json.string(outbox_kind)),
-      #("dedupe_key", json.string(dedupe_key)),
-      #("payload_json", json.string(payload_json)),
-    ]
-    OutboxCompleted(outbox_id, issue_id, outbox_kind) -> [
-      #("outbox_id", json.string(outbox_id)),
-      #("issue_id", json.string(issue_id)),
-      #("outbox_kind", json.string(outbox_kind)),
-    ]
-    OutboxFailed(outbox_id, issue_id, outbox_kind, error_code) -> [
-      #("outbox_id", json.string(outbox_id)),
-      #("issue_id", json.string(issue_id)),
-      #("outbox_kind", json.string(outbox_kind)),
-      #("error_code", json.string(error_code)),
-    ]
+      scheduled_record.failure_report_failed_entries(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        dedupe_key,
+        error_code,
+        error_message,
+        next_retry_at_ms,
+        generation,
+      )
+    OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key) ->
+      outbox_record.pending_entries(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+      )
+    OutboxPendingV2(outbox_id, issue_id, outbox_kind, dedupe_key, payload_json) ->
+      outbox_record.pending_v2_entries(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+      )
+    OutboxCompleted(outbox_id, issue_id, outbox_kind) ->
+      outbox_record.completed_entries(outbox_id, issue_id, outbox_kind)
+    OutboxFailed(outbox_id, issue_id, outbox_kind, error_code) ->
+      outbox_record.failed_entries(outbox_id, issue_id, outbox_kind, error_code)
     WorkstreamCreated(workstream_id, task_ref, idempotency_key) ->
-      [#("workstream_id", json.string(workstream_id))]
-      |> append_json_entries(task_ref_entries(task_ref))
-      |> append_json_entries([
-        #("idempotency_key", json.string(idempotency_key)),
-      ])
+      workstream_record.created_with_task_entries(
+        workstream_id,
+        task_ref_entries(task_ref),
+        idempotency_key,
+      )
     WorkstreamAssigned(
       workstream_id,
       assignment_id,
@@ -1455,14 +1510,15 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       playbook_id,
       reason,
       idempotency_key,
-    ) -> [
-      #("workstream_id", json.string(workstream_id)),
-      #("assignment_id", json.string(assignment_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("playbook_id", option_string_to_json(playbook_id)),
-      #("reason", json.string(reason)),
-      #("idempotency_key", json.string(idempotency_key)),
-    ]
+    ) ->
+      workstream_record.assigned_entries(
+        workstream_id,
+        assignment_id,
+        workflow_id,
+        playbook_id,
+        reason,
+        idempotency_key,
+      )
     WorkstreamArtifactRecorded(
       workstream_id,
       artifact_id,
@@ -1477,21 +1533,22 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       producer_run_id,
       producer_step_id,
       idempotency_key,
-    ) -> [
-      #("workstream_id", json.string(workstream_id)),
-      #("artifact_id", json.string(artifact_id)),
-      #("artifact_type", json.string(artifact_type)),
-      #("snapshot_ref", json.string(snapshot_ref)),
-      #("snapshot_sha256", json.string(snapshot_sha256)),
-      #("snapshot_bytes", json.int(snapshot_bytes)),
-      #("original_path", json.string(original_path)),
-      #("contract_type", json.string(contract_type)),
-      #("media_type", json.string(media_type)),
-      #("producer_workflow_id", json.string(producer_workflow_id)),
-      #("producer_run_id", json.string(producer_run_id)),
-      #("producer_step_id", json.string(producer_step_id)),
-      #("idempotency_key", json.string(idempotency_key)),
-    ]
+    ) ->
+      workstream_record.artifact_entries(
+        workstream_id,
+        artifact_id,
+        artifact_type,
+        snapshot_ref,
+        snapshot_sha256,
+        snapshot_bytes,
+        original_path,
+        contract_type,
+        media_type,
+        producer_workflow_id,
+        producer_run_id,
+        producer_step_id,
+        idempotency_key,
+      )
     WorkstreamHandoffRecorded(
       workstream_id,
       handoff_id,
@@ -1501,16 +1558,17 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       source_workflow_id,
       source_run_id,
       idempotency_key,
-    ) -> [
-      #("workstream_id", json.string(workstream_id)),
-      #("handoff_id", json.string(handoff_id)),
-      #("handoff_ref", json.string(handoff_ref)),
-      #("handoff_sha256", json.string(handoff_sha256)),
-      #("handoff_bytes", json.int(handoff_bytes)),
-      #("source_workflow_id", json.string(source_workflow_id)),
-      #("source_run_id", json.string(source_run_id)),
-      #("idempotency_key", json.string(idempotency_key)),
-    ]
+    ) ->
+      workstream_record.handoff_entries(
+        workstream_id,
+        handoff_id,
+        handoff_ref,
+        handoff_sha256,
+        handoff_bytes,
+        source_workflow_id,
+        source_run_id,
+        idempotency_key,
+      )
     WorkstreamPhaseRunQueued(
       workstream_id,
       phase_run_id,
@@ -1520,16 +1578,17 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       input_bundle_sha256,
       input_bundle_bytes,
       idempotency_key,
-    ) -> [
-      #("workstream_id", json.string(workstream_id)),
-      #("phase_run_id", json.string(phase_run_id)),
-      #("action_id", json.string(action_id)),
-      #("workflow_id", json.string(workflow_id)),
-      #("input_bundle_ref", json.string(input_bundle_ref)),
-      #("input_bundle_sha256", json.string(input_bundle_sha256)),
-      #("input_bundle_bytes", json.int(input_bundle_bytes)),
-      #("idempotency_key", json.string(idempotency_key)),
-    ]
+    ) ->
+      workstream_record.phase_run_entries(
+        workstream_id,
+        phase_run_id,
+        action_id,
+        workflow_id,
+        input_bundle_ref,
+        input_bundle_sha256,
+        input_bundle_bytes,
+        idempotency_key,
+      )
   }
 }
 
@@ -1541,54 +1600,19 @@ fn workflow_contract_record_entries(
   artifact_sha256: String,
   artifact_bytes: Int,
 ) -> List(#(String, json.Json)) {
-  [
-    #("run_id", json.string(run_id)),
-    #("workflow_id", json.string(workflow_id)),
-    #("workflow_fingerprint", json.string(workflow_fingerprint)),
-    #("artifact_ref", json.string(artifact_ref)),
-    #("artifact_sha256", json.string(artifact_sha256)),
-    #("artifact_bytes", json.int(artifact_bytes)),
-  ]
-}
-
-fn scheduled_base_entries(
-  job_id: String,
-  workflow_id: String,
-  due_at_ms: Int,
-  run_id: String,
-) -> List(#(String, json.Json)) {
-  [
-    #("job_id", json.string(job_id)),
-    #("workflow_id", json.string(workflow_id)),
-    #("due_at_ms", json.int(due_at_ms)),
-    #("run_id", json.string(run_id)),
-  ]
-}
-
-fn append_json_entries(
-  base: List(#(String, json.Json)),
-  extra: List(#(String, json.Json)),
-) -> List(#(String, json.Json)) {
-  list_append(base, extra)
-}
-
-fn list_append(left: List(a), right: List(a)) -> List(a) {
-  case left {
-    [] -> right
-    [first, ..rest] -> [first, ..list_append(rest, right)]
-  }
+  workflow_run_record.contract_record_entries(
+    run_id,
+    workflow_id,
+    workflow_fingerprint,
+    artifact_ref,
+    artifact_sha256,
+    artifact_bytes,
+  )
 }
 
 fn option_string_to_json(value: Option(String)) -> json.Json {
   case value {
     Some(value) -> json.string(value)
-    None -> json.null()
-  }
-}
-
-fn option_int_to_json(value: Option(Int)) -> json.Json {
-  case value {
-    Some(value) -> json.int(value)
     None -> json.null()
   }
 }
@@ -1618,41 +1642,52 @@ fn fields_to_record(fields: RecordFields) -> Result(LedgerRecord, DecodeError) {
   }
 }
 
+fn legacy_run_body_from_fields(
+  fields: RecordFields,
+) -> Result(RecordBody, DecodeError) {
+  let legacy_fields =
+    legacy_run_record.Fields(
+      run_id: fields.run_id,
+      issue_id: fields.issue_id,
+      issue_identifier: fields.issue_identifier,
+      workspace_path: fields.workspace_path,
+      classification: fields.classification,
+      token_total: fields.token_total,
+      turns: fields.turns,
+      reason: fields.reason,
+    )
+  case
+    legacy_run_record.decode(
+      fields.kind,
+      legacy_fields,
+      required_string,
+      required_int,
+      UnknownKind,
+    )
+  {
+    Ok(legacy_run_record.RunStartedBody(
+      run_id,
+      issue_id,
+      issue_identifier,
+      workspace_path,
+    )) -> Ok(RunStarted(run_id, issue_id, issue_identifier, workspace_path))
+    Ok(legacy_run_record.RunFinishedBody(
+      run_id,
+      issue_id,
+      classification,
+      token_total,
+      turns,
+    )) -> Ok(RunFinished(run_id, issue_id, classification, token_total, turns))
+    Ok(legacy_run_record.RunInterruptedBody(run_id, issue_id, reason)) ->
+      Ok(RunInterrupted(run_id, issue_id, reason))
+    Error(error) -> Error(error)
+  }
+}
+
 fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
   case fields.kind {
-    "run_started" -> {
-      use run_id <- result.try(required_string(fields.run_id, "run_id"))
-      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
-      use issue_identifier <- result.try(required_string(
-        fields.issue_identifier,
-        "issue_identifier",
-      ))
-      use workspace_path <- result.try(required_string(
-        fields.workspace_path,
-        "workspace_path",
-      ))
-      Ok(RunStarted(run_id, issue_id, issue_identifier, workspace_path))
-    }
-    "run_finished" -> {
-      use run_id <- result.try(required_string(fields.run_id, "run_id"))
-      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
-      use classification <- result.try(required_string(
-        fields.classification,
-        "classification",
-      ))
-      use token_total <- result.try(required_int(
-        fields.token_total,
-        "token_total",
-      ))
-      use turns <- result.try(required_int(fields.turns, "turns"))
-      Ok(RunFinished(run_id, issue_id, classification, token_total, turns))
-    }
-    "run_interrupted" -> {
-      use run_id <- result.try(required_string(fields.run_id, "run_id"))
-      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
-      use reason <- result.try(required_string(fields.reason, "reason"))
-      Ok(RunInterrupted(run_id, issue_id, reason))
-    }
+    "run_started" | "run_finished" | "run_interrupted" ->
+      legacy_run_body_from_fields(fields)
     "workflow_run_started" -> {
       use run_id <- result.try(required_string(fields.run_id, "run_id"))
       use workflow_id <- result.try(required_string(
@@ -2382,238 +2417,268 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       ))
       Ok(RemoteCommandAcked(backend_kind, event_id, task_remote_id))
     }
-    "scheduled_job_due" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use trigger <- result.try(required_string(fields.trigger, "trigger"))
-      Ok(ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger))
-    }
-    "scheduled_job_skipped" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use reason <- result.try(required_string(fields.reason, "reason"))
-      use skipped_count <- result.try(required_int(
-        fields.skipped_count,
-        "skipped_count",
-      ))
-      Ok(ScheduledJobSkipped(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        reason,
-        skipped_count,
-      ))
-    }
-    "scheduled_run_pending" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use trigger <- result.try(required_string(fields.trigger, "trigger"))
-      use requested_at_ms <- result.try(required_int(
-        fields.requested_at_ms,
-        "requested_at_ms",
-      ))
-      Ok(ScheduledRunPending(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        trigger,
-        requested_at_ms,
-      ))
-    }
-    "scheduled_run_pending_blocked" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use reason <- result.try(required_string(fields.reason, "reason"))
-      use observed_at_ms <- result.try(required_int(
-        fields.observed_at_ms,
-        "observed_at_ms",
-      ))
-      Ok(ScheduledRunPendingBlocked(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        reason,
-        observed_at_ms,
-      ))
-    }
-    "scheduled_run_pending_cancelled" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use reason <- result.try(required_string(fields.reason, "reason"))
-      use cancelled_at_ms <- result.try(required_int(
-        fields.cancelled_at_ms,
-        "cancelled_at_ms",
-      ))
-      Ok(ScheduledRunPendingCancelled(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        reason,
-        cancelled_at_ms,
-      ))
-    }
-    "scheduled_run_started" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use started_at_ms <- result.try(required_int(
-        fields.started_at_ms,
-        "started_at_ms",
-      ))
-      use attempt <- result.try(required_int(fields.attempt, "attempt"))
-      use session_id <- result.try(required_string(
-        fields.session_id,
-        "session_id",
-      ))
-      use run_root <- result.try(required_string(fields.run_root, "run_root"))
-      Ok(ScheduledRunStarted(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        started_at_ms,
-        run_id,
-        attempt,
-        session_id,
-        run_root,
-      ))
-    }
-    "scheduled_run_succeeded" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use attempt <- result.try(required_int(fields.attempt, "attempt"))
-      use finished_at_ms <- result.try(required_int(
-        fields.finished_at_ms,
-        "finished_at_ms",
-      ))
-      use token_total <- result.try(required_int(
-        fields.token_total,
-        "token_total",
-      ))
-      use turns <- result.try(required_int(fields.turns, "turns"))
-      Ok(ScheduledRunSucceeded(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        attempt,
-        finished_at_ms,
-        token_total,
-        turns,
-      ))
-    }
-    "scheduled_run_failed" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use attempt <- result.try(required_int(fields.attempt, "attempt"))
-      use finished_at_ms <- result.try(required_int(
-        fields.finished_at_ms,
-        "finished_at_ms",
-      ))
-      use reason <- result.try(required_string(fields.reason, "reason"))
-      use retry_exhausted <- result.try(required_bool(
-        fields.retry_exhausted,
-        "retry_exhausted",
-      ))
-      Ok(ScheduledRunFailed(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        attempt,
-        finished_at_ms,
-        reason,
-        retry_exhausted,
-        fields.run_root,
-      ))
-    }
-    "scheduled_run_retry_scheduled" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use next_attempt <- result.try(required_int(
-        fields.next_attempt,
-        "next_attempt",
-      ))
-      use delay_ms <- result.try(required_int(fields.delay_ms, "delay_ms"))
-      use generation <- result.try(required_int(fields.generation, "generation"))
-      use reason <- result.try(required_string(fields.reason, "reason"))
-      Ok(ScheduledRunRetryScheduled(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        next_attempt,
-        delay_ms,
-        generation,
-        reason,
-      ))
-    }
-    "scheduled_run_retry_cancelled" -> {
-      use job_id <- result.try(required_string(fields.job_id, "job_id"))
-      use run_id <- result.try(required_string(fields.run_id, "run_id"))
-      use generation <- result.try(required_int(fields.generation, "generation"))
-      use reason <- result.try(required_string(fields.reason, "reason"))
-      Ok(ScheduledRunRetryCancelled(job_id, run_id, generation, reason))
-    }
-    "scheduled_failure_reported" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use attempt <- result.try(required_int(fields.attempt, "attempt"))
-      use dedupe_key <- result.try(required_string(
-        fields.dedupe_key,
-        "dedupe_key",
-      ))
-      use linear_issue_id <- result.try(required_string(
-        fields.linear_issue_id,
-        "linear_issue_id",
-      ))
-      use action <- result.try(required_string(fields.action, "action"))
-      Ok(ScheduledFailureReported(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        attempt,
-        dedupe_key,
-        linear_issue_id,
-        action,
-      ))
-    }
-    "scheduled_failure_report_failed" -> {
-      use base <- result.try(required_scheduled_base(fields))
-      let #(job_id, workflow_id, due_at_ms, run_id) = base
-      use attempt <- result.try(required_int(fields.attempt, "attempt"))
-      use dedupe_key <- result.try(required_string(
-        fields.dedupe_key,
-        "dedupe_key",
-      ))
-      use error_code <- result.try(required_string(
-        fields.error_code,
-        "error_code",
-      ))
-      use error_message <- result.try(required_string(
-        fields.error_message,
-        "error_message",
-      ))
-      use next_retry_at_ms <- result.try(required_int(
-        fields.next_retry_at_ms,
-        "next_retry_at_ms",
-      ))
-      use generation <- result.try(required_int(fields.generation, "generation"))
-      Ok(ScheduledFailureReportFailed(
-        job_id,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        attempt,
-        dedupe_key,
-        error_code,
-        error_message,
-        next_retry_at_ms,
-        generation,
-      ))
+    "scheduled_job_due"
+    | "scheduled_job_skipped"
+    | "scheduled_run_pending"
+    | "scheduled_run_pending_blocked"
+    | "scheduled_run_pending_cancelled"
+    | "scheduled_run_started"
+    | "scheduled_run_succeeded"
+    | "scheduled_run_failed"
+    | "scheduled_run_retry_scheduled"
+    | "scheduled_run_retry_cancelled"
+    | "scheduled_failure_reported"
+    | "scheduled_failure_report_failed" -> {
+      use decoded <- result.try(
+        scheduled_record.decode(
+          fields.kind,
+          scheduled_record.ScheduledFields(
+            job_id: fields.job_id,
+            workflow_id: fields.workflow_id,
+            due_at_ms: fields.due_at_ms,
+            run_id: fields.run_id,
+            trigger: fields.trigger,
+            reason: fields.reason,
+            skipped_count: fields.skipped_count,
+            requested_at_ms: fields.requested_at_ms,
+            observed_at_ms: fields.observed_at_ms,
+            cancelled_at_ms: fields.cancelled_at_ms,
+            started_at_ms: fields.started_at_ms,
+            finished_at_ms: fields.finished_at_ms,
+            attempt: fields.attempt,
+            session_id: fields.session_id,
+            retry_exhausted: fields.retry_exhausted,
+            next_attempt: fields.next_attempt,
+            generation: fields.generation,
+            delay_ms: fields.delay_ms,
+            dedupe_key: fields.dedupe_key,
+            linear_issue_id: fields.linear_issue_id,
+            action: fields.action,
+            error_code: fields.error_code,
+            error_message: fields.error_message,
+            next_retry_at_ms: fields.next_retry_at_ms,
+            run_root: fields.run_root,
+            token_total: fields.token_total,
+            turns: fields.turns,
+          ),
+          fn(value, field) {
+            required_string(value, field) |> result.map_error(describe_error)
+          },
+          fn(value, field) {
+            required_int(value, field) |> result.map_error(describe_error)
+          },
+          fn(value, field) {
+            required_bool(value, field) |> result.map_error(describe_error)
+          },
+        )
+        |> result.map_error(InvalidRecord),
+      )
+      case decoded {
+        scheduled_record.ScheduledJobDueBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          trigger,
+        ) ->
+          Ok(ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger))
+        scheduled_record.ScheduledJobSkippedBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          reason,
+          skipped_count,
+        ) ->
+          Ok(ScheduledJobSkipped(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            reason,
+            skipped_count,
+          ))
+        scheduled_record.ScheduledRunPendingBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          trigger,
+          requested_at_ms,
+        ) ->
+          Ok(ScheduledRunPending(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            trigger,
+            requested_at_ms,
+          ))
+        scheduled_record.ScheduledRunPendingBlockedBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          reason,
+          observed_at_ms,
+        ) ->
+          Ok(ScheduledRunPendingBlocked(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            reason,
+            observed_at_ms,
+          ))
+        scheduled_record.ScheduledRunPendingCancelledBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          reason,
+          cancelled_at_ms,
+        ) ->
+          Ok(ScheduledRunPendingCancelled(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            reason,
+            cancelled_at_ms,
+          ))
+        scheduled_record.ScheduledRunStartedBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          started_at_ms,
+          run_id,
+          attempt,
+          session_id,
+          run_root,
+        ) ->
+          Ok(ScheduledRunStarted(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            started_at_ms,
+            run_id,
+            attempt,
+            session_id,
+            run_root,
+          ))
+        scheduled_record.ScheduledRunSucceededBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          attempt,
+          finished_at_ms,
+          token_total,
+          turns,
+        ) ->
+          Ok(ScheduledRunSucceeded(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            attempt,
+            finished_at_ms,
+            token_total,
+            turns,
+          ))
+        scheduled_record.ScheduledRunFailedBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          attempt,
+          finished_at_ms,
+          reason,
+          retry_exhausted,
+          run_root,
+        ) ->
+          Ok(ScheduledRunFailed(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            attempt,
+            finished_at_ms,
+            reason,
+            retry_exhausted,
+            run_root,
+          ))
+        scheduled_record.ScheduledRunRetryScheduledBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          next_attempt,
+          delay_ms,
+          generation,
+          reason,
+        ) ->
+          Ok(ScheduledRunRetryScheduled(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            next_attempt,
+            delay_ms,
+            generation,
+            reason,
+          ))
+        scheduled_record.ScheduledRunRetryCancelledBody(
+          job_id,
+          run_id,
+          generation,
+          reason,
+        ) -> Ok(ScheduledRunRetryCancelled(job_id, run_id, generation, reason))
+        scheduled_record.ScheduledFailureReportedBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          attempt,
+          dedupe_key,
+          linear_issue_id,
+          action,
+        ) ->
+          Ok(ScheduledFailureReported(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            attempt,
+            dedupe_key,
+            linear_issue_id,
+            action,
+          ))
+        scheduled_record.ScheduledFailureReportFailedBody(
+          job_id,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          attempt,
+          dedupe_key,
+          error_code,
+          error_message,
+          next_retry_at_ms,
+          generation,
+        ) ->
+          Ok(ScheduledFailureReportFailed(
+            job_id,
+            workflow_id,
+            due_at_ms,
+            run_id,
+            attempt,
+            dedupe_key,
+            error_code,
+            error_message,
+            next_retry_at_ms,
+            generation,
+          ))
+      }
     }
     "outbox_pending" -> {
       use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
@@ -3602,19 +3667,6 @@ fn decode_workflow_contract_record(
     artifact_sha256,
     artifact_bytes,
   ))
-}
-
-fn required_scheduled_base(
-  fields: RecordFields,
-) -> Result(#(String, String, Int, String), DecodeError) {
-  use job_id <- result.try(required_string(fields.job_id, "job_id"))
-  use workflow_id <- result.try(required_string(
-    fields.workflow_id,
-    "workflow_id",
-  ))
-  use due_at_ms <- result.try(required_int(fields.due_at_ms, "due_at_ms"))
-  use run_id <- result.try(required_string(fields.run_id, "run_id"))
-  Ok(#(job_id, workflow_id, due_at_ms, run_id))
 }
 
 fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
