@@ -785,8 +785,8 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         issue.id,
         run_id,
         adapter_result(
-          capability.report(adapter.LegacyHandoffClaim(
-            issue,
+          capability.report(adapter.HandoffClaim(
+            task.from_legacy_issue(issue),
             workspace_path,
             run_id,
           )),
@@ -797,8 +797,8 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         issue_id,
         run_id,
         adapter_result(
-          capability.report(adapter.LegacyHandoffSuccess(
-            issue,
+          capability.report(adapter.HandoffSuccess(
+            task.from_legacy_issue(issue),
             success,
             run_id,
             workflow_id,
@@ -810,8 +810,8 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         issue_id,
         run_id,
         adapter_result(
-          capability.report(adapter.LegacyHandoffFailure(
-            issue,
+          capability.report(adapter.HandoffFailure(
+            task.from_legacy_issue(issue),
             failure,
             run_id,
             workflow_id,
@@ -821,7 +821,7 @@ fn run_side_effect(effect: Effect) -> EffectResult {
     ReportPark(report, capability) ->
       HandoffParkFinished(
         report.task.remote_id,
-        adapter_result(capability.report(adapter.LegacyHandoffPark(report))),
+        adapter_result(capability.report(adapter.HandoffPark(report))),
       )
     PostRemoteCommandAck(
       backend_kind,

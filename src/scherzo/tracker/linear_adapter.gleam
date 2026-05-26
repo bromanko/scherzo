@@ -11,6 +11,7 @@ import scherzo/scheduled_failure_reporter
 import scherzo/smoke
 import scherzo/task
 import scherzo/tracker/adapter
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
 pub type Dependencies {
@@ -319,43 +320,60 @@ fn report_handoff(
   event: adapter.HandoffEvent,
 ) -> Result(Nil, adapter.TrackerError) {
   case event {
-    adapter.LegacyHandoffClaim(issue, _workspace_path, run_id) ->
+    adapter.HandoffClaim(task_context, _workspace_path, run_id) -> {
+      use issue <- try_adapter_result(linear_handoff_issue(task_context))
       try_adapter(client.claim_issue(issue, run_id), fn(_) { Ok(Nil) })
-    adapter.LegacyHandoffSuccess(issue, success, run_id, workflow_id) ->
+    }
+    adapter.HandoffSuccess(task_context, success, run_id, workflow_id) -> {
+      use issue <- try_adapter_result(linear_handoff_issue(task_context))
       try_adapter(
         client.report_success_for_workflow(issue, success, run_id, workflow_id),
         fn(_) { Ok(Nil) },
       )
-    adapter.LegacyHandoffFailure(issue, failure, run_id, workflow_id) ->
+    }
+    adapter.HandoffFailure(task_context, failure, run_id, workflow_id) -> {
+      use issue <- try_adapter_result(linear_handoff_issue(task_context))
       try_adapter(
         client.report_failure_for_workflow(issue, failure, run_id, workflow_id),
         fn(_) { Ok(Nil) },
       )
-    adapter.LegacyHandoffPark(report) -> {
-      let adapter.ParkReport(
-        task: task_ref,
-        issue_identifier: issue_identifier,
-        reason: reason,
-        release_policy: release_policy,
-        run_id: run_id,
-      ) = report
-      use issue_id <- try_adapter_result(require_linear_ref(task_ref))
-      try_adapter(
-        client.report_park(handoff.ParkReport(
-          issue_id: issue_id,
-          issue_identifier: issue_identifier,
-          reason: reason,
-          release_policy: release_policy,
-          run_id: run_id,
-        )),
-        fn(_) { Ok(Nil) },
-      )
     }
-    adapter.HandoffClaim(_, _, _)
-    | adapter.HandoffSuccess(_, _, _)
-    | adapter.HandoffFailure(_, _, _)
-    | adapter.HandoffPark(_, _, _) -> Ok(Nil)
+    adapter.HandoffPark(report) -> report_linear_park(client, report)
   }
+}
+
+fn linear_handoff_issue(
+  task_context: task.Task,
+) -> Result(tracker_issue.Issue, adapter.TrackerError) {
+  let task.Task(ref: task_ref, ..) = task_context
+  case require_linear_ref(task_ref) {
+    Ok(_) -> Ok(task.to_runtime_issue(task_context))
+    Error(err) -> Error(err)
+  }
+}
+
+fn report_linear_park(
+  client: handoff.Client,
+  report: adapter.ParkReport,
+) -> Result(Nil, adapter.TrackerError) {
+  let adapter.ParkReport(
+    task: task_ref,
+    issue_identifier: issue_identifier,
+    reason: reason,
+    release_policy: release_policy,
+    run_id: run_id,
+  ) = report
+  use issue_id <- try_adapter_result(require_linear_ref(task_ref))
+  try_adapter(
+    client.report_park(handoff.ParkReport(
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      reason: reason,
+      release_policy: release_policy,
+      run_id: run_id,
+    )),
+    fn(_) { Ok(Nil) },
+  )
 }
 
 fn state_transition_capability(

@@ -3,17 +3,21 @@ import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/agent/types as agent_types
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
+import scherzo/result_artifact
 import scherzo/scheduled_failure_reporter as reporter
+import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/adapter as tracker_adapter
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
+import test_async
 
 type CapturedRequest {
   CapturedRequest(String)
@@ -50,6 +54,27 @@ fn effective_config() -> config_types.EffectiveConfig {
   )
 }
 
+fn handoff_effective_config() -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    ..effective_config(),
+    handoff: config_types.HandoffConfig(
+      enabled: True,
+      comment_on_claim: True,
+      comment_on_success: True,
+      comment_on_failure: True,
+      comment_on_park: True,
+      claim_state_id: Some("claim-state"),
+      success_state_id: Some("success-state"),
+      failure_state_id: Some("failure-state"),
+      include_result_on_success: True,
+      attach_result_on_success: False,
+      attachment_fallback_to_markdown_link: True,
+      result_max_chars: 8000,
+      completion_states: None,
+    ),
+  )
+}
+
 fn task_search_request() -> tracker_adapter.TaskSearchRequest {
   tracker_adapter.TaskSearchRequest(
     active_states: ["Todo", "In Progress"],
@@ -66,6 +91,70 @@ fn linear_task_ref() -> task.TaskRef {
     remote_id: "issue-1",
     key: Some("LIV-266"),
     url: Some("https://linear.app/living-systems/issue/LIV-266"),
+  )
+}
+
+fn linear_task() -> task.Task {
+  task.Task(
+    ref: linear_task_ref(),
+    title: "Refresh architecture",
+    description: Some("body"),
+    priority: Some(2),
+    state: task.TaskState(id: None, name: "Todo", category: task.Unknown),
+    branch_hint: Some("liv-266-refresh"),
+    labels: [task.TaskLabel(id: None, name: "workflow:implementation")],
+    blockers: [],
+    blockers_complete: True,
+    created_at: None,
+    updated_at: None,
+  )
+}
+
+fn non_linear_task() -> task.Task {
+  task.Task(
+    ..linear_task(),
+    ref: task.TaskRef(
+      backend_kind: "github",
+      remote_id: "issue-1",
+      key: Some("GH-1"),
+      url: None,
+    ),
+  )
+}
+
+fn linear_task_without_remote_id() -> task.Task {
+  task.Task(
+    ..linear_task(),
+    ref: task.TaskRef(
+      backend_kind: "linear",
+      remote_id: "",
+      key: Some("LIV-blank"),
+      url: None,
+    ),
+  )
+}
+
+fn worker_success(task_context: task.Task) -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
+    final_issue: Some(task.to_runtime_issue(task_context)),
+    final_classification: agent_types.FinalTerminal,
+    workspace_path: "workspace/main",
+    tokens: session_tokens.zero_token_totals(),
+    turns: 1,
+    result: result_artifact.from_final_response(
+      Some("completed generic handoff"),
+      False,
+      "agent_end_messages",
+    ),
+  )
+}
+
+fn worker_failure() -> agent_types.WorkerFailure {
+  agent_types.WorkerFailure(
+    reason: error.PiFailed(error.PiProtocolError("generic handoff failure")),
+    workspace_path: Some("workspace/main"),
+    tokens: session_tokens.zero_token_totals(),
+    final_issue: None,
   )
 }
 
@@ -155,6 +244,133 @@ pub fn linear_adapter_posts_comment_with_existing_linear_body_test() {
       created: True,
     )
   assert receive_request(captured) == expected_request.body
+}
+
+pub fn linear_adapter_generic_handoff_events_preserve_linear_behavior_test() {
+  let captured = process.new_subject()
+  let linear_tracker =
+    linear_adapter.from_effective_config(
+      handoff_effective_config(),
+      fn(request) {
+        process.send(captured, CapturedRequest(request.body))
+        case string.contains(request.body, "issueUpdate") {
+          True ->
+            Ok(linear.Response(
+              status: 200,
+              body: mutation_success_response("issueUpdate"),
+            ))
+          False ->
+            Ok(linear.Response(
+              status: 200,
+              body: comment_create_response("comment-handoff"),
+            ))
+        }
+      },
+    )
+  let assert Some(tracker_adapter.HandoffCapability(report: report)) =
+    linear_tracker.handoff
+  let task_context = linear_task()
+
+  assert report(tracker_adapter.HandoffClaim(
+      task_context,
+      "workspace/main",
+      "run-claim",
+    ))
+    == Ok(Nil)
+  let claim_comment = receive_request(captured)
+  let claim_state = receive_request(captured)
+  assert string.contains(claim_comment, "Scherzo claimed this issue")
+  assert string.contains(claim_comment, "LIV-266")
+  assert string.contains(claim_comment, "run-claim")
+  assert string.contains(claim_state, "claim-state")
+
+  assert report(tracker_adapter.HandoffSuccess(
+      task_context,
+      worker_success(task_context),
+      "run-success",
+      "workflow:implementation",
+    ))
+    == Ok(Nil)
+  let success_comment = receive_request(captured)
+  let success_state = receive_request(captured)
+  assert string.contains(success_comment, "Scherzo completed the run")
+  assert string.contains(success_comment, "completed generic handoff")
+  assert string.contains(success_comment, "run-success")
+  assert string.contains(success_state, "success-state")
+
+  assert report(tracker_adapter.HandoffFailure(
+      task_context,
+      worker_failure(),
+      "run-failure",
+      "workflow:implementation",
+    ))
+    == Ok(Nil)
+  let failure_comment = receive_request(captured)
+  let failure_state = receive_request(captured)
+  assert string.contains(failure_comment, "Failure diagnostics")
+  assert string.contains(failure_comment, "generic handoff failure")
+  assert string.contains(failure_comment, "run-failure")
+  assert string.contains(failure_state, "failure-state")
+
+  assert report(
+      tracker_adapter.HandoffPark(tracker_adapter.ParkReport(
+        task: linear_task_ref(),
+        issue_identifier: "LIV-266",
+        reason: "needs operator input",
+        release_policy: Some("explicit_unpark_only"),
+        run_id: Some("run-park"),
+      )),
+    )
+    == Ok(Nil)
+  let park_comment = receive_request(captured)
+  assert string.contains(park_comment, "Scherzo parked this issue")
+  assert string.contains(park_comment, "needs operator input")
+  assert string.contains(park_comment, "explicit_unpark_only")
+  assert string.contains(park_comment, "run-park")
+}
+
+pub fn linear_adapter_rejects_generic_handoff_events_for_invalid_tasks_test() {
+  let captured = process.new_subject()
+  let linear_tracker =
+    linear_adapter.from_effective_config(
+      handoff_effective_config(),
+      fn(request) {
+        process.send(captured, CapturedRequest(request.body))
+        Error(error.LinearApiRequest("unexpected Linear transport call"))
+      },
+    )
+  let assert Some(tracker_adapter.HandoffCapability(report: report)) =
+    linear_tracker.handoff
+  let non_linear_task = non_linear_task()
+  let blank_linear_task = linear_task_without_remote_id()
+
+  assert report(tracker_adapter.HandoffClaim(
+      non_linear_task,
+      "workspace/main",
+      "run-claim",
+    ))
+    == Error(tracker_adapter.NotFound(non_linear_task.ref))
+  assert report(tracker_adapter.HandoffSuccess(
+      non_linear_task,
+      worker_success(non_linear_task),
+      "run-success",
+      "workflow:implementation",
+    ))
+    == Error(tracker_adapter.NotFound(non_linear_task.ref))
+  assert report(tracker_adapter.HandoffFailure(
+      non_linear_task,
+      worker_failure(),
+      "run-failure",
+      "workflow:implementation",
+    ))
+    == Error(tracker_adapter.NotFound(non_linear_task.ref))
+  assert report(tracker_adapter.HandoffClaim(
+      blank_linear_task,
+      "workspace/main",
+      "run-blank",
+    ))
+    == Error(tracker_adapter.NotFound(blank_linear_task.ref))
+  test_async.assert_no_extra_message_within(captured, 20)
 }
 
 pub fn linear_adapter_scheduled_failure_preserves_dedupe_marker_test() {
@@ -287,6 +503,17 @@ fn empty_issues_response() -> String {
 
 fn candidate_response() -> String {
   "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-1\",\"identifier\":\"LIV-266\",\"title\":\"Refresh architecture\",\"description\":\"body\",\"priority\":2,\"branchName\":\"liv-266-refresh\",\"url\":\"https://linear.app/living-systems/issue/LIV-266\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan\"}]},\"inverseRelations\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+}
+
+fn mutation_success_response(field: String) -> String {
+  json.to_string(
+    json.object([
+      #(
+        "data",
+        json.object([#(field, json.object([#("success", json.bool(True))]))]),
+      ),
+    ]),
+  )
 }
 
 fn comment_create_response(comment_id: String) -> String {
