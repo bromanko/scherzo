@@ -9,6 +9,7 @@ import scherzo/runtime_bundle
 import scherzo/step_artifact
 import scherzo/workflow_dag
 import simplifile
+import support/test_helpers
 
 fn env(name: String) -> Option(String) {
   case name {
@@ -16,14 +17,6 @@ fn env(name: String) -> Option(String) {
     "LINEAR_PROJECT_SLUG" -> Some("TEST")
     _ -> None
   }
-}
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
 }
 
 fn read_file(path: String) -> String {
@@ -58,24 +51,11 @@ fn assert_not_contains(content: String, needle: String) -> Nil {
   assert !string.contains(content, needle)
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 fn absolute(value: String) -> String {
   case path.absolute(value) {
     Ok(value) -> value
     Error(_) -> value
   }
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
 }
 
 fn write_describe_driver(path: String, capabilities_json: String) -> Nil {
@@ -91,7 +71,7 @@ fn write_describe_driver(path: String, capabilities_json: String) -> Nil {
         <> "fi\n"
         <> "exit 2\n",
     )
-  chmod_executable(path)
+  test_helpers.chmod_executable(path)
 }
 
 fn write_fake_driver(path: String) -> Nil {
@@ -110,11 +90,11 @@ fn write_fake_driver(path: String) -> Nil {
         <> "  exit 65\n"
         <> "fi\n",
     )
-  chmod_executable(path)
+  test_helpers.chmod_executable(path)
 }
 
 fn setup_driver_workspace(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let driver = dir <> "/bin/fake-driver"
   write_fake_driver(driver)
@@ -235,7 +215,7 @@ pub fn example_research_package_profile_supports_assert_only_test() {
 
 pub fn example_research_package_rejects_profile_without_assert_only_test() {
   let dir = "test/tmp/portable-research-workflow/missing-capability-package"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/scripts")
   write_describe_driver(
@@ -274,7 +254,7 @@ pub fn collect_findings_command_executes_driver_and_streams_findings_test() {
       5000,
       driver_env(driver),
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -300,7 +280,7 @@ pub fn collect_findings_command_fails_when_driver_rejects_extra_artifact_test() 
       5000,
       driver_env(driver),
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -311,7 +291,7 @@ pub fn collect_findings_command_fails_when_driver_rejects_extra_artifact_test() 
 
 pub fn collect_findings_command_requires_driver_and_findings_file_test() {
   let missing_driver_dir = "test/tmp/portable-research-workflow/missing-driver"
-  reset_dir(missing_driver_dir)
+  test_helpers.reset_dir(missing_driver_dir)
   let assert Ok(Nil) =
     simplifile.write(missing_driver_dir <> "/research-findings.md", "report\n")
   let missing_driver_artifact =
@@ -322,7 +302,7 @@ pub fn collect_findings_command_requires_driver_and_findings_file_test() {
       5000,
       [#("SCHERZO_WORKSPACE_DRIVER", "")],
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
   assert missing_driver_artifact.status == step_artifact.StepFailed
   assert_contains(
@@ -341,7 +321,7 @@ pub fn collect_findings_command_requires_driver_and_findings_file_test() {
       5000,
       driver_env(driver),
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
   assert missing_findings_artifact.status == step_artifact.StepFailed
   assert missing_findings_artifact.exit_code == Some(1)

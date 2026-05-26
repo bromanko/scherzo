@@ -1,18 +1,17 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/runtime_bundle
-import scherzo/step_artifact
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
 import scherzo/workspace_driver_discovery
 import simplifile
+import support/test_helpers
 
 fn parse(content: String) -> workflow_dag.WorkflowDag {
   let assert Ok(dag) = workflow_dag.parse(content)
@@ -114,30 +113,6 @@ fn limits(command_stream_max_chars: Int) -> config_types.ArtifactLimits {
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run(
-      "chmod_fingerprint_driver",
-      "chmod +x " <> shell_quote(path),
-      ".",
-      5000,
-      [],
-      limits(4000),
-    )
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-}
-
 fn write_describe_driver(path: String, capabilities_json: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
@@ -151,7 +126,7 @@ fn write_describe_driver(path: String, capabilities_json: String) -> Nil {
         <> "fi\n"
         <> "exit 2\n",
     )
-  chmod_executable(path)
+  test_helpers.chmod_executable(path)
 }
 
 fn orchestrator_with_profiles(
@@ -252,7 +227,7 @@ pub fn workflow_fingerprint_changes_for_resolved_recover_prompt_contents_test() 
   let dir = "test/tmp/workflow-fingerprint-recover-prompts"
   let workflow_path = dir <> "/workflow.yaml"
   let prompt_path = dir <> "/prompts/recover.md"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/prompts")
   let assert Ok(Nil) =
     simplifile.write(
@@ -340,7 +315,7 @@ pub fn workflow_fingerprint_changes_for_structured_output_validators_test() {
 
 pub fn execution_fingerprint_changes_for_json_schema_content_hash_test() {
   let dir = "test/tmp/workflow-fingerprint-schema-hash"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/.scherzo")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/schemas")
   let schema_path = dir <> "/schemas/review.schema.json"
@@ -732,7 +707,7 @@ pub fn execution_fingerprint_canonicalizes_driver_list_order_test() {
 
 pub fn execution_fingerprint_uses_discovered_driver_capabilities_test() {
   let dir = "test/tmp/workflow-fingerprint-discovered-driver"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let driver = dir <> "/driver.sh"
   let dag =
     parse(

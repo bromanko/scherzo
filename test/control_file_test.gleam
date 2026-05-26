@@ -1,17 +1,11 @@
 import gleam/option.{None, Some}
 import scherzo/control/file
 import scherzo/path
-import simplifile
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
+import support/test_helpers
 
 pub fn write_and_read_control_json_test() {
   let root = "test/tmp/control-file/write-read/workspaces"
-  reset_dir("test/tmp/control-file")
+  test_helpers.reset_dir("test/tmp/control-file")
   let path = file.path_for_workspace(root)
   let control =
     file.ControlFile(
@@ -34,7 +28,7 @@ pub fn write_and_read_control_json_test() {
 
 pub fn env_discovery_uses_injected_environment_test() {
   let root = "test/tmp/control-file/env/workspaces"
-  reset_dir("test/tmp/control-file/env")
+  test_helpers.reset_dir("test/tmp/control-file/env")
   let path = file.path_for_workspace(root)
   let assert Ok(Nil) =
     file.write(path, file.ControlFile("127.0.0.1", 10_000, "token", root, 1))
@@ -55,7 +49,7 @@ pub fn caller_cwd_resolves_relative_control_file_paths_test() {
   let base = "test/tmp/control-file/caller-cwd"
   let core_root = base <> "/core"
   let caller_root = base <> "/consumer"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   let assert Ok(core_abs) = path.absolute(core_root)
   let assert Ok(caller_abs) = path.absolute(caller_root)
   let control_rel = file.default_discovery_path
@@ -91,7 +85,7 @@ pub fn caller_cwd_resolves_relative_control_file_paths_test() {
 pub fn caller_cwd_resolves_relative_scherzo_control_file_env_test() {
   let base = "test/tmp/control-file/caller-env"
   let caller_root = base <> "/consumer"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   let assert Ok(caller_abs) = path.absolute(caller_root)
   let control_rel = file.default_discovery_path
   let caller_control = caller_abs <> "/" <> control_rel

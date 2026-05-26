@@ -4,10 +4,11 @@ import scherzo/state/ledger
 import scherzo/state/projection
 import scherzo/state/record
 import simplifile
+import support/test_helpers
 
 pub fn compact_preserves_projection_and_archives_current_segment_test() {
   let root = "test/tmp/state-ledger/compaction"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = ledger.append_many(path, initial_records(), False)
   let assert Ok(before) = ledger.load_projection(path)
@@ -28,7 +29,7 @@ pub fn compact_preserves_projection_and_archives_current_segment_test() {
 
 pub fn load_projection_replays_snapshot_plus_current_segment_test() {
   let root = "test/tmp/state-ledger/snapshot-plus-current"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = ledger.append_many(path, initial_records(), False)
   let assert Ok(Nil) = ledger.compact(path)
@@ -96,18 +97,12 @@ fn assert_load_projection_rejects_snapshot(
   root: String,
   contents: String,
 ) -> Nil {
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let assert Ok(Nil) = simplifile.write(path.snapshot_path, contents)
 
   let assert Error(_) = ledger.load_projection(path)
-  Nil
-}
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
   Nil
 }
 

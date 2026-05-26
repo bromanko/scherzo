@@ -14,6 +14,7 @@ import scherzo/workspace_driver_discovery
 import scherzo/workspace_manifest
 import scherzo/workspace_run
 import simplifile
+import support/test_helpers
 import yay
 
 fn env(_name: String) -> Option(String) {
@@ -43,20 +44,6 @@ fn root(source: String) -> yay.Node {
   yay.document_root(document)
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
 fn chmod_path(path: String, mode: String) -> Nil {
   let artifact =
     command_step.run(
@@ -65,7 +52,7 @@ fn chmod_path(path: String, mode: String) -> Nil {
       ".",
       5000,
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
   assert artifact.status == step_artifact.StepSucceeded
 }
@@ -95,10 +82,6 @@ fn log_line_before_loop(
       }
     }
   }
-}
-
-fn chmod_executable(path: String) -> Nil {
-  chmod_path(path, "+x")
 }
 
 fn orchestrator(
@@ -143,7 +126,7 @@ fn no_driver_profile() -> config_types.WorkspaceHookProfile {
 
 pub fn prepares_logical_workspace_paths_under_run_root_test() {
   let dir = "test/tmp/workspace-run-layout"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let orchestrator =
     orchestrator(
       dir,
@@ -213,12 +196,12 @@ fn write_lifecycle_driver(dir: String) -> Nil {
       driver,
       "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') if [ -f \"$SCHERZO_CONFIG_DIR/create-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/create-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 17; fi; mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') if [ -f \"$SCHERZO_CONFIG_DIR/before-step-fail\" ]; then exit 19; fi; test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') test -d \"$SCHERZO_RUN_ROOT\"; if [ -f \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\" ] && [ \"$(cat \"$SCHERZO_CONFIG_DIR/remove-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then exit 23; fi; rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
     )
-  chmod_executable(driver)
+  test_helpers.chmod_executable(driver)
 }
 
 pub fn driver_profile_invokes_lifecycle_create_before_after_and_remove_test() {
   let dir = "test/tmp/workspace-run-driver-lifecycle"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -253,7 +236,7 @@ pub fn driver_profile_invokes_lifecycle_create_before_after_and_remove_test() {
 
 pub fn cleanup_invokes_remove_for_each_run_workspace_before_delete_test() {
   let dir = "test/tmp/workspace-run-cleanup-multiple-driver-workspaces"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -315,7 +298,7 @@ pub fn cleanup_invokes_remove_for_each_run_workspace_before_delete_test() {
 
 pub fn cleanup_remove_failure_returns_error_and_keeps_run_root_test() {
   let dir = "test/tmp/workspace-run-cleanup-remove-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -362,7 +345,7 @@ pub fn cleanup_remove_failure_returns_error_and_keeps_run_root_test() {
 
 pub fn prepare_cleanup_failure_returns_cleanup_error_and_keeps_run_root_test() {
   let dir = "test/tmp/workspace-run-prepare-cleanup-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -416,7 +399,7 @@ pub fn prepare_cleanup_failure_returns_cleanup_error_and_keeps_run_root_test() {
 
 pub fn scheduled_run_paths_and_hook_env_are_issue_free_test() {
   let dir = "test/tmp/workspace-run-scheduled"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let orchestrator =
     orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
   let run_id = "schedule-pr-conflict-repair-20260505T120000Z"
@@ -475,7 +458,7 @@ pub fn scheduled_run_paths_and_hook_env_are_issue_free_test() {
 
 pub fn recovered_workspace_validation_rejects_paths_outside_run_root_test() {
   let dir = "test/tmp/workspace-run-recovered-validation"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let orchestrator =
     orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
   let assert Ok(expected_run_root) =
@@ -538,7 +521,7 @@ pub fn recovered_workspace_validation_rejects_paths_outside_run_root_test() {
 
 pub fn cleanup_rejects_paths_outside_workspace_root_test() {
   let dir = "test/tmp/workspace-run-cleanup"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let orchestrator =
     orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
   let assert Error(error.WorkspaceOutsideRoot(_)) =
@@ -551,7 +534,7 @@ pub fn cleanup_rejects_paths_outside_workspace_root_test() {
 
 pub fn cleanup_retention_marker_inspect_failure_returns_error_test() {
   let dir = "test/tmp/workspace-run-retention-inspect-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let orchestrator =
     orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
   let profile = default_profile(orchestrator)
@@ -578,7 +561,7 @@ pub fn cleanup_retention_marker_inspect_failure_returns_error_test() {
 
 pub fn cleanup_delete_run_root_failure_returns_error_test() {
   let dir = "test/tmp/workspace-run-delete-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let orchestrator =
     orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
   let profile = no_driver_profile()
@@ -608,7 +591,7 @@ pub fn cleanup_delete_run_root_failure_returns_error_test() {
 
 pub fn cleanup_retention_marker_skips_delete_until_removed_test() {
   let dir = "test/tmp/workspace-run-retained-cleanup"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let orchestrator =
     orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
   let assert Ok(main) =
@@ -673,7 +656,7 @@ pub fn managed_workspace_manifest_round_trip_and_upsert_test() {
   assert entry.source_workspace_relative_path == Some("workspaces/main")
 
   let dir = "test/tmp/workspace-run-manifest-upsert"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let run_root = dir <> "/run"
   let assert Ok(Nil) = simplifile.create_directory_all(run_root)
   let planned =
@@ -718,7 +701,7 @@ pub fn managed_workspace_manifest_round_trip_and_upsert_test() {
 
 pub fn prepare_create_failure_leaves_planned_manifest_entry_test() {
   let dir = "test/tmp/workspace-run-create-failure-manifest"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -757,7 +740,7 @@ pub fn prepare_create_failure_leaves_planned_manifest_entry_test() {
 
 pub fn cleanup_uses_manifest_entries_only_test() {
   let dir = "test/tmp/workspace-run-manifest-cleanup-only"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -824,7 +807,7 @@ pub fn cleanup_uses_manifest_entries_only_test() {
 
 pub fn cleanup_missing_manifest_returns_error_and_keeps_run_root_test() {
   let dir = "test/tmp/workspace-run-missing-manifest"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -849,7 +832,7 @@ pub fn cleanup_missing_manifest_returns_error_and_keeps_run_root_test() {
 
 pub fn cleanup_invalid_manifest_path_returns_error_and_keeps_run_root_test() {
   let dir = "test/tmp/workspace-run-invalid-manifest"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -930,7 +913,7 @@ fn write_manifest_entries(
 
 pub fn cleanup_rejects_manifest_driver_context_mismatch_test() {
   let dir = "test/tmp/workspace-run-driver-context-mismatch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -966,7 +949,7 @@ pub fn cleanup_rejects_manifest_driver_context_mismatch_test() {
 
 pub fn cleanup_rejects_non_workspace_manifest_path_before_remove_hook_test() {
   let dir = "test/tmp/workspace-run-non-workspace-manifest"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -1005,7 +988,7 @@ pub fn cleanup_rejects_non_workspace_manifest_path_before_remove_hook_test() {
 
 pub fn cleanup_rejects_manifest_realpath_escape_and_keeps_run_root_test() {
   let dir = "test/tmp/workspace-run-realpath-escape"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")
@@ -1038,7 +1021,7 @@ pub fn cleanup_rejects_manifest_realpath_escape_and_keeps_run_root_test() {
 
 pub fn cleanup_rejects_oversized_manifest_and_keeps_run_root_test() {
   let dir = "test/tmp/workspace-run-oversized-manifest"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_lifecycle_driver(dir)
   let orchestrator = driver_profile_orchestrator(dir)
   let profile = named_profile(orchestrator, "dogfood-jj")

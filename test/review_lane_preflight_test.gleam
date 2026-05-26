@@ -1,16 +1,11 @@
 import gleam/option.{None, Some}
 import scherzo/review_lane_preflight
 import simplifile
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
+import support/test_helpers
 
 pub fn review_lane_preflight_cache_reads_unexpired_blocking_failure_test() {
   let root = "test/tmp/review-lane-preflight/cache-blocking"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let state_root = root <> "/.scherzo-state"
   let assert Ok(Nil) = simplifile.create_directory_all(state_root)
   let cache_path = review_lane_preflight.cache_path(state_root)
@@ -30,7 +25,7 @@ pub fn review_lane_preflight_cache_reads_unexpired_blocking_failure_test() {
 
 pub fn review_lane_preflight_cache_ignores_expired_entry_test() {
   let root = "test/tmp/review-lane-preflight/cache-expired"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let state_root = root <> "/.scherzo-state"
   let assert Ok(Nil) = simplifile.create_directory_all(state_root)
   let cache_path = review_lane_preflight.cache_path(state_root)

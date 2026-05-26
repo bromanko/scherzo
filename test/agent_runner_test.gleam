@@ -22,13 +22,8 @@ import scherzo/tracker/state as issue_state
 import scherzo/turn_telemetry
 import scherzo/workflow_attempt
 import simplifile
+import support/test_helpers
 import test_async
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
 
 fn fake_pi() -> String {
   let assert Ok(abs) = path.absolute("test/fixtures/fake_pi_rpc.sh")
@@ -326,7 +321,7 @@ pub fn turn_update_helpers_emit_sanitized_runner_updates_test() {
 
 pub fn state_refresh_failure_emits_failed_turn_without_finished_first_test() {
   let root = "test/tmp/runner-state-refresh-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = fake_pi()
   let cfg = config(root, command, False, 1)
   let update_subject = process.new_subject()
@@ -348,7 +343,7 @@ pub fn state_refresh_failure_emits_failed_turn_without_finished_first_test() {
 
 pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
   let root = "test/tmp/runner-success"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
@@ -381,7 +376,7 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
 
 pub fn after_run_failure_is_emitted_without_overriding_success_test() {
   let root = "test/tmp/runner-after-run-failure-visible"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = config(root, fake_pi(), False, 1)
   let cfg =
     config_types.EffectiveConfig(
@@ -414,7 +409,7 @@ pub fn after_run_failure_is_emitted_without_overriding_success_test() {
 
 pub fn runner_completes_after_high_volume_streaming_message_updates_test() {
   let root = "test/tmp/runner-high-volume-message-updates"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_MESSAGE_UPDATE_COUNT=20000 " <> fake_pi()
 
   let assert Ok(success) =
@@ -434,7 +429,7 @@ pub fn runner_completes_after_high_volume_streaming_message_updates_test() {
 
 pub fn runner_allows_pi_auto_retry_to_succeed_in_same_turn_test() {
   let root = "test/tmp/runner-auto-retry-success"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
@@ -478,7 +473,7 @@ pub fn runner_allows_pi_auto_retry_to_succeed_in_same_turn_test() {
 
 pub fn runner_waits_for_agent_end_after_successful_auto_retry_with_tool_events_test() {
   let root = "test/tmp/runner-auto-retry-early-end-tool-events"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_AUTO_RETRY_EARLY_END_WITH_TOOL_EVENTS=1 " <> fake_pi()
   let update_subject = process.new_subject()
 
@@ -502,7 +497,7 @@ pub fn runner_waits_for_agent_end_after_successful_auto_retry_with_tool_events_t
 
 pub fn runner_fails_once_when_pi_auto_retry_exhausts_test() {
   let root = "test/tmp/runner-auto-retry-exhausted"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_AUTO_RETRY_EXHAUSTED=1 " <> fake_pi()
   let update_subject = process.new_subject()
 
@@ -527,7 +522,7 @@ pub fn runner_fails_once_when_pi_auto_retry_exhausts_test() {
 
 pub fn runner_retryable_error_without_retry_event_fails_after_grace_test() {
   let root = "test/tmp/runner-auto-retry-no-event"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_RETRYABLE_ERROR_NO_RETRY_EVENT=1 " <> fake_pi()
   let base = config(root, command, False, 1)
   let cfg =
@@ -559,7 +554,7 @@ pub fn runner_retryable_error_without_retry_event_fails_after_grace_test() {
 
 pub fn runner_fails_when_pi_reports_stop_reason_error_test() {
   let root = "test/tmp/runner-stop-reason-error"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_STOP_REASON_ERROR=1 " <> fake_pi()
   let update_subject = process.new_subject()
 
@@ -585,7 +580,7 @@ pub fn runner_fails_when_pi_reports_stop_reason_error_test() {
 
 pub fn runner_fails_when_pi_exits_zero_after_message_start_without_turn_end_test() {
   let root = "test/tmp/runner-stream-exit-without-turn-end"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_EXIT_AFTER_MESSAGE_START=1 " <> fake_pi()
   let update_subject = process.new_subject()
 
@@ -613,7 +608,7 @@ pub fn runner_fails_when_pi_exits_zero_after_message_start_without_turn_end_test
 
 pub fn runner_fails_when_pi_exits_nonzero_after_message_start_without_turn_end_test() {
   let root = "test/tmp/runner-stream-exit-nonzero-without-turn-end"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command =
     "FAKE_PI_EXIT_AFTER_MESSAGE_START=1 FAKE_PI_EXIT_AFTER_MESSAGE_START_STATUS=7 "
     <> fake_pi()
@@ -638,7 +633,7 @@ pub fn runner_fails_when_pi_exits_nonzero_after_message_start_without_turn_end_t
 
 pub fn runner_fails_when_agent_end_arrives_before_turn_end_test() {
   let root = "test/tmp/runner-agent-end-without-turn-end"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_AGENT_END_WITHOUT_TURN_END=1 " <> fake_pi()
   let update_subject = process.new_subject()
 
@@ -666,7 +661,7 @@ pub fn runner_fails_when_agent_end_arrives_before_turn_end_test() {
 
 pub fn runner_stall_times_out_after_message_start_without_turn_end_test() {
   let root = "test/tmp/runner-message-start-stall-timeout"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_HANG_AFTER_MESSAGE_START=1 " <> fake_pi()
   let base = config(root, command, False, 1)
   let cfg =
@@ -699,7 +694,7 @@ pub fn runner_stall_times_out_after_message_start_without_turn_end_test() {
 
 pub fn runner_recovers_context_exhaustion_with_pi_compaction_test() {
   let root = "test/tmp/runner-context-recovery-compact"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
@@ -734,7 +729,7 @@ pub fn runner_recovers_context_exhaustion_with_pi_compaction_test() {
 
 pub fn runner_records_compact_failure_reason_before_fresh_session_fallback_test() {
   let root = "test/tmp/runner-context-recovery-compact-fail"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
@@ -799,7 +794,7 @@ pub fn runner_records_compact_failure_reason_before_fresh_session_fallback_test(
 
 pub fn runner_stops_after_repeated_context_exhaustion_test() {
   let root = "test/tmp/runner-context-recovery-exhausted"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
@@ -865,7 +860,7 @@ pub fn runner_stops_after_repeated_context_exhaustion_test() {
 
 pub fn runner_context_recovery_can_be_disabled_test() {
   let root = "test/tmp/runner-context-recovery-disabled"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
@@ -901,7 +896,7 @@ pub fn runner_context_recovery_can_be_disabled_test() {
 
 pub fn recovery_prompt_reopens_recorded_session_without_original_prompt_test() {
   let root = "test/tmp/runner-recovery-prompt"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = root <> "/workspace"
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let assert Ok(abs_workspace) = path.absolute(workspace)
@@ -957,7 +952,7 @@ pub fn recovery_prompt_reopens_recorded_session_without_original_prompt_test() {
 
 pub fn recovery_resume_validation_failure_returns_specific_failure_before_prompt_test() {
   let root = "test/tmp/runner-recovery-validation-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = root <> "/workspace"
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let assert Ok(abs_workspace) = path.absolute(workspace)
@@ -1009,7 +1004,7 @@ pub fn recovery_resume_validation_failure_returns_specific_failure_before_prompt
 
 pub fn cancel_ui_policy_sends_extension_ui_cancel_test() {
   let root = "test/tmp/runner-ui-cancel"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
@@ -1039,7 +1034,7 @@ pub fn cancel_ui_policy_sends_extension_ui_cancel_test() {
 
 pub fn worker_success_result_redacts_secret_output_test() {
   let root = "test/tmp/runner-result-redacts"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command =
     "FAKE_PI_MESSAGE_SECRET=key FAKE_PI_NO_AGENT_END_MESSAGES=1 " <> fake_pi()
   let assert Ok(success) =
@@ -1059,7 +1054,7 @@ pub fn worker_success_result_redacts_secret_output_test() {
 
 pub fn worker_success_result_includes_interleaved_skipped_records_test() {
   let root = "test/tmp/runner-result-skipped"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command =
     "FAKE_PI_INTERLEAVE_EVENT_BEFORE_PROMPT_RESPONSE=1 FAKE_PI_NO_AGENT_END_MESSAGES=1 "
     <> fake_pi()
@@ -1079,7 +1074,7 @@ pub fn worker_success_result_includes_interleaved_skipped_records_test() {
 
 pub fn prompt_render_failure_aborts_before_pi_launch_test() {
   let root = "test/tmp/runner-render-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
@@ -1102,7 +1097,7 @@ pub fn prompt_render_failure_aborts_before_pi_launch_test() {
 
 pub fn before_run_and_probe_failures_abort_before_prompt_test() {
   let root = "test/tmp/runner-before-run-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let bad_hooks =
     config_types.HooksConfig(
       after_create: Some("printf populated > POPULATED"),
@@ -1127,7 +1122,7 @@ pub fn before_run_and_probe_failures_abort_before_prompt_test() {
     )
 
   let root2 = "test/tmp/runner-probe-failure"
-  reset_dir(root2)
+  test_helpers.reset_dir(root2)
   let transcript_path = root2 <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
@@ -1152,7 +1147,7 @@ pub fn before_run_and_probe_failures_abort_before_prompt_test() {
 
 pub fn runner_update_preserves_redacted_raw_pi_event_test() {
   let root = "test/tmp/runner-update-redaction"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_MESSAGE_SECRET=key " <> fake_pi()
   let update_subject = process.new_subject()
   let assert Ok(success) =
@@ -1177,7 +1172,7 @@ pub fn runner_update_preserves_redacted_raw_pi_event_test() {
 
 pub fn runner_redacts_normalized_tool_fields_test() {
   let root = "test/tmp/runner-tool-redaction"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_TOOL=1 FAKE_PI_TOOL_SECRET=key " <> fake_pi()
   let update_subject = process.new_subject()
   let assert Ok(success) =
@@ -1204,7 +1199,7 @@ pub fn runner_redacts_normalized_tool_fields_test() {
 
 pub fn runner_streams_update_before_agent_end_test() {
   let root = "test/tmp/runner-streaming"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let command = "FAKE_PI_STALL_AFTER_PROMPT=1000 " <> fake_pi()
   let update_subject = process.new_subject()
   let finished_subject = process.new_subject()
@@ -1231,7 +1226,7 @@ pub fn runner_streams_update_before_agent_end_test() {
 
 pub fn active_issue_continues_in_same_worker_until_max_turns_test() {
   let root = "test/tmp/runner-continuation"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()

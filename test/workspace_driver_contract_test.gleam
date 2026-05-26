@@ -3,26 +3,12 @@ import gleam/json
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/path
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 
 const marker = ".scherzo-workspace-driver-noop"
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
 
 fn absolute(value: String) -> String {
   path.absolute(value) |> result_unwrap(value)
@@ -35,10 +21,6 @@ fn result_unwrap(result: Result(a, b), default: a) -> a {
   }
 }
 
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
-}
-
 fn run_noop(
   step_id: String,
   args: String,
@@ -47,12 +29,12 @@ fn run_noop(
   let script = absolute("scripts/scherzo-workspace-noop")
   command_step.run_with_env(
     step_id,
-    "sh " <> shell_quote(script) <> " " <> args,
+    "sh " <> test_helpers.shell_quote(script) <> " " <> args,
     ".",
     5000,
     env,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
 }
 
@@ -113,7 +95,7 @@ fn write_file(path: String, contents: String) -> Nil {
 
 pub fn noop_driver_describe_json_is_static_and_workspace_free_test() {
   let root = "test/tmp/workspace-driver-noop-describe"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = absolute(root <> "/workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let sentinel = workspace <> "/sentinel.txt"
@@ -137,7 +119,7 @@ pub fn noop_driver_describe_json_is_static_and_workspace_free_test() {
 
 pub fn noop_driver_lifecycle_create_before_after_and_remove_test() {
   let root = "test/tmp/workspace-driver-noop-lifecycle"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let run_root = absolute(root <> "/run")
   let workspace = absolute(root <> "/run/workspaces/workspace")
 
@@ -188,7 +170,7 @@ pub fn noop_driver_lifecycle_create_before_after_and_remove_test() {
 
 pub fn noop_driver_lifecycle_remove_rejects_unset_empty_unmarked_and_outside_run_root_test() {
   let root = "test/tmp/workspace-driver-noop-remove-rejects"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let run_root = absolute(root <> "/run")
   let unmarked = absolute(root <> "/run/workspaces/unmarked")
   let outside = absolute(root <> "/outside/workspace")
@@ -236,7 +218,7 @@ pub fn noop_driver_lifecycle_remove_rejects_unset_empty_unmarked_and_outside_run
 
 pub fn noop_driver_changed_files_json_is_sorted_relative_and_empty_safe_test() {
   let root = "test/tmp/workspace-driver-noop-changed-files"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = absolute(root <> "/workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/nested")
 
@@ -272,7 +254,7 @@ pub fn noop_driver_changed_files_json_is_sorted_relative_and_empty_safe_test() {
 
 pub fn noop_driver_status_human_is_deterministic_and_relative_test() {
   let root = "test/tmp/workspace-driver-noop-status"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = absolute(root <> "/workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/nested")
 
@@ -297,7 +279,7 @@ pub fn noop_driver_status_human_is_deterministic_and_relative_test() {
 
 pub fn noop_driver_unsupported_commands_and_flags_are_usage_errors_test() {
   let root = "test/tmp/workspace-driver-noop-unsupported"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = absolute(root <> "/workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
 
@@ -322,7 +304,7 @@ pub fn noop_driver_unsupported_commands_and_flags_are_usage_errors_test() {
 
 pub fn noop_driver_changed_files_json_escapes_special_path_names_test() {
   let root = "test/tmp/workspace-driver-noop-special-paths"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = absolute(root <> "/workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   write_file(workspace <> "/space name.md", "space\n")
@@ -346,7 +328,7 @@ pub fn noop_driver_changed_files_json_escapes_special_path_names_test() {
 
 pub fn noop_driver_assert_only_accepts_exact_single_file_test() {
   let root = "test/tmp/workspace-driver-noop-assert-only-success"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = absolute(root <> "/workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   write_file(workspace <> "/research-findings.md", "findings\n")
@@ -364,7 +346,7 @@ pub fn noop_driver_assert_only_accepts_exact_single_file_test() {
 
 pub fn noop_driver_assert_only_rejects_missing_file_test() {
   let root = "test/tmp/workspace-driver-noop-assert-only-missing"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = absolute(root <> "/workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
 
@@ -382,7 +364,7 @@ pub fn noop_driver_assert_only_rejects_missing_file_test() {
 
 pub fn noop_driver_assert_only_rejects_extra_file_test() {
   let root = "test/tmp/workspace-driver-noop-assert-only-extra"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let workspace = absolute(root <> "/workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   write_file(workspace <> "/research-findings.md", "findings\n")
@@ -402,7 +384,7 @@ pub fn noop_driver_assert_only_rejects_extra_file_test() {
 
 pub fn driver_assert_only_rejects_unsafe_paths_before_workspace_inspection_test() {
   let root = "test/tmp/workspace-driver-noop-unsafe-paths"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let missing_workspace = absolute(root <> "/missing-workspace")
   let absolute_path = absolute(root <> "/outside.md")
 
@@ -419,7 +401,7 @@ pub fn driver_assert_only_rejects_unsafe_paths_before_workspace_inspection_test(
     let artifact =
       run_noop(
         "noop_assert_unsafe",
-        "assert-only --path " <> shell_quote(value),
+        "assert-only --path " <> test_helpers.shell_quote(value),
         workspace_env(missing_workspace),
       )
     assert_exit(artifact, 2)

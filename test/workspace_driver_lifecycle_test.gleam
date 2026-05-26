@@ -1,17 +1,16 @@
 import gleam/dict
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/hooks
 import scherzo/model_config
-import scherzo/step_artifact
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workspace_driver_lifecycle
 import simplifile
+import support/test_helpers
 
 fn effective(root: String) -> config_types.EffectiveConfig {
   config_types.EffectiveConfig(
@@ -95,34 +94,11 @@ fn env(dir: String) -> List(#(String, String)) {
   ]
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run(
-      "chmod_lifecycle_driver",
-      "chmod +x " <> shell_quote(path),
-      ".",
-      5000,
-      [],
-      config_types.ArtifactLimits(4000, 4000, 4000),
-    )
-  assert artifact.status == step_artifact.StepSucceeded
-}
-
 fn write_driver(dir: String, body: String) -> Nil {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/driver.sh"
   let assert Ok(Nil) = simplifile.write(path, body)
-  chmod_executable(path)
+  test_helpers.chmod_executable(path)
 }
 
 pub fn lifecycle_invocations_receive_profile_env_test() {
@@ -132,7 +108,7 @@ pub fn lifecycle_invocations_receive_profile_env_test() {
     dir,
     "#!/bin/sh\n"
       <> "echo $2:SCHERZO_JJ_WORKSPACE_BASE=$SCHERZO_JJ_WORKSPACE_BASE:SCHERZO_WORKSPACE_DRIVER=$SCHERZO_WORKSPACE_DRIVER:SCHERZO_WORKSPACE_PATH=$SCHERZO_WORKSPACE_PATH >> "
-      <> shell_quote("driver.log")
+      <> test_helpers.shell_quote("driver.log")
       <> "\n",
   )
   let orchestrator = orchestrator(dir)
@@ -188,7 +164,7 @@ pub fn lifecycle_invocations_receive_profile_env_test() {
 
 pub fn lifecycle_invokes_path_installed_packaged_jj_command_name_test() {
   let dir = "test/tmp/workspace-driver-lifecycle-packaged-jj"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let driver_path = dir <> "/bin/scherzo-workspace-jj"
   let log_path = dir <> "/driver.log"
@@ -197,7 +173,7 @@ pub fn lifecycle_invokes_path_installed_packaged_jj_command_name_test() {
       driver_path,
       "#!/bin/sh\nname=${0##*/}\nprintf '%s %s %s\\n' \"$name\" \"$1\" \"$2\" >> driver.log\n",
     )
-  chmod_executable(driver_path)
+  test_helpers.chmod_executable(driver_path)
   let orchestrator = orchestrator(dir)
   let driver =
     config_types.WorkspaceDriverConfig(

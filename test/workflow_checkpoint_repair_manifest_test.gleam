@@ -7,7 +7,7 @@ import scherzo/state/record
 import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest as contract_manifest
-import simplifile
+import support/test_helpers
 
 const workflow_id = "workflow-alpha"
 
@@ -18,12 +18,6 @@ const issue_id = "issue-1"
 const issue_identifier = "LIV-407"
 
 const output_name = "code_change_bundle"
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
 
 fn append_repair(root: String, run_id: String, record_id: String) -> Nil {
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
@@ -137,7 +131,7 @@ fn output_record_refs(root: String, run_id: String) -> List(String) {
 pub fn repaired_workflow_outputs_use_repair_generation_manifest_and_blob_test() {
   let root = "test/tmp/workflow-checkpoint/repaired-output-generation"
   let run_id = "run-1"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 10 })
   let store = artifact_store.new(root)
 
@@ -193,7 +187,7 @@ pub fn repaired_workflow_outputs_use_repair_generation_manifest_and_blob_test() 
 pub fn repaired_workflow_outputs_after_compaction_use_next_generation_test() {
   let root = "test/tmp/workflow-checkpoint/repaired-output-compaction"
   let run_id = "run-1"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 10 })
   let store = artifact_store.new(root)
 
@@ -270,7 +264,7 @@ pub fn repaired_workflow_outputs_after_compaction_use_next_generation_test() {
 pub fn repaired_output_manifest_mismatch_reports_repaired_generation_test() {
   let root = "test/tmp/workflow-checkpoint/repaired-output-corruption"
   let run_id = "run-1"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 10 })
   let store = artifact_store.new(root)
   append_repair(root, run_id, "repair-1")

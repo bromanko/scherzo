@@ -1,15 +1,14 @@
 import gleam/dict
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
-import scherzo/step_artifact
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workspace_driver_discovery
 import simplifile
+import support/test_helpers
 
 fn effective(root: String) -> config_types.EffectiveConfig {
   config_types.EffectiveConfig(
@@ -88,47 +87,15 @@ fn orchestrator_with_env(
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
-}
-
 fn discovery_timeout_ms() -> Int {
   5000
 }
 
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run(
-      "chmod_discovery_driver",
-      "chmod +x " <> shell_quote(path),
-      ".",
-      5000,
-      [],
-      limits(),
-    )
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-}
-
 fn write_driver(dir: String, body: String) -> Nil {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/driver.sh"
   let assert Ok(Nil) = simplifile.write(path, body)
-  chmod_executable(path)
+  test_helpers.chmod_executable(path)
 }
 
 fn describe_driver(payload: String) -> String {
@@ -184,7 +151,7 @@ pub fn discovery_profile_path_overrides_process_path_test() {
   let assert Ok(Nil) = simplifile.create_directory_all(bin)
   let helper = bin <> "/profile-helper"
   let assert Ok(Nil) = simplifile.write(helper, "#!/bin/sh\necho helper\n")
-  chmod_executable(helper)
+  test_helpers.chmod_executable(helper)
 
   let assert Ok(enriched) =
     workspace_driver_discovery.enrich_orchestrator(

@@ -1,31 +1,10 @@
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/path
 import scherzo/step_artifact
 import simplifile
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-}
+import support/test_helpers
 
 fn absolute(value: String) -> String {
   path.absolute(value) |> result_unwrap(value)
@@ -75,12 +54,12 @@ fn write_fake_jj(path: String) -> Nil {
 }
 
 fn setup_driver_fixture(dir: String) -> #(String, String, String, String) {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/repo/.jj")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workspaces")
   write_fake_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   #(
     absolute(dir <> "/repo"),
@@ -115,7 +94,7 @@ fn run_driver_create(
     ".",
     5000,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
 }
 

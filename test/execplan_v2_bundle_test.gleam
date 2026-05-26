@@ -8,6 +8,7 @@ import scherzo/hash
 import scherzo/path as scherzo_path
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 import workflow_context_test_support
 
 fn limits() -> config_types.ArtifactLimits {
@@ -53,12 +54,6 @@ fn run_shell_in(cwd: String, command: String) -> step_artifact.StepArtifact {
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 fn assert_completion_preflight_failed(
   artifact: step_artifact.StepArtifact,
   diagnostic: String,
@@ -90,10 +85,6 @@ fn assert_review_doc_section_failed(
   Nil
 }
 
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
-}
-
 fn tmp_repo_path(path: String) -> String {
   "../../../" <> path
 }
@@ -106,7 +97,7 @@ fn write_valid_review_doc(path: String) -> Nil {
 }
 
 fn mutated_bundle(dir: String, each old: String, with new: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(source) =
     simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
   let path = dir <> "/bundle.json"
@@ -116,7 +107,7 @@ fn mutated_bundle(dir: String, each old: String, with new: String) -> String {
 }
 
 fn mutated_pack(dir: String, each old: String, with new: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(source) =
     simplifile.read("test/fixtures/execplan_v2/implementation-pack.valid.json")
   let path = dir <> "/pack.json"
@@ -414,7 +405,7 @@ pub fn validate_bundle_accepts_valid_fixture_test() {
 
 pub fn validate_bundle_accepts_artifact_backed_plan_without_repo_path_test() {
   let dir = "test/tmp/execplan-artifact-backed-plan-validate"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
   let #(bundle_ref, _bundle_sha, _plan_text) =
     write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
@@ -436,7 +427,7 @@ pub fn validate_bundle_accepts_artifact_backed_plan_without_repo_path_test() {
 
 pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
   let dir = "test/tmp/execplan-artifact-backed-plan-prepare"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
   let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
   let #(bundle_ref, bundle_sha, plan_text) =
@@ -449,7 +440,7 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
     run_shell_in(
       dir,
       "env SCHERZO_REPO_ROOT=$PWD SCHERZO_RUN_ROOT=$PWD/run-root SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote(issue_context)
+        <> test_helpers.shell_quote(issue_context)
         <> " "
         <> helper
         <> " implementation-prepare --from-issue-context",
@@ -496,7 +487,7 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
 
 pub fn implementation_prepare_rejects_plan_hash_mismatch_test() {
   let dir = "test/tmp/execplan-artifact-plan-hash-mismatch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
   let #(bundle_ref, bundle_sha, _plan_text) =
     write_artifact_backed_plan_bundle(
@@ -513,7 +504,7 @@ pub fn implementation_prepare_rejects_plan_hash_mismatch_test() {
     run_shell_in(
       dir,
       "env SCHERZO_REPO_ROOT=$PWD SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote(issue_context)
+        <> test_helpers.shell_quote(issue_context)
         <> " "
         <> helper
         <> " implementation-prepare --from-issue-context",
@@ -529,7 +520,7 @@ pub fn implementation_prepare_rejects_plan_hash_mismatch_test() {
 
 pub fn implementation_prepare_rejects_missing_plan_artifact_test() {
   let dir = "test/tmp/execplan-artifact-plan-missing"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let #(bundle_ref, bundle_sha, _plan_text) =
     write_artifact_backed_plan_bundle(
       dir,
@@ -545,7 +536,7 @@ pub fn implementation_prepare_rejects_missing_plan_artifact_test() {
     run_shell_in(
       dir,
       "env SCHERZO_REPO_ROOT=$PWD SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote(issue_context)
+        <> test_helpers.shell_quote(issue_context)
         <> " "
         <> helper
         <> " implementation-prepare --from-issue-context",
@@ -561,16 +552,16 @@ pub fn implementation_prepare_rejects_missing_plan_artifact_test() {
 
 pub fn implementation_prepare_failure_writes_retention_marker_test() {
   let dir = "test/tmp/execplan-implementation-prepare-retention"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let run_root = dir <> "/run-root"
   let assert Ok(Nil) = simplifile.create_directory_all(run_root)
 
   let artifact =
     run_shell(
       "SCHERZO_RUN_ROOT="
-      <> shell_quote(run_root)
+      <> test_helpers.shell_quote(run_root)
       <> " SCHERZO_ISSUE_IDENTIFIER=LIV-385 SCHERZO_ISSUE_CONTEXT="
-      <> shell_quote("no bundle here")
+      <> test_helpers.shell_quote("no bundle here")
       <> " .scherzo/workflows/scripts/scherzo-execplan implementation-prepare --from-issue-context",
     )
 
@@ -584,7 +575,7 @@ pub fn implementation_prepare_failure_writes_retention_marker_test() {
 
 pub fn implementation_prepare_accepts_source_handoff_issue_split_test() {
   let dir = "test/tmp/execplan-implementation-source-handoff-split"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let #(bundle_ref, bundle_sha) = write_source_handoff_split_bundle(dir)
   let issue_context =
     "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
@@ -596,13 +587,13 @@ pub fn implementation_prepare_accepts_source_handoff_issue_split_test() {
       "env SCHERZO_REPO_ROOT=$PWD"
         <> " SCHERZO_ISSUE_IDENTIFIER=LIV-423"
         <> " SCHERZO_ISSUE_TITLE="
-        <> shell_quote("Implement: Fixture source LIV-418")
+        <> test_helpers.shell_quote("Implement: Fixture source LIV-418")
         <> " SCHERZO_ISSUE_URL="
-        <> shell_quote(
+        <> test_helpers.shell_quote(
         "https://linear.app/living-systems/issue/LIV-423/implement-fixture",
       )
         <> " SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote(issue_context)
+        <> test_helpers.shell_quote(issue_context)
         <> " "
         <> helper
         <> " implementation-prepare --from-issue-context && "
@@ -639,7 +630,7 @@ pub fn implementation_prepare_accepts_source_handoff_issue_split_test() {
 
 pub fn implementation_prepare_rejects_current_handoff_issue_mismatch_test() {
   let dir = "test/tmp/execplan-implementation-current-handoff-mismatch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let #(bundle_ref, bundle_sha) = write_source_handoff_split_bundle(dir)
   let issue_context =
     "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
@@ -651,9 +642,9 @@ pub fn implementation_prepare_rejects_current_handoff_issue_mismatch_test() {
       "env SCHERZO_REPO_ROOT=$PWD"
         <> " SCHERZO_ISSUE_IDENTIFIER=LIV-999"
         <> " SCHERZO_ISSUE_TITLE="
-        <> shell_quote("Unexpected implementation handoff")
+        <> test_helpers.shell_quote("Unexpected implementation handoff")
         <> " SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote(issue_context)
+        <> test_helpers.shell_quote(issue_context)
         <> " "
         <> helper
         <> " implementation-prepare --from-issue-context",
@@ -707,7 +698,7 @@ pub fn validate_bundle_rejects_missing_review_doc_test() {
 
 pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
   let dir = "test/tmp/execplan-prepare-revision-branch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/docs/plans/unmerged.md"
   let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
   let driver = dir <> "/workspace-driver"
@@ -717,7 +708,7 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
       driver,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> "
-        <> shell_quote(log)
+        <> test_helpers.shell_quote(log)
         <> "\n"
         <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = ca667773c9a6d31bb64676c103b3f1f14c3bcced ]; then\n"
         <> "  printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"head not local\"}'\n"
@@ -725,10 +716,10 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
         <> "fi\n"
         <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = execplan/liv-314-unmerged@fork ]; then\n"
         <> "  mkdir -p "
-        <> shell_quote(dir <> "/docs/plans")
+        <> test_helpers.shell_quote(dir <> "/docs/plans")
         <> "\n"
         <> "  cp test/fixtures/execplan_v2/review-doc.valid.md "
-        <> shell_quote(review_path)
+        <> test_helpers.shell_quote(review_path)
         <> "\n"
         <> "  printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\",\"stage\":\"prepare_revision\",\"base_ref\":\"execplan/liv-314-unmerged@fork\",\"base_revision\":\"execplan/liv-314-unmerged@fork\",\"before_revision\":\"main\",\"after_revision\":\"branch\",\"conflict_files\":[]}'\n"
         <> "  exit 0\n"
@@ -736,7 +727,7 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
         <> "printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"missing revision base\"}'\n"
         <> "exit 1\n",
     )
-  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(driver))
   assert chmod.status == step_artifact.StepSucceeded
   let issue_context =
     "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
@@ -744,17 +735,17 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
   let artifact =
     run_shell(
       "env SCHERZO_REPO_ROOT="
-      <> shell_quote(dir <> "/repo")
+      <> test_helpers.shell_quote(dir <> "/repo")
       <> " SCHERZO_WORKSPACE_DRIVER="
-      <> shell_quote(driver)
+      <> test_helpers.shell_quote(driver)
       <> " SCHERZO_JJ_WORKSPACE_REMOTE=upstream SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_PR_REMOTE=legacy SCHERZO_ISSUE_CONTEXT="
-      <> shell_quote(issue_context)
+      <> test_helpers.shell_quote(issue_context)
       <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
-      <> shell_quote(dir <> "/previous-bundle.json")
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
       <> " --write-review-doc-path "
-      <> shell_quote(dir <> "/review.path")
+      <> test_helpers.shell_quote(dir <> "/review.path")
       <> " --write-pack "
-      <> shell_quote(dir <> "/previous-pack.json"),
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -781,7 +772,7 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
 
 pub fn prepare_revision_reports_revision_base_missing_when_branch_unresolved_test() {
   let dir = "test/tmp/execplan-prepare-revision-base-missing"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/docs/plans/unmerged.md"
   let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
   let driver = dir <> "/workspace-driver"
@@ -792,7 +783,7 @@ pub fn prepare_revision_reports_revision_base_missing_when_branch_unresolved_tes
         <> "printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"missing revision base\"}'\n"
         <> "exit 1\n",
     )
-  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(driver))
   assert chmod.status == step_artifact.StepSucceeded
   let issue_context =
     "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
@@ -800,17 +791,17 @@ pub fn prepare_revision_reports_revision_base_missing_when_branch_unresolved_tes
   let artifact =
     run_shell(
       "env SCHERZO_REPO_ROOT="
-      <> shell_quote(dir <> "/repo")
+      <> test_helpers.shell_quote(dir <> "/repo")
       <> " SCHERZO_WORKSPACE_DRIVER="
-      <> shell_quote(driver)
+      <> test_helpers.shell_quote(driver)
       <> " SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_ISSUE_CONTEXT="
-      <> shell_quote(issue_context)
+      <> test_helpers.shell_quote(issue_context)
       <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
-      <> shell_quote(dir <> "/previous-bundle.json")
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
       <> " --write-review-doc-path "
-      <> shell_quote(dir <> "/review.path")
+      <> test_helpers.shell_quote(dir <> "/review.path")
       <> " --write-pack "
-      <> shell_quote(dir <> "/previous-pack.json"),
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -827,7 +818,7 @@ pub fn prepare_revision_reports_revision_base_missing_when_branch_unresolved_tes
 
 pub fn prepare_revision_refresh_base_timeout_test() {
   let dir = "test/tmp/execplan-prepare-revision-refresh-timeout"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/docs/plans/unmerged.md"
   let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
   let driver = dir <> "/workspace-driver"
@@ -836,7 +827,7 @@ pub fn prepare_revision_refresh_base_timeout_test() {
       driver,
       "#!/usr/bin/env python3\nimport time\ntime.sleep(5)\n",
     )
-  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(driver))
   assert chmod.status == step_artifact.StepSucceeded
   let issue_context =
     "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
@@ -844,17 +835,17 @@ pub fn prepare_revision_refresh_base_timeout_test() {
   let artifact =
     run_shell(
       "env SCHERZO_REPO_ROOT="
-      <> shell_quote(dir <> "/repo")
+      <> test_helpers.shell_quote(dir <> "/repo")
       <> " SCHERZO_WORKSPACE_DRIVER="
-      <> shell_quote(driver)
+      <> test_helpers.shell_quote(driver)
       <> " SCHERZO_EXECPLAN_REVISION_REFRESH_TIMEOUT_SECONDS=0.1 SCHERZO_ISSUE_CONTEXT="
-      <> shell_quote(issue_context)
+      <> test_helpers.shell_quote(issue_context)
       <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
-      <> shell_quote(dir <> "/previous-bundle.json")
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
       <> " --write-review-doc-path "
-      <> shell_quote(dir <> "/review.path")
+      <> test_helpers.shell_quote(dir <> "/review.path")
       <> " --write-pack "
-      <> shell_quote(dir <> "/previous-pack.json"),
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -868,7 +859,7 @@ pub fn prepare_revision_refresh_base_timeout_test() {
 
 pub fn prepare_revision_rejects_unsafe_review_surface_targets_before_refresh_test() {
   let dir = "test/tmp/execplan-prepare-revision-unsafe-target"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/docs/plans/unmerged.md"
   let #(bundle_ref, bundle_sha) =
     write_revision_bundle_with_surface(
@@ -884,11 +875,11 @@ pub fn prepare_revision_rejects_unsafe_review_surface_targets_before_refresh_tes
       driver,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> "
-        <> shell_quote(log)
+        <> test_helpers.shell_quote(log)
         <> "\n"
         <> "printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\"}'\n",
     )
-  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(driver))
   assert chmod.status == step_artifact.StepSucceeded
   let issue_context =
     "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
@@ -896,17 +887,17 @@ pub fn prepare_revision_rejects_unsafe_review_surface_targets_before_refresh_tes
   let artifact =
     run_shell(
       "env SCHERZO_REPO_ROOT="
-      <> shell_quote(dir <> "/repo")
+      <> test_helpers.shell_quote(dir <> "/repo")
       <> " SCHERZO_WORKSPACE_DRIVER="
-      <> shell_quote(driver)
+      <> test_helpers.shell_quote(driver)
       <> " SCHERZO_ISSUE_CONTEXT="
-      <> shell_quote(issue_context)
+      <> test_helpers.shell_quote(issue_context)
       <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
-      <> shell_quote(dir <> "/previous-bundle.json")
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
       <> " --write-review-doc-path "
-      <> shell_quote(dir <> "/review.path")
+      <> test_helpers.shell_quote(dir <> "/review.path")
       <> " --write-pack "
-      <> shell_quote(dir <> "/previous-pack.json"),
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -989,7 +980,7 @@ pub fn validate_bundle_rejects_absolute_review_doc_path_test() {
 
 pub fn validate_bundle_rejects_bundle_self_hash_test() {
   let dir = "test/tmp/execplan-self-hash"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(source) =
     simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
   let mutated =
@@ -1010,7 +1001,7 @@ pub fn validate_bundle_rejects_bundle_self_hash_test() {
 
 pub fn validate_review_doc_rejects_mechanical_sections_test() {
   let dir = "test/tmp/execplan-review-doc"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
@@ -1028,7 +1019,7 @@ pub fn validate_review_doc_rejects_mechanical_sections_test() {
 
 pub fn validate_review_doc_rejects_liv_503_missing_open_questions_regression_test() {
   let dir = "test/tmp/execplan-missing-open-questions"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
@@ -1055,7 +1046,7 @@ pub fn validate_review_doc_rejects_liv_503_missing_open_questions_regression_tes
 
 pub fn validate_review_doc_rejects_empty_open_questions_test() {
   let dir = "test/tmp/execplan-empty-open-questions"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
@@ -1082,7 +1073,7 @@ pub fn validate_review_doc_rejects_empty_open_questions_test() {
 
 pub fn validate_review_doc_rejects_missing_strategy_overview_test() {
   let dir = "test/tmp/execplan-missing-strategy-overview"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
@@ -1105,7 +1096,7 @@ pub fn validate_review_doc_rejects_missing_strategy_overview_test() {
 
 pub fn validate_review_doc_rejects_empty_scope_boundaries_test() {
   let dir = "test/tmp/execplan-empty-scope-boundaries"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
@@ -1128,7 +1119,7 @@ pub fn validate_review_doc_rejects_empty_scope_boundaries_test() {
 
 pub fn validate_review_doc_rejects_unchecked_required_progress_test() {
   let dir = "test/tmp/execplan-progress-preflight"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
@@ -1150,7 +1141,7 @@ pub fn validate_review_doc_rejects_unchecked_required_progress_test() {
 
 pub fn validate_review_doc_rejects_ambiguous_milestones_test() {
   let dir = "test/tmp/execplan-ambiguous-milestone"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
@@ -1169,7 +1160,7 @@ pub fn validate_review_doc_rejects_ambiguous_milestones_test() {
 
 pub fn validate_review_doc_rejects_unverifiable_acceptance_test() {
   let dir = "test/tmp/execplan-unverifiable-acceptance"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let review =
     review_doc_with_validation(
@@ -1188,7 +1179,7 @@ pub fn validate_review_doc_rejects_unverifiable_acceptance_test() {
 
 pub fn validate_review_doc_rejects_negated_acceptance_evidence_test() {
   let dir = "test/tmp/execplan-negated-acceptance-evidence"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let review =
     review_doc_with_validation(
@@ -1206,7 +1197,7 @@ pub fn validate_review_doc_rejects_negated_acceptance_evidence_test() {
 
 pub fn materialize_pack_rejects_missing_negative_test_evidence_test() {
   let dir = "test/tmp/execplan-pack-negative-evidence"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/review.md"
   let submission_path = dir <> "/submission.json"
   let output_path = dir <> "/pack.json"
@@ -1239,7 +1230,7 @@ pub fn materialize_pack_rejects_missing_negative_test_evidence_test() {
 
 pub fn materialize_pack_rejects_negated_negative_test_evidence_test() {
   let dir = "test/tmp/execplan-pack-negated-negative-evidence"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/review.md"
   let submission_path = dir <> "/submission.json"
   let output_path = dir <> "/pack.json"
@@ -1276,7 +1267,7 @@ pub fn materialize_pack_rejects_negated_negative_test_evidence_test() {
 
 pub fn materialize_pack_rejects_missing_validation_evidence_step_test() {
   let dir = "test/tmp/execplan-pack-no-validation-evidence"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/review.md"
   let submission_path = dir <> "/submission.json"
   let output_path = dir <> "/pack.json"
@@ -1313,7 +1304,7 @@ pub fn materialize_pack_rejects_missing_validation_evidence_step_test() {
 
 pub fn materialize_pack_rejects_unrecognized_validation_commands_test() {
   let dir = "test/tmp/execplan-pack-unrecognized-validation-command"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/review.md"
   let submission_path = dir <> "/submission.json"
   let output_path = dir <> "/pack.json"
@@ -1350,7 +1341,7 @@ pub fn materialize_pack_rejects_unrecognized_validation_commands_test() {
 
 pub fn materialize_pack_accepts_camel_case_idempotent_test_name_test() {
   let dir = "test/tmp/execplan-pack-camel-case-idempotent"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/review.md"
   let submission_path = dir <> "/submission.json"
   let output_path = dir <> "/pack.json"
@@ -1386,7 +1377,7 @@ pub fn materialize_pack_accepts_camel_case_idempotent_test_name_test() {
 
 pub fn materialize_pack_accepts_manual_screenshot_evidence_without_commands_test() {
   let dir = "test/tmp/execplan-pack-manual-evidence"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/review.md"
   let submission_path = dir <> "/submission.json"
   let output_path = dir <> "/pack.json"
@@ -1422,7 +1413,7 @@ pub fn materialize_pack_accepts_manual_screenshot_evidence_without_commands_test
 
 pub fn materialize_pack_rejects_required_behavior_missing_from_steps_test() {
   let dir = "test/tmp/execplan-pack-missing-behavior"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let review_path = dir <> "/review.md"
   let submission_path = dir <> "/submission.json"
   let output_path = dir <> "/pack.json"
@@ -1455,13 +1446,13 @@ pub fn materialize_pack_rejects_required_behavior_missing_from_steps_test() {
 
 pub fn prepare_review_doc_target_creates_custom_directory_test() {
   let dir = "test/tmp/execplan-target-prepare-custom"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_shell_in(
       dir,
       "env SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote("Create an execplan at doobar/docs/plans")
+        <> test_helpers.shell_quote("Create an execplan at doobar/docs/plans")
         <> " "
         <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
         <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
@@ -1478,13 +1469,15 @@ pub fn prepare_review_doc_target_creates_custom_directory_test() {
 
 pub fn prepare_review_doc_target_creates_custom_file_parent_test() {
   let dir = "test/tmp/execplan-target-prepare-file"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_shell_in(
       dir,
       "env SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote("Create an execplan at doobar/docs/plans/exact.md")
+        <> test_helpers.shell_quote(
+        "Create an execplan at doobar/docs/plans/exact.md",
+      )
         <> " "
         <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
         <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
@@ -1501,13 +1494,15 @@ pub fn prepare_review_doc_target_creates_custom_file_parent_test() {
 
 pub fn prepare_review_doc_target_ignores_plain_infinitive_to_test() {
   let dir = "test/tmp/execplan-target-infinitive-to"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_shell_in(
       dir,
       "env SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote("Create an execplan to add custom target support")
+        <> test_helpers.shell_quote(
+        "Create an execplan to add custom target support",
+      )
         <> " "
         <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
         <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
@@ -1523,13 +1518,15 @@ pub fn prepare_review_doc_target_ignores_plain_infinitive_to_test() {
 
 pub fn prepare_review_doc_target_ignores_generic_destination_field_test() {
   let dir = "test/tmp/execplan-target-generic-destination"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_shell_in(
       dir,
       "env SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote("Create an execplan\n\nDestination: production")
+        <> test_helpers.shell_quote(
+        "Create an execplan\n\nDestination: production",
+      )
         <> " "
         <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
         <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
@@ -1543,7 +1540,7 @@ pub fn prepare_review_doc_target_ignores_generic_destination_field_test() {
 
 pub fn discover_changed_review_doc_accepts_default_docs_plans_test() {
   let dir = "test/tmp/execplan-discovery-default"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   write_valid_review_doc(dir <> "/docs/plans/default.md")
 
@@ -1551,7 +1548,9 @@ pub fn discover_changed_review_doc_accepts_default_docs_plans_test() {
     run_shell_in(
       dir,
       "env SCHERZO_WORKSPACE_DRIVER="
-        <> shell_quote(tmp_repo_path("scripts/scherzo-workspace-noop"))
+        <> test_helpers.shell_quote(tmp_repo_path(
+        "scripts/scherzo-workspace-noop",
+      ))
         <> " SCHERZO_WORKSPACE_PATH=. "
         <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
         <> " validate-review-doc --discover-changed-review-doc --write-path tmp/review.path",
@@ -1569,7 +1568,7 @@ pub fn discover_changed_review_doc_accepts_default_docs_plans_test() {
 
 pub fn discover_changed_review_doc_accepts_custom_requested_directory_test() {
   let dir = "test/tmp/execplan-discovery-custom"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let helper = tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
   let driver = tmp_repo_path("scripts/scherzo-workspace-noop")
 
@@ -1577,7 +1576,7 @@ pub fn discover_changed_review_doc_accepts_custom_requested_directory_test() {
     run_shell_in(
       dir,
       "env SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote("Create an execplan at doobar/docs/plans")
+        <> test_helpers.shell_quote("Create an execplan at doobar/docs/plans")
         <> " "
         <> helper
         <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
@@ -1589,7 +1588,7 @@ pub fn discover_changed_review_doc_accepts_custom_requested_directory_test() {
     run_shell_in(
       dir,
       "env SCHERZO_WORKSPACE_DRIVER="
-        <> shell_quote(driver)
+        <> test_helpers.shell_quote(driver)
         <> " SCHERZO_WORKSPACE_PATH=. "
         <> helper
         <> " validate-review-doc --discover-changed-review-doc --target-file tmp/target.json --write-path tmp/review.path",
@@ -1610,7 +1609,7 @@ pub fn discover_changed_review_doc_accepts_custom_requested_directory_test() {
 
 pub fn discover_changed_review_doc_accepts_custom_requested_file_test() {
   let dir = "test/tmp/execplan-discovery-custom-file"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let helper = tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
   let driver = tmp_repo_path("scripts/scherzo-workspace-noop")
 
@@ -1618,7 +1617,9 @@ pub fn discover_changed_review_doc_accepts_custom_requested_file_test() {
     run_shell_in(
       dir,
       "env SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote("Create an execplan at doobar/docs/plans/exact.md")
+        <> test_helpers.shell_quote(
+        "Create an execplan at doobar/docs/plans/exact.md",
+      )
         <> " "
         <> helper
         <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
@@ -1631,7 +1632,7 @@ pub fn discover_changed_review_doc_accepts_custom_requested_file_test() {
     run_shell_in(
       dir,
       "env SCHERZO_WORKSPACE_DRIVER="
-        <> shell_quote(driver)
+        <> test_helpers.shell_quote(driver)
         <> " SCHERZO_WORKSPACE_PATH=. "
         <> helper
         <> " validate-review-doc --discover-changed-review-doc --target-file tmp/target.json --write-path tmp/review.path",
@@ -1653,7 +1654,7 @@ pub fn discover_changed_review_doc_accepts_custom_requested_file_test() {
 
 pub fn discover_changed_review_doc_rejects_sibling_for_custom_file_test() {
   let dir = "test/tmp/execplan-discovery-custom-file-sibling"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let helper = tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
   let driver = tmp_repo_path("scripts/scherzo-workspace-noop")
 
@@ -1661,7 +1662,9 @@ pub fn discover_changed_review_doc_rejects_sibling_for_custom_file_test() {
     run_shell_in(
       dir,
       "env SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote("Create an execplan at doobar/docs/plans/exact.md")
+        <> test_helpers.shell_quote(
+        "Create an execplan at doobar/docs/plans/exact.md",
+      )
         <> " "
         <> helper
         <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
@@ -1673,7 +1676,7 @@ pub fn discover_changed_review_doc_rejects_sibling_for_custom_file_test() {
     run_shell_in(
       dir,
       "env SCHERZO_WORKSPACE_DRIVER="
-        <> shell_quote(driver)
+        <> test_helpers.shell_quote(driver)
         <> " SCHERZO_WORKSPACE_PATH=. "
         <> helper
         <> " validate-review-doc --discover-changed-review-doc --target-file tmp/target.json --write-path tmp/review.path",
@@ -1686,13 +1689,13 @@ pub fn discover_changed_review_doc_rejects_sibling_for_custom_file_test() {
 
 pub fn prepare_review_doc_target_rejects_unsafe_path_test() {
   let dir = "test/tmp/execplan-target-unsafe"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_shell_in(
       dir,
       "env SCHERZO_ISSUE_CONTEXT="
-        <> shell_quote("Create an execplan at ../outside")
+        <> test_helpers.shell_quote("Create an execplan at ../outside")
         <> " "
         <> tmp_repo_path(".scherzo/workflows/scripts/scherzo-execplan")
         <> " prepare-review-doc-target --from-issue-context --write-target tmp/target.json",
@@ -1707,14 +1710,14 @@ pub fn prepare_review_doc_target_rejects_unsafe_path_test() {
 
 pub fn discover_changed_review_doc_rejects_zero_candidates_test() {
   let dir = "test/tmp/execplan-discovery-zero"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-noop SCHERZO_WORKSPACE_PATH="
-      <> shell_quote(dir)
+      <> test_helpers.shell_quote(dir)
       <> " .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --discover-changed-review-doc --write-path "
-      <> shell_quote(dir <> "/review.path"),
+      <> test_helpers.shell_quote(dir <> "/review.path"),
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1723,7 +1726,7 @@ pub fn discover_changed_review_doc_rejects_zero_candidates_test() {
 
 pub fn discover_changed_review_doc_rejects_multiple_candidates_test() {
   let dir = "test/tmp/execplan-discovery-multiple"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) = simplifile.write(dir <> "/docs/plans/a.md", "# A\n")
   let assert Ok(Nil) = simplifile.write(dir <> "/docs/plans/b.md", "# B\n")
@@ -1731,9 +1734,9 @@ pub fn discover_changed_review_doc_rejects_multiple_candidates_test() {
   let artifact =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-noop SCHERZO_WORKSPACE_PATH="
-      <> shell_quote(dir)
+      <> test_helpers.shell_quote(dir)
       <> " .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --discover-changed-review-doc --write-path "
-      <> shell_quote(dir <> "/review.path"),
+      <> test_helpers.shell_quote(dir <> "/review.path"),
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1743,7 +1746,7 @@ pub fn discover_changed_review_doc_rejects_multiple_candidates_test() {
 
 pub fn materialize_pack_discovers_latest_structured_submission_test() {
   let dir = "test/tmp/execplan-structured-latest"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let run_dir = dir <> "/artifacts/runs/run-structured"
   let attempt_1 =
     run_dir
@@ -1767,9 +1770,9 @@ pub fn materialize_pack_discovers_latest_structured_submission_test() {
   let artifact =
     run_shell(
       "env SCHERZO_RUN_ID=run-structured SCHERZO_RUN_ARTIFACT_DIR="
-      <> shell_quote(run_dir)
+      <> test_helpers.shell_quote(run_dir)
       <> " .scherzo/workflows/scripts/scherzo-execplan materialize-pack --review-doc test/fixtures/execplan_v2/review-doc.valid.md --submission-step incorporate_review --submission-artifact implementation_pack_submission --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1780,7 +1783,7 @@ pub fn materialize_pack_discovers_latest_structured_submission_test() {
 
 pub fn publish_review_doc_writes_offline_context_test() {
   let dir = "test/tmp/execplan-publish-context"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
   let assert Ok(Nil) =
@@ -1792,11 +1795,11 @@ pub fn publish_review_doc_writes_offline_context_test() {
   let artifact =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z SCHERZO_ISSUE_IDENTIFIER=LIV-900 SCHERZO_ISSUE_TITLE="
-      <> shell_quote("Offline publish fixture")
+      <> test_helpers.shell_quote("Offline publish fixture")
       <> " SCHERZO_ISSUE_URL=https://linear.app/living-systems/issue/LIV-900/offline-publish-fixture .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --publish-context "
-      <> shell_quote(context_path),
+      <> test_helpers.shell_quote(context_path),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1816,7 +1819,7 @@ pub fn publish_review_doc_writes_offline_context_test() {
 
 pub fn publish_review_doc_revision_targets_existing_pr_test() {
   let dir = "test/tmp/execplan-v2-revision-publish-target"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
   let previous_bundle =
@@ -1837,26 +1840,26 @@ pub fn publish_review_doc_revision_targets_existing_pr_test() {
       driver,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> "
-        <> shell_quote(log)
+        <> test_helpers.shell_quote(log)
         <> "\n"
         <> "if [ \"$1\" = changed-files ]; then printf '%s\\n' '{\"version\":1,\"files\":[{\"path\":\"test/fixtures/execplan_v2/review-doc.valid.md\",\"status\":\"modified\"}]}'; exit 0; fi\n"
         <> "if [ \"$1\" = publish-change ]; then printf '%s\\n' '{\"version\":1,\"status\":\"updated\",\"url\":\"https://github.com/living-systems/scherzo/pull/314\",\"branch\":\"execplan/liv-314\",\"base_ref\":\"main\",\"base_revision\":\"main\",\"head_revision\":\"abcdef123456\",\"change_id\":\"chg\",\"created\":false,\"updated\":true}'; exit 0; fi\n"
         <> "echo unexpected driver command >&2\n"
         <> "exit 1\n",
     )
-  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(driver))
   assert chmod.status == step_artifact.StepSucceeded
 
   let artifact =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER="
-      <> shell_quote(driver)
+      <> test_helpers.shell_quote(driver)
       <> " SCHERZO_JJ_WORKSPACE_BASE_BRANCH=trunk SCHERZO_PR_BASE=legacy SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --previous-bundle "
-      <> shell_quote(previous_bundle)
+      <> test_helpers.shell_quote(previous_bundle)
       <> " --skip-if-unchanged",
     )
 
@@ -1879,7 +1882,7 @@ pub fn publish_review_doc_revision_targets_existing_pr_test() {
 
 pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
   let dir = "test/tmp/execplan-v2-publish-pack-source"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
   let output = dir <> "/bundle.json"
@@ -1894,9 +1897,9 @@ pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
   let artifact =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z SCHERZO_ISSUE_IDENTIFIER=LIV-314 .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json",
     )
 
@@ -1915,11 +1918,11 @@ pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
   let bundle_artifact =
     run_shell(
       "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-publish-pack-source .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
   assert bundle_artifact.status == step_artifact.StepSucceeded
   let assert Ok(bundle) = simplifile.read(output)
@@ -1928,7 +1931,7 @@ pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
 
 pub fn publish_review_doc_rejects_pack_review_doc_hash_mismatch_test() {
   let dir = "test/tmp/execplan-v2-publish-stale-pack"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
   let pack_path =
@@ -1946,11 +1949,11 @@ pub fn publish_review_doc_rejects_pack_review_doc_hash_mismatch_test() {
   let artifact =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --pack "
-      <> shell_quote(pack_path),
+      <> test_helpers.shell_quote(pack_path),
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1964,7 +1967,7 @@ pub fn publish_review_doc_rejects_pack_review_doc_hash_mismatch_test() {
 
 pub fn publish_review_doc_rejects_pack_source_issue_identifier_mismatch_test() {
   let dir = "test/tmp/execplan-v2-publish-pack-source-mismatch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
   let assert Ok(Nil) =
@@ -1976,9 +1979,9 @@ pub fn publish_review_doc_rejects_pack_source_issue_identifier_mismatch_test() {
   let artifact =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_ISSUE_IDENTIFIER=LIV-999 .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json",
     )
 
@@ -1993,7 +1996,7 @@ pub fn publish_review_doc_rejects_pack_source_issue_identifier_mismatch_test() {
 
 pub fn materialize_bundle_prefers_pack_source_issue_over_publish_context_test() {
   let dir = "test/tmp/execplan-v2-materialize-pack-source"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
   let output = dir <> "/bundle.json"
@@ -2016,11 +2019,11 @@ pub fn materialize_bundle_prefers_pack_source_issue_over_publish_context_test() 
   let artifact =
     run_shell(
       "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-pack-source .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -2040,7 +2043,7 @@ pub fn materialize_bundle_prefers_pack_source_issue_over_publish_context_test() 
 
 pub fn materialize_bundle_rejects_publish_context_source_issue_identifier_mismatch_test() {
   let dir = "test/tmp/execplan-v2-materialize-pack-source-mismatch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
   let output = dir <> "/bundle.json"
@@ -2063,11 +2066,11 @@ pub fn materialize_bundle_rejects_publish_context_source_issue_identifier_mismat
   let artifact =
     run_shell(
       "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-pack-source .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -2081,7 +2084,7 @@ pub fn materialize_bundle_rejects_publish_context_source_issue_identifier_mismat
 
 pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
   let dir = "test/tmp/execplan-online-linear-create"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let log = dir <> "/linear.log"
   let update_desc = dir <> "/updated-description.md"
@@ -2091,7 +2094,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
       linear,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> "
-        <> shell_quote(log)
+        <> test_helpers.shell_quote(log)
         <> "\n"
         <> "if [ \"$1 $2\" = 'issue query' ]; then printf '%s\\n' '{\"nodes\":[]}'; exit 0; fi\n"
         <> "if [ \"$1 $2 $3\" = 'issue view LIV-314' ]; then printf '%s\\n' '{\"identifier\":\"LIV-314\",\"url\":\"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\",\"project\":{\"name\":\"Scherzo Core\"}}'; exit 0; fi\n"
@@ -2107,7 +2110,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
         <> "  for arg in \"$@\"; do if [ \"$prev\" = --description-file ]; then desc=$arg; fi; prev=$arg; done\n"
         <> "  if [ -z \"$desc\" ]; then echo 'missing description file' >&2; exit 2; fi\n"
         <> "  cp \"$desc\" "
-        <> shell_quote(update_desc)
+        <> test_helpers.shell_quote(update_desc)
         <> "\n"
         <> "  grep -Eq '^Bundle sha256: [a-f0-9]{64}$' \"$desc\" || { echo 'missing final bundle sha' >&2; exit 3; }\n"
         <> "  grep -q '^Bundle sha256: pending$' \"$desc\" && { echo 'pending bundle sha' >&2; exit 4; }\n"
@@ -2116,7 +2119,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
         <> "if [ \"$1 $2 $3\" = 'issue comment add' ]; then exit 0; fi\n"
         <> "exit 1\n",
     )
-  let chmod = run_shell("chmod +x " <> shell_quote(linear))
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(linear))
   assert chmod.status == step_artifact.StepSucceeded
 
   let path_file = dir <> "/review.path"
@@ -2141,13 +2144,13 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
   let artifact =
     run_shell(
       "env PATH="
-      <> shell_quote(dir <> "/bin")
+      <> test_helpers.shell_quote(dir <> "/bin")
       <> ":$PATH SCHERZO_RUN_ID=run-online .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -2171,7 +2174,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
 
 pub fn materialize_revision_reuses_unchanged_review_surface_test() {
   let dir = "test/tmp/execplan-unchanged-revision"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
   let output = dir <> "/bundle.json"
@@ -2184,9 +2187,9 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
   let publish =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --skip-if-unchanged",
     )
   assert publish.status == step_artifact.StepSucceeded
@@ -2195,11 +2198,11 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
   let revision =
     run_shell(
       "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision .scherzo/workflows/scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --status auto --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
 
   assert revision.status == step_artifact.StepSucceeded
@@ -2222,7 +2225,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
 
 pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
   let dir = "test/tmp/execplan-v2-revision-pack-source"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let previous_bundle =
     mutated_bundle(
       dir <> "/previous",
@@ -2241,11 +2244,11 @@ pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
   let publish =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z .scherzo/workflows/scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --previous-bundle "
-      <> shell_quote(previous_bundle)
+      <> test_helpers.shell_quote(previous_bundle)
       <> " --skip-if-unchanged",
     )
   assert publish.status == step_artifact.StepSucceeded
@@ -2262,13 +2265,13 @@ pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
   let revision =
     run_shell(
       "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision-pack-source .scherzo/workflows/scripts/scherzo-execplan materialize-revision --previous-bundle "
-      <> shell_quote(previous_bundle)
+      <> test_helpers.shell_quote(previous_bundle)
       <> " --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --status auto --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
 
   assert revision.status == step_artifact.StepSucceeded
@@ -2289,7 +2292,7 @@ pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
 
 pub fn materialize_revision_updates_existing_handoff_issue_test() {
   let dir = "test/tmp/execplan-v2-revision-handoff-update"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let log = dir <> "/linear.log"
   let update_desc = dir <> "/updated-description.md"
@@ -2299,7 +2302,7 @@ pub fn materialize_revision_updates_existing_handoff_issue_test() {
       linear,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> "
-        <> shell_quote(log)
+        <> test_helpers.shell_quote(log)
         <> "\n"
         <> "if [ \"$1 $2 $3\" = 'issue update LIV-315' ]; then\n"
         <> "  desc=''\n"
@@ -2307,7 +2310,7 @@ pub fn materialize_revision_updates_existing_handoff_issue_test() {
         <> "  for arg in \"$@\"; do if [ \"$prev\" = --description-file ]; then desc=$arg; fi; prev=$arg; done\n"
         <> "  if [ -z \"$desc\" ]; then echo 'missing description file' >&2; exit 2; fi\n"
         <> "  cp \"$desc\" "
-        <> shell_quote(update_desc)
+        <> test_helpers.shell_quote(update_desc)
         <> "\n"
         <> "  grep -q '^Bundle ref: runs/run-revision-update/outputs/exec_plan_bundle.json$' \"$desc\" || { echo 'missing revised bundle ref' >&2; exit 3; }\n"
         <> "  grep -Eq '^Bundle sha256: [a-f0-9]{64}$' \"$desc\" || { echo 'missing revised bundle sha' >&2; exit 4; }\n"
@@ -2317,7 +2320,7 @@ pub fn materialize_revision_updates_existing_handoff_issue_test() {
         <> "if [ \"$1 $2 $3 $4\" = 'issue comment add LIV-315' ]; then exit 0; fi\n"
         <> "exit 1\n",
     )
-  let chmod = run_shell("chmod +x " <> shell_quote(linear))
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(linear))
   assert chmod.status == step_artifact.StepSucceeded
 
   let path_file = dir <> "/review.path"
@@ -2342,13 +2345,13 @@ pub fn materialize_revision_updates_existing_handoff_issue_test() {
   let artifact =
     run_shell(
       "env PATH="
-      <> shell_quote(dir <> "/bin")
+      <> test_helpers.shell_quote(dir <> "/bin")
       <> ":$PATH SCHERZO_RUN_ID=run-revision-update .scherzo/workflows/scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
-      <> shell_quote(path_file)
+      <> test_helpers.shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
-      <> shell_quote(context_path)
+      <> test_helpers.shell_quote(context_path)
       <> " --status auto --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -2368,7 +2371,7 @@ pub fn materialize_revision_updates_existing_handoff_issue_test() {
 
 pub fn materialize_code_change_bundle_emits_retained_refs_test() {
   let dir = "test/tmp/execplan-code-change"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_root = dir <> "/artifacts/runs/run-2"
   let run_root = dir <> "/run-root"
   let assert Ok(Nil) = simplifile.create_directory_all(artifact_root)
@@ -2425,11 +2428,11 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
   let artifact =
     run_shell(
       "env SCHERZO_RUN_ID=run-2 SCHERZO_RUN_ARTIFACT_DIR="
-      <> shell_quote(artifact_root)
+      <> test_helpers.shell_quote(artifact_root)
       <> " SCHERZO_RUN_ROOT="
-      <> shell_quote(run_root)
+      <> test_helpers.shell_quote(run_root)
       <> " SCHERZO_EXECPLAN_DIFF_PATH=test/fixtures/execplan_v2/artifacts/runs/run-2/execplan/code-change/diff.patch .scherzo/workflows/scripts/scherzo-execplan materialize-code-change-bundle --bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
-      <> shell_quote(output),
+      <> test_helpers.shell_quote(output),
     )
 
   assert artifact.status == step_artifact.StepSucceeded

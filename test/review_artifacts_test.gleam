@@ -2,26 +2,19 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
+import support/test_helpers
 
 fn run_command(command: String) -> step_artifact.StepArtifact {
-  command_step.run("review-artifacts", command, ".", 120_000, [], limits())
+  command_step.run(
+    "review-artifacts",
+    command,
+    ".",
+    120_000,
+    [],
+    test_helpers.default_artifact_limits(),
+  )
 }
 
 fn assert_contains(contents: String, expected: String) -> Nil {
@@ -58,7 +51,7 @@ fn native_prepare_diff() -> String {
 
 pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
   let dir = "test/tmp/review-artifacts-dry-run"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let output_dir = dir <> "/out"
   let assert Ok(Nil) =
@@ -149,7 +142,7 @@ pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
 
 pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
   let dir = "test/tmp/review-artifacts-specialist-lanes"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let brief_dir = dir <> "/brief"
   let assert Ok(Nil) =
@@ -355,7 +348,7 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
 
 pub fn security_performance_lane_uses_low_risk_lightweight_depth_test() {
   let dir = "test/tmp/review-artifacts-security-lightweight"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/docs.diff"
   let brief_dir = dir <> "/brief"
   let lane_dir = dir <> "/lane"
@@ -419,7 +412,7 @@ pub fn security_performance_lane_uses_low_risk_lightweight_depth_test() {
 
 pub fn security_performance_lane_ignores_detector_token_literals_test() {
   let dir = "test/tmp/review-artifacts-security-token-literals"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/tokens.diff"
   let brief_dir = dir <> "/brief"
   let lane_dir = dir <> "/lane"
@@ -483,7 +476,7 @@ pub fn security_performance_lane_ignores_detector_token_literals_test() {
 
 pub fn review_lane_failure_writes_debug_artifacts_test() {
   let dir = "test/tmp/review-artifacts-lane-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let brief_path = dir <> "/invalid-brief.json"
   let lane_dir = dir <> "/lane"
   let assert Ok(Nil) =
@@ -522,7 +515,7 @@ pub fn review_lane_failure_writes_debug_artifacts_test() {
 
 pub fn agent_fixture_lane_writes_bundle_artifacts_test() {
   let dir = "test/tmp/review-artifacts-agent-fixture-lane"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let brief_dir = dir <> "/brief"
   let lane_dir = dir <> "/lane"
@@ -596,7 +589,7 @@ pub fn agent_fixture_lane_writes_bundle_artifacts_test() {
 
 pub fn preflight_fixture_backend_records_lane_backends_test() {
   let dir = "test/tmp/review-artifacts-preflight-fixture-backend"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let preflight =
     run_command(
@@ -630,7 +623,7 @@ pub fn preflight_fixture_backend_records_lane_backends_test() {
 
 pub fn external_agent_missing_command_writes_failed_lane_result_test() {
   let dir = "test/tmp/review-artifacts-external-missing-command"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let brief_dir = dir <> "/brief"
   let lane_dir = dir <> "/lane"
@@ -690,7 +683,7 @@ pub fn external_agent_missing_command_writes_failed_lane_result_test() {
 
 pub fn external_agent_command_writes_successful_lane_result_test() {
   let dir = "test/tmp/review-artifacts-external-success"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let brief_dir = dir <> "/brief"
   let lane_dir = dir <> "/lane"
@@ -790,7 +783,7 @@ pub fn agent_environment_sanitizer_strips_mutation_credentials_test() {
 
 pub fn correctness_fixture_evidence_gate_preflight_test() {
   let dir = "test/tmp/review-artifacts-correctness-fixture"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let preflight =
     run_command(
@@ -854,7 +847,7 @@ pub fn correctness_fixture_evidence_gate_preflight_test() {
 
 pub fn heuristic_preflight_is_not_cutover_ready_test() {
   let dir = "test/tmp/review-artifacts-heuristic-not-ready"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let preflight =
     run_command(
@@ -880,7 +873,7 @@ pub fn heuristic_preflight_is_not_cutover_ready_test() {
 
 pub fn prepare_native_serializes_passed_validation_evidence_test() {
   let dir = "test/tmp/review-artifacts-native-validation-passed"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let output_dir = dir <> "/out"
   let validation_path = dir <> "/validation-passed.json"
@@ -936,7 +929,7 @@ pub fn prepare_native_serializes_passed_validation_evidence_test() {
 
 pub fn prepare_native_serializes_failed_validation_evidence_test() {
   let dir = "test/tmp/review-artifacts-native-validation-failed"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let output_dir = dir <> "/out"
   let validation_path = dir <> "/validation-failed.json"
@@ -979,7 +972,7 @@ pub fn prepare_native_serializes_failed_validation_evidence_test() {
 
 pub fn prepare_native_records_not_run_validation_by_design_test() {
   let dir = "test/tmp/review-artifacts-native-validation-not-run"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let output_dir = dir <> "/out"
   let assert Ok(Nil) = simplifile.write(diff_path, native_prepare_diff())
@@ -1010,7 +1003,7 @@ pub fn prepare_native_records_not_run_validation_by_design_test() {
 
 pub fn prepare_native_records_missing_validation_artifact_test() {
   let dir = "test/tmp/review-artifacts-native-validation-missing"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let output_dir = dir <> "/out"
   let missing_path = dir <> "/missing-validation.json"
@@ -1043,7 +1036,7 @@ pub fn prepare_native_records_missing_validation_artifact_test() {
 
 pub fn prepare_native_records_malformed_validation_artifact_test() {
   let dir = "test/tmp/review-artifacts-native-validation-malformed"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let diff_path = dir <> "/change.diff"
   let output_dir = dir <> "/out"
   let validation_path = dir <> "/validation-malformed.json"
@@ -1102,7 +1095,7 @@ pub fn implementation_workflows_native_cutover_removes_legacy_backend_default_te
 
 pub fn review_preflight_runs_full_dry_run_suite_test() {
   let dir = "test/tmp/review-artifacts-preflight"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let preflight =
     run_command(
@@ -1179,7 +1172,7 @@ pub fn review_preflight_runs_full_dry_run_suite_test() {
 
 pub fn review_artifact_validator_accepts_review_finding_test() {
   let dir = "test/tmp/review-artifacts-finding"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_path = dir <> "/finding.json"
   let assert Ok(Nil) =
     simplifile.write(
@@ -1214,7 +1207,7 @@ pub fn review_artifact_validator_accepts_review_finding_test() {
 
 pub fn review_artifact_validator_rejects_blocking_correctness_without_executable_evidence_test() {
   let dir = "test/tmp/review-artifacts-invalid-correctness-blocker"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_path = dir <> "/lane-result.json"
   let assert Ok(Nil) =
     simplifile.write(
@@ -1256,7 +1249,7 @@ pub fn review_artifact_validator_rejects_blocking_correctness_without_executable
 
 pub fn review_artifact_validator_rejects_missing_required_brief_fields_test() {
   let dir = "test/tmp/review-artifacts-invalid"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_path = dir <> "/invalid.json"
   let assert Ok(Nil) =
     simplifile.write(
@@ -1428,7 +1421,7 @@ fn write_wrong_finding_ledger(path: String) -> Nil {
 
 pub fn review_lane_draft_path_safety_validation_test() {
   let dir = "test/tmp/review-lane-draft-path-safety"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let absolute_path = "/tmp/scherzo-review-absolute-path-fixture.gleam"
   let absolute_draft = dir <> "/absolute.json"
   let parent_draft = dir <> "/parent.json"
@@ -1495,7 +1488,7 @@ pub fn review_lane_draft_path_safety_validation_test() {
 
 pub fn evidence_verdict_must_link_to_finding_test() {
   let dir = "test/tmp/native-evidence-linkage"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let draft_path = dir <> "/draft.v1.json"
   let ledger_path = dir <> "/evidence-ledger.v1.json"
@@ -1532,7 +1525,7 @@ pub fn evidence_verdict_must_link_to_finding_test() {
 
 pub fn generic_gleam_test_does_not_verify_arbitrary_correctness_claim_test() {
   let dir = "test/tmp/native-generic-gleam-test"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let draft_path = dir <> "/draft.v1.json"
   let metadata_path = dir <> "/agent-step-metadata.v1.json"
@@ -1588,7 +1581,7 @@ pub fn generic_gleam_test_does_not_verify_arbitrary_correctness_claim_test() {
 
 pub fn verify_evidence_relativizes_absolute_draft_path_test() {
   let dir = "test/tmp/native-absolute-draft-path"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let draft_path = dir <> "/draft.v1.json"
   let lane_dir = dir <> "/lane"
@@ -1627,7 +1620,7 @@ pub fn verify_evidence_relativizes_absolute_draft_path_test() {
 
 pub fn correctness_blocker_downgraded_without_verified_reproduction_test() {
   let dir = "test/tmp/native-correctness-downgrade"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let draft_path = dir <> "/draft.v1.json"
   let ledger_path = dir <> "/evidence-ledger.v1.json"
@@ -1668,7 +1661,7 @@ pub fn correctness_blocker_downgraded_without_verified_reproduction_test() {
 
 pub fn missing_evidence_ledger_produces_failed_lane_result_test() {
   let dir = "test/tmp/native-missing-evidence-ledger"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let draft_path = dir <> "/draft.v1.json"
   let metadata_path = dir <> "/agent-step-metadata.v1.json"
@@ -1704,7 +1697,7 @@ pub fn missing_evidence_ledger_produces_failed_lane_result_test() {
 
 pub fn missing_draft_verify_evidence_reports_structured_output_root_cause_test() {
   let dir = "test/tmp/native-missing-draft-root-cause-verify"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let artifact_dir = dir <> "/artifact-runs/run-1"
   let draft_path =
@@ -1744,7 +1737,7 @@ pub fn missing_draft_verify_evidence_reports_structured_output_root_cause_test()
 
 pub fn missing_draft_normalize_preserves_structured_output_root_cause_test() {
   let dir = "test/tmp/native-missing-draft-root-cause-normalize"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let artifact_dir = dir <> "/artifact-runs/run-1"
   let draft_path =
@@ -1781,7 +1774,7 @@ pub fn missing_draft_normalize_preserves_structured_output_root_cause_test() {
 
 pub fn all_lanes_review_infrastructure_failure_exits_42_test() {
   let dir = "test/tmp/native-all-lanes-infrastructure-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let lanes = [
     "correctness",
@@ -1852,7 +1845,7 @@ pub fn all_lanes_review_infrastructure_failure_exits_42_test() {
 
 pub fn missing_or_malformed_draft_produces_failed_lane_result_test() {
   let dir = "test/tmp/native-malformed-draft"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_native_support_files(dir)
   let draft_path = dir <> "/draft.v1.json"
   let metadata_path = dir <> "/agent-step-metadata.v1.json"
@@ -1957,7 +1950,7 @@ fn write_validation_artifact(path: String) -> Nil {
 
 pub fn disposition_input_structured_validator_rejects_string_schema_version_test() {
   let dir = "test/tmp/native-disposition-input-validator"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let payload_path = dir <> "/payload.json"
   let assert Ok(Nil) =
     simplifile.write(
@@ -1984,7 +1977,7 @@ pub fn disposition_input_structured_validator_rejects_string_schema_version_test
 
 pub fn materialize_disposition_input_uses_runner_validated_structured_output_test() {
   let dir = "test/tmp/native-disposition-input-materialize"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_dir = dir <> "/artifacts"
   let structured_dir = artifact_dir <> "/apply_feedback/attempt-2/structured"
   let assert Ok(Nil) = simplifile.create_directory_all(structured_dir)
@@ -2057,7 +2050,7 @@ pub fn materialize_disposition_input_uses_runner_validated_structured_output_tes
 
 pub fn materialize_disposition_input_finds_hash_suffixed_step_metadata_test() {
   let dir = "test/tmp/native-disposition-input-hashed-metadata"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_dir = dir <> "/artifacts"
   let structured_dir = artifact_dir <> "/apply_feedback/attempt-2/structured"
   let metadata_dir = artifact_dir <> "/apply_feedback-8eeea1750f4d"
@@ -2127,7 +2120,7 @@ pub fn materialize_disposition_input_finds_hash_suffixed_step_metadata_test() {
 
 pub fn finalize_dispositions_writes_schema_valid_artifacts_test() {
   let dir = "test/tmp/native-finalize-dispositions"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let input_path = dir <> "/disposition-input.v1.json"
   let validation_path = dir <> "/validation.json"
@@ -2207,7 +2200,7 @@ pub fn finalize_dispositions_writes_schema_valid_artifacts_test() {
 
 pub fn finalize_dispositions_normalizes_string_evidence_refs_test() {
   let dir = "test/tmp/native-finalize-dispositions-string-evidence"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let input_path = dir <> "/disposition-input.v1.json"
   let validation_path = dir <> "/validation.json"
@@ -2258,7 +2251,7 @@ pub fn finalize_dispositions_normalizes_string_evidence_refs_test() {
 
 pub fn finalize_dispositions_rejects_deferred_blocking_findings_test() {
   let dir = "test/tmp/native-finalize-dispositions-blocked"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let input_path = dir <> "/disposition-input.v1.json"
   let validation_path = dir <> "/validation.json"
@@ -2299,7 +2292,7 @@ pub fn finalize_dispositions_rejects_deferred_blocking_findings_test() {
 
 pub fn finalize_dispositions_rejects_missing_finding_ids_test() {
   let dir = "test/tmp/native-finalize-dispositions-missing"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let input_path = dir <> "/disposition-input.v1.json"
   let validation_path = dir <> "/validation.json"
@@ -2339,7 +2332,7 @@ pub fn finalize_dispositions_rejects_missing_finding_ids_test() {
 
 pub fn finalize_dispositions_rejects_duplicate_finding_ids_test() {
   let dir = "test/tmp/native-finalize-dispositions-duplicate"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let input_path = dir <> "/disposition-input.v1.json"
   let validation_path = dir <> "/validation.json"
@@ -2380,7 +2373,7 @@ pub fn finalize_dispositions_rejects_duplicate_finding_ids_test() {
 
 pub fn finalize_dispositions_rejects_unknown_finding_ids_test() {
   let dir = "test/tmp/native-finalize-dispositions-unknown"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let input_path = dir <> "/disposition-input.v1.json"
   let validation_path = dir <> "/validation.json"
@@ -2422,7 +2415,7 @@ pub fn finalize_dispositions_rejects_unknown_finding_ids_test() {
 
 pub fn finalize_dispositions_handles_no_findings_test() {
   let dir = "test/tmp/native-finalize-dispositions-empty"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let input_path = dir <> "/disposition-input.v1.json"
   let validation_path = dir <> "/validation.json"
@@ -2465,7 +2458,7 @@ pub fn finalize_dispositions_handles_no_findings_test() {
 
 pub fn finalize_dispositions_is_idempotent_over_same_output_dir_test() {
   let dir = "test/tmp/native-finalize-dispositions-idempotent"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let input_path = dir <> "/disposition-input.v1.json"
   let validation_path = dir <> "/validation.json"
@@ -2527,7 +2520,7 @@ pub fn finalize_dispositions_is_idempotent_over_same_output_dir_test() {
 
 pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
   let dir = "test/tmp/native-publish-feedback"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let final_path = dir <> "/final-review.v1.json"
   let feedback_dir = dir <> "/feedback"
   let publish_dir = dir <> "/publish"
@@ -2607,7 +2600,7 @@ pub fn legacy_pr_smoke_lists_curated_prs_with_rationale_test() {
 
 pub fn legacy_pr_smoke_rejects_scenario_environment_test() {
   let dir = "test/tmp/legacy-pr-smoke-rejects-env"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     run_command(
       "SCHERZO_NATIVE_REVIEW_SCENARIO=fixture .scherzo/workflows/scripts/scherzo-review legacy-pr-smoke --pr 116 --output-dir "
@@ -2624,7 +2617,7 @@ pub fn legacy_pr_smoke_rejects_scenario_environment_test() {
 
 pub fn legacy_pr_smoke_reports_retired_standalone_workflow_test() {
   let dir = "test/tmp/legacy-pr-smoke-retired"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     run_command(
       "env -u SCHERZO_NATIVE_REVIEW_SCENARIO -u SCHERZO_STAGED_REVIEW_AGENT_BACKEND -u SCHERZO_REVIEW_AGENT_BACKEND .scherzo/workflows/scripts/scherzo-review legacy-pr-smoke --pr 116 --output-dir "
@@ -2646,7 +2639,7 @@ pub fn legacy_pr_smoke_reports_retired_standalone_workflow_test() {
 
 pub fn native_preflight_reports_retired_standalone_workflow_test() {
   let dir = "test/tmp/native-preflight-retired"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     run_command(
       ".scherzo/workflows/scripts/scherzo-review native-preflight --output-dir "
@@ -2670,7 +2663,7 @@ pub fn native_preflight_reports_retired_standalone_workflow_test() {
 
 pub fn native_preflight_requires_runner_provenance_test() {
   let dir = "test/tmp/native-preflight-provenance"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let manifest_path = dir <> "/preflight-manifest.v1.json"
   let assert Ok(Nil) =
     simplifile.write(

@@ -1,16 +1,11 @@
 import gleam/erlang/process
 import gleam/string
 import simplifile
+import support/test_helpers
 
 pub type Listener
 
 pub type Socket
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
 
 pub fn control_ffi_loopback_send_receive_and_idempotent_close_test() {
   let assert Ok(listener) = listen("127.0.0.1", 0)
@@ -75,7 +70,7 @@ pub fn control_ffi_token_chmod_and_env_not_found_test() {
   assert string.length(token) > 0
 
   let root = "test/tmp/control-ffi"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let private_path = root <> "/control.json"
   let assert Ok(Nil) = simplifile.write(private_path, "{}")
   let assert Ok(Nil) = chmod_private(private_path)

@@ -10,12 +10,7 @@ import scherzo/pi/client
 import scherzo/pi/command as pi_command
 import scherzo/pi/protocol
 import simplifile
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
+import support/test_helpers
 
 fn fake_pi() -> String {
   let assert Ok(abs) = path.absolute("test/fixtures/fake_pi_rpc.sh")
@@ -24,7 +19,7 @@ fn fake_pi() -> String {
 
 pub fn structured_argv_launch_records_cwd_argv_and_session_file_test() {
   let cwd = "test/tmp/pi-rpc-argv-launch"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(abs_cwd) = path.absolute(cwd)
   let assert Ok(argv_log) = path.absolute(cwd <> "/argv.log")
   let session_file = abs_cwd <> "/fresh.pi-session"
@@ -50,7 +45,7 @@ pub fn structured_argv_launch_records_cwd_argv_and_session_file_test() {
 
 pub fn continuation_reopen_uses_recorded_session_file_and_validates_before_prompt_test() {
   let cwd = "test/tmp/pi-rpc-continuation"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(abs_cwd) = path.absolute(cwd)
   let assert Ok(argv_log) = path.absolute(cwd <> "/argv.log")
   let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
@@ -77,7 +72,7 @@ pub fn continuation_reopen_uses_recorded_session_file_and_validates_before_promp
 
 pub fn continuation_reopen_validation_failure_sends_no_prompt_test() {
   let cwd = "test/tmp/pi-rpc-continuation-validation-failure"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(abs_cwd) = path.absolute(cwd)
   let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
   let session_file = abs_cwd <> "/captured.pi-session"
@@ -102,7 +97,7 @@ pub fn continuation_reopen_validation_failure_sends_no_prompt_test() {
 
 pub fn stepwise_prompt_read_and_stats_with_fake_pi_test() {
   let cwd = "test/tmp/pi-rpc-stepwise"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(Nil) = simplifile.write(cwd <> "/POPULATED", "yes")
   let assert Ok(session) =
     client.launch(fake_pi(), cwd, "ABC-123: Title", True, 1000)
@@ -135,7 +130,7 @@ pub fn stepwise_prompt_read_and_stats_with_fake_pi_test() {
 
 pub fn read_turn_record_uses_absolute_deadlines_test() {
   let cwd = "test/tmp/pi-rpc-absolute-deadlines"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let command = "FAKE_PI_NO_OUTPUT_AFTER_PROMPT=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let assert Ok(#(session, _)) = client.send_prompt(session, "prompt", 1000)
@@ -154,7 +149,7 @@ pub fn read_turn_record_uses_absolute_deadlines_test() {
 
 pub fn compact_collects_compaction_events_test() {
   let cwd = "test/tmp/pi-rpc-compact"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(session) = client.launch(fake_pi(), cwd, "name", False, 1000)
   let assert Ok(#(session, records)) =
     client.compact(session, Some("Focus on workspace state"), 1000)
@@ -166,7 +161,7 @@ pub fn compact_collects_compaction_events_test() {
 
 pub fn compact_failed_response_is_protocol_error_test() {
   let cwd = "test/tmp/pi-rpc-compact-fail"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let command = "FAKE_PI_COMPACT_FAIL=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let result = client.compact(session, None, 1000)
@@ -176,7 +171,7 @@ pub fn compact_failed_response_is_protocol_error_test() {
 
 pub fn compact_failure_diagnostics_preserve_interleaved_events_test() {
   let cwd = "test/tmp/pi-rpc-compact-fail-diagnostics"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let command =
     "FAKE_PI_COMPACT_FAIL=1 FAKE_PI_COMPACT_EVENTS_BEFORE_FAIL=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
@@ -194,7 +189,7 @@ pub fn compact_failure_diagnostics_preserve_interleaved_events_test() {
 
 pub fn compact_timeout_diagnostics_preserve_interleaved_events_test() {
   let cwd = "test/tmp/pi-rpc-compact-timeout-diagnostics"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let command =
     "FAKE_PI_COMPACT_FAIL=1 FAKE_PI_COMPACT_EVENTS_BEFORE_FAIL=1 FAKE_PI_COMPACT_NO_RESPONSE_AFTER_EVENTS=1 "
     <> fake_pi()
@@ -211,7 +206,7 @@ pub fn compact_timeout_diagnostics_preserve_interleaved_events_test() {
 
 pub fn send_abort_and_ui_response_helpers_test() {
   let cwd = "test/tmp/pi-rpc-command-helpers"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
   let command =
     "FAKE_PI_INTERLEAVE_EVENT_BEFORE_COMMAND_RESPONSE=1 FAKE_PI_TRANSCRIPT="
@@ -235,7 +230,7 @@ pub fn send_abort_and_ui_response_helpers_test() {
 
 pub fn launch_prompt_and_stats_with_fake_pi_test() {
   let cwd = "test/tmp/pi-rpc-workspace"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(Nil) = simplifile.write(cwd <> "/POPULATED", "yes")
   let assert Ok(session) =
     client.launch(fake_pi(), cwd, "ABC-123: Title", True, 1000)
@@ -252,7 +247,7 @@ pub fn launch_prompt_and_stats_with_fake_pi_test() {
 
 pub fn prompt_with_fake_tool_events_surfaces_tool_records_test() {
   let cwd = "test/tmp/pi-rpc-tool-events"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(Nil) = simplifile.write(cwd <> "/POPULATED", "yes")
   let command = "FAKE_PI_TOOL=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
@@ -281,7 +276,7 @@ pub fn prompt_with_fake_tool_events_surfaces_tool_records_test() {
 
 pub fn probe_launches_without_prompt_test() {
   let cwd = "test/tmp/pi-probe-workspace"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
   let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
   let assert Ok(Nil) = probe.probe(command, cwd, 1000)
@@ -294,7 +289,7 @@ pub fn probe_launches_without_prompt_test() {
 
 pub fn malformed_json_and_timeout_fail_test() {
   let cwd = "test/tmp/pi-rpc-failure"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let malformed_result =
     client.launch("FAKE_PI_MALFORMED=1 " <> fake_pi(), cwd, "name", False, 1000)
   terminate_if_launch_succeeded(malformed_result)
@@ -308,7 +303,7 @@ pub fn malformed_json_and_timeout_fail_test() {
 
 pub fn launch_spec_terminates_fake_pi_after_handshake_failure_test() {
   let cwd = "test/tmp/pi-rpc-launch-handshake-failure"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(abs_cwd) = path.absolute(cwd)
   let assert Ok(pid_file) = path.absolute(cwd <> "/fake-pi.pid")
   let spec =
@@ -326,7 +321,7 @@ pub fn launch_spec_terminates_fake_pi_after_handshake_failure_test() {
 
 pub fn prompt_allows_short_read_timeouts_until_event_test() {
   let cwd = "test/tmp/pi-rpc-delayed-event"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let command = "FAKE_PI_DELAY_EVENT_MS=100 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let assert Ok(#(session, events)) =
@@ -340,7 +335,7 @@ pub fn prompt_allows_short_read_timeouts_until_event_test() {
 
 pub fn prompt_fails_when_stall_timeout_expires_test() {
   let cwd = "test/tmp/pi-rpc-stall-timeout"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let command = "FAKE_PI_NO_OUTPUT_AFTER_PROMPT=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let prompt_result = collect_prompt(session, "prompt", 1000, 1000, 50)
@@ -350,7 +345,7 @@ pub fn prompt_fails_when_stall_timeout_expires_test() {
 
 pub fn prompt_fails_when_turn_timeout_expires_before_agent_end_test() {
   let cwd = "test/tmp/pi-rpc-turn-timeout-before-end"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let command = "FAKE_PI_NO_AGENT_END=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let prompt_result = collect_prompt(session, "prompt", 1000, 80, 1000)
@@ -360,7 +355,7 @@ pub fn prompt_fails_when_turn_timeout_expires_before_agent_end_test() {
 
 pub fn turn_timeout_and_failed_stats_are_errors_test() {
   let cwd = "test/tmp/pi-rpc-timeout"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let command = "FAKE_PI_STALL_AFTER_PROMPT=200 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let prompt_result = collect_prompt(session, "prompt", 1000, 20, 300_000)
@@ -368,7 +363,7 @@ pub fn turn_timeout_and_failed_stats_are_errors_test() {
   let assert Error(error.PiTurnTimeout) = prompt_result
 
   let cwd = "test/tmp/pi-rpc-stats-fail"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(session) =
     client.launch(
       "FAKE_PI_STATS_FAIL=1 " <> fake_pi(),

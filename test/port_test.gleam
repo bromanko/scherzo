@@ -6,16 +6,11 @@ import gleam/string
 import scherzo/path as scherzo_path
 import scherzo/port
 import simplifile
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
+import support/test_helpers
 
 pub fn port_cwd_and_stdin_stdout_test() {
   let cwd = "test/tmp/port-cwd"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) =
     port.start("pwd; while IFS= read -r line; do echo \"$line\"; done", cwd)
@@ -34,7 +29,7 @@ pub fn port_cwd_and_stdin_stdout_test() {
 
 pub fn port_keeps_stderr_out_of_stdout_test() {
   let cwd = "test/tmp/port-stderr"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) =
     port.start("echo '{\"ok\":true}'; echo diagnostic >&2", cwd)
@@ -49,7 +44,7 @@ pub fn port_keeps_stderr_out_of_stdout_test() {
 
 pub fn port_start_with_env_applies_environment_test() {
   let cwd = "test/tmp/port-env"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) =
     port.start_with_env("printf '%s\n' \"$SCHERZO_TEST_ENV\"", cwd, [
@@ -69,7 +64,7 @@ pub fn port_start_preserves_current_path_across_shell_rewrites_test() {
   let fake_tool = tool_bin <> "/path-sensitive-tool"
   let bash_log = cwd <> "/bash.log"
   let real_bash = real_bash_path()
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(Nil) = simplifile.create_directory_all(fake_bin)
   let assert Ok(Nil) = simplifile.create_directory_all(tool_bin)
   let assert Ok(Nil) =
@@ -108,7 +103,7 @@ pub fn port_launchers_resolve_bash_from_path_test() {
   let fake_bin = cwd <> "/bin"
   let fake_bash = fake_bin <> "/bash"
   let bash_log = cwd <> "/bash.log"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(Nil) = simplifile.create_directory_all(fake_bin)
   let assert Ok(Nil) = simplifile.write(fake_bash, fake_bash_script())
   chmod_executable(fake_bash)
@@ -247,7 +242,7 @@ fn assert_launch_wrapper_records_child_pid(process: port.Process) -> Nil {
 
 pub fn port_start_waits_until_launch_wrapper_records_child_pid_test() {
   let cwd = "test/tmp/port-start-ready"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) = port.start("sleep 60", cwd)
   assert_launch_wrapper_records_child_pid(process)
@@ -255,7 +250,7 @@ pub fn port_start_waits_until_launch_wrapper_records_child_pid_test() {
 
 pub fn port_start_argv_waits_until_launch_wrapper_records_child_pid_test() {
   let cwd = "test/tmp/port-start-argv-ready"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) = port.start_argv("sh", ["-c", "sleep 60"], cwd, [])
   assert_launch_wrapper_records_child_pid(process)
@@ -263,7 +258,7 @@ pub fn port_start_argv_waits_until_launch_wrapper_records_child_pid_test() {
 
 pub fn port_start_argv_with_input_waits_until_launch_wrapper_records_child_pid_test() {
   let cwd = "test/tmp/port-start-argv-input-ready"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) =
     port.start_argv_with_input("sh", ["-c", "sleep 60"], cwd, [], "")
@@ -272,7 +267,7 @@ pub fn port_start_argv_with_input_waits_until_launch_wrapper_records_child_pid_t
 
 pub fn port_terminate_exits_child_test() {
   let cwd = "test/tmp/port-terminate"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let child_pid_file = cwd <> "/child.pid"
   let assert Ok(process) =
@@ -290,7 +285,7 @@ pub fn port_terminate_exits_child_test() {
 
 pub fn port_await_exit_times_out_while_descendant_survives_test() {
   let cwd = "test/tmp/port-await-descendant"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let child_pid_file = cwd <> "/orphan.pid"
   let assert Ok(process) =
@@ -310,7 +305,7 @@ pub fn port_await_exit_times_out_while_descendant_survives_test() {
 
 pub fn port_max_line_handling_test() {
   let cwd = "test/tmp/port-lines"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let under = port.max_stdout_line_length - 1
   let assert Ok(process_ok) =
@@ -341,14 +336,14 @@ pub fn port_returns_typed_launch_errors_test() {
     port.start("echo should not run", "test/tmp/port-missing-cwd")
 
   let cwd = "test/tmp/port-invalid-launch"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Error(port.InvalidCommand(_)) = port.start("   ", cwd)
   let assert Error(port.InvalidExecutable(_)) = port.start_argv("", [], cwd, [])
 }
 
 pub fn port_read_timeout_leaves_process_terminable_test() {
   let cwd = "test/tmp/port-read-timeout"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) = port.start("sleep 1", cwd)
   let assert Error(port.ReadTimeout) = port.read_stdout_line(process, 20)
@@ -357,7 +352,7 @@ pub fn port_read_timeout_leaves_process_terminable_test() {
 
 pub fn port_read_timeout_is_absolute_for_partial_lines_test() {
   let cwd = "test/tmp/port-partial-line-timeout"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) =
     port.start(
@@ -375,7 +370,7 @@ pub fn port_read_timeout_is_absolute_for_partial_lines_test() {
 
 pub fn port_diagnostics_survive_await_cleanup_test() {
   let cwd = "test/tmp/port-diagnostics-cleanup"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) = port.start("echo diagnostic >&2", cwd)
   let assert Ok(temp_dir) = port.temp_dir_for_test(process)
@@ -388,7 +383,7 @@ pub fn port_diagnostics_survive_await_cleanup_test() {
 
 pub fn port_terminate_cleans_temp_storage_test() {
   let cwd = "test/tmp/port-terminate-cleanup"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
 
   let assert Ok(process) = port.start("sleep 60", cwd)
   let assert Ok(temp_dir) = port.temp_dir_for_test(process)

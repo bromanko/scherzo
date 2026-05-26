@@ -12,11 +12,11 @@ import scherzo/workstream/artifact_store as workstream_artifact_store
 import scherzo/workstream/artifacts
 import scherzo/workstream/handoff_emitter
 import scherzo/workstream/phase_metadata
-import simplifile
+import support/test_helpers
 
 pub fn handoff_emitter_snapshots_output_handoff_and_next_action_test() {
   let root = "test/tmp/workstream-handoff-emitter/success"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let manifest = success_manifest(root)
 
@@ -78,7 +78,7 @@ pub fn handoff_emitter_snapshots_output_handoff_and_next_action_test() {
 
 pub fn handoff_emitter_is_idempotent_for_exact_retries_test() {
   let root = "test/tmp/workstream-handoff-emitter/idempotent"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let manifest = success_manifest(root)
 
@@ -129,7 +129,7 @@ pub fn handoff_emitter_is_idempotent_for_exact_retries_test() {
 
 pub fn handoff_emitter_requires_present_output_metadata_test() {
   let root = "test/tmp/workstream-handoff-emitter/missing-metadata"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let manifest =
     workflow_contract_manifest.ContractOutputManifest(
@@ -175,7 +175,7 @@ pub fn handoff_emitter_requires_present_output_metadata_test() {
 
 pub fn handoff_emitter_rejects_absent_output_test() {
   let root = "test/tmp/workstream-handoff-emitter/absent-output"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let manifest =
     workflow_contract_manifest.ContractOutputManifest(
@@ -212,7 +212,7 @@ pub fn handoff_emitter_rejects_absent_output_test() {
 
 pub fn handoff_emitter_rejects_invalid_next_action_payload_test() {
   let root = "test/tmp/workstream-handoff-emitter/invalid-next-action"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
   let assert Error(error) =
@@ -243,7 +243,7 @@ pub fn handoff_emitter_rejects_invalid_next_action_payload_test() {
 
 pub fn handoff_emitter_rejects_unsupported_handoff_artifact_type_test() {
   let root = "test/tmp/workstream-handoff-emitter/unsupported-artifact-type"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
   let assert Error(error) =
@@ -272,7 +272,7 @@ pub fn handoff_emitter_rejects_unsupported_handoff_artifact_type_test() {
 
 pub fn handoff_emitter_rejects_stale_artifact_hash_test() {
   let root = "test/tmp/workstream-handoff-emitter/hash-mismatch"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let manifest = success_manifest(root)
   let assert [named] = manifest.outputs
@@ -396,10 +396,4 @@ fn assert_retry_records(
       assert_retry_records(rest, checkpoint)
     }
   }
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }

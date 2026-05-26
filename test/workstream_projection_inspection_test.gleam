@@ -11,11 +11,11 @@ import scherzo/workstream/ledger
 import scherzo/workstream/projection
 import scherzo/workstream/projection_snapshot
 import scherzo/workstream/types
-import simplifile
+import support/test_helpers
 
 pub fn inspection_projects_normal_workstream_state_test() {
   let root = "test/tmp/workstream-projection-inspection/normal"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = state_artifact_store.new(root)
   let workstream_snapshot =
     write_snapshot(store, "workstream.json", workstream_json("blocked"))
@@ -63,7 +63,7 @@ pub fn inspection_projects_normal_workstream_state_test() {
 
 pub fn partial_workstream_without_task_ref_still_inspects_test() {
   let root = "test/tmp/workstream-projection-inspection/partial"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = state_artifact_store.new(root)
   let snapshot =
     write_snapshot(store, "workstream.json", workstream_json("open"))
@@ -86,7 +86,7 @@ pub fn partial_workstream_without_task_ref_still_inspects_test() {
 
 pub fn missing_snapshot_is_reported_without_payload_test() {
   let root = "test/tmp/workstream-projection-inspection/missing"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = state_artifact_store.new(root)
   let projected =
     state_projection.fold([
@@ -104,7 +104,7 @@ pub fn missing_snapshot_is_reported_without_payload_test() {
 
 pub fn malformed_snapshot_record_is_reported_before_reading_test() {
   let root = "test/tmp/workstream-projection-inspection/malformed"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = state_artifact_store.new(root)
   let projected =
     state_projection.fold([
@@ -286,10 +286,4 @@ fn has_warning(
   code: String,
 ) -> Bool {
   list.any(warnings, fn(warning) { warning.code == code })
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }

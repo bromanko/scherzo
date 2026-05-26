@@ -3,6 +3,7 @@ import scherzo/config/types as config_types
 import scherzo/state/workflow_checkpoint
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 
 fn limits() -> config_types.ArtifactLimits {
   config_types.ArtifactLimits(
@@ -12,15 +13,9 @@ fn limits() -> config_types.ArtifactLimits {
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 pub fn workflow_checkpoint_roundtrips_full_step_artifact_test() {
   let root = "test/tmp/state-workflow-checkpoint/roundtrip"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let artifact =
     step_artifact.from_command_result(
       "build",
@@ -41,7 +36,7 @@ pub fn workflow_checkpoint_roundtrips_full_step_artifact_test() {
 
 pub fn workflow_checkpoint_reports_missing_and_corrupt_artifacts_test() {
   let root = "test/tmp/state-workflow-checkpoint/fail-closed"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let artifact =
     step_artifact.from_command_result(
       "build",

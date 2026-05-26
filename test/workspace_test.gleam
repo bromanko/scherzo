@@ -4,12 +4,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/workspace
 import simplifile
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
+import support/test_helpers
 
 fn hooks(
   after_create: Option(String),
@@ -36,7 +31,7 @@ pub fn sanitize_identifiers_test() {
 
 pub fn workspace_path_stays_under_root_test() {
   let root = "test/tmp/workspaces-root"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(#(key, path)) = workspace.workspace_path(root, "A/B")
   assert key == "A_B"
   assert string.ends_with(path, "/test/tmp/workspaces-root/A_B")
@@ -44,7 +39,7 @@ pub fn workspace_path_stays_under_root_test() {
 
 pub fn create_reuse_and_file_collision_test() {
   let root = "test/tmp/workspace-create"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let config = config_types.WorkspaceConfig(root: root)
   let hook_config = hooks(None, Some("test -d ."))
 
@@ -61,7 +56,7 @@ pub fn create_reuse_and_file_collision_test() {
 
 pub fn population_hook_runs_only_on_new_directory_test() {
   let root = "test/tmp/workspace-hooks"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let config = config_types.WorkspaceConfig(root: root)
   let hook_config =
     hooks(Some("printf populated > POPULATED"), Some("test -f POPULATED"))
@@ -79,7 +74,7 @@ pub fn population_hook_runs_only_on_new_directory_test() {
 
 pub fn failing_after_create_removes_new_workspace_test() {
   let root = "test/tmp/workspace-failing-hook"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let config = config_types.WorkspaceConfig(root: root)
   let hook_config = hooks(Some("printf partial > PARTIAL; exit 3"), None)
 
@@ -91,7 +86,7 @@ pub fn failing_after_create_removes_new_workspace_test() {
 
 pub fn population_marker_inspect_failure_aborts_prepare_test() {
   let root = "test/tmp/workspace-marker-inspect-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(Nil) = simplifile.write(root <> "/.scherzo-state", "file")
   let config = config_types.WorkspaceConfig(root: root)
   let hook_config = hooks(Some("printf populated > POPULATED"), None)
@@ -107,7 +102,7 @@ pub fn population_marker_inspect_failure_aborts_prepare_test() {
 
 pub fn population_marker_write_failure_does_not_poison_retries_test() {
   let root = "test/tmp/workspace-marker-write-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(#(key, workspace_path)) =
     workspace.workspace_path(root, "ABC-123")
   let marker = root <> "/.scherzo-state/" <> key <> ".populating"
@@ -128,7 +123,7 @@ pub fn population_marker_write_failure_does_not_poison_retries_test() {
 
 pub fn failing_after_create_cleanup_failure_is_operator_visible_test() {
   let root = "test/tmp/workspace-failing-hook-cleanup-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let config = config_types.WorkspaceConfig(root: root)
   let hook_config =
     hooks(
@@ -153,7 +148,7 @@ pub fn failing_after_create_cleanup_failure_is_operator_visible_test() {
 
 pub fn sidecar_marker_forces_repopulation_test() {
   let root = "test/tmp/workspace-sidecar"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(#(key, path)) = workspace.workspace_path(root, "ABC-123")
   let assert Ok(Nil) = simplifile.create_directory_all(path)
   let assert Ok(Nil) = simplifile.write(path <> "/PARTIAL", "partial")
@@ -175,7 +170,7 @@ pub fn sidecar_marker_forces_repopulation_test() {
 
 pub fn before_run_failure_aborts_attempt_and_after_run_is_best_effort_test() {
   let root = "test/tmp/workspace-before-run"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let config = config_types.WorkspaceConfig(root: root)
   let hook_config = hooks(None, Some("exit 2"))
   let assert Error(workspace.HookFailure(_)) =
@@ -192,8 +187,8 @@ pub fn before_run_failure_aborts_attempt_and_after_run_is_best_effort_test() {
 pub fn cleanup_validates_stored_path_under_root_test() {
   let old_root = "test/tmp/workspace-old-root"
   let new_root = "test/tmp/workspace-new-root"
-  reset_dir(old_root)
-  reset_dir(new_root)
+  test_helpers.reset_dir(old_root)
+  test_helpers.reset_dir(new_root)
   let assert Ok(Nil) = simplifile.create_directory_all(old_root <> "/ABC-123")
   let assert Ok(Nil) = simplifile.write(old_root <> "/ABC-123/file", "old")
   let assert Ok(Nil) = simplifile.create_directory_all(new_root <> "/ABC-123")

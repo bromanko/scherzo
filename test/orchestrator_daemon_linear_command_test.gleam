@@ -25,13 +25,8 @@ import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
 import scherzo/workflow_run
 import simplifile
+import support/test_helpers
 import test_async
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
 
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
@@ -88,7 +83,7 @@ linear_commands:
 }
 
 fn write_workflow(dir: String, max_concurrent: Int) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_workflow_files(dir, workflow_text(dir <> "/workspaces", max_concurrent))
 }
 
@@ -97,7 +92,7 @@ fn effective_workspace_root(workflow_dir: String) -> String {
 }
 
 fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let contents =
     workflow_text(dir <> "/workspaces", max_concurrent)
     |> string.replace(

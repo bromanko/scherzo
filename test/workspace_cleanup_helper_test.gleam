@@ -1,14 +1,14 @@
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/path
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 
 pub fn cleanup_removes_empty_noop_run_and_keeps_active_or_file_work_test() {
   let dir = "test/tmp/workspace-cleanup-helper"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let workspace_root = dir <> "/workspaces"
   let empty_run = workspace_root <> "/implementation/LIV-1/run-empty"
   let active_run = workspace_root <> "/implementation/LIV-2/run-active"
@@ -28,12 +28,12 @@ pub fn cleanup_removes_empty_noop_run_and_keeps_active_or_file_work_test() {
     command_step.run(
       "workspace_cleanup_apply",
       "scripts/scherzo-workspace-cleanup --workspace-root "
-        <> shell_quote(workspace_root)
+        <> test_helpers.shell_quote(workspace_root)
         <> " --min-age-seconds 0 --apply --json",
       ".",
       10_000,
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -85,24 +85,6 @@ fn assert_is_not_directory(path: String) -> Nil {
     Ok(True) -> panic as "expected path not to be a directory"
     Error(_) -> Nil
   }
-}
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
 
 fn json_escape(value: String) -> String {

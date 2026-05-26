@@ -7,12 +7,7 @@ import scherzo/structured_output_metadata
 import scherzo/structured_output_source
 import scherzo/workflow_dag
 import simplifile
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
+import support/test_helpers
 
 fn fixture_payload() -> String {
   let assert Ok(contents) =
@@ -24,7 +19,7 @@ fn fixture_payload() -> String {
 
 pub fn structured_output_artifact_store_writes_wrapped_json_test() {
   let root = "test/tmp/structured-artifact-store/roundtrip"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
 
   let assert Ok(ref) =
@@ -71,7 +66,7 @@ pub fn structured_output_artifact_store_writes_wrapped_json_test() {
 
 pub fn structured_output_artifact_decode_error_includes_context_test() {
   let root = "test/tmp/structured-artifact-store/decode-error-context"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let malformed =
     "{\"schema_version\":1,\"artifact_type\":\"structured_output\",\"run_id\":1,\"workflow_id\":\"structured_review\",\"step_id\":\"review_json\",\"attempt_index\":0,\"artifact_name\":\"review_result\",\"format\":\"json\",\"payload\":{}}"
@@ -96,7 +91,7 @@ pub fn structured_output_artifact_decode_error_includes_context_test() {
 
 pub fn structured_output_artifact_store_writes_json_schema_metadata_test() {
   let root = "test/tmp/structured-artifact-store/json-schema-metadata"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let source_tool_name = Some("submit_review_lane_draft")
   let spec =
@@ -160,7 +155,7 @@ pub fn structured_output_artifact_store_writes_json_schema_metadata_test() {
 
 pub fn structured_output_artifact_store_receives_redacted_payload_test() {
   let root = "test/tmp/structured-artifact-store/redacted"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
 
   let assert Ok(ref) =
