@@ -95,6 +95,15 @@ pub type PiConfig {
   )
 }
 
+pub type UiServerConfig {
+  UiServerConfig(
+    enabled: Bool,
+    endpoint: Option(String),
+    enrollment_token_env: Option(String),
+    enrollment_token: Option(String),
+  )
+}
+
 pub type HandoffConfig {
   HandoffConfig(
     enabled: Bool,
@@ -567,6 +576,7 @@ pub type EffectiveConfig {
     handoff: HandoffConfig,
     linear_contract: LinearContractConfig,
     linear_commands: LinearCommandConfig,
+    ui_server: UiServerConfig,
   )
 }
 

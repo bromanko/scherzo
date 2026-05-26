@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import gleam/uri
 import scherzo/config/tracker_config
 import scherzo/config/types as config_types
 import scherzo/error
@@ -116,6 +117,15 @@ pub fn default_handoff_config() -> config_types.HandoffConfig {
   )
 }
 
+pub fn default_ui_server_config() -> config_types.UiServerConfig {
+  config_types.UiServerConfig(
+    enabled: False,
+    endpoint: None,
+    enrollment_token_env: None,
+    enrollment_token: None,
+  )
+}
+
 pub fn default_linear_contract_config() -> config_types.LinearContractConfig {
   config_types.LinearContractConfig(
     enabled: False,
@@ -194,6 +204,7 @@ pub fn resolve_root_report(
   use linear_contract <- result.try(resolve_linear_contract(root))
   use handoff <- result.try(resolve_handoff(root, linear_contract.enabled))
   use linear_commands <- result.try(resolve_linear_commands(root))
+  use ui_server <- result.try(resolve_ui_server(root, env))
   Ok(config_types.ResolveReport(
     config: config_types.EffectiveConfig(
       tracker:,
@@ -205,6 +216,7 @@ pub fn resolve_root_report(
       handoff:,
       linear_contract:,
       linear_commands:,
+      ui_server:,
     ),
     warnings: tracker_warnings,
   ))
@@ -305,9 +317,13 @@ pub fn apply_reload(
 }
 
 pub fn resolved_secrets(config: config_types.EffectiveConfig) -> List(String) {
-  case config.tracker.api_key {
+  let tracker_secrets = case config.tracker.api_key {
     Some(value) -> [value]
     None -> []
+  }
+  case config.ui_server.enrollment_token {
+    Some(value) -> list.append(tracker_secrets, [value])
+    None -> tracker_secrets
   }
 }
 
@@ -1079,6 +1095,120 @@ fn resolve_linear_commands(
               ))
           }
       }
+  }
+}
+
+fn resolve_ui_server(
+  root: yay.Node,
+  env: Env,
+) -> Result(config_types.UiServerConfig, error.ConfigError) {
+  let defaults = default_ui_server_config()
+  case get_node(root, "ui_server") {
+    None -> Ok(defaults)
+    Some(node) ->
+      case node {
+        yay.NodeMap(_) -> {
+          use enabled_option <- result.try(get_bool_strict(
+            node,
+            "enabled",
+            "ui_server.enabled",
+          ))
+          use endpoint_option <- result.try(get_optional_string_strict(
+            node,
+            "endpoint",
+            "ui_server.endpoint",
+          ))
+          use enrollment_token_env_option <- result.try(
+            get_optional_string_strict(
+              node,
+              "enrollment_token_env",
+              "ui_server.enrollment_token_env",
+            ),
+          )
+          let enabled = enabled_option |> bool_default(defaults.enabled)
+          let endpoint = endpoint_option |> optional_non_empty_string
+          let enrollment_token_env =
+            enrollment_token_env_option |> optional_non_empty_string
+          case enabled {
+            False ->
+              Ok(config_types.UiServerConfig(
+                enabled: False,
+                endpoint: endpoint,
+                enrollment_token_env: enrollment_token_env,
+                enrollment_token: None,
+              ))
+            True -> {
+              use endpoint <- result.try(required_option(
+                endpoint,
+                error.InvalidConfig(
+                  "ui_server.endpoint is required when enabled",
+                ),
+              ))
+              use _ <- result.try(validate_ui_server_endpoint(endpoint))
+              use enrollment_token_env <- result.try(required_option(
+                enrollment_token_env,
+                error.InvalidConfig(
+                  "ui_server.enrollment_token_env is required when enabled",
+                ),
+              ))
+              use _ <- result.try(validate_ui_server_env_name(
+                enrollment_token_env,
+              ))
+              let enrollment_token =
+                env(enrollment_token_env) |> option.map(string.trim)
+              use enrollment_token <- result.try(required_option(
+                enrollment_token,
+                error.InvalidConfig(
+                  "ui_server.enrollment_token_env must resolve to a non-empty environment variable",
+                ),
+              ))
+              case enrollment_token == "" {
+                True ->
+                  Error(error.InvalidConfig(
+                    "ui_server.enrollment_token_env must resolve to a non-empty environment variable",
+                  ))
+                False ->
+                  Ok(config_types.UiServerConfig(
+                    enabled: True,
+                    endpoint: Some(endpoint),
+                    enrollment_token_env: Some(enrollment_token_env),
+                    enrollment_token: Some(enrollment_token),
+                  ))
+              }
+            }
+          }
+        }
+        _ -> Error(error.InvalidConfig("ui_server must be a map"))
+      }
+  }
+}
+
+fn validate_ui_server_endpoint(
+  endpoint: String,
+) -> Result(Nil, error.ConfigError) {
+  case uri.parse(endpoint) {
+    Error(_) -> Error(invalid_ui_server_endpoint_error())
+    Ok(parsed) -> {
+      let uri.Uri(scheme: scheme, userinfo: userinfo, host: host, ..) = parsed
+      case scheme, userinfo, host {
+        Some("https"), None, Some(host) if host != "" -> Ok(Nil)
+        _, _, _ -> Error(invalid_ui_server_endpoint_error())
+      }
+    }
+  }
+}
+
+fn invalid_ui_server_endpoint_error() -> error.ConfigError {
+  error.InvalidConfig("ui_server.endpoint must be an HTTPS URL with a host")
+}
+
+fn validate_ui_server_env_name(name: String) -> Result(Nil, error.ConfigError) {
+  case workspace_driver_env.valid_key(name) {
+    True -> Ok(Nil)
+    False ->
+      Error(error.InvalidConfig(
+        "ui_server.enrollment_token_env has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*",
+      ))
   }
 }
 

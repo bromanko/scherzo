@@ -205,3 +205,9 @@ linear_commands:
   max_comments_per_tick: 50
   acknowledge_success: true
   acknowledge_rejection: true
+ui_server:
+  # Disabled-by-default identity/config primitive. This does not open a live
+  # browser UI or server transport in the current slice.
+  enabled: false
+  # endpoint: https://ui.example.test
+  # enrollment_token_env: UI_SERVER_TOKEN

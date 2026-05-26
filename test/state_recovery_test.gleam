@@ -1074,6 +1074,12 @@ fn config() -> config_types.EffectiveConfig {
       acknowledge_success: True,
       acknowledge_rejection: True,
     ),
+    ui_server: config_types.UiServerConfig(
+      enabled: False,
+      endpoint: None,
+      enrollment_token_env: None,
+      enrollment_token: None,
+    ),
   )
 }
 

@@ -199,6 +199,14 @@ linear_commands:
   enabled: false
   prefix: "/scherzo"
   authorized_user_ids: []
+
+ui_server:
+  enabled: false
+  # This primitive stays inert in the current slice. When a later transport
+  # ticket enables real remote connectivity, use an HTTPS endpoint and an
+  # environment variable name whose value contains the enrollment token.
+  # endpoint: https://ui.example.test
+  # enrollment_token_env: UI_SERVER_TOKEN
 ```
 
 Path rule of thumb:
@@ -433,6 +441,10 @@ Create matching workflow labels in the tracker. With the Linear adapter, these a
 - `workflow:research`
 
 Start with one route and one label. Add more after `doctor` and `--once` are passing.
+
+`ui_server` is intentionally disabled in the starter config above. This ticket
+adds only the identity/config primitive and secret redaction path, not a live
+browser UI, remote server connection, or central control-plane transport.
 
 ## 7. Add a workflow YAML DAG
 

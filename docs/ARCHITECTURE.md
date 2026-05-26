@@ -209,6 +209,17 @@ is eliminated.
 - The daemon binds the control server to loopback only, generates a token, and
   writes `workspace.root/.scherzo-state/control.json` with private permissions.
   Never log the token.
+- Local `control.json` is only for loopback `scherzoctl` discovery and
+  per-process local auth. It is not the durable daemon identity and it is not a
+  remote UI/server credential.
+- The durable daemon identity primitive stores identity in
+  `workspace.root/.scherzo-state/daemon_identity.json`. It persists only a
+  stable `daemon_id`; each helper load still generates a fresh in-memory
+  `boot_id`.
+- `ui_server` config is a disabled-by-default identity/config primitive. When
+  enabled it requires an explicit HTTPS endpoint and an environment-variable
+  secret named by `enrollment_token_env`; it does not read `control.json` or
+  `SCHERZO_CONTROL_FILE`, and this slice does not add any live remote transport.
 - `scherzoctl` discovers the control file from `--control-file`,
   `SCHERZO_CONTROL_FILE`, or the repository default path.
 - Non-streaming control commands support JSON output. `attach`/`events` can

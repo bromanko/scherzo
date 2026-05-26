@@ -1054,6 +1054,7 @@ fn recovery_effective_config(root: String) -> config_types.EffectiveConfig {
     handoff: config.default_handoff_config(),
     linear_contract: config.default_linear_contract_config(),
     linear_commands: config.default_linear_command_config(),
+    ui_server: config.default_ui_server_config(),
   )
 }
 

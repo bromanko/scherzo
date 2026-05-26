@@ -1,12 +1,16 @@
 import gleam/dict
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
+import scherzo/config/ui_server as ui_server_config
+import scherzo/control/file as control_file
 import scherzo/error
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
+import simplifile
 import yay
 
 fn env(name: String) -> Option(String) {
@@ -15,6 +19,9 @@ fn env(name: String) -> Option(String) {
     "LINEAR_PROJECT_SLUG" -> Some("ENV-PROJECT")
     "OTHER_VAR" -> Some("other-secret")
     "WORKSPACE_ROOT" -> Some("test/tmp/env-workspaces")
+    "UI_SERVER_TOKEN" -> Some("ui-server-secret-token")
+    "EMPTY_UI_SERVER_TOKEN" -> Some("")
+    "SCHERZO_CONTROL_FILE" -> Some(test_control_file_path())
     "EMPTY" -> None
     _ -> None
   }
@@ -39,6 +46,27 @@ fn invalid_config_message(front: String) -> String {
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   message
+}
+
+fn test_control_file_path() -> String {
+  "test/tmp/ui-server-control/control.json"
+}
+
+fn ensure_test_control_file() {
+  let path = test_control_file_path()
+  let _ = simplifile.delete("test/tmp/ui-server-control")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all("test/tmp/ui-server-control")
+  let contents =
+    control_file.control_file_to_string(control_file.ControlFile(
+      host: "127.0.0.1",
+      port: 9999,
+      token: "local-control-token",
+      workspace_root: "test/tmp/control-workspace",
+      started_at_ms: 1,
+    ))
+  let assert Ok(Nil) = simplifile.write(path, contents)
+  Nil
 }
 
 pub fn default_values_test() {
@@ -69,6 +97,147 @@ pub fn default_values_test() {
   assert pi.ui_request_policy == config_types.Cancel
   assert pi.ui_request_timeout_ms == 300_000
   assert pi.compatibility_probe == True
+
+  let ui_server = config.default_ui_server_config()
+  assert ui_server.enabled == False
+  assert ui_server.endpoint == None
+  assert ui_server.enrollment_token_env == None
+  assert ui_server.enrollment_token == None
+}
+
+pub fn ui_server_default_and_disabled_config_test() {
+  let assert Ok(defaulted) =
+    config.resolve_with_env(
+      definition(minimal_front()),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert defaulted.ui_server == config.default_ui_server_config()
+
+  let disabled_front =
+    minimal_front()
+    <> "ui_server:\n  enabled: false\n  endpoint: https://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n"
+  let assert Ok(disabled) =
+    config.resolve_with_env(
+      definition(disabled_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert disabled.ui_server.enabled == False
+  assert disabled.ui_server.endpoint == Some("https://ui.example.test")
+  assert disabled.ui_server.enrollment_token_env == Some("UI_SERVER_TOKEN")
+  assert disabled.ui_server.enrollment_token == None
+  assert config.resolved_secrets(disabled) == ["linearkey"]
+}
+
+pub fn ui_server_enabled_validation_and_secret_resolution_test() {
+  let missing_endpoint =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  enrollment_token_env: UI_SERVER_TOKEN\n",
+    )
+  assert missing_endpoint == "ui_server.endpoint is required when enabled"
+
+  let http_endpoint =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: http://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n",
+    )
+  assert http_endpoint == "ui_server.endpoint must be an HTTPS URL with a host"
+
+  let empty_host_endpoint =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: https://\n  enrollment_token_env: UI_SERVER_TOKEN\n",
+    )
+  assert empty_host_endpoint
+    == "ui_server.endpoint must be an HTTPS URL with a host"
+
+  let missing_env_name =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n",
+    )
+  assert missing_env_name
+    == "ui_server.enrollment_token_env is required when enabled"
+
+  let invalid_env_name =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: BAD-NAME\n",
+    )
+  assert string.contains(invalid_env_name, "invalid environment variable name")
+
+  let missing_env_value =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: MISSING_UI_SERVER_TOKEN\n",
+    )
+  assert string.contains(
+    missing_env_value,
+    "must resolve to a non-empty environment variable",
+  )
+
+  let empty_env_value =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: EMPTY_UI_SERVER_TOKEN\n",
+    )
+  assert string.contains(
+    empty_env_value,
+    "must resolve to a non-empty environment variable",
+  )
+
+  let enabled_front =
+    minimal_front()
+    <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n"
+  let assert Ok(enabled) =
+    config.resolve_with_env(
+      definition(enabled_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert enabled.ui_server.enabled == True
+  assert enabled.ui_server.endpoint == Some("https://ui.example.test")
+  assert enabled.ui_server.enrollment_token_env == Some("UI_SERVER_TOKEN")
+  assert enabled.ui_server.enrollment_token == Some("ui-server-secret-token")
+  assert config.resolved_secrets(enabled)
+    == ["linearkey", "ui-server-secret-token"]
+}
+
+pub fn ui_server_redaction_and_local_control_separation_test() {
+  ensure_test_control_file()
+
+  let missing_env_name =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n",
+    )
+  assert missing_env_name
+    == "ui_server.enrollment_token_env is required when enabled"
+
+  let enabled_front =
+    minimal_front()
+    <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n"
+  let assert Ok(enabled) =
+    config.resolve_with_env(
+      definition(enabled_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let summary = ui_server_config.debug_summary(enabled)
+
+  assert string.contains(summary, "event=ui_server_config")
+  assert string.contains(summary, "[REDACTED]")
+  assert !string.contains(summary, "ui-server-secret-token")
+  assert !string.contains(summary, "local-control-token")
+  assert !string.contains(summary, test_control_file_path())
+  assert !list.contains(config.resolved_secrets(enabled), "local-control-token")
+  assert !list.contains(
+    config.resolved_secrets(enabled),
+    test_control_file_path(),
+  )
+  assert enabled.ui_server.enrollment_token == Some("ui-server-secret-token")
 }
 
 pub fn missing_dispatch_states_fails_test() {
