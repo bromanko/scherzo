@@ -20,6 +20,7 @@ import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/task
 import scherzo/tracker
 import scherzo/tracker/adapter
 import scherzo/tracker/adapter_legacy
@@ -213,23 +214,26 @@ fn test_handoff_capability(
 ) -> adapter.HandoffCapability {
   adapter.HandoffCapability(report: fn(event) {
     case event {
-      adapter.LegacyHandoffClaim(issue, _, run_id) ->
-        map_tracker_nil(client.claim_issue(issue, run_id))
-      adapter.LegacyHandoffSuccess(issue, success, run_id, workflow_id) ->
+      adapter.HandoffClaim(task_context, _, run_id) ->
+        map_tracker_nil(client.claim_issue(
+          task.to_runtime_issue(task_context),
+          run_id,
+        ))
+      adapter.HandoffSuccess(task_context, success, run_id, workflow_id) ->
         map_tracker_nil(client.report_success_for_workflow(
-          issue,
+          task.to_runtime_issue(task_context),
           success,
           run_id,
           workflow_id,
         ))
-      adapter.LegacyHandoffFailure(issue, failure, run_id, workflow_id) ->
+      adapter.HandoffFailure(task_context, failure, run_id, workflow_id) ->
         map_tracker_nil(client.report_failure_for_workflow(
-          issue,
+          task.to_runtime_issue(task_context),
           failure,
           run_id,
           workflow_id,
         ))
-      adapter.LegacyHandoffPark(report) ->
+      adapter.HandoffPark(report) ->
         map_tracker_nil(
           client.report_park(handoff.ParkReport(
             issue_id: report.task.remote_id,
@@ -239,7 +243,6 @@ fn test_handoff_capability(
             run_id: report.run_id,
           )),
         )
-      _ -> Ok(Nil)
     }
   })
 }

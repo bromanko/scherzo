@@ -496,20 +496,21 @@ fn adapter_with_handoff_failure_subject(
     handoff: Some(
       adapter.HandoffCapability(report: fn(event) {
         case event {
-          adapter.LegacyHandoffFailure(issue, failure, run_id, _) -> {
+          adapter.HandoffFailure(task_context, failure, run_id, _) -> {
             process.send(
               subject,
-              handoff_format.failure_comment(issue, failure, run_id, []),
+              handoff_format.failure_comment(
+                task.to_runtime_issue(task_context),
+                failure,
+                run_id,
+                [],
+              ),
             )
             Ok(Nil)
           }
-          adapter.LegacyHandoffClaim(_, _, _)
-          | adapter.LegacyHandoffSuccess(_, _, _, _)
-          | adapter.LegacyHandoffPark(_)
-          | adapter.HandoffClaim(_, _, _)
-          | adapter.HandoffSuccess(_, _, _)
-          | adapter.HandoffFailure(_, _, _)
-          | adapter.HandoffPark(_, _, _) -> Ok(Nil)
+          adapter.HandoffClaim(_, _, _)
+          | adapter.HandoffSuccess(_, _, _, _)
+          | adapter.HandoffPark(_) -> Ok(Nil)
         }
       }),
     ),

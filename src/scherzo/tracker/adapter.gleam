@@ -2,7 +2,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/task
-import scherzo/tracker/issue as tracker_issue
 
 pub type TrackerAdapter {
   TrackerAdapter(
@@ -144,28 +143,20 @@ pub type ParkReport {
 }
 
 pub type HandoffEvent {
-  HandoffClaim(task: task.TaskRef, workspace_path: String, run_id: String)
-  HandoffSuccess(task: task.TaskRef, run_id: String, summary: String)
-  HandoffFailure(task: task.TaskRef, run_id: String, reason: String)
-  HandoffPark(task: task.TaskRef, reason: String, release_policy: String)
-  LegacyHandoffClaim(
-    issue: tracker_issue.Issue,
-    workspace_path: String,
-    run_id: String,
-  )
-  LegacyHandoffSuccess(
-    issue: tracker_issue.Issue,
+  HandoffClaim(task: task.Task, workspace_path: String, run_id: String)
+  HandoffSuccess(
+    task: task.Task,
     success: agent_types.WorkerSuccess,
     run_id: String,
     workflow_id: String,
   )
-  LegacyHandoffFailure(
-    issue: tracker_issue.Issue,
+  HandoffFailure(
+    task: task.Task,
     failure: agent_types.WorkerFailure,
     run_id: String,
     workflow_id: String,
   )
-  LegacyHandoffPark(report: ParkReport)
+  HandoffPark(report: ParkReport)
 }
 
 pub type HandoffCapability {
