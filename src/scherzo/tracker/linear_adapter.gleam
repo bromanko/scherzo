@@ -42,6 +42,7 @@ pub fn from_tracker_config(
       handoff: config_defaults.default_handoff_config(),
       linear_contract: config_defaults.default_linear_contract_config(),
       linear_commands: config_defaults.default_linear_command_config(),
+      ui_server: config_defaults.default_ui_server_config(),
     ),
     transport,
   )

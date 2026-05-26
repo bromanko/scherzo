@@ -154,6 +154,7 @@ fn effective_with_dispatch(
     handoff: handoff,
     linear_contract: contract,
     linear_commands: config.default_linear_command_config(),
+    ui_server: config.default_ui_server_config(),
   )
 }
 
