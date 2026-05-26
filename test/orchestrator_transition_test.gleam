@@ -129,8 +129,6 @@ pub fn fixture_state() -> transition_types.State {
     pending_dispatch_validations: dict.new(),
     next_dispatch_validation_generation: 1,
     next_session_sequence: 1,
-    pending_linear_command_acks: dict.new(),
-    in_flight_linear_command_acks: dict.new(),
   )
 }
 

@@ -3,6 +3,10 @@ import scherzo/config
 import scherzo/error
 import yay
 
+const removed_remote_commands_message = "remote_commands has been removed; remove this section and use scherzoctl for operator control"
+
+const removed_linear_commands_message = "linear_commands has been removed; remove this section and use scherzoctl for operator control"
+
 fn env(name: String) -> Option(String) {
   case name {
     "LINEAR_API_KEY" -> Some("linearkey")
@@ -35,77 +39,45 @@ pub fn default_config_disables_linear_commands_test() {
   assert configured.linear_commands.acknowledge_rejection == True
 }
 
-pub fn enabled_config_requires_authorized_linear_user_ids_test() {
+pub fn remote_commands_section_is_rejected_test() {
   let front =
     minimal_front()
-    <> "linear_commands:\n  enabled: true\n  authorized_user_ids: []\n"
-  let assert Error(error.InvalidConfig(_)) =
+    <> "remote_commands:\n  enabled: true\n  authorized_user_ids:\n    - lin_user_1\n"
+  let assert Error(error.InvalidConfig(message)) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  assert message == removed_remote_commands_message
 }
 
-pub fn parses_custom_prefix_and_trims_authorized_user_ids_test() {
-  let front =
-    minimal_front()
-    <> "remote_commands:\n  enabled: true\n  prefix: \"!s\"\n  authorized_user_ids:\n    - \" lin_user_1 \"\n    - \"\"\n    - lin_user_2\n  poll_limit_per_issue: 7\n  max_comments_per_tick: 8\n  acknowledge_success: false\n  acknowledge_rejection: true\n"
-  let assert Ok(configured) =
-    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
-  assert configured.linear_commands.enabled == True
-  assert configured.linear_commands.prefix == "!s"
-  assert configured.linear_commands.authorized_user_ids
-    == ["lin_user_1", "lin_user_2"]
-  assert configured.linear_commands.poll_limit_per_issue == 7
-  assert configured.linear_commands.max_comments_per_tick == 8
-  assert configured.linear_commands.acknowledge_success == False
-  assert configured.linear_commands.acknowledge_rejection == True
-}
-
-pub fn legacy_linear_commands_alias_still_parses_test() {
+pub fn legacy_linear_commands_section_is_rejected_test() {
   let front =
     minimal_front()
     <> "linear_commands:\n  enabled: true\n  authorized_user_ids:\n    - lin_user_1\n"
-  let assert Ok(configured) =
+  let assert Error(error.InvalidConfig(message)) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
-
-  assert configured.linear_commands.enabled == True
-  assert configured.linear_commands.authorized_user_ids == ["lin_user_1"]
+  assert message == removed_linear_commands_message
 }
 
-pub fn remote_commands_takes_precedence_over_legacy_alias_test() {
+pub fn disabled_remote_commands_section_is_rejected_test() {
   let front =
     minimal_front()
-    <> "linear_commands:\n  enabled: true\n  prefix: \"!legacy\"\n  authorized_user_ids:\n    - lin_legacy\nremote_commands:\n  enabled: true\n  prefix: \"!remote\"\n  authorized_user_ids:\n    - remote_user\n"
-  let assert Ok(configured) =
+    <> "remote_commands:\n  enabled: false\n  prefix: \"   \"\n  authorized_user_ids:\n    - lin_user_1\n  poll_limit_per_issue: 0\n  max_comments_per_tick: 0\n  acknowledge_success: false\n  acknowledge_rejection: false\n"
+  let assert Error(error.InvalidConfig(message)) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
-
-  assert configured.linear_commands.prefix == "!remote"
-  assert configured.linear_commands.authorized_user_ids == ["remote_user"]
+  assert message == removed_remote_commands_message
 }
 
-pub fn rejects_invalid_linear_command_limits_and_prefix_test() {
-  let invalid_prefix =
-    minimal_front() <> "remote_commands:\n  prefix: \"   \"\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(invalid_prefix),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
+pub fn disabled_legacy_linear_commands_section_is_rejected_test() {
+  let front =
+    minimal_front()
+    <> "linear_commands:\n  enabled: false\n  prefix: \"!legacy\"\n  authorized_user_ids:\n    - lin_legacy\n"
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  assert message == removed_linear_commands_message
+}
 
-  let invalid_poll_limit =
-    minimal_front() <> "remote_commands:\n  poll_limit_per_issue: 0\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(invalid_poll_limit),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
-
-  let invalid_tick_limit =
-    minimal_front() <> "remote_commands:\n  max_comments_per_tick: 0\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(invalid_tick_limit),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
+pub fn non_map_remote_commands_section_is_rejected_test() {
+  let front = minimal_front() <> "remote_commands: false\n"
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  assert message == removed_remote_commands_message
 }

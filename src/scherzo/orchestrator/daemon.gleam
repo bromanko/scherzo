@@ -14,8 +14,6 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
-import scherzo/control/linear_parser
-import scherzo/control/linear_transport
 import scherzo/control/server as control_server
 import scherzo/error
 import scherzo/log
@@ -161,7 +159,6 @@ type StartupRecovery {
     cleanup_workspaces: List(recovery.CleanupRequest),
     outbox_to_replay: List(recovery.OutboxReplay),
     park_reports: List(adapter.ParkReport),
-    command_receipts: Dict(String, projection.CommandReceiptState),
     recovery_by_issue: Dict(String, session_event.RecoveryInfo),
     warnings: List(String),
     workflow_resumptions: List(recovery.RecoveredWorkflowRun),
@@ -194,12 +191,6 @@ type State {
     workflow: workflow_reloader.State,
     tracker_client: tracker.Client,
     tracker_adapter: adapter.TrackerAdapter,
-    linear_command_state: linear_transport.TransportState,
-    pending_linear_command_acks: Dict(
-      String,
-      transition_types.PendingLinearCommandAck,
-    ),
-    in_flight_linear_command_acks: Dict(String, Bool),
     scheduled_next_due: Dict(String, Int),
     pending_scheduled_starts: Dict(String, ScheduledPendingStart),
     scheduled_retries: Dict(String, ScheduledRetryStart),
@@ -306,8 +297,8 @@ fn tracker_requirements(
 ) -> adapter.TrackerRequirements {
   let effective = orchestrator.effective
   adapter.TrackerRequirements(
-    remote_commands_enabled: effective.linear_commands.enabled,
-    remote_commands_config_path: Some("remote_commands.enabled"),
+    remote_commands_enabled: False,
+    remote_commands_config_path: None,
     handoff_comments_enabled: handoff_comments_enabled(effective.handoff),
     handoff_state_moves_enabled: handoff_state_moves_enabled(effective.handoff),
     handoff_config_path: Some("handoff.states"),
@@ -480,11 +471,6 @@ pub fn start(
     dependencies,
     secrets,
   ))
-  let linear_command_state =
-    linear_transport.new_state_with_receipts(
-      dependencies.now_ms(),
-      startup_recovery.command_receipts,
-    )
   let runtime = startup_recovery.runtime
   use event_hub <- try_startup(dependencies.start_event_hub() |> map_hub_error)
   let builder =
@@ -544,9 +530,6 @@ pub fn start(
                       workflow: workflow,
                       tracker_client: tracker_client,
                       tracker_adapter: tracker_adapter,
-                      linear_command_state: linear_command_state,
-                      pending_linear_command_acks: dict.new(),
-                      in_flight_linear_command_acks: dict.new(),
                       scheduled_next_due: initial_scheduled_next_due(
                         workflow.bundle,
                         dependencies.now_ms(),
@@ -709,7 +692,6 @@ fn load_startup_recovery(
     cleanup_workspaces: recovery_plan.cleanup_workspaces,
     outbox_to_replay: recovery_plan.outbox_to_replay,
     park_reports: startup_park_reports(records_to_append),
-    command_receipts: replayed.projection.command_receipts,
     recovery_by_issue: startup_recovery_by_issue(
       replayed.projection,
       recovery_plan,
@@ -2205,23 +2187,14 @@ fn apply_shell_operator_command(
     | command.ResumeDispatch
     | command.RetryIssue(_)
     | command.ParkIssue(_, _)
-    | command.UnparkIssue(_) ->
-      case request.source {
-        transition_effects.RemoteOperatorCommand(_, _, _, _, _) ->
-          apply_operator_command_to_state(
-            state,
-            operator_command,
-            request.timeout_ms,
-          )
-        transition_effects.LocalOperatorCommand -> #(
-          state,
-          command.rejected(
-            operator_command,
-            "operator_command_already_handled",
-            None,
-          ),
-        )
-      }
+    | command.UnparkIssue(_) -> #(
+      state,
+      command.rejected(
+        operator_command,
+        "operator_command_already_handled",
+        None,
+      ),
+    )
   }
   #(State(..state, shell_state_overrides_transition: True), result)
 }
@@ -2492,90 +2465,12 @@ fn rejection_reason_from_finalization(
 
 fn finish_operator_command_effect(
   state: State,
-  request: transition_effects.OperatorCommandRequest,
+  _request: transition_effects.OperatorCommandRequest,
   result: command.CommandResult,
 ) -> #(State, List(transition_types.Message)) {
   let state = State(..state, last_operator_command_result: Some(result))
-  case request.source {
-    transition_effects.LocalOperatorCommand -> {
-      log_operator_result(state, result, [])
-      #(state, [])
-    }
-    transition_effects.RemoteOperatorCommand(
-      backend_kind,
-      event_id,
-      task_remote_id,
-      command_name,
-      excerpt,
-    ) -> {
-      let completion =
-        remote_command_completion_for_result(
-          state,
-          event_id,
-          task_remote_id,
-          command_name,
-          excerpt,
-          request.operator_command,
-          result,
-        )
-      log_state(state, "info", "remote_operator_command", [
-        #("event_id", event_id),
-        #("command", result.command),
-        #("status", command.status_to_string(result.status)),
-      ])
-      #(state, [
-        transition_types.RemoteCommandApplied(
-          backend_kind: backend_kind,
-          event_id: event_id,
-          task_remote_id: task_remote_id,
-          command_name: command_name,
-          result: completion.result,
-          message_excerpt: completion.message_excerpt,
-          ack_body: completion.ack_body,
-        ),
-      ])
-    }
-  }
-}
-
-fn remote_command_completion_for_result(
-  state: State,
-  event_id: String,
-  task_remote_id: String,
-  _command_name: String,
-  excerpt: String,
-  operator_command: command.OperatorCommand,
-  result: command.CommandResult,
-) -> transition_effects.RemoteCommandCompletion {
-  let ack_result =
-    command_result_with_display_target(state, operator_command, result)
-  let message_excerpt =
-    result_message_excerpt(ack_result, state.workflow.secrets)
-  let ack_body = case
-    linear_transport.should_ack_result(
-      state.workflow.effective.linear_commands,
-      result,
-    )
-  {
-    True ->
-      Some(linear_transport.result_ack_body(
-        event_id,
-        linear_parser.ParsedLinearCommand(
-          source_issue_id: task_remote_id,
-          source_comment_id: event_id,
-          command: operator_command,
-          excerpt: excerpt,
-        ),
-        ack_result,
-        state.workflow.secrets,
-      ))
-    False -> None
-  }
-  transition_effects.RemoteCommandCompletion(
-    result: ack_result,
-    message_excerpt: message_excerpt,
-    ack_body: ack_body,
-  )
+  log_operator_result(state, result, [])
+  #(state, [])
 }
 
 fn set_operator_paused(state: State, paused: Bool) -> State {
@@ -3284,220 +3179,6 @@ fn handle_candidate_fetch_finished(
   ])
 }
 
-fn handle_remote_command_fetch_finished(
-  state: State,
-  generation: Int,
-  candidates: List(tracker_issue.Issue),
-  dispatch_after: Bool,
-  result: Result(List(adapter.RemoteCommandEvent), error.TrackerError),
-) -> State {
-  case poll_result_is_stale(state, generation) {
-    True -> state
-    False -> {
-      let state = case result {
-        Error(err) -> {
-          log_state(state, "warn", "remote_command_fetch_failed", [
-            #("error", error.tracker_code(err)),
-          ])
-          state
-        }
-        Ok(events) -> remote_events_to_transition(state, events)
-      }
-      finish_remote_command_phase(state, candidates, dispatch_after)
-    }
-  }
-}
-
-fn finish_remote_command_phase(
-  state: State,
-  candidates: List(tracker_issue.Issue),
-  dispatch_after: Bool,
-) -> State {
-  run_transition_messages(state, [
-    transition_types.RetryPendingRemoteCommandAcks,
-    transition_types.RemoteCommandPhaseFinished(
-      candidates,
-      dispatch_after,
-      transition_dispatch_context(state),
-    ),
-  ])
-}
-
-fn remote_events_to_transition(
-  state: State,
-  events: List(adapter.RemoteCommandEvent),
-) -> State {
-  let #(transport_state, actions) =
-    linear_transport.process_remote_events(
-      state.linear_command_state,
-      state.workflow.effective.linear_commands,
-      events,
-      worker_registry.linear_issue_sessions(state.registry),
-    )
-  let state = State(..state, linear_command_state: transport_state)
-  fold_remote_transport_actions(state, actions)
-}
-
-fn fold_remote_transport_actions(
-  state: State,
-  actions: List(linear_transport.RemoteTransportAction),
-) -> State {
-  case actions {
-    [] -> state
-    [action, ..rest] ->
-      fold_remote_transport_actions(
-        remote_transport_action_to_transition(state, action),
-        rest,
-      )
-  }
-}
-
-fn command_result_with_display_target(
-  state: State,
-  operator_command: command.OperatorCommand,
-  result: command.CommandResult,
-) -> command.CommandResult {
-  case result.target, operator_command_targets_session(operator_command) {
-    Some(target), True ->
-      case worker_registry.worker_for_session(state.registry, target) {
-        Ok(handle) ->
-          command.CommandResult(
-            ..result,
-            target: Some(session_name.generate(
-              handle.issue.identifier,
-              handle.session_id,
-            )),
-          )
-        Error(Nil) -> result
-      }
-    _, _ -> result
-  }
-}
-
-fn operator_command_targets_session(
-  operator_command: command.OperatorCommand,
-) -> Bool {
-  case operator_command {
-    command.AbortSession(_)
-    | command.StopAfterCurrentTurn(_)
-    | command.PromptSession(_, _)
-    | command.RespondUi(_, _, _) -> True
-    command.PauseDispatch
-    | command.ResumeDispatch
-    | command.ReloadWorkflow
-    | command.RetryIssue(_)
-    | command.RetryWorkflowStep(_, _)
-    | command.ParkIssue(_, _)
-    | command.UnparkIssue(_)
-    | command.RunScheduleNow(_) -> False
-  }
-}
-
-fn remote_transport_action_to_transition(
-  state: State,
-  action: linear_transport.RemoteTransportAction,
-) -> State {
-  case action {
-    linear_transport.SubmitRemoteCommand(event, parsed) ->
-      remote_submit_to_transition(state, event, parsed)
-    linear_transport.PostRemoteAck(backend_kind, task_remote_id, event_id, body) ->
-      remote_ack_to_transition(
-        state,
-        backend_kind,
-        task_remote_id,
-        event_id,
-        body,
-        False,
-        "remote_command_ack",
-      )
-    linear_transport.LogRemoteIgnored(reason, event_id) -> {
-      log_state(state, "info", "remote_command_ignored", [
-        #("event_id", event_id),
-        #("reason", reason),
-      ])
-      state
-    }
-  }
-}
-
-fn remote_submit_to_transition(
-  state: State,
-  event: adapter.RemoteCommandEvent,
-  parsed: linear_parser.ParsedLinearCommand,
-) -> State {
-  run_transition_messages(state, [
-    transition_types.RemoteCommandSubmitted(
-      event: event,
-      parsed: parsed,
-      safe_excerpt: safe_remote_command_excerpt(
-        parsed.excerpt,
-        state.workflow.secrets,
-      ),
-    ),
-  ])
-}
-
-fn remote_ack_to_transition(
-  state: State,
-  backend_kind: String,
-  task_remote_id: String,
-  event_id: String,
-  body: String,
-  outbox_recorded: Bool,
-  outbox_kind: String,
-) -> State {
-  run_transition_messages(state, [
-    transition_types.RemoteCommandAckRequested(
-      backend_kind: backend_kind,
-      task_remote_id: task_remote_id,
-      event_id: event_id,
-      body: body,
-      outbox_recorded: outbox_recorded,
-      outbox_kind: outbox_kind,
-    ),
-  ])
-}
-
-fn post_remote_command_ack_shell(
-  state: State,
-  backend_kind: String,
-  task_remote_id: String,
-  event_id: String,
-  body: String,
-  outbox_kind: String,
-) -> State {
-  case state.tracker_adapter.remote_commands {
-    Some(capability) ->
-      enqueue_side_effect(
-        state,
-        effect_runner.PostRemoteCommandAck(
-          backend_kind: backend_kind,
-          task_remote_id: task_remote_id,
-          event_id: event_id,
-          body: body,
-          outbox_kind: outbox_kind,
-          capability: capability,
-        ),
-      )
-    None -> state
-  }
-}
-
-fn safe_remote_command_excerpt(value: String, secrets: List(String)) -> String {
-  log.redact("remote_command_receipt", value, secrets)
-  |> log.truncate(record.max_excerpt_chars)
-}
-
-fn result_message_excerpt(
-  result: command.CommandResult,
-  secrets: List(String),
-) -> String {
-  case result.message {
-    Some(message) -> safe_remote_command_excerpt(message, secrets)
-    None -> ""
-  }
-}
-
 fn append_unique_list(
   existing: List(String),
   values: List(String),
@@ -3510,10 +3191,6 @@ fn append_unique(values: List(String), value: String) -> List(String) {
     True -> values
     False -> list.append(values, [value])
   }
-}
-
-fn poll_result_is_stale(state: State, generation: Int) -> Bool {
-  poll_scheduler.result_is_stale(state.poll, generation)
 }
 
 fn poll_snapshot(state: State) -> transition_types.PollSnapshot {
@@ -3550,8 +3227,6 @@ fn transition_state_from_daemon(state: State) -> transition_types.State {
     pending_dispatch_validations: state.pending_dispatch_validations,
     next_dispatch_validation_generation: state.next_dispatch_validation_generation,
     next_session_sequence: worker_registry.next_session_sequence(state.registry),
-    pending_linear_command_acks: state.pending_linear_command_acks,
-    in_flight_linear_command_acks: state.in_flight_linear_command_acks,
   )
 }
 
@@ -3572,11 +3247,7 @@ fn merge_transition_state(
         shell_state_overrides_transition: False,
       )
   }
-  State(
-    ..state,
-    pending_linear_command_acks: transition_state.pending_linear_command_acks,
-    in_flight_linear_command_acks: transition_state.in_flight_linear_command_acks,
-  )
+  state
 }
 
 fn run_transition_messages(
@@ -3634,29 +3305,6 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
           tracker_adapter: state.tracker_adapter,
         ),
       )
-    },
-    fetch_remote_commands: fn(
-      state,
-      generation,
-      task_refs,
-      candidates,
-      dispatch_after,
-    ) {
-      case state.tracker_adapter.remote_commands {
-        Some(capability) ->
-          enqueue_side_effect(
-            state,
-            effect_runner.FetchRemoteCommands(
-              generation: generation,
-              task_refs: task_refs,
-              candidates: candidates,
-              dispatch_after: dispatch_after,
-              capability: capability,
-              limit_per_task: state.workflow.effective.linear_commands.poll_limit_per_issue,
-            ),
-          )
-        None -> finish_remote_command_phase(state, candidates, dispatch_after)
-      }
     },
     begin_dispatch_validation: fn(state, issue_id, generation) {
       enqueue_side_effect(
@@ -3733,7 +3381,6 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
     report_worker_failure: transition_report_worker_failure,
     cleanup_workspace: transition_cleanup_workspace,
     park_issue: transition_park_issue,
-    replay_remote_command_ack: transition_replay_remote_command_ack,
     report_park: transition_report_park,
     stop_worker: transition_stop_worker,
     stop_worker_after_issue_refresh: transition_stop_worker_after_issue_refresh,
@@ -3747,23 +3394,6 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
     set_operator_paused: set_operator_paused,
     apply_operator_command: apply_shell_operator_command,
     finish_operator_command: finish_operator_command_effect,
-    post_remote_command_ack: fn(
-      state,
-      backend_kind,
-      task_remote_id,
-      event_id,
-      body,
-      outbox_kind,
-    ) {
-      post_remote_command_ack_shell(
-        state,
-        backend_kind,
-        task_remote_id,
-        event_id,
-        body,
-        outbox_kind,
-      )
-    },
     report_park_effect: fn(
       state,
       issue_id,
@@ -3971,33 +3601,6 @@ fn transition_cleanup_workspace(state: State, workspace_path: String) -> State {
         ),
       )
   }
-}
-
-fn transition_replay_remote_command_ack(
-  state: State,
-  backend_kind: String,
-  task_remote_id: String,
-  event_id: String,
-  body: String,
-  outbox_kind: String,
-) -> State {
-  let state =
-    State(
-      ..state,
-      linear_command_state: linear_transport.mark_processed(
-        state.linear_command_state,
-        event_id,
-      ),
-    )
-  remote_ack_to_transition(
-    state,
-    backend_kind,
-    task_remote_id,
-    event_id,
-    body,
-    True,
-    outbox_kind,
-  )
 }
 
 fn transition_report_park(state: State, report: adapter.ParkReport) -> State {
@@ -6455,19 +6058,6 @@ fn handle_side_effect_result(
   case result {
     effect_runner.CandidateFetchFinished(generation, result) ->
       handle_candidate_fetch_finished(state, generation, result)
-    effect_runner.RemoteCommandFetchFinished(
-      generation,
-      candidates,
-      dispatch_after,
-      result,
-    ) ->
-      handle_remote_command_fetch_finished(
-        state,
-        generation,
-        candidates,
-        dispatch_after,
-        result,
-      )
     effect_runner.RunningRefreshFinished(generation, result) ->
       handle_running_refresh_finished(state, generation, result)
     effect_runner.RetryRefreshFinished(issue_id, generation, result) ->
@@ -6487,21 +6077,6 @@ fn handle_side_effect_result(
       handle_handoff_failure_finished(state, issue_id, result)
     effect_runner.HandoffParkFinished(issue_id, result) ->
       handle_handoff_park_finished(state, issue_id, result)
-    effect_runner.RemoteCommandAckFinished(
-      backend_kind,
-      task_remote_id,
-      event_id,
-      outbox_kind,
-      result,
-    ) ->
-      handle_remote_command_ack_finished(
-        state,
-        backend_kind,
-        task_remote_id,
-        event_id,
-        outbox_kind,
-        result,
-      )
     effect_runner.InvalidWorkflowReportFinished(
       issue_id,
       violation_fingerprint,
@@ -6535,20 +6110,6 @@ fn crash_result_for_effect(
     effect_runner.FetchCandidates(generation, _) ->
       effect_runner.CandidateFetchFinished(
         generation,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.FetchRemoteCommands(
-      generation,
-      _,
-      candidates,
-      dispatch_after,
-      _,
-      _,
-    ) ->
-      effect_runner.RemoteCommandFetchFinished(
-        generation,
-        candidates,
-        dispatch_after,
         Error(error.LinearApiRequest(reason)),
       )
     effect_runner.RefreshRunning(generation, _, _) ->
@@ -6593,21 +6154,6 @@ fn crash_result_for_effect(
     effect_runner.ReportPark(report, _) ->
       effect_runner.HandoffParkFinished(
         report.task.remote_id,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.PostRemoteCommandAck(
-      backend_kind,
-      task_remote_id,
-      event_id,
-      _,
-      outbox_kind,
-      _,
-    ) ->
-      effect_runner.RemoteCommandAckFinished(
-        backend_kind,
-        task_remote_id,
-        event_id,
-        outbox_kind,
         Error(error.LinearApiRequest(reason)),
       )
     effect_runner.ReportInvalidWorkflow(
@@ -6802,29 +6348,6 @@ fn handle_handoff_park_finished(
       state
     }
   }
-}
-
-fn handle_remote_command_ack_finished(
-  state: State,
-  backend_kind: String,
-  task_remote_id: String,
-  event_id: String,
-  outbox_kind: String,
-  result: Result(Nil, error.TrackerError),
-) -> State {
-  let result = case result {
-    Ok(Nil) -> Ok(Nil)
-    Error(err) -> Error(error.tracker_code(err))
-  }
-  run_transition_messages(state, [
-    transition_types.RemoteCommandAckFinished(
-      backend_kind: backend_kind,
-      task_remote_id: task_remote_id,
-      event_id: event_id,
-      outbox_kind: outbox_kind,
-      result: result,
-    ),
-  ])
 }
 
 fn handle_invalid_workflow_report_finished(

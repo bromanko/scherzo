@@ -154,9 +154,9 @@ is eliminated.
 - `agent.max_concurrent_agents: 0` pauses new dispatch while daemon reload and
   reconciliation remain alive.
 - Dispatch validates the task with a fresh tracker read before claim/handoff.
-- Claims, handoff comments, remote command acknowledgements, invalid-workflow
-  reports, tracker refreshes, and orchestrator cleanup effects run through
-  `effect_runner.gleam`; workflow-run cleanup is part of
+- Claims, handoff comments, invalid-workflow reports, tracker refreshes, and
+  orchestrator cleanup effects run through `effect_runner.gleam`; workflow-run
+  cleanup is part of
   `workflow_run.gleam` dependencies. Some compatibility paths still use Linear
   names; see `docs/runbooks/tracker-adapters.md` for the current coupling map.
 - The daemon owns session registration in the EventHub and command-subject
@@ -227,11 +227,10 @@ is eliminated.
 - Mutating local commands (`pause`, `resume`, `reload`, `retry`, `park`,
   `unpark`, `abort`, `stop-after-turn`, `prompt`, `ui respond`) enter the daemon
   as `OperatorCommand` values and must return explicit `CommandResult` statuses.
-- Remote task comments can provide operator commands when the adapter supports
-  them. The current production path is Linear comment commands
-  (`linear_commands.enabled`), authorized by explicit Linear user id allowlist,
-  parsed from one command line outside fenced code blocks, and tracked durably
-  with seen/started/completed/acked receipts.
+- Remote task comments are not an operator command transport. The former Linear
+  comment command path has been removed; `remote_commands` and legacy
+  `linear_commands` config sections are rejected. Use `scherzoctl` for operator
+  commands.
 
 ### FFI boundary
 
@@ -483,8 +482,6 @@ Touch:
 - `src/scherzo/control/server.gleam`
 - `src/scherzo/control/client.gleam`
 - `src/scherzo/control/file.gleam`
-- `src/scherzo/control/linear_parser.gleam`
-- `src/scherzo/control/linear_transport.gleam`
 - `src/scherzo/ctl.gleam`, `scripts/scherzoctl`
 - `src/scherzo/session/event.gleam`, `json.gleam`, `hub.gleam` if session data
   shape changes
@@ -501,15 +498,14 @@ Must preserve:
 - Local control remains loopback-only, token-authenticated, line-delimited, and
   versioned.
 - Mutating commands return stable status strings and bounded/redacted messages.
-- Linear command comments require explicit user-id authorization and durable
-  receipts; completed-but-unacked commands are acknowledged after restart
-  without reapplying the command. Future remote-command adapters must preserve
-  the same authorization, dedupe, and acknowledgement invariants.
+- Linear comments are outbound reporting only; they must not become an inbound
+  operator command transport or acknowledgement channel. Future remote-command
+  adapter experiments must stay outside production daemon polling unless a new
+  design explicitly reopens that boundary.
 
 Run tests:
 
-- `test/linear_test.gleam`, `test/linear_http_test.gleam`,
-  `test/linear_comments_test.gleam`
+- `test/linear_test.gleam`, `test/linear_http_test.gleam`
 - `test/linear_attachment_test.gleam`,
   `test/linear_attachment_graphql_test.gleam`,
   `test/linear_body_data_test.gleam`
@@ -518,10 +514,9 @@ Run tests:
 - `test/control_protocol_test.gleam`, `test/control_server_test.gleam`,
   `test/control_file_test.gleam`, `test/control_command_test.gleam`,
   `test/ctl_test.gleam`, `test/ctl_attach_render_test.gleam`
-- `test/linear_command_parser_test.gleam`,
-  `test/linear_command_transport_test.gleam`,
-  `test/linear_command_config_test.gleam`,
-  `test/orchestrator_daemon_linear_command_test.gleam`
+- `test/linear_command_config_test.gleam`,
+  `test/tracker_linear_adapter_test.gleam`,
+  `test/orchestrator_daemon_test.gleam`
 
 ## If changing FFI, process, pi, or terminal behavior
 

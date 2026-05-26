@@ -195,16 +195,7 @@ linear_contract:
   enforce_issue_workflow_labels: true
   invalid_workflow_state_id: 83eb55af-4c17-443f-9501-8a581be7de20
   comment_on_invalid_workflow: true
-linear_commands:
-  # Keep Linear comment commands off for the first dogfood loop. Use the local
-  # control API (`scripts/scherzoctl`) for supervision and follow-up prompts.
-  enabled: false
-  prefix: "/scherzo"
-  authorized_user_ids: []
-  poll_limit_per_issue: 25
-  max_comments_per_tick: 50
-  acknowledge_success: true
-  acknowledge_rejection: true
+
 ui_server:
   # Disabled-by-default identity/config primitive. This does not open a live
   # browser UI or server transport in the current slice.

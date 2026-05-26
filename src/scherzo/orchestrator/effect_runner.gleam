@@ -20,14 +20,6 @@ import scherzo/workflow_policy
 
 pub type Effect {
   FetchCandidates(generation: Int, tracker_adapter: adapter.TrackerAdapter)
-  FetchRemoteCommands(
-    generation: Int,
-    task_refs: List(task.TaskRef),
-    candidates: List(tracker_issue.Issue),
-    dispatch_after: Bool,
-    capability: adapter.RemoteCommandCapability,
-    limit_per_task: Int,
-  )
   RefreshRunning(
     generation: Int,
     ids: List(String),
@@ -66,14 +58,6 @@ pub type Effect {
     capability: adapter.HandoffCapability,
   )
   ReportPark(report: adapter.ParkReport, capability: adapter.HandoffCapability)
-  PostRemoteCommandAck(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    body: String,
-    outbox_kind: String,
-    capability: adapter.RemoteCommandCapability,
-  )
   ReportInvalidWorkflow(
     issue: tracker_issue.Issue,
     violation: workflow_policy.IssueWorkflowViolation,
@@ -116,12 +100,6 @@ pub type EffectResult {
     Int,
     Result(List(tracker_issue.Issue), error.TrackerError),
   )
-  RemoteCommandFetchFinished(
-    Int,
-    List(tracker_issue.Issue),
-    Bool,
-    Result(List(adapter.RemoteCommandEvent), error.TrackerError),
-  )
   RunningRefreshFinished(
     Int,
     Result(List(tracker_issue.Issue), error.TrackerError),
@@ -140,13 +118,6 @@ pub type EffectResult {
   HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))
   HandoffFailureFinished(String, String, Result(Nil, error.TrackerError))
   HandoffParkFinished(String, Result(Nil, error.TrackerError))
-  RemoteCommandAckFinished(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    outbox_kind: String,
-    result: Result(Nil, error.TrackerError),
-  )
   InvalidWorkflowReportFinished(
     issue_id: String,
     violation_fingerprint: String,
@@ -180,8 +151,6 @@ pub fn reply_snapshot(
       pending_dispatch_validations: dict.new(),
       next_dispatch_validation_generation: 1,
       next_session_sequence: 1,
-      pending_linear_command_acks: dict.new(),
-      in_flight_linear_command_acks: dict.new(),
     )
   let shell =
     transition_interpreter.new_production_shell_state(
@@ -197,7 +166,6 @@ pub fn reply_snapshot(
       mark_poll_in_flight: fn(data, _) { data },
       schedule_next_poll: fn(data) { data },
       fetch_candidates: fn(data, _) { data },
-      fetch_remote_commands: fn(data, _, _, _, _) { data },
       begin_dispatch_validation: fn(data, _, _) { data },
       reserve_session_sequence: fn(data, _) { data },
       claim_issue: fn(data, _, _, _) { data },
@@ -218,7 +186,6 @@ pub fn reply_snapshot(
       report_worker_failure: fn(data, _, _) { data },
       cleanup_workspace: fn(data, _) { data },
       park_issue: fn(data, _, _) { data },
-      replay_remote_command_ack: fn(data, _, _, _, _, _) { data },
       report_park: fn(data, _) { data },
       stop_worker: fn(data, _, _) { data },
       stop_worker_after_issue_refresh: fn(data, _, _) { data },
@@ -241,7 +208,6 @@ pub fn reply_snapshot(
         )
       },
       finish_operator_command: fn(data, _, _) { #(data, []) },
-      post_remote_command_ack: fn(data, _, _, _, _, _) { data },
       report_park_effect: fn(data, _, _, _, _, _) { data },
     )
   let transition_runner.RunResult(exhausted: _, ..) =
@@ -358,7 +324,6 @@ pub fn shutdown(handle: Handle, timeout_ms: Int) -> Result(Nil, Nil) {
 pub fn effect_kind(effect: Effect) -> String {
   case effect {
     FetchCandidates(_, _) -> "fetch_candidates"
-    FetchRemoteCommands(_, _, _, _, _, _) -> "fetch_remote_commands"
     RefreshRunning(_, _, _) -> "refresh_running"
     RefreshRetry(_, _, _) -> "refresh_retry"
     ValidateDispatchClaim(_, _, _) -> "validate_dispatch_claim"
@@ -366,7 +331,6 @@ pub fn effect_kind(effect: Effect) -> String {
     ReportSuccess(_, _, _, _, _, _) -> "report_success"
     ReportFailure(_, _, _, _, _, _) -> "report_failure"
     ReportPark(_, _) -> "report_park"
-    PostRemoteCommandAck(_, _, _, _, _, _) -> "post_remote_command_ack"
     ReportInvalidWorkflow(_, _, _, _, _, _, _) -> "report_invalid_workflow"
     ReportScheduledFailure(_, _, _) -> "report_scheduled_failure"
     CleanupWorkspace(_, _, _, _) -> "cleanup_workspace"
@@ -580,34 +544,6 @@ fn adapter_error_message(err: adapter.TrackerError) -> String {
   }
 }
 
-fn post_remote_command_ack(
-  capability: adapter.RemoteCommandCapability,
-  backend_kind: String,
-  task_remote_id: String,
-  event_id: String,
-  body: String,
-) -> Result(Nil, adapter.TrackerError) {
-  let event =
-    adapter.RemoteCommandEvent(
-      event_id: event_id,
-      task: task.TaskRef(
-        backend_kind: backend_kind,
-        remote_id: task_remote_id,
-        key: None,
-        url: None,
-      ),
-      author_id: "",
-      body: "",
-      command_name: "",
-      excerpt: "",
-      observed_at_ms: 0,
-    )
-  use _ <- try_adapter(
-    capability.post_ack(adapter.RemoteCommandAck(event: event, body: body)),
-  )
-  Ok(Nil)
-}
-
 fn report_invalid_workflow(
   issue: tracker_issue.Issue,
   violation: workflow_policy.IssueWorkflowViolation,
@@ -740,26 +676,6 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         generation,
         fetch_candidate_issues(tracker_adapter),
       )
-    FetchRemoteCommands(
-      generation,
-      task_refs,
-      candidates,
-      dispatch_after,
-      capability,
-      limit_per_task,
-    ) ->
-      RemoteCommandFetchFinished(
-        generation,
-        candidates,
-        dispatch_after,
-        adapter_result(
-          capability.fetch_events(adapter.RemoteCommandFetch(
-            task_refs: task_refs,
-            since_event_ids: [],
-            limit_per_task: limit_per_task,
-          )),
-        ),
-      )
     RefreshRunning(generation, ids, tracker_adapter) ->
       RunningRefreshFinished(
         generation,
@@ -822,27 +738,6 @@ fn run_side_effect(effect: Effect) -> EffectResult {
       HandoffParkFinished(
         report.task.remote_id,
         adapter_result(capability.report(adapter.HandoffPark(report))),
-      )
-    PostRemoteCommandAck(
-      backend_kind,
-      task_remote_id,
-      event_id,
-      body,
-      outbox_kind,
-      capability,
-    ) ->
-      RemoteCommandAckFinished(
-        backend_kind,
-        task_remote_id,
-        event_id,
-        outbox_kind,
-        adapter_result(post_remote_command_ack(
-          capability,
-          backend_kind,
-          task_remote_id,
-          event_id,
-          body,
-        )),
       )
     ReportInvalidWorkflow(
       issue,

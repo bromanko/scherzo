@@ -732,7 +732,7 @@ pub fn invalid_pending_outbox_payload_is_marked_failed_test() {
   )
 }
 
-pub fn linear_command_ack_outbox_is_replayed_test() {
+pub fn linear_command_ack_outbox_is_marked_failed_test() {
   let projection =
     projection.fold([
       record.with_id(
@@ -750,19 +750,15 @@ pub fn linear_command_ack_outbox_is_replayed_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
 
-  let assert [
-    recovery.OutboxReplay(
-      outbox_id: "outbox-ack",
-      issue_id: "issue-1",
-      outbox_kind: "linear_command_ack",
-      dedupe_key: "ack",
-      payload_json: "{\"type\":\"linear_command_ack\",\"body\":\"ack\"}",
-    ),
-  ] = plan.outbox_to_replay
-  assert plan.records_to_append == []
+  assert plan.outbox_to_replay == []
+  assert has_outbox_failed(
+    plan.records_to_append,
+    "outbox-ack",
+    "unsupported_outbox_kind:linear_command_ack",
+  )
 }
 
-pub fn remote_command_ack_outbox_is_replayed_test() {
+pub fn remote_command_ack_outbox_is_marked_failed_test() {
   let payload =
     outbox.remote_command_ack_payload(
       "linear",
@@ -788,17 +784,12 @@ pub fn remote_command_ack_outbox_is_replayed_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
 
-  let assert [
-    recovery.OutboxReplay(
-      outbox_id: "comment-1",
-      issue_id: "issue-1",
-      outbox_kind: "remote_command_ack",
-      dedupe_key: "remote_command_ack:comment-1",
-      payload_json: replay_payload,
-    ),
-  ] = plan.outbox_to_replay
-  assert replay_payload == payload
-  assert plan.records_to_append == []
+  assert plan.outbox_to_replay == []
+  assert has_outbox_failed(
+    plan.records_to_append,
+    "comment-1",
+    "unsupported_outbox_kind:remote_command_ack",
+  )
 }
 
 pub fn acked_remote_command_suppresses_legacy_linear_ack_outbox_replay_test() {

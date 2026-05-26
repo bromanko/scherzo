@@ -17,7 +17,6 @@ import scherzo/tracker/state as issue_state
 pub type Dependencies {
   Dependencies(
     transport: linear.Transport,
-    command_client: linear.CommandClient,
     handoff_client: handoff.Client,
     scheduled_failure_client: scheduled_failure_reporter.Client,
   )
@@ -56,7 +55,6 @@ pub fn from_effective_config(
     effective,
     Dependencies(
       transport: transport,
-      command_client: linear.command_client(effective.tracker, transport),
       handoff_client: handoff.linear_client(
         effective.tracker,
         effective.handoff,
@@ -77,7 +75,6 @@ pub fn from_dependencies(
   let config = effective.tracker
   let Dependencies(
     transport: transport,
-    command_client: command_client,
     handoff_client: handoff_client,
     scheduled_failure_client: scheduled_failure_client,
   ) = dependencies
@@ -87,7 +84,7 @@ pub fn from_dependencies(
     display_name: "Linear",
     task_source: task_source_capability(config, transport),
     comments: Some(comment_capability(config, transport)),
-    remote_commands: Some(remote_command_capability(command_client)),
+    remote_commands: None,
     state_transitions: Some(state_transition_capability(config, transport)),
     routing_metadata: Some(routing_metadata_capability()),
     links: None,
@@ -258,57 +255,6 @@ fn update_comment(
     task: task_ref,
     url: task_ref.url,
     created: False,
-  ))
-}
-
-fn remote_command_capability(
-  client: linear.CommandClient,
-) -> adapter.RemoteCommandCapability {
-  adapter.RemoteCommandCapability(
-    fetch_events: fn(request) { fetch_remote_command_events(client, request) },
-    post_ack: fn(ack) { post_remote_command_ack(client, ack) },
-  )
-}
-
-fn fetch_remote_command_events(
-  client: linear.CommandClient,
-  request: adapter.RemoteCommandFetch,
-) -> Result(List(adapter.RemoteCommandEvent), adapter.TrackerError) {
-  use issue_ids <- try_adapter_result(linear_remote_ids(request.task_refs))
-  use comments <- try_adapter(client.fetch_comments(
-    issue_ids,
-    request.limit_per_task,
-  ))
-  Ok(list.map(comments, linear_comment_to_remote_command_event))
-}
-
-fn linear_comment_to_remote_command_event(
-  comment: linear.LinearComment,
-) -> adapter.RemoteCommandEvent {
-  adapter.RemoteCommandEvent(
-    event_id: comment.id,
-    task: linear_task_ref(comment.issue_id, None),
-    author_id: comment.author.id,
-    body: comment.body,
-    command_name: "",
-    excerpt: comment.body,
-    observed_at_ms: comment.created_at_ms,
-  )
-}
-
-fn post_remote_command_ack(
-  client: linear.CommandClient,
-  ack: adapter.RemoteCommandAck,
-) -> Result(adapter.CommentReceipt, adapter.TrackerError) {
-  let adapter.RemoteCommandAck(event: event, body: body) = ack
-  let adapter.RemoteCommandEvent(event_id: event_id, task: task_ref, ..) = event
-  use issue_id <- try_adapter_result(require_linear_ref(task_ref))
-  use Nil <- try_adapter(client.post_ack(issue_id, body))
-  Ok(adapter.CommentReceipt(
-    id: event_id,
-    task: task_ref,
-    url: task_ref.url,
-    created: True,
   ))
 }
 

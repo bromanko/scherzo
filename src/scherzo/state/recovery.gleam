@@ -2138,21 +2138,19 @@ fn recover_outbox_entry(
             error,
           )
         Ok(payload) ->
-          case outbox.recovery_replay_error(outbox_kind, payload.kind) {
-            Error(error) ->
-              fail_outbox_recovery(
-                recovery,
-                outbox_id,
-                issue_id,
-                outbox_kind,
-                error,
-              )
-            Ok(Nil) ->
-              case
-                command_ack_already_recorded(projection, outbox_id, payload)
-              {
-                True -> recovery
-                False ->
+          case command_ack_already_recorded(projection, outbox_id, payload) {
+            True -> recovery
+            False ->
+              case outbox.recovery_replay_error(outbox_kind, payload.kind) {
+                Error(error) ->
+                  fail_outbox_recovery(
+                    recovery,
+                    outbox_id,
+                    issue_id,
+                    outbox_kind,
+                    error,
+                  )
+                Ok(Nil) ->
                   OutboxRecovery(..recovery, outbox_to_replay: [
                     OutboxReplay(
                       outbox_id,

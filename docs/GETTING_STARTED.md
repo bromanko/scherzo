@@ -195,10 +195,8 @@ linear_contract:
   enforce_issue_workflow_labels: false
   comment_on_invalid_workflow: false
 
-linear_commands:
-  enabled: false
-  prefix: "/scherzo"
-  authorized_user_ids: []
+# Linear comment command controls have been removed. Use `scherzoctl` for
+# operator commands such as retry, park, prompt, stop-after-turn, and abort.
 
 ui_server:
   enabled: false
@@ -732,7 +730,7 @@ direnv exec . scripts/scherzoctl stop-after-turn <session-id> --yes
 direnv exec . scripts/scherzoctl abort <session-id> --yes
 ```
 
-Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
+Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. Linear comments are not an operator command transport; comments beginning with old command prefixes are ignored by Scherzo. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
 
 ## 14. Adaptation checklist and troubleshooting
 

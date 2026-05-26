@@ -61,61 +61,6 @@ pub fn handle(
       handle_running_refresh_completed(state, generation, poll, result, context)
     transition_types.CandidateFetchCompleted(generation, poll, result, context) ->
       handle_candidate_fetch_completed(state, generation, poll, result, context)
-    transition_types.RemoteCommandSubmitted(event, parsed, safe_excerpt) ->
-      commands.handle_remote_submitted(state, event, parsed, safe_excerpt)
-    transition_types.RemoteCommandApplied(
-      backend_kind,
-      event_id,
-      task_remote_id,
-      command_name,
-      result,
-      message_excerpt,
-      ack_body,
-    ) ->
-      commands.handle_remote_applied(
-        state,
-        backend_kind,
-        event_id,
-        task_remote_id,
-        command_name,
-        result,
-        message_excerpt,
-        ack_body,
-      )
-    transition_types.RemoteCommandAckRequested(
-      backend_kind,
-      task_remote_id,
-      event_id,
-      body,
-      outbox_recorded,
-      outbox_kind,
-    ) ->
-      commands.request_remote_ack(
-        state,
-        backend_kind,
-        task_remote_id,
-        event_id,
-        body,
-        outbox_recorded,
-        outbox_kind,
-      )
-    transition_types.RemoteCommandAckFinished(
-      backend_kind,
-      task_remote_id,
-      event_id,
-      outbox_kind,
-      result,
-    ) ->
-      commands.handle_remote_ack_finished(
-        state,
-        backend_kind,
-        task_remote_id,
-        event_id,
-        outbox_kind,
-        result,
-      )
-    transition_types.RetryPendingRemoteCommandAcks ->
-      commands.retry_pending_remote_acks(state)
     transition_types.OperatorCommandSubmitted(
       request,
       context,
@@ -130,11 +75,6 @@ pub fn handle(
         parked_issue_resolution,
         operator_callbacks(),
       )
-    transition_types.RemoteCommandPhaseFinished(
-      candidates,
-      dispatch_after,
-      context,
-    ) -> finish_dispatch_phase(state, candidates, dispatch_after, context)
     transition_types.DispatchCandidates(candidates, context) ->
       dispatch_candidates_outcome(candidates, state, context)
     transition_types.DispatchValidationCompleted(
@@ -227,7 +167,7 @@ fn handle_startup_recovery_applied(
   state: transition_types.State,
   retry_timers: List(recovery.RecoveredRetry),
   cleanup_workspaces: List(recovery.CleanupRequest),
-  outbox_to_replay: List(recovery.OutboxReplay),
+  _outbox_to_replay: List(recovery.OutboxReplay),
   park_reports: List(adapter.ParkReport),
   warnings: List(String),
   secrets: List(String),
@@ -238,11 +178,8 @@ fn handle_startup_recovery_applied(
       list.append(
         startup_cleanup_effects(cleanup_workspaces),
         list.append(
-          commands.startup_outbox_replay_effects(outbox_to_replay),
-          list.append(
-            startup_park_report_effects(park_reports),
-            startup_warning_effects(warnings, secrets),
-          ),
+          startup_park_report_effects(park_reports),
+          startup_warning_effects(warnings, secrets),
         ),
       ),
     )
@@ -522,24 +459,12 @@ fn handle_candidate_fetch_completed(
 
 fn finish_candidate_phase(
   state: transition_types.State,
-  generation: Int,
+  _generation: Int,
   candidates: List(tracker_issue.Issue),
   dispatch_after: Bool,
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let task_refs = observed_task_refs(state, context, candidates)
-  case context.effective.linear_commands.enabled && task_refs != [] {
-    True ->
-      transition_types.Outcome(state: state, effects: [
-        effects_types.FetchRemoteCommands(
-          generation,
-          task_refs,
-          candidates,
-          dispatch_after,
-        ),
-      ])
-    False -> finish_dispatch_phase(state, candidates, dispatch_after, context)
-  }
+  finish_dispatch_phase(state, candidates, dispatch_after, context)
 }
 
 fn finish_dispatch_phase(
@@ -1587,55 +1512,6 @@ fn handle_ledger_append_completed(
         session_id,
         result,
         claim_callbacks(),
-      )
-    effects_types.ApplyRemoteCommand(request) ->
-      commands.handle_remote_apply_continuation(
-        state,
-        correlation_id,
-        request,
-        result,
-      )
-    effects_types.EnqueueRemoteCommandAck(
-      backend_kind,
-      task_remote_id,
-      event_id,
-      body,
-      outbox_kind,
-    ) ->
-      commands.handle_remote_enqueue_continuation(
-        state,
-        correlation_id,
-        backend_kind,
-        task_remote_id,
-        event_id,
-        body,
-        outbox_kind,
-        result,
-      )
-    effects_types.PublishRemoteCommandAck(
-      backend_kind,
-      task_remote_id,
-      event_id,
-      body,
-      outbox_kind,
-    ) ->
-      commands.handle_remote_publish_continuation(
-        state,
-        correlation_id,
-        backend_kind,
-        task_remote_id,
-        event_id,
-        body,
-        outbox_kind,
-        result,
-      )
-    effects_types.RemoveRemoteCommandAck(task_remote_id, event_id) ->
-      commands.handle_remote_remove_continuation(
-        state,
-        correlation_id,
-        task_remote_id,
-        event_id,
-        result,
       )
     effects_types.ReportParkAfterLedger(
       issue_id,
@@ -3048,42 +2924,6 @@ fn active_issues(
       )
     }),
   )
-}
-
-fn observed_task_refs(
-  state: transition_types.State,
-  context: transition_types.DispatchContext,
-  candidates: List(tracker_issue.Issue),
-) -> List(task.TaskRef) {
-  active_issues(state, context)
-  |> append_unique_issues(candidates)
-  |> list.map(fn(issue) { task.from_legacy_issue(issue).ref })
-  |> append_task_refs(
-    state.runtime.retry_attempts
-    |> dict.values
-    |> list.map(fn(entry) { entry.task_ref }),
-  )
-  |> append_task_refs(
-    state.runtime.parked
-    |> dict.values
-    |> list.map(fn(entry) { entry.task_ref }),
-  )
-}
-
-fn append_task_refs(
-  existing: List(task.TaskRef),
-  refs: List(task.TaskRef),
-) -> List(task.TaskRef) {
-  list.fold(refs, existing, fn(acc, ref) {
-    case
-      list.any(acc, fn(existing_ref) {
-        task.identity(existing_ref) == task.identity(ref)
-      })
-    {
-      True -> acc
-      False -> list.append(acc, [ref])
-    }
-  })
 }
 
 fn append_unique_list(
