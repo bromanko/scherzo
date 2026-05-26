@@ -16,13 +16,8 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import simplifile
+import support/test_helpers
 import test_async
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
 
 fn fake_pi() -> String {
   let assert Ok(abs) = path.absolute("test/fixtures/fake_pi_rpc.sh")
@@ -177,7 +172,7 @@ fn receive_update_named(
 
 pub fn abort_command_stops_fake_pi_worker_test() {
   let root = "test/tmp/agent-worker-control-abort"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let pi_command =
@@ -229,7 +224,7 @@ pub fn abort_command_stops_fake_pi_worker_test() {
 
 pub fn operator_prompt_queued_during_turn_and_sent_next_turn_test() {
   let root = "test/tmp/agent-worker-control-prompt"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let assert Ok(release_after_message_update) =
@@ -297,7 +292,7 @@ pub fn operator_prompt_queued_during_turn_and_sent_next_turn_test() {
 
 pub fn operator_ui_request_timeout_cancels_before_read_timeout_test() {
   let root = "test/tmp/agent-worker-control-ui-timeout"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let pi_command =
@@ -351,7 +346,7 @@ pub fn operator_ui_request_timeout_cancels_before_read_timeout_test() {
 
 pub fn operator_ui_request_cancel_response_test() {
   let root = "test/tmp/agent-worker-control-ui"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   // Exercise the UI path with a fixture response delay longer than the old

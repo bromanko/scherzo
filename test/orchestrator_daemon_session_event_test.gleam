@@ -25,6 +25,7 @@ import scherzo/workflow_attempt
 import scherzo/workflow_run
 import scherzo/workspace
 import simplifile
+import support/test_helpers
 import test_async
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
@@ -34,12 +35,6 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
     workflow_attempt.StepRecoveryPrompt(prompt) -> prompt
     workflow_attempt.RecoveryPrompt(prompt) -> prompt
   }
-}
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
 }
 
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
@@ -89,7 +84,7 @@ routing:
 }
 
 fn write_workflow(dir: String) -> #(String, String) {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let prompt_dir = workflow_dir <> "/prompts"
@@ -114,7 +109,7 @@ steps:
 }
 
 fn write_scheduled_workflow(dir: String) -> #(String, String) {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let prompt_dir = workflow_dir <> "/prompts"

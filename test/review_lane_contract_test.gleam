@@ -6,6 +6,7 @@ import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 import workflow_context_test_support
 
 fn limits() -> config_types.ArtifactLimits {
@@ -14,12 +15,6 @@ fn limits() -> config_types.ArtifactLimits {
     template_field_max_chars: 8000,
     workflow_summary_max_chars: 8000,
   )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }
 
 fn run_contract(command: String) -> step_artifact.StepArtifact {
@@ -95,7 +90,7 @@ fn correctness_structured_output_artifact(payload: String) -> String {
 
 pub fn review_lane_contract_materializes_structured_output_artifact_test() {
   let dir = "test/tmp/review-lane-contract-structured-output"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let submission_path = dir <> "/correctness_submission.json"
   let output_path = dir <> "/review-lane-draft.v1.json"
   let assert Ok(Nil) =
@@ -167,7 +162,7 @@ fn native_lane_step_metadata(
 
 pub fn review_lane_contract_resolves_successful_retry_attempt_test() {
   let dir = "test/tmp/review-lane-contract-retry-attempt"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_dir = dir <> "/artifact-runs/run-1"
   let stable_structured_dir =
     artifact_dir <> "/lane_security_performance/attempt-2/structured"
@@ -280,7 +275,7 @@ pub fn review_lane_contract_resolves_successful_retry_attempt_test() {
 
 pub fn review_lane_contract_falls_back_to_latest_retained_submission_without_metadata_test() {
   let dir = "test/tmp/review-lane-contract-retry-fallback"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_dir = dir <> "/artifact-runs/run-1"
   let attempt_1_structured_dir =
     artifact_dir <> "/lane_security_performance/attempt-1/structured"
@@ -338,7 +333,7 @@ pub fn review_lane_contract_falls_back_to_latest_retained_submission_without_met
 
 pub fn review_lane_contract_rejects_metadata_path_outside_artifact_dir_test() {
   let dir = "test/tmp/review-lane-contract-metadata-path-outside"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact_dir = dir <> "/artifact-runs/run-1"
   let metadata_dir = artifact_dir <> "/lane_security_performance-abc123def456"
   let outside_dir = dir <> "/outside"
@@ -391,7 +386,7 @@ pub fn review_lane_contract_rejects_metadata_path_outside_artifact_dir_test() {
 
 pub fn review_lane_contract_still_rejects_metadata_inside_payload_test() {
   let dir = "test/tmp/review-lane-contract-structured-output-invalid-payload"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let submission_path = dir <> "/correctness_submission.json"
   let output_path = dir <> "/review-lane-draft.v1.json"
   let invalid_payload =
@@ -445,7 +440,7 @@ pub fn review_lane_contract_offline_accepts_routed_review_workflows_test() {
 
 pub fn review_lane_contract_live_skips_without_credentials_test() {
   let dir = "test/tmp/review-lane-contract-live"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_shell(

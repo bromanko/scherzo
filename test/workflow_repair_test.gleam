@@ -19,6 +19,7 @@ import scherzo/workflow_dag
 import scherzo/workflow_outcome
 import scherzo/workflow_repair
 import simplifile
+import support/test_helpers
 
 pub fn retry_step_can_repair_interrupted_attempt_test() {
   let projection = projection.fold(interrupted_run_records())
@@ -503,7 +504,7 @@ pub fn retry_step_finalization_rejects_missing_upstream_artifact_test() {
       "seed-sha",
     ))
   let assert Ok(dag) = workflow_dag.parse(recovery_ready_workflow_yaml())
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   ensure_directory(run_root <> "/workspaces/seed")
 
   let assert Ok(plan) =
@@ -530,7 +531,7 @@ pub fn retry_step_finalization_rejects_missing_upstream_artifact_test() {
 pub fn retry_step_finalization_rejects_corrupt_upstream_artifact_test() {
   let root = "test/tmp/workflow-repair-corrupt-artifact"
   let run_root = recovery_run_root(root)
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   ensure_directory(run_root <> "/workspaces/seed")
   let store = artifact_store.new(root)
   let assert Ok(stored) =
@@ -578,7 +579,7 @@ pub fn retry_step_finalization_rejects_unreadable_upstream_artifact_test() {
   let root = "test/tmp/workflow-repair-unreadable-artifact"
   let run_root = recovery_run_root(root)
   let artifact_ref = "runs/run-1/seed/attempt-1.json"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   ensure_directory(run_root <> "/workspaces/seed")
   let projection =
     projection.fold(recovery_ready_run_records(
@@ -623,7 +624,7 @@ pub fn retry_step_finalization_rejects_invalid_upstream_artifact_json_test() {
   let run_root = recovery_run_root(root)
   let artifact_ref = "runs/run-1/seed/attempt-1.json"
   let invalid_json = "{not valid step artifact json"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   ensure_directory(run_root <> "/workspaces/seed")
   ensure_artifact_parent(root, artifact_ref)
   let assert Ok(Nil) =
@@ -716,7 +717,7 @@ pub fn retry_step_finalization_redacts_local_artifact_ref_details_test() {
     let #(label, artifact_ref, reason, display_ref) = entry
     let root = "test/tmp/workflow-repair-redacted-artifact-ref-" <> label
     let run_root = recovery_run_root(root)
-    reset_dir(root)
+    test_helpers.reset_dir(root)
     ensure_directory(run_root <> "/workspaces/seed")
     let projection =
       projection.fold(recovery_ready_run_records(
@@ -748,7 +749,7 @@ pub fn retry_step_finalization_redacts_local_artifact_ref_details_test() {
 pub fn retry_step_finalization_rejects_missing_workspace_test() {
   let root = "test/tmp/workflow-repair-missing-workspace"
   let run_root = recovery_run_root(root)
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let assert Ok(stored) =
     artifact_store.write_step_artifact(
@@ -787,7 +788,7 @@ pub fn retry_step_finalization_rejects_missing_workspace_test() {
 pub fn retry_step_finalization_accepts_guarded_recovery_then_rejects_later_corruption_test() {
   let root = "test/tmp/workflow-repair-guarded-recovery"
   let run_root = recovery_run_root(root)
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   ensure_directory(run_root <> "/workspaces/seed")
   let store = artifact_store.new(root)
   let assert Ok(seed_artifact) =
@@ -1955,12 +1956,6 @@ fn finalize_repair_plan_with_store(
 
 fn recovery_run_root(root: String) -> String {
   root <> "/runs/run-1"
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }
 
 fn ensure_directory(path: String) -> Nil {

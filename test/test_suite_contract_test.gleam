@@ -1,12 +1,11 @@
 import gleam/list
 import gleam/option.{Some}
-import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/path
 import scherzo/step_artifact
 import scherzo_test
 import simplifile
+import support/test_helpers
 
 pub fn suite_selection_partitions_unit_and_contract_files_test() {
   let contract_files = scherzo_test.contract_test_files()
@@ -29,7 +28,7 @@ pub fn suite_selection_partitions_unit_and_contract_files_test() {
 
 pub fn contract_wrapper_invokes_contract_suite_test() {
   let dir = "test/tmp/contract-wrapper-dispatch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let bin = dir <> "/bin"
   let assert Ok(Nil) = simplifile.create_directory_all(bin)
   let assert Ok(log_path) = path.absolute(dir <> "/argv.log")
@@ -39,10 +38,10 @@ pub fn contract_wrapper_invokes_contract_suite_test() {
       fake_gleam,
       "#!/bin/sh\n"
         <> "printf 'ARG=%s\\n' \"$@\" > "
-        <> shell_quote(log_path)
+        <> test_helpers.shell_quote(log_path)
         <> "\n",
     )
-  chmod_executable(fake_gleam)
+  test_helpers.chmod_executable(fake_gleam)
 
   let artifact =
     command_step.run_with_env(
@@ -52,7 +51,7 @@ pub fn contract_wrapper_invokes_contract_suite_test() {
       5000,
       [#("PATH", env_path(bin))],
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -64,38 +63,6 @@ pub fn contract_wrapper_invokes_contract_suite_test() {
 fn assert_contract_file(file: String) -> Nil {
   assert scherzo_test.is_contract_file(file)
   assert !scherzo_test.is_unit_file(file)
-}
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn chmod_executable(file: String) -> Nil {
-  let artifact =
-    command_step.run(
-      "chmod_contract_wrapper_fake_gleam",
-      "chmod +x " <> shell_quote(file),
-      ".",
-      5000,
-      [],
-      limits(),
-    )
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-}
-
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
 
 fn env_path(bin: String) -> String {

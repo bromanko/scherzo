@@ -15,6 +15,7 @@ import scherzo/state/record
 import scherzo/terminal/style
 import scherzo/turn_telemetry
 import simplifile
+import support/test_helpers
 
 const ps_now_ms = -576_460_678_330
 
@@ -41,12 +42,6 @@ fn control_file_for_root(root: String) -> file.ControlFile {
     workspace_root: root,
     started_at_ms: 1,
   )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }
 
 fn write_control_file(path: String) -> Nil {
@@ -420,7 +415,7 @@ pub fn schedules_logs_last_replays_retained_session_events_test() {
   let base = "test/tmp/ctl-schedules/logs-retained"
   let root = base <> "/workspaces"
   let control_path = base <> "/control.json"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   write_scheduled_history(root, "nightly-session")
   write_control_file_for_root(control_path, root)
   let summary =
@@ -457,7 +452,7 @@ pub fn schedules_logs_last_replays_retained_session_events_test() {
 pub fn schedules_logs_last_reports_expired_transcript_test() {
   let base = "test/tmp/ctl-schedules/logs-expired"
   let root = base <> "/workspaces"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   write_scheduled_history(root, "expired-session")
   let subject = process.new_subject()
 
@@ -538,7 +533,7 @@ pub fn schedules_doctor_reports_issue_context_template_failure_test() {
 
 pub fn schedules_doctor_root_resolves_config_path_from_caller_cwd_test() {
   let base = "test/tmp/ctl-schedules/doctor-caller-root"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   let assert Ok(caller_abs) = path.absolute(base <> "/consumer")
   let config_path =
     write_schedule_doctor_config(
@@ -967,7 +962,7 @@ pub fn control_file_option_resolves_relative_to_caller_cwd_test() {
   let base = "test/tmp/ctl-path-options/control-file"
   let core_root = base <> "/core"
   let caller_root = base <> "/consumer"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   let assert Ok(core_abs) = path.absolute(core_root)
   let assert Ok(caller_abs) = path.absolute(caller_root)
   let control_rel = file.default_discovery_path
@@ -1005,7 +1000,7 @@ pub fn control_file_option_resolves_relative_to_caller_cwd_test() {
 
 pub fn root_option_resolves_relative_to_caller_cwd_test() {
   let base = "test/tmp/ctl-path-options/root"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   let assert Ok(caller_abs) = path.absolute(base <> "/consumer")
   let subject = process.new_subject()
 
@@ -1082,7 +1077,7 @@ pub fn session_human_output_appends_workflow_recovery_history_test() {
   let base = "test/tmp/ctl-session-recovery-history"
   let root = base <> "/workspaces"
   let path = base <> "/control.json"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   write_control_file_for_root(path, root)
   write_workflow_recovery_history(root)
   let summary =
@@ -1117,7 +1112,7 @@ pub fn session_json_output_remains_raw_when_recovery_history_exists_test() {
   let base = "test/tmp/ctl-session-recovery-history-json"
   let root = base <> "/workspaces"
   let path = base <> "/control.json"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   write_control_file_for_root(path, root)
   write_workflow_recovery_history(root)
   let raw_response =
@@ -1139,7 +1134,7 @@ pub fn session_json_output_remains_raw_when_recovery_history_exists_test() {
 pub fn session_human_output_preserves_base_fields_when_history_unavailable_test() {
   let base = "test/tmp/ctl-session-recovery-history-unavailable"
   let path = base <> "/control.json"
-  reset_dir(base)
+  test_helpers.reset_dir(base)
   write_control_file_for_root(path, "")
   let summary = session_summary("session-unavailable", ps_now_ms - 1000)
   let subject = process.new_subject()
@@ -1582,7 +1577,7 @@ fn write_scheduled_history(root: String, session_id: String) -> Nil {
 }
 
 fn write_schedule_doctor_config(dir: String, prompt: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/workflows/prompts")
   let config_path = dir <> "/scherzo.yaml"

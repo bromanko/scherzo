@@ -40,6 +40,7 @@ import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
 import support/expected_crash
+import support/test_helpers
 import test_async
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
@@ -49,12 +50,6 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
     workflow_attempt.StepRecoveryPrompt(prompt) -> prompt
     workflow_attempt.RecoveryPrompt(prompt) -> prompt
   }
-}
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
 }
 
 fn ms(iso: String) -> Int {
@@ -134,7 +129,7 @@ routing:
 }
 
 fn write_workflow(dir: String, max_concurrent: Int) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_workflow_files(dir, workflow_text(dir <> "/workspaces", max_concurrent))
 }
 
@@ -150,7 +145,7 @@ fn write_enforcing_split_state_workflow(
   dir: String,
   max_concurrent: Int,
 ) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_text =
     workflow_text_with_linear_contract(
       dir <> "/workspaces",
@@ -165,12 +160,12 @@ fn write_enforcing_split_state_workflow(
 }
 
 fn write_yaml_agent_workflow(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_workflow_files(dir, workflow_text(dir <> "/workspaces", 1))
 }
 
 fn write_parallel_yaml_agent_workflow(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let prompt_dir = workflow_dir <> "/prompts"
@@ -204,7 +199,7 @@ steps:
 }
 
 fn write_yaml_workflow(dir: String, _marker: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
@@ -226,7 +221,7 @@ steps:
 }
 
 fn write_scheduled_reporting_workflow(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
@@ -256,7 +251,7 @@ fn write_scheduled_command_workflow(
   dir: String,
   max_concurrent: Int,
 ) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
@@ -286,7 +281,7 @@ fn write_scheduled_capacity_workflow(
   dir: String,
   max_concurrent: Int,
 ) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
@@ -313,7 +308,7 @@ steps:
 }
 
 fn write_real_failing_command_workflow(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let root = dir <> "/workspaces"
@@ -348,7 +343,7 @@ fn write_workflow_with_contract(
   max_concurrent: Int,
   linear_contract_text: String,
 ) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_workflow_files(
     dir,
     workflow_text_with_linear_contract(
@@ -3402,7 +3397,7 @@ fn int_to_string(value: Int) -> String
 
 pub fn daemon_startup_resumes_matching_workflow_checkpoint_test() {
   let dir = "test/tmp/daemon-startup-resume-workflow"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let assert Ok(workspace_root) = path.absolute(dir <> "/workspaces")

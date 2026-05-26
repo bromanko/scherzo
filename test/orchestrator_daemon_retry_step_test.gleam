@@ -22,6 +22,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_run
 import simplifile
+import support/test_helpers
 import test_async
 
 pub fn retry_step_rejects_active_issue_for_interrupted_run_test() {
@@ -321,14 +322,8 @@ pub fn retry_step_rejects_terminal_issue_state_for_retained_run_test() {
   hub.stop(hub_subject)
 }
 
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
-
 fn write_retry_step_workflow(dir: String) -> #(String, String) {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"

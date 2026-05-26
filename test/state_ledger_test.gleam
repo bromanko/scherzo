@@ -5,10 +5,11 @@ import scherzo/state/ledger
 import scherzo/state/projection
 import scherzo/state/record
 import simplifile
+import support/test_helpers
 
 pub fn append_and_replay_records_test() {
   let root = "test/tmp/state-ledger/append-replay"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let records = [
     run_started_record(),
@@ -54,7 +55,7 @@ pub fn append_and_replay_records_test() {
 
 pub fn replay_ignores_truncated_trailing_line_test() {
   let root = "test/tmp/state-ledger/truncated-tail"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let line1 = record.to_string(run_started_record())
@@ -69,7 +70,7 @@ pub fn replay_ignores_truncated_trailing_line_test() {
 
 pub fn replay_rejects_invalid_trailing_record_shape_test() {
   let root = "test/tmp/state-ledger/invalid-trailing-shape"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let assert Ok(Nil) =
@@ -84,7 +85,7 @@ pub fn replay_rejects_invalid_trailing_record_shape_test() {
 
 pub fn replay_rejects_malformed_middle_line_test() {
   let root = "test/tmp/state-ledger/malformed-middle"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let line1 = record.to_string(run_started_record())
@@ -98,7 +99,7 @@ pub fn replay_rejects_malformed_middle_line_test() {
 
 pub fn append_redacted_record_does_not_persist_secret_test() {
   let root = "test/tmp/state-ledger/redacted-secret"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let unsafe =
     record.with_id(
@@ -121,7 +122,7 @@ pub fn append_redacted_record_does_not_persist_secret_test() {
 
 pub fn replay_rejects_unsupported_schema_version_test() {
   let root = "test/tmp/state-ledger/unsupported-version"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let assert Ok(Nil) =
@@ -135,7 +136,7 @@ pub fn replay_rejects_unsupported_schema_version_test() {
 
 pub fn read_records_missing_current_returns_empty_test() {
   let root = "test/tmp/state-ledger/read-records-missing"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
 
   let assert Ok(read) = ledger.read_records(path)
@@ -145,7 +146,7 @@ pub fn read_records_missing_current_returns_empty_test() {
 
 pub fn read_records_empty_file_returns_empty_test() {
   let root = "test/tmp/state-ledger/read-records-empty"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let assert Ok(Nil) = simplifile.write(path.current_path, "")
@@ -157,7 +158,7 @@ pub fn read_records_empty_file_returns_empty_test() {
 
 pub fn read_records_valid_jsonl_returns_records_in_order_test() {
   let root = "test/tmp/state-ledger/read-records-valid"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let records = [run_started_record(), retry_scheduled_record()]
@@ -175,7 +176,7 @@ pub fn read_records_valid_jsonl_returns_records_in_order_test() {
 
 pub fn read_records_allows_empty_trailing_lines_test() {
   let root = "test/tmp/state-ledger/read-records-trailing-empty"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let assert Ok(Nil) =
@@ -191,7 +192,7 @@ pub fn read_records_allows_empty_trailing_lines_test() {
 
 pub fn read_records_ignores_final_malformed_json_as_truncated_tail_test() {
   let root = "test/tmp/state-ledger/read-records-truncated-tail"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let assert Ok(Nil) =
@@ -207,7 +208,7 @@ pub fn read_records_ignores_final_malformed_json_as_truncated_tail_test() {
 
 pub fn read_records_rejects_malformed_middle_line_test() {
   let root = "test/tmp/state-ledger/read-records-malformed-middle"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let contents =
@@ -219,12 +220,6 @@ pub fn read_records_rejects_malformed_middle_line_test() {
 
   let assert Error(ledger.CorruptRecord(line: 2, reason: _)) =
     ledger.read_records(path)
-}
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
 }
 
 fn run_started_record() -> record.LedgerRecord {

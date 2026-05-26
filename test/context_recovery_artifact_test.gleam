@@ -1,84 +1,17 @@
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import scherzo/agent/context_exhaustion
 import scherzo/agent/context_recovery_artifact
 import scherzo/agent/context_recovery_prompt
 import scherzo/error
-import scherzo/path
 import scherzo/pi/protocol
 import scherzo/state/artifact_store
-import simplifile
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
-
-fn artifact_root(root: String) -> String {
-  root <> "/.scherzo-state/artifacts"
-}
-
-fn hidden_local_path_store(root: String) -> artifact_store.Store {
-  let store_root = artifact_root(root)
-  artifact_store.custom(
-    "hidden-local-path",
-    artifact_store.StoreCallbacks(
-      write: fn(ref, contents) {
-        let final_path = store_root <> "/" <> ref
-        let parent = path.dirname(final_path) |> result.unwrap(final_path)
-        use Nil <- result.try(
-          simplifile.create_directory_all(parent)
-          |> result.map_error(fn(error) {
-            artifact_store.ArtifactIo(simplifile.describe_error(error))
-          }),
-        )
-        artifact_store.write_atomic(final_path, contents)
-        |> result.map_error(fn(error) {
-          artifact_store.ArtifactWriteFailed(error)
-        })
-      },
-      read: fn(ref) {
-        simplifile.read(store_root <> "/" <> ref)
-        |> result.map_error(fn(error) {
-          case error {
-            simplifile.Enoent -> artifact_store.MissingStepArtifact(ref)
-            _ -> artifact_store.ArtifactIo(simplifile.describe_error(error))
-          }
-        })
-      },
-      write_immutable_bytes: fn(ref, contents) {
-        artifact_store.write_immutable(store_root <> "/" <> ref, contents)
-        |> result.map_error(fn(error) {
-          artifact_store.ArtifactWriteFailed(error)
-        })
-      },
-      read_bytes: fn(ref) {
-        artifact_store.read_file_bytes(store_root <> "/" <> ref)
-        |> result.map_error(fn(error) {
-          case error {
-            artifact_store.MissingStepArtifact(_) ->
-              artifact_store.MissingStepArtifact(ref)
-            _ -> error
-          }
-        })
-      },
-      locate: fn(ref) {
-        Ok(artifact_store.ArtifactLocation(
-          ref: ref,
-          uri: "artifact://hidden-local-path/" <> ref,
-          display_path: "artifacts://" <> ref,
-          local_path: None,
-        ))
-      },
-    ),
-  )
-}
+import support/artifact_store_fixtures
+import support/test_helpers
 
 pub fn writes_redacted_bounded_context_recovery_artifacts_test() {
   let root = "test/tmp/context-recovery-artifacts"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let prompt =
     "api_key=SECRET_VALUE\n<absolute-local-path>/workspace/file.gleam\n"
@@ -122,8 +55,8 @@ pub fn writes_redacted_bounded_context_recovery_artifacts_test() {
 
 pub fn context_recovery_artifacts_use_store_display_paths_test() {
   let root = "test/tmp/context-recovery-artifacts-display-path"
-  reset_dir(root)
-  let store = hidden_local_path_store(root)
+  test_helpers.reset_dir(root)
+  let store = artifact_store_fixtures.hidden_local_path_store(root)
   let input =
     context_recovery_artifact.RecoveryArtifactInput(
       store: store,
@@ -170,7 +103,7 @@ pub fn context_recovery_artifacts_use_store_display_paths_test() {
 
 pub fn writes_compact_failure_fallback_diagnostics_test() {
   let root = "test/tmp/context-recovery-compact-diagnostics"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let assert Ok(response) =
     protocol.decode_record(

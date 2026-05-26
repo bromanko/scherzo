@@ -10,6 +10,7 @@ import scherzo/structured_output_source
 import scherzo/structured_output_validator
 import scherzo/workflow_dag
 import simplifile
+import support/test_helpers
 
 const helper_env = "SCHERZO_JSON_SCHEMA_HELPER"
 
@@ -80,12 +81,6 @@ fn run_validator(
     context(validator),
     [],
   )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }
 
 fn with_env(key: String, value: String, run: fn() -> a) -> a {
@@ -348,7 +343,7 @@ pub fn json_schema_rejects_non_workflow_schema_symlink_escape_before_helper_test
     "test/tmp/structured-output-json-schema-non-workflow-schema-symlink"
   let repo = root <> "/repo"
   let outside = root <> "/outside"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/schemas")
   let assert Ok(Nil) = simplifile.create_directory_all(outside)
   let outside_schema = outside <> "/escaped.schema.json"
@@ -383,7 +378,7 @@ fn setup_symlinked_workflow_schema_fixture(
   let shared_schemas = root <> "/sibling-scherzo/.scherzo/workflows/schemas"
   let schema_path = symlinked_workflow_schema_path()
   let schema_contents = symlinked_workflow_schema_contents()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(Nil) =
     simplifile.create_directory_all(repo <> "/.scherzo/workflows")
   let assert Ok(Nil) = simplifile.create_directory_all(shared_schemas)
@@ -413,7 +408,7 @@ fn symlinked_workflow_schema_contents() -> String {
 
 pub fn json_schema_redacts_secret_in_diagnostics_test() {
   let dir = "test/tmp/structured-output-json-schema-redaction"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let schema_path = dir <> "/secret.schema.json"
   let assert Ok(Nil) =
     simplifile.write(

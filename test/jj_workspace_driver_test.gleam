@@ -4,24 +4,10 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/path
 import scherzo/step_artifact
 import simplifile
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
+import support/test_helpers
 
 fn tmp_fixture_dir(name: String) -> String {
   let base = case path.env("TMPDIR") {
@@ -42,33 +28,18 @@ fn result_unwrap(result: Result(a, b), default: a) -> a {
   }
 }
 
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run(
-      "chmod_fake_jj",
-      "chmod +x " <> shell_quote(path),
-      ".",
-      5000,
-      [],
-      limits(),
-    )
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-}
-
 fn assert_symlink_target(link: String, target: String) -> Nil {
   let artifact =
     command_step.run(
       "readlink_symlink",
-      "test -L " <> shell_quote(link) <> " && readlink " <> shell_quote(link),
+      "test -L "
+        <> test_helpers.shell_quote(link)
+        <> " && readlink "
+        <> test_helpers.shell_quote(link),
       ".",
       5000,
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
@@ -167,7 +138,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "fi\n"
         <> "exit 1\n",
     )
-  chmod_executable(path)
+  test_helpers.chmod_executable(path)
 }
 
 fn write_fake_gh(path: String, log: String) -> Nil {
@@ -176,13 +147,13 @@ fn write_fake_gh(path: String, log: String) -> Nil {
       path,
       "#!/bin/sh\n"
         <> "printf 'gh: %s\\n' \"$*\" >> "
-        <> shell_quote(log)
+        <> test_helpers.shell_quote(log)
         <> "\n"
         <> "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then if [ -n \"${SCHERZO_FAKE_GH_VIEW_URL:-}\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_URL\"; exit 0; fi; exit 1; fi\n"
         <> "if [ \"$1\" = pr ] && [ \"$2\" = create ]; then echo https://github.com/example/repo/pull/1; exit 0; fi\n"
         <> "exit 1\n",
     )
-  chmod_executable(path)
+  test_helpers.chmod_executable(path)
 }
 
 fn find_python3_path(dirs: List(String)) -> String {
@@ -211,13 +182,13 @@ fn install_python3_wrapper(bin: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       bin <> "/python3",
-      "#!/bin/sh\nexec " <> shell_quote(real_python) <> " \"$@\"\n",
+      "#!/bin/sh\nexec " <> test_helpers.shell_quote(real_python) <> " \"$@\"\n",
     )
-  chmod_executable(bin <> "/python3")
+  test_helpers.chmod_executable(bin <> "/python3")
 }
 
 fn setup_driver_fixture(dir: String) -> #(String, String, String, String) {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/repo/.jj")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workspaces")
@@ -351,12 +322,12 @@ fn run_jj_command(
   let script = absolute("scripts/scherzo-workspace-jj")
   command_step.run_with_env(
     step_id,
-    prefix <> shell_quote(script) <> " " <> args,
+    prefix <> test_helpers.shell_quote(script) <> " " <> args,
     ".",
     5000,
     env,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
 }
 
@@ -1481,7 +1452,7 @@ pub fn jj_driver_assert_only_rejects_unsafe_paths_without_invoking_jj_test() {
     let artifact =
       run_jj(
         "jj_driver_assert_unsafe",
-        "assert-only --path " <> shell_quote(value),
+        "assert-only --path " <> test_helpers.shell_quote(value),
         fake_env(workspace, bin, log, []),
       )
     assert_exit(artifact, 2)

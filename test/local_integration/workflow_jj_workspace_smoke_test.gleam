@@ -14,6 +14,7 @@ import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_run
 import simplifile
+import support/test_helpers
 
 fn issue() -> tracker_issue.Issue {
   tracker_issue.Issue(
@@ -30,14 +31,6 @@ fn issue() -> tracker_issue.Issue {
     blocked_by_complete: True,
     created_at: None,
     updated_at: None,
-  )
-}
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
   )
 }
 
@@ -115,7 +108,7 @@ fn driver_orchestrator(
         ),
       ]),
     ),
-    artifact_limits: limits(),
+    artifact_limits: test_helpers.default_artifact_limits(),
     model_settings: model_config.default_settings(),
     scheduled_jobs: [],
   )
@@ -158,7 +151,7 @@ fn setup_jj_repo(root: String) -> String {
       root,
       20_000,
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
   assert setup.status == step_artifact.StepSucceeded
   repo
@@ -203,7 +196,7 @@ pub fn workflow_jj_workspace_driver_lifecycle_reuses_main_and_cleans_up_smoke_te
       ".",
       20_000,
       [],
-      limits(),
+      test_helpers.default_artifact_limits(),
     )
   assert list.status == step_artifact.StepSucceeded
   assert !string.contains(list.stdout, "scherzo-smoke-ABC-123-run-1-main")

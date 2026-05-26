@@ -1,31 +1,10 @@
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 import workflow_context_test_support
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-}
 
 fn run_agent_helper_in(
   cwd: String,
@@ -37,7 +16,7 @@ fn run_agent_helper_in(
     cwd,
     10_000,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
 }
 
@@ -71,7 +50,7 @@ fn agent_identity_env() -> String {
 }
 
 fn setup_agent_fixture(dir: String, remotes: String) -> Nil {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_jj(dir <> "/bin/jj", remotes)
   write_fake_git(dir <> "/bin/git")
@@ -79,12 +58,12 @@ fn setup_agent_fixture(dir: String, remotes: String) -> Nil {
   write_fake_curl(dir <> "/bin/curl")
   write_fake_jq(dir <> "/bin/jq")
   write_fake_ssh(dir <> "/bin/ssh")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/git")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/curl")
-  chmod_executable(dir <> "/bin/jq")
-  chmod_executable(dir <> "/bin/ssh")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/curl")
+  test_helpers.chmod_executable(dir <> "/bin/jq")
+  test_helpers.chmod_executable(dir <> "/bin/ssh")
 }
 
 pub fn agent_whoami_uses_canonical_jj_and_github_env_test() {

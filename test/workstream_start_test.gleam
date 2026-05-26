@@ -15,10 +15,11 @@ import scherzo/workstream/start
 import scherzo/workstream/start_key
 import scherzo/workstream/types
 import simplifile
+import support/test_helpers
 
 pub fn start_from_handoff_queues_input_bundle_from_snapshot_refs_test() {
   let root = "test/tmp/workstream-start/from-handoff"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
   let assert Ok(projected) = load_projection(root)
@@ -60,7 +61,7 @@ pub fn start_from_handoff_queues_input_bundle_from_snapshot_refs_test() {
 
 pub fn start_from_recorded_input_bundle_queues_without_handoff_contents_test() {
   let root = "test/tmp/workstream-start/from-input-bundle"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
   let assert Ok(projected) = load_projection(root)
@@ -94,7 +95,7 @@ pub fn start_from_recorded_input_bundle_queues_without_handoff_contents_test() {
 
 pub fn duplicate_start_from_same_handoff_returns_duplicate_test() {
   let root = "test/tmp/workstream-start/duplicate-handoff"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
   let assert Ok(projected) = load_projection(root)
@@ -164,7 +165,7 @@ pub fn idempotency_key_distinguishes_delimiter_containing_inputs_test() {
 pub fn manual_start_snapshots_artifacts_and_rejects_conflicting_retry_test() {
   let root = "test/tmp/workstream-start/manual"
   let repo = root <> "/repo"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let store = state_artifact_store.new(root)
   let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/docs")
@@ -249,7 +250,7 @@ pub fn manual_start_snapshots_artifacts_and_rejects_conflicting_retry_test() {
 pub fn stale_projection_conflicting_manual_start_is_rejected_at_append_test() {
   let root = "test/tmp/workstream-start/stale-manual-conflict"
   let repo = root <> "/repo"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let store = state_artifact_store.new(root)
   let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/docs")
@@ -415,10 +416,4 @@ fn load_projection(
 ) -> Result(projection.Projection, state_ledger.LedgerError) {
   use path <- result.try(state_ledger.path_for_workspace_root(root))
   state_ledger.load_projection(path)
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }

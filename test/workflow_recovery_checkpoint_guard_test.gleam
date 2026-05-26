@@ -10,12 +10,7 @@ import scherzo/state/projection
 import scherzo/state/record
 import scherzo/workflow_recovery_checkpoint_guard
 import simplifile
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
+import support/test_helpers
 
 fn root(name: String) -> String {
   "test/tmp/workflow-recovery-checkpoint-guard/" <> name
@@ -102,7 +97,7 @@ fn snapshot_entry_refs(
 
 pub fn snapshot_includes_finished_attempt_and_manifest_refs_test() {
   let fixture = root("snapshot-includes")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let output_ref = "runs/run-1/outputs.v1.json"
@@ -130,7 +125,7 @@ pub fn snapshot_includes_finished_attempt_and_manifest_refs_test() {
 
 pub fn snapshot_deduplicates_identical_refs_test() {
   let fixture = root("snapshot-dedup")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let shared_ref = "runs/run-1/upstream/attempt-1.json"
   let shared_sha =
     write_checkpoint(fixture, shared_ref, checkpoint_text("shared"))
@@ -153,7 +148,7 @@ pub fn snapshot_deduplicates_identical_refs_test() {
 
 pub fn snapshot_conflicting_duplicate_refs_fail_closed_test() {
   let fixture = root("snapshot-conflict")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let shared_ref = "runs/run-1/upstream/attempt-1.json"
   let shared_sha =
     write_checkpoint(fixture, shared_ref, checkpoint_text("shared"))
@@ -176,7 +171,7 @@ pub fn snapshot_conflicting_duplicate_refs_fail_closed_test() {
 
 pub fn snapshot_preflight_read_failure_returns_recovery_artifact_restore_failed_test() {
   let fixture = root("snapshot-read-failure")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let state =
     projection_with_refs(
       #("runs/run-1/upstream/attempt-1.json", "missing"),
@@ -196,7 +191,7 @@ pub fn snapshot_preflight_read_failure_returns_recovery_artifact_restore_failed_
 
 pub fn snapshot_preflight_hash_mismatch_returns_recovery_artifact_restore_failed_test() {
   let fixture = root("snapshot-hash-mismatch")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let attempt_sha =
@@ -221,7 +216,7 @@ pub fn snapshot_preflight_hash_mismatch_returns_recovery_artifact_restore_failed
 
 pub fn snapshot_preflight_local_path_missing_returns_recovery_artifact_restore_failed_test() {
   let fixture = root("snapshot-no-local-path")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let store =
     artifact_store.custom(
       "hidden-local-path",
@@ -259,7 +254,7 @@ pub fn snapshot_preflight_local_path_missing_returns_recovery_artifact_restore_f
 
 pub fn postflight_without_mutation_reports_no_events_test() {
   let fixture = root("postflight-clean")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let attempt_sha =
@@ -289,7 +284,7 @@ pub fn postflight_without_mutation_reports_no_events_test() {
 
 pub fn postflight_restores_mutated_step_artifact_test() {
   let fixture = root("postflight-mutate-step")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let attempt_text = checkpoint_text("attempt")
@@ -326,7 +321,7 @@ pub fn postflight_restores_mutated_step_artifact_test() {
 
 pub fn postflight_restores_deleted_step_artifact_test() {
   let fixture = root("postflight-delete-step")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let attempt_text = checkpoint_text("attempt")
@@ -359,7 +354,7 @@ pub fn postflight_restores_deleted_step_artifact_test() {
 
 pub fn postflight_restores_deleted_checkpoint_parent_directory_test() {
   let fixture = root("postflight-delete-parent")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let attempt_text = checkpoint_text("attempt")
@@ -391,7 +386,7 @@ pub fn postflight_restores_deleted_checkpoint_parent_directory_test() {
 
 pub fn postflight_restores_deleted_output_manifest_test() {
   let fixture = root("postflight-delete-output")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let output_ref = "runs/run-1/outputs.v1.json"
@@ -427,7 +422,7 @@ pub fn postflight_restores_deleted_output_manifest_test() {
 
 pub fn postflight_restore_is_idempotent_after_success_test() {
   let fixture = root("postflight-idempotent")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let attempt_text = checkpoint_text("attempt")
@@ -465,7 +460,7 @@ pub fn postflight_restore_is_idempotent_after_success_test() {
 
 pub fn postflight_restore_failure_returns_recovery_artifact_restore_failed_test() {
   let fixture = root("postflight-restore-failure")
-  reset_dir(fixture)
+  test_helpers.reset_dir(fixture)
   let attempt_ref = "runs/run-1/upstream/attempt-1.json"
   let input_ref = "runs/run-1/inputs.v1.json"
   let attempt_sha =

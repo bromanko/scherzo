@@ -4,6 +4,7 @@ import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 
 fn limits() -> config_types.ArtifactLimits {
   config_types.ArtifactLimits(
@@ -11,12 +12,6 @@ fn limits() -> config_types.ArtifactLimits {
     template_field_max_chars: 8000,
     workflow_summary_max_chars: 8000,
   )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }
 
 fn run_in(cwd: String, command: String) -> step_artifact.StepArtifact {
@@ -46,7 +41,7 @@ fn list_drop_last(parts: List(String)) -> List(String) {
 }
 
 fn render_plan(dir: String, markdown: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_plan(dir <> "/tmp/execplan-source.md", markdown)
   let artifact =
     run_in(
@@ -230,7 +225,7 @@ pub fn renderer_uses_deterministic_unique_heading_ids_test() {
     <> "- [x] Done.\n\n"
     <> "## Open Questions and Clarifications Needed\n\n"
     <> "None.\n"
-  reset_dir("test/tmp/execplan-html-renderer-deterministic")
+  test_helpers.reset_dir("test/tmp/execplan-html-renderer-deterministic")
   write_plan(
     "test/tmp/execplan-html-renderer-deterministic/tmp/execplan-source.md",
     markdown,
@@ -450,7 +445,7 @@ pub fn render_includes_short_non_visible_extraction_hint_comment_test() {
 
 pub fn legacy_markdown_and_old_html_plan_helpers_remain_compatible_test() {
   let dir = "test/tmp/execplan-html-legacy-compat"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_plan(dir <> "/docs/plans/legacy.md", representative_plan("None.\n"))
   write_plan(dir <> "/docs/plans/old.html", old_html_plan())
 

@@ -1,24 +1,10 @@
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 import workflow_context_test_support
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
 
 fn run_helper(command: String) -> step_artifact.StepArtifact {
   command_step.run(
@@ -29,7 +15,7 @@ fn run_helper(command: String) -> step_artifact.StepArtifact {
     ".",
     5000,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
 }
 
@@ -40,20 +26,13 @@ fn run_helper_in(cwd: String, command: String) -> step_artifact.StepArtifact {
     cwd,
     10_000,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
 }
 
 pub fn extract_target_accepts_local_pr_reference_test() {
   let dir = "test/tmp/merge-conflict-extract-pr"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.txt"
   let assert Ok(Nil) =
     simplifile.write(text_path, "Please resolve conflicts for PR #51.\n")
@@ -70,7 +49,7 @@ pub fn extract_target_accepts_local_pr_reference_test() {
 
 pub fn extract_target_uses_canonical_repo_env_when_arg_omitted_test() {
   let dir = "test/tmp/merge-conflict-extract-canonical-repo-env"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.txt"
   let assert Ok(Nil) =
     simplifile.write(text_path, "Please resolve conflicts for PR #51.\n")
@@ -89,7 +68,7 @@ pub fn extract_target_uses_canonical_repo_env_when_arg_omitted_test() {
 
 pub fn extract_target_uses_legacy_repo_env_when_canonical_unset_test() {
   let dir = "test/tmp/merge-conflict-extract-legacy-repo-env"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.txt"
   let assert Ok(Nil) =
     simplifile.write(text_path, "Please resolve conflicts for PR #52.\n")
@@ -108,7 +87,7 @@ pub fn extract_target_uses_legacy_repo_env_when_canonical_unset_test() {
 
 pub fn extract_target_uses_github_repository_when_scherzo_repo_env_unset_test() {
   let dir = "test/tmp/merge-conflict-extract-github-repository-env"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.txt"
   let assert Ok(Nil) =
     simplifile.write(text_path, "Please resolve conflicts for PR #53.\n")
@@ -127,7 +106,7 @@ pub fn extract_target_uses_github_repository_when_scherzo_repo_env_unset_test() 
 
 pub fn extract_target_prefers_issue_fields_over_diagnostic_comments_test() {
   let dir = "test/tmp/merge-conflict-extract-pr-with-diagnostic-comment"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.json"
   let assert Ok(Nil) =
     simplifile.write(
@@ -155,7 +134,7 @@ pub fn extract_target_prefers_issue_fields_over_diagnostic_comments_test() {
 
 pub fn extract_target_accepts_explicit_branch_line_test() {
   let dir = "test/tmp/merge-conflict-extract-branch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.txt"
   let assert Ok(Nil) =
     simplifile.write(text_path, "Branch: feature/conflicted-branch\n")
@@ -172,7 +151,7 @@ pub fn extract_target_accepts_explicit_branch_line_test() {
 
 pub fn extract_target_rejects_ambiguous_pr_and_branch_test() {
   let dir = "test/tmp/merge-conflict-extract-ambiguous"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.txt"
   let assert Ok(Nil) =
     simplifile.write(
@@ -260,7 +239,7 @@ pub fn validate_does_not_run_repo_specific_project_validation_test() {
   let dir = "test/tmp/merge-conflict-validate-no-project-validation"
   write_validation_fixture(dir, "safe\n")
   write_failing_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -308,7 +287,7 @@ pub fn run_project_validation_scrubs_outer_workflow_context_test() {
   write_fake_project_validation_with_leak_guard(
     dir <> "/bin/project-validation",
   )
-  chmod_executable(dir <> "/bin/project-validation")
+  test_helpers.chmod_executable(dir <> "/bin/project-validation")
 
   let validate =
     run_helper_in(
@@ -409,7 +388,7 @@ pub fn publish_requires_recorded_project_validation_test() {
         <> "}\n",
     )
   write_fake_workspace_driver(dir <> "/bin/workspace-driver")
-  chmod_executable(dir <> "/bin/workspace-driver")
+  test_helpers.chmod_executable(dir <> "/bin/workspace-driver")
 
   let validate =
     run_helper_in(
@@ -506,7 +485,7 @@ pub fn validate_reports_unresolved_conflict_path_without_jj_status_suffix_test()
   let dir = "test/tmp/merge-conflict-validate-unresolved"
   write_validation_fixture(dir, "safe\n")
   write_fake_unresolved_conflict_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -549,7 +528,7 @@ pub fn checked_in_merge_conflict_workflow_is_routed_and_guarded_test() {
 }
 
 fn write_validation_fixture(dir: String, safe_contents: String) -> Nil {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.write(dir <> "/conflicted.txt", "resolved\n")
@@ -576,11 +555,11 @@ fn write_validation_fixture(dir: String, safe_contents: String) -> Nil {
         <> "}\n",
     )
   write_fake_validation_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 }
 
 fn write_no_conflicts_validation_fixture(dir: String) -> Nil {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.write(dir <> "/conflicted.txt", "resolved\n")
@@ -603,7 +582,7 @@ fn write_no_conflicts_validation_fixture(dir: String) -> Nil {
         <> "}\n",
     )
   write_fake_validation_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 }
 
 fn outer_workflow_context_env() -> String {

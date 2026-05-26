@@ -4,6 +4,7 @@ import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 import workflow_context_test_support
 
 fn limits() -> config_types.ArtifactLimits {
@@ -12,12 +13,6 @@ fn limits() -> config_types.ArtifactLimits {
     template_field_max_chars: 8000,
     workflow_summary_max_chars: 8000,
   )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }
 
 fn run_shell(command: String) -> step_artifact.StepArtifact {
@@ -33,7 +28,7 @@ fn run_shell(command: String) -> step_artifact.StepArtifact {
 
 pub fn structured_output_contract_check_schema_rejects_nested_enum_test() {
   let dir = "test/tmp/structured-output-contract"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let schema_path = dir <> "/nested-enum.schema.json"
   let assert Ok(Nil) =
     simplifile.write(
@@ -54,7 +49,7 @@ pub fn structured_output_contract_check_schema_rejects_nested_enum_test() {
 
 pub fn structured_output_contract_check_workflows_passes_for_checked_in_workflows_test() {
   let dir = "test/tmp/structured-output-contract/all"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_shell(
@@ -76,7 +71,7 @@ pub fn structured_output_contract_check_workflows_passes_for_checked_in_workflow
 
 pub fn structured_output_contract_check_workflow_reports_prompt_mismatch_test() {
   let dir = "test/tmp/structured-output-contract/prompt-mismatch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let workflow_path = dir <> "/workflow.yaml"
   let prompt_path = dir <> "/prompt.md"
   let assert Ok(Nil) =

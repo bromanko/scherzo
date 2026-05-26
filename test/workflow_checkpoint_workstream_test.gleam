@@ -6,11 +6,11 @@ import scherzo/state/ledger as state_ledger
 import scherzo/state/record
 import scherzo/workflow_checkpoint
 import scherzo/workstream/ledger
-import simplifile
+import support/test_helpers
 
 pub fn workflow_checkpoint_snapshots_generated_workstream_bytes_test() {
   let root = "test/tmp/workflow-checkpoint-workstream/generated-bytes"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
   let assert Ok(snapshot) =
@@ -31,7 +31,7 @@ pub fn workflow_checkpoint_snapshots_generated_workstream_bytes_test() {
 
 pub fn workflow_checkpoint_snapshots_existing_artifact_refs_test() {
   let root = "test/tmp/workflow-checkpoint-workstream/existing-ref"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let assert Ok(existing) =
     artifact_store.write_output_blob(store, "run-1", "bundle", ".json", "{}")
@@ -52,7 +52,7 @@ pub fn workflow_checkpoint_snapshots_existing_artifact_refs_test() {
 
 pub fn workflow_checkpoint_appends_workstream_records_idempotently_test() {
   let root = "test/tmp/workflow-checkpoint-workstream/idempotent-append"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let ledger_record =
     ledger.workstream_created(
@@ -72,7 +72,7 @@ pub fn workflow_checkpoint_appends_workstream_records_idempotently_test() {
 
 pub fn workflow_checkpoint_rejects_conflicting_workstream_records_test() {
   let root = "test/tmp/workflow-checkpoint-workstream/conflicting-append"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let first =
     ledger.workstream_created(
@@ -102,10 +102,4 @@ pub fn workflow_checkpoint_rejects_conflicting_workstream_records_test() {
     checkpoint.append_workstream_record_idempotent(conflicting)
 
   assert string.starts_with(reason, "record_id_conflict:")
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }

@@ -12,13 +12,8 @@ import scherzo/signal
 import scherzo/tracker
 import scherzo/tracker/adapter_legacy
 import simplifile
+import support/test_helpers
 import test_async
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
 
 fn workflow_text(root: String) -> String {
   "version: 1
@@ -49,7 +44,7 @@ routing:
 }
 
 fn write_workflow(dir: String) -> #(String, String) {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let workflow_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let prompt_dir = workflow_dir <> "/prompts"

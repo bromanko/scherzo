@@ -9,6 +9,8 @@ import scherzo/path
 import scherzo/state/artifact_store
 import scherzo/step_artifact
 import simplifile
+import support/artifact_store_fixtures
+import support/test_helpers
 
 fn limits() -> config_types.ArtifactLimits {
   config_types.ArtifactLimits(
@@ -18,75 +20,13 @@ fn limits() -> config_types.ArtifactLimits {
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 fn artifact_root(root: String) -> String {
   root <> "/.scherzo-state/artifacts"
 }
 
-fn hidden_local_path_store(root: String) -> artifact_store.Store {
-  let store_root = artifact_root(root)
-  artifact_store.custom(
-    "hidden-local-path",
-    artifact_store.StoreCallbacks(
-      write: fn(ref, contents) {
-        let final_path = store_root <> "/" <> ref
-        let parent = path.dirname(final_path) |> result.unwrap(final_path)
-        use Nil <- result.try(
-          simplifile.create_directory_all(parent)
-          |> result.map_error(fn(error) {
-            artifact_store.ArtifactIo(simplifile.describe_error(error))
-          }),
-        )
-        artifact_store.write_atomic(final_path, contents)
-        |> result.map_error(fn(error) {
-          artifact_store.ArtifactWriteFailed(error)
-        })
-      },
-      read: fn(ref) {
-        simplifile.read(store_root <> "/" <> ref)
-        |> result.map_error(fn(error) {
-          case error {
-            simplifile.Enoent -> artifact_store.MissingStepArtifact(ref)
-            _ -> artifact_store.ArtifactIo(simplifile.describe_error(error))
-          }
-        })
-      },
-      write_immutable_bytes: fn(ref, contents) {
-        artifact_store.write_immutable(store_root <> "/" <> ref, contents)
-        |> result.map_error(fn(error) {
-          artifact_store.ArtifactWriteFailed(error)
-        })
-      },
-      read_bytes: fn(ref) {
-        artifact_store.read_file_bytes(store_root <> "/" <> ref)
-        |> result.map_error(fn(error) {
-          case error {
-            artifact_store.MissingStepArtifact(_) ->
-              artifact_store.MissingStepArtifact(ref)
-            _ -> error
-          }
-        })
-      },
-      locate: fn(ref) {
-        Ok(artifact_store.ArtifactLocation(
-          ref: ref,
-          uri: "artifact://hidden-local-path/" <> ref,
-          display_path: "artifacts://" <> ref,
-          local_path: None,
-        ))
-      },
-    ),
-  )
-}
-
 pub fn artifact_store_writes_relative_hash_verified_artifacts_test() {
   let root = "test/tmp/artifact-store/roundtrip"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let artifact =
     step_artifact.from_command_result(
@@ -124,8 +64,8 @@ pub fn artifact_store_writes_relative_hash_verified_artifacts_test() {
 
 pub fn custom_store_round_trips_without_local_path_test() {
   let root = "test/tmp/artifact-store/custom-no-local-path"
-  reset_dir(root)
-  let store = hidden_local_path_store(root)
+  test_helpers.reset_dir(root)
+  let store = artifact_store_fixtures.hidden_local_path_store(root)
   let artifact =
     step_artifact.from_command_result(
       "build",
@@ -156,7 +96,7 @@ pub fn custom_store_round_trips_without_local_path_test() {
 
 pub fn artifact_store_fails_closed_for_missing_and_corrupt_artifacts_test() {
   let root = "test/tmp/artifact-store/fail-closed"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let artifact =
     step_artifact.from_command_result(
@@ -199,7 +139,7 @@ pub fn decode_step_artifact_contents_reports_json_decode_context_test() {
 
 pub fn artifact_store_rejects_unsafe_refs_test() {
   let root = "test/tmp/artifact-store/invalid-ref"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
 
   let assert Error(artifact_store.InvalidArtifactRef(_)) =
@@ -212,7 +152,7 @@ pub fn artifact_store_rejects_unsafe_refs_test() {
 
 pub fn filesystem_uri_escapes_spaces_in_workspace_path_test() {
   let root = "test/tmp/artifact-store/uri with spaces"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
 
   let assert Ok(ref) =
@@ -226,7 +166,7 @@ pub fn filesystem_uri_escapes_spaces_in_workspace_path_test() {
 
 pub fn write_atomic_uses_unique_temp_and_leaves_no_success_temp_test() {
   let root = "test/tmp/artifact-store/write-atomic-success"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let final_path = root <> "/artifact.json"
 
   let assert Ok(Nil) = artifact_store.write_atomic(final_path, "payload")
@@ -238,7 +178,7 @@ pub fn write_atomic_uses_unique_temp_and_leaves_no_success_temp_test() {
 
 pub fn write_atomic_reports_open_temp_phase_for_missing_parent_test() {
   let root = "test/tmp/artifact-store/write-atomic-missing-parent"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
 
   let result =
     artifact_store.write_atomic(root <> "/missing/artifact.json", "payload")
@@ -249,7 +189,7 @@ pub fn write_atomic_reports_open_temp_phase_for_missing_parent_test() {
 
 pub fn write_atomic_concurrent_writers_leave_one_complete_payload_test() {
   let root = "test/tmp/artifact-store/write-atomic-concurrent"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let final_path = root <> "/artifact.json"
   let payload_a = string.repeat("a", times: 10_000)
   let payload_b = string.repeat("b", times: 10_000)
@@ -280,7 +220,7 @@ fn temp_entries(dir: String) -> List(String) {
 
 pub fn recovery_artifact_rewrite_with_identical_bytes_is_idempotent_test() {
   let root = "test/tmp/artifact-store/recovery-artifact-identical"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let payload =
     "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"gave_up\",\"summary\":\"No fix\",\"reason\":\"Needs a human\"}"
@@ -316,7 +256,7 @@ pub fn recovery_artifact_rewrite_with_identical_bytes_is_idempotent_test() {
 
 pub fn recovery_artifact_rewrite_with_different_bytes_conflicts_test() {
   let root = "test/tmp/artifact-store/recovery-artifact-conflict"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let first_payload =
     "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"gave_up\",\"summary\":\"No fix\",\"reason\":\"Needs a human\"}"
@@ -353,7 +293,7 @@ pub fn recovery_artifact_rewrite_with_different_bytes_conflicts_test() {
 
 pub fn recovery_artifact_refs_distinguish_sanitized_step_collisions_test() {
   let root = "test/tmp/artifact-store/recovery-artifact-step-collisions"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let first_payload =
     "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"gave_up\",\"summary\":\"First\",\"reason\":\"Needs a human\"}"
@@ -392,7 +332,7 @@ pub fn recovery_artifact_refs_distinguish_sanitized_step_collisions_test() {
 
 pub fn artifact_store_writes_contract_manifests_and_output_blobs_test() {
   let root = "test/tmp/artifact-store/contract-manifests"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
 
   let assert Ok(inputs) =
@@ -422,7 +362,7 @@ pub fn artifact_store_writes_contract_manifests_and_output_blobs_test() {
 
 pub fn restore_filesystem_artifact_bytes_restores_deleted_ref_test() {
   let root = "test/tmp/artifact-store/restore-deleted"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let store = artifact_store.new(root)
   let ref = "runs/run-1/upstream/attempt-1.json"
   let original = bit_array.from_string("{\"status\":\"ok\"}")
@@ -440,7 +380,7 @@ pub fn restore_filesystem_artifact_bytes_restores_deleted_ref_test() {
 
 pub fn restore_filesystem_artifact_bytes_reports_obstructing_directory_test() {
   let root = "test/tmp/artifact-store/restore-obstructed"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let ref = "runs/run-1/upstream/attempt-1.json"
   let full_path = artifact_root(root) <> "/" <> ref
   let parent = path.dirname(full_path) |> result.unwrap(full_path)

@@ -2,10 +2,10 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/step_artifact
 import scherzo/workflow_dag
 import simplifile
+import support/test_helpers
 
 fn read_file(path: String) -> String {
   let assert Ok(contents) = simplifile.read(path)
@@ -57,22 +57,15 @@ fn assert_not_contains_any(contents: String, unexpected_terms: List(String)) {
   list.each(unexpected_terms, fn(term) { assert_not_contains(contents, term) })
 }
 
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 fn run_command(command: String) -> step_artifact.StepArtifact {
-  command_step.run("workflow-portability", command, ".", 120_000, [], limits())
+  command_step.run(
+    "workflow-portability",
+    command,
+    ".",
+    120_000,
+    [],
+    test_helpers.default_artifact_limits(),
+  )
 }
 
 fn local_pi_config_terms() -> List(String) {
@@ -450,7 +443,7 @@ pub fn active_operator_guidance_uses_canonical_execplan_names_test() {
 
 pub fn workflow_portability_harness_writes_report_test() {
   let dir = "test/tmp/workflow-portability-harness"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let fake_scherzo = dir <> "/fake-scherzo.sh"
   let output_dir = dir <> "/out"
   let assert Ok(cwd) = simplifile.current_directory()

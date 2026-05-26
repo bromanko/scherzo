@@ -15,6 +15,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workspace_run
 import simplifile
+import support/test_helpers
 import test_async
 
 pub type DoctorAction {
@@ -30,12 +31,6 @@ pub type DoctorAction {
     secrets: List(String),
   )
   ListWritten(String)
-}
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
 }
 
 fn fake_pi() -> String {
@@ -62,7 +57,7 @@ fn issue(id: String) -> tracker_issue.Issue {
 }
 
 fn write_config(dir: String, extra: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/workflows/prompts")
   let config_path = dir <> "/scherzo.yaml"
@@ -90,7 +85,7 @@ fn write_config(dir: String, extra: String) -> String {
 }
 
 fn write_top_level_hooks_config(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let assert Ok(Nil) =
     simplifile.write(
@@ -101,7 +96,7 @@ fn write_top_level_hooks_config(dir: String) -> String {
 }
 
 fn write_profile_hooks_config(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/workflows/prompts")
   let config_path = dir <> "/scherzo.yaml"
@@ -127,7 +122,7 @@ fn write_invalid_dispatch_config(
   dir: String,
   tracker_fields: String,
 ) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let assert Ok(Nil) =
     simplifile.write(

@@ -5,6 +5,7 @@ import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 
 const observed_at = "2026-05-09T20:00:00Z"
 
@@ -16,14 +17,8 @@ fn limits() -> config_types.ArtifactLimits {
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 fn write_fixture(dir: String, body: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/fixture.json"
   let assert Ok(Nil) = simplifile.write(path, body)
   path

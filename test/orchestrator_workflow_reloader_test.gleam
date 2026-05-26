@@ -7,12 +7,7 @@ import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
 import scherzo/workflow_dag
 import simplifile
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
+import support/test_helpers
 
 fn workflow_text(root: String, interval_ms: Int) -> String {
   "version: 1
@@ -114,7 +109,7 @@ fn write_workflow_file(dir: String, contents: String) -> Nil {
 }
 
 fn write_workflow(dir: String, interval_ms: Int) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let prompt_dir = workflow_dir <> "/prompts"

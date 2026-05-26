@@ -3,25 +3,11 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/hash
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 import workflow_context_test_support
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
 
 fn run_helper(command: String) -> step_artifact.StepArtifact {
   command_step.run(
@@ -32,7 +18,7 @@ fn run_helper(command: String) -> step_artifact.StepArtifact {
     ".",
     5000,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
 }
 
@@ -43,15 +29,8 @@ fn run_helper_in(cwd: String, command: String) -> step_artifact.StepArtifact {
     cwd,
     10_000,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
 }
 
 fn read_or_empty(path: String) -> String {
@@ -114,7 +93,7 @@ fn write_linear_graphql_fixture(path: String, issue_json: String) -> Nil {
 
 pub fn extract_plan_requires_exactly_one_existing_plan_path_test() {
   let dir = "test/tmp/execplan-helper-extract"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) =
     simplifile.write(dir <> "/docs/plans/example-plan.md", "# Example\n")
@@ -137,7 +116,7 @@ pub fn extract_plan_requires_exactly_one_existing_plan_path_test() {
 
 pub fn extract_plan_accepts_html_plan_paths_test() {
   let dir = "test/tmp/execplan-helper-extract-html"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) =
     simplifile.write(
@@ -160,7 +139,7 @@ pub fn extract_plan_accepts_html_plan_paths_test() {
 
 pub fn extract_plan_error_messages_prefer_markdown_and_allow_legacy_html_test() {
   let dir = "test/tmp/execplan-helper-extract-error-copy"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.txt"
   let assert Ok(Nil) =
     simplifile.write(text_path, "Plan path: `not-a-plan.txt`\n")
@@ -178,7 +157,7 @@ pub fn extract_plan_error_messages_prefer_markdown_and_allow_legacy_html_test() 
 
 pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
   let dir = "test/tmp/implementation-helper-plan-brief"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
@@ -263,7 +242,7 @@ pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
 
 pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
   let dir = "test/tmp/implementation-helper-plan-brief-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
@@ -283,7 +262,7 @@ pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
         <> "}\n",
     )
   write_failing_brief_helper(dir <> "/bin/failing-brief-helper")
-  chmod_executable(dir <> "/bin/failing-brief-helper")
+  test_helpers.chmod_executable(dir <> "/bin/failing-brief-helper")
 
   let artifact =
     run_helper_in(
@@ -309,7 +288,7 @@ pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
 
 pub fn metadata_load_restores_tmp_cache_from_run_root_test() {
   let dir = "test/tmp/implementation-helper-metadata-canonical-load"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/run-root/state/implementation")
@@ -342,7 +321,7 @@ pub fn metadata_load_restores_tmp_cache_from_run_root_test() {
 
 pub fn metadata_backfills_run_root_from_tmp_cache_with_diagnostic_test() {
   let dir = "test/tmp/implementation-helper-metadata-backfill"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
@@ -378,7 +357,7 @@ pub fn metadata_backfills_run_root_from_tmp_cache_with_diagnostic_test() {
 
 pub fn restore_execplan_artifacts_restores_tmp_cache_from_run_root_test() {
   let dir = "test/tmp/implementation-helper-restore-execplan-artifacts"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/run-root/state/implementation")
@@ -446,7 +425,7 @@ pub fn restore_execplan_artifacts_restores_tmp_cache_from_run_root_test() {
 
 pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
   let dir = "test/tmp/implementation-helper-analyze-canonical"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/run-root/state/implementation")
@@ -459,7 +438,7 @@ pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
         <> "}\n",
     )
   write_fake_analyze_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -481,7 +460,7 @@ pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
 
 pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
   let dir = "test/tmp/implementation-helper-refresh-canonical-start"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
@@ -491,7 +470,7 @@ pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
   let assert Ok(Nil) = simplifile.write(metadata_cache_path(dir), metadata)
   let assert Ok(Nil) = simplifile.write(metadata_canonical_path(dir), metadata)
   write_fake_refresh_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -523,7 +502,7 @@ pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
 
 pub fn metadata_missing_from_run_root_and_tmp_is_unrecoverable_test() {
   let dir = "test/tmp/implementation-helper-metadata-missing"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
 
   let artifact =
     run_helper_in(
@@ -547,14 +526,14 @@ pub fn metadata_missing_from_run_root_and_tmp_is_unrecoverable_test() {
 
 pub fn prepare_execplan_writes_canonical_metadata_and_cache_test() {
   let dir = "test/tmp/implementation-helper-prepare-execplan-canonical"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
   let assert Ok(Nil) =
     simplifile.write(dir <> "/docs/plans/example.md", execplan_markdown())
   write_fake_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
   write_linear_graphql_fixture(
     dir <> "/linear-execplan.json",
     "{"
@@ -608,11 +587,11 @@ pub fn prepare_execplan_writes_canonical_metadata_and_cache_test() {
 
 pub fn prepare_ticket_writes_canonical_metadata_and_cache_test() {
   let dir = "test/tmp/implementation-helper-prepare-ticket-canonical"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
   write_fake_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
   write_linear_graphql_fixture(
     dir <> "/linear-ticket.json",
     "{"
@@ -667,7 +646,7 @@ pub fn prepare_ticket_writes_canonical_metadata_and_cache_test() {
 
 pub fn extract_plan_prefers_explicit_plan_field_over_liv59_context_references_test() {
   let dir = "test/tmp/execplan-helper-explicit-plan"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) =
     simplifile.write(
@@ -695,7 +674,7 @@ pub fn extract_plan_prefers_explicit_plan_field_over_liv59_context_references_te
 
 pub fn extract_plan_fallback_ignores_contextual_plan_references_test() {
   let dir = "test/tmp/execplan-helper-contextual-fallback"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) =
     simplifile.write(dir <> "/docs/plans/implementation.md", "# Impl\n")
@@ -720,7 +699,7 @@ pub fn extract_plan_fallback_ignores_contextual_plan_references_test() {
 
 pub fn extract_plan_rejects_multiple_explicit_plan_fields_test() {
   let dir = "test/tmp/execplan-helper-multiple-explicit"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let text_path = dir <> "/issue.txt"
   let assert Ok(Nil) =
     simplifile.write(
@@ -743,7 +722,7 @@ pub fn extract_plan_rejects_multiple_explicit_plan_fields_test() {
 
 pub fn extract_plan_rejects_ambiguous_plan_paths_test() {
   let dir = "test/tmp/execplan-helper-ambiguous"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) = simplifile.write(dir <> "/docs/plans/one.md", "# One\n")
   let assert Ok(Nil) = simplifile.write(dir <> "/docs/plans/two.md", "# Two\n")
@@ -772,11 +751,11 @@ pub fn extract_plan_rejects_ambiguous_plan_paths_test() {
 
 pub fn prepare_execplan_failure_writes_retention_marker_before_fetch_test() {
   let dir = "test/tmp/implementation-helper-prepare-retention"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/main")
   write_fake_prepare_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -794,11 +773,11 @@ pub fn prepare_execplan_failure_writes_retention_marker_before_fetch_test() {
 
 pub fn prepare_command_failure_reports_bounded_diagnostic_excerpt_test() {
   let dir = "test/tmp/implementation-helper-bounded-diagnostics"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/main")
   write_noisy_failing_prepare_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -817,7 +796,7 @@ pub fn prepare_command_failure_reports_bounded_diagnostic_excerpt_test() {
 
 pub fn languages_detects_gleam_and_reports_unsupported_files_test() {
   let dir = "test/tmp/execplan-helper-languages"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let file_list = dir <> "/files.txt"
   let assert Ok(Nil) =
     simplifile.write(
@@ -837,7 +816,7 @@ pub fn languages_detects_gleam_and_reports_unsupported_files_test() {
 
 pub fn ticket_brief_renders_linear_context_test() {
   let dir = "test/tmp/implementation-helper-ticket-brief"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let issue_json = dir <> "/issue.json"
   let assert Ok(Nil) =
     simplifile.write(
@@ -1220,10 +1199,10 @@ pub fn jj_workspace_driver_prefers_configured_remote_base_for_new_root_workspace
 
 pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   let dir = "test/tmp/implementation-helper-validate-env"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1258,7 +1237,7 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
 
 pub fn validate_uses_latest_refresh_base_revision_for_selfci_test() {
   let dir = "test/tmp/implementation-helper-validate-refresh-base"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
@@ -1267,7 +1246,7 @@ pub fn validate_uses_latest_refresh_base_revision_for_selfci_test() {
       "{\"base_revision\":\"feature-base@origin\"}\n",
     )
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1291,10 +1270,10 @@ pub fn validate_uses_latest_refresh_base_revision_for_selfci_test() {
 
 pub fn validate_failure_writes_structured_failure_artifact_test() {
   let dir = "test/tmp/implementation-helper-validate-failure-artifact"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1320,7 +1299,7 @@ pub fn validate_failure_writes_structured_failure_artifact_test() {
 
 pub fn validate_base_drift_marker_reports_previous_validation_summary_test() {
   let dir = "test/tmp/implementation-helper-base-drift-validation-summary"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
     simplifile.write(
@@ -1365,14 +1344,14 @@ pub fn validate_base_drift_marker_reports_previous_validation_summary_test() {
 
 pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   let dir = "test/tmp/implementation-helper-publish-normalize"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1433,7 +1412,7 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
 
 pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test() {
   let dir = "test/tmp/execplan-implementation-publish-linking"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
@@ -1468,9 +1447,9 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1532,14 +1511,14 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
 
 pub fn publish_prefers_remote_repo_over_github_repository_test() {
   let dir = "test/tmp/implementation-helper-publish-github-repository"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1556,14 +1535,14 @@ pub fn publish_prefers_remote_repo_over_github_repository_test() {
 
 pub fn publish_uses_legacy_repo_alias_when_canonical_unset_test() {
   let dir = "test/tmp/implementation-helper-publish-legacy-repo"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1579,14 +1558,14 @@ pub fn publish_uses_legacy_repo_alias_when_canonical_unset_test() {
 
 pub fn publish_uses_github_repository_when_remote_repo_unparseable_test() {
   let dir = "test/tmp/implementation-helper-publish-github-repository-fallback"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1602,14 +1581,14 @@ pub fn publish_uses_github_repository_when_remote_repo_unparseable_test() {
 
 pub fn publish_rejects_explicit_repo_mismatch_before_push_test() {
   let dir = "test/tmp/implementation-helper-publish-repo-mismatch"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1630,12 +1609,12 @@ pub fn publish_rejects_explicit_repo_mismatch_before_push_test() {
 
 pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
   let dir = "test/tmp/implementation-helper-publish-rebase-conflict"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
 
   let artifact =
     run_helper_in(
@@ -1654,14 +1633,14 @@ pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
 
 pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
   let dir = "test/tmp/implementation-helper-publish-revalidation-failed"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1684,10 +1663,10 @@ pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
 
 pub fn refresh_base_reports_fresh_base_test() {
   let dir = "test/tmp/implementation-helper-refresh-fresh"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_refresh_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -1711,7 +1690,7 @@ pub fn refresh_base_reports_fresh_base_test() {
 
 pub fn refresh_base_rebases_stale_base_and_updates_start_metadata_test() {
   let dir = "test/tmp/implementation-helper-refresh-rebase-start"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
@@ -1720,7 +1699,7 @@ pub fn refresh_base_rebases_stale_base_and_updates_start_metadata_test() {
       "{\"source_kind\":\"ticket\",\"base_change_id\":\"old-base\"}\n",
     )
   write_fake_refresh_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -1751,10 +1730,10 @@ pub fn refresh_base_rebases_stale_base_and_updates_start_metadata_test() {
 
 pub fn refresh_base_reports_repairable_conflicts_test() {
   let dir = "test/tmp/implementation-helper-refresh-conflicts"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_refresh_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -1777,10 +1756,10 @@ pub fn refresh_base_reports_repairable_conflicts_test() {
 
 pub fn refresh_base_fetch_failure_is_nonrepairable_test() {
   let dir = "test/tmp/implementation-helper-refresh-fetch-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_refresh_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -1801,10 +1780,10 @@ pub fn refresh_base_fetch_failure_is_nonrepairable_test() {
 
 pub fn refresh_base_base_not_found_is_nonrepairable_test() {
   let dir = "test/tmp/implementation-helper-refresh-base-not-found"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_refresh_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -1826,10 +1805,10 @@ pub fn refresh_base_base_not_found_is_nonrepairable_test() {
 
 pub fn refresh_base_rebase_failed_without_conflicts_is_nonrepairable_test() {
   let dir = "test/tmp/implementation-helper-refresh-rebase-failed"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_refresh_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let artifact =
     run_helper_in(
@@ -1849,10 +1828,10 @@ pub fn refresh_base_rebase_failed_without_conflicts_is_nonrepairable_test() {
 
 pub fn refresh_base_rejects_unsafe_stage_and_writes_latest_json_test() {
   let dir = "test/tmp/implementation-helper-refresh-safe-stage"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_refresh_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let bad =
     run_helper_in(
@@ -1885,7 +1864,7 @@ pub fn refresh_base_rejects_unsafe_stage_and_writes_latest_json_test() {
 
 pub fn validate_fails_on_base_drift_failure_marker_test() {
   let dir = "test/tmp/implementation-helper-validate-marker"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
@@ -1894,7 +1873,7 @@ pub fn validate_fails_on_base_drift_failure_marker_test() {
       "# Base drift repair failure\n",
     )
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1913,12 +1892,12 @@ pub fn validate_fails_on_base_drift_failure_marker_test() {
 
 pub fn validate_fails_on_unresolved_jj_conflicts_test() {
   let dir = "test/tmp/implementation-helper-validate-conflicts"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -1934,14 +1913,14 @@ pub fn validate_fails_on_unresolved_jj_conflicts_test() {
 
 pub fn publish_time_conflicts_do_not_publish_test() {
   let dir = "test/tmp/implementation-helper-publish-conflicts-blocked"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   let assert Ok(Nil) =
     simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
 
   let artifact =
     run_helper_in(
@@ -1968,16 +1947,16 @@ pub fn publish_time_conflicts_do_not_publish_test() {
 
 pub fn publish_time_revalidation_failure_does_not_publish_test() {
   let dir = "test/tmp/implementation-helper-publish-revalidation-blocked"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   let assert Ok(Nil) =
     simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -2012,12 +1991,12 @@ fn run_driver_backed_publish_with_pr_draft(
   dir: String,
   draft: String,
 ) -> step_artifact.StepArtifact {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
 
   run_helper_in(
     dir,
@@ -2028,16 +2007,16 @@ fn run_driver_backed_publish_with_pr_draft(
 
 pub fn publish_time_revalidation_success_may_publish_test() {
   let dir = "test/tmp/implementation-helper-publish-revalidation-success"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   let assert Ok(Nil) =
     simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -2058,14 +2037,14 @@ pub fn publish_time_revalidation_success_may_publish_test() {
 
 pub fn legacy_publish_pr_draft_true_adds_draft_flag_test() {
   let dir = "test/tmp/implementation-helper-publish-draft-true"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -2081,12 +2060,12 @@ pub fn legacy_publish_pr_draft_true_adds_draft_flag_test() {
 
 pub fn legacy_publish_invalid_pr_draft_fails_before_publication_test() {
   let dir = "test/tmp/implementation-helper-publish-draft-invalid"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
 
   let artifact =
     run_helper_in(
@@ -2152,7 +2131,7 @@ pub fn driver_backed_publish_invalid_pr_draft_fails_before_publication_test() {
 
 pub fn publish_includes_base_drift_repair_summary_test() {
   let dir = "test/tmp/implementation-helper-publish-repair-summary"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   let assert Ok(Nil) =
     simplifile.write(
@@ -2162,9 +2141,9 @@ pub fn publish_includes_base_drift_repair_summary_test() {
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
@@ -2188,14 +2167,14 @@ pub fn publish_includes_base_drift_repair_summary_test() {
   )
 
   let dir_without = "test/tmp/implementation-helper-publish-no-repair-summary"
-  reset_dir(dir_without)
+  test_helpers.reset_dir(dir_without)
   write_publish_fixture_metadata(dir_without)
   write_fake_refresh_jj(dir_without <> "/bin/jj")
   write_fake_gh(dir_without <> "/bin/gh")
   write_fake_direnv(dir_without <> "/bin/direnv")
-  chmod_executable(dir_without <> "/bin/jj")
-  chmod_executable(dir_without <> "/bin/gh")
-  chmod_executable(dir_without <> "/bin/direnv")
+  test_helpers.chmod_executable(dir_without <> "/bin/jj")
+  test_helpers.chmod_executable(dir_without <> "/bin/gh")
+  test_helpers.chmod_executable(dir_without <> "/bin/direnv")
 
   let artifact_without =
     run_helper_in(
@@ -2589,7 +2568,7 @@ fn assert_workflow_refresh_ordering(
 }
 
 fn setup_plan_completion_gate_fixture(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
@@ -2617,7 +2596,7 @@ fn setup_plan_completion_gate_fixture(dir: String) -> String {
         <> "}\n",
     )
   write_fake_jj(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
 
   let context =
     run_helper_in(

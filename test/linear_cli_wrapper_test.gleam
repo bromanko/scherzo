@@ -1,33 +1,12 @@
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
-
-fn limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-}
+import support/test_helpers
 
 fn write_fake_linear(dir: String) -> String {
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let path = dir <> "/fake-linear"
   let body =
     "#!/usr/bin/env bash\n"
@@ -37,7 +16,7 @@ fn write_fake_linear(dir: String) -> String {
     <> "  printf 'ARG:%s\\n' \"$arg\"\n"
     <> "done\n"
   let assert Ok(Nil) = simplifile.write(path, body)
-  chmod_executable(path)
+  test_helpers.chmod_executable(path)
   path
 }
 
@@ -52,7 +31,7 @@ fn run_wrapper(
     5000,
     env,
     [],
-    limits(),
+    test_helpers.default_artifact_limits(),
   )
 }
 

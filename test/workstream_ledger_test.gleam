@@ -8,6 +8,7 @@ import scherzo/state/record
 import scherzo/workstream/id
 import scherzo/workstream/ledger
 import simplifile
+import support/test_helpers
 
 const artifact_ref = "workstream-artifacts/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
 
@@ -74,7 +75,7 @@ pub fn workstream_record_bodies_roundtrip_test() {
 
 pub fn idempotent_ledger_append_coalesces_exact_retry_test() {
   let root = "test/tmp/workstream-ledger/idempotent-retry"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = state_ledger.path_for_workspace_root(root)
   let first = workstream_artifact_record()
   let retry =
@@ -109,7 +110,7 @@ pub fn idempotent_ledger_append_coalesces_exact_retry_test() {
 
 pub fn idempotent_ledger_append_rejects_same_id_different_body_test() {
   let root = "test/tmp/workstream-ledger/idempotent-conflict"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = state_ledger.path_for_workspace_root(root)
   let first = workstream_artifact_record()
   let conflicting = conflicting_workstream_artifact_record(first)
@@ -126,7 +127,7 @@ pub fn idempotent_ledger_append_rejects_same_id_different_body_test() {
 
 pub fn idempotent_ledger_append_coalesces_exact_retry_after_compaction_test() {
   let root = "test/tmp/workstream-ledger/idempotent-retry-after-compaction"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = state_ledger.path_for_workspace_root(root)
   let first = workstream_artifact_record()
   let retry =
@@ -160,7 +161,7 @@ pub fn idempotent_ledger_append_coalesces_exact_retry_after_compaction_test() {
 
 pub fn idempotent_ledger_append_rejects_conflict_after_compaction_test() {
   let root = "test/tmp/workstream-ledger/idempotent-conflict-after-compaction"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(path) = state_ledger.path_for_workspace_root(root)
   let first = workstream_artifact_record()
   let conflicting = conflicting_workstream_artifact_record(first)
@@ -354,10 +355,4 @@ fn workstream_phase_run_record() -> record.LedgerRecord {
     789,
     "ws-phase-1",
   )
-}
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
 }

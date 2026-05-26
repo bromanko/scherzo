@@ -21,6 +21,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
+import support/test_helpers
 import test_async
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
@@ -39,12 +40,6 @@ pub type CapturedLog {
     fields: List(#(String, String)),
     secrets: List(String),
   )
-}
-
-fn reset_dir(dir: String) -> Nil {
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
 }
 
 fn fake_pi() -> String {
@@ -297,7 +292,7 @@ pub fn startup_fails_on_missing_config_test() {
 
 pub fn paused_config_skips_dispatch_but_loads_workflow_test() {
   let root = "test/tmp/service-paused/workspaces"
-  reset_dir("test/tmp/service-paused")
+  test_helpers.reset_dir("test/tmp/service-paused")
   let assert Ok(Nil) =
     simplifile.create_directory_all("test/tmp/service-paused/workflows")
   let workflow_path = "test/tmp/service-paused/scherzo.yaml"
@@ -319,7 +314,7 @@ pub fn paused_config_skips_dispatch_but_loads_workflow_test() {
 
 pub fn pi_probe_mode_launches_without_prompt_test() {
   let root = "test/tmp/service-pi-probe/workspaces"
-  reset_dir("test/tmp/service-pi-probe")
+  test_helpers.reset_dir("test/tmp/service-pi-probe")
   let assert Ok(Nil) =
     simplifile.create_directory_all("test/tmp/service-pi-probe/workflows")
   let workflow_path = "test/tmp/service-pi-probe/scherzo.yaml"
@@ -348,7 +343,7 @@ pub fn pi_probe_mode_launches_without_prompt_test() {
 
 pub fn linear_contract_check_success_logs_structured_summary_test() {
   let root = "test/tmp/service-contract-ok/workspaces"
-  reset_dir("test/tmp/service-contract-ok")
+  test_helpers.reset_dir("test/tmp/service-contract-ok")
   let assert Ok(Nil) =
     simplifile.create_directory_all("test/tmp/service-contract-ok/workflows")
   let workflow_path = "test/tmp/service-contract-ok/scherzo.yaml"
@@ -389,7 +384,7 @@ pub fn linear_contract_check_success_logs_structured_summary_test() {
 
 pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
   let root = "test/tmp/service-contract-mismatch/workspaces"
-  reset_dir("test/tmp/service-contract-mismatch")
+  test_helpers.reset_dir("test/tmp/service-contract-mismatch")
   let assert Ok(Nil) =
     simplifile.create_directory_all(
       "test/tmp/service-contract-mismatch/workflows",
@@ -442,7 +437,7 @@ pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
 
 pub fn linear_attach_comment_file_validation_failure_surfaces_detail_test() {
   let root = "test/tmp/service-attach-validation/workspaces"
-  reset_dir("test/tmp/service-attach-validation")
+  test_helpers.reset_dir("test/tmp/service-attach-validation")
   let assert Ok(Nil) =
     simplifile.create_directory_all(
       "test/tmp/service-attach-validation/workflows",
@@ -468,7 +463,7 @@ pub fn linear_attach_comment_file_validation_failure_surfaces_detail_test() {
 
 pub fn linear_contract_check_fetch_error_maps_to_startup_failure_test() {
   let root = "test/tmp/service-contract-fetch-error/workspaces"
-  reset_dir("test/tmp/service-contract-fetch-error")
+  test_helpers.reset_dir("test/tmp/service-contract-fetch-error")
   let assert Ok(Nil) =
     simplifile.create_directory_all(
       "test/tmp/service-contract-fetch-error/workflows",
@@ -494,7 +489,7 @@ pub fn linear_contract_check_fetch_error_maps_to_startup_failure_test() {
 pub fn yaml_once_runs_command_workflow_test() {
   let dir = "test/tmp/service-yaml-once"
   let root = "workspaces"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
   let config_path = dir <> "/scherzo.yaml"
   let assert Ok(Nil) = simplifile.write(config_path, yaml_config(root, ""))
@@ -526,7 +521,7 @@ pub fn yaml_once_runs_command_workflow_test() {
 
 pub fn yaml_once_skips_issue_without_workflow_label_test() {
   let dir = "test/tmp/service-yaml-missing-label"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
   let config_path = dir <> "/scherzo.yaml"
   let assert Ok(Nil) =
@@ -547,7 +542,7 @@ pub fn yaml_once_skips_issue_without_workflow_label_test() {
 
 pub fn yaml_linear_contract_check_uses_orchestrator_config_test() {
   let dir = "test/tmp/service-yaml-contract"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
   let config_path = dir <> "/scherzo.yaml"
   let assert Ok(Nil) =
@@ -578,7 +573,7 @@ pub fn yaml_linear_contract_check_uses_orchestrator_config_test() {
 
 pub fn service_refresh_blocks_non_terminal_dependency_test() {
   let root = "test/tmp/service-blocked-refresh/workspaces"
-  reset_dir("test/tmp/service-blocked-refresh")
+  test_helpers.reset_dir("test/tmp/service-blocked-refresh")
   let assert Ok(Nil) =
     simplifile.create_directory_all(
       "test/tmp/service-blocked-refresh/workflows",
@@ -614,7 +609,7 @@ pub fn service_refresh_blocks_non_terminal_dependency_test() {
 
 pub fn service_refresh_allows_terminal_dependency_test() {
   let root = "test/tmp/service-terminal-refresh/workspaces"
-  reset_dir("test/tmp/service-terminal-refresh")
+  test_helpers.reset_dir("test/tmp/service-terminal-refresh")
   let assert Ok(Nil) =
     simplifile.create_directory_all(
       "test/tmp/service-terminal-refresh/workflows",
@@ -650,7 +645,7 @@ pub fn service_refresh_allows_terminal_dependency_test() {
 
 pub fn fake_end_to_end_service_dispatch_test() {
   let root = "test/tmp/service-integration/workspaces"
-  reset_dir("test/tmp/service-integration")
+  test_helpers.reset_dir("test/tmp/service-integration")
   let assert Ok(Nil) =
     simplifile.create_directory_all("test/tmp/service-integration/workflows")
   let workflow_path = "test/tmp/service-integration/scherzo.yaml"
@@ -677,7 +672,7 @@ pub fn fake_end_to_end_service_dispatch_test() {
 pub fn yaml_once_cleanup_warning_logs_workspace_cleanup_failed_test() {
   let dir = "test/tmp/service-yaml-once-cleanup-warning"
   let root = "workspaces"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
   let config_path = dir <> "/scherzo.yaml"
   let assert Ok(Nil) = simplifile.write(config_path, yaml_config(root, ""))

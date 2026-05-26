@@ -4,17 +4,11 @@ import scherzo/error
 import scherzo/path
 import scherzo/pi/client
 import scherzo/pi/command as pi_command
-import simplifile
-
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
+import support/test_helpers
 
 pub fn real_pi_session_file_can_be_reopened_from_recorded_workspace_test() {
   let cwd = "test/tmp/real-pi-session-validation"
-  reset_dir(cwd)
+  test_helpers.reset_dir(cwd)
   let assert Ok(abs_cwd) = path.absolute(cwd)
   let fresh_spec = pi_command.ArgvLaunch("pi", ["--mode", "rpc"], [])
   let assert Ok(session) =

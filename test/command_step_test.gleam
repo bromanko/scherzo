@@ -4,6 +4,7 @@ import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
+import support/test_helpers
 
 fn limits() -> config_types.ArtifactLimits {
   config_types.ArtifactLimits(
@@ -21,15 +22,9 @@ fn diagnostic_limits() -> config_types.ArtifactLimits {
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 pub fn command_step_captures_stdout_and_exit_zero_test() {
   let dir = "test/tmp/command-step-success"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     command_step.run(
       "test_step",
@@ -47,7 +42,7 @@ pub fn command_step_captures_stdout_and_exit_zero_test() {
 
 pub fn command_step_captures_stderr_and_nonzero_exit_test() {
   let dir = "test/tmp/command-step-failure"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     command_step.run(
       "test_step",
@@ -65,7 +60,7 @@ pub fn command_step_captures_stderr_and_nonzero_exit_test() {
 
 pub fn command_step_promotes_stable_failure_code_test() {
   let dir = "test/tmp/command-step-failure-code"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     command_step.run(
       "publish_pr",
@@ -87,7 +82,7 @@ pub fn command_step_promotes_stable_failure_code_test() {
 
 pub fn command_step_captures_final_stdout_line_without_newline_test() {
   let dir = "test/tmp/command-step-no-final-newline"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     command_step.run(
       "test_step",
@@ -104,7 +99,7 @@ pub fn command_step_captures_final_stdout_line_without_newline_test() {
 
 pub fn command_step_timeout_returns_failed_artifact_test() {
   let dir = "test/tmp/command-step-timeout"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact = command_step.run("slow", "sleep 1", dir, 10, [], limits())
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(124)
@@ -113,7 +108,7 @@ pub fn command_step_timeout_returns_failed_artifact_test() {
 
 pub fn command_step_env_is_available_to_helpers_test() {
   let dir = "test/tmp/command-step-env"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     command_step.run_with_env(
       "env_step",
@@ -131,7 +126,7 @@ pub fn command_step_env_is_available_to_helpers_test() {
 
 pub fn command_step_redacts_fake_secret_test() {
   let dir = "test/tmp/command-step-secret"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     command_step.run(
       "secret",
@@ -147,7 +142,7 @@ pub fn command_step_redacts_fake_secret_test() {
 
 pub fn command_step_caps_stdout_while_collecting_test() {
   let dir = "test/tmp/command-step-long-stdout"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     command_step.run(
       "long_stdout",
@@ -165,7 +160,7 @@ pub fn command_step_caps_stdout_while_collecting_test() {
 
 pub fn command_step_stdout_capture_preserves_pipeline_status_test() {
   let dir = "test/tmp/command-step-pipeline-status"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let artifact =
     command_step.run("pipeline", "false | true", dir, 1000, [], limits())
 
@@ -175,7 +170,7 @@ pub fn command_step_stdout_capture_preserves_pipeline_status_test() {
 
 pub fn failed_command_step_retains_full_diagnostic_artifact_test() {
   let dir = "test/tmp/command-step-retained-diagnostics"
-  reset_dir(dir)
+  test_helpers.reset_dir(dir)
   let stdout = string.repeat("o", times: 150)
   let stderr = string.repeat("e", times: 150)
   let command =

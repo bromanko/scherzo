@@ -8,7 +8,6 @@ import gleam/result
 import gleam/string
 import scherzo/agent/pi_rpc
 import scherzo/agent/types as agent_types
-import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
@@ -42,7 +41,9 @@ import scherzo/workspace_driver_discovery
 import scherzo/workspace_run
 import scherzo/workstream/artifacts as workstream_artifacts
 import simplifile
+import support/artifact_store_fixtures
 import support/expected_crash
+import support/test_helpers
 import test_async
 
 type CommandStart {
@@ -242,77 +243,15 @@ fn success_agent_with_result(
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 fn artifact_root(root: String) -> String {
   root <> "/.scherzo-state/artifacts"
-}
-
-fn hidden_local_path_store(root: String) -> artifact_store.Store {
-  let store_root = artifact_root(root)
-  artifact_store.custom(
-    "hidden-local-path",
-    artifact_store.StoreCallbacks(
-      write: fn(ref, contents) {
-        let final_path = store_root <> "/" <> ref
-        let assert Ok(parent) = path.dirname(final_path)
-        use Nil <- result.try(
-          simplifile.create_directory_all(parent)
-          |> result.map_error(fn(error) {
-            artifact_store.ArtifactIo(simplifile.describe_error(error))
-          }),
-        )
-        artifact_store.write_atomic(final_path, contents)
-        |> result.map_error(fn(error) {
-          artifact_store.ArtifactWriteFailed(error)
-        })
-      },
-      read: fn(ref) {
-        simplifile.read(store_root <> "/" <> ref)
-        |> result.map_error(fn(error) {
-          case error {
-            simplifile.Enoent -> artifact_store.MissingStepArtifact(ref)
-            _ -> artifact_store.ArtifactIo(simplifile.describe_error(error))
-          }
-        })
-      },
-      write_immutable_bytes: fn(ref, contents) {
-        artifact_store.write_immutable(store_root <> "/" <> ref, contents)
-        |> result.map_error(fn(error) {
-          artifact_store.ArtifactWriteFailed(error)
-        })
-      },
-      read_bytes: fn(ref) {
-        artifact_store.read_file_bytes(store_root <> "/" <> ref)
-        |> result.map_error(fn(error) {
-          case error {
-            artifact_store.MissingStepArtifact(_) ->
-              artifact_store.MissingStepArtifact(ref)
-            _ -> error
-          }
-        })
-      },
-      locate: fn(ref) {
-        Ok(artifact_store.ArtifactLocation(
-          ref: ref,
-          uri: "artifact://hidden-local-path/" <> ref,
-          display_path: "artifacts://" <> ref,
-          local_path: None,
-        ))
-      },
-    ),
-  )
 }
 
 fn hidden_local_path_checkpoint(root: String) -> workflow_checkpoint.Writer {
   workflow_checkpoint.ledger_writer_with_artifact_store(
     root,
     fn() { 123 },
-    hidden_local_path_store(root),
+    artifact_store_fixtures.hidden_local_path_store(root),
   )
 }
 
@@ -460,35 +399,9 @@ fn fake_pi() -> String {
   abs
 }
 
-fn shell_quote(value: String) -> String {
-  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
-}
-
-fn test_limits() -> config_types.ArtifactLimits {
-  config_types.ArtifactLimits(
-    command_stream_max_chars: 4000,
-    template_field_max_chars: 4000,
-    workflow_summary_max_chars: 4000,
-  )
-}
-
 fn absolute_path(value: String) -> String {
   let assert Ok(abs) = path.absolute(value)
   abs
-}
-
-fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run(
-      "chmod_executable",
-      "chmod +x " <> shell_quote(path),
-      ".",
-      5000,
-      [],
-      test_limits(),
-    )
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
 }
 
 fn write_noop_path_shim(root: String, log_path: String) -> String {
@@ -502,12 +415,12 @@ fn write_noop_path_shim(root: String, log_path: String) -> String {
       target,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> "
-        <> shell_quote(log)
+        <> test_helpers.shell_quote(log)
         <> "\nexec "
-        <> shell_quote(source)
+        <> test_helpers.shell_quote(source)
         <> " \"$@\"\n",
     )
-  chmod_executable(target)
+  test_helpers.chmod_executable(target)
   absolute_path(bin)
 }
 
@@ -789,13 +702,13 @@ fn deps_with_prepared_run_root(
 
 pub fn default_command_step_receives_profile_driver_env_test() {
   let root = "test/tmp/workflow-run/profile-driver-env-command"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let bin = root <> "/bin"
   let assert Ok(Nil) = simplifile.create_directory_all(bin)
   let helper = bin <> "/profile-helper"
   let assert Ok(Nil) =
     simplifile.write(helper, "#!/bin/sh\necho helper-found\n")
-  chmod_executable(helper)
+  test_helpers.chmod_executable(helper)
   let context =
     workflow_run.StepContext(
       workflow_id: "workflow",
@@ -832,7 +745,7 @@ pub fn default_command_step_receives_profile_driver_env_test() {
       "printf '%s\\n' \"$SCHERZO_JJ_WORKSPACE_BASE\"; if command -v ls >/dev/null 2>&1; then echo unexpected-system-path; exit 1; fi; profile-helper",
       1000,
       [],
-      test_limits(),
+      test_helpers.default_artifact_limits(),
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1374,7 +1287,7 @@ pub fn command_step_receives_workspace_driver_context_from_resolved_profile_test
 
 pub fn command_step_receives_discovered_workspace_driver_context_test() {
   let subject = process.new_subject()
-  reset_dir("test/tmp/workflow-run")
+  test_helpers.reset_dir("test/tmp/workflow-run")
   let hooks = dag_hooks_with_timeout(1000)
   let assert Ok(driver_path) = path.absolute("scripts/scherzo-workspace-noop")
   let orchestrator =
@@ -1447,7 +1360,7 @@ pub fn command_step_receives_discovered_workspace_driver_context_test() {
 
 pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
   let root = "test/tmp/workflow-run-packaged-noop-driver"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let bin = write_noop_path_shim(root, root <> "/driver.log")
   let original_path = path.env("PATH")
   let assert Ok(Nil) = setenv("PATH", path_with_prefix(bin, original_path))
@@ -1539,7 +1452,7 @@ pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
 
 pub fn default_agent_step_receives_workspace_driver_environment_test() {
   let root = "test/tmp/workflow-run-agent-driver-env"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(env_log) = path.absolute(root <> "/pi-env.log")
   let profile_path =
     path_with_prefix(absolute_path(root <> "/profile-bin"), path.env("PATH"))
@@ -1554,9 +1467,9 @@ pub fn default_agent_step_receives_workspace_driver_environment_test() {
         pi: config_types.PiConfig(
           ..base.effective.pi,
           command: "FAKE_PI_ENV_LOG="
-            <> shell_quote(env_log)
+            <> test_helpers.shell_quote(env_log)
             <> " "
-            <> shell_quote(fake_pi()),
+            <> test_helpers.shell_quote(fake_pi()),
           compatibility_probe: False,
         ),
       ),
@@ -1658,7 +1571,7 @@ fn agent_attempt_context(root: String) -> workflow_attempt.StepAttemptContext {
 
 pub fn default_agent_step_argv_mode_receives_profile_driver_environment_test() {
   let root = "test/tmp/workflow-run-agent-driver-env-argv"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(env_log) = path.absolute(root <> "/pi-env.log")
   let profile_path =
     path_with_prefix(absolute_path(root <> "/profile-bin"), path.env("PATH"))
@@ -1718,7 +1631,7 @@ pub fn default_agent_step_argv_mode_receives_profile_driver_environment_test() {
 
 pub fn default_agent_step_redacts_sensitive_profile_driver_env_updates_test() {
   let root = "test/tmp/workflow-run-agent-driver-env-redaction"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let redaction_probe = "redaction-probe-value-123"
   let update_subject = process.new_subject()
   let base = orchestrator()
@@ -1729,9 +1642,9 @@ pub fn default_agent_step_redacts_sensitive_profile_driver_env_updates_test() {
       pi: config_types.PiConfig(
         ..base.effective.pi,
         command: "FAKE_PI_MESSAGE_SECRET="
-          <> shell_quote(redaction_probe)
+          <> test_helpers.shell_quote(redaction_probe)
           <> " "
-          <> shell_quote(fake_pi()),
+          <> test_helpers.shell_quote(fake_pi()),
         compatibility_probe: False,
       ),
     )
@@ -2147,7 +2060,7 @@ pub fn workflow_run_fans_out_fans_in_and_renders_artifacts_test() {
 pub fn valid_json_final_response_becomes_retained_structured_artifact_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/structured-valid"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let assert Ok(success) =
     workflow_run.execute(
@@ -2182,7 +2095,7 @@ pub fn valid_json_final_response_becomes_retained_structured_artifact_test() {
 pub fn pi_tool_call_source_persists_retained_structured_artifact_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/tool-source-valid"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let result =
     tool_call_result(
@@ -2247,7 +2160,7 @@ pub fn final_json_without_configured_tool_call_source_fails_test() {
 pub fn native_review_missing_generated_at_retries_and_records_diagnostics_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/structured-retry"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, None)
   let dependencies =
     workflow_run.Dependencies(
@@ -2336,7 +2249,7 @@ pub fn native_review_missing_generated_at_retries_and_records_diagnostics_test()
 pub fn native_review_missing_nested_lane_metadata_retries_and_records_diagnostics_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/structured-nested-retry"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, None)
   let dependencies =
     workflow_run.Dependencies(
@@ -2414,7 +2327,7 @@ pub fn native_review_missing_nested_lane_metadata_retries_and_records_diagnostic
 pub fn native_review_transient_pi_termination_retries_once_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/native-transient-retry"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, None)
   let dependencies =
     workflow_run.Dependencies(
@@ -2495,7 +2408,7 @@ pub fn native_review_transient_pi_termination_retries_once_test() {
 pub fn over_display_limit_valid_json_still_retains_structured_artifact_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/structured-over-limit"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let large_summary = string.repeat("x", times: 180)
   let response = "{\"summary\":\"" <> large_summary <> "\",\"findings\":[]}"
   let result = over_display_limit_result(response)
@@ -2710,7 +2623,7 @@ pub fn structured_artifact_write_failure_fails_step_without_metadata_test() {
 pub fn structured_artifact_metadata_available_to_downstream_template_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/structured-downstream"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, None)
   let dependencies =
     workflow_run.Dependencies(
@@ -2797,7 +2710,7 @@ pub fn workflow_without_structured_output_behaves_unchanged_test() {
 pub fn workflow_run_completed_cleanup_failure_keeps_success_and_appends_diagnostic_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/post-success-cleanup-warning"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
@@ -3189,7 +3102,7 @@ pub fn recovered_prepare_failure_interrupts_stale_prepared_attempt_before_termin
   let root =
     "test/tmp/workflow-run/recovered-prepare-failure-interrupts-stale-attempt"
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: docs\n    kind: command\n    run: docs\n    workspace: docs\n  - id: tests\n    kind: command\n    run: tests\n    workspace: tests\n  - id: finish\n    kind: command\n    depends_on: [docs, tests]\n    run: finish\n    workspace: main\n",
@@ -4202,7 +4115,7 @@ pub fn generic_pi_tool_call_step_generates_spec_env_and_metadata_test() {
 pub fn contracted_command_run_records_inputs_before_steps_and_outputs_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-recording"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo findings\n",
@@ -4255,7 +4168,7 @@ pub fn contracted_command_run_records_inputs_before_steps_and_outputs_test() {
 pub fn contracted_mapped_input_missing_fails_before_prepare_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-missing-input"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    exec_plan:\n      type: exec_plan\n      source: mapped_output\nsteps:\n  - id: implement\n    kind: command\n    run: echo should-not-run\n",
@@ -4283,7 +4196,7 @@ pub fn contracted_mapped_input_missing_fails_before_prepare_test() {
 pub fn contracted_existing_mismatched_input_manifest_fails_before_prepare_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-mismatched-input-manifest"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\nsteps:\n  - id: implement\n    kind: command\n    run: echo should-not-run\n",
@@ -4330,7 +4243,7 @@ pub fn contracted_existing_mismatched_input_manifest_fails_before_prepare_test()
 
 pub fn opted_in_workstream_phase_emits_handoff_and_next_action_test() {
   let root = "test/tmp/workflow-run/workstream-phase-success"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let assert Ok(success) =
     workflow_run.execute(
@@ -4387,7 +4300,7 @@ pub fn opted_in_workstream_phase_emits_handoff_and_next_action_test() {
 
 pub fn workflow_without_workstream_phase_writes_no_workstream_records_test() {
   let root = "test/tmp/workflow-run/workstream-phase-noop"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
 
   let assert Ok(_) =
     workflow_run.execute(
@@ -4430,7 +4343,7 @@ pub fn workflow_without_workstream_phase_writes_no_workstream_records_test() {
 
 pub fn metadata_only_workstream_phase_without_contract_noops_test() {
   let root = "test/tmp/workflow-run/workstream-phase-metadata-only"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
 
   let assert Ok(_) =
     workflow_run.execute(
@@ -4474,7 +4387,7 @@ pub fn metadata_only_workstream_phase_without_contract_noops_test() {
 pub fn opted_in_workstream_phase_fails_closed_when_output_is_absent_test() {
   let root = "test/tmp/workflow-run/workstream-phase-absent-output"
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let checkpoint =
     workflow_checkpoint.Writer(
@@ -4526,7 +4439,7 @@ pub fn opted_in_workstream_phase_fails_closed_when_output_is_absent_test() {
 
 pub fn resumed_opted_in_workstream_phase_reuses_recorded_output_manifest_test() {
   let root = "test/tmp/workflow-run/workstream-phase-recovery-success"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let dag = opted_in_workstream_dag()
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let manifest = write_recorded_execplan_output_manifest(root, dag, "execplan")
@@ -4573,7 +4486,7 @@ pub fn resumed_opted_in_workstream_phase_reuses_recorded_output_manifest_test() 
 
 pub fn resumed_opted_in_workstream_phase_rejects_mismatched_output_manifest_identity_test() {
   let root = "test/tmp/workflow-run/workstream-phase-recovery-manifest-mismatch"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let dag = opted_in_workstream_dag()
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let manifest =
@@ -4796,7 +4709,7 @@ fn output_named(
 pub fn contracted_mapped_input_can_be_supplied_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-supplied-input"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    exec_plan:\n      type: exec_plan\n      source: mapped_output\nsteps:\n  - id: implement\n    kind: command\n    run: echo runs\n",
@@ -4843,7 +4756,7 @@ pub fn contracted_mapped_input_can_be_supplied_test() {
 pub fn handoff_derived_contract_values_are_recorded_in_input_manifest_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-handoff-derived-input"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    reviewed_plan:\n      type: exec_plan\n      source: mapped_output\nsteps:\n  - id: implement\n    kind: command\n    run: echo runs\n",
@@ -4913,7 +4826,7 @@ pub fn handoff_derived_contract_values_are_recorded_in_input_manifest_test() {
 pub fn contracted_scheduled_context_records_metadata_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-scheduled-context"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: scheduled-repair\ncontract:\n  version: 1\n  inputs:\n    scheduled:\n      type: text\n      source: scheduled_context\nsteps:\n  - id: repair\n    kind: command\n    run: echo repair\n",
@@ -4957,7 +4870,7 @@ pub fn contracted_scheduled_context_records_metadata_test() {
 pub fn contracted_optional_workspace_driver_base_records_absent_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-optional-driver-base"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  context:\n    base_ref:\n      type: git_ref\n      required: false\n      source: workspace_driver_base\nsteps:\n  - id: implement\n    kind: command\n    run: echo implement\n",
@@ -4988,7 +4901,7 @@ pub fn contracted_optional_workspace_driver_base_records_absent_test() {
 pub fn contracted_required_final_response_output_missing_fails_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-missing-required-output"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
@@ -5019,7 +4932,7 @@ pub fn contracted_required_final_response_output_missing_fails_test() {
 pub fn contracted_step_failure_keeps_terminal_reason_and_records_output_diagnostics_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-step-failure-output-diagnostics"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect\n        field: stdout\nsteps:\n  - id: fail\n    kind: command\n    run: exit 1\n  - id: collect\n    kind: command\n    depends_on: [fail]\n    run: echo findings\n",
@@ -5054,7 +4967,7 @@ pub fn contracted_step_failure_keeps_terminal_reason_and_records_output_diagnost
 pub fn contracted_failed_stdout_source_output_is_absent_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-failed-stdout-output"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: exit 1\n",
@@ -5097,7 +5010,7 @@ pub fn contracted_failed_stdout_source_output_is_absent_test() {
 pub fn contracted_failed_agent_source_outputs_are_absent_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-failed-agent-source-outputs"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: draft\n        structured_output: code_change\nsteps:\n  - id: draft\n    kind: agent\n    prompt: write prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_code_change\n      schema:\n        required: [branch]\n",
@@ -5159,7 +5072,7 @@ pub fn contracted_failed_agent_source_outputs_are_absent_test() {
 pub fn contracted_final_response_output_is_retained_as_markdown_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-final-response-output"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    exec_plan:\n      type: exec_plan\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
@@ -5195,7 +5108,7 @@ pub fn contracted_final_response_output_is_retained_as_markdown_test() {
 pub fn contracted_execplan_v2_step_field_outputs_are_retained_as_json_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-execplan-json-outputs"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize\n        field: stdout\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: echo '{\"schema_version\":2}'\n",
@@ -5249,8 +5162,10 @@ pub fn contracted_execplan_v2_step_field_outputs_are_retained_as_json_test() {
 pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-file-output-json"
-  reset_dir(root)
-  reset_dir("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: tmp/execplan-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
@@ -5317,7 +5232,7 @@ pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
 pub fn contracted_json_stdout_output_truncation_fails_publication_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-json-stdout-truncated"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
@@ -5381,8 +5296,10 @@ pub fn contracted_json_stdout_output_truncation_fails_publication_test() {
 pub fn contracted_invalid_json_file_output_fails_publication_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-invalid-json-file-output"
-  reset_dir(root)
-  reset_dir("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: tmp/execplan-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
@@ -5449,7 +5366,7 @@ pub fn contracted_invalid_json_file_output_fails_publication_test() {
 pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-structured-inline-output"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    artifact_change:\n      type: code_change\n      source:\n        step: review_json\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: review_json\n        inline_json: code_change\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [branch]\n",
@@ -5500,7 +5417,7 @@ pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
 pub fn contracted_optional_missing_output_allows_success_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-optional-missing-output"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    notes:\n      type: document.markdown\n      required: false\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
@@ -5526,7 +5443,7 @@ pub fn contracted_optional_missing_output_allows_success_test() {
 pub fn resumed_run_without_step_recovery_emits_completed_terminal_outcome_test() {
   let root = "test/tmp/workflow-run/recovered-outcome-clean-success"
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
@@ -5566,7 +5483,7 @@ pub fn resumed_run_without_step_recovery_emits_completed_terminal_outcome_test()
 pub fn resumed_run_with_step_recovery_emits_succeeded_after_recovery_test() {
   let root = "test/tmp/workflow-run/recovered-outcome-recovered-success"
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
@@ -5607,7 +5524,7 @@ pub fn resumed_run_with_step_recovery_emits_succeeded_after_recovery_test() {
 pub fn resumed_run_without_step_recovery_emits_failed_fatal_terminal_outcome_test() {
   let root = "test/tmp/workflow-run/recovered-outcome-clean-failure"
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
@@ -5647,7 +5564,7 @@ pub fn resumed_run_without_step_recovery_emits_failed_fatal_terminal_outcome_tes
 pub fn resumed_run_with_step_recovery_retry_requested_emits_failed_after_recovery_test() {
   let root = "test/tmp/workflow-run/recovered-outcome-recovered-failure"
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
@@ -5689,7 +5606,7 @@ pub fn resumed_run_with_step_recovery_retry_requested_emits_failed_after_recover
 pub fn contracted_recovery_with_started_attempt_records_recovery_input_manifest_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-recovery-started-attempt"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\nsteps:\n  - id: collect\n    kind: command\n    run: echo findings\n",
@@ -5733,7 +5650,7 @@ pub fn contracted_recovery_with_started_attempt_records_recovery_input_manifest_
 pub fn contracted_recovery_records_missing_inputs_once_and_preserves_outputs_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-recovery-idempotence"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect\n        field: stdout\nsteps:\n  - id: collect\n    kind: command\n    run: echo findings\n",
@@ -5861,12 +5778,14 @@ fn first_index_of_kind(
 pub fn fatal_command_step_recovery_retries_original_step_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-command-retry"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: fixable\n    kind: command\n    run: ignored\n    workspace: main\n    recover:\n      attempts: 1\n      prompt: repair the workspace\n",
     )
-  reset_dir("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
   let checkpoint = hidden_local_path_checkpoint(root)
   let base = deps(subject, None)
   let dependencies =
@@ -6035,7 +5954,7 @@ pub fn fatal_command_step_recovery_retries_original_step_test() {
 pub fn continued_failures_do_not_start_step_recovery_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-continue-noop"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: optional\n    kind: command\n    run: ignored\n    workspace: main\n    on_failure: continue\n    recover:\n      attempts: 1\n      prompt: ignored\n",
@@ -6070,7 +5989,7 @@ pub fn continued_failures_do_not_start_step_recovery_test() {
 pub fn disabled_step_recovery_preserves_original_failure_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-disabled"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: broken\n    kind: command\n    run: ignored\n    workspace: main\n    recover:\n      enabled: false\n      attempts: 1\n      prompt: ignored\n",
@@ -6295,7 +6214,7 @@ fn recovery_result_with_calls(
 pub fn absent_step_recovery_preserves_original_failure_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-absent"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let dependencies =
     workflow_run.Dependencies(
       ..deps(subject, Some("broken")),
@@ -6320,7 +6239,7 @@ pub fn absent_step_recovery_preserves_original_failure_test() {
 pub fn fatal_agent_step_recovery_preserves_original_definition_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-agent-retry"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: draft\n    kind: agent\n    prompt: draft prompt\n    workspace: main\n    model: openai/gpt-5.1\n    structured_output:\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n    recover:\n      attempts: 1\n      prompt: repair draft workspace\n      model: github-copilot/gpt-5.1-codex\n",
@@ -6428,7 +6347,7 @@ pub fn fatal_agent_step_recovery_preserves_original_definition_test() {
 pub fn step_recovery_gave_up_preserves_original_failure_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-gave-up"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, None)
   let dependencies =
     workflow_run.Dependencies(
@@ -6511,7 +6430,7 @@ pub fn step_recovery_gave_up_preserves_original_failure_test() {
 pub fn recovery_checkpoint_preflight_failure_stops_before_worker_and_retry_test() {
   let root = "test/tmp/workflow-run/recovery-checkpoint-preflight"
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let base = workflow_run.default_dependencies()
   let dependencies =
@@ -6616,7 +6535,7 @@ pub fn recovery_checkpoint_preflight_failure_stops_before_worker_and_retry_test(
 
 pub fn recovery_checkpoint_restore_preserves_workspace_edits_before_retry_test() {
   let root = "test/tmp/workflow-run/recovery-checkpoint-restore"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let base = workflow_run.default_dependencies()
   let workspace_marker =
@@ -6741,7 +6660,7 @@ pub fn recovery_checkpoint_restore_preserves_workspace_edits_before_retry_test()
 
 pub fn recovery_checkpoint_restores_mutated_input_manifest_test() {
   let root = "test/tmp/workflow-run/recovery-checkpoint-input-manifest"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let base = workflow_run.default_dependencies()
   let dependencies =
@@ -6833,7 +6752,7 @@ pub fn recovery_checkpoint_restores_mutated_input_manifest_test() {
 
 pub fn recovery_checkpoint_restore_failure_stops_before_retry_test() {
   let root = "test/tmp/workflow-run/recovery-checkpoint-restore-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let base = workflow_run.default_dependencies()
   let dependencies =
@@ -6923,7 +6842,7 @@ pub fn recovery_checkpoint_restore_failure_stops_before_retry_test() {
 
 pub fn recovery_checkpoint_worker_failure_restores_mutated_artifact_test() {
   let root = "test/tmp/workflow-run/recovery-checkpoint-worker-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let base = workflow_run.default_dependencies()
   let dependencies =
@@ -7019,7 +6938,7 @@ pub fn recovery_checkpoint_worker_failure_restores_mutated_artifact_test() {
 pub fn failed_recovery_worker_preserves_original_failure_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-worker-failed"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, None)
   let dependencies =
     workflow_run.Dependencies(
@@ -7100,7 +7019,7 @@ pub fn failed_recovery_worker_preserves_original_failure_test() {
 pub fn timed_out_recovery_worker_preserves_original_failure_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-worker-timeout"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, None)
   let dependencies =
     workflow_run.Dependencies(
@@ -7195,7 +7114,7 @@ fn assert_invalid_recovery_output_failure(
   expected_code: String,
 ) {
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, None)
   let dependencies =
     workflow_run.Dependencies(
@@ -7380,7 +7299,7 @@ fn assert_recovery_artifact_write_failure_preserves_original_failure(
   result: result_artifact.ResultArtifact,
 ) {
   let subject = process.new_subject()
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(subject, Some("broken"))
   let dependencies =
     workflow_run.Dependencies(
@@ -7478,7 +7397,7 @@ pub fn gave_up_recovery_artifact_write_failure_preserves_original_failure_test()
 
 pub fn recovery_started_checkpoint_failure_preserves_original_failure_test() {
   let root = "test/tmp/workflow-run/recovery-started-checkpoint-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let agent_subject = process.new_subject()
   let base = deps(process.new_subject(), Some("broken"))
   let dependencies =
@@ -7532,7 +7451,7 @@ pub fn recovery_started_checkpoint_failure_preserves_original_failure_test() {
 
 pub fn recovery_tool_spec_build_failure_does_not_launch_agent_test() {
   let root = "test/tmp/workflow-run/recovery-tool-spec-build-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let bad_repo = root <> "/bad-repo"
   let schema_dir = bad_repo <> "/.scherzo/workflows/schemas/provider"
   let script_dir = bad_repo <> "/.scherzo/workflows/scripts"
@@ -7602,7 +7521,7 @@ pub fn recovery_tool_spec_build_failure_does_not_launch_agent_test() {
 
 pub fn recovery_tool_spec_write_failure_does_not_launch_agent_test() {
   let root = "test/tmp/workflow-run/recovery-tool-spec-write-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let run_root = root <> "/prepared-run"
   let assert Ok(Nil) = simplifile.create_directory_all(run_root <> "/artifacts")
   let assert Ok(Nil) =
@@ -7662,7 +7581,7 @@ pub fn recovery_tool_spec_write_failure_does_not_launch_agent_test() {
 
 pub fn recovery_finished_checkpoint_failure_preserves_original_failure_test() {
   let root = "test/tmp/workflow-run/recovery-finished-checkpoint-failure"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(process.new_subject(), Some("broken"))
   let dependencies =
     workflow_run.Dependencies(
@@ -7723,7 +7642,7 @@ pub fn recovery_finished_checkpoint_failure_preserves_original_failure_test() {
 
 pub fn step_recovery_finished_redacts_secrets_and_artifact_uses_decision_test() {
   let root = "test/tmp/workflow-run/recovery-redacted-finished"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let base = deps(process.new_subject(), Some("broken"))
   let dependencies =
     workflow_run.Dependencies(
@@ -7804,7 +7723,7 @@ pub fn step_recovery_finished_redacts_secrets_and_artifact_uses_decision_test() 
 pub fn exhausted_step_recovery_budget_preserves_original_failure_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-budget-exhausted"
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   let checkpoint = hidden_local_path_checkpoint(root)
   let base = deps(subject, None)
   let dependencies =

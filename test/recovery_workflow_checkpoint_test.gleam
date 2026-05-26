@@ -15,6 +15,7 @@ import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_outcome
 import simplifile
+import support/test_helpers
 
 type RecoveryScenario {
   RecoveryScenario(
@@ -78,12 +79,6 @@ fn issue_in_state(state: String) -> tracker_issue.Issue {
   )
 }
 
-fn reset_dir(path: String) -> Nil {
-  let _ = simplifile.delete(path)
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
-  Nil
-}
-
 fn parse_dag(content: String) -> workflow_dag.WorkflowDag {
   let assert Ok(dag) = workflow_dag.parse(content)
   dag
@@ -126,7 +121,7 @@ fn recovery_scenario_with_fingerprint(
   run_id: String,
   issue_fingerprint: String,
 ) -> RecoveryScenario {
-  reset_dir(root)
+  test_helpers.reset_dir(root)
   RecoveryScenario(
     root: root,
     store: artifact_store.new(root),
