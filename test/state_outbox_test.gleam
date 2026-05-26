@@ -11,7 +11,7 @@ pub fn decode_payload_returns_typed_invalid_error_test() {
     == "invalid outbox payload JSON"
 }
 
-pub fn linear_command_ack_payload_decodes_and_replays_test() {
+pub fn linear_command_ack_payload_decodes_but_is_not_replayed_test() {
   let assert Ok(outbox.Payload(
     kind: "linear_command_ack",
     body: "ack",
@@ -24,11 +24,11 @@ pub fn linear_command_ack_payload_decodes_and_replays_test() {
       "{\"type\":\"linear_command_ack\",\"source_comment_id\":\"comment-1\",\"body\":\"ack\"}",
     )
 
-  let assert Ok(Nil) =
+  let assert Error(outbox.UnsupportedOutboxKind("linear_command_ack")) =
     outbox.recovery_replay_error("linear_command_ack", "linear_command_ack")
 }
 
-pub fn remote_command_ack_payload_decodes_and_replays_test() {
+pub fn remote_command_ack_payload_decodes_but_is_not_replayed_test() {
   let assert Ok(outbox.Payload(
     kind: "remote_command_ack",
     body: "ack",
@@ -47,7 +47,7 @@ pub fn remote_command_ack_payload_decodes_and_replays_test() {
       ),
     )
 
-  let assert Ok(Nil) =
+  let assert Error(outbox.UnsupportedOutboxKind("remote_command_ack")) =
     outbox.recovery_replay_error("remote_command_ack", "remote_command_ack")
 }
 
@@ -74,14 +74,4 @@ pub fn replay_kind_mismatch_returns_typed_error_with_stable_code_test() {
     == "unsupported_outbox_kind:linear_comment"
   assert outbox.describe_replay_error(unsupported_kind)
     == "unsupported outbox kind: linear_comment"
-
-  let assert Error(outbox.UnsupportedOutboxPayloadKind("linear_comment")) =
-    outbox.recovery_replay_error("linear_command_ack", "linear_comment")
-
-  let unsupported_payload_kind =
-    outbox.UnsupportedOutboxPayloadKind("linear_comment")
-  assert outbox.replay_error_code(unsupported_payload_kind)
-    == "unsupported_outbox_payload_kind:linear_comment"
-  assert outbox.describe_replay_error(unsupported_payload_kind)
-    == "unsupported outbox payload kind: linear_comment"
 }

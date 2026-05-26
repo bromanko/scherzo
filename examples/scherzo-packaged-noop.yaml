@@ -67,11 +67,3 @@ linear_contract:
     failure: needs_workflow
   enforce_issue_workflow_labels: false
   comment_on_invalid_workflow: false
-linear_commands:
-  enabled: false
-  prefix: "/scherzo"
-  authorized_user_ids: []
-  poll_limit_per_issue: 25
-  max_comments_per_tick: 50
-  acknowledge_success: true
-  acknowledge_rejection: true

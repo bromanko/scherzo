@@ -83,14 +83,10 @@ pub fn decode_payload(payload_json: String) -> Result(Payload, ReplayError) {
 
 pub fn recovery_replay_error(
   outbox_kind: String,
-  payload_kind: String,
+  _payload_kind: String,
 ) -> Result(Nil, ReplayError) {
-  case outbox_kind, payload_kind {
-    "linear_command_ack", "linear_command_ack" -> Ok(Nil)
-    "remote_command_ack", "remote_command_ack" -> Ok(Nil)
-    "linear_command_ack", other -> Error(UnsupportedOutboxPayloadKind(other))
-    "remote_command_ack", other -> Error(UnsupportedOutboxPayloadKind(other))
-    other, _ -> Error(UnsupportedOutboxKind(other))
+  case outbox_kind {
+    _ -> Error(UnsupportedOutboxKind(outbox_kind))
   }
 }
 

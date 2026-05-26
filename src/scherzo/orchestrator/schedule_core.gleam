@@ -1,7 +1,7 @@
 import birl
-import gleam/int
 import gleam/result
 import gleam/string
+import scherzo/duration
 import scherzo/workflow_identity
 
 // Persisted due times older than this are treated as legacy monotonic-clock
@@ -63,39 +63,8 @@ pub fn parse_every(value: String) -> Result(Int, String) {
 }
 
 fn parse_every_non_empty(value: String) -> Result(Int, String) {
-  let #(number_text, multiplier, unit_ok) = case string.ends_with(value, "ms") {
-    True -> #(string.drop_end(value, 2), 1, True)
-    False ->
-      case string.ends_with(value, "s") {
-        True -> #(string.drop_end(value, 1), 1000, True)
-        False ->
-          case string.ends_with(value, "m") {
-            True -> #(string.drop_end(value, 1), 60_000, True)
-            False ->
-              case string.ends_with(value, "h") {
-                True -> #(string.drop_end(value, 1), 3_600_000, True)
-                False -> #(value, 1, False)
-              }
-          }
-      }
-  }
-  case unit_ok {
-    False -> Error("scheduled job every must use unit ms, s, m, or h")
-    True -> {
-      use number <- result.try(
-        number_text
-        |> string.trim
-        |> int.parse
-        |> result.replace_error(
-          "scheduled job every must start with an integer",
-        ),
-      )
-      case number <= 0 {
-        True -> Error("scheduled job every must be positive")
-        False -> Ok(number * multiplier)
-      }
-    }
-  }
+  duration.parse_positive_ms(value, "scheduled job every")
+  |> result.map_error(duration.error_message)
 }
 
 pub fn next_due_after(now_ms: Int, every_ms: Int) -> Int {

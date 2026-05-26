@@ -7,7 +7,6 @@ import orchestrator_transition_test
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
-import scherzo/control/linear_parser
 import scherzo/orchestrator/effects/interpreter
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
@@ -15,7 +14,6 @@ import scherzo/orchestrator/transition_types
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
-import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/task
@@ -179,227 +177,6 @@ pub fn running_refresh_releases_stale_context_slot_before_candidate_fetch_test()
       "cleanup:test/tmp/workspaces/ABC-1",
       "fetch:1",
     ]
-}
-
-pub fn linear_command_start_append_failure_prevents_apply_test() {
-  let state = orchestrator_transition_test.fixture_state()
-  let shell = append_failure_shell()
-
-  let transition_runner.RunResult(
-    state: next,
-    shell: shell,
-    exhausted: exhausted,
-  ) =
-    transition_runner.run(
-      state: state,
-      shell: shell,
-      messages: [
-        transition_types.RemoteCommandSubmitted(
-          event: remote_event("c-start"),
-          parsed: parsed_linear_command("c-start", command.PauseDispatch, ""),
-          safe_excerpt: "",
-        ),
-      ],
-      max_messages: 8,
-    )
-
-  assert exhausted == False
-  assert next == state
-  assert interpreter.data(shell)
-    == [
-      "append:remote_command_start:c-start",
-      "log:remote_command_start_record_failed",
-    ]
-}
-
-pub fn linear_command_completion_append_success_enqueues_ack_test() {
-  let state = orchestrator_transition_test.fixture_state()
-  let shell = event_shell()
-
-  let transition_runner.RunResult(
-    state: next,
-    shell: shell,
-    exhausted: exhausted,
-  ) =
-    transition_runner.run(
-      state: state,
-      shell: shell,
-      messages: [
-        transition_types.RemoteCommandApplied(
-          backend_kind: "linear",
-          event_id: "c-complete",
-          task_remote_id: "issue-1",
-          command_name: "pause",
-          result: command.applied(command.PauseDispatch, Some("paused")),
-          message_excerpt: "paused",
-          ack_body: Some("ack body"),
-        ),
-      ],
-      max_messages: 8,
-    )
-
-  assert exhausted == False
-  assert interpreter.data(shell)
-    == [
-      "append:remote_command_completion:c-complete",
-      "append:remote_command_ack_outbox:c-complete",
-      "ack:post:c-complete",
-    ]
-  assert dict.get(next.pending_linear_command_acks, "c-complete")
-    == Ok(transition_types.PendingLinearCommandAck(
-      "linear",
-      "issue-1",
-      "c-complete",
-      "ack body",
-      True,
-      "remote_command_ack",
-    ))
-  assert dict.has_key(next.in_flight_linear_command_acks, "c-complete")
-}
-
-pub fn linear_command_ack_outbox_append_failure_remains_retryable_test() {
-  let state = orchestrator_transition_test.fixture_state()
-  let shell = append_failure_shell()
-
-  let transition_runner.RunResult(
-    state: next,
-    shell: shell,
-    exhausted: exhausted,
-  ) =
-    transition_runner.run(
-      state: state,
-      shell: shell,
-      messages: [
-        transition_types.RemoteCommandAckRequested(
-          backend_kind: "linear",
-          task_remote_id: "issue-1",
-          event_id: "c-ack",
-          body: "ack body",
-          outbox_recorded: False,
-          outbox_kind: "remote_command_ack",
-        ),
-      ],
-      max_messages: 8,
-    )
-
-  assert exhausted == False
-  assert interpreter.data(shell)
-    == [
-      "append:remote_command_ack_outbox:c-ack",
-      "log:remote_command_ack_outbox_record_failed",
-    ]
-  assert dict.get(next.pending_linear_command_acks, "c-ack")
-    == Ok(transition_types.PendingLinearCommandAck(
-      "linear",
-      "issue-1",
-      "c-ack",
-      "ack body",
-      False,
-      "remote_command_ack",
-    ))
-  assert !dict.has_key(next.in_flight_linear_command_acks, "c-ack")
-}
-
-pub fn linear_command_ack_publish_failure_remains_retryable_test() {
-  let pending =
-    transition_types.PendingLinearCommandAck(
-      "linear",
-      "issue-1",
-      "c-publish",
-      "ack body",
-      True,
-      "remote_command_ack",
-    )
-  let state =
-    transition_types.State(
-      ..orchestrator_transition_test.fixture_state(),
-      pending_linear_command_acks: dict.from_list([#("c-publish", pending)]),
-      in_flight_linear_command_acks: dict.from_list([#("c-publish", True)]),
-    )
-  let shell = event_shell()
-
-  let transition_runner.RunResult(
-    state: next,
-    shell: shell,
-    exhausted: exhausted,
-  ) =
-    transition_runner.run(
-      state: state,
-      shell: shell,
-      messages: [
-        transition_types.RemoteCommandAckFinished(
-          backend_kind: "linear",
-          task_remote_id: "issue-1",
-          event_id: "c-publish",
-          outbox_kind: "remote_command_ack",
-          result: Error("api"),
-        ),
-      ],
-      max_messages: 8,
-    )
-
-  assert exhausted == False
-  assert interpreter.data(shell) == ["log:remote_command_ack_failed"]
-  assert dict.get(next.pending_linear_command_acks, "c-publish") == Ok(pending)
-  assert !dict.has_key(next.in_flight_linear_command_acks, "c-publish")
-}
-
-pub fn non_linear_remote_ack_state_is_task_scoped_test() {
-  let state = orchestrator_transition_test.fixture_state()
-  let shell = event_shell()
-  let first_key =
-    projection.remote_command_receipt_key("github", "owner/repo#1", "event-1")
-  let second_key =
-    projection.remote_command_receipt_key("github", "owner/repo#2", "event-1")
-
-  let transition_runner.RunResult(
-    state: next,
-    shell: shell,
-    exhausted: exhausted,
-  ) =
-    transition_runner.run(
-      state: state,
-      shell: shell,
-      messages: [
-        transition_types.RemoteCommandAckRequested(
-          backend_kind: "github",
-          task_remote_id: "owner/repo#1",
-          event_id: "event-1",
-          body: "ack one",
-          outbox_recorded: False,
-          outbox_kind: "remote_command_ack",
-        ),
-        transition_types.RemoteCommandAckRequested(
-          backend_kind: "github",
-          task_remote_id: "owner/repo#2",
-          event_id: "event-1",
-          body: "ack two",
-          outbox_recorded: False,
-          outbox_kind: "remote_command_ack",
-        ),
-      ],
-      max_messages: 16,
-    )
-
-  assert exhausted == False
-  assert dict.has_key(next.pending_linear_command_acks, first_key)
-  assert dict.has_key(next.pending_linear_command_acks, second_key)
-  assert dict.has_key(next.in_flight_linear_command_acks, first_key)
-  assert dict.has_key(next.in_flight_linear_command_acks, second_key)
-  assert list.length(
-      list.filter(interpreter.data(shell), fn(entry) {
-        entry == "ack:post:event-1"
-      }),
-    )
-    == 2
-  assert list.contains(
-    interpreter.data(shell),
-    "append:remote_command_ack_outbox:" <> first_key,
-  )
-  assert list.contains(
-    interpreter.data(shell),
-    "append:remote_command_ack_outbox:" <> second_key,
-  )
 }
 
 pub fn transition_runner_stops_at_message_limit_test() {
@@ -715,7 +492,7 @@ pub fn yaml_step_cleanup_removes_pure_route_test() {
     == ["yaml_start:step-session", "yaml_finish:step-session"]
 }
 
-pub fn startup_recovery_schedules_retry_cleanup_ack_and_park_effects_test() {
+pub fn startup_recovery_schedules_retry_cleanup_and_park_effects_test() {
   let state = orchestrator_transition_test.fixture_state()
 
   let transition_runner.RunResult(
@@ -778,8 +555,6 @@ pub fn startup_recovery_schedules_retry_cleanup_ack_and_park_effects_test() {
       "log:workflow_recovery_status",
       "log:recovered_workspace_cleanup",
       "cleanup:test/tmp/workspaces/ABC-2",
-      "log:outbox_replay_enqueued",
-      "ack:issue-3:comment-1:ack",
       "report_park:issue-4",
       "log:workflow_recovery_status",
       "log:startup_recovery_warning",
@@ -968,36 +743,6 @@ fn lifecycle_context() -> transition_types.WorkerLifecycleContext {
   )
 }
 
-fn remote_event(event_id: String) -> adapter.RemoteCommandEvent {
-  adapter.RemoteCommandEvent(
-    event_id: event_id,
-    task: task.TaskRef(
-      backend_kind: "linear",
-      remote_id: "issue-1",
-      key: Some("ABC-1"),
-      url: None,
-    ),
-    author_id: "user-1",
-    body: "/scherzo pause",
-    command_name: "pause",
-    excerpt: "/scherzo pause",
-    observed_at_ms: 1,
-  )
-}
-
-fn parsed_linear_command(
-  comment_id: String,
-  operator_command: command.OperatorCommand,
-  excerpt: String,
-) -> linear_parser.ParsedLinearCommand {
-  linear_parser.ParsedLinearCommand(
-    source_issue_id: "issue-1",
-    source_comment_id: comment_id,
-    command: operator_command,
-    excerpt: excerpt,
-  )
-}
-
 fn event_shell() -> interpreter.ShellState(List(String)) {
   shell_with_append_and_start_result(Ok(Nil), Ok(Nil))
 }
@@ -1037,7 +782,6 @@ fn shell_with_append_and_start_result(
     fetch_candidates: fn(events, generation) {
       list.append(events, ["fetch:" <> int.to_string(generation)])
     },
-    fetch_remote_commands: fn(events, _, _, _, _) { events },
     begin_dispatch_validation: fn(events, issue_id, _) {
       list.append(events, ["validate:" <> issue_id])
     },
@@ -1100,18 +844,6 @@ fn shell_with_append_and_start_result(
     park_issue: fn(events, parked, _) {
       list.append(events, ["park:" <> parked.issue_id])
     },
-    replay_remote_command_ack: fn(
-      events,
-      _backend_kind,
-      task_remote_id,
-      event_id,
-      body,
-      _outbox_kind,
-    ) {
-      list.append(events, [
-        "ack:" <> task_remote_id <> ":" <> event_id <> ":" <> body,
-      ])
-    },
     report_park: fn(events, report) {
       list.append(events, ["report_park:" <> report.task.remote_id])
     },
@@ -1153,16 +885,6 @@ fn shell_with_append_and_start_result(
     },
     finish_operator_command: fn(events, _, result) {
       #(list.append(events, ["operator:finish:" <> result.command]), [])
-    },
-    post_remote_command_ack: fn(
-      events,
-      _backend_kind,
-      _task_remote_id,
-      event_id,
-      _body,
-      _outbox_kind,
-    ) {
-      list.append(events, ["ack:post:" <> event_id])
     },
     report_park_effect: fn(events, issue_id, _, _, _, _) {
       list.append(events, ["park:report:" <> issue_id])

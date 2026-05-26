@@ -2,8 +2,6 @@ import gleam/dict
 import gleam/option.{type Option, None}
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
-import scherzo/control/command
-import scherzo/control/linear_parser
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/review_lane_preflight
@@ -26,8 +24,6 @@ pub type State {
     pending_dispatch_validations: dict.Dict(String, PendingDispatchValidation),
     next_dispatch_validation_generation: Int,
     next_session_sequence: Int,
-    pending_linear_command_acks: dict.Dict(String, PendingLinearCommandAck),
-    in_flight_linear_command_acks: dict.Dict(String, Bool),
   )
 }
 
@@ -55,46 +51,11 @@ pub type Message {
     result: Result(List(tracker_issue.Issue), String),
     context: DispatchContext,
   )
-  RemoteCommandSubmitted(
-    event: adapter.RemoteCommandEvent,
-    parsed: linear_parser.ParsedLinearCommand,
-    safe_excerpt: String,
-  )
-  RemoteCommandApplied(
-    backend_kind: String,
-    event_id: String,
-    task_remote_id: String,
-    command_name: String,
-    result: command.CommandResult,
-    message_excerpt: String,
-    ack_body: Option(String),
-  )
-  RemoteCommandAckRequested(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    body: String,
-    outbox_recorded: Bool,
-    outbox_kind: String,
-  )
-  RemoteCommandAckFinished(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    outbox_kind: String,
-    result: Result(Nil, String),
-  )
-  RetryPendingRemoteCommandAcks
   OperatorCommandSubmitted(
     request: effects_types.OperatorCommandRequest,
     context: DispatchContext,
     issue_resolution: OperatorIssueResolution,
     parked_issue_resolution: ParkedIssueResolution,
-  )
-  RemoteCommandPhaseFinished(
-    candidates: List(tracker_issue.Issue),
-    dispatch_after: Bool,
-    context: DispatchContext,
   )
   DispatchCandidates(
     candidates: List(tracker_issue.Issue),
@@ -217,17 +178,6 @@ pub type WorkerDownResolution {
   KnownWorkerDown(issue_id: String, run_id: String, session_id: String)
   WorkerDownStale(issue_id: String)
   UnknownWorkerDown
-}
-
-pub type PendingLinearCommandAck {
-  PendingLinearCommandAck(
-    backend_kind: String,
-    task_remote_id: String,
-    event_id: String,
-    body: String,
-    outbox_recorded: Bool,
-    outbox_kind: String,
-  )
 }
 
 pub type OperatorIssueResolution {
