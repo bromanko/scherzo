@@ -162,6 +162,7 @@ type StartupRecovery {
     recovery_by_issue: Dict(String, session_event.RecoveryInfo),
     warnings: List(String),
     workflow_resumptions: List(recovery.RecoveredWorkflowRun),
+    scheduled_statuses: List(projection.ScheduledJobStatus),
   )
 }
 
@@ -533,8 +534,7 @@ pub fn start(
                       scheduled_next_due: initial_scheduled_next_due(
                         workflow.bundle,
                         dependencies.now_ms(),
-                        dependencies,
-                        workflow.secrets,
+                        startup_recovery.scheduled_statuses,
                       ),
                       pending_scheduled_starts: dict.new(),
                       scheduled_retries: dict.new(),
@@ -561,7 +561,9 @@ pub fn start(
                       dependencies: dependencies,
                     )
                     |> apply_startup_recovery(startup_recovery)
-                    |> recover_scheduled_runtime_state
+                    |> recover_scheduled_runtime_state(
+                      startup_recovery.scheduled_statuses,
+                    )
                     |> spawn_recovered_workflow_resumptions(
                       startup_recovery.workflow_resumptions,
                     )
@@ -701,48 +703,39 @@ fn load_startup_recovery(
       workflow_finalization.warnings,
     ),
     workflow_resumptions: workflow_finalization.resumptions,
+    scheduled_statuses: projection.scheduled_statuses(replayed.projection),
   ))
 }
 
 fn initial_scheduled_next_due(
   bundle: runtime_bundle.RuntimeBundle,
   now_ms: Int,
-  dependencies: RuntimeDependencies,
-  secrets: List(String),
+  scheduled_statuses: List(projection.ScheduledJobStatus),
 ) -> Dict(String, Int) {
-  let projection = case
-    scheduled_projection_for_root(bundle.effective.workspace.root)
-  {
-    Ok(projected) -> Some(projected)
-    Error(err) -> {
-      emit_runtime_log(
-        dependencies,
-        "warn",
-        "scheduled_next_due_projection_unavailable",
-        [#("error", ledger_error_message(err))],
-        secrets,
-      )
-      None
-    }
-  }
   bundle.orchestrator.scheduled_jobs
   |> list.filter(fn(job) { job.enabled })
   |> list.fold(dict.new(), fn(acc, job) {
-    let next_due = case projection {
-      Some(projected) ->
-        case projection.scheduled_status_for(projected, job.id) {
-          Ok(status) ->
-            case status.last_due_at_ms {
-              Some(due_at_ms) ->
-                next_due_after_persisted_due(due_at_ms, now_ms, job.every_ms)
-              None -> schedule_core.initial_next_due(now_ms, job.every_ms)
-            }
-          Error(Nil) -> schedule_core.initial_next_due(now_ms, job.every_ms)
+    let next_due = case scheduled_status_for(scheduled_statuses, job.id) {
+      Some(status) ->
+        case status.last_due_at_ms {
+          Some(due_at_ms) ->
+            next_due_after_persisted_due(due_at_ms, now_ms, job.every_ms)
+          None -> schedule_core.initial_next_due(now_ms, job.every_ms)
         }
       None -> schedule_core.initial_next_due(now_ms, job.every_ms)
     }
     dict.insert(acc, job.id, next_due)
   })
+}
+
+fn scheduled_status_for(
+  statuses: List(projection.ScheduledJobStatus),
+  job_id: String,
+) -> Option(projection.ScheduledJobStatus) {
+  case list.find(statuses, fn(status) { status.job_id == job_id }) {
+    Ok(status) -> Some(status)
+    Error(Nil) -> None
+  }
 }
 
 fn scheduled_projection_for_root(
@@ -752,26 +745,14 @@ fn scheduled_projection_for_root(
   ledger.load_projection(ledger_path)
 }
 
-fn recover_scheduled_runtime_state(state: State) -> State {
-  case scheduled_projection_for_root(state.workflow.effective.workspace.root) {
-    Error(err) -> {
-      log_state(
-        state,
-        "warn",
-        "scheduled_runtime_recovery_projection_unavailable",
-        [
-          #("error", ledger_error_message(err)),
-        ],
-      )
-      state
-    }
-    Ok(projected) ->
-      projected
-      |> projection.scheduled_statuses
-      |> list.fold(state, fn(state, status) {
-        recover_scheduled_status(state, status)
-      })
-  }
+fn recover_scheduled_runtime_state(
+  state: State,
+  scheduled_statuses: List(projection.ScheduledJobStatus),
+) -> State {
+  scheduled_statuses
+  |> list.fold(state, fn(state, status) {
+    recover_scheduled_status(state, status)
+  })
 }
 
 fn recover_scheduled_status(
