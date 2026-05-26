@@ -358,6 +358,52 @@ pub fn rejects_step_level_workspace_capabilities_test() {
     == "step_workspace_capabilities_not_supported"
 }
 
+pub fn parses_command_step_duration_timeout_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout: 2m\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.CommandStep(_, Some(timeout_ms)) = step.kind
+  assert timeout_ms == 120_000
+}
+
+pub fn rejects_invalid_command_step_duration_timeout_test() {
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout: 120000\n",
+    )
+    == "command_timeout_not_duration"
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout: 2d\n",
+    )
+    == "invalid_command_timeout"
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout: 0ms\n",
+    )
+    == "invalid_command_timeout"
+}
+
+pub fn parses_legacy_command_step_timeout_ms_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout_ms: 120000\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.CommandStep(_, Some(timeout_ms)) = step.kind
+  assert timeout_ms == 120_000
+}
+
+pub fn rejects_invalid_legacy_command_step_timeout_ms_test() {
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout_ms: 0\n",
+    )
+    == "invalid_command_timeout_ms"
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout_ms: nope\n",
+    )
+    == "command_timeout_ms_not_int"
+}
+
 pub fn parses_optional_description_test() {
   let dag =
     parse_ok(

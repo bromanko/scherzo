@@ -5,11 +5,11 @@ import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
 import gleam/uri
+import scherzo/config/duration_config
 import scherzo/config/tracker_config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
-import scherzo/orchestrator/schedule_core
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
 import scherzo/workspace_driver_env
@@ -330,12 +330,8 @@ pub fn resolved_secrets(config: config_types.EffectiveConfig) -> List(String) {
 fn resolve_polling(
   root: yay.Node,
 ) -> Result(config_types.PollingConfig, error.ConfigError) {
-  let polling = get_map(root, "polling")
-  let interval = get_int(polling, "interval_ms") |> int_default(30_000)
-  case interval > 0 {
-    True -> Ok(config_types.PollingConfig(interval_ms: interval))
-    False -> Error(error.InvalidConfig("polling.interval_ms must be positive"))
-  }
+  use interval <- result.try(duration_config.polling_interval_ms(root))
+  Ok(config_types.PollingConfig(interval_ms: interval))
 }
 
 fn resolve_workspace(
@@ -356,19 +352,14 @@ fn resolve_hooks(
   root: yay.Node,
 ) -> Result(config_types.HooksConfig, error.ConfigError) {
   let hooks = get_map(root, "hooks")
-  let timeout = get_int(hooks, "timeout_ms") |> int_default(60_000)
-  case timeout > 0 {
-    False -> Error(error.InvalidConfig("hooks.timeout_ms must be positive"))
-    True -> {
-      Ok(config_types.HooksConfig(
-        after_create: get_non_empty_string(hooks, "after_create"),
-        before_run: get_non_empty_string(hooks, "before_run"),
-        after_run: get_non_empty_string(hooks, "after_run"),
-        before_remove: get_non_empty_string(hooks, "before_remove"),
-        timeout_ms: timeout,
-      ))
-    }
-  }
+  use timeout <- result.try(duration_config.hooks_timeout_ms(root))
+  Ok(config_types.HooksConfig(
+    after_create: get_non_empty_string(hooks, "after_create"),
+    before_run: get_non_empty_string(hooks, "before_run"),
+    after_run: get_non_empty_string(hooks, "after_run"),
+    before_remove: get_non_empty_string(hooks, "before_remove"),
+    timeout_ms: timeout,
+  ))
 }
 
 fn resolve_agent(
@@ -378,8 +369,9 @@ fn resolve_agent(
   let max_concurrent_agents =
     get_int(agent, "max_concurrent_agents") |> int_default(10)
   let max_turns = get_int(agent, "max_turns") |> int_default(20)
-  let max_retry_backoff_ms =
-    get_int(agent, "max_retry_backoff_ms") |> int_default(300_000)
+  use max_retry_backoff_ms <- result.try(
+    duration_config.agent_max_retry_backoff_ms(root),
+  )
   let max_retry_attempts =
     get_int(agent, "max_retry_attempts") |> int_default(5)
   let max_sessions_per_issue =
@@ -428,11 +420,12 @@ fn resolve_pi(
   let command =
     get_string(pi, "command")
     |> option.unwrap("pi --mode rpc --no-session --rpc-message-updates off")
-  let turn_timeout_ms = get_int(pi, "turn_timeout_ms") |> int_default(3_600_000)
-  let read_timeout_ms = get_int(pi, "read_timeout_ms") |> int_default(5000)
-  let stall_timeout_ms = get_int(pi, "stall_timeout_ms") |> int_default(300_000)
-  let ui_request_timeout_ms =
-    get_int(pi, "ui_request_timeout_ms") |> int_default(300_000)
+  use turn_timeout_ms <- result.try(duration_config.pi_turn_timeout_ms(root))
+  use read_timeout_ms <- result.try(duration_config.pi_read_timeout_ms(root))
+  use stall_timeout_ms <- result.try(duration_config.pi_stall_timeout_ms(root))
+  use ui_request_timeout_ms <- result.try(
+    duration_config.pi_ui_request_timeout_ms(root),
+  )
   case
     string.trim(command) == ""
     || turn_timeout_ms <= 0
@@ -1352,19 +1345,17 @@ fn read_workspace_driver(
         path <> ".lifecycle",
       ))
       use env <- result.try(read_workspace_driver_env(driver, path <> ".env"))
-      let timeout = get_int(driver, "timeout_ms") |> int_default(60_000)
-      case timeout > 0 {
-        False ->
-          Error(error.InvalidConfig(path <> ".timeout_ms must be positive"))
-        True ->
-          Ok(config_types.WorkspaceDriverConfig(
-            command: command,
-            lifecycle: lifecycle,
-            capabilities: [],
-            timeout_ms: timeout,
-            env: env,
-          ))
-      }
+      use timeout <- result.try(duration_config.workspace_driver_timeout_ms(
+        driver,
+        path,
+      ))
+      Ok(config_types.WorkspaceDriverConfig(
+        command: command,
+        lifecycle: lifecycle,
+        capabilities: [],
+        timeout_ms: timeout,
+        env: env,
+      ))
     }
   }
 }
@@ -1797,12 +1788,10 @@ fn resolve_scheduled_every(
         False -> Ok(0)
       }
     Ok(Some(value)) -> {
-      use every_ms <- result.try(
-        schedule_core.parse_every(value)
-        |> result.map_error(fn(message) {
-          error.InvalidConfig("scheduled_jobs." <> id <> ".every: " <> message)
-        }),
-      )
+      use every_ms <- result.try(duration_config.scheduled_every_ms(
+        value,
+        "scheduled_jobs." <> id <> ".every",
+      ))
       case enabled && every_ms < 1000 {
         True ->
           Error(error.InvalidConfig(

@@ -105,6 +105,71 @@ pub fn default_values_test() {
   assert ui_server.enrollment_token == None
 }
 
+pub fn duration_string_fields_parse_to_milliseconds_test() {
+  let front =
+    "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\nagent:\n  max_retry_backoff: 5m\npi:\n  turn_timeout: 1h\n  read_timeout: 5s\n  stall_timeout: 0ms\n  ui_request_timeout: 10m\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.polling.interval_ms == 45_000
+  assert configured.hooks.timeout_ms == 90_000
+  assert configured.agent.max_retry_backoff_ms == 300_000
+  assert configured.pi.turn_timeout_ms == 3_600_000
+  assert configured.pi.read_timeout_ms == 5000
+  assert configured.pi.stall_timeout_ms == 0
+  assert configured.pi.ui_request_timeout_ms == 600_000
+}
+
+pub fn duration_string_fields_reject_invalid_values_test() {
+  let bare_number =
+    invalid_config_message(minimal_front() <> "pi:\n  read_timeout: 5000\n")
+  assert string.contains(bare_number, "duration string")
+
+  let invalid_unit =
+    invalid_config_message(minimal_front() <> "pi:\n  turn_timeout: 1d\n")
+  assert string.contains(invalid_unit, "unit ms, s, m, or h")
+
+  let negative_nonnegative_field =
+    invalid_config_message(minimal_front() <> "pi:\n  stall_timeout: -1ms\n")
+  assert string.contains(negative_nonnegative_field, "zero or positive")
+
+  let zero_positive_field =
+    invalid_config_message(
+      minimal_front() <> "agent:\n  max_retry_backoff: 0s\n",
+    )
+  assert string.contains(zero_positive_field, "must be positive")
+}
+
+pub fn legacy_duration_ms_fields_remain_supported_test() {
+  let front =
+    "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\npolling:\n  interval_ms: 1234\nhooks:\n  before_run: test -d .git\n  timeout_ms: 2345\nagent:\n  max_retry_backoff_ms: 3456\npi:\n  turn_timeout_ms: 4567\n  read_timeout_ms: 5678\n  stall_timeout_ms: 0\n  ui_request_timeout_ms: 6789\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.polling.interval_ms == 1234
+  assert configured.hooks.timeout_ms == 2345
+  assert configured.agent.max_retry_backoff_ms == 3456
+  assert configured.pi.turn_timeout_ms == 4567
+  assert configured.pi.read_timeout_ms == 5678
+  assert configured.pi.stall_timeout_ms == 0
+  assert configured.pi.ui_request_timeout_ms == 6789
+}
+
+pub fn duration_string_fields_take_precedence_over_legacy_ms_test() {
+  let front =
+    "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\npolling:\n  interval: 2s\n  interval_ms: 999\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout_ms: 999\nagent:\n  max_retry_backoff: 4s\n  max_retry_backoff_ms: 999\npi:\n  turn_timeout: 5s\n  turn_timeout_ms: 999\n  read_timeout: 6s\n  read_timeout_ms: 999\n  stall_timeout: 0ms\n  stall_timeout_ms: 999\n  ui_request_timeout: 7s\n  ui_request_timeout_ms: 999\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.polling.interval_ms == 2000
+  assert configured.hooks.timeout_ms == 3000
+  assert configured.agent.max_retry_backoff_ms == 4000
+  assert configured.pi.turn_timeout_ms == 5000
+  assert configured.pi.read_timeout_ms == 6000
+  assert configured.pi.stall_timeout_ms == 0
+  assert configured.pi.ui_request_timeout_ms == 7000
+}
+
 pub fn ui_server_default_and_disabled_config_test() {
   let assert Ok(defaulted) =
     config.resolve_with_env(
@@ -442,7 +507,7 @@ pub fn nested_tracker_config_takes_precedence_over_flat_aliases_test() {
 
 fn workspace_driver_env_front(env_body: String) -> String {
   minimal_front()
-  <> "workspace:\n  root: test/tmp/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step]\n        timeout_ms: 60000\n"
+  <> "workspace:\n  root: test/tmp/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step]\n        timeout: 60s\n"
   <> env_body
 }
 
@@ -638,7 +703,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
 
   let operator_policy =
     minimal_front()
-    <> "pi:\n  ui_request_policy: operator\n  ui_request_timeout_ms: 1234\n"
+    <> "pi:\n  ui_request_policy: operator\n  ui_request_timeout: 1234ms\n"
   let assert Ok(configured_operator_policy) =
     config.resolve_with_env(
       definition(operator_policy),
@@ -660,7 +725,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
   assert configured_cancel_policy.pi.ui_request_policy == config_types.Cancel
 
   let explicit_timeout =
-    minimal_front() <> "pi:\n  ui_request_timeout_ms: 1234\n"
+    minimal_front() <> "pi:\n  ui_request_timeout: 1234ms\n"
   let assert Ok(configured_timeout) =
     config.resolve_with_env(
       definition(explicit_timeout),
@@ -695,7 +760,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       env,
     )
 
-  let invalid_timeout = minimal_front() <> "pi:\n  ui_request_timeout_ms: 0\n"
+  let invalid_timeout = minimal_front() <> "pi:\n  ui_request_timeout: 0ms\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_timeout),

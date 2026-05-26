@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import scherzo/duration
 import yay
 
 pub type ParsedValidator {
@@ -56,6 +57,50 @@ pub fn parsed_validator_name(validator: ParsedValidator) -> String {
   case validator {
     ParsedJsonSchemaValidator(name: name, ..) -> name
     ParsedCommandValidator(name: name, ..) -> name
+  }
+}
+
+pub fn parse_command_step_timeout(
+  node: yay.Node,
+) -> Result(Option(Int), ValidatorParseError) {
+  case get_node(node, "timeout") {
+    Some(yay.NodeStr(value)) ->
+      duration.parse_positive_ms(value, "timeout")
+      |> result.map(Some)
+      |> result.map_error(fn(duration_error) {
+        ValidatorParseError(
+          "invalid_command_timeout",
+          duration.error_message(duration_error),
+        )
+      })
+    Some(_) ->
+      Error(ValidatorParseError(
+        "command_timeout_not_duration",
+        "timeout must be a duration string with unit ms, s, m, or h",
+      ))
+    None -> parse_legacy_command_step_timeout(node)
+  }
+}
+
+fn parse_legacy_command_step_timeout(
+  node: yay.Node,
+) -> Result(Option(Int), ValidatorParseError) {
+  case get_node(node, "timeout_ms") {
+    None -> Ok(None)
+    Some(yay.NodeInt(value)) ->
+      case value > 0 {
+        True -> Ok(Some(value))
+        False ->
+          Error(ValidatorParseError(
+            "invalid_command_timeout_ms",
+            "timeout_ms must be positive",
+          ))
+      }
+    Some(_) ->
+      Error(ValidatorParseError(
+        "command_timeout_ms_not_int",
+        "timeout_ms must be an integer",
+      ))
   }
 }
 
@@ -286,6 +331,27 @@ fn validate_executable_path(
 }
 
 fn read_command_timeout_ms(node: yay.Node) -> Result(Int, ValidatorParseError) {
+  case get_node(node, "timeout") {
+    Some(yay.NodeStr(value)) ->
+      duration.parse_positive_ms(value, "structured_output.validators.timeout")
+      |> result.map_error(fn(duration_error) {
+        ValidatorParseError(
+          "invalid_structured_output_validator_timeout",
+          duration.error_message(duration_error),
+        )
+      })
+    Some(_) ->
+      Error(ValidatorParseError(
+        "structured_output_validator_timeout_not_duration",
+        "structured_output.validators.timeout must be a duration string with unit ms, s, m, or h",
+      ))
+    None -> read_legacy_command_timeout_ms(node)
+  }
+}
+
+fn read_legacy_command_timeout_ms(
+  node: yay.Node,
+) -> Result(Int, ValidatorParseError) {
   case get_node(node, "timeout_ms") {
     None -> Ok(30_000)
     Some(yay.NodeInt(timeout_ms)) ->
