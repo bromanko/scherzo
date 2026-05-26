@@ -4,6 +4,13 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/state/projection
+import scherzo/state/projection/commands as projection_commands
+import scherzo/state/projection/issue_recovery as projection_issue_recovery
+import scherzo/state/projection/legacy_runs as projection_legacy_runs
+import scherzo/state/projection/outbox as projection_outbox
+import scherzo/state/projection/steps as projection_steps
+import scherzo/state/projection/workflow_runs as projection_workflow_runs
+import scherzo/state/projection/workstreams as projection_workstreams
 import scherzo/state/record
 
 pub fn folding_records_produces_expected_projection_test() {
@@ -214,6 +221,7 @@ pub fn legacy_projection_snapshot_without_workstreams_decodes_test() {
   let assert Ok(decoded) = projection.decode_string(legacy_snapshot)
   assert decoded.workstreams == dict.new()
   assert decoded.step_recoveries == dict.new()
+  assert decoded.scheduled_jobs == dict.new()
 }
 
 pub fn projection_records_step_recoveries_test() {
@@ -1323,6 +1331,52 @@ fn scheduled_due_records(
         ..records
       ])
   }
+}
+
+pub fn bounded_context_projection_helpers_cover_remaining_slices_test() {
+  let runs = projection_legacy_runs.started(dict.new(), "run-1", "running")
+  let assert ["running"] = dict.values(runs)
+  assert projection_steps.attempt_key("run-1", "step-1", 2)
+    == "run-1\u{001f}step-1\u{001f}2"
+  assert projection_steps.recovery_key("run-1", "step-1", 2, 1)
+    == "run-1\u{001f}step-1\u{001f}2\u{001f}1"
+  assert projection_steps.session_fact_values(
+      "workflow",
+      "ws",
+      "/tmp/ws",
+      "workflow",
+      "ws",
+      "/tmp/ws",
+      "session-1",
+      "session.json",
+      0,
+    )
+    == #(Some("session-1"), Some("session.json"), 1)
+  assert projection_issue_recovery.retry_due_at_ms(#(1000, 2000), fn(value) {
+      Ok(value)
+    })
+    == Ok(3000)
+  assert projection_workflow_runs.has_run(
+    dict.from_list([#("run-1", "active")]),
+    "run-1",
+  )
+  assert projection_commands.command_receipt(dict.new(), "comment-1", "unseen")
+    == "unseen"
+  assert projection_outbox.pending_replays(
+      dict.from_list([#("outbox-1", "pending")]),
+      fn(entry) {
+        let #(outbox_id, _) = entry
+        Ok(outbox_id)
+      },
+    )
+    == Ok(["outbox-1"])
+  assert projection_workstreams.update_status(
+      dict.new(),
+      "workstream-1",
+      fn(id) { id },
+      fn(_) { "updated" },
+    )
+    == dict.from_list([#("workstream-1", "updated")])
 }
 
 fn sample_records() -> List(record.LedgerRecord) {

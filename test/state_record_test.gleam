@@ -1,7 +1,15 @@
-import gleam/option.{Some}
+import gleam/json
+import gleam/option.{None, Some}
 import gleam/string
 import legacy_ledger_fixtures
 import scherzo/state/record
+import scherzo/state/record/commands as record_commands
+import scherzo/state/record/issue_recovery as record_issue_recovery
+import scherzo/state/record/legacy_runs as record_legacy_runs
+import scherzo/state/record/outbox as record_outbox
+import scherzo/state/record/steps as record_steps
+import scherzo/state/record/workflow_runs as record_workflow_runs
+import scherzo/state/record/workstreams as record_workstreams
 
 pub fn encodes_and_decodes_run_records_test() {
   let started =
@@ -189,6 +197,13 @@ pub fn retry_scheduled_requires_delay_ms_test() {
     "{\"schema_version\":2,\"record_id\":\"retry-missing-delay\",\"at_ms\":4000,\"kind\":\"retry_scheduled\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"generation\":2,\"reason\":\"backoff\"}"
 
   let assert Error(_) = record.decode_string(missing_delay_line)
+}
+
+pub fn scheduled_failure_report_failed_requires_next_retry_at_ms_test() {
+  let missing_next_retry_line =
+    "{\"schema_version\":2,\"record_id\":\"scheduled-report-missing-retry\",\"at_ms\":4001,\"kind\":\"scheduled_failure_report_failed\",\"job_id\":\"repair\",\"workflow_id\":\"repair\",\"due_at_ms\":900000,\"run_id\":\"schedule-repair-20260505T120000Z\",\"attempt\":2,\"dedupe_key\":\"scheduled-job:repair\",\"error_code\":\"linear_api_request\",\"error_message\":\"network\",\"generation\":1}"
+
+  let assert Error(_) = record.decode_string(missing_next_retry_line)
 }
 
 pub fn encodes_and_decodes_linear_command_records_test() {
@@ -614,6 +629,117 @@ pub fn invalid_top_level_record_shape_is_rejected_test() {
 fn decode_record(line: String) -> record.LedgerRecord {
   let assert Ok(decoded) = record.decode_string(line)
   decoded
+}
+
+pub fn bounded_context_record_helpers_cover_remaining_slices_test() {
+  assert record_legacy_runs.run_started_entries(
+      "run-1",
+      "issue-1",
+      "SCH-1",
+      "workspace",
+    )
+    == [
+      #("run_id", json.string("run-1")),
+      #("issue_id", json.string("issue-1")),
+      #("issue_identifier", json.string("SCH-1")),
+      #("workspace_path", json.string("workspace")),
+    ]
+  assert record_issue_recovery.retry_scheduled_entries(
+      "issue-1",
+      "SCH-1",
+      1000,
+      2,
+      "backoff",
+    )
+    == [
+      #("issue_id", json.string("issue-1")),
+      #("issue_identifier", json.string("SCH-1")),
+      #("delay_ms", json.int(1000)),
+      #("generation", json.int(2)),
+      #("reason", json.string("backoff")),
+    ]
+  assert record_commands.linear_seen_entries(
+      "comment-1",
+      "issue-1",
+      "user-1",
+      "retry",
+      "/scherzo retry",
+    )
+    == [
+      #("comment_id", json.string("comment-1")),
+      #("issue_id", json.string("issue-1")),
+      #("author_id", json.string("user-1")),
+      #("command_name", json.string("retry")),
+      #("excerpt", json.string("/scherzo retry")),
+    ]
+  assert record_outbox.pending_v2_entries(
+      "outbox-1",
+      "issue-1",
+      "linear_comment",
+      "dedupe",
+      "{\"body\":\"ok\"}",
+    )
+    == [
+      #("outbox_id", json.string("outbox-1")),
+      #("issue_id", json.string("issue-1")),
+      #("outbox_kind", json.string("linear_comment")),
+      #("dedupe_key", json.string("dedupe")),
+      #("payload_json", json.string("{\"body\":\"ok\"}")),
+    ]
+  assert record_workflow_runs.contract_record_entries(
+      "run-1",
+      "workflow",
+      "wf-1",
+      "artifact.json",
+      "sha",
+      12,
+    )
+    == [
+      #("run_id", json.string("run-1")),
+      #("workflow_id", json.string("workflow")),
+      #("workflow_fingerprint", json.string("wf-1")),
+      #("artifact_ref", json.string("artifact.json")),
+      #("artifact_sha256", json.string("sha")),
+      #("artifact_bytes", json.int(12)),
+    ]
+  assert record_steps.prepared_entries(
+      "run-1",
+      "workflow",
+      "step-1",
+      1,
+      "ws",
+      "/tmp/ws",
+      "/tmp/run",
+      Some("src"),
+      None,
+    )
+    == [
+      #("run_id", json.string("run-1")),
+      #("workflow_id", json.string("workflow")),
+      #("step_id", json.string("step-1")),
+      #("attempt_index", json.int(1)),
+      #("workspace_name", json.string("ws")),
+      #("workspace_path", json.string("/tmp/ws")),
+      #("run_root", json.string("/tmp/run")),
+      #("source_workspace_name", json.string("src")),
+      #("source_workspace_path", json.null()),
+    ]
+  assert record_workstreams.assigned_entries(
+      "ws-1",
+      "assign-1",
+      "workflow",
+      Some("playbook"),
+      "handoff",
+      "idem-1",
+    )
+    == [
+      #("workstream_id", json.string("ws-1")),
+      #("assignment_id", json.string("assign-1")),
+      #("workflow_id", json.string("workflow")),
+      #("playbook_id", json.string("playbook")),
+      #("reason", json.string("handoff")),
+      #("idempotency_key", json.string("idem-1")),
+    ]
 }
 
 fn assert_roundtrip(ledger_record: record.LedgerRecord) -> Nil {

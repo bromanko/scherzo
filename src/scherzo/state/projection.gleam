@@ -5,12 +5,19 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq}
+import gleam/result
 import gleam/string
 import scherzo/json_decode_error
 import scherzo/orchestrator/state as orchestrator_state
+import scherzo/state/projection/commands as commands_projection
+import scherzo/state/projection/issue_recovery as issue_recovery_projection
+import scherzo/state/projection/legacy_runs as legacy_runs_projection
+import scherzo/state/projection/outbox as outbox_projection
+import scherzo/state/projection/scheduled as scheduled_projection
+import scherzo/state/projection/steps as steps_projection
+import scherzo/state/projection/workflow_runs as workflow_runs_projection
+import scherzo/state/projection/workstreams as workstreams_projection
 import scherzo/state/record
-
-const max_recent_scheduled_run_ids = 25
 
 pub type Projection {
   Projection(
@@ -595,18 +602,12 @@ type SnapshotFields {
     issue_counters: List(IssueCounterSnapshot),
     known_workspaces: List(KnownWorkspaceSnapshot),
     workstreams: List(WorkstreamSnapshot),
-    scheduled_jobs: List(ScheduledJobSnapshot),
+    scheduled_jobs: List(#(String, scheduled_projection.ScheduledJobStatus)),
   )
 }
 
 type WorkstreamSnapshot {
   WorkstreamSnapshot(workstream_id: String, status: WorkstreamStatus)
-}
-
-// Snapshot support for scheduled projection is intentionally lightweight in the
-// first slice. Old snapshots omit this optional field and decode as an empty map.
-type ScheduledJobSnapshot {
-  ScheduledJobSnapshot(job_id: String, status: ScheduledJobStatus)
 }
 
 pub fn new() -> Projection {
@@ -654,7 +655,7 @@ pub fn apply(
     record.RunStarted(run_id, issue_id, issue_identifier, workspace_path) ->
       Projection(
         ..projection,
-        runs: dict.insert(
+        runs: legacy_runs_projection.started(
           projection.runs,
           run_id,
           RunRunning(issue_id, issue_identifier, workspace_path, at_ms),
@@ -663,7 +664,7 @@ pub fn apply(
     record.RunFinished(run_id, issue_id, classification, token_total, turns) ->
       Projection(
         ..projection,
-        runs: dict.insert(
+        runs: legacy_runs_projection.finished(
           projection.runs,
           run_id,
           RunFinished(issue_id, classification, token_total, turns, at_ms),
@@ -672,7 +673,7 @@ pub fn apply(
     record.RunInterrupted(run_id, issue_id, reason) ->
       Projection(
         ..projection,
-        runs: dict.insert(
+        runs: legacy_runs_projection.interrupted(
           projection.runs,
           run_id,
           RunInterrupted(issue_id, reason, at_ms),
@@ -1531,7 +1532,7 @@ pub fn apply(
         )
       Projection(
         ..projection,
-        commands: dict.insert(
+        commands: commands_projection.insert_status(
           projection.commands,
           comment_id,
           CommandSeen(issue_id, author_id, command_name, excerpt, at_ms),
@@ -1554,7 +1555,7 @@ pub fn apply(
         )
       Projection(
         ..projection,
-        commands: dict.insert(
+        commands: commands_projection.insert_status(
           projection.commands,
           comment_id,
           CommandStarted(issue_id, command_name, at_ms),
@@ -1578,7 +1579,7 @@ pub fn apply(
         )
       Projection(
         ..projection,
-        commands: dict.insert(
+        commands: commands_projection.insert_status(
           projection.commands,
           comment_id,
           CommandCompleted(issue_id, status, message_excerpt, at_ms),
@@ -1595,7 +1596,7 @@ pub fn apply(
         acked_receipt(projection.command_receipts, comment_id, issue_id, at_ms)
       Projection(
         ..projection,
-        commands: dict.insert(
+        commands: commands_projection.insert_status(
           projection.commands,
           comment_id,
           CommandAcked(issue_id, at_ms),
@@ -1628,7 +1629,7 @@ pub fn apply(
         )
       Projection(
         ..projection,
-        commands: dict.insert(
+        commands: commands_projection.insert_status(
           projection.commands,
           event_id,
           CommandSeen(task_remote_id, author_id, command_name, excerpt, at_ms),
@@ -1651,7 +1652,7 @@ pub fn apply(
         )
       Projection(
         ..projection,
-        commands: dict.insert(
+        commands: commands_projection.insert_status(
           projection.commands,
           event_id,
           CommandStarted(task_remote_id, command_name, at_ms),
@@ -1681,7 +1682,7 @@ pub fn apply(
         )
       Projection(
         ..projection,
-        commands: dict.insert(
+        commands: commands_projection.insert_status(
           projection.commands,
           event_id,
           CommandCompleted(task_remote_id, status, message_excerpt, at_ms),
@@ -1703,7 +1704,7 @@ pub fn apply(
         )
       Projection(
         ..projection,
-        commands: dict.insert(
+        commands: commands_projection.insert_status(
           projection.commands,
           event_id,
           CommandAcked(task_remote_id, at_ms),
@@ -1718,12 +1719,13 @@ pub fn apply(
     record.ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger) ->
       update_scheduled_job(
         projection,
-        scheduled_due_status(
-          scheduled_status(projection, job_id, workflow_id),
-          due_at_ms,
-          run_id,
-          trigger,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.due_status(due_at_ms, run_id, trigger)
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledJobSkipped(
       job_id,
@@ -1735,13 +1737,18 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_skipped_status(
-          scheduled_status(projection, job_id, workflow_id),
-          due_at_ms,
-          run_id,
-          reason,
-          skipped_count,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.skipped_status(
+            due_at_ms,
+            run_id,
+            reason,
+            skipped_count,
+          )
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledRunPending(
       job_id,
@@ -1753,12 +1760,13 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_pending_status(
-          scheduled_status(projection, job_id, workflow_id),
-          due_at_ms,
-          run_id,
-          trigger,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.pending_status(due_at_ms, run_id, trigger)
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledRunPendingBlocked(
       job_id,
@@ -1770,12 +1778,13 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_blocked_status(
-          scheduled_status(projection, job_id, workflow_id),
-          due_at_ms,
-          run_id,
-          reason,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.blocked_status(due_at_ms, run_id, reason)
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledRunPendingCancelled(
       job_id,
@@ -1787,11 +1796,13 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_cancelled_status(
-          scheduled_status(projection, job_id, workflow_id),
-          run_id,
-          reason,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.cancelled_status(run_id, reason)
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledRunStarted(
       job_id,
@@ -1805,14 +1816,19 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_started_status(
-          scheduled_status(projection, job_id, workflow_id),
-          due_at_ms,
-          run_id,
-          attempt,
-          session_id,
-          run_root,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.started_status(
+            due_at_ms,
+            run_id,
+            attempt,
+            session_id,
+            run_root,
+          )
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledRunSucceeded(
       job_id,
@@ -1826,13 +1842,18 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_succeeded_status(
-          scheduled_status(projection, job_id, workflow_id),
-          due_at_ms,
-          run_id,
-          attempt,
-          finished_at_ms,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.succeeded_status(
+            due_at_ms,
+            run_id,
+            attempt,
+            finished_at_ms,
+          )
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledRunFailed(
       job_id,
@@ -1847,16 +1868,21 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_failed_status(
-          scheduled_status(projection, job_id, workflow_id),
-          due_at_ms,
-          run_id,
-          attempt,
-          finished_at_ms,
-          reason,
-          retry_exhausted,
-          run_root,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.failed_status(
+            due_at_ms,
+            run_id,
+            attempt,
+            finished_at_ms,
+            reason,
+            retry_exhausted,
+            run_root,
+          )
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledRunRetryScheduled(
       job_id,
@@ -1870,22 +1896,29 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_retry_status(
-          scheduled_status(projection, job_id, workflow_id),
-          due_at_ms,
-          run_id,
-          next_attempt,
-          reason,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.retry_status(
+            due_at_ms,
+            run_id,
+            next_attempt,
+            reason,
+          )
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledRunRetryCancelled(job_id, run_id, _, reason) ->
       update_scheduled_job(
         projection,
-        scheduled_cancelled_status(
-          scheduled_status(projection, job_id, ""),
-          run_id,
-          reason,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          "",
+        )
+          |> scheduled_projection.cancelled_status(run_id, reason)
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledFailureReported(
       job_id,
@@ -1899,11 +1932,13 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_reported_status(
-          scheduled_status(projection, job_id, workflow_id),
-          dedupe_key,
-          linear_issue_id,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.reported_status(dedupe_key, linear_issue_id)
+          |> local_scheduled_status_to_parent,
       )
     record.ScheduledFailureReportFailed(
       job_id,
@@ -1919,21 +1954,26 @@ pub fn apply(
     ) ->
       update_scheduled_job(
         projection,
-        scheduled_report_failed_status(
-          scheduled_status(projection, job_id, workflow_id),
-          run_id,
-          attempt,
-          dedupe_key,
-          error_code,
-          error_message,
-          next_retry_at_ms,
-          generation,
-        ),
+        scheduled_projection.ensure_status(
+          scheduled_jobs_to_local(projection.scheduled_jobs),
+          job_id,
+          workflow_id,
+        )
+          |> scheduled_projection.report_failed_status(
+            run_id,
+            attempt,
+            dedupe_key,
+            error_code,
+            error_message,
+            next_retry_at_ms,
+            generation,
+          )
+          |> local_scheduled_status_to_parent,
       )
     record.OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key) ->
       Projection(
         ..projection,
-        outbox: dict.insert(
+        outbox: outbox_projection.insert_status(
           projection.outbox,
           outbox_id,
           OutboxPending(issue_id, outbox_kind, dedupe_key, at_ms),
@@ -1948,7 +1988,7 @@ pub fn apply(
     ) ->
       Projection(
         ..projection,
-        outbox: dict.insert(
+        outbox: outbox_projection.insert_status(
           projection.outbox,
           outbox_id,
           OutboxPendingV2(
@@ -1963,7 +2003,7 @@ pub fn apply(
     record.OutboxCompleted(outbox_id, issue_id, outbox_kind) ->
       Projection(
         ..projection,
-        outbox: dict.insert(
+        outbox: outbox_projection.insert_status(
           projection.outbox,
           outbox_id,
           OutboxCompleted(issue_id, outbox_kind, at_ms),
@@ -1972,7 +2012,7 @@ pub fn apply(
     record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code) ->
       Projection(
         ..projection,
-        outbox: dict.insert(
+        outbox: outbox_projection.insert_status(
           projection.outbox,
           outbox_id,
           OutboxFailed(issue_id, outbox_kind, error_code, at_ms),
@@ -2112,16 +2152,13 @@ fn update_workstream(
   workstream_id: String,
   update: fn(WorkstreamStatus) -> WorkstreamStatus,
 ) -> Projection {
-  let current = case dict.get(projection.workstreams, workstream_id) {
-    Ok(status) -> status
-    Error(Nil) -> empty_workstream_status(workstream_id)
-  }
   Projection(
     ..projection,
-    workstreams: dict.insert(
+    workstreams: workstreams_projection.update_status(
       projection.workstreams,
       workstream_id,
-      update(current),
+      empty_workstream_status,
+      update,
     ),
   )
 }
@@ -2149,11 +2186,155 @@ pub fn scheduled_status_for(
   projection: Projection,
   job_id: String,
 ) -> Result(ScheduledJobStatus, Nil) {
-  dict.get(projection.scheduled_jobs, job_id)
+  projection.scheduled_jobs
+  |> scheduled_jobs_to_local
+  |> scheduled_projection.status_for(job_id)
+  |> result.map(local_scheduled_status_to_parent)
 }
 
 pub fn scheduled_statuses(projection: Projection) -> List(ScheduledJobStatus) {
-  dict.values(projection.scheduled_jobs)
+  projection.scheduled_jobs
+  |> scheduled_jobs_to_local
+  |> scheduled_projection.statuses
+  |> list.map(local_scheduled_status_to_parent)
+}
+
+fn scheduled_jobs_to_local(
+  statuses: Dict(String, ScheduledJobStatus),
+) -> Dict(String, scheduled_projection.ScheduledJobStatus) {
+  statuses
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(job_id, status) = entry
+    #(job_id, parent_scheduled_status_to_local(status))
+  })
+  |> dict.from_list
+}
+
+fn local_scheduled_status_to_parent(
+  status: scheduled_projection.ScheduledJobStatus,
+) -> ScheduledJobStatus {
+  ScheduledJobStatus(
+    job_id: status.job_id,
+    workflow_id: status.workflow_id,
+    state: case status.state {
+      scheduled_projection.ScheduledIdle -> ScheduledIdle
+      scheduled_projection.ScheduledDuePending -> ScheduledDuePending
+      scheduled_projection.ScheduledPaused -> ScheduledPaused
+      scheduled_projection.ScheduledWaitingForGlobalSlot ->
+        ScheduledWaitingForGlobalSlot
+      scheduled_projection.ScheduledActive -> ScheduledActive
+      scheduled_projection.ScheduledRetryWaiting -> ScheduledRetryWaiting
+      scheduled_projection.ScheduledReportRetryWaiting ->
+        ScheduledReportRetryWaiting
+      scheduled_projection.ScheduledTerminalSuccess -> ScheduledTerminalSuccess
+      scheduled_projection.ScheduledTerminalFailure -> ScheduledTerminalFailure
+    },
+    current_run: case status.current_run {
+      Some(run) ->
+        Some(ScheduledRunSummary(
+          run_id: run.run_id,
+          due_at_ms: run.due_at_ms,
+          trigger: run.trigger,
+          attempt: run.attempt,
+          status: run.status,
+          reason: run.reason,
+          session_id: run.session_id,
+          run_root: run.run_root,
+        ))
+      None -> None
+    },
+    last_due_at_ms: status.last_due_at_ms,
+    last_success_at_ms: status.last_success_at_ms,
+    last_success_run_id: status.last_success_run_id,
+    last_failure_at_ms: status.last_failure_at_ms,
+    last_failure_run_id: status.last_failure_run_id,
+    last_failure_reason: status.last_failure_reason,
+    retry_count: status.retry_count,
+    skipped_overlap_count: status.skipped_overlap_count,
+    skipped_catch_up_count: status.skipped_catch_up_count,
+    skipped_paused_count: status.skipped_paused_count,
+    skipped_capacity_count: status.skipped_capacity_count,
+    failure_issue_id: status.failure_issue_id,
+    failure_dedupe_key: status.failure_dedupe_key,
+    report_retry: case status.report_retry {
+      Some(retry) ->
+        Some(ScheduledReportRetry(
+          run_id: retry.run_id,
+          attempt: retry.attempt,
+          dedupe_key: retry.dedupe_key,
+          error_code: retry.error_code,
+          error_message: retry.error_message,
+          next_retry_at_ms: retry.next_retry_at_ms,
+          generation: retry.generation,
+        ))
+      None -> None
+    },
+    recent_run_ids: status.recent_run_ids,
+  )
+}
+
+fn parent_scheduled_status_to_local(
+  status: ScheduledJobStatus,
+) -> scheduled_projection.ScheduledJobStatus {
+  scheduled_projection.ScheduledJobStatus(
+    job_id: status.job_id,
+    workflow_id: status.workflow_id,
+    state: case status.state {
+      ScheduledIdle -> scheduled_projection.ScheduledIdle
+      ScheduledDuePending -> scheduled_projection.ScheduledDuePending
+      ScheduledPaused -> scheduled_projection.ScheduledPaused
+      ScheduledWaitingForGlobalSlot ->
+        scheduled_projection.ScheduledWaitingForGlobalSlot
+      ScheduledActive -> scheduled_projection.ScheduledActive
+      ScheduledRetryWaiting -> scheduled_projection.ScheduledRetryWaiting
+      ScheduledReportRetryWaiting ->
+        scheduled_projection.ScheduledReportRetryWaiting
+      ScheduledTerminalSuccess -> scheduled_projection.ScheduledTerminalSuccess
+      ScheduledTerminalFailure -> scheduled_projection.ScheduledTerminalFailure
+    },
+    current_run: case status.current_run {
+      Some(run) ->
+        Some(scheduled_projection.ScheduledRunSummary(
+          run_id: run.run_id,
+          due_at_ms: run.due_at_ms,
+          trigger: run.trigger,
+          attempt: run.attempt,
+          status: run.status,
+          reason: run.reason,
+          session_id: run.session_id,
+          run_root: run.run_root,
+        ))
+      None -> None
+    },
+    last_due_at_ms: status.last_due_at_ms,
+    last_success_at_ms: status.last_success_at_ms,
+    last_success_run_id: status.last_success_run_id,
+    last_failure_at_ms: status.last_failure_at_ms,
+    last_failure_run_id: status.last_failure_run_id,
+    last_failure_reason: status.last_failure_reason,
+    retry_count: status.retry_count,
+    skipped_overlap_count: status.skipped_overlap_count,
+    skipped_catch_up_count: status.skipped_catch_up_count,
+    skipped_paused_count: status.skipped_paused_count,
+    skipped_capacity_count: status.skipped_capacity_count,
+    failure_issue_id: status.failure_issue_id,
+    failure_dedupe_key: status.failure_dedupe_key,
+    report_retry: case status.report_retry {
+      Some(retry) ->
+        Some(scheduled_projection.ScheduledReportRetry(
+          run_id: retry.run_id,
+          attempt: retry.attempt,
+          dedupe_key: retry.dedupe_key,
+          error_code: retry.error_code,
+          error_message: retry.error_message,
+          next_retry_at_ms: retry.next_retry_at_ms,
+          generation: retry.generation,
+        ))
+      None -> None
+    },
+    recent_run_ids: status.recent_run_ids,
+  )
 }
 
 fn apply_step_attempt_pi_session_recorded(
@@ -2298,365 +2479,6 @@ fn update_scheduled_job(
       status,
     ),
   )
-}
-
-fn scheduled_status(
-  projection: Projection,
-  job_id: String,
-  workflow_id: String,
-) -> ScheduledJobStatus {
-  case dict.get(projection.scheduled_jobs, job_id) {
-    Ok(status) ->
-      case status.workflow_id == "" && workflow_id != "" {
-        True -> ScheduledJobStatus(..status, workflow_id: workflow_id)
-        False -> status
-      }
-    Error(Nil) -> empty_scheduled_status(job_id, workflow_id)
-  }
-}
-
-fn empty_scheduled_status(
-  job_id: String,
-  workflow_id: String,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    job_id: job_id,
-    workflow_id: workflow_id,
-    state: ScheduledIdle,
-    current_run: None,
-    last_due_at_ms: None,
-    last_success_at_ms: None,
-    last_success_run_id: None,
-    last_failure_at_ms: None,
-    last_failure_run_id: None,
-    last_failure_reason: None,
-    retry_count: 0,
-    skipped_overlap_count: 0,
-    skipped_catch_up_count: 0,
-    skipped_paused_count: 0,
-    skipped_capacity_count: 0,
-    failure_issue_id: None,
-    failure_dedupe_key: None,
-    report_retry: None,
-    recent_run_ids: [],
-  )
-}
-
-fn scheduled_due_status(
-  status: ScheduledJobStatus,
-  due_at_ms: Int,
-  run_id: String,
-  trigger: String,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledDuePending,
-    current_run: Some(ScheduledRunSummary(
-      run_id: run_id,
-      due_at_ms: due_at_ms,
-      trigger: trigger,
-      attempt: 0,
-      status: "due",
-      reason: None,
-      session_id: None,
-      run_root: None,
-    )),
-    last_due_at_ms: Some(due_at_ms),
-    recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
-  )
-}
-
-fn scheduled_pending_status(
-  status: ScheduledJobStatus,
-  due_at_ms: Int,
-  run_id: String,
-  trigger: String,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledDuePending,
-    current_run: Some(ScheduledRunSummary(
-      run_id: run_id,
-      due_at_ms: due_at_ms,
-      trigger: trigger,
-      attempt: 0,
-      status: "pending",
-      reason: None,
-      session_id: None,
-      run_root: None,
-    )),
-    recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
-  )
-}
-
-fn scheduled_blocked_status(
-  status: ScheduledJobStatus,
-  due_at_ms: Int,
-  run_id: String,
-  reason: String,
-) -> ScheduledJobStatus {
-  let state = case reason {
-    "paused" -> ScheduledPaused
-    "waiting_for_global_slot" -> ScheduledWaitingForGlobalSlot
-    _ -> ScheduledDuePending
-  }
-  ScheduledJobStatus(
-    ..status,
-    state: state,
-    current_run: Some(ScheduledRunSummary(
-      run_id: run_id,
-      due_at_ms: due_at_ms,
-      trigger: current_trigger(status),
-      attempt: current_attempt(status),
-      status: "blocked",
-      reason: Some(reason),
-      session_id: None,
-      run_root: current_run_root(status),
-    )),
-  )
-}
-
-fn scheduled_started_status(
-  status: ScheduledJobStatus,
-  due_at_ms: Int,
-  run_id: String,
-  attempt: Int,
-  session_id: String,
-  run_root: String,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledActive,
-    current_run: Some(ScheduledRunSummary(
-      run_id: run_id,
-      due_at_ms: due_at_ms,
-      trigger: current_trigger(status),
-      attempt: attempt,
-      status: "active",
-      reason: None,
-      session_id: Some(session_id),
-      run_root: Some(run_root),
-    )),
-    recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
-  )
-}
-
-fn scheduled_succeeded_status(
-  status: ScheduledJobStatus,
-  due_at_ms: Int,
-  run_id: String,
-  attempt: Int,
-  finished_at_ms: Int,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledTerminalSuccess,
-    current_run: Some(ScheduledRunSummary(
-      run_id: run_id,
-      due_at_ms: due_at_ms,
-      trigger: current_trigger(status),
-      attempt: attempt,
-      status: "succeeded",
-      reason: None,
-      session_id: current_session_id(status),
-      run_root: current_run_root(status),
-    )),
-    last_success_at_ms: Some(finished_at_ms),
-    last_success_run_id: Some(run_id),
-    report_retry: None,
-    recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
-  )
-}
-
-fn scheduled_failed_status(
-  status: ScheduledJobStatus,
-  due_at_ms: Int,
-  run_id: String,
-  attempt: Int,
-  finished_at_ms: Int,
-  reason: String,
-  retry_exhausted: Bool,
-  run_root: Option(String),
-) -> ScheduledJobStatus {
-  let state = case retry_exhausted {
-    True -> ScheduledTerminalFailure
-    False -> ScheduledRetryWaiting
-  }
-  ScheduledJobStatus(
-    ..status,
-    state: state,
-    current_run: Some(ScheduledRunSummary(
-      run_id: run_id,
-      due_at_ms: due_at_ms,
-      trigger: current_trigger(status),
-      attempt: attempt,
-      status: "failed",
-      reason: Some(reason),
-      session_id: current_session_id(status),
-      run_root: option.or(run_root, current_run_root(status)),
-    )),
-    last_failure_at_ms: Some(finished_at_ms),
-    last_failure_run_id: Some(run_id),
-    last_failure_reason: Some(reason),
-    retry_count: attempt,
-    recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
-  )
-}
-
-fn scheduled_retry_status(
-  status: ScheduledJobStatus,
-  due_at_ms: Int,
-  run_id: String,
-  next_attempt: Int,
-  reason: String,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledRetryWaiting,
-    current_run: Some(ScheduledRunSummary(
-      run_id: run_id,
-      due_at_ms: due_at_ms,
-      trigger: current_trigger(status),
-      attempt: next_attempt,
-      status: "retry_waiting",
-      reason: Some(reason),
-      session_id: current_session_id(status),
-      run_root: current_run_root(status),
-    )),
-    retry_count: next_attempt - 1,
-  )
-}
-
-fn scheduled_cancelled_status(
-  status: ScheduledJobStatus,
-  run_id: String,
-  reason: String,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledIdle,
-    current_run: Some(ScheduledRunSummary(
-      run_id: run_id,
-      due_at_ms: current_due_at(status),
-      trigger: current_trigger(status),
-      attempt: current_attempt(status),
-      status: "cancelled",
-      reason: Some(reason),
-      session_id: current_session_id(status),
-      run_root: current_run_root(status),
-    )),
-  )
-}
-
-fn scheduled_reported_status(
-  status: ScheduledJobStatus,
-  dedupe_key: String,
-  linear_issue_id: String,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledTerminalFailure,
-    failure_issue_id: Some(linear_issue_id),
-    failure_dedupe_key: Some(dedupe_key),
-    report_retry: None,
-  )
-}
-
-fn scheduled_report_failed_status(
-  status: ScheduledJobStatus,
-  run_id: String,
-  attempt: Int,
-  dedupe_key: String,
-  error_code: String,
-  error_message: String,
-  next_retry_at_ms: Int,
-  generation: Int,
-) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledReportRetryWaiting,
-    failure_dedupe_key: Some(dedupe_key),
-    report_retry: Some(ScheduledReportRetry(
-      run_id: run_id,
-      attempt: attempt,
-      dedupe_key: dedupe_key,
-      error_code: error_code,
-      error_message: error_message,
-      next_retry_at_ms: next_retry_at_ms,
-      generation: generation,
-    )),
-  )
-}
-
-fn scheduled_skipped_status(
-  status: ScheduledJobStatus,
-  due_at_ms: Int,
-  run_id: String,
-  reason: String,
-  skipped_count: Int,
-) -> ScheduledJobStatus {
-  let #(overlap, catch_up, paused, capacity) = case reason {
-    "overlap_running" -> #(skipped_count, 0, 0, 0)
-    "catch_up_disabled" -> #(0, skipped_count, 0, 0)
-    "schedule_paused" -> #(0, 0, skipped_count, 0)
-    "waiting_for_global_slot" -> #(0, 0, 0, skipped_count)
-    _ -> #(0, 0, 0, 0)
-  }
-  ScheduledJobStatus(
-    ..status,
-    last_due_at_ms: Some(due_at_ms),
-    skipped_overlap_count: status.skipped_overlap_count + overlap,
-    skipped_catch_up_count: status.skipped_catch_up_count + catch_up,
-    skipped_paused_count: status.skipped_paused_count + paused,
-    skipped_capacity_count: status.skipped_capacity_count + capacity,
-    recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
-  )
-}
-
-fn current_trigger(status: ScheduledJobStatus) -> String {
-  case status.current_run {
-    Some(run) -> run.trigger
-    None -> "automatic"
-  }
-}
-
-fn current_due_at(status: ScheduledJobStatus) -> Int {
-  case status.current_run {
-    Some(run) -> run.due_at_ms
-    None -> 0
-  }
-}
-
-fn current_attempt(status: ScheduledJobStatus) -> Int {
-  case status.current_run {
-    Some(run) -> run.attempt
-    None -> 0
-  }
-}
-
-fn current_session_id(status: ScheduledJobStatus) -> Option(String) {
-  case status.current_run {
-    Some(run) -> run.session_id
-    None -> None
-  }
-}
-
-fn current_run_root(status: ScheduledJobStatus) -> Option(String) {
-  case status.current_run {
-    Some(run) -> run.run_root
-    None -> None
-  }
-}
-
-fn insert_recent_run(ids: List(String), run_id: String) -> List(String) {
-  case list.contains(ids, run_id) {
-    True -> trim_recent_runs(ids)
-    False -> trim_recent_runs([run_id, ..ids])
-  }
-}
-
-fn trim_recent_runs(ids: List(String)) -> List(String) {
-  list.take(ids, max_recent_scheduled_run_ids)
 }
 
 fn seen_receipt(
@@ -2854,7 +2676,7 @@ pub fn step_attempt_key(
   step_id: String,
   attempt_index: Int,
 ) -> String {
-  run_id <> "\u{001f}" <> step_id <> "\u{001f}" <> int.to_string(attempt_index)
+  steps_projection.attempt_key(run_id, step_id, attempt_index)
 }
 
 pub fn step_recovery_key(
@@ -2863,13 +2685,12 @@ pub fn step_recovery_key(
   failed_attempt_index: Int,
   recovery_attempt_number: Int,
 ) -> String {
-  run_id
-  <> "\u{001f}"
-  <> step_id
-  <> "\u{001f}"
-  <> int.to_string(failed_attempt_index)
-  <> "\u{001f}"
-  <> int.to_string(recovery_attempt_number)
+  steps_projection.recovery_key(
+    run_id,
+    step_id,
+    failed_attempt_index,
+    recovery_attempt_number,
+  )
 }
 
 fn apply_step_recovery_finished(
@@ -2946,15 +2767,17 @@ fn session_fact_values(
   session_file: String,
   current_count: Int,
 ) -> #(Option(String), Option(String), Int) {
-  let fact_count = current_count + 1
-  case
-    status_workflow_id == fact_workflow_id
-    && status_workspace_name == fact_workspace_name
-    && status_workspace_path == fact_workspace_path
-  {
-    True -> #(Some(session_id), Some(session_file), fact_count)
-    False -> #(None, None, fact_count)
-  }
+  steps_projection.session_fact_values(
+    status_workflow_id,
+    status_workspace_name,
+    status_workspace_path,
+    fact_workflow_id,
+    fact_workspace_name,
+    fact_workspace_path,
+    session_id,
+    session_file,
+    current_count,
+  )
 }
 
 pub fn next_attempt_index(
@@ -2962,22 +2785,12 @@ pub fn next_attempt_index(
   run_id: String,
   step_id: String,
 ) -> Int {
-  projection.step_attempts
-  |> dict.values
-  |> list.fold(0, fn(max_index, status) {
-    case attempt_identity(status) {
-      #(status_run_id, status_step_id, attempt_index) ->
-        case
-          status_run_id == run_id
-          && status_step_id == step_id
-          && attempt_index > max_index
-        {
-          True -> attempt_index
-          False -> max_index
-        }
-    }
-  })
-  |> add_one
+  steps_projection.next_attempt_index(
+    projection.step_attempts,
+    attempt_identity,
+    run_id,
+    step_id,
+  )
 }
 
 pub fn dependency_satisfying_attempt(status: StepAttemptStatus) -> Bool {
@@ -3042,10 +2855,7 @@ pub fn latest_completed_workspace(
 pub fn active_workflow_runs(
   projection: Projection,
 ) -> List(#(String, WorkflowRunStatus)) {
-  projection.workflow_runs
-  |> dict.to_list
-  |> list.filter(fn(entry) {
-    let #(_, status) = entry
+  workflow_runs_projection.active_entries(projection.workflow_runs, fn(status) {
     case status {
       WorkflowRunActive(..) -> True
       _ -> False
@@ -3054,28 +2864,37 @@ pub fn active_workflow_runs(
 }
 
 pub fn has_workflow_run(projection: Projection, run_id: String) -> Bool {
-  dict.has_key(projection.workflow_runs, run_id)
+  workflow_runs_projection.has_run(projection.workflow_runs, run_id)
 }
 
 pub fn workflow_input_manifest(
   projection: Projection,
   run_id: String,
 ) -> Option(WorkflowContractManifestRef) {
-  dict.get(projection.workflow_input_manifests, run_id) |> option.from_result
+  workflow_runs_projection.workflow_input_manifest(
+    projection.workflow_input_manifests,
+    run_id,
+  )
 }
 
 pub fn workflow_output_manifest(
   projection: Projection,
   run_id: String,
 ) -> Option(WorkflowContractManifestRef) {
-  dict.get(projection.workflow_output_manifests, run_id) |> option.from_result
+  workflow_runs_projection.workflow_output_manifest(
+    projection.workflow_output_manifests,
+    run_id,
+  )
 }
 
 pub fn latest_workflow_repair(
   projection: Projection,
   run_id: String,
 ) -> Option(WorkflowRepairStatus) {
-  dict.get(projection.workflow_repairs, run_id) |> option.from_result
+  workflow_runs_projection.latest_workflow_repair(
+    projection.workflow_repairs,
+    run_id,
+  )
 }
 
 fn latest_finished_workspace(
@@ -3175,29 +2994,27 @@ fn attempt_index_of(status: StepAttemptStatus) -> Int {
   attempt_index
 }
 
-fn add_one(value: Int) -> Int {
-  value + 1
-}
-
 fn preserve_or_insert_workflow_task_ref(
   refs: Dict(String, record.TaskRefFields),
   run_id: String,
   fallback: record.TaskRefFields,
 ) -> Dict(String, record.TaskRefFields) {
-  case dict.has_key(refs, run_id) {
-    True -> refs
-    False -> dict.insert(refs, run_id, fallback)
-  }
+  workflow_runs_projection.preserve_or_insert_task_ref(refs, run_id, fallback)
 }
 
 fn workflow_run_root(projection: Projection, run_id: String) -> String {
-  case dict.get(projection.workflow_runs, run_id) {
-    Ok(WorkflowRunActive(run_root: run_root, ..)) -> run_root
-    Ok(WorkflowRunFinished(run_root: run_root, ..)) -> run_root
-    Ok(WorkflowRunInterrupted(run_root: run_root, ..)) -> run_root
-    Ok(WorkflowRunSuperseded(run_root: run_root, ..)) -> run_root
-    Error(Nil) -> ""
-  }
+  workflow_runs_projection.run_root(
+    projection.workflow_runs,
+    run_id,
+    fn(status) {
+      case status {
+        WorkflowRunActive(run_root: run_root, ..) -> run_root
+        WorkflowRunFinished(run_root: run_root, ..) -> run_root
+        WorkflowRunInterrupted(run_root: run_root, ..) -> run_root
+        WorkflowRunSuperseded(run_root: run_root, ..) -> run_root
+      }
+    },
+  )
 }
 
 pub fn known_issue_ids(projection: Projection) -> List(String) {
@@ -3219,10 +3036,11 @@ pub fn known_workspace_for_issue(
   projection: Projection,
   issue_id: String,
 ) -> Result(String, Nil) {
-  case dict.get(projection.known_workspaces, issue_id) {
-    Ok(workspace) -> Ok(workspace.workspace_path)
-    Error(Nil) -> Error(Nil)
-  }
+  issue_recovery_projection.known_workspace_for_issue(
+    projection.known_workspaces,
+    issue_id,
+    fn(workspace) { workspace.workspace_path },
+  )
 }
 
 pub fn latest_counter(
@@ -3244,10 +3062,12 @@ pub fn counter_has_source_run(
   issue_id: String,
   run_id: String,
 ) -> Bool {
-  case dict.get(projection.issue_counters, issue_id) {
-    Ok(counter) -> list.contains(counter.source_run_ids, run_id)
-    Error(Nil) -> False
-  }
+  issue_recovery_projection.counter_has_source_run(
+    projection.issue_counters,
+    issue_id,
+    run_id,
+    fn(counter) { counter.source_run_ids },
+  )
 }
 
 pub fn workflow_task_ref(
@@ -3268,18 +3088,21 @@ pub fn command_receipt(
   projection: Projection,
   comment_id: String,
 ) -> CommandReceiptState {
-  case dict.get(projection.command_receipts, comment_id) {
-    Ok(receipt) -> receipt
-    Error(Nil) -> CommandReceiptUnseen
-  }
+  commands_projection.command_receipt(
+    projection.command_receipts,
+    comment_id,
+    CommandReceiptUnseen,
+  )
 }
 
 pub fn retry_due_at_ms(status: RetryStatus) -> Result(Int, Nil) {
-  case status {
-    RetryScheduled(_, delay_ms, _, _, scheduled_at_ms) ->
-      Ok(scheduled_at_ms + delay_ms)
-    RetryCancelled(_, _, _) -> Error(Nil)
-  }
+  issue_recovery_projection.retry_due_at_ms(status, fn(status) {
+    case status {
+      RetryScheduled(_, delay_ms, _, _, scheduled_at_ms) ->
+        Ok(#(delay_ms, scheduled_at_ms))
+      RetryCancelled(_, _, _) -> Error(Nil)
+    }
+  })
 }
 
 pub fn pending_outbox_replays(
@@ -3403,8 +3226,13 @@ pub fn to_json(projection: Projection) -> json.Json {
     #(
       "scheduled_jobs",
       json.array(
-        dict.to_list(projection.scheduled_jobs),
-        of: scheduled_job_entry_to_json,
+        projection.scheduled_jobs
+          |> dict.to_list
+          |> list.map(fn(entry) {
+            let #(job_id, status) = entry
+            #(job_id, parent_scheduled_status_to_local(status))
+          }),
+        of: scheduled_projection.entry_to_json,
       ),
     ),
   ])
@@ -3545,8 +3373,8 @@ fn decode_current_snapshot(
           |> dict.from_list,
         scheduled_jobs: fields.scheduled_jobs
           |> list.map(fn(entry) {
-            let ScheduledJobSnapshot(job_id, status) = entry
-            #(job_id, status)
+            let #(job_id, status) = entry
+            #(job_id, local_scheduled_status_to_parent(status))
           })
           |> dict.from_list,
       ))
@@ -4394,98 +4222,6 @@ fn workstream_phase_run_entry_to_json(
   ])
 }
 
-fn scheduled_job_entry_to_json(
-  entry: #(String, ScheduledJobStatus),
-) -> json.Json {
-  let #(job_id, status) = entry
-  json.object([
-    #("job_id", json.string(job_id)),
-    #("workflow_id", json.string(status.workflow_id)),
-    #("state", json.string(scheduled_state_to_string(status.state))),
-    #("current_run", option_scheduled_run_to_json(status.current_run)),
-    #("last_due_at_ms", option_int_to_json(status.last_due_at_ms)),
-    #("last_success_at_ms", option_int_to_json(status.last_success_at_ms)),
-    #("last_success_run_id", option_string_to_json(status.last_success_run_id)),
-    #("last_failure_at_ms", option_int_to_json(status.last_failure_at_ms)),
-    #("last_failure_run_id", option_string_to_json(status.last_failure_run_id)),
-    #("last_failure_reason", option_string_to_json(status.last_failure_reason)),
-    #("retry_count", json.int(status.retry_count)),
-    #("skipped_overlap_count", json.int(status.skipped_overlap_count)),
-    #("skipped_catch_up_count", json.int(status.skipped_catch_up_count)),
-    #("skipped_paused_count", json.int(status.skipped_paused_count)),
-    #("skipped_capacity_count", json.int(status.skipped_capacity_count)),
-    #("failure_issue_id", option_string_to_json(status.failure_issue_id)),
-    #("failure_dedupe_key", option_string_to_json(status.failure_dedupe_key)),
-    #("report_retry", option_report_retry_to_json(status.report_retry)),
-    #("recent_run_ids", json.array(status.recent_run_ids, of: json.string)),
-  ])
-}
-
-fn option_scheduled_run_to_json(
-  value: Option(ScheduledRunSummary),
-) -> json.Json {
-  case value {
-    None -> json.null()
-    Some(run) ->
-      json.object([
-        #("run_id", json.string(run.run_id)),
-        #("due_at_ms", json.int(run.due_at_ms)),
-        #("trigger", json.string(run.trigger)),
-        #("attempt", json.int(run.attempt)),
-        #("status", json.string(run.status)),
-        #("reason", option_string_to_json(run.reason)),
-        #("session_id", option_string_to_json(run.session_id)),
-        #("run_root", option_string_to_json(run.run_root)),
-      ])
-  }
-}
-
-fn option_report_retry_to_json(
-  value: Option(ScheduledReportRetry),
-) -> json.Json {
-  case value {
-    None -> json.null()
-    Some(retry) ->
-      json.object([
-        #("run_id", json.string(retry.run_id)),
-        #("attempt", json.int(retry.attempt)),
-        #("dedupe_key", json.string(retry.dedupe_key)),
-        #("error_code", json.string(retry.error_code)),
-        #("error_message", json.string(retry.error_message)),
-        #("next_retry_at_ms", json.int(retry.next_retry_at_ms)),
-        #("generation", json.int(retry.generation)),
-      ])
-  }
-}
-
-fn scheduled_state_to_string(state: ScheduledRunState) -> String {
-  case state {
-    ScheduledIdle -> "idle"
-    ScheduledDuePending -> "due_pending"
-    ScheduledPaused -> "paused"
-    ScheduledWaitingForGlobalSlot -> "waiting_for_global_slot"
-    ScheduledActive -> "active"
-    ScheduledRetryWaiting -> "retry_waiting"
-    ScheduledReportRetryWaiting -> "report_retry_waiting"
-    ScheduledTerminalSuccess -> "terminal_success"
-    ScheduledTerminalFailure -> "terminal_failure"
-  }
-}
-
-fn scheduled_state_from_string(value: String) -> ScheduledRunState {
-  case value {
-    "due_pending" -> ScheduledDuePending
-    "paused" -> ScheduledPaused
-    "waiting_for_global_slot" -> ScheduledWaitingForGlobalSlot
-    "active" -> ScheduledActive
-    "retry_waiting" -> ScheduledRetryWaiting
-    "report_retry_waiting" -> ScheduledReportRetryWaiting
-    "terminal_success" -> ScheduledTerminalSuccess
-    "terminal_failure" -> ScheduledTerminalFailure
-    _ -> ScheduledIdle
-  }
-}
-
 fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
   use schema_version <- decode.field("schema_version", decode.int)
   use kind <- decode.field("kind", decode.string)
@@ -4569,7 +4305,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
   use scheduled_jobs <- decode.optional_field(
     "scheduled_jobs",
     [],
-    decode.list(of: scheduled_job_snapshot_decoder()),
+    decode.list(of: scheduled_projection.snapshot_decoder()),
   )
   case
     schema_version == record.schema_version && kind == "projection_snapshot"
@@ -5534,58 +5270,6 @@ fn known_workspace_snapshot_decoder() -> decode.Decoder(KnownWorkspaceSnapshot) 
   ))
 }
 
-fn scheduled_run_summary_decoder() -> decode.Decoder(ScheduledRunSummary) {
-  use run_id <- decode.field("run_id", decode.string)
-  use due_at_ms <- decode.field("due_at_ms", decode.int)
-  use trigger <- decode.field("trigger", decode.string)
-  use attempt <- decode.field("attempt", decode.int)
-  use status <- decode.field("status", decode.string)
-  use reason <- decode.optional_field(
-    "reason",
-    None,
-    decode.optional(decode.string),
-  )
-  use session_id <- decode.optional_field(
-    "session_id",
-    None,
-    decode.optional(decode.string),
-  )
-  use run_root <- decode.optional_field(
-    "run_root",
-    None,
-    decode.optional(decode.string),
-  )
-  decode.success(ScheduledRunSummary(
-    run_id: run_id,
-    due_at_ms: due_at_ms,
-    trigger: trigger,
-    attempt: attempt,
-    status: status,
-    reason: reason,
-    session_id: session_id,
-    run_root: run_root,
-  ))
-}
-
-fn scheduled_report_retry_decoder() -> decode.Decoder(ScheduledReportRetry) {
-  use run_id <- decode.field("run_id", decode.string)
-  use attempt <- decode.field("attempt", decode.int)
-  use dedupe_key <- decode.field("dedupe_key", decode.string)
-  use error_code <- decode.field("error_code", decode.string)
-  use error_message <- decode.field("error_message", decode.string)
-  use next_retry_at_ms <- decode.field("next_retry_at_ms", decode.int)
-  use generation <- decode.field("generation", decode.int)
-  decode.success(ScheduledReportRetry(
-    run_id: run_id,
-    attempt: attempt,
-    dedupe_key: dedupe_key,
-    error_code: error_code,
-    error_message: error_message,
-    next_retry_at_ms: next_retry_at_ms,
-    generation: generation,
-  ))
-}
-
 fn workstream_snapshot_decoder() -> decode.Decoder(WorkstreamSnapshot) {
   use workstream_id <- decode.field("workstream_id", decode.string)
   use task_backend_kind <- decode.optional_field(
@@ -5795,112 +5479,6 @@ fn workstream_phase_run_snapshot_decoder() -> decode.Decoder(WorkstreamPhaseRun)
     input_bundle_bytes: input_bundle_bytes,
     idempotency_key: idempotency_key,
     queued_at_ms: queued_at_ms,
-  ))
-}
-
-fn scheduled_job_snapshot_decoder() -> decode.Decoder(ScheduledJobSnapshot) {
-  use job_id <- decode.field("job_id", decode.string)
-  use workflow_id <- decode.field("workflow_id", decode.string)
-  use state <- decode.optional_field("state", "idle", decode.string)
-  use current_run <- decode.optional_field(
-    "current_run",
-    None,
-    decode.optional(scheduled_run_summary_decoder()),
-  )
-  use last_due_at_ms <- decode.optional_field(
-    "last_due_at_ms",
-    None,
-    decode.optional(decode.int),
-  )
-  use last_success_at_ms <- decode.optional_field(
-    "last_success_at_ms",
-    None,
-    decode.optional(decode.int),
-  )
-  use last_success_run_id <- decode.optional_field(
-    "last_success_run_id",
-    None,
-    decode.optional(decode.string),
-  )
-  use last_failure_at_ms <- decode.optional_field(
-    "last_failure_at_ms",
-    None,
-    decode.optional(decode.int),
-  )
-  use last_failure_run_id <- decode.optional_field(
-    "last_failure_run_id",
-    None,
-    decode.optional(decode.string),
-  )
-  use last_failure_reason <- decode.optional_field(
-    "last_failure_reason",
-    None,
-    decode.optional(decode.string),
-  )
-  use retry_count <- decode.optional_field("retry_count", 0, decode.int)
-  use skipped_overlap_count <- decode.optional_field(
-    "skipped_overlap_count",
-    0,
-    decode.int,
-  )
-  use skipped_catch_up_count <- decode.optional_field(
-    "skipped_catch_up_count",
-    0,
-    decode.int,
-  )
-  use skipped_paused_count <- decode.optional_field(
-    "skipped_paused_count",
-    0,
-    decode.int,
-  )
-  use skipped_capacity_count <- decode.optional_field(
-    "skipped_capacity_count",
-    0,
-    decode.int,
-  )
-  use failure_issue_id <- decode.optional_field(
-    "failure_issue_id",
-    None,
-    decode.optional(decode.string),
-  )
-  use failure_dedupe_key <- decode.optional_field(
-    "failure_dedupe_key",
-    None,
-    decode.optional(decode.string),
-  )
-  use report_retry <- decode.optional_field(
-    "report_retry",
-    None,
-    decode.optional(scheduled_report_retry_decoder()),
-  )
-  use recent_run_ids <- decode.optional_field(
-    "recent_run_ids",
-    [],
-    decode.list(of: decode.string),
-  )
-  decode.success(ScheduledJobSnapshot(
-    job_id,
-    ScheduledJobStatus(
-      job_id: job_id,
-      workflow_id: workflow_id,
-      state: scheduled_state_from_string(state),
-      current_run: current_run,
-      last_due_at_ms: last_due_at_ms,
-      last_success_at_ms: last_success_at_ms,
-      last_success_run_id: last_success_run_id,
-      last_failure_at_ms: last_failure_at_ms,
-      last_failure_run_id: last_failure_run_id,
-      last_failure_reason: last_failure_reason,
-      retry_count: retry_count,
-      skipped_overlap_count: skipped_overlap_count,
-      skipped_catch_up_count: skipped_catch_up_count,
-      skipped_paused_count: skipped_paused_count,
-      skipped_capacity_count: skipped_capacity_count,
-      failure_issue_id: failure_issue_id,
-      failure_dedupe_key: failure_dedupe_key,
-      report_retry: report_retry,
-      recent_run_ids: trim_recent_runs(recent_run_ids),
-    ),
   ))
 }
 
