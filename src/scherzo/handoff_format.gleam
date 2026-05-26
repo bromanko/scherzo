@@ -2,7 +2,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
-import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/error
@@ -701,7 +700,7 @@ fn cwd_relative_path(raw_path: String) -> Option(String) {
 }
 
 fn relative_to_root(raw_path: String, root: String) -> Option(String) {
-  let root_abs = path.absolute(root) |> result.unwrap(root)
+  let root_abs = path.absolute_or_original(root)
   let root_abs = trim_trailing_slash(root_abs)
   case path.contains(root_abs, raw_path) {
     True ->

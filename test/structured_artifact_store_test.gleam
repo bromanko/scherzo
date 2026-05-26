@@ -69,6 +69,31 @@ pub fn structured_output_artifact_store_writes_wrapped_json_test() {
   assert json_value.object_has_key(entries, "findings")
 }
 
+pub fn structured_output_artifact_decode_error_includes_context_test() {
+  let root = "test/tmp/structured-artifact-store/decode-error-context"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+  let malformed =
+    "{\"schema_version\":1,\"artifact_type\":\"structured_output\",\"run_id\":1,\"workflow_id\":\"structured_review\",\"step_id\":\"review_json\",\"attempt_index\":0,\"artifact_name\":\"review_result\",\"format\":\"json\",\"payload\":{}}"
+
+  let assert Ok(ref) =
+    artifact_store.write_context_recovery_artifact(
+      store,
+      "run-1",
+      "structured_review",
+      "review_json",
+      0,
+      "malformed",
+      malformed,
+    )
+
+  let assert Error(artifact_store.DecodeArtifactFailed(message)) =
+    artifact_store.read_structured_output_artifact(store, ref.ref, ref.sha256)
+  assert string.starts_with(message, "invalid_structured_output_artifact:")
+  assert string.contains(message, "path=run_id")
+  assert string.contains(message, "expected=String")
+}
+
 pub fn structured_output_artifact_store_writes_json_schema_metadata_test() {
   let root = "test/tmp/structured-artifact-store/json-schema-metadata"
   reset_dir(root)

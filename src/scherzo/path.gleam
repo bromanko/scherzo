@@ -7,6 +7,13 @@ pub fn absolute(path: String) -> Result(String, Nil) {
   absname(path)
 }
 
+pub fn absolute_or_original(path: String) -> String {
+  case absolute(path) {
+    Ok(absolute_path) -> absolute_path
+    Error(Nil) -> path
+  }
+}
+
 pub fn resolve_from_caller_cwd(
   value: String,
   env: fn(String) -> Option(String),

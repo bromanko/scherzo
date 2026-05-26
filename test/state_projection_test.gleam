@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import scherzo/state/projection
 import scherzo/state/record
 
@@ -1222,7 +1223,7 @@ pub fn projection_snapshot_decoder_rejects_invalid_snapshots_test() {
   assert_malformed_projection_snapshot(
     "{\"schema_version\":2,\"kind\":\"not_projection\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
-  assert_malformed_projection_snapshot(
+  assert_unsupported_projection_snapshot(
     "{\"schema_version\":3,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
   assert_malformed_projection_snapshot(snapshot_json(
@@ -1263,7 +1264,20 @@ pub fn projection_snapshot_decoder_rejects_invalid_snapshots_test() {
 }
 
 fn assert_malformed_projection_snapshot(contents: String) -> Nil {
-  let assert Error(_) = projection.decode_string(contents)
+  assert_projection_snapshot_error(contents, "malformed projection snapshot:")
+}
+
+fn assert_unsupported_projection_snapshot(contents: String) -> Nil {
+  assert_projection_snapshot_error(contents, "unsupported schema version ")
+}
+
+fn assert_projection_snapshot_error(
+  contents: String,
+  expected_prefix: String,
+) -> Nil {
+  let assert Error(error) = projection.decode_string(contents)
+  let message = projection.describe_decode_error(error)
+  assert string.starts_with(message, expected_prefix)
   Nil
 }
 

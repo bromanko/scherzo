@@ -305,6 +305,22 @@ pub fn offline_state_status_archive_discard_and_reinitialize_test() {
   let assert Ok(False) = simplifile.is_directory(discard_ledger)
 }
 
+pub fn offline_state_status_reports_schema_marker_decode_context_test() {
+  let root = "test/tmp/local-artifacts/malformed-schema-marker"
+  let _ = simplifile.delete(root)
+  let assert Ok(paths) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(paths.ledger_dir)
+  let assert Ok(Nil) =
+    simplifile.write(paths.current_path, "{\"schema_version\":\"two\"}\n")
+
+  let status = local_artifacts.inspect_state(root)
+  let assert local_artifacts.StateCorrupt(reason) = status.status
+  assert string.starts_with(reason, "malformed schema marker: ")
+  assert string.contains(reason, "path=schema_version")
+  assert string.contains(reason, "expected=Int")
+  assert string.contains(status.message, "malformed schema marker: ")
+}
+
 pub fn offline_state_status_warns_for_scheduled_records_test() {
   let root = "test/tmp/local-artifacts/scheduled-state-warning"
   let _ = simplifile.delete(root)

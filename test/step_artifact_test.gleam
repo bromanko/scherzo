@@ -11,6 +11,14 @@ import scherzo/structured_output_metadata
 import scherzo/template
 import scherzo/workflow_dag
 
+pub fn status_from_string_returns_typed_context_test() {
+  let assert Error(step_artifact.UnknownStepStatus("mystery")) =
+    step_artifact.status_from_string("mystery")
+  let assert Error(error) = step_artifact.status_from_string("mystery")
+  assert step_artifact.describe_decode_error(error)
+    == "unknown_step_status:mystery"
+}
+
 fn limits() -> config_types.ArtifactLimits {
   config_types.ArtifactLimits(
     command_stream_max_chars: 12,

@@ -5,8 +5,8 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq}
-import gleam/result
 import gleam/string
+import scherzo/json_decode_error
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/state/record
 
@@ -500,6 +500,14 @@ pub type OutboxReplay {
 
 pub type PendingOutboxError {
   OutboxPayloadMissing(outbox_id: String)
+}
+
+pub type DecodeError {
+  UnsupportedSnapshotVersion(Int)
+  MalformedProjectionSnapshot(
+    header_error: Option(json.DecodeError),
+    snapshot_error: json.DecodeError,
+  )
 }
 
 type RunSnapshot {
@@ -1424,7 +1432,7 @@ pub fn apply(
     ) -> {
       let source_run_ids = case dict.get(projection.issue_counters, issue_id) {
         Ok(existing) -> existing.source_run_ids
-        Error(_) -> []
+        Error(Nil) -> []
       }
       let source_run_ids = case source_run_id {
         Some(run_id) -> insert_unique_string(source_run_ids, run_id)
@@ -2106,7 +2114,7 @@ fn update_workstream(
 ) -> Projection {
   let current = case dict.get(projection.workstreams, workstream_id) {
     Ok(status) -> status
-    Error(_) -> empty_workstream_status(workstream_id)
+    Error(Nil) -> empty_workstream_status(workstream_id)
   }
   Projection(
     ..projection,
@@ -2303,7 +2311,7 @@ fn scheduled_status(
         True -> ScheduledJobStatus(..status, workflow_id: workflow_id)
         False -> status
       }
-    Error(_) -> empty_scheduled_status(job_id, workflow_id)
+    Error(Nil) -> empty_scheduled_status(job_id, workflow_id)
   }
 }
 
@@ -2661,7 +2669,7 @@ fn seen_receipt(
   seen_at_ms: Int,
 ) -> CommandReceiptState {
   case dict.get(receipts, comment_id) {
-    Ok(CommandReceiptUnseen) | Error(_) ->
+    Ok(CommandReceiptUnseen) | Error(Nil) ->
       CommandReceiptSeen(issue_id, author_id, command_name, excerpt, seen_at_ms)
     Ok(receipt) -> receipt
   }
@@ -2706,7 +2714,7 @@ fn started_receipt(
             started_at_ms,
           )
       }
-    Error(_) ->
+    Error(Nil) ->
       CommandReceiptStarted(issue_id, "", command_name, "", 0, started_at_ms)
   }
 }
@@ -3188,7 +3196,7 @@ fn workflow_run_root(projection: Projection, run_id: String) -> String {
     Ok(WorkflowRunFinished(run_root: run_root, ..)) -> run_root
     Ok(WorkflowRunInterrupted(run_root: run_root, ..)) -> run_root
     Ok(WorkflowRunSuperseded(run_root: run_root, ..)) -> run_root
-    Error(_) -> ""
+    Error(Nil) -> ""
   }
 }
 
@@ -3213,7 +3221,7 @@ pub fn known_workspace_for_issue(
 ) -> Result(String, Nil) {
   case dict.get(projection.known_workspaces, issue_id) {
     Ok(workspace) -> Ok(workspace.workspace_path)
-    Error(_) -> Error(Nil)
+    Error(Nil) -> Error(Nil)
   }
 }
 
@@ -3227,7 +3235,7 @@ pub fn latest_counter(
         counter.failure_attempts,
         counter.worker_sessions,
       )
-    Error(_) -> orchestrator_state.new_issue_counter()
+    Error(Nil) -> orchestrator_state.new_issue_counter()
   }
 }
 
@@ -3238,7 +3246,7 @@ pub fn counter_has_source_run(
 ) -> Bool {
   case dict.get(projection.issue_counters, issue_id) {
     Ok(counter) -> list.contains(counter.source_run_ids, run_id)
-    Error(_) -> False
+    Error(Nil) -> False
   }
 }
 
@@ -3260,8 +3268,10 @@ pub fn command_receipt(
   projection: Projection,
   comment_id: String,
 ) -> CommandReceiptState {
-  dict.get(projection.command_receipts, comment_id)
-  |> result.unwrap(CommandReceiptUnseen)
+  case dict.get(projection.command_receipts, comment_id) {
+    Ok(receipt) -> receipt
+    Error(Nil) -> CommandReceiptUnseen
+  }
 }
 
 pub fn retry_due_at_ms(status: RetryStatus) -> Result(Int, Nil) {
@@ -3404,15 +3414,30 @@ pub fn to_string(projection: Projection) -> String {
   projection |> to_json |> json.to_string
 }
 
-pub fn decode_string(contents: String) -> Result(Projection, String) {
+pub fn decode_string(contents: String) -> Result(Projection, DecodeError) {
   case json.parse(contents, snapshot_header_decoder()) {
     Ok(#(version, _)) if version != record.schema_version ->
-      Error("unsupported schema version " <> int.to_string(version))
-    _ -> decode_current_snapshot(contents)
+      Error(UnsupportedSnapshotVersion(version))
+    Ok(_) -> decode_current_snapshot(contents, None)
+    Error(header_error) -> decode_current_snapshot(contents, Some(header_error))
   }
 }
 
-fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
+pub fn describe_decode_error(error: DecodeError) -> String {
+  case error {
+    UnsupportedSnapshotVersion(version) ->
+      "unsupported schema version " <> int.to_string(version)
+    MalformedProjectionSnapshot(header_error, snapshot_error) ->
+      "malformed projection snapshot:"
+      <> json_decode_error.to_string(snapshot_error)
+      <> optional_json_decode_error("header", header_error)
+  }
+}
+
+fn decode_current_snapshot(
+  contents: String,
+  header_error: Option(json.DecodeError),
+) -> Result(Projection, DecodeError) {
   case json.parse(contents, snapshot_decoder()) {
     Ok(fields) ->
       Ok(Projection(
@@ -3525,7 +3550,17 @@ fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
           })
           |> dict.from_list,
       ))
-    Error(_) -> Error("malformed projection snapshot")
+    Error(error) -> Error(MalformedProjectionSnapshot(header_error, error))
+  }
+}
+
+fn optional_json_decode_error(
+  label: String,
+  error: Option(json.DecodeError),
+) -> String {
+  case error {
+    Some(error) -> " " <> label <> "=" <> json_decode_error.to_string(error)
+    None -> ""
   }
 }
 
