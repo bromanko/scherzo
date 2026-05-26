@@ -358,9 +358,27 @@ pub type OutboxStatus {
     payload_json: String,
     pending_at_ms: Int,
   )
+  OutboxPendingV2WithTask(
+    task_ref: record.TaskRefFields,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    pending_at_ms: Int,
+  )
   OutboxCompleted(issue_id: String, outbox_kind: String, completed_at_ms: Int)
+  OutboxCompletedWithTask(
+    task_ref: record.TaskRefFields,
+    outbox_kind: String,
+    completed_at_ms: Int,
+  )
   OutboxFailed(
     issue_id: String,
+    outbox_kind: String,
+    error_code: String,
+    failed_at_ms: Int,
+  )
+  OutboxFailedWithTask(
+    task_ref: record.TaskRefFields,
     outbox_kind: String,
     error_code: String,
     failed_at_ms: Int,
@@ -498,7 +516,7 @@ pub type WorkstreamPhaseRun {
 pub type OutboxReplay {
   OutboxReplay(
     outbox_id: String,
-    issue_id: String,
+    task_ref: record.TaskRefFields,
     outbox_kind: String,
     dedupe_key: String,
     payload_json: String,
@@ -1609,7 +1627,7 @@ pub fn apply(
       )
     }
     record.RemoteCommandSeen(
-      _,
+      backend_kind,
       event_id,
       task_remote_id,
       _,
@@ -1617,10 +1635,12 @@ pub fn apply(
       command_name,
       excerpt,
     ) -> {
+      let receipt_key =
+        remote_command_receipt_key(backend_kind, task_remote_id, event_id)
       let receipt =
         seen_receipt(
           projection.command_receipts,
-          event_id,
+          receipt_key,
           task_remote_id,
           author_id,
           command_name,
@@ -1631,21 +1651,28 @@ pub fn apply(
         ..projection,
         commands: commands_projection.insert_status(
           projection.commands,
-          event_id,
+          receipt_key,
           CommandSeen(task_remote_id, author_id, command_name, excerpt, at_ms),
         ),
         command_receipts: dict.insert(
           projection.command_receipts,
-          event_id,
+          receipt_key,
           receipt,
         ),
       )
     }
-    record.RemoteCommandStarted(_, event_id, task_remote_id, command_name) -> {
+    record.RemoteCommandStarted(
+      backend_kind,
+      event_id,
+      task_remote_id,
+      command_name,
+    ) -> {
+      let receipt_key =
+        remote_command_receipt_key(backend_kind, task_remote_id, event_id)
       let receipt =
         started_receipt(
           projection.command_receipts,
-          event_id,
+          receipt_key,
           task_remote_id,
           command_name,
           at_ms,
@@ -1654,27 +1681,29 @@ pub fn apply(
         ..projection,
         commands: commands_projection.insert_status(
           projection.commands,
-          event_id,
+          receipt_key,
           CommandStarted(task_remote_id, command_name, at_ms),
         ),
         command_receipts: dict.insert(
           projection.command_receipts,
-          event_id,
+          receipt_key,
           receipt,
         ),
       )
     }
     record.RemoteCommandCompleted(
-      _,
+      backend_kind,
       event_id,
       task_remote_id,
       status,
       message_excerpt,
     ) -> {
+      let receipt_key =
+        remote_command_receipt_key(backend_kind, task_remote_id, event_id)
       let receipt =
         completed_receipt(
           projection.command_receipts,
-          event_id,
+          receipt_key,
           task_remote_id,
           status,
           message_excerpt,
@@ -1684,21 +1713,23 @@ pub fn apply(
         ..projection,
         commands: commands_projection.insert_status(
           projection.commands,
-          event_id,
+          receipt_key,
           CommandCompleted(task_remote_id, status, message_excerpt, at_ms),
         ),
         command_receipts: dict.insert(
           projection.command_receipts,
-          event_id,
+          receipt_key,
           receipt,
         ),
       )
     }
-    record.RemoteCommandAcked(_, event_id, task_remote_id) -> {
+    record.RemoteCommandAcked(backend_kind, event_id, task_remote_id) -> {
+      let receipt_key =
+        remote_command_receipt_key(backend_kind, task_remote_id, event_id)
       let receipt =
         acked_receipt(
           projection.command_receipts,
-          event_id,
+          receipt_key,
           task_remote_id,
           at_ms,
         )
@@ -1706,12 +1737,12 @@ pub fn apply(
         ..projection,
         commands: commands_projection.insert_status(
           projection.commands,
-          event_id,
+          receipt_key,
           CommandAcked(task_remote_id, at_ms),
         ),
         command_receipts: dict.insert(
           projection.command_receipts,
-          event_id,
+          receipt_key,
           receipt,
         ),
       )
@@ -2000,6 +2031,27 @@ pub fn apply(
           ),
         ),
       )
+    record.OutboxPendingV2WithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+    ) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxPendingV2WithTask(
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            at_ms,
+          ),
+        ),
+      )
     record.OutboxCompleted(outbox_id, issue_id, outbox_kind) ->
       Projection(
         ..projection,
@@ -2009,6 +2061,15 @@ pub fn apply(
           OutboxCompleted(issue_id, outbox_kind, at_ms),
         ),
       )
+    record.OutboxCompletedWithTask(outbox_id, task_ref, outbox_kind) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxCompletedWithTask(task_ref, outbox_kind, at_ms),
+        ),
+      )
     record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code) ->
       Projection(
         ..projection,
@@ -2016,6 +2077,15 @@ pub fn apply(
           projection.outbox,
           outbox_id,
           OutboxFailed(issue_id, outbox_kind, error_code, at_ms),
+        ),
+      )
+    record.OutboxFailedWithTask(outbox_id, task_ref, outbox_kind, error_code) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxFailedWithTask(task_ref, outbox_kind, error_code, at_ms),
         ),
       )
     record.WorkstreamCreated(workstream_id, task_ref, _) ->
@@ -2479,6 +2549,26 @@ fn update_scheduled_job(
       status,
     ),
   )
+}
+
+pub fn remote_command_receipt_key(
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
+) -> String {
+  case backend_kind {
+    "linear" -> event_id
+    _ ->
+      encode_identity_component(backend_kind)
+      <> "|"
+      <> encode_identity_component(task_remote_id)
+      <> "\u{001f}"
+      <> event_id
+  }
+}
+
+fn encode_identity_component(value: String) -> String {
+  int.to_string(string.length(value)) <> ":" <> value
 }
 
 fn seen_receipt(
@@ -3030,6 +3120,35 @@ pub fn known_issue_ids(projection: Projection) -> List(String) {
   |> append_unique_strings(outbox_issue_ids(projection.outbox))
   |> append_unique_strings(dict.keys(projection.issue_counters))
   |> append_unique_strings(dict.keys(projection.known_workspaces))
+}
+
+pub fn known_task_refs(projection: Projection) -> List(record.TaskRefFields) {
+  []
+  |> append_unique_task_refs(
+    run_issue_ids(projection.runs) |> list.map(linear_task_ref_for_issue_id),
+  )
+  |> append_unique_task_refs(
+    workflow_run_issue_ids(projection.workflow_runs)
+    |> list.map(linear_task_ref_for_issue_id),
+  )
+  |> append_unique_task_refs(dict.values(projection.workflow_task_refs))
+  |> append_unique_task_refs(
+    dict.keys(projection.retries) |> list.map(linear_task_ref_for_issue_id),
+  )
+  |> append_unique_task_refs(
+    dict.keys(projection.parked_issues)
+    |> list.map(linear_task_ref_for_issue_id),
+  )
+  |> append_unique_task_refs(command_task_refs(projection.commands))
+  |> append_unique_task_refs(outbox_task_refs(projection.outbox))
+  |> append_unique_task_refs(
+    dict.keys(projection.issue_counters)
+    |> list.map(linear_task_ref_for_issue_id),
+  )
+  |> append_unique_task_refs(
+    dict.keys(projection.known_workspaces)
+    |> list.map(linear_task_ref_for_issue_id),
+  )
 }
 
 pub fn known_workspace_for_issue(
@@ -3762,6 +3881,17 @@ fn option_string_to_json(value: Option(String)) -> json.Json {
   }
 }
 
+fn task_ref_entries(
+  task_ref: record.TaskRefFields,
+) -> List(#(String, json.Json)) {
+  [
+    #("task_backend_kind", json.string(task_ref.task_backend_kind)),
+    #("task_remote_id", json.string(task_ref.task_remote_id)),
+    #("task_key", option_string_to_json(task_ref.task_key)),
+    #("task_url", option_string_to_json(task_ref.task_url)),
+  ]
+}
+
 fn step_recovery_entry_to_json(
   entry: #(String, StepRecoveryStatus),
 ) -> json.Json {
@@ -4028,6 +4158,25 @@ fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
         #("payload_json", json.string(payload_json)),
         #("pending_at_ms", json.int(pending_at_ms)),
       ])
+    OutboxPendingV2WithTask(
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      pending_at_ms,
+    ) ->
+      json.object(list.append(
+        [
+          #("outbox_id", json.string(outbox_id)),
+          #("status", json.string("pending_v2")),
+        ],
+        list.append(task_ref_entries(task_ref), [
+          #("outbox_kind", json.string(outbox_kind)),
+          #("dedupe_key", json.string(dedupe_key)),
+          #("payload_json", json.string(payload_json)),
+          #("pending_at_ms", json.int(pending_at_ms)),
+        ]),
+      ))
     OutboxCompleted(issue_id, outbox_kind, completed_at_ms) ->
       json.object([
         #("outbox_id", json.string(outbox_id)),
@@ -4036,6 +4185,17 @@ fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
         #("outbox_kind", json.string(outbox_kind)),
         #("completed_at_ms", json.int(completed_at_ms)),
       ])
+    OutboxCompletedWithTask(task_ref, outbox_kind, completed_at_ms) ->
+      json.object(list.append(
+        [
+          #("outbox_id", json.string(outbox_id)),
+          #("status", json.string("completed")),
+        ],
+        list.append(task_ref_entries(task_ref), [
+          #("outbox_kind", json.string(outbox_kind)),
+          #("completed_at_ms", json.int(completed_at_ms)),
+        ]),
+      ))
     OutboxFailed(issue_id, outbox_kind, error_code, failed_at_ms) ->
       json.object([
         #("outbox_id", json.string(outbox_id)),
@@ -4045,6 +4205,18 @@ fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
         #("error_code", json.string(error_code)),
         #("failed_at_ms", json.int(failed_at_ms)),
       ])
+    OutboxFailedWithTask(task_ref, outbox_kind, error_code, failed_at_ms) ->
+      json.object(list.append(
+        [
+          #("outbox_id", json.string(outbox_id)),
+          #("status", json.string("failed")),
+        ],
+        list.append(task_ref_entries(task_ref), [
+          #("outbox_kind", json.string(outbox_kind)),
+          #("error_code", json.string(error_code)),
+          #("failed_at_ms", json.int(failed_at_ms)),
+        ]),
+      ))
   }
 }
 
@@ -5188,46 +5360,190 @@ fn outbox_snapshot_decoder() -> decode.Decoder(OutboxSnapshot) {
       ))
     }
     "pending_v2" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
+      use issue_id <- decode.optional_field(
+        "issue_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_backend_kind <- decode.optional_field(
+        "task_backend_kind",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_remote_id <- decode.optional_field(
+        "task_remote_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_key <- decode.optional_field(
+        "task_key",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_url <- decode.optional_field(
+        "task_url",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_ref <- outbox_task_ref_from_snapshot_decoder(
+        task_backend_kind,
+        task_remote_id,
+        task_key,
+        task_url,
+      )
       use outbox_kind <- decode.field("outbox_kind", decode.string)
       use dedupe_key <- decode.field("dedupe_key", decode.string)
       use payload_json <- decode.field("payload_json", decode.string)
       use pending_at_ms <- decode.field("pending_at_ms", decode.int)
-      decode.success(OutboxSnapshot(
-        outbox_id,
-        OutboxPendingV2(
-          issue_id,
-          outbox_kind,
-          dedupe_key,
-          payload_json,
-          pending_at_ms,
-        ),
-      ))
+      case task_ref, issue_id {
+        Some(task_ref), _ ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxPendingV2WithTask(
+              task_ref,
+              outbox_kind,
+              dedupe_key,
+              payload_json,
+              pending_at_ms,
+            ),
+          ))
+        None, Some(issue_id) ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxPendingV2(
+              issue_id,
+              outbox_kind,
+              dedupe_key,
+              payload_json,
+              pending_at_ms,
+            ),
+          ))
+        None, None -> outbox_snapshot_decode_failure()
+      }
     }
     "completed" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
+      use issue_id <- decode.optional_field(
+        "issue_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_backend_kind <- decode.optional_field(
+        "task_backend_kind",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_remote_id <- decode.optional_field(
+        "task_remote_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_key <- decode.optional_field(
+        "task_key",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_url <- decode.optional_field(
+        "task_url",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_ref <- outbox_task_ref_from_snapshot_decoder(
+        task_backend_kind,
+        task_remote_id,
+        task_key,
+        task_url,
+      )
       use outbox_kind <- decode.field("outbox_kind", decode.string)
       use completed_at_ms <- decode.field("completed_at_ms", decode.int)
-      decode.success(OutboxSnapshot(
-        outbox_id,
-        OutboxCompleted(issue_id, outbox_kind, completed_at_ms),
-      ))
+      case task_ref, issue_id {
+        Some(task_ref), _ ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxCompletedWithTask(task_ref, outbox_kind, completed_at_ms),
+          ))
+        None, Some(issue_id) ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxCompleted(issue_id, outbox_kind, completed_at_ms),
+          ))
+        None, None -> outbox_snapshot_decode_failure()
+      }
     }
     "failed" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
+      use issue_id <- decode.optional_field(
+        "issue_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_backend_kind <- decode.optional_field(
+        "task_backend_kind",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_remote_id <- decode.optional_field(
+        "task_remote_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_key <- decode.optional_field(
+        "task_key",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_url <- decode.optional_field(
+        "task_url",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_ref <- outbox_task_ref_from_snapshot_decoder(
+        task_backend_kind,
+        task_remote_id,
+        task_key,
+        task_url,
+      )
       use outbox_kind <- decode.field("outbox_kind", decode.string)
       use error_code <- decode.field("error_code", decode.string)
       use failed_at_ms <- decode.field("failed_at_ms", decode.int)
-      decode.success(OutboxSnapshot(
-        outbox_id,
-        OutboxFailed(issue_id, outbox_kind, error_code, failed_at_ms),
-      ))
+      case task_ref, issue_id {
+        Some(task_ref), _ ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxFailedWithTask(
+              task_ref,
+              outbox_kind,
+              error_code,
+              failed_at_ms,
+            ),
+          ))
+        None, Some(issue_id) ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxFailed(issue_id, outbox_kind, error_code, failed_at_ms),
+          ))
+        None, None -> outbox_snapshot_decode_failure()
+      }
     }
-    _ ->
-      decode.failure(
-        OutboxSnapshot("", OutboxFailed("", "", "", 0)),
-        expected: "OutboxSnapshot",
-      )
+    _ -> outbox_snapshot_decode_failure()
+  }
+}
+
+fn outbox_snapshot_decode_failure() -> decode.Decoder(OutboxSnapshot) {
+  decode.failure(
+    OutboxSnapshot("", OutboxFailed("", "", "", 0)),
+    expected: "OutboxSnapshot",
+  )
+}
+
+fn outbox_task_ref_from_snapshot_decoder(
+  backend_kind: Option(String),
+  remote_id: Option(String),
+  task_key: Option(String),
+  task_url: Option(String),
+  next: fn(Option(record.TaskRefFields)) -> decode.Decoder(OutboxSnapshot),
+) -> decode.Decoder(OutboxSnapshot) {
+  case task_ref_from_snapshot(backend_kind, remote_id, task_key, task_url) {
+    Ok(task_ref) -> next(task_ref)
+    Error(Nil) -> outbox_snapshot_decode_failure()
   }
 }
 
@@ -5358,11 +5674,11 @@ fn task_ref_from_snapshot(
   task_key: Option(String),
   task_url: Option(String),
 ) -> Result(Option(record.TaskRefFields), Nil) {
-  case backend_kind, remote_id {
-    None, None -> Ok(None)
-    Some(kind), Some(id) ->
+  case backend_kind, remote_id, task_key, task_url {
+    None, None, None, None -> Ok(None)
+    Some(kind), Some(id), _, _ ->
       Ok(Some(record.TaskRefFields(kind, id, task_key, task_url)))
-    _, _ -> Error(Nil)
+    _, _, _, _ -> Error(Nil)
   }
 }
 
@@ -5524,13 +5840,78 @@ fn command_issue_ids(commands: Dict(String, CommandStatus)) -> List(String) {
   |> dict.to_list
   |> list.map(fn(entry) {
     let #(_, status) = entry
-    case status {
-      CommandSeen(issue_id, _, _, _, _) -> issue_id
-      CommandStarted(issue_id, _, _) -> issue_id
-      CommandCompleted(issue_id, _, _, _) -> issue_id
-      CommandAcked(issue_id, _) -> issue_id
+    command_status_issue_id(status)
+  })
+}
+
+fn command_task_refs(
+  commands: Dict(String, CommandStatus),
+) -> List(record.TaskRefFields) {
+  commands
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(receipt_key, status) = entry
+    case task_ref_from_remote_command_receipt_key(receipt_key) {
+      Some(task_ref) -> task_ref
+      None -> linear_task_ref_for_issue_id(command_status_issue_id(status))
     }
   })
+}
+
+fn command_status_issue_id(status: CommandStatus) -> String {
+  case status {
+    CommandSeen(issue_id, _, _, _, _) -> issue_id
+    CommandStarted(issue_id, _, _) -> issue_id
+    CommandCompleted(issue_id, _, _, _) -> issue_id
+    CommandAcked(issue_id, _) -> issue_id
+  }
+}
+
+fn task_ref_from_remote_command_receipt_key(
+  receipt_key: String,
+) -> Option(record.TaskRefFields) {
+  case string.split_once(receipt_key, on: "\u{001f}") {
+    Ok(#(identity, _event_id)) ->
+      case decode_remote_command_receipt_identity(identity) {
+        Ok(#(backend_kind, task_remote_id)) ->
+          Some(record.TaskRefFields(backend_kind, task_remote_id, None, None))
+        Error(Nil) -> None
+      }
+    Error(Nil) -> None
+  }
+}
+
+fn decode_remote_command_receipt_identity(
+  identity: String,
+) -> Result(#(String, String), Nil) {
+  use #(backend_kind, rest) <- result.try(decode_identity_component(identity))
+  case string.starts_with(rest, "|") {
+    False -> Error(Nil)
+    True -> {
+      let rest = string.drop_start(rest, 1)
+      use #(task_remote_id, rest) <- result.try(decode_identity_component(rest))
+      case rest == "" {
+        True -> Ok(#(backend_kind, task_remote_id))
+        False -> Error(Nil)
+      }
+    }
+  }
+}
+
+fn decode_identity_component(input: String) -> Result(#(String, String), Nil) {
+  use #(length_text, after_colon) <- result.try(
+    string.split_once(input, on: ":")
+    |> result.replace_error(Nil),
+  )
+  use length <- result.try(int.parse(length_text) |> result.replace_error(Nil))
+  case length < 0 || string.length(after_colon) < length {
+    True -> Error(Nil)
+    False -> {
+      let value = string.slice(after_colon, 0, length)
+      let rest = string.drop_start(after_colon, length)
+      Ok(#(value, rest))
+    }
+  }
 }
 
 fn outbox_issue_ids(outbox: Dict(String, OutboxStatus)) -> List(String) {
@@ -5538,12 +5919,61 @@ fn outbox_issue_ids(outbox: Dict(String, OutboxStatus)) -> List(String) {
   |> dict.to_list
   |> list.map(fn(entry) {
     let #(_, status) = entry
-    case status {
-      OutboxPending(issue_id, _, _, _) -> issue_id
-      OutboxPendingV2(issue_id, _, _, _, _) -> issue_id
-      OutboxCompleted(issue_id, _, _) -> issue_id
-      OutboxFailed(issue_id, _, _, _) -> issue_id
-    }
+    outbox_status_task_ref(status).task_remote_id
+  })
+}
+
+fn outbox_task_refs(
+  outbox: Dict(String, OutboxStatus),
+) -> List(record.TaskRefFields) {
+  outbox
+  |> dict.values
+  |> list.map(outbox_status_task_ref)
+}
+
+fn outbox_status_task_ref(status: OutboxStatus) -> record.TaskRefFields {
+  case status {
+    OutboxPending(issue_id, _, _, _) -> linear_task_ref_for_issue_id(issue_id)
+    OutboxPendingV2(issue_id, _, _, _, _) ->
+      linear_task_ref_for_issue_id(issue_id)
+    OutboxPendingV2WithTask(task_ref, _, _, _, _) -> task_ref
+    OutboxCompleted(issue_id, _, _) -> linear_task_ref_for_issue_id(issue_id)
+    OutboxCompletedWithTask(task_ref, _, _) -> task_ref
+    OutboxFailed(issue_id, _, _, _) -> linear_task_ref_for_issue_id(issue_id)
+    OutboxFailedWithTask(task_ref, _, _, _) -> task_ref
+  }
+}
+
+fn linear_task_ref_for_issue_id(issue_id: String) -> record.TaskRefFields {
+  record.linear_task_ref_fields(issue_id, None, None)
+}
+
+fn append_unique_task_refs(
+  values: List(record.TaskRefFields),
+  more: List(record.TaskRefFields),
+) -> List(record.TaskRefFields) {
+  list.fold(more, values, insert_unique_task_ref)
+}
+
+fn insert_unique_task_ref(
+  values: List(record.TaskRefFields),
+  value: record.TaskRefFields,
+) -> List(record.TaskRefFields) {
+  case
+    string.trim(value.task_remote_id) == "" || task_ref_in_list(values, value)
+  {
+    True -> values
+    False -> [value, ..values]
+  }
+}
+
+fn task_ref_in_list(
+  values: List(record.TaskRefFields),
+  value: record.TaskRefFields,
+) -> Bool {
+  list.any(values, fn(existing) {
+    existing.task_backend_kind == value.task_backend_kind
+    && existing.task_remote_id == value.task_remote_id
   })
 }
 
@@ -5575,14 +6005,34 @@ fn pending_outbox_replays_loop(
           pending_outbox_replays_loop(rest, [
             OutboxReplay(
               outbox_id,
-              issue_id,
+              linear_task_ref_for_issue_id(issue_id),
               outbox_kind,
               dedupe_key,
               payload_json,
             ),
             ..acc
           ])
-        OutboxCompleted(_, _, _) | OutboxFailed(_, _, _, _) ->
+        OutboxPendingV2WithTask(
+          task_ref,
+          outbox_kind,
+          dedupe_key,
+          payload_json,
+          _,
+        ) ->
+          pending_outbox_replays_loop(rest, [
+            OutboxReplay(
+              outbox_id,
+              task_ref,
+              outbox_kind,
+              dedupe_key,
+              payload_json,
+            ),
+            ..acc
+          ])
+        OutboxCompleted(_, _, _)
+        | OutboxCompletedWithTask(_, _, _)
+        | OutboxFailed(_, _, _, _)
+        | OutboxFailedWithTask(_, _, _, _) ->
           pending_outbox_replays_loop(rest, acc)
       }
     }
@@ -5605,8 +6055,11 @@ fn outbox_status_time(status: OutboxStatus) -> Int {
   case status {
     OutboxPending(_, _, _, pending_at_ms) -> pending_at_ms
     OutboxPendingV2(_, _, _, _, pending_at_ms) -> pending_at_ms
+    OutboxPendingV2WithTask(_, _, _, _, pending_at_ms) -> pending_at_ms
     OutboxCompleted(_, _, completed_at_ms) -> completed_at_ms
+    OutboxCompletedWithTask(_, _, completed_at_ms) -> completed_at_ms
     OutboxFailed(_, _, _, failed_at_ms) -> failed_at_ms
+    OutboxFailedWithTask(_, _, _, failed_at_ms) -> failed_at_ms
   }
 }
 

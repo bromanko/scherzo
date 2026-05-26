@@ -88,6 +88,21 @@ pub fn workstream_fixture_round_trip_test() {
   )
 }
 
+pub fn legacy_workstream_issue_ref_decodes_as_linear_task_ref_test() {
+  let assert Ok(decoded) =
+    artifacts.decode_workstream(
+      "{\"schema_version\":1,\"artifact_type\":\"scherzo.workstream.v1\",\"artifact_id\":\"workstream-linear-liv-370\",\"workstream_id\":\"linear:LIV-370\",\"issue\":{\"id\":\"issue-370\"},\"status\":\"active\",\"summary\":\"summary\",\"produced_artifacts\":[],\"next_actions\":[]}",
+    )
+
+  assert decoded.task_ref
+    == types.TaskRef(
+      backend_kind: "linear",
+      remote_id: "issue-370",
+      key: None,
+      url: None,
+    )
+}
+
 pub fn handoff_fixture_round_trip_test() {
   assert_round_trip(
     "test/fixtures/workstream/specs/handoff_valid.json",

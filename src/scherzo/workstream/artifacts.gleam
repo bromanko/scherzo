@@ -26,12 +26,7 @@ pub fn decode_workstream(
     "workstream_id",
     "workstream_workstream_id_missing",
   ))
-  use issue_id <- result.try(required_nested_string(
-    entries,
-    "issue",
-    "id",
-    "workstream_issue_id_missing",
-  ))
+  use task_ref <- result.try(workstream_task_ref(entries))
   use status <- result.try(required_string(
     entries,
     "status",
@@ -56,7 +51,7 @@ pub fn decode_workstream(
   Ok(types.WorkstreamArtifact(
     artifact_id: artifact_id,
     workstream_id: workstream_id,
-    issue: types.IssueRef(id: issue_id),
+    task_ref: task_ref,
     status: status,
     summary: summary,
     produced_artifacts: produced_artifacts,
@@ -686,6 +681,66 @@ fn decode_validation(
         "validation must be an object",
       )
   }
+}
+
+fn workstream_task_ref(
+  entries: List(#(String, json_value.JsonValue)),
+) -> Result(types.TaskRef, types.SpecError) {
+  case lookup(entries, "task_ref") {
+    Some(json_value.JObject(task_ref_entries)) ->
+      decode_task_ref(task_ref_entries)
+    Some(_) ->
+      spec_error("workstream_task_ref_invalid", "task_ref must be an object")
+    None -> legacy_issue_task_ref(entries)
+  }
+}
+
+fn decode_task_ref(
+  entries: List(#(String, json_value.JsonValue)),
+) -> Result(types.TaskRef, types.SpecError) {
+  use backend_kind <- result.try(required_string(
+    entries,
+    "backend_kind",
+    "workstream_task_backend_kind_missing",
+  ))
+  use remote_id <- result.try(required_string(
+    entries,
+    "remote_id",
+    "workstream_task_remote_id_missing",
+  ))
+  use key <- result.try(optional_string_field(
+    entries,
+    "key",
+    "workstream_task_key_invalid",
+  ))
+  use url <- result.try(optional_string_field(
+    entries,
+    "url",
+    "workstream_task_url_invalid",
+  ))
+  Ok(types.TaskRef(
+    backend_kind: backend_kind,
+    remote_id: remote_id,
+    key: key,
+    url: url,
+  ))
+}
+
+fn legacy_issue_task_ref(
+  entries: List(#(String, json_value.JsonValue)),
+) -> Result(types.TaskRef, types.SpecError) {
+  use issue_id <- result.try(required_nested_string(
+    entries,
+    "issue",
+    "id",
+    "workstream_issue_id_missing",
+  ))
+  Ok(types.TaskRef(
+    backend_kind: "linear",
+    remote_id: issue_id,
+    key: None,
+    url: None,
+  ))
 }
 
 fn required_value(

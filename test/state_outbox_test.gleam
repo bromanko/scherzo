@@ -51,6 +51,20 @@ pub fn remote_command_ack_payload_decodes_and_replays_test() {
     outbox.recovery_replay_error("remote_command_ack", "remote_command_ack")
 }
 
+pub fn legacy_remote_command_ack_payload_backend_kind_decodes_test() {
+  let assert Ok(outbox.Payload(
+    kind: "remote_command_ack",
+    body: "ack",
+    source_comment_id: None,
+    backend_kind: Some("linear"),
+    event_id: Some("comment-1"),
+    task_remote_id: Some("issue-1"),
+  )) =
+    outbox.decode_payload(
+      "{\"type\":\"remote_command_ack\",\"backend_kind\":\"linear\",\"event_id\":\"comment-1\",\"task_remote_id\":\"issue-1\",\"body\":\"ack\"}",
+    )
+}
+
 pub fn replay_kind_mismatch_returns_typed_error_with_stable_code_test() {
   let assert Error(outbox.UnsupportedOutboxKind("linear_comment")) =
     outbox.recovery_replay_error("linear_comment", "linear_comment")

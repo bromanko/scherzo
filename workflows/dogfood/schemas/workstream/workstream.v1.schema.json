@@ -7,11 +7,22 @@
     "artifact_type",
     "artifact_id",
     "workstream_id",
-    "issue",
     "status",
     "summary",
     "produced_artifacts",
     "next_actions"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "task_ref"
+      ]
+    },
+    {
+      "required": [
+        "issue"
+      ]
+    }
   ],
   "properties": {
     "schema_version": {
@@ -25,6 +36,28 @@
     },
     "workstream_id": {
       "type": "string"
+    },
+    "task_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend_kind",
+        "remote_id"
+      ],
+      "properties": {
+        "backend_kind": {
+          "type": "string"
+        },
+        "remote_id": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      }
     },
     "issue": {
       "type": "object",

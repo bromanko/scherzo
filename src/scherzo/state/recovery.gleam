@@ -43,7 +43,7 @@ pub type CleanupRequest {
 pub type OutboxReplay {
   OutboxReplay(
     outbox_id: String,
-    issue_id: String,
+    task_ref: record.TaskRefFields,
     outbox_kind: String,
     dedupe_key: String,
     payload_json: String,
@@ -200,6 +200,12 @@ type OutboxRecovery {
 
 pub fn known_issue_ids(projection: projection.Projection) -> List(String) {
   projection.known_issue_ids(projection)
+}
+
+pub fn known_task_refs(
+  projection: projection.Projection,
+) -> List(record.TaskRefFields) {
+  projection.known_task_refs(projection)
 }
 
 fn default_session_recovery_config() -> SessionRecoveryConfig {
@@ -2117,7 +2123,7 @@ fn recover_outbox_entry(
       fail_outbox_recovery(
         recovery,
         outbox_id,
-        issue_id,
+        legacy_linear_task_ref(issue_id),
         outbox_kind,
         outbox.OutboxPayloadMissing,
       )
@@ -2128,46 +2134,76 @@ fn recover_outbox_entry(
       payload_json,
       _,
     ) ->
-      case outbox.decode_payload(payload_json) {
+      recover_pending_outbox(
+        recovery,
+        projection,
+        outbox_id,
+        legacy_linear_task_ref(issue_id),
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+      )
+    projection.OutboxPendingV2WithTask(
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      _,
+    ) ->
+      recover_pending_outbox(
+        recovery,
+        projection,
+        outbox_id,
+        task_ref,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+      )
+    projection.OutboxCompleted(_, _, _)
+    | projection.OutboxCompletedWithTask(_, _, _)
+    | projection.OutboxFailed(_, _, _, _)
+    | projection.OutboxFailedWithTask(_, _, _, _) -> recovery
+  }
+}
+
+fn recover_pending_outbox(
+  recovery: OutboxRecovery,
+  projection: projection.Projection,
+  outbox_id: String,
+  task_ref: record.TaskRefFields,
+  outbox_kind: String,
+  dedupe_key: String,
+  payload_json: String,
+) -> OutboxRecovery {
+  case outbox.decode_payload(payload_json) {
+    Error(error) ->
+      fail_outbox_recovery(recovery, outbox_id, task_ref, outbox_kind, error)
+    Ok(payload) ->
+      case outbox.recovery_replay_error(outbox_kind, payload.kind) {
         Error(error) ->
           fail_outbox_recovery(
             recovery,
             outbox_id,
-            issue_id,
+            task_ref,
             outbox_kind,
             error,
           )
-        Ok(payload) ->
-          case outbox.recovery_replay_error(outbox_kind, payload.kind) {
-            Error(error) ->
-              fail_outbox_recovery(
-                recovery,
-                outbox_id,
-                issue_id,
-                outbox_kind,
-                error,
-              )
-            Ok(Nil) ->
-              case
-                command_ack_already_recorded(projection, outbox_id, payload)
-              {
-                True -> recovery
-                False ->
-                  OutboxRecovery(..recovery, outbox_to_replay: [
-                    OutboxReplay(
-                      outbox_id,
-                      issue_id,
-                      outbox_kind,
-                      dedupe_key,
-                      payload_json,
-                    ),
-                    ..recovery.outbox_to_replay
-                  ])
-              }
+        Ok(Nil) ->
+          case command_ack_already_recorded(projection, outbox_id, payload) {
+            True -> recovery
+            False ->
+              OutboxRecovery(..recovery, outbox_to_replay: [
+                OutboxReplay(
+                  outbox_id,
+                  task_ref,
+                  outbox_kind,
+                  dedupe_key,
+                  payload_json,
+                ),
+                ..recovery.outbox_to_replay
+              ])
           }
       }
-    projection.OutboxCompleted(_, _, _) | projection.OutboxFailed(_, _, _, _) ->
-      recovery
   }
 }
 
@@ -2176,14 +2212,17 @@ fn command_ack_already_recorded(
   outbox_id: String,
   payload: outbox.Payload,
 ) -> Bool {
-  case command_ack_event_id(outbox_id, payload) {
-    Some(event_id) ->
-      command_receipt_is_acked(projection.command_receipt(projection, event_id))
+  case command_ack_receipt_key(outbox_id, payload) {
+    Some(receipt_key) ->
+      command_receipt_is_acked(projection.command_receipt(
+        projection,
+        receipt_key,
+      ))
     None -> False
   }
 }
 
-fn command_ack_event_id(
+fn command_ack_receipt_key(
   outbox_id: String,
   payload: outbox.Payload,
 ) -> Option(String) {
@@ -2193,7 +2232,16 @@ fn command_ack_event_id(
         Some(source_comment_id) -> Some(source_comment_id)
         None -> Some(outbox_id)
       }
-    "remote_command_ack" -> payload.event_id
+    "remote_command_ack" ->
+      case payload.backend_kind, payload.task_remote_id, payload.event_id {
+        Some(backend_kind), Some(task_remote_id), Some(event_id) ->
+          Some(projection.remote_command_receipt_key(
+            backend_kind,
+            task_remote_id,
+            event_id,
+          ))
+        _, _, _ -> None
+      }
     _ -> None
   }
 }
@@ -2209,17 +2257,22 @@ fn command_receipt_is_acked(receipt: projection.CommandReceiptState) -> Bool {
 fn fail_outbox_recovery(
   recovery: OutboxRecovery,
   outbox_id: String,
-  issue_id: String,
+  task_ref: record.TaskRefFields,
   outbox_kind: String,
   error: outbox.ReplayError,
 ) -> OutboxRecovery {
   let error_code = outbox.replay_error_code(error)
-  let body = record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code)
+  let body =
+    record.OutboxFailedWithTask(outbox_id, task_ref, outbox_kind, error_code)
   OutboxRecovery(
     ..recovery,
     record_bodies: [body, ..recovery.record_bodies],
     warnings: [outbox_recovery_warning(outbox_id, error), ..recovery.warnings],
   )
+}
+
+fn legacy_linear_task_ref(issue_id: String) -> record.TaskRefFields {
+  record.linear_task_ref_fields(issue_id, None, None)
 }
 
 fn outbox_recovery_warning(
@@ -2245,8 +2298,12 @@ fn outbox_status_time(status: projection.OutboxStatus) -> Int {
   case status {
     projection.OutboxPending(_, _, _, pending_at_ms) -> pending_at_ms
     projection.OutboxPendingV2(_, _, _, _, pending_at_ms) -> pending_at_ms
+    projection.OutboxPendingV2WithTask(_, _, _, _, pending_at_ms) ->
+      pending_at_ms
     projection.OutboxCompleted(_, _, completed_at_ms) -> completed_at_ms
+    projection.OutboxCompletedWithTask(_, _, completed_at_ms) -> completed_at_ms
     projection.OutboxFailed(_, _, _, failed_at_ms) -> failed_at_ms
+    projection.OutboxFailedWithTask(_, _, _, failed_at_ms) -> failed_at_ms
   }
 }
 

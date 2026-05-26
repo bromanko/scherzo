@@ -147,7 +147,11 @@ pub type LedgerContinuation {
     body: String,
     outbox_kind: String,
   )
-  RemoveRemoteCommandAck(task_remote_id: String, event_id: String)
+  RemoveRemoteCommandAck(
+    task_remote_id: String,
+    event_id: String,
+    ack_key: String,
+  )
   ReportParkAfterLedger(
     issue_id: String,
     issue_identifier: String,

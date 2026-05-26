@@ -223,6 +223,7 @@ pub type PendingLinearCommandAck {
   PendingLinearCommandAck(
     backend_kind: String,
     task_remote_id: String,
+    event_id: String,
     body: String,
     outbox_recorded: Bool,
     outbox_kind: String,

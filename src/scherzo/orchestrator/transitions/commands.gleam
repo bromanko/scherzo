@@ -157,6 +157,7 @@ pub fn handle_remote_remove_continuation(
   correlation_id: String,
   task_remote_id: String,
   event_id: String,
+  ack_key: String,
   result: Result(Nil, ledger.LedgerError),
 ) -> transition_types.Outcome {
   linear_commands.handle_remove_continuation(
@@ -164,6 +165,7 @@ pub fn handle_remote_remove_continuation(
     correlation_id,
     task_remote_id,
     event_id,
+    ack_key,
     result,
   )
 }

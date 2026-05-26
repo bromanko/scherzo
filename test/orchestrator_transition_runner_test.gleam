@@ -15,6 +15,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/task
@@ -248,6 +249,7 @@ pub fn linear_command_completion_append_success_enqueues_ack_test() {
     == Ok(transition_types.PendingLinearCommandAck(
       "linear",
       "issue-1",
+      "c-complete",
       "ack body",
       True,
       "remote_command_ack",
@@ -290,6 +292,7 @@ pub fn linear_command_ack_outbox_append_failure_remains_retryable_test() {
     == Ok(transition_types.PendingLinearCommandAck(
       "linear",
       "issue-1",
+      "c-ack",
       "ack body",
       False,
       "remote_command_ack",
@@ -302,6 +305,7 @@ pub fn linear_command_ack_publish_failure_remains_retryable_test() {
     transition_types.PendingLinearCommandAck(
       "linear",
       "issue-1",
+      "c-publish",
       "ack body",
       True,
       "remote_command_ack",
@@ -338,6 +342,64 @@ pub fn linear_command_ack_publish_failure_remains_retryable_test() {
   assert interpreter.data(shell) == ["log:remote_command_ack_failed"]
   assert dict.get(next.pending_linear_command_acks, "c-publish") == Ok(pending)
   assert !dict.has_key(next.in_flight_linear_command_acks, "c-publish")
+}
+
+pub fn non_linear_remote_ack_state_is_task_scoped_test() {
+  let state = orchestrator_transition_test.fixture_state()
+  let shell = event_shell()
+  let first_key =
+    projection.remote_command_receipt_key("github", "owner/repo#1", "event-1")
+  let second_key =
+    projection.remote_command_receipt_key("github", "owner/repo#2", "event-1")
+
+  let transition_runner.RunResult(
+    state: next,
+    shell: shell,
+    exhausted: exhausted,
+  ) =
+    transition_runner.run(
+      state: state,
+      shell: shell,
+      messages: [
+        transition_types.RemoteCommandAckRequested(
+          backend_kind: "github",
+          task_remote_id: "owner/repo#1",
+          event_id: "event-1",
+          body: "ack one",
+          outbox_recorded: False,
+          outbox_kind: "remote_command_ack",
+        ),
+        transition_types.RemoteCommandAckRequested(
+          backend_kind: "github",
+          task_remote_id: "owner/repo#2",
+          event_id: "event-1",
+          body: "ack two",
+          outbox_recorded: False,
+          outbox_kind: "remote_command_ack",
+        ),
+      ],
+      max_messages: 16,
+    )
+
+  assert exhausted == False
+  assert dict.has_key(next.pending_linear_command_acks, first_key)
+  assert dict.has_key(next.pending_linear_command_acks, second_key)
+  assert dict.has_key(next.in_flight_linear_command_acks, first_key)
+  assert dict.has_key(next.in_flight_linear_command_acks, second_key)
+  assert list.length(
+      list.filter(interpreter.data(shell), fn(entry) {
+        entry == "ack:post:event-1"
+      }),
+    )
+    == 2
+  assert list.contains(
+    interpreter.data(shell),
+    "append:remote_command_ack_outbox:" <> first_key,
+  )
+  assert list.contains(
+    interpreter.data(shell),
+    "append:remote_command_ack_outbox:" <> second_key,
+  )
 }
 
 pub fn transition_runner_stops_at_message_limit_test() {
@@ -679,7 +741,7 @@ pub fn startup_recovery_schedules_retry_cleanup_ack_and_park_effects_test() {
           outbox_to_replay: [
             recovery.OutboxReplay(
               "outbox-1",
-              "issue-3",
+              record.linear_task_ref_fields("issue-3", Some("ABC-3"), None),
               "linear_command_ack",
               "linear_command_ack:comment-1",
               "{\"type\":\"linear_command_ack\",\"source_comment_id\":\"comment-1\",\"body\":\"ack\"}",

@@ -3,8 +3,11 @@
   "artifact_type": "scherzo.workstream.v1",
   "artifact_id": "workstream-linear-liv-370",
   "workstream_id": "linear:LIV-370",
-  "issue": {
-    "id": "LIV-370"
+  "task_ref": {
+    "backend_kind": "linear",
+    "remote_id": "issue-370",
+    "key": "LIV-370",
+    "url": "https://linear.app/living-systems/issue/LIV-370"
   },
   "status": "in_progress",
   "summary": "Composable workstream specs are defined.",

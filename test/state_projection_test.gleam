@@ -166,12 +166,13 @@ pub fn projection_exposes_recovery_facts_test() {
   let assert Ok([
     projection.OutboxReplay(
       outbox_id: "outbox-1",
-      issue_id: "issue-1",
+      task_ref: replay_task_ref,
       outbox_kind: "linear_comment",
       dedupe_key: "run-1:success",
       payload_json: "{\"body\":\"ok\"}",
     ),
   ]) = projection.pending_outbox_replays(folded)
+  assert replay_task_ref == record.linear_task_ref_fields("issue-1", None, None)
 }
 
 pub fn projection_records_workflow_contract_manifest_refs_test() {
@@ -360,6 +361,92 @@ pub fn projection_snapshot_with_partial_workstream_task_ref_fails_test() {
     "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[],\"workstreams\":[{\"workstream_id\":\"linear:LIV-393\",\"task_backend_kind\":\"linear\"}]}"
 
   let assert Error(_) = projection.decode_string(malformed_snapshot)
+}
+
+pub fn projection_snapshot_with_partial_outbox_task_ref_fails_test() {
+  let malformed_snapshot =
+    "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[{\"outbox_id\":\"outbox-1\",\"status\":\"pending_v2\",\"issue_id\":\"legacy-issue\",\"task_backend_kind\":\"github\",\"outbox_kind\":\"remote_command_ack\",\"dedupe_key\":\"dedupe-1\",\"payload_json\":\"{}\",\"pending_at_ms\":1000}]}"
+
+  let assert Error(_) = projection.decode_string(malformed_snapshot)
+}
+
+pub fn legacy_issue_id_outbox_snapshot_decodes_test() {
+  let legacy_snapshot =
+    "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[{\"outbox_id\":\"outbox-1\",\"status\":\"pending_v2\",\"issue_id\":\"issue-1\",\"outbox_kind\":\"linear_comment\",\"dedupe_key\":\"run-1\",\"payload_json\":\"{\\\"body\\\":\\\"ok\\\"}\",\"pending_at_ms\":1000},{\"outbox_id\":\"outbox-2\",\"status\":\"completed\",\"issue_id\":\"issue-1\",\"outbox_kind\":\"linear_comment\",\"completed_at_ms\":1001},{\"outbox_id\":\"outbox-3\",\"status\":\"failed\",\"issue_id\":\"issue-2\",\"outbox_kind\":\"linear_comment\",\"error_code\":\"http_500\",\"failed_at_ms\":1002}]}"
+
+  let assert Ok(decoded) = projection.decode_string(legacy_snapshot)
+  let assert Ok(projection.OutboxPendingV2(issue_id: "issue-1", ..)) =
+    dict.get(decoded.outbox, "outbox-1")
+  let assert Ok(projection.OutboxCompleted(issue_id: "issue-1", ..)) =
+    dict.get(decoded.outbox, "outbox-2")
+  let assert Ok(projection.OutboxFailed(issue_id: "issue-2", ..)) =
+    dict.get(decoded.outbox, "outbox-3")
+}
+
+pub fn task_ref_outbox_projection_survives_snapshot_migration_test() {
+  let task_ref =
+    record.TaskRefFields(
+      task_backend_kind: "github",
+      task_remote_id: "octo/repo#42",
+      task_key: Some("GH-42"),
+      task_url: Some("https://github.example/octo/repo/issues/42"),
+    )
+  let folded =
+    projection.fold([
+      record.with_id(
+        "outbox-task",
+        1700,
+        record.OutboxPendingV2WithTask(
+          outbox_id: "outbox-task",
+          task_ref: task_ref,
+          outbox_kind: "remote_command_ack",
+          dedupe_key: "remote_command_ack:github:event-42",
+          payload_json: outbox_payload("github", "event-42", "octo/repo#42"),
+        ),
+      ),
+    ])
+
+  let assert Ok(projection.OutboxPendingV2WithTask(
+    task_ref: stored_task_ref,
+    ..,
+  )) = dict.get(folded.outbox, "outbox-task")
+  assert stored_task_ref == task_ref
+  let assert Ok([projection.OutboxReplay(task_ref: replay_task_ref, ..)]) =
+    projection.pending_outbox_replays(folded)
+  assert replay_task_ref == task_ref
+
+  let assert Ok(decoded) =
+    projection.decode_string(projection.to_string(folded))
+  let assert Ok(projection.OutboxPendingV2WithTask(
+    task_ref: decoded_task_ref,
+    ..,
+  )) = dict.get(decoded.outbox, "outbox-task")
+  assert decoded_task_ref == task_ref
+}
+
+pub fn known_task_refs_includes_remote_command_task_identity_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "remote-seen",
+        1800,
+        record.RemoteCommandSeen(
+          backend_kind: "github",
+          event_id: "event-42",
+          task_remote_id: "octo/repo#42",
+          task_key: Some("GH-42"),
+          author_id: "user-1",
+          command_name: "retry",
+          excerpt: "/scherzo retry",
+        ),
+      ),
+    ])
+
+  assert has_task_ref(
+    projection.known_task_refs(folded),
+    "github",
+    "octo/repo#42",
+  )
 }
 
 pub fn known_issue_ids_omits_blank_issue_ids_test() {
@@ -1287,6 +1374,31 @@ fn assert_projection_snapshot_error(
   let message = projection.describe_decode_error(error)
   assert string.starts_with(message, expected_prefix)
   Nil
+}
+
+fn outbox_payload(
+  backend_kind: String,
+  event_id: String,
+  task_remote_id: String,
+) -> String {
+  "{\"type\":\"remote_command_ack\",\"task_backend_kind\":\""
+  <> backend_kind
+  <> "\",\"event_id\":\""
+  <> event_id
+  <> "\",\"task_remote_id\":\""
+  <> task_remote_id
+  <> "\",\"body\":\"ack\"}"
+}
+
+fn has_task_ref(
+  refs: List(record.TaskRefFields),
+  backend_kind: String,
+  task_remote_id: String,
+) -> Bool {
+  list.any(refs, fn(ref) {
+    ref.task_backend_kind == backend_kind
+    && ref.task_remote_id == task_remote_id
+  })
 }
 
 fn snapshot_json(

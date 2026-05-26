@@ -1085,6 +1085,66 @@ pub fn startup_ack_outbox_replay_suppresses_duplicate_receipt_ack_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn startup_recovery_refreshes_current_backend_task_refs_by_ref_test() {
+  let workflow_dir = "test/tmp/daemon-startup-task-ref-refresh"
+  let workspace_root = effective_workspace_root(workflow_dir)
+  let workflow_path = write_workflow(workflow_dir, 1)
+  append_ledger_bodies_for_root(workspace_root, [
+    record.RemoteCommandSeen(
+      backend_kind: "linear",
+      event_id: "comment-1",
+      task_remote_id: "issue-1",
+      task_key: Some("ABC-1"),
+      author_id: "user-1",
+      command_name: "retry",
+      excerpt: "/scherzo retry",
+    ),
+    record.RemoteCommandSeen(
+      backend_kind: "github",
+      event_id: "comment-1",
+      task_remote_id: "owner/repo#42",
+      task_key: Some("GH-42"),
+      author_id: "user-1",
+      command_name: "retry",
+      excerpt: "/scherzo retry",
+    ),
+  ])
+  let refresh_subject = process.new_subject()
+  let log_subject = process.new_subject()
+  let fetch_subject = process.new_subject()
+  let ack_subject = process.new_subject()
+  let ack_target_subject = process.new_subject()
+  let linear_server =
+    start_linear_server(fetch_subject, ack_subject, ack_target_subject)
+  let refreshed_issue = issue("issue-1", "ABC-1", "Todo")
+  let tracker_client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(ids) {
+        process.send(refresh_subject, ids)
+        case list.contains(ids, "issue-1") {
+          True -> Ok([refreshed_issue])
+          False -> Ok([])
+        }
+      },
+    )
+  let deps =
+    dependencies(
+      tracker_client,
+      linear_client(linear_server),
+      log_subject,
+      unused_agent,
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(refreshed_ids) = process.receive(refresh_subject, within: 1000)
+  assert refreshed_ids == ["issue-1"]
+  test_async.assert_no_extra_message_within(refresh_subject, 100)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn linear_command_ack_outbox_survives_recovery_test() {
   let workflow_dir = "test/tmp/daemon-linear-outbox-ack-recovery"
   let workspace_root = effective_workspace_root(workflow_dir)
@@ -1354,7 +1414,8 @@ fn outbox_completed(
 ) -> Bool {
   list.any(records, fn(ledger_record) {
     case ledger_record.body {
-      record.OutboxCompleted(outbox_id: completed_outbox_id, ..) ->
+      record.OutboxCompleted(outbox_id: completed_outbox_id, ..)
+      | record.OutboxCompletedWithTask(outbox_id: completed_outbox_id, ..) ->
         completed_outbox_id == outbox_id
       _ -> False
     }

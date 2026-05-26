@@ -1171,6 +1171,25 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "OutboxPendingV2WithTask",
+      "outbox_pending_v2",
+      record.with_id(
+        "record-outbox-pending-v2-with-task",
+        1038,
+        record.OutboxPendingV2WithTask(
+          outbox_id: "outbox-2-task",
+          task_ref: record.linear_task_ref_fields(
+            "issue-2",
+            Some("LIV-2"),
+            None,
+          ),
+          outbox_kind: "linear_comment",
+          dedupe_key: "run-2:success",
+          payload_json: "{\"body\":\"ok\"}",
+        ),
+      ),
+    ),
+    LedgerExample(
       "OutboxCompleted",
       "outbox_completed",
       record.with_id(
@@ -1184,6 +1203,23 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "OutboxCompletedWithTask",
+      "outbox_completed",
+      record.with_id(
+        "record-outbox-completed-with-task",
+        1039,
+        record.OutboxCompletedWithTask(
+          outbox_id: "outbox-2-task",
+          task_ref: record.linear_task_ref_fields(
+            "issue-2",
+            Some("LIV-2"),
+            None,
+          ),
+          outbox_kind: "linear_comment",
+        ),
+      ),
+    ),
+    LedgerExample(
       "OutboxFailed",
       "outbox_failed",
       record.with_id(
@@ -1192,6 +1228,24 @@ fn ledger_examples() -> List(LedgerExample) {
         record.OutboxFailed(
           outbox_id: "outbox-3",
           issue_id: "issue-2",
+          outbox_kind: "linear_comment",
+          error_code: "http_500",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "OutboxFailedWithTask",
+      "outbox_failed",
+      record.with_id(
+        "record-outbox-failed-with-task",
+        1040,
+        record.OutboxFailedWithTask(
+          outbox_id: "outbox-4-task",
+          task_ref: record.linear_task_ref_fields(
+            "issue-4",
+            Some("LIV-4"),
+            None,
+          ),
           outbox_kind: "linear_comment",
           error_code: "http_500",
         ),

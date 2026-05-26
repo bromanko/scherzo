@@ -1629,12 +1629,13 @@ fn handle_ledger_append_completed(
         outbox_kind,
         result,
       )
-    effects_types.RemoveRemoteCommandAck(task_remote_id, event_id) ->
+    effects_types.RemoveRemoteCommandAck(task_remote_id, event_id, ack_key) ->
       commands.handle_remote_remove_continuation(
         state,
         correlation_id,
         task_remote_id,
         event_id,
+        ack_key,
         result,
       )
     effects_types.ReportParkAfterLedger(

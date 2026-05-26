@@ -1,12 +1,13 @@
 import gleam/dict
 import gleam/list
-import gleam/option.{type Option, Some}
+import gleam/option.{type Option, None, Some}
 import scherzo/control/command
 import scherzo/control/linear_parser
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/transition_types
 import scherzo/state/ledger
 import scherzo/state/outbox
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/tracker/adapter
@@ -114,6 +115,8 @@ pub fn request_ack(
   outbox_recorded: Bool,
   outbox_kind: String,
 ) -> transition_types.Outcome {
+  let ack_key =
+    ack_identity_key(backend_kind, task_remote_id, event_id, outbox_kind)
   let state =
     remember_pending_ack(
       state,
@@ -137,7 +140,7 @@ pub fn request_ack(
     False ->
       transition_types.Outcome(state: state, effects: [
         effects_types.AppendLedger(effects_types.LedgerAppend(
-          correlation_id: "remote_command_ack_outbox:" <> event_id,
+          correlation_id: "remote_command_ack_outbox:" <> ack_key,
           bodies: [
             ack_outbox_body(
               backend_kind,
@@ -171,13 +174,13 @@ pub fn startup_outbox_replay_effects(
 fn startup_outbox_replay_entry_effects(
   entry: recovery.OutboxReplay,
 ) -> List(effects_types.Effect) {
-  let recovery.OutboxReplay(outbox_id, issue_id, outbox_kind, _, payload_json) =
+  let recovery.OutboxReplay(outbox_id, task_ref, outbox_kind, _, payload_json) =
     entry
   case outbox.decode_payload(payload_json) {
     Error(error) ->
       startup_outbox_replay_failure_effects(
         outbox_id,
-        issue_id,
+        task_ref,
         outbox_kind,
         error,
       )
@@ -186,18 +189,19 @@ fn startup_outbox_replay_entry_effects(
         Error(error) ->
           startup_outbox_replay_failure_effects(
             outbox_id,
-            issue_id,
+            task_ref,
             outbox_kind,
             error,
           )
         Ok(Nil) -> {
           let event_id = outbox_ack_event_id(outbox_id, payload)
-          let task_remote_id = outbox_ack_issue_id(issue_id, payload)
-          let backend_kind = outbox_ack_backend_kind(payload)
+          let task_remote_id = outbox_ack_task_remote_id(task_ref, payload)
+          let backend_kind = outbox_ack_backend_kind(task_ref, payload)
           [
             effects_types.Log("info", "outbox_replay_enqueued", [
               #("outbox_id", outbox_id),
-              #("issue_id", task_remote_id),
+              #("task_backend_kind", backend_kind),
+              #("task_remote_id", task_remote_id),
               #("kind", outbox_kind),
             ]),
             effects_types.ReplayRemoteCommandAck(
@@ -221,23 +225,29 @@ fn outbox_ack_event_id(outbox_id: String, payload: outbox.Payload) -> String {
   }
 }
 
-fn outbox_ack_issue_id(issue_id: String, payload: outbox.Payload) -> String {
+fn outbox_ack_task_remote_id(
+  task_ref: record.TaskRefFields,
+  payload: outbox.Payload,
+) -> String {
   case payload.kind, payload.task_remote_id {
     "remote_command_ack", Some(task_remote_id) -> task_remote_id
-    _, _ -> issue_id
+    _, _ -> task_ref.task_remote_id
   }
 }
 
-fn outbox_ack_backend_kind(payload: outbox.Payload) -> String {
+fn outbox_ack_backend_kind(
+  task_ref: record.TaskRefFields,
+  payload: outbox.Payload,
+) -> String {
   case payload.kind, payload.backend_kind {
     "remote_command_ack", Some(backend_kind) -> backend_kind
-    _, _ -> "linear"
+    _, _ -> task_ref.task_backend_kind
   }
 }
 
 fn startup_outbox_replay_failure_effects(
   outbox_id: String,
-  issue_id: String,
+  task_ref: record.TaskRefFields,
   outbox_kind: String,
   error: outbox.ReplayError,
 ) -> List(effects_types.Effect) {
@@ -245,7 +255,8 @@ fn startup_outbox_replay_failure_effects(
   [
     effects_types.Log("warn", "outbox_replay_failed", [
       #("outbox_id", outbox_id),
-      #("issue_id", issue_id),
+      #("task_backend_kind", task_ref.task_backend_kind),
+      #("task_remote_id", task_ref.task_remote_id),
       #("kind", outbox_kind),
       #("error", error_code),
       #("reason", outbox.describe_replay_error(error)),
@@ -253,7 +264,12 @@ fn startup_outbox_replay_failure_effects(
     effects_types.AppendLedger(effects_types.LedgerAppend(
       correlation_id: "outbox_failed:" <> outbox_id,
       bodies: [
-        record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code),
+        record.OutboxFailedWithTask(
+          outbox_id,
+          task_ref,
+          outbox_kind,
+          error_code,
+        ),
       ],
       failure_event: "ledger_append_failed",
       policy: effects_types.ContinueRegardless,
@@ -269,15 +285,16 @@ pub fn retry_pending_acks(
   |> list.fold(
     transition_types.Outcome(state: state, effects: []),
     fn(outcome, entry) {
-      let #(event_id, pending) = entry
+      let #(ack_key, pending) = entry
       let transition_types.PendingLinearCommandAck(
         backend_kind,
         task_remote_id,
+        event_id,
         body,
         outbox_recorded,
         outbox_kind,
       ) = pending
-      case dict.has_key(outcome.state.in_flight_linear_command_acks, event_id) {
+      case dict.has_key(outcome.state.in_flight_linear_command_acks, ack_key) {
         True -> outcome
         False -> {
           let retried =
@@ -308,12 +325,14 @@ pub fn handle_ack_finished(
   outbox_kind: String,
   result: Result(Nil, String),
 ) -> transition_types.Outcome {
+  let ack_key =
+    ack_identity_key(backend_kind, task_remote_id, event_id, outbox_kind)
   let state =
     transition_types.State(
       ..state,
       in_flight_linear_command_acks: dict.delete(
         state.in_flight_linear_command_acks,
-        event_id,
+        ack_key,
       ),
     )
   case result {
@@ -328,14 +347,23 @@ pub fn handle_ack_finished(
     Ok(Nil) ->
       transition_types.Outcome(state: state, effects: [
         effects_types.AppendLedger(effects_types.LedgerAppend(
-          correlation_id: "remote_command_ack_complete:" <> event_id,
+          correlation_id: "remote_command_ack_complete:" <> ack_key,
           bodies: [
-            record.OutboxCompleted(event_id, task_remote_id, outbox_kind),
+            outbox_completed_body(
+              backend_kind,
+              task_remote_id,
+              event_id,
+              outbox_kind,
+            ),
             record.RemoteCommandAcked(backend_kind, event_id, task_remote_id),
           ],
           failure_event: "ledger_append_failed",
           policy: effects_types.ContinueWith(
-            effects_types.RemoveRemoteCommandAck(task_remote_id, event_id),
+            effects_types.RemoveRemoteCommandAck(
+              task_remote_id,
+              event_id,
+              ack_key,
+            ),
           ),
         )),
       ])
@@ -444,6 +472,7 @@ pub fn handle_remove_continuation(
   correlation_id: String,
   task_remote_id: String,
   event_id: String,
+  ack_key: String,
   result: Result(Nil, ledger.LedgerError),
 ) -> transition_types.Outcome {
   case result {
@@ -462,7 +491,7 @@ pub fn handle_remove_continuation(
           ..state,
           pending_linear_command_acks: dict.delete(
             state.pending_linear_command_acks,
-            event_id,
+            ack_key,
           ),
         ),
         effects: [],
@@ -487,11 +516,11 @@ fn ack_outbox_body(
         outbox.linear_command_ack_payload(event_id, body, []),
       )
     _ ->
-      record.OutboxPendingV2(
-        event_id,
-        task_remote_id,
+      record.OutboxPendingV2WithTask(
+        ack_identity_key(backend_kind, task_remote_id, event_id, outbox_kind),
+        remote_task_ref(backend_kind, task_remote_id),
         "remote_command_ack",
-        "remote_command_ack:" <> backend_kind <> ":" <> event_id,
+        remote_command_ack_dedupe_key(backend_kind, task_remote_id, event_id),
         outbox.remote_command_ack_payload(
           backend_kind,
           event_id,
@@ -501,6 +530,71 @@ fn ack_outbox_body(
         ),
       )
   }
+}
+
+fn outbox_completed_body(
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
+  outbox_kind: String,
+) -> record.RecordBody {
+  case outbox_kind {
+    "linear_command_ack" ->
+      record.OutboxCompleted(event_id, task_remote_id, outbox_kind)
+    _ ->
+      record.OutboxCompletedWithTask(
+        ack_identity_key(backend_kind, task_remote_id, event_id, outbox_kind),
+        remote_task_ref(backend_kind, task_remote_id),
+        outbox_kind,
+      )
+  }
+}
+
+fn ack_identity_key(
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
+  outbox_kind: String,
+) -> String {
+  case outbox_kind {
+    "linear_command_ack" -> event_id
+    _ ->
+      projection.remote_command_receipt_key(
+        backend_kind,
+        task_remote_id,
+        event_id,
+      )
+  }
+}
+
+fn remote_command_ack_dedupe_key(
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
+) -> String {
+  case backend_kind {
+    "linear" -> "remote_command_ack:" <> backend_kind <> ":" <> event_id
+    _ ->
+      "remote_command_ack:"
+      <> ack_identity_key(
+        backend_kind,
+        task_remote_id,
+        event_id,
+        "remote_command_ack",
+      )
+  }
+}
+
+fn remote_task_ref(
+  backend_kind: String,
+  task_remote_id: String,
+) -> record.TaskRefFields {
+  record.TaskRefFields(
+    task_backend_kind: backend_kind,
+    task_remote_id: task_remote_id,
+    task_key: None,
+    task_url: None,
+  )
 }
 
 fn remember_pending_ack(
@@ -516,10 +610,11 @@ fn remember_pending_ack(
     ..state,
     pending_linear_command_acks: dict.insert(
       state.pending_linear_command_acks,
-      event_id,
+      ack_identity_key(backend_kind, task_remote_id, event_id, outbox_kind),
       transition_types.PendingLinearCommandAck(
         backend_kind,
         task_remote_id,
+        event_id,
         body,
         outbox_recorded,
         outbox_kind,
@@ -536,7 +631,9 @@ fn publish_pending_ack(
   body: String,
   outbox_kind: String,
 ) -> transition_types.Outcome {
-  case dict.has_key(state.in_flight_linear_command_acks, event_id) {
+  let ack_key =
+    ack_identity_key(backend_kind, task_remote_id, event_id, outbox_kind)
+  case dict.has_key(state.in_flight_linear_command_acks, ack_key) {
     True -> transition_types.Outcome(state: state, effects: [])
     False ->
       transition_types.Outcome(
@@ -544,7 +641,7 @@ fn publish_pending_ack(
           ..state,
           in_flight_linear_command_acks: dict.insert(
             state.in_flight_linear_command_acks,
-            event_id,
+            ack_key,
             True,
           ),
         ),
