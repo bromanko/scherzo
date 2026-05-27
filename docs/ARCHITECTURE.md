@@ -218,10 +218,16 @@ is eliminated.
   `workspace.root/.scherzo-state/daemon_identity.json`. It persists only a
   stable `daemon_id`; each helper load still generates a fresh in-memory
   `boot_id`.
-- `ui_server` config is a disabled-by-default identity/config primitive. When
-  enabled it requires an explicit HTTPS endpoint and an environment-variable
-  secret named by `enrollment_token_env`; it does not read `control.json` or
-  `SCHERZO_CONTROL_FILE`, and this slice does not add any live remote transport.
+- `ui_server` config is disabled by default. When enabled the daemon loads the
+  durable daemon identity, starts one outbound remote client, sends hello,
+  heartbeat, and minimal state snapshots, retries unreachable loopback/demo
+  endpoints without blocking local control, and stops the client during daemon
+  shutdown. It still requires an explicit HTTPS endpoint and an
+  environment-variable secret named by `enrollment_token_env`, and it does not
+  read `control.json` or `SCHERZO_CONTROL_FILE`.
+- This lifecycle slice does not add browser UI, server-originated command
+  mutation, workflow-helper/schema changes, provider-live or provider-cache
+  behavior changes, or token-accounting changes.
 - `scherzoctl` discovers the control file from `--control-file`,
   `SCHERZO_CONTROL_FILE`, or the repository default path.
 - Non-streaming control commands support JSON output. `attach`/`events` can

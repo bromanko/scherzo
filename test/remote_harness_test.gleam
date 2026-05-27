@@ -11,6 +11,16 @@ pub fn remote_harness_runs_live_loopback_and_updates_liveness_test() {
   let root = "test/tmp/remote-harness-live"
   test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.json"
+  let sessions = [
+    remote_envelope.RemoteSession(
+      session_id: "session-1",
+      display_name: "Harness demo session",
+      issue_identifier: "LIV-686",
+      status: "running",
+      current_turn: 1,
+      last_event_at_ms: 101,
+    ),
+  ]
   let scenario =
     remote_harness.Scenario(
       expected_token: "test-token",
@@ -23,8 +33,10 @@ pub fn remote_harness_runs_live_loopback_and_updates_liveness_test() {
       offline_after_ms: 10,
       send_malformed_hello: False,
       heartbeat_envelope: None,
+      state_sessions: sessions,
       transcript_path: Some(transcript_path),
       run_nonce: "run_nonce_aaaaaaaaaaaaaaaaaaaaaaaa",
+      use_real_client: True,
     )
   let assert Ok(report) = remote_harness.run_scenario(scenario)
 
@@ -36,6 +48,7 @@ pub fn remote_harness_runs_live_loopback_and_updates_liveness_test() {
   assert list.length(report.observations) == 2
   assert matching_digest(report.events, "hello")
   assert matching_digest(report.events, "heartbeat")
+  assert matching_digest(report.events, "state")
   assert !string.contains(report.transcript_json, "test-token")
   assert string.contains(report.transcript_json, "[REDACTED]")
 }
@@ -53,8 +66,10 @@ pub fn remote_harness_rejects_wrong_auth_without_online_entry_test() {
       offline_after_ms: 10,
       send_malformed_hello: False,
       heartbeat_envelope: None,
+      state_sessions: [],
       transcript_path: None,
       run_nonce: "run_nonce_wrong_auth_aaaaaaaaaaaa",
+      use_real_client: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -75,8 +90,10 @@ pub fn remote_harness_rejects_malformed_hello_without_online_entry_test() {
       offline_after_ms: 10,
       send_malformed_hello: True,
       heartbeat_envelope: None,
+      state_sessions: [],
       transcript_path: None,
       run_nonce: "run_nonce_bad_hello_aaaaaaaaaaaaa",
+      use_real_client: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -97,8 +114,10 @@ pub fn remote_harness_rejects_non_heartbeat_after_valid_hello_test() {
       offline_after_ms: 10,
       send_malformed_hello: False,
       heartbeat_envelope: Some(remote_envelope.RemoteHello(["not_heartbeat"])),
+      state_sessions: [],
       transcript_path: None,
       run_nonce: "run_nonce_bad_heartbeat_aaaaaaaa",
+      use_real_client: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -119,8 +138,10 @@ pub fn remote_harness_uses_server_receipt_time_for_liveness_test() {
       offline_after_ms: 10,
       send_malformed_hello: False,
       heartbeat_envelope: Some(remote_envelope.RemoteHeartbeat(1_000_000)),
+      state_sessions: [],
       transcript_path: None,
       run_nonce: "run_nonce_future_heartbeat_aaaaa",
+      use_real_client: False,
     )
   let assert Ok(report) = remote_harness.run_scenario(scenario)
 
@@ -143,7 +164,11 @@ pub fn remote_harness_demo_writes_distinct_live_transcripts_test() {
   assert second.bound_port > 0
   assert first.run_nonce != second.run_nonce
   assert matching_digest(first.events, "hello")
+  assert matching_digest(first.events, "heartbeat")
+  assert matching_digest(first.events, "state")
+  assert matching_digest(second.events, "hello")
   assert matching_digest(second.events, "heartbeat")
+  assert matching_digest(second.events, "state")
 
   let assert Ok(first_contents) = simplifile.read(first_path)
   let assert Ok(second_contents) = simplifile.read(second_path)

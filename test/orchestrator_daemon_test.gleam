@@ -399,6 +399,7 @@ fn base_dependencies(
   log_subject: process.Subject(String),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
+    ..daemon.default_dependencies(),
     make_tracker_adapter: fn(_) { legacy_adapter(client) },
     workflow_run_dependencies: fake_workflow_run_dependencies(log_subject),
     cleanup: fn(_, _, _) { Ok(Nil) },

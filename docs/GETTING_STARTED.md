@@ -195,9 +195,10 @@ linear_contract:
 
 ui_server:
   enabled: false
-  # This primitive stays inert in the current slice. When a later transport
-  # ticket enables real remote connectivity, use an HTTPS endpoint and an
-  # environment variable name whose value contains the enrollment token.
+  # Leave this off for local-only operation. When enabled, the daemon starts an
+  # outbound remote client that sends hello, heartbeat, and minimal state
+  # snapshots, retries unreachable endpoints in the background, and keeps local
+  # scherzoctl control separate.
   # endpoint: https://ui.example.test
   # enrollment_token_env: UI_SERVER_TOKEN
 ```
@@ -426,9 +427,10 @@ Create matching workflow labels in the tracker. With the Linear adapter, these a
 
 Start with one route and one label. Add more after `doctor` and `--once` are passing.
 
-`ui_server` is intentionally disabled in the starter config above. This ticket
-adds only the identity/config primitive and secret redaction path, not a live
-browser UI, remote server connection, or central control-plane transport.
+`ui_server` is intentionally disabled in the starter config above. Enabling it
+starts the outbound remote client lifecycle for hello, heartbeat, and minimal
+state snapshots, but this slice still does not add browser UI or
+server-originated command mutation.
 
 ## 7. Add a workflow YAML DAG
 

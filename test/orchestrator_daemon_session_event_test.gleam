@@ -285,6 +285,7 @@ fn dependencies(
   ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
+    ..daemon.default_dependencies(),
     make_tracker_adapter: fn(_) {
       adapter_legacy.adapter_from_legacy_client(client, "linear")
     },
