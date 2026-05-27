@@ -55,14 +55,34 @@ fn handoff_config(
     comment_on_success: enabled,
     comment_on_failure: enabled,
     comment_on_park: enabled,
-    claim_state_id: claim,
-    success_state_id: success,
-    failure_state_id: failure,
+    claim_state_id: option.map(claim, workflow_completion_policy.StateById),
+    success_state_id: option.map(success, workflow_completion_policy.StateById),
+    failure_state_id: option.map(failure, workflow_completion_policy.StateById),
     include_result_on_success: enabled,
     attach_result_on_success: False,
     attachment_fallback_to_markdown_link: True,
     result_max_chars: 8000,
     completion_states: None,
+  )
+}
+
+fn named_handoff_config(
+  enabled: Bool,
+  claim: Option(String),
+  success: Option(String),
+  failure: Option(String),
+) -> config_types.HandoffConfig {
+  config_types.HandoffConfig(
+    ..handoff_config(enabled, None, None, None),
+    claim_state_id: option.map(claim, workflow_completion_policy.StateByName),
+    success_state_id: option.map(
+      success,
+      workflow_completion_policy.StateByName,
+    ),
+    failure_state_id: option.map(
+      failure,
+      workflow_completion_policy.StateByName,
+    ),
   )
 }
 
@@ -559,6 +579,61 @@ pub fn multi_team_handoff_suppresses_secondary_id_diagnostics_test() {
   assert !contains_code(diagnostics, "handoff_state_name_mismatch")
 }
 
+pub fn task_update_state_names_are_checked_test() {
+  let diagnostics =
+    linear_contract.check(
+      effective(
+        contract_config(False),
+        named_handoff_config(
+          True,
+          Some("Missing Claim"),
+          Some("In Review"),
+          Some("Needs Attention"),
+        ),
+        ["Ready for Agent"],
+        ["Done"],
+      ),
+      board(
+        [
+          team(
+            "ENG",
+            list.append(all_states(), [
+              state("review-a", "In Review"),
+              state("review-b", "In Review"),
+            ]),
+            [],
+          ),
+        ],
+        [],
+      ),
+    )
+
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.MissingState(
+      team_key: "ENG",
+      name: "Missing Claim",
+      source: "task_updates.states.claim",
+    )
+  })
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.MissingState(
+      team_key: "ENG",
+      name: "Needs Attention",
+      source: "task_updates.states.failure",
+    )
+  })
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.AmbiguousCompletionStateName(
+      team_key: "ENG",
+      name: "In Review",
+      source: "task_updates.states.success",
+    )
+  })
+}
+
 pub fn completion_state_policy_names_are_checked_test() {
   let handoff =
     config_types.HandoffConfig(
@@ -576,7 +651,7 @@ pub fn completion_state_policy_names_are_checked_test() {
     == linear_contract.MissingState(
       team_key: "ENG",
       name: "In Review",
-      source: "handoff.completion_states.default_completion_state",
+      source: "task_updates.states.success",
     )
   })
   assert list.any(diagnostics, fn(diagnostic) {
@@ -584,13 +659,13 @@ pub fn completion_state_policy_names_are_checked_test() {
     == linear_contract.MissingState(
       team_key: "ENG",
       name: "Needs Attention",
-      source: "handoff.completion_states.failure_state",
+      source: "task_updates.states.failure",
     )
   })
   assert list.any(diagnostics, fn(diagnostic) {
     diagnostic
     == linear_contract.MissingCompletionStateId(
-      source: "handoff.completion_states.workflows.execplan.success_state_id",
+      source: "task_updates.states.success",
       id: "state-custom-review",
     )
   })
@@ -635,7 +710,7 @@ pub fn completion_state_policy_ids_are_checked_test() {
   assert list.any(diagnostics, fn(diagnostic) {
     diagnostic
     == linear_contract.MissingCompletionStateId(
-      source: "handoff.completion_states.partial_success_state_id",
+      source: "task_updates.states.partial_success",
       id: "missing-attention",
     )
   })
@@ -676,7 +751,7 @@ pub fn completion_state_policy_ambiguous_names_fail_doctor_test() {
     == linear_contract.AmbiguousCompletionStateName(
       team_key: "ENG",
       name: "In Review",
-      source: "handoff.completion_states.default_completion_state",
+      source: "task_updates.states.success",
     )
   })
   assert string.contains(

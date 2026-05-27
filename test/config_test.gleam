@@ -861,7 +861,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
     config.resolve_with_env(definition(invalid), "test/tmp/scherzo.yaml", env)
 }
 
-pub fn handoff_defaults_and_parsing_test() {
+pub fn task_updates_defaults_and_parsing_test() {
   let assert Ok(defaulted) =
     config.resolve_with_env(
       definition(minimal_front()),
@@ -870,71 +870,103 @@ pub fn handoff_defaults_and_parsing_test() {
     )
   assert defaulted.handoff.enabled == False
   assert defaulted.handoff.comment_on_claim == False
+  assert defaulted.handoff.comment_on_success == False
   assert defaulted.handoff.comment_on_park == False
   assert defaulted.handoff.attach_result_on_success == False
   assert defaulted.handoff.attachment_fallback_to_markdown_link == True
 
-  let comments_only = minimal_front() <> "handoff:\n  enabled: true\n"
-  let assert Ok(enabled) =
-    config.resolve_with_env(
-      definition(comments_only),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
-  assert enabled.handoff.enabled == True
-  assert enabled.handoff.comment_on_claim == True
-  assert enabled.handoff.comment_on_success == True
-  assert enabled.handoff.comment_on_failure == True
-  assert enabled.handoff.comment_on_park == True
-
-  let with_states =
+  let front =
     minimal_front()
-    <> "handoff:\n  enabled: true\n  comment_on_failure: false\n  comment_on_park: false\n  claim_state_id: state-claim\n  success_state_id: state-success\n  failure_state_id: state-fail\n  attach_result_on_success: true\n  attachment_fallback_to_markdown_link: false\n"
+    <> "task_updates:\n  enabled: true\n  states:\n    claim: In Progress\n    success: In Review\n    failure: Triage\n  comment_on: [claim, failure, park]\n  result:\n    on_success: attachment\n    max_chars: 4000\n"
   let assert Ok(parsed) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert parsed.handoff.enabled == True
+  assert parsed.handoff.comment_on_claim == True
+  assert parsed.handoff.comment_on_success == False
+  assert parsed.handoff.comment_on_failure == True
+  assert parsed.handoff.comment_on_park == True
+  assert parsed.handoff.claim_state_id
+    == Some(workflow_completion_policy.StateByName("In Progress"))
+  assert parsed.handoff.success_state_id
+    == Some(workflow_completion_policy.StateByName("In Review"))
+  assert parsed.handoff.failure_state_id
+    == Some(workflow_completion_policy.StateByName("Triage"))
+  assert parsed.handoff.include_result_on_success == False
+  assert parsed.handoff.attach_result_on_success == True
+  assert parsed.handoff.result_max_chars == 4000
+  assert parsed.handoff.completion_states == None
+}
+
+pub fn task_updates_result_publication_options_test() {
+  let none_front =
+    minimal_front()
+    <> "task_updates:\n  enabled: true\n  comment_on: [success]\n  result:\n    on_success: none\n"
+  let assert Ok(none_config) =
     config.resolve_with_env(
-      definition(with_states),
+      definition(none_front),
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert parsed.handoff.comment_on_failure == False
-  assert parsed.handoff.comment_on_park == False
-  assert parsed.handoff.claim_state_id == Some("state-claim")
-  assert parsed.handoff.success_state_id == Some("state-success")
-  assert parsed.handoff.failure_state_id == Some("state-fail")
-  assert parsed.handoff.attach_result_on_success == True
-  assert parsed.handoff.attachment_fallback_to_markdown_link == False
+  assert none_config.handoff.comment_on_success == True
+  assert none_config.handoff.include_result_on_success == False
+  assert none_config.handoff.attach_result_on_success == False
+
+  let comment_front =
+    minimal_front()
+    <> "task_updates:\n  enabled: true\n  result:\n    on_success: comment\n"
+  let assert Ok(comment_config) =
+    config.resolve_with_env(
+      definition(comment_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert comment_config.handoff.comment_on_success == True
+  assert comment_config.handoff.include_result_on_success == True
+  assert comment_config.handoff.attach_result_on_success == False
+  assert comment_config.handoff.result_max_chars == 8000
+
+  let attachment_front =
+    minimal_front()
+    <> "task_updates:\n  enabled: true\n  result:\n    on_success: attachment\n"
+  let assert Ok(attachment_config) =
+    config.resolve_with_env(
+      definition(attachment_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert attachment_config.handoff.comment_on_success == False
+  assert attachment_config.handoff.include_result_on_success == False
+  assert attachment_config.handoff.attach_result_on_success == True
 }
 
-pub fn handoff_result_defaults_follow_success_comments_test() {
-  let front = minimal_front() <> "handoff:\n  enabled: true\n"
-  let assert Ok(configured) =
-    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
-  assert configured.handoff.comment_on_success == True
-  assert configured.handoff.include_result_on_success == True
-  assert configured.handoff.result_max_chars == 8000
+pub fn task_updates_missing_and_disabled_behavior_test() {
+  let assert Ok(missing) =
+    config.resolve_with_env(
+      definition(minimal_front()),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert missing.handoff == config.default_handoff_config()
+
+  let disabled_front =
+    minimal_front()
+    <> "task_updates:\n  enabled: false\n  states:\n    claim: In Progress\n  comment_on: [claim]\n  result:\n    on_success: comment\n"
+  let assert Ok(disabled) =
+    config.resolve_with_env(
+      definition(disabled_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert disabled.handoff.enabled == False
+  assert disabled.handoff.comment_on_claim == True
+  assert disabled.handoff.include_result_on_success == True
 }
 
-pub fn handoff_can_disable_result_in_success_comment_test() {
+pub fn task_updates_completion_states_parse_state_names_test() {
   let front =
     minimal_front()
-    <> "handoff:\n  enabled: true\n  include_result_on_success: false\n"
-  let assert Ok(configured) =
-    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
-  assert configured.handoff.comment_on_success == True
-  assert configured.handoff.include_result_on_success == False
-}
-
-pub fn handoff_result_max_chars_must_be_positive_test() {
-  let front =
-    minimal_front() <> "handoff:\n  enabled: true\n  result_max_chars: 0\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
-}
-
-pub fn handoff_completion_states_parse_display_names_test() {
-  let front =
-    minimal_front()
-    <> "linear_contract:\n  enabled: true\nhandoff:\n  enabled: true\n  completion_states:\n    default_completion_state: In Review\n    no_review_completion_state: Done\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n    cancellation_state: Canceled\n    workflows:\n      execplan:\n        produces_reviewable_artifacts: true\n        requires_review: true\n      no-review-maintenance:\n        produces_reviewable_artifacts: false\n        requires_review: false\n        success_state: Done\n"
+    <> "task_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Needs Attention\n    partial_success: Triage\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   let assert Some(policy) = configured.handoff.completion_states
@@ -945,95 +977,82 @@ pub fn handoff_completion_states_parse_display_names_test() {
   assert policy.failure_state
     == workflow_completion_policy.StateByName("Needs Attention")
   assert policy.partial_success_state
-    == workflow_completion_policy.StateByName("Needs Attention")
-  assert policy.cancellation_state
-    == Some(workflow_completion_policy.StateByName("Canceled"))
-  let assert Ok(execplan_v2) = dict.get(policy.workflows, "execplan")
-  assert execplan_v2.produces_reviewable_artifacts == Some(True)
-  assert execplan_v2.requires_review == Some(True)
-  let assert Ok(maintenance) =
-    dict.get(policy.workflows, "no-review-maintenance")
-  assert maintenance.produces_reviewable_artifacts == Some(False)
-  assert maintenance.requires_review == Some(False)
-  assert maintenance.success_state
-    == Some(workflow_completion_policy.StateByName("Done"))
+    == workflow_completion_policy.StateByName("Triage")
+  assert dict.to_list(policy.workflows) == []
 }
 
-pub fn handoff_completion_states_parse_state_ids_test() {
+pub fn task_updates_partial_success_defaults_to_failure_state_test() {
   let front =
     minimal_front()
-    <> "linear_contract:\n  enabled: true\nhandoff:\n  enabled: true\n  completion_states:\n    default_completion_state_id: state-review\n    failure_state_id: state-attention\n    partial_success_state_id: state-attention\n    workflows:\n      execplan:\n        success_state_id: state-custom\n"
+    <> "task_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Needs Attention\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   let assert Some(policy) = configured.handoff.completion_states
-  assert policy.default_completion_state
-    == workflow_completion_policy.StateById("state-review")
-  assert policy.failure_state
-    == workflow_completion_policy.StateById("state-attention")
   assert policy.partial_success_state
-    == workflow_completion_policy.StateById("state-attention")
-  let assert Ok(execplan_v2) = dict.get(policy.workflows, "execplan")
-  assert execplan_v2.success_state
-    == Some(workflow_completion_policy.StateById("state-custom"))
+    == workflow_completion_policy.StateByName("Needs Attention")
 }
 
-pub fn handoff_completion_states_reject_invalid_config_test() {
-  let duplicate =
+pub fn task_updates_validation_test() {
+  let invalid_event =
     invalid_config_message(
       minimal_front()
-      <> "linear_contract:\n  enabled: true\nhandoff:\n  completion_states:\n    default_completion_state: In Review\n    default_completion_state_id: state-review\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n",
+      <> "task_updates:\n  enabled: true\n  comment_on: [claim, typo]\n",
     )
-  assert string.contains(
-    duplicate,
-    "handoff.completion_states.default_completion_state",
-  )
-  assert string.contains(
-    duplicate,
-    "handoff.completion_states.default_completion_state_id",
-  )
+  assert string.contains(invalid_event, "task_updates.comment_on")
+  assert string.contains(invalid_event, "typo")
 
-  let missing_required =
+  let invalid_result =
     invalid_config_message(
       minimal_front()
-      <> "linear_contract:\n  enabled: true\nhandoff:\n  completion_states:\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n",
+      <> "task_updates:\n  enabled: true\n  result:\n    on_success: issue_description\n",
     )
-  assert string.contains(
-    missing_required,
-    "handoff.completion_states.default_completion_state",
-  )
+  assert string.contains(invalid_result, "task_updates.result.on_success")
+  assert string.contains(invalid_result, "none, comment, or attachment")
 
-  let empty_value =
+  let invalid_max_chars =
     invalid_config_message(
       minimal_front()
-      <> "linear_contract:\n  enabled: true\nhandoff:\n  completion_states:\n    default_completion_state: \"  \"\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n",
+      <> "task_updates:\n  enabled: true\n  result:\n    max_chars: 0\n",
     )
-  assert string.contains(empty_value, "must be non-empty")
+  assert string.contains(invalid_max_chars, "task_updates.result.max_chars")
+  assert string.contains(invalid_max_chars, "positive")
 
-  let contract_disabled =
+  let missing_success =
     invalid_config_message(
       minimal_front()
-      <> "handoff:\n  completion_states:\n    default_completion_state: In Review\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n",
+      <> "task_updates:\n  enabled: true\n  states:\n    no_review_success: Done\n    failure: Triage\n",
     )
-  assert string.contains(contract_disabled, "linear_contract.enabled")
-  assert string.contains(
-    contract_disabled,
-    "scherzo doctor --check tracker-contract",
-  )
-
-  let unsupported =
-    invalid_config_message(
-      minimal_front()
-      <> "linear_contract:\n  enabled: true\nhandoff:\n  completion_states:\n    default_completion_state: In Review\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n    unresolved_state_policy: best_effort\n",
-    )
-  assert string.contains(unsupported, "unresolved_state_policy")
+  assert string.contains(missing_success, "task_updates.states.success")
 }
 
-pub fn handoff_attachment_requires_success_comment_test() {
-  let front =
-    minimal_front()
-    <> "handoff:\n  attach_result_on_success: true\n  comment_on_success: false\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+pub fn old_handoff_keys_fail_with_migration_hint_test() {
+  let enabled =
+    invalid_config_message(minimal_front() <> "handoff:\n  enabled: true\n")
+  assert string.contains(enabled, "handoff.enabled")
+  assert string.contains(enabled, "task_updates.enabled")
+  assert string.contains(enabled, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let comment =
+    invalid_config_message(
+      minimal_front() <> "handoff:\n  comment_on_success: true\n",
+    )
+  assert string.contains(comment, "handoff.comment_on_success")
+  assert string.contains(comment, "task_updates.comment_on")
+
+  let state =
+    invalid_config_message(
+      minimal_front() <> "handoff:\n  claim_state_id: state-claim\n",
+    )
+  assert string.contains(state, "handoff.claim_state_id")
+  assert string.contains(state, "task_updates.states.claim")
+  assert string.contains(state, "state name")
+
+  let result =
+    invalid_config_message(
+      minimal_front() <> "handoff:\n  include_result_on_success: true\n",
+    )
+  assert string.contains(result, "handoff.include_result_on_success")
+  assert string.contains(result, "task_updates.result.on_success")
 }
 
 pub fn linear_contract_defaults_test() {

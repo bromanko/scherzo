@@ -23,6 +23,7 @@ pub type SimplifiedLinearContractFields {
 pub fn reject_removed_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
   use _ <- result.try(reject_removed_routing_keys(root))
   use _ <- result.try(reject_removed_polling_keys(root))
+  use _ <- result.try(reject_removed_handoff_keys(root))
   reject_removed_tracker_state_keys(root)
 }
 
@@ -233,6 +234,134 @@ fn reject_removed_polling_keys(
               Error(migration_hint("polling.interval", "tracker.polling.every"))
             None -> Error(migration_hint("polling", "tracker.polling"))
           }
+      }
+  }
+}
+
+fn reject_removed_handoff_keys(
+  root: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(root, "handoff") {
+    None -> Ok(Nil)
+    Some(yay.NodeMap(_) as handoff) -> reject_removed_handoff_map(handoff)
+    Some(_) -> Error(migration_hint("handoff", "task_updates"))
+  }
+}
+
+fn reject_removed_handoff_map(
+  handoff: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(handoff, "comment_on_claim") {
+    Some(_) ->
+      Error(migration_hint(
+        "handoff.comment_on_claim",
+        "task_updates.comment_on: [claim]",
+      ))
+    None ->
+      case get_node(handoff, "comment_on_success") {
+        Some(_) ->
+          Error(migration_hint(
+            "handoff.comment_on_success",
+            "task_updates.comment_on: [success]",
+          ))
+        None ->
+          case get_node(handoff, "comment_on_failure") {
+            Some(_) ->
+              Error(migration_hint(
+                "handoff.comment_on_failure",
+                "task_updates.comment_on: [failure]",
+              ))
+            None -> reject_removed_handoff_map_after_comments(handoff)
+          }
+      }
+  }
+}
+
+fn reject_removed_handoff_map_after_comments(
+  handoff: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(handoff, "comment_on_park") {
+    Some(_) ->
+      Error(migration_hint(
+        "handoff.comment_on_park",
+        "task_updates.comment_on: [park]",
+      ))
+    None ->
+      case get_node(handoff, "claim_state_id") {
+        Some(_) ->
+          Error(migration_hint(
+            "handoff.claim_state_id",
+            "task_updates.states.claim using the state name",
+          ))
+        None ->
+          case get_node(handoff, "success_state_id") {
+            Some(_) ->
+              Error(migration_hint(
+                "handoff.success_state_id",
+                "task_updates.states.success using the state name",
+              ))
+            None -> reject_removed_handoff_state_tail(handoff)
+          }
+      }
+  }
+}
+
+fn reject_removed_handoff_state_tail(
+  handoff: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(handoff, "failure_state_id") {
+    Some(_) ->
+      Error(migration_hint(
+        "handoff.failure_state_id",
+        "task_updates.states.failure using the state name",
+      ))
+    None ->
+      case get_node(handoff, "completion_states") {
+        Some(_) ->
+          Error(migration_hint(
+            "handoff.completion_states",
+            "task_updates.states.success and task_updates.states.no_review_success using state names",
+          ))
+        None -> reject_removed_handoff_result_keys(handoff)
+      }
+  }
+}
+
+fn reject_removed_handoff_result_keys(
+  handoff: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(handoff, "include_result_on_success") {
+    Some(_) ->
+      Error(migration_hint(
+        "handoff.include_result_on_success",
+        "task_updates.result.on_success: comment",
+      ))
+    None ->
+      case get_node(handoff, "attach_result_on_success") {
+        Some(_) ->
+          Error(migration_hint(
+            "handoff.attach_result_on_success",
+            "task_updates.result.on_success: attachment",
+          ))
+        None -> reject_removed_handoff_result_tail(handoff)
+      }
+  }
+}
+
+fn reject_removed_handoff_result_tail(
+  handoff: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(handoff, "result_max_chars") {
+    Some(_) ->
+      Error(migration_hint(
+        "handoff.result_max_chars",
+        "task_updates.result.max_chars",
+      ))
+    None ->
+      case get_node(handoff, "enabled") {
+        Some(_) ->
+          Error(migration_hint("handoff.enabled", "task_updates.enabled"))
+        None -> Error(migration_hint("handoff", "task_updates"))
       }
   }
 }

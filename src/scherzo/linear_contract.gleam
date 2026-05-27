@@ -299,63 +299,82 @@ fn append_handoff_diagnostics(
 ) -> List(ContractDiagnostic) {
   case effective.handoff.enabled {
     False -> acc
-    True ->
-      acc
-      |> append_handoff_field(
-        "claim",
-        effective.handoff.claim_state_id,
-        effective,
-        remote,
-      )
-      |> append_handoff_field(
-        "success",
-        effective.handoff.success_state_id,
-        effective,
-        remote,
-      )
-      |> append_handoff_field(
-        "failure",
-        effective.handoff.failure_state_id,
-        effective,
-        remote,
-      )
+    True -> {
+      let acc =
+        append_handoff_field(
+          acc,
+          "claim",
+          effective.handoff.claim_state_id,
+          effective,
+          remote,
+        )
+      case effective.handoff.completion_states {
+        Some(_) -> acc
+        None ->
+          acc
+          |> append_handoff_field(
+            "success",
+            effective.handoff.success_state_id,
+            effective,
+            remote,
+          )
+          |> append_handoff_field(
+            "failure",
+            effective.handoff.failure_state_id,
+            effective,
+            remote,
+          )
+      }
+    }
   }
 }
 
 fn append_handoff_field(
   acc: List(ContractDiagnostic),
   field: String,
-  maybe_id: Option(String),
+  maybe_state: Option(workflow_completion_policy.LinearStateRef),
   effective: config_types.EffectiveConfig,
   remote: RemoteBoard,
 ) -> List(ContractDiagnostic) {
-  case maybe_id {
+  case maybe_state {
     None -> acc
-    Some(id) -> {
-      let id = string.trim(id)
-      case id == "" {
-        True -> acc
+    Some(workflow_completion_policy.StateById(id)) ->
+      append_handoff_state_id_field(acc, field, id, effective, remote)
+    Some(workflow_completion_policy.StateByName(name)) ->
+      append_completion_state_name_diagnostics(
+        acc,
+        "task_updates.states." <> field,
+        name,
+        remote.teams,
+      )
+  }
+}
+
+fn append_handoff_state_id_field(
+  acc: List(ContractDiagnostic),
+  field: String,
+  id: String,
+  effective: config_types.EffectiveConfig,
+  remote: RemoteBoard,
+) -> List(ContractDiagnostic) {
+  let id = string.trim(id)
+  case id == "" {
+    True -> acc
+    False ->
+      case list.length(remote.teams) > 1 {
+        True -> [
+          MultiTeamHandoffStateUnsupported(field, id, team_keys(remote.teams)),
+          ..acc
+        ]
         False ->
-          case list.length(remote.teams) > 1 {
-            True -> [
-              MultiTeamHandoffStateUnsupported(
-                field,
-                id,
-                team_keys(remote.teams),
-              ),
-              ..acc
-            ]
-            False ->
-              append_single_team_handoff_diagnostic(
-                acc,
-                field,
-                id,
-                effective,
-                remote.teams,
-              )
-          }
+          append_single_team_handoff_diagnostic(
+            acc,
+            field,
+            id,
+            effective,
+            remote.teams,
+          )
       }
-    }
   }
 }
 
@@ -427,83 +446,65 @@ fn append_completion_state_policy_diagnostics(
 fn completion_state_refs(
   policy: workflow_completion_policy.CompletionStatePolicy,
 ) -> List(#(String, workflow_completion_policy.LinearStateRef)) {
-  let base = "handoff.completion_states"
   let globals = [
-    state_ref_source(
-      base,
-      "default_completion_state",
-      policy.default_completion_state,
-    ),
-    state_ref_source(base, "failure_state", policy.failure_state),
-    state_ref_source(
-      base,
-      "partial_success_state",
+    task_update_state_ref_source("success", policy.default_completion_state),
+    task_update_state_ref_source("failure", policy.failure_state),
+    task_update_state_ref_source(
+      "partial_success",
       policy.partial_success_state,
     ),
   ]
   let globals =
-    append_optional_state_ref(
+    append_optional_task_update_state_ref(
       globals,
-      base,
-      "no_review_completion_state",
+      "no_review_success",
       policy.no_review_completion_state,
     )
   let globals =
-    append_optional_state_ref(
+    append_optional_task_update_state_ref(
       globals,
-      base,
-      "cancellation_state",
+      "cancellation",
       policy.cancellation_state,
     )
   policy.workflows
   |> dict.to_list
   |> list.sort(by: compare_workflow_override_pairs)
   |> list.fold(globals, fn(acc, entry) {
-    let #(workflow_id, override) = entry
-    let path = base <> ".workflows." <> workflow_id
+    let #(_, override) = entry
     acc
-    |> append_optional_state_ref(path, "success_state", override.success_state)
-    |> append_optional_state_ref(
-      path,
-      "no_review_completion_state",
+    |> append_optional_task_update_state_ref("success", override.success_state)
+    |> append_optional_task_update_state_ref(
+      "no_review_success",
       override.no_review_completion_state,
     )
-    |> append_optional_state_ref(path, "failure_state", override.failure_state)
-    |> append_optional_state_ref(
-      path,
-      "partial_success_state",
+    |> append_optional_task_update_state_ref("failure", override.failure_state)
+    |> append_optional_task_update_state_ref(
+      "partial_success",
       override.partial_success_state,
     )
-    |> append_optional_state_ref(
-      path,
-      "cancellation_state",
+    |> append_optional_task_update_state_ref(
+      "cancellation",
       override.cancellation_state,
     )
   })
 }
 
-fn append_optional_state_ref(
+fn append_optional_task_update_state_ref(
   acc: List(#(String, workflow_completion_policy.LinearStateRef)),
-  path: String,
   key: String,
   maybe_ref: Option(workflow_completion_policy.LinearStateRef),
 ) -> List(#(String, workflow_completion_policy.LinearStateRef)) {
   case maybe_ref {
     None -> acc
-    Some(ref) -> [state_ref_source(path, key, ref), ..acc]
+    Some(ref) -> [task_update_state_ref_source(key, ref), ..acc]
   }
 }
 
-fn state_ref_source(
-  path: String,
+fn task_update_state_ref_source(
   key: String,
   ref: workflow_completion_policy.LinearStateRef,
 ) -> #(String, workflow_completion_policy.LinearStateRef) {
-  let suffix = case ref {
-    workflow_completion_policy.StateById(_) -> key <> "_id"
-    workflow_completion_policy.StateByName(_) -> key
-  }
-  #(path <> "." <> suffix, ref)
+  #("task_updates.states." <> key, ref)
 }
 
 fn compare_workflow_override_pairs(

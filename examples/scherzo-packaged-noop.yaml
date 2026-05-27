@@ -35,14 +35,12 @@ pi:
   auto_retry: true
   ui_request_policy: cancel
   compatibility_probe: true
-handoff:
+task_updates:
   enabled: false
-  comment_on_claim: true
-  comment_on_success: true
-  comment_on_failure: true
-  comment_on_park: true
-  include_result_on_success: true
-  result_max_chars: 8000
+  comment_on: [claim, success, failure, park]
+  result:
+    on_success: comment
+    max_chars: 8000
 workflows:
   research: workflows/research.yaml
 artifact_limits:

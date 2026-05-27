@@ -17,6 +17,7 @@ import scherzo/tracker/adapter as tracker_adapter
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 import test_async
 
 type CapturedRequest {
@@ -64,9 +65,13 @@ fn handoff_effective_config() -> config_types.EffectiveConfig {
       comment_on_success: True,
       comment_on_failure: True,
       comment_on_park: True,
-      claim_state_id: Some("claim-state"),
-      success_state_id: Some("success-state"),
-      failure_state_id: Some("failure-state"),
+      claim_state_id: Some(workflow_completion_policy.StateById("claim-state")),
+      success_state_id: Some(workflow_completion_policy.StateById(
+        "success-state",
+      )),
+      failure_state_id: Some(workflow_completion_policy.StateById(
+        "failure-state",
+      )),
       include_result_on_success: True,
       attach_result_on_success: False,
       attachment_fallback_to_markdown_link: True,

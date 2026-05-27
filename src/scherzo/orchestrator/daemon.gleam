@@ -266,7 +266,7 @@ fn tracker_requirements(
     remote_commands_config_path: None,
     handoff_comments_enabled: handoff_comments_enabled(effective.handoff),
     handoff_state_moves_enabled: handoff_state_moves_enabled(effective.handoff),
-    handoff_config_path: Some("handoff.states"),
+    handoff_config_path: Some("task_updates"),
     workflow_label_paths: workflow_label_paths(orchestrator.routing),
     scheduled_failure_paths: scheduled_failure_paths(
       orchestrator.scheduled_jobs,
@@ -283,6 +283,7 @@ fn handoff_comments_enabled(handoff: config_types.HandoffConfig) -> Bool {
     || handoff.comment_on_success
     || handoff.comment_on_failure
     || handoff.comment_on_park
+    || handoff.attach_result_on_success
   }
 }
 
