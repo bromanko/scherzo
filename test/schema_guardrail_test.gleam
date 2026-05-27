@@ -223,12 +223,15 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
   assert effective.handoff.comment_on_success == True
   assert effective.handoff.comment_on_failure == False
   assert effective.handoff.comment_on_park == True
-  assert effective.handoff.claim_state_id == Some("state-claim")
-  assert effective.handoff.success_state_id == Some("state-success")
-  assert effective.handoff.failure_state_id == Some("state-fail")
-  assert effective.handoff.include_result_on_success == True
+  assert effective.handoff.claim_state_id
+    == Some(workflow_completion_policy.StateByName("In Progress"))
+  assert effective.handoff.success_state_id
+    == Some(workflow_completion_policy.StateByName("In Review"))
+  assert effective.handoff.failure_state_id
+    == Some(workflow_completion_policy.StateByName("Needs Attention"))
+  assert effective.handoff.include_result_on_success == False
   assert effective.handoff.attach_result_on_success == True
-  assert effective.handoff.attachment_fallback_to_markdown_link == False
+  assert effective.handoff.attachment_fallback_to_markdown_link == True
   assert effective.handoff.result_max_chars == 4000
   let assert Some(completion_policy) = effective.handoff.completion_states
   assert completion_policy.default_completion_state
@@ -238,11 +241,8 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
   assert completion_policy.failure_state
     == workflow_completion_policy.StateByName("Needs Attention")
   assert completion_policy.partial_success_state
-    == workflow_completion_policy.StateByName("Needs Attention")
-  let assert Ok(implementation_completion) =
-    dict.get(completion_policy.workflows, "implementation")
-  assert implementation_completion.produces_reviewable_artifacts == Some(True)
-  assert implementation_completion.requires_review == Some(True)
+    == workflow_completion_policy.StateByName("Triage")
+  assert dict.to_list(completion_policy.workflows) == []
 
   assert effective.linear_contract.enabled == True
   assert effective.linear_contract.workflow_label_prefix == "workflow:"

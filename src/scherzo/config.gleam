@@ -216,7 +216,7 @@ pub fn resolve_root_report(
   use agent <- result.try(resolve_agent(root))
   use pi <- result.try(resolve_pi(root))
   use linear_contract <- result.try(resolve_linear_contract(root))
-  use handoff <- result.try(resolve_handoff(root, linear_contract.enabled))
+  use handoff <- result.try(resolve_handoff(root))
   use linear_commands <- result.try(resolve_linear_commands(root))
   use ui_server <- result.try(resolve_ui_server(root, env))
   Ok(config_types.ResolveReport(
@@ -705,331 +705,154 @@ fn shell_quote(value: String) -> String {
   "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
 
+type TaskUpdateStates {
+  TaskUpdateStates(
+    claim: Option(workflow_completion_policy.LinearStateRef),
+    success: Option(workflow_completion_policy.LinearStateRef),
+    no_review_success: Option(workflow_completion_policy.LinearStateRef),
+    failure: Option(workflow_completion_policy.LinearStateRef),
+    partial_success: Option(workflow_completion_policy.LinearStateRef),
+  )
+}
+
+type TaskUpdateComments {
+  TaskUpdateComments(claim: Bool, success: Bool, failure: Bool, park: Bool)
+}
+
+type TaskUpdateResultConfig {
+  TaskUpdateResultConfig(
+    include_result_on_success: Bool,
+    attach_result_on_success: Bool,
+    force_success_comment: Bool,
+    result_max_chars: Int,
+  )
+}
+
+type TaskUpdateResultMode {
+  ResultNone
+  ResultComment
+  ResultAttachment
+}
+
 fn resolve_handoff(
   root: yay.Node,
-  linear_contract_enabled: Bool,
 ) -> Result(config_types.HandoffConfig, error.ConfigError) {
-  let handoff = get_map(root, "handoff")
-  let enabled = get_bool(handoff, "enabled") |> bool_default(False)
-  let default_comment = enabled
-  let comment_on_success =
-    get_bool(handoff, "comment_on_success") |> bool_default(default_comment)
-  let result_max_chars =
-    get_int(handoff, "result_max_chars") |> int_default(8000)
-  let attach_result_on_success =
-    get_bool(handoff, "attach_result_on_success") |> bool_default(False)
-  case result_max_chars <= 0 {
-    True ->
-      Error(error.InvalidConfig("handoff.result_max_chars must be positive"))
-    False ->
-      case attach_result_on_success && !comment_on_success {
-        True ->
-          Error(error.InvalidConfig(
-            "handoff.attach_result_on_success requires handoff.comment_on_success to be true",
-          ))
-        False -> {
-          use completion_states <- result.try(resolve_completion_state_policy(
-            handoff,
-            linear_contract_enabled,
-          ))
-          Ok(config_types.HandoffConfig(
-            enabled: enabled,
-            comment_on_claim: get_bool(handoff, "comment_on_claim")
-              |> bool_default(default_comment),
-            comment_on_success: comment_on_success,
-            comment_on_failure: get_bool(handoff, "comment_on_failure")
-              |> bool_default(default_comment),
-            comment_on_park: get_bool(handoff, "comment_on_park")
-              |> bool_default(default_comment),
-            claim_state_id: get_non_empty_string(handoff, "claim_state_id"),
-            success_state_id: get_non_empty_string(handoff, "success_state_id"),
-            failure_state_id: get_non_empty_string(handoff, "failure_state_id"),
-            include_result_on_success: get_bool(
-              handoff,
-              "include_result_on_success",
-            )
-              |> bool_default(comment_on_success),
-            attach_result_on_success: attach_result_on_success,
-            attachment_fallback_to_markdown_link: get_bool(
-              handoff,
-              "attachment_fallback_to_markdown_link",
-            )
-              |> bool_default(True),
-            result_max_chars: result_max_chars,
-            completion_states: completion_states,
-          ))
-        }
-      }
+  case get_node(root, "task_updates") {
+    None -> Ok(default_handoff_config())
+    Some(yay.NodeMap(_) as task_updates) -> resolve_task_updates(task_updates)
+    Some(_) -> Error(error.InvalidConfig("task_updates must be a map"))
   }
 }
 
-fn resolve_completion_state_policy(
-  handoff: yay.Node,
-  linear_contract_enabled: Bool,
-) -> Result(
-  Option(workflow_completion_policy.CompletionStatePolicy),
-  error.ConfigError,
-) {
-  case get_node(handoff, "completion_states") {
-    None -> Ok(None)
-    Some(yay.NodeMap(_) as node) -> {
-      case linear_contract_enabled {
-        False ->
-          Error(error.InvalidConfig(
-            "handoff.completion_states requires linear_contract.enabled: true so scherzo doctor --check tracker-contract can validate configured Linear states",
-          ))
-        True -> {
-          use policy <- result.try(read_completion_state_policy(node))
-          Ok(Some(policy))
-        }
-      }
-    }
-    Some(_) ->
-      Error(error.InvalidConfig("handoff.completion_states must be a map"))
-  }
-}
-
-fn read_completion_state_policy(
-  node: yay.Node,
-) -> Result(workflow_completion_policy.CompletionStatePolicy, error.ConfigError) {
-  use _ <- result.try(reject_completion_state_unsupported_keys(
-    node,
-    "handoff.completion_states",
+fn resolve_task_updates(
+  task_updates: yay.Node,
+) -> Result(config_types.HandoffConfig, error.ConfigError) {
+  use _ <- result.try(
+    reject_unknown_map_keys(task_updates, "task_updates", [
+      "enabled",
+      "states",
+      "comment_on",
+      "result",
+    ]),
+  )
+  use enabled_option <- result.try(get_bool_strict(
+    task_updates,
+    "enabled",
+    "task_updates.enabled",
   ))
-  use default_completion_state <- result.try(read_required_state_ref(
-    node,
-    "default_completion_state",
-    "default_completion_state_id",
-    "handoff.completion_states",
+  let enabled = enabled_option |> bool_default(False)
+  use states <- result.try(resolve_task_update_states(task_updates))
+  use comments <- result.try(resolve_task_update_comments(task_updates))
+  use result_config <- result.try(resolve_task_update_result(task_updates))
+  use completion_states <- result.try(resolve_task_update_completion_states(
+    states,
   ))
-  use no_review_completion_state <- result.try(read_optional_state_ref(
-    node,
-    "no_review_completion_state",
-    "no_review_completion_state_id",
-    "handoff.completion_states",
-  ))
-  use failure_state <- result.try(read_required_state_ref(
-    node,
-    "failure_state",
-    "failure_state_id",
-    "handoff.completion_states",
-  ))
-  use partial_success_state <- result.try(read_required_state_ref(
-    node,
-    "partial_success_state",
-    "partial_success_state_id",
-    "handoff.completion_states",
-  ))
-  use cancellation_state <- result.try(read_optional_state_ref(
-    node,
-    "cancellation_state",
-    "cancellation_state_id",
-    "handoff.completion_states",
-  ))
-  use workflows <- result.try(read_completion_workflows(node))
-  Ok(workflow_completion_policy.CompletionStatePolicy(
-    default_completion_state: default_completion_state,
-    no_review_completion_state: no_review_completion_state,
-    failure_state: failure_state,
-    partial_success_state: partial_success_state,
-    cancellation_state: cancellation_state,
-    workflows: workflows,
+  Ok(config_types.HandoffConfig(
+    enabled: enabled,
+    comment_on_claim: comments.claim,
+    comment_on_success: comments.success || result_config.force_success_comment,
+    comment_on_failure: comments.failure,
+    comment_on_park: comments.park,
+    claim_state_id: states.claim,
+    success_state_id: states.success,
+    failure_state_id: states.failure,
+    include_result_on_success: result_config.include_result_on_success,
+    attach_result_on_success: result_config.attach_result_on_success,
+    attachment_fallback_to_markdown_link: True,
+    result_max_chars: result_config.result_max_chars,
+    completion_states: completion_states,
   ))
 }
 
-fn reject_completion_state_unsupported_keys(
-  node: yay.Node,
-  path: String,
-) -> Result(Nil, error.ConfigError) {
-  case get_node(node, "unresolved_state_policy") {
-    Some(_) ->
-      Error(error.InvalidConfig(
-        path
-        <> ".unresolved_state_policy is unsupported; unresolved Linear states must be fixed with scherzo doctor --check tracker-contract",
-      ))
-    None -> Ok(Nil)
-  }
-}
-
-fn read_completion_workflows(
-  node: yay.Node,
-) -> Result(
-  dict.Dict(String, workflow_completion_policy.WorkflowCompletionOverride),
-  error.ConfigError,
-) {
-  case get_node(node, "workflows") {
-    None -> Ok(dict.new())
-    Some(yay.NodeMap(entries)) -> read_completion_workflow_entries(entries, [])
-    Some(_) ->
-      Error(error.InvalidConfig(
-        "handoff.completion_states.workflows must be a map",
-      ))
-  }
-}
-
-fn read_completion_workflow_entries(
-  entries: List(#(yay.Node, yay.Node)),
-  acc: List(#(String, workflow_completion_policy.WorkflowCompletionOverride)),
-) -> Result(
-  dict.Dict(String, workflow_completion_policy.WorkflowCompletionOverride),
-  error.ConfigError,
-) {
-  case entries {
-    [] -> Ok(dict.from_list(list.reverse(acc)))
-    [#(yay.NodeStr(key), yay.NodeMap(_) as node), ..rest] -> {
-      let workflow_id = normalize_label(key)
-      use _ <- result.try(validate_completion_workflow_id(workflow_id, key))
-      use override <- result.try(read_completion_workflow_override(
-        node,
-        "handoff.completion_states.workflows." <> key,
-      ))
-      read_completion_workflow_entries(rest, [#(workflow_id, override), ..acc])
-    }
-    [#(yay.NodeStr(key), _), ..] ->
-      Error(error.InvalidConfig(
-        "handoff.completion_states.workflows." <> key <> " must be a map",
-      ))
-    [#(_, _), ..] ->
-      Error(error.InvalidConfig(
-        "handoff.completion_states.workflows keys must be strings",
-      ))
-  }
-}
-
-fn validate_completion_workflow_id(
-  workflow_id: String,
-  original: String,
-) -> Result(Nil, error.ConfigError) {
-  case valid_workflow_name(workflow_id) {
-    True -> Ok(Nil)
-    False ->
-      Error(error.InvalidConfig(
-        "handoff.completion_states.workflows has invalid workflow id: "
-        <> original,
-      ))
-  }
-}
-
-fn read_completion_workflow_override(
-  node: yay.Node,
-  path: String,
-) -> Result(
-  workflow_completion_policy.WorkflowCompletionOverride,
-  error.ConfigError,
-) {
-  use produces_reviewable_artifacts <- result.try(get_bool_strict(
-    node,
-    "produces_reviewable_artifacts",
-    path <> ".produces_reviewable_artifacts",
+fn resolve_task_update_states(
+  task_updates: yay.Node,
+) -> Result(TaskUpdateStates, error.ConfigError) {
+  use states <- result.try(get_map_strict_or_empty(
+    task_updates,
+    "states",
+    "task_updates.states",
   ))
-  use requires_review <- result.try(get_bool_strict(
-    node,
-    "requires_review",
-    path <> ".requires_review",
+  use _ <- result.try(
+    reject_unknown_map_keys(states, "task_updates.states", [
+      "claim",
+      "success",
+      "no_review_success",
+      "failure",
+      "partial_success",
+    ]),
+  )
+  use claim <- result.try(read_task_update_state(
+    states,
+    "claim",
+    "task_updates.states.claim",
   ))
-  use success_state <- result.try(read_optional_state_ref(
-    node,
-    "success_state",
-    "success_state_id",
-    path,
+  use success <- result.try(read_task_update_state(
+    states,
+    "success",
+    "task_updates.states.success",
   ))
-  use no_review_completion_state <- result.try(read_optional_state_ref(
-    node,
-    "no_review_completion_state",
-    "no_review_completion_state_id",
-    path,
+  use no_review_success <- result.try(read_task_update_state(
+    states,
+    "no_review_success",
+    "task_updates.states.no_review_success",
   ))
-  use failure_state <- result.try(read_optional_state_ref(
-    node,
-    "failure_state",
-    "failure_state_id",
-    path,
+  use failure <- result.try(read_task_update_state(
+    states,
+    "failure",
+    "task_updates.states.failure",
   ))
-  use partial_success_state <- result.try(read_optional_state_ref(
-    node,
-    "partial_success_state",
-    "partial_success_state_id",
-    path,
+  use partial_success <- result.try(read_task_update_state(
+    states,
+    "partial_success",
+    "task_updates.states.partial_success",
   ))
-  use cancellation_state <- result.try(read_optional_state_ref(
-    node,
-    "cancellation_state",
-    "cancellation_state_id",
-    path,
-  ))
-  Ok(workflow_completion_policy.WorkflowCompletionOverride(
-    produces_reviewable_artifacts: produces_reviewable_artifacts,
-    requires_review: requires_review,
-    success_state: success_state,
-    no_review_completion_state: no_review_completion_state,
-    failure_state: failure_state,
-    partial_success_state: partial_success_state,
-    cancellation_state: cancellation_state,
+  Ok(TaskUpdateStates(
+    claim: claim,
+    success: success,
+    no_review_success: no_review_success,
+    failure: failure,
+    partial_success: partial_success,
   ))
 }
 
-fn read_required_state_ref(
-  node: yay.Node,
-  name_key: String,
-  id_key: String,
-  path: String,
-) -> Result(workflow_completion_policy.LinearStateRef, error.ConfigError) {
-  use maybe_ref <- result.try(read_optional_state_ref(
-    node,
-    name_key,
-    id_key,
-    path,
-  ))
-  case maybe_ref {
-    Some(ref) -> Ok(ref)
-    None ->
-      Error(error.InvalidConfig(path <> "." <> name_key <> " is required"))
-  }
-}
-
-fn read_optional_state_ref(
-  node: yay.Node,
-  name_key: String,
-  id_key: String,
+fn read_task_update_state(
+  states: yay.Node,
+  key: String,
   path: String,
 ) -> Result(
   Option(workflow_completion_policy.LinearStateRef),
   error.ConfigError,
 ) {
-  use raw_name <- result.try(get_string_strict(
-    node,
-    name_key,
-    path <> "." <> name_key,
-  ))
-  use raw_id <- result.try(get_string_strict(
-    node,
-    id_key,
-    path <> "." <> id_key,
-  ))
-  case raw_name, raw_id {
-    Some(_), Some(_) ->
-      Error(error.InvalidConfig(
-        path
-        <> "."
-        <> name_key
-        <> " and "
-        <> path
-        <> "."
-        <> id_key
-        <> " cannot both be set",
-      ))
-    Some(value), None ->
-      state_ref_from_value(value, path <> "." <> name_key, True)
-    None, Some(value) ->
-      state_ref_from_value(value, path <> "." <> id_key, False)
-    None, None -> Ok(None)
+  use value <- result.try(get_optional_string_strict(states, key, path))
+  case value {
+    None -> Ok(None)
+    Some(value) -> task_update_state_ref(value, path)
   }
 }
 
-fn state_ref_from_value(
+fn task_update_state_ref(
   value: String,
   path: String,
-  by_name: Bool,
 ) -> Result(
   Option(workflow_completion_policy.LinearStateRef),
   error.ConfigError,
@@ -1037,13 +860,187 @@ fn state_ref_from_value(
   let value = string.trim(value)
   case value == "" {
     True -> Error(error.InvalidConfig(path <> " must be non-empty"))
-    False -> {
-      let ref = case by_name {
-        True -> workflow_completion_policy.StateByName(value)
-        False -> workflow_completion_policy.StateById(value)
-      }
-      Ok(Some(ref))
+    False -> Ok(Some(workflow_completion_policy.StateByName(value)))
+  }
+}
+
+fn resolve_task_update_completion_states(
+  states: TaskUpdateStates,
+) -> Result(
+  Option(workflow_completion_policy.CompletionStatePolicy),
+  error.ConfigError,
+) {
+  case states.no_review_success, states.partial_success {
+    None, None -> Ok(None)
+    _, _ -> {
+      use success <- result.try(required_task_update_state(
+        states.success,
+        "task_updates.states.success",
+        "task_updates.states.no_review_success or task_updates.states.partial_success",
+      ))
+      use failure <- result.try(required_task_update_state(
+        states.failure,
+        "task_updates.states.failure",
+        "task_updates.states.no_review_success or task_updates.states.partial_success",
+      ))
+      Ok(
+        Some(workflow_completion_policy.CompletionStatePolicy(
+          default_completion_state: success,
+          no_review_completion_state: states.no_review_success,
+          failure_state: failure,
+          partial_success_state: option.unwrap(states.partial_success, failure),
+          cancellation_state: None,
+          workflows: dict.new(),
+        )),
+      )
     }
+  }
+}
+
+fn required_task_update_state(
+  state: Option(workflow_completion_policy.LinearStateRef),
+  path: String,
+  dependent_path: String,
+) -> Result(workflow_completion_policy.LinearStateRef, error.ConfigError) {
+  case state {
+    Some(state) -> Ok(state)
+    None ->
+      Error(error.InvalidConfig(
+        path <> " is required when " <> dependent_path <> " is set",
+      ))
+  }
+}
+
+fn resolve_task_update_comments(
+  task_updates: yay.Node,
+) -> Result(TaskUpdateComments, error.ConfigError) {
+  case get_node(task_updates, "comment_on") {
+    None ->
+      Ok(TaskUpdateComments(
+        claim: False,
+        success: False,
+        failure: False,
+        park: False,
+      ))
+    Some(yay.NodeSeq(values)) -> {
+      use events <- result.try(read_task_update_comment_events(values, []))
+      Ok(TaskUpdateComments(
+        claim: list.contains(events, "claim"),
+        success: list.contains(events, "success"),
+        failure: list.contains(events, "failure"),
+        park: list.contains(events, "park"),
+      ))
+    }
+    Some(_) ->
+      Error(error.InvalidConfig("task_updates.comment_on must be a string list"))
+  }
+}
+
+fn read_task_update_comment_events(
+  values: List(yay.Node),
+  acc: List(String),
+) -> Result(List(String), error.ConfigError) {
+  case values {
+    [] -> Ok(acc)
+    [yay.NodeStr(value), ..rest] -> {
+      let event = value |> string.trim |> string.lowercase
+      case list.contains(["claim", "success", "failure", "park"], event) {
+        True -> read_task_update_comment_events(rest, [event, ..acc])
+        False ->
+          Error(error.InvalidConfig(
+            "task_updates.comment_on has invalid event: "
+            <> event
+            <> "; supported events are claim, success, failure, and park",
+          ))
+      }
+    }
+    [_, ..] ->
+      Error(error.InvalidConfig(
+        "task_updates.comment_on entries must be strings",
+      ))
+  }
+}
+
+fn resolve_task_update_result(
+  task_updates: yay.Node,
+) -> Result(TaskUpdateResultConfig, error.ConfigError) {
+  use result_node <- result.try(get_map_strict_or_empty(
+    task_updates,
+    "result",
+    "task_updates.result",
+  ))
+  use _ <- result.try(
+    reject_unknown_map_keys(result_node, "task_updates.result", [
+      "on_success",
+      "max_chars",
+    ]),
+  )
+  use mode <- result.try(resolve_task_update_result_mode(result_node))
+  use max_chars <- result.try(resolve_task_update_result_max_chars(result_node))
+  case mode {
+    ResultNone ->
+      Ok(TaskUpdateResultConfig(
+        include_result_on_success: False,
+        attach_result_on_success: False,
+        force_success_comment: False,
+        result_max_chars: max_chars,
+      ))
+    ResultComment ->
+      Ok(TaskUpdateResultConfig(
+        include_result_on_success: True,
+        attach_result_on_success: False,
+        force_success_comment: True,
+        result_max_chars: max_chars,
+      ))
+    ResultAttachment ->
+      Ok(TaskUpdateResultConfig(
+        include_result_on_success: False,
+        attach_result_on_success: True,
+        force_success_comment: False,
+        result_max_chars: max_chars,
+      ))
+  }
+}
+
+fn resolve_task_update_result_mode(
+  result_node: yay.Node,
+) -> Result(TaskUpdateResultMode, error.ConfigError) {
+  use raw <- result.try(get_string_strict(
+    result_node,
+    "on_success",
+    "task_updates.result.on_success",
+  ))
+  case raw {
+    None -> Ok(ResultNone)
+    Some(value) ->
+      case value |> string.trim |> string.lowercase {
+        "none" -> Ok(ResultNone)
+        "comment" -> Ok(ResultComment)
+        "attachment" -> Ok(ResultAttachment)
+        other ->
+          Error(error.InvalidConfig(
+            "task_updates.result.on_success must be one of none, comment, or attachment; got "
+            <> other,
+          ))
+      }
+  }
+}
+
+fn resolve_task_update_result_max_chars(
+  result_node: yay.Node,
+) -> Result(Int, error.ConfigError) {
+  use configured <- result.try(get_int_strict(
+    result_node,
+    "max_chars",
+    "task_updates.result.max_chars",
+  ))
+  let max_chars = configured |> int_default(8000)
+  case max_chars <= 0 {
+    True ->
+      Error(error.InvalidConfig(
+        "task_updates.result.max_chars must be positive",
+      ))
+    False -> Ok(max_chars)
   }
 }
 
@@ -2209,6 +2206,31 @@ fn get_map_strict_or_empty(
   }
 }
 
+fn reject_unknown_map_keys(
+  node: yay.Node,
+  path: String,
+  allowed_keys: List(String),
+) -> Result(Nil, error.ConfigError) {
+  case node {
+    yay.NodeMap([]) -> Ok(Nil)
+    yay.NodeMap([#(yay.NodeStr(key), _), ..rest]) ->
+      case list.contains(allowed_keys, key) {
+        True -> reject_unknown_map_keys(yay.NodeMap(rest), path, allowed_keys)
+        False ->
+          Error(error.InvalidConfig(
+            path
+            <> "."
+            <> key
+            <> " is not supported; supported keys are "
+            <> string.join(allowed_keys, with: ", "),
+          ))
+      }
+    yay.NodeMap([#(_, _), ..]) ->
+      Error(error.InvalidConfig(path <> " keys must be strings"))
+    _ -> Ok(Nil)
+  }
+}
+
 fn get_node(node: yay.Node, key: String) -> Option(yay.Node) {
   case node {
     yay.NodeMap(pairs) ->
@@ -2263,6 +2285,18 @@ fn get_int(node: yay.Node, key: String) -> Option(Int) {
         _ -> None
       }
     _ -> None
+  }
+}
+
+fn get_int_strict(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(Option(Int), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok(None)
+    Some(yay.NodeInt(value)) -> Ok(Some(value))
+    Some(_) -> Error(error.InvalidConfig(path <> " must be an integer"))
   }
 }
 

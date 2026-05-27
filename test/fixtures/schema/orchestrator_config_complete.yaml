@@ -50,28 +50,18 @@ agents:
     ui_requests: operator
     ui_request_timeout: 10s
     compatibility_check: false
-handoff:
+task_updates:
   enabled: true
-  comment_on_claim: true
-  comment_on_success: true
-  comment_on_failure: false
-  comment_on_park: true
-  claim_state_id: state-claim
-  success_state_id: state-success
-  failure_state_id: state-fail
-  include_result_on_success: true
-  attach_result_on_success: true
-  attachment_fallback_to_markdown_link: false
-  result_max_chars: 4000
-  completion_states:
-    default_completion_state: In Review
-    no_review_completion_state: Done
-    failure_state: Needs Attention
-    partial_success_state: Needs Attention
-    workflows:
-      implementation:
-        produces_reviewable_artifacts: true
-        requires_review: true
+  states:
+    claim: In Progress
+    success: In Review
+    no_review_success: Done
+    failure: Needs Attention
+    partial_success: Triage
+  comment_on: [claim, success, park]
+  result:
+    on_success: attachment
+    max_chars: 4000
 linear_contract:
   enabled: true
   workflow_label_prefix: "workflow:"

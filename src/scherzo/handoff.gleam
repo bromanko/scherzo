@@ -160,7 +160,7 @@ fn claim_issue(
       tracker_secrets(tracker_config),
     ),
   ))
-  run_state_update(
+  run_optional_state_ref_update(
     tracker_config,
     transport,
     issue.id,
@@ -445,7 +445,7 @@ fn run_success_state_update(
     Some(decision) ->
       run_completion_state_update(tracker_config, transport, issue_id, decision)
     None ->
-      run_state_update(
+      run_optional_state_ref_update(
         tracker_config,
         transport,
         issue_id,
@@ -465,7 +465,7 @@ fn run_failure_state_update(
     Some(decision) ->
       run_completion_state_update(tracker_config, transport, issue_id, decision)
     None ->
-      run_state_update(
+      run_optional_state_ref_update(
         tracker_config,
         transport,
         issue_id,
@@ -483,6 +483,19 @@ fn run_completion_state_update(
   case decision {
     workflow_completion_policy.LeaveLinearState(_) -> Ok(Nil)
     workflow_completion_policy.MoveToState(state, _) ->
+      run_state_ref_update(tracker_config, transport, issue_id, state)
+  }
+}
+
+fn run_optional_state_ref_update(
+  tracker_config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  state: Option(workflow_completion_policy.LinearStateRef),
+) -> Result(Nil, error.TrackerError) {
+  case state {
+    None -> Ok(Nil)
+    Some(state) ->
       run_state_ref_update(tracker_config, transport, issue_id, state)
   }
 }

@@ -40,7 +40,7 @@ fn handoff_config() -> config_types.HandoffConfig {
     comment_on_success: True,
     comment_on_failure: True,
     comment_on_park: True,
-    claim_state_id: Some("claim-state"),
+    claim_state_id: Some(workflow_completion_policy.StateById("claim-state")),
     success_state_id: None,
     failure_state_id: None,
     include_result_on_success: True,
@@ -500,7 +500,9 @@ pub fn success_handoff_attachment_respects_inline_result_toggle_and_state_order_
         ..handoff_config(),
         include_result_on_success: False,
         attach_result_on_success: True,
-        success_state_id: Some("success-state"),
+        success_state_id: Some(workflow_completion_policy.StateById(
+          "success-state",
+        )),
       ),
       attachment_deps(graphql_subject, upload_subject, 204),
     )
@@ -535,7 +537,9 @@ pub fn success_handoff_attachment_failure_stops_before_state_update_test() {
       config_types.HandoffConfig(
         ..handoff_config(),
         attach_result_on_success: True,
-        success_state_id: Some("success-state"),
+        success_state_id: Some(workflow_completion_policy.StateById(
+          "success-state",
+        )),
       ),
       attachment_deps(graphql_subject, upload_subject, 403),
     )
@@ -553,6 +557,79 @@ pub fn success_handoff_attachment_failure_stops_before_state_update_test() {
   test_async.assert_no_extra_message_within(graphql_subject, 20)
 }
 
+pub fn task_update_claim_state_name_resolves_before_update_test() {
+  let subject = process.new_subject()
+  let client =
+    handoff.linear_client(
+      tracker_config(),
+      config_types.HandoffConfig(
+        ..handoff_config(),
+        claim_state_id: Some(workflow_completion_policy.StateByName(
+          "In Progress",
+        )),
+      ),
+      success_transport(
+        subject,
+        team_states_response([#("state-progress", "In Progress")]),
+      ),
+    )
+
+  assert client.claim_issue(issue(), "run-claim-name") == Ok(Nil)
+  let assert Ok(comment) = process.receive(subject, within: 100)
+  let assert Ok(lookup) = process.receive(subject, within: 100)
+  let assert Ok(update) = process.receive(subject, within: 100)
+  test_async.assert_no_extra_message_within(subject, 20)
+  assert string.contains(comment, "run-claim-name")
+  assert string.contains(lookup, "ScherzoIssueTeamStates")
+  assert string.contains(update, "ScherzoIssueUpdateState")
+  assert string.contains(update, "state-progress")
+}
+
+pub fn task_update_success_and_failure_state_names_resolve_before_update_test() {
+  let subject = process.new_subject()
+  let client =
+    handoff.linear_client(
+      tracker_config(),
+      config_types.HandoffConfig(
+        ..handoff_config(),
+        success_state_id: Some(workflow_completion_policy.StateByName("Done")),
+        failure_state_id: Some(workflow_completion_policy.StateByName(
+          "Needs Attention",
+        )),
+      ),
+      success_transport(
+        subject,
+        team_states_response([
+          #("state-done", "Done"),
+          #("state-attention", "Needs Attention"),
+        ]),
+      ),
+    )
+
+  assert client.report_success(issue(), success(), "run-success-name")
+    == Ok(Nil)
+  let assert Ok(success_comment) = process.receive(subject, within: 100)
+  let assert Ok(success_lookup) = process.receive(subject, within: 100)
+  let assert Ok(success_update) = process.receive(subject, within: 100)
+  assert string.contains(success_comment, "run-success-name")
+  assert string.contains(success_lookup, "ScherzoIssueTeamStates")
+  assert string.contains(success_update, "state-done")
+
+  assert client.report_failure(
+      issue(),
+      worker_failure(error.PiFailed(error.PiExited(1)), None),
+      "run-failure-name",
+    )
+    == Ok(Nil)
+  let assert Ok(failure_comment) = process.receive(subject, within: 100)
+  let assert Ok(failure_lookup) = process.receive(subject, within: 100)
+  let assert Ok(failure_update) = process.receive(subject, within: 100)
+  test_async.assert_no_extra_message_within(subject, 20)
+  assert string.contains(failure_comment, "run-failure-name")
+  assert string.contains(failure_lookup, "ScherzoIssueTeamStates")
+  assert string.contains(failure_update, "state-attention")
+}
+
 pub fn policy_state_by_id_updates_without_lookup_test() {
   let subject = process.new_subject()
   let client =
@@ -560,7 +637,9 @@ pub fn policy_state_by_id_updates_without_lookup_test() {
       tracker_config(),
       config_types.HandoffConfig(
         ..handoff_config(),
-        success_state_id: Some("legacy-success"),
+        success_state_id: Some(workflow_completion_policy.StateById(
+          "legacy-success",
+        )),
         completion_states: Some(
           completion_policy(workflow_completion_policy.StateById("state-review")),
         ),

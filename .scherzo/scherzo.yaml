@@ -77,54 +77,20 @@ agents:
     ui_requests: operator
     ui_request_timeout: 10m
     compatibility_check: true
-handoff:
+task_updates:
   # Move issues through the checked Linear states so successful daemon runs do
-  # not redispatch the same still-active issue on the next poll. Artifact-
-  # producing workflows use completion-state policy so plan and implementation
-  # results land in In Review instead of Done.
+  # not redispatch the same still-active issue on the next poll.
   enabled: true
-  comment_on_claim: true
-  comment_on_success: true
-  comment_on_failure: true
-  claim_state_id: 2e245854-2a96-4ebf-9b67-cbef92ca9a1f
-  failure_state_id: 83eb55af-4c17-443f-9501-8a581be7de20
-  include_result_on_success: false
-  attach_result_on_success: true
-  attachment_fallback_to_markdown_link: true
-  result_max_chars: 20000
-  completion_states:
-    default_completion_state: In Review
-    no_review_completion_state: Done
-    failure_state: Triage
-    partial_success_state: Triage
-    workflows:
-      execplan:
-        produces_reviewable_artifacts: true
-        requires_review: true
-      execplan-revision:
-        produces_reviewable_artifacts: true
-        requires_review: true
-      execplan-implementation:
-        produces_reviewable_artifacts: true
-        requires_review: true
-      implementation:
-        produces_reviewable_artifacts: true
-        requires_review: true
-      merge-conflict-resolution:
-        produces_reviewable_artifacts: true
-        requires_review: true
-      research:
-        produces_reviewable_artifacts: false
-        requires_review: false
-      github-pr-conflict-scout:
-        produces_reviewable_artifacts: false
-        requires_review: false
-      origin-sync:
-        produces_reviewable_artifacts: false
-        requires_review: false
-      workspace-cleanup:
-        produces_reviewable_artifacts: false
-        requires_review: false
+  states:
+    claim: In Progress
+    success: In Review
+    no_review_success: Done
+    failure: Triage
+    partial_success: Triage
+  comment_on: [claim, success, failure]
+  result:
+    on_success: attachment
+    max_chars: 20000
 workflows:
   research: workflows/research.yaml
   implementation: workflows/implementation.yaml

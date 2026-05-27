@@ -2,11 +2,15 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/path
+import scherzo/result_artifact
 import scherzo/runtime_bundle
+import scherzo/session/tokens as session_tokens
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 import scherzo/workflow_dag
 import simplifile
 import support/test_helpers
@@ -37,6 +41,19 @@ fn issue(labels: List(String)) -> tracker_issue.Issue {
     blocked_by_complete: True,
     created_at: None,
     updated_at: None,
+  )
+}
+
+fn worker_success(
+  result: result_artifact.ResultArtifact,
+) -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
+    final_issue: None,
+    final_classification: agent_types.FinalTerminal,
+    workspace_path: "test/tmp/workspace",
+    tokens: session_tokens.zero_token_totals(),
+    turns: 1,
+    result: result,
   )
 }
 
@@ -161,6 +178,83 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   let assert workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), None) =
     step.kind
   assert prompt == "Implement {{ issue.identifier }}"
+}
+
+pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test() {
+  let dir = "test/tmp/runtime-bundle-task-updates-review-policy"
+  test_helpers.reset_dir(dir)
+  write_describe_driver(dir, "driver", "[\"publish-change\"]")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nworkspace_profile: driver\nworkspace_capabilities: [publish-change]\nsteps:\n  - id: run\n    kind: command\n    run: echo reviewable\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/maintenance.yaml",
+      "version: 1\nid: maintenance\nworkspace_profile: driver\nsteps:\n  - id: run\n    kind: command\n    run: echo maintenance\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: driver\n  profiles:\n    driver:\n      driver:\n        command: scripts/driver\ntask_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Triage\n    partial_success: Triage\nworkflows:\n    implementation: workflows/implementation.yaml\n    maintenance: workflows/maintenance.yaml\n",
+    )
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let assert Some(policy) = bundle.effective.handoff.completion_states
+  let assert Ok(implementation) = dict.get(policy.workflows, "implementation")
+  let assert Ok(maintenance) = dict.get(policy.workflows, "maintenance")
+
+  assert implementation.produces_reviewable_artifacts == Some(True)
+  assert implementation.requires_review == Some(True)
+  assert maintenance.produces_reviewable_artifacts == Some(False)
+  assert maintenance.requires_review == Some(False)
+
+  let empty_success = worker_success(result_artifact.empty())
+  let implementation_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "implementation",
+      empty_success,
+    )
+  assert implementation_outcome.expected_artifacts_missing == True
+  assert implementation_outcome.requires_review
+    == workflow_completion_policy.ReviewRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "implementation",
+      implementation_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("Triage"),
+      "expected reviewable artifacts were missing",
+    )
+
+  let maintenance_success =
+    worker_success(result_artifact.from_final_response(
+      Some("maintenance completed"),
+      False,
+      "test",
+    ))
+  let maintenance_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "maintenance",
+      maintenance_success,
+    )
+  assert maintenance_outcome.requires_review
+    == workflow_completion_policy.ReviewNotRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "maintenance",
+      maintenance_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("Done"),
+      "no review is required",
+    )
 }
 
 pub fn loads_workflow_yaml_without_recover_fields_through_current_parser_test() {

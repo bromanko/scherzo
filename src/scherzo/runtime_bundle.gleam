@@ -10,6 +10,7 @@ import scherzo/model_config
 import scherzo/path
 import scherzo/template
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_completion_policy
 import scherzo/workflow_dag
 import scherzo/workspace_driver_discovery
 import scherzo/workspace_profile
@@ -161,6 +162,7 @@ fn load_orchestrator(
       [],
     ),
   )
+  let orchestrator = enrich_completion_state_policy(orchestrator, workflows)
   use orchestrator <- result.try(
     workspace_driver_discovery.enrich_orchestrator(orchestrator)
     |> result.map_error(workspace_driver_discovery_error_to_bundle_error),
@@ -189,6 +191,69 @@ fn load_orchestrator(
     workflows: workflows,
     secrets: config.resolved_secrets(orchestrator.effective),
   ))
+}
+
+fn enrich_completion_state_policy(
+  orchestrator: config_types.OrchestratorConfig,
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+) -> config_types.OrchestratorConfig {
+  let effective = orchestrator.effective
+  let handoff = effective.handoff
+  case handoff.completion_states {
+    None -> orchestrator
+    Some(policy) -> {
+      let completion_states =
+        workflow_completion_policy.CompletionStatePolicy(
+          ..policy,
+          workflows: workflow_completion_overrides(policy.workflows, workflows),
+        )
+      let handoff =
+        config_types.HandoffConfig(
+          ..handoff,
+          completion_states: Some(completion_states),
+        )
+      let effective = config_types.EffectiveConfig(..effective, handoff:)
+      config_types.OrchestratorConfig(..orchestrator, effective:)
+    }
+  }
+}
+
+fn workflow_completion_overrides(
+  existing: Dict(String, workflow_completion_policy.WorkflowCompletionOverride),
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+) -> Dict(String, workflow_completion_policy.WorkflowCompletionOverride) {
+  workflows
+  |> dict.to_list
+  |> list.fold(existing, fn(acc, entry) {
+    let #(id, dag) = entry
+    case dict.has_key(acc, id) {
+      True -> acc
+      False -> dict.insert(acc, id, workflow_completion_override(dag))
+    }
+  })
+}
+
+fn workflow_completion_override(
+  dag: workflow_dag.WorkflowDag,
+) -> workflow_completion_policy.WorkflowCompletionOverride {
+  let requires_review = workflow_requires_review(dag)
+  workflow_completion_policy.WorkflowCompletionOverride(
+    ..workflow_completion_policy.default_override(),
+    produces_reviewable_artifacts: Some(requires_review),
+    requires_review: Some(requires_review),
+  )
+}
+
+fn workflow_requires_review(dag: workflow_dag.WorkflowDag) -> Bool {
+  list.contains(dag.workspace_capabilities, config_types.WorkspacePublishChange)
+  || workflow_declares_outputs(dag)
+}
+
+fn workflow_declares_outputs(dag: workflow_dag.WorkflowDag) -> Bool {
+  case dag.contract {
+    Some(contract) -> !list.is_empty(contract.outputs)
+    None -> False
+  }
 }
 
 fn load_workflow_map(
