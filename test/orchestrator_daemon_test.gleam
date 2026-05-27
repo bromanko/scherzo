@@ -2978,6 +2978,10 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
   )
   let _ = test_async.drain_subject(command_subject)
 
+  process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 2))
+  test_async.assert_no_extra_message_within(report_subject, 100)
+  test_async.assert_no_extra_message_within(command_subject, 100)
+
   process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 1))
   let assert Ok(DirectedScheduledReportCall(second_request, second_reply)) =
     process.receive(report_subject, within: 1000)
