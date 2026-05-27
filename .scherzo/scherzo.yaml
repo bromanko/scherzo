@@ -74,7 +74,7 @@ pi:
     enabled: true
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
-  stall_timeout_ms: 300000
+  stall_timeout_ms: 1200000
   auto_retry: true
   # Route extension UI requests to the operator through scherzoctl attach/ui.
   ui_request_policy: operator
