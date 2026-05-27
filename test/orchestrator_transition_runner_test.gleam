@@ -518,7 +518,7 @@ pub fn startup_recovery_schedules_retry_cleanup_and_park_effects_test() {
           outbox_to_replay: [
             recovery.OutboxReplay(
               "outbox-1",
-              "issue-3",
+              record.linear_task_ref_fields("issue-3", Some("ABC-3"), None),
               "linear_command_ack",
               "linear_command_ack:comment-1",
               "{\"type\":\"linear_command_ack\",\"source_comment_id\":\"comment-1\",\"body\":\"ack\"}",

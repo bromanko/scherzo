@@ -648,9 +648,9 @@ fn load_startup_recovery(
       )
     False -> Nil
   }
-  use refreshed_issues <- try_startup(fetch_recovery_issue_states(
+  use refreshed_issues <- try_startup(fetch_recovery_task_states(
     tracker_adapter,
-    recovery.known_issue_ids(replayed.projection),
+    recovery.known_task_refs(replayed.projection),
   ))
   use recovery_plan <- try_startup(
     recovery.plan(
@@ -1221,26 +1221,30 @@ fn fingerprint_error_message(
   }
 }
 
-fn fetch_recovery_issue_states(
+fn fetch_recovery_task_states(
   tracker_adapter: adapter.TrackerAdapter,
-  issue_ids: List(String),
+  task_refs: List(record.TaskRefFields),
 ) -> Result(List(tracker_issue.Issue), StartupError) {
-  fetch_recovery_issue_chunks(tracker_adapter, chunk_strings(issue_ids, 50), [])
+  let refs =
+    task_refs
+    |> list.filter(fn(ref) { ref.task_backend_kind == tracker_adapter.kind })
+    |> list.map(record_task_ref_to_task_ref)
+  fetch_recovery_task_chunks(tracker_adapter, chunk_task_refs(refs, 50), [])
 }
 
-fn fetch_recovery_issue_chunks(
+fn fetch_recovery_task_chunks(
   tracker_adapter: adapter.TrackerAdapter,
-  chunks: List(List(String)),
+  chunks: List(List(task.TaskRef)),
   acc: List(tracker_issue.Issue),
 ) -> Result(List(tracker_issue.Issue), StartupError) {
   case chunks {
     [] -> Ok(list.reverse(acc))
     [chunk, ..rest] ->
       case
-        adapter_legacy.refresh_runtime_issues_by_ids(tracker_adapter, chunk)
+        adapter_legacy.refresh_runtime_issues_by_refs(tracker_adapter, chunk)
       {
         Ok(issues) ->
-          fetch_recovery_issue_chunks(
+          fetch_recovery_task_chunks(
             tracker_adapter,
             rest,
             list.append(list.reverse(issues), acc),
@@ -1254,17 +1258,25 @@ fn fetch_recovery_issue_chunks(
   }
 }
 
-fn chunk_strings(values: List(String), size: Int) -> List(List(String)) {
+fn record_task_ref_to_task_ref(ref: record.TaskRefFields) -> task.TaskRef {
+  task.TaskRef(
+    backend_kind: ref.task_backend_kind,
+    remote_id: ref.task_remote_id,
+    key: ref.task_key,
+    url: ref.task_url,
+  )
+}
+
+fn chunk_task_refs(
+  values: List(task.TaskRef),
+  size: Int,
+) -> List(List(task.TaskRef)) {
   case values {
     [] -> []
-    _ -> {
-      let size = case size <= 0 {
-        True -> 1
-        False -> size
-      }
+    values -> {
       let chunk = list.take(values, size)
       let rest = list.drop(values, size)
-      [chunk, ..chunk_strings(rest, size)]
+      [chunk, ..chunk_task_refs(rest, size)]
     }
   }
 }

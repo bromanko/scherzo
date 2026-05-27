@@ -325,7 +325,7 @@ pub fn prompt_allows_short_read_timeouts_until_event_test() {
   let command = "FAKE_PI_DELAY_EVENT_MS=100 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let assert Ok(#(session, events)) =
-    collect_prompt(session, "prompt", 20, 1000, 500)
+    collect_prompt_with_read_timeouts(session, "prompt", 1000, 20, 1000, 500)
   let stats_result = client.get_session_stats(session, 1000)
   let _ = client.terminate(session)
   let assert Ok(#(_session, _)) = stats_result
@@ -384,12 +384,34 @@ fn collect_prompt(
   turn_timeout_ms: Int,
   stall_timeout_ms: Int,
 ) -> Result(#(client.Session, List(protocol.RpcRecord)), error.PiRpcError) {
-  use pair <- try_pi(client.send_prompt(session, message, read_timeout_ms))
+  collect_prompt_with_read_timeouts(
+    session,
+    message,
+    read_timeout_ms,
+    read_timeout_ms,
+    turn_timeout_ms,
+    stall_timeout_ms,
+  )
+}
+
+fn collect_prompt_with_read_timeouts(
+  session: client.Session,
+  message: String,
+  command_read_timeout_ms: Int,
+  turn_read_timeout_ms: Int,
+  turn_timeout_ms: Int,
+  stall_timeout_ms: Int,
+) -> Result(#(client.Session, List(protocol.RpcRecord)), error.PiRpcError) {
+  use pair <- try_pi(client.send_prompt(
+    session,
+    message,
+    command_read_timeout_ms,
+  ))
   let #(session, skipped) = pair
   let now = monotonic_ms()
   collect_turn(
     session,
-    read_timeout_ms,
+    turn_read_timeout_ms,
     stall_timeout_ms,
     now + turn_timeout_ms,
     now + stall_timeout_ms,

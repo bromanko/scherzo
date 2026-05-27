@@ -2500,7 +2500,7 @@ pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
-pub fn daemon_scheduled_startup_logs_projection_failures_and_still_runs_test() {
+pub fn daemon_scheduled_startup_uses_replayed_statuses_after_event_hub_start_test() {
   let dir = "test/tmp/daemon-scheduled-startup-projection-unavailable"
   let workflow_path = write_scheduled_command_workflow(dir, 1)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
@@ -2519,16 +2519,14 @@ pub fn daemon_scheduled_startup_logs_projection_failures_and_still_runs_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
-
-  assert wait_for_event(
-    log_subject,
+  let startup_logs = test_async.drain_subject(log_subject)
+  assert !list.contains(
+    startup_logs,
     "scheduled_next_due_projection_unavailable",
-    20,
   )
-  assert wait_for_event(
-    log_subject,
+  assert !list.contains(
+    startup_logs,
     "scheduled_runtime_recovery_projection_unavailable",
-    20,
   )
 
   set_clock(clock, 1000)

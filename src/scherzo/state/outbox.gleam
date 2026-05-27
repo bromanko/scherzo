@@ -43,7 +43,7 @@ pub fn remote_command_ack_payload(
 ) -> String {
   json.object([
     #("type", json.string("remote_command_ack")),
-    #("backend_kind", json.string(backend_kind)),
+    #("task_backend_kind", json.string(backend_kind)),
     #("event_id", json.string(event_id)),
     #("task_remote_id", json.string(task_remote_id)),
     #("body", json.string(safe_body(body, secrets))),
@@ -110,6 +110,13 @@ pub fn describe_replay_error(error: ReplayError) -> String {
   }
 }
 
+fn first_some(value: Option(a), fallback: Option(a)) -> Option(a) {
+  case value {
+    Some(_) -> value
+    None -> fallback
+  }
+}
+
 fn payload_decoder() -> decode.Decoder(Payload) {
   use kind <- decode.field("type", decode.string)
   use body <- decode.field("body", decode.string)
@@ -118,11 +125,17 @@ fn payload_decoder() -> decode.Decoder(Payload) {
     None,
     decode.optional(decode.string),
   )
-  use backend_kind <- decode.optional_field(
+  use legacy_backend_kind <- decode.optional_field(
     "backend_kind",
     None,
     decode.optional(decode.string),
   )
+  use task_backend_kind <- decode.optional_field(
+    "task_backend_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  let backend_kind = first_some(task_backend_kind, legacy_backend_kind)
   use event_id <- decode.optional_field(
     "event_id",
     None,

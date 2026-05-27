@@ -457,10 +457,28 @@ pub type RecordBody {
     dedupe_key: String,
     payload_json: String,
   )
+  OutboxPendingV2WithTask(
+    outbox_id: String,
+    task_ref: TaskRefFields,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+  )
   OutboxCompleted(outbox_id: String, issue_id: String, outbox_kind: String)
+  OutboxCompletedWithTask(
+    outbox_id: String,
+    task_ref: TaskRefFields,
+    outbox_kind: String,
+  )
   OutboxFailed(
     outbox_id: String,
     issue_id: String,
+    outbox_kind: String,
+    error_code: String,
+  )
+  OutboxFailedWithTask(
+    outbox_id: String,
+    task_ref: TaskRefFields,
     outbox_kind: String,
     error_code: String,
   )
@@ -709,9 +727,9 @@ pub fn kind(body: RecordBody) -> String {
     ScheduledFailureReported(..) -> "scheduled_failure_reported"
     ScheduledFailureReportFailed(..) -> "scheduled_failure_report_failed"
     OutboxPending(..) -> "outbox_pending"
-    OutboxPendingV2(..) -> "outbox_pending_v2"
-    OutboxCompleted(..) -> "outbox_completed"
-    OutboxFailed(..) -> "outbox_failed"
+    OutboxPendingV2(..) | OutboxPendingV2WithTask(..) -> "outbox_pending_v2"
+    OutboxCompleted(..) | OutboxCompletedWithTask(..) -> "outbox_completed"
+    OutboxFailed(..) | OutboxFailedWithTask(..) -> "outbox_failed"
     WorkstreamCreated(..) -> "workstream_created"
     WorkstreamAssigned(..) -> "workstream_assigned"
     WorkstreamArtifactRecorded(..) -> "workstream_artifact_recorded"
@@ -1493,10 +1511,37 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         dedupe_key,
         payload_json,
       )
+    OutboxPendingV2WithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+    ) ->
+      outbox_record.pending_v2_with_task_entries(
+        outbox_id,
+        task_ref_entries(task_ref),
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+      )
     OutboxCompleted(outbox_id, issue_id, outbox_kind) ->
       outbox_record.completed_entries(outbox_id, issue_id, outbox_kind)
+    OutboxCompletedWithTask(outbox_id, task_ref, outbox_kind) ->
+      outbox_record.completed_with_task_entries(
+        outbox_id,
+        task_ref_entries(task_ref),
+        outbox_kind,
+      )
     OutboxFailed(outbox_id, issue_id, outbox_kind, error_code) ->
       outbox_record.failed_entries(outbox_id, issue_id, outbox_kind, error_code)
+    OutboxFailedWithTask(outbox_id, task_ref, outbox_kind, error_code) ->
+      outbox_record.failed_with_task_entries(
+        outbox_id,
+        task_ref_entries(task_ref),
+        outbox_kind,
+        error_code,
+      )
     WorkstreamCreated(workstream_id, task_ref, idempotency_key) ->
       workstream_record.created_with_task_entries(
         workstream_id,
@@ -2336,10 +2381,7 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       Ok(LinearCommandAcked(comment_id, issue_id))
     }
     "remote_command_seen" -> {
-      use backend_kind <- result.try(required_string(
-        fields.backend_kind,
-        "backend_kind",
-      ))
+      use backend_kind <- result.try(required_task_backend_kind(fields))
       use event_id <- result.try(required_string(fields.event_id, "event_id"))
       use task_remote_id <- result.try(required_string(
         fields.task_remote_id,
@@ -2362,10 +2404,7 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       ))
     }
     "remote_command_started" -> {
-      use backend_kind <- result.try(required_string(
-        fields.backend_kind,
-        "backend_kind",
-      ))
+      use backend_kind <- result.try(required_task_backend_kind(fields))
       use event_id <- result.try(required_string(fields.event_id, "event_id"))
       use task_remote_id <- result.try(required_string(
         fields.task_remote_id,
@@ -2383,10 +2422,7 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       ))
     }
     "remote_command_completed" -> {
-      use backend_kind <- result.try(required_string(
-        fields.backend_kind,
-        "backend_kind",
-      ))
+      use backend_kind <- result.try(required_task_backend_kind(fields))
       use event_id <- result.try(required_string(fields.event_id, "event_id"))
       use task_remote_id <- result.try(required_string(
         fields.task_remote_id,
@@ -2406,10 +2442,7 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       ))
     }
     "remote_command_acked" -> {
-      use backend_kind <- result.try(required_string(
-        fields.backend_kind,
-        "backend_kind",
-      ))
+      use backend_kind <- result.try(required_task_backend_kind(fields))
       use event_id <- result.try(required_string(fields.event_id, "event_id"))
       use task_remote_id <- result.try(required_string(
         fields.task_remote_id,
@@ -2695,7 +2728,6 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
     }
     "outbox_pending_v2" -> {
       use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
-      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
       use outbox_kind <- result.try(required_string(
         fields.outbox_kind,
         "outbox_kind",
@@ -2708,26 +2740,52 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         fields.payload_json,
         "payload_json",
       ))
-      Ok(OutboxPendingV2(
-        outbox_id,
-        issue_id,
-        outbox_kind,
-        dedupe_key,
-        payload_json,
-      ))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(OutboxPendingV2WithTask(
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+          ))
+        None -> {
+          use issue_id <- result.try(required_string(
+            fields.issue_id,
+            "issue_id",
+          ))
+          Ok(OutboxPendingV2(
+            outbox_id,
+            issue_id,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+          ))
+        }
+      }
     }
     "outbox_completed" -> {
       use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
-      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
       use outbox_kind <- result.try(required_string(
         fields.outbox_kind,
         "outbox_kind",
       ))
-      Ok(OutboxCompleted(outbox_id, issue_id, outbox_kind))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(OutboxCompletedWithTask(outbox_id, task_ref, outbox_kind))
+        None -> {
+          use issue_id <- result.try(required_string(
+            fields.issue_id,
+            "issue_id",
+          ))
+          Ok(OutboxCompleted(outbox_id, issue_id, outbox_kind))
+        }
+      }
     }
     "outbox_failed" -> {
       use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
-      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
       use outbox_kind <- result.try(required_string(
         fields.outbox_kind,
         "outbox_kind",
@@ -2736,7 +2794,18 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         fields.error_code,
         "error_code",
       ))
-      Ok(OutboxFailed(outbox_id, issue_id, outbox_kind, error_code))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(OutboxFailedWithTask(outbox_id, task_ref, outbox_kind, error_code))
+        None -> {
+          use issue_id <- result.try(required_string(
+            fields.issue_id,
+            "issue_id",
+          ))
+          Ok(OutboxFailed(outbox_id, issue_id, outbox_kind, error_code))
+        }
+      }
     }
     "workstream_created" -> {
       use workstream_id <- result.try(required_string(
@@ -3607,6 +3676,16 @@ fn required_task_ref_fields(
   }
 }
 
+fn required_task_backend_kind(
+  fields: RecordFields,
+) -> Result(String, DecodeError) {
+  case fields.task_backend_kind, fields.backend_kind {
+    Some(kind), _ -> Ok(kind)
+    None, Some(kind) -> Ok(kind)
+    None, None -> Error(InvalidRecord("missing task_backend_kind"))
+  }
+}
+
 fn required_string(
   value: Option(String),
   field: String,
@@ -3722,6 +3801,20 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
       OutboxPendingV2(
         outbox_id,
         issue_id,
+        outbox_kind,
+        dedupe_key,
+        safe_payload(payload_json, secrets),
+      )
+    OutboxPendingV2WithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+    ) ->
+      OutboxPendingV2WithTask(
+        outbox_id,
+        task_ref,
         outbox_kind,
         dedupe_key,
         safe_payload(payload_json, secrets),

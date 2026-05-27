@@ -675,7 +675,7 @@ pub fn runner_stall_times_out_after_message_start_without_turn_end_test() {
       ..base,
       pi: config_types.PiConfig(
         ..base.pi,
-        read_timeout_ms: 100,
+        read_timeout_ms: 1000,
         stall_timeout_ms: 50,
         turn_timeout_ms: 1000,
       ),

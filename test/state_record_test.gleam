@@ -141,6 +141,43 @@ pub fn encodes_and_decodes_recovery_records_test() {
   ))
 }
 
+pub fn legacy_issue_id_outbox_records_decode_test() {
+  let pending =
+    decode_record(
+      "{\"schema_version\":2,\"record_id\":\"legacy-outbox-pending\",\"at_ms\":9300,\"kind\":\"outbox_pending_v2\",\"outbox_id\":\"outbox-1\",\"issue_id\":\"issue-1\",\"outbox_kind\":\"linear_comment\",\"dedupe_key\":\"run-1:success\",\"payload_json\":\"{\\\"body\\\":\\\"ok\\\"}\"}",
+    )
+  let completed =
+    decode_record(
+      "{\"schema_version\":2,\"record_id\":\"legacy-outbox-completed\",\"at_ms\":9301,\"kind\":\"outbox_completed\",\"outbox_id\":\"outbox-1\",\"issue_id\":\"issue-1\",\"outbox_kind\":\"linear_comment\"}",
+    )
+  let failed =
+    decode_record(
+      "{\"schema_version\":2,\"record_id\":\"legacy-outbox-failed\",\"at_ms\":9302,\"kind\":\"outbox_failed\",\"outbox_id\":\"outbox-2\",\"issue_id\":\"issue-2\",\"outbox_kind\":\"linear_comment\",\"error_code\":\"http_500\"}",
+    )
+
+  assert pending.body
+    == record.OutboxPendingV2(
+      outbox_id: "outbox-1",
+      issue_id: "issue-1",
+      outbox_kind: "linear_comment",
+      dedupe_key: "run-1:success",
+      payload_json: "{\"body\":\"ok\"}",
+    )
+  assert completed.body
+    == record.OutboxCompleted(
+      outbox_id: "outbox-1",
+      issue_id: "issue-1",
+      outbox_kind: "linear_comment",
+    )
+  assert failed.body
+    == record.OutboxFailed(
+      outbox_id: "outbox-2",
+      issue_id: "issue-2",
+      outbox_kind: "linear_comment",
+      error_code: "http_500",
+    )
+}
+
 pub fn outbox_pending_v2_payload_is_redacted_and_bounded_test() {
   let long = string.repeat("x", times: record.max_excerpt_chars + 20)
   let unsafe =

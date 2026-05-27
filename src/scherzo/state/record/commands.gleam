@@ -65,7 +65,7 @@ pub fn remote_seen_entries(
   excerpt: String,
 ) -> List(#(String, json.Json)) {
   [
-    #("backend_kind", json.string(backend_kind)),
+    #("task_backend_kind", json.string(backend_kind)),
     #("event_id", json.string(event_id)),
     #("task_remote_id", json.string(task_remote_id)),
     #("task_key", option_string(task_key)),
@@ -82,7 +82,7 @@ pub fn remote_started_entries(
   command_name: String,
 ) -> List(#(String, json.Json)) {
   [
-    #("backend_kind", json.string(backend_kind)),
+    #("task_backend_kind", json.string(backend_kind)),
     #("event_id", json.string(event_id)),
     #("task_remote_id", json.string(task_remote_id)),
     #("command_name", json.string(command_name)),
@@ -97,7 +97,7 @@ pub fn remote_completed_entries(
   message_excerpt: String,
 ) -> List(#(String, json.Json)) {
   [
-    #("backend_kind", json.string(backend_kind)),
+    #("task_backend_kind", json.string(backend_kind)),
     #("event_id", json.string(event_id)),
     #("task_remote_id", json.string(task_remote_id)),
     #("status", json.string(status)),
@@ -111,7 +111,7 @@ pub fn remote_acked_entries(
   task_remote_id: String,
 ) -> List(#(String, json.Json)) {
   [
-    #("backend_kind", json.string(backend_kind)),
+    #("task_backend_kind", json.string(backend_kind)),
     #("event_id", json.string(event_id)),
     #("task_remote_id", json.string(task_remote_id)),
   ]

@@ -124,7 +124,12 @@ fn workstream_json(status: String) -> String {
     types.WorkstreamArtifact(
       artifact_id: "workstream-artifact",
       workstream_id: "linear:LIV-393",
-      issue: types.IssueRef(id: "issue-393"),
+      task_ref: types.TaskRef(
+        backend_kind: "linear",
+        remote_id: "issue-393",
+        key: Some("LIV-393"),
+        url: None,
+      ),
       status: status,
       summary: "current summary",
       produced_artifacts: [],

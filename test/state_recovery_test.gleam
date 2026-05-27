@@ -792,6 +792,94 @@ pub fn remote_command_ack_outbox_is_marked_failed_test() {
   )
 }
 
+pub fn remote_command_ack_failure_dedupes_by_task_ref_and_event_test() {
+  let acked_task_ref = task_ref("github", "octo/repo#1")
+  let other_task_ref = task_ref("github", "octo/repo#2")
+  let projection =
+    projection.fold([
+      record.with_id(
+        "remote-acked",
+        1000,
+        record.RemoteCommandAcked(
+          backend_kind: "github",
+          event_id: "event-1",
+          task_remote_id: "octo/repo#1",
+        ),
+      ),
+      record.with_id(
+        "outbox-acked",
+        1001,
+        record.OutboxPendingV2WithTask(
+          outbox_id: "event-1-acked",
+          task_ref: acked_task_ref,
+          outbox_kind: "remote_command_ack",
+          dedupe_key: "remote_command_ack:github:octo/repo#1:event-1",
+          payload_json: remote_ack_payload("github", "event-1", "octo/repo#1"),
+        ),
+      ),
+      record.with_id(
+        "outbox-other",
+        1002,
+        record.OutboxPendingV2WithTask(
+          outbox_id: "event-1-other",
+          task_ref: other_task_ref,
+          outbox_kind: "remote_command_ack",
+          dedupe_key: "remote_command_ack:github:octo/repo#2:event-1",
+          payload_json: remote_ack_payload("github", "event-1", "octo/repo#2"),
+        ),
+      ),
+    ])
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
+
+  assert plan.outbox_to_replay == []
+  let assert [
+    record.LedgerRecord(
+      body: record.OutboxFailedWithTask(
+        outbox_id: "event-1-other",
+        task_ref: failed_task_ref,
+        error_code: "unsupported_outbox_kind:remote_command_ack",
+        ..,
+      ),
+      ..,
+    ),
+  ] = plan.records_to_append
+  assert failed_task_ref == other_task_ref
+}
+
+pub fn failed_task_ref_outbox_recovery_records_task_ref_test() {
+  let task_ref = task_ref("github", "octo/repo#42")
+  let projection =
+    projection.fold([
+      record.with_id(
+        "outbox-invalid-task",
+        1000,
+        record.OutboxPendingV2WithTask(
+          outbox_id: "outbox-invalid-task",
+          task_ref: task_ref,
+          outbox_kind: "remote_command_ack",
+          dedupe_key: "remote_command_ack:github:event-42",
+          payload_json: "not-json",
+        ),
+      ),
+    ])
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
+
+  let assert [
+    record.LedgerRecord(
+      body: record.OutboxFailedWithTask(
+        outbox_id: "outbox-invalid-task",
+        task_ref: failed_task_ref,
+        error_code: "invalid_outbox_payload",
+        ..,
+      ),
+      ..,
+    ),
+  ] = plan.records_to_append
+  assert failed_task_ref == task_ref
+}
+
 pub fn acked_remote_command_suppresses_legacy_linear_ack_outbox_replay_test() {
   let projection =
     projection.fold([
@@ -984,6 +1072,32 @@ fn decode_ledger_record(line: String) -> record.LedgerRecord {
   decoded
 }
 
+fn task_ref(
+  backend_kind: String,
+  task_remote_id: String,
+) -> record.TaskRefFields {
+  record.TaskRefFields(
+    task_backend_kind: backend_kind,
+    task_remote_id: task_remote_id,
+    task_key: None,
+    task_url: None,
+  )
+}
+
+fn remote_ack_payload(
+  backend_kind: String,
+  event_id: String,
+  task_remote_id: String,
+) -> String {
+  outbox.remote_command_ack_payload(
+    backend_kind,
+    event_id,
+    task_remote_id,
+    "ack",
+    [],
+  )
+}
+
 fn config() -> config_types.EffectiveConfig {
   config_types.EffectiveConfig(
     tracker: config_types.TrackerConfig(
@@ -1158,6 +1272,11 @@ fn has_outbox_failed(
   list.any(records, fn(ledger_record) {
     case ledger_record.body {
       record.OutboxFailed(
+        outbox_id: failed_outbox_id,
+        error_code: failed_error_code,
+        ..,
+      ) -> failed_outbox_id == outbox_id && failed_error_code == error_code
+      record.OutboxFailedWithTask(
         outbox_id: failed_outbox_id,
         error_code: failed_error_code,
         ..,

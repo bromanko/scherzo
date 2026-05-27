@@ -44,6 +44,13 @@ pub fn refresh_runtime_issues_by_ids(
         url: None,
       )
     })
+  refresh_runtime_issues_by_refs(tracker_adapter, refs)
+}
+
+pub fn refresh_runtime_issues_by_refs(
+  tracker_adapter: adapter.TrackerAdapter,
+  refs: List(task.TaskRef),
+) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
   case tracker_adapter.task_source.refresh_by_refs(refs) {
     Ok(tasks) -> tasks_to_runtime_issues(tracker_adapter.kind, tasks)
     Error(err) -> Error(err)

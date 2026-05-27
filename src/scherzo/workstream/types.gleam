@@ -18,8 +18,13 @@ pub type SpecError {
   SpecError(code: String, message: String)
 }
 
-pub type IssueRef {
-  IssueRef(id: String)
+pub type TaskRef {
+  TaskRef(
+    backend_kind: String,
+    remote_id: String,
+    key: Option(String),
+    url: Option(String),
+  )
 }
 
 pub type ProducerRef {
@@ -66,7 +71,7 @@ pub type WorkstreamArtifact {
   WorkstreamArtifact(
     artifact_id: String,
     workstream_id: String,
-    issue: IssueRef,
+    task_ref: TaskRef,
     status: String,
     summary: String,
     produced_artifacts: List(ArtifactSnapshot),

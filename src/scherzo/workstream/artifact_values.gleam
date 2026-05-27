@@ -11,10 +11,7 @@ pub fn workstream_to_value(
     #("artifact_type", json_value.JString(types.workstream_artifact_type)),
     #("artifact_id", json_value.JString(value.artifact_id)),
     #("workstream_id", json_value.JString(value.workstream_id)),
-    #(
-      "issue",
-      json_value.JObject([#("id", json_value.JString(value.issue.id))]),
-    ),
+    #("task_ref", task_ref_to_value(value.task_ref)),
     #("status", json_value.JString(value.status)),
     #("summary", json_value.JString(value.summary)),
     #(
@@ -137,6 +134,16 @@ pub fn next_action_to_value(
       list.append(base, [#("requires_gate", json_value.JString(gate))])
     None -> base
   }
+  json_value.JObject(base)
+}
+
+fn task_ref_to_value(value: types.TaskRef) -> json_value.JsonValue {
+  let base = [
+    #("backend_kind", json_value.JString(value.backend_kind)),
+    #("remote_id", json_value.JString(value.remote_id)),
+  ]
+  let base = append_optional_string(base, "key", value.key)
+  let base = append_optional_string(base, "url", value.url)
   json_value.JObject(base)
 }
 
