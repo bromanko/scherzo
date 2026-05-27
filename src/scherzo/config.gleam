@@ -167,12 +167,24 @@ pub fn default_linear_command_config() -> config_types.LinearCommandConfig {
 
 pub fn default_scheduled_failure_config() -> config_types.ScheduledFailureConfig {
   config_types.ScheduledFailureConfig(
-    linear: config_types.ScheduledLinearFailureConfig(
+    task: config_types.ScheduledTaskFailureConfig(
       enabled: False,
       state: None,
       labels: [],
-      dedupe: config_types.OpenIssuePerJob,
+      dedupe: config_types.OpenTaskPerSchedule,
     ),
+  )
+}
+
+fn config_migration_hint(
+  old_path: String,
+  replacement: String,
+) -> error.ConfigError {
+  error.InvalidConfig(
+    old_path
+    <> " was removed. Use "
+    <> replacement
+    <> ". See docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md.",
   )
 }
 
@@ -1347,26 +1359,65 @@ fn resolve_default_workspace_profile(
 fn resolve_artifact_limits(
   root: yay.Node,
 ) -> Result(config_types.ArtifactLimits, error.ConfigError) {
-  let limits = get_map(root, "artifact_limits")
+  use artifacts <- result.try(get_map_strict_or_empty(
+    root,
+    "artifacts",
+    "artifacts",
+  ))
+  use limits <- result.try(get_map_strict_or_empty(
+    artifacts,
+    "limits",
+    "artifacts.limits",
+  ))
+  use _ <- result.try(reject_removed_artifact_limit_keys(limits))
   let command_stream_max_chars =
-    get_int(limits, "command_stream_max_chars") |> int_default(20_000)
+    get_int(limits, "command_output_chars") |> int_default(20_000)
   let template_field_max_chars =
-    get_int(limits, "template_field_max_chars") |> int_default(8000)
+    get_int(limits, "template_field_chars") |> int_default(8000)
   let workflow_summary_max_chars =
-    get_int(limits, "workflow_summary_max_chars") |> int_default(20_000)
+    get_int(limits, "workflow_summary_chars") |> int_default(20_000)
   case
     command_stream_max_chars <= 0
     || template_field_max_chars <= 0
     || workflow_summary_max_chars <= 0
   {
     True ->
-      Error(error.InvalidConfig("artifact_limits values must be positive"))
+      Error(error.InvalidConfig("artifacts.limits values must be positive"))
     False ->
       Ok(config_types.ArtifactLimits(
         command_stream_max_chars: command_stream_max_chars,
         template_field_max_chars: template_field_max_chars,
         workflow_summary_max_chars: workflow_summary_max_chars,
       ))
+  }
+}
+
+fn reject_removed_artifact_limit_keys(
+  limits: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(limits, "command_stream_max_chars") {
+    Some(_) ->
+      Error(config_migration_hint(
+        "artifacts.limits.command_stream_max_chars",
+        "artifacts.limits.command_output_chars",
+      ))
+    None ->
+      case get_node(limits, "template_field_max_chars") {
+        Some(_) ->
+          Error(config_migration_hint(
+            "artifacts.limits.template_field_max_chars",
+            "artifacts.limits.template_field_chars",
+          ))
+        None ->
+          case get_node(limits, "workflow_summary_max_chars") {
+            Some(_) ->
+              Error(config_migration_hint(
+                "artifacts.limits.workflow_summary_max_chars",
+                "artifacts.limits.workflow_summary_chars",
+              ))
+            None -> Ok(Nil)
+          }
+      }
   }
 }
 
@@ -1390,11 +1441,11 @@ fn resolve_scheduled_jobs(
   root: yay.Node,
   routing: config_types.RoutingConfig,
 ) -> Result(List(config_types.ScheduledJobConfig), error.ConfigError) {
-  case get_node(root, "scheduled_jobs") {
+  case get_node(root, "schedules") {
     None -> Ok([])
     Some(yay.NodeSeq(values)) ->
       read_scheduled_job_values(values, routing, [], [])
-    Some(_) -> Error(error.InvalidConfig("scheduled_jobs must be a list"))
+    Some(_) -> Error(error.InvalidConfig("schedules must be a list"))
   }
 }
 
@@ -1411,7 +1462,7 @@ fn read_scheduled_job_values(
       case list.contains(seen_ids, job.id) {
         True ->
           Error(error.InvalidConfig(
-            "scheduled_jobs has duplicate job id: " <> job.id,
+            "schedules has duplicate schedule id: " <> job.id,
           ))
         False ->
           read_scheduled_job_values(rest, routing, [job.id, ..seen_ids], [
@@ -1420,7 +1471,7 @@ fn read_scheduled_job_values(
           ])
       }
     }
-    [_, ..] -> Error(error.InvalidConfig("scheduled_jobs entries must be maps"))
+    [_, ..] -> Error(error.InvalidConfig("schedules entries must be maps"))
   }
 }
 
@@ -1429,27 +1480,27 @@ fn resolve_scheduled_job(
   routing: config_types.RoutingConfig,
 ) -> Result(config_types.ScheduledJobConfig, error.ConfigError) {
   use _ <- result.try(reject_schedule_payload_fields(node))
-  use id_raw <- result.try(get_required_string(
-    node,
-    "id",
-    error.InvalidConfig("scheduled_jobs entries require id"),
-  ))
-  let id = normalize_label(id_raw)
-  use _ <- result.try(validate_scheduled_id(id, "scheduled_jobs.id"))
   use workflow_raw <- result.try(get_required_string(
     node,
     "workflow",
-    error.InvalidConfig("scheduled_jobs." <> id <> " requires workflow"),
+    error.InvalidConfig("schedules entries require workflow"),
   ))
   let workflow = normalize_label(workflow_raw)
-  use _ <- result.try(validate_scheduled_id(
-    workflow,
-    "scheduled_jobs." <> id <> ".workflow",
+  use _ <- result.try(validate_scheduled_id(workflow, "schedules.workflow"))
+  use id_option <- result.try(get_optional_string_strict(
+    node,
+    "id",
+    "schedules." <> workflow <> ".id",
   ))
+  let id =
+    id_option
+    |> option.map(normalize_label)
+    |> option.unwrap(workflow)
+  use _ <- result.try(validate_scheduled_id(id, "schedules.id"))
   use enabled_option <- result.try(get_bool_strict(
     node,
     "enabled",
-    "scheduled_jobs." <> id <> ".enabled",
+    "schedules." <> id <> ".enabled",
   ))
   let enabled = enabled_option |> bool_default(True)
   use every_ms <- result.try(resolve_scheduled_every(node, id, enabled))
@@ -1459,7 +1510,7 @@ fn resolve_scheduled_job(
   case enabled && !dict.has_key(routing.workflows, workflow) {
     True ->
       Error(error.InvalidConfig(
-        "scheduled_jobs."
+        "schedules."
         <> id
         <> ".workflow references unknown workflow: "
         <> workflow,
@@ -1492,27 +1543,25 @@ fn resolve_scheduled_every(
   id: String,
   enabled: Bool,
 ) -> Result(Int, error.ConfigError) {
-  case get_string_strict(node, "every", "scheduled_jobs." <> id <> ".every") {
+  case get_string_strict(node, "every", "schedules." <> id <> ".every") {
     Error(err) -> Error(err)
     Ok(None) ->
       case enabled {
         True ->
           Error(error.InvalidConfig(
-            "scheduled_jobs." <> id <> ".every is required when enabled",
+            "schedules." <> id <> ".every is required when enabled",
           ))
         False -> Ok(0)
       }
     Ok(Some(value)) -> {
       use every_ms <- result.try(duration_config.scheduled_every_ms(
         value,
-        "scheduled_jobs." <> id <> ".every",
+        "schedules." <> id <> ".every",
       ))
       case enabled && every_ms < 1000 {
         True ->
           Error(error.InvalidConfig(
-            "scheduled_jobs."
-            <> id
-            <> ".every must be at least 1000ms when enabled",
+            "schedules." <> id <> ".every must be at least 1000ms when enabled",
           ))
         False -> Ok(every_ms)
       }
@@ -1524,9 +1573,7 @@ fn resolve_scheduled_overlap(
   node: yay.Node,
   id: String,
 ) -> Result(config_types.ScheduledOverlap, error.ConfigError) {
-  case
-    get_string_strict(node, "overlap", "scheduled_jobs." <> id <> ".overlap")
-  {
+  case get_string_strict(node, "overlap", "schedules." <> id <> ".overlap") {
     Error(err) -> Error(err)
     Ok(None) -> Ok(config_types.SkipOverlap)
     Ok(Some(value)) ->
@@ -1534,7 +1581,7 @@ fn resolve_scheduled_overlap(
         "skip" -> Ok(config_types.SkipOverlap)
         other ->
           Error(error.InvalidScheduledJobOverlap(
-            "scheduled_jobs."
+            "schedules."
             <> id
             <> ".overlap unsupported value "
             <> other
@@ -1551,13 +1598,13 @@ fn resolve_scheduled_catch_up(
   use catch_up <- result.try(get_bool_strict(
     node,
     "catch_up",
-    "scheduled_jobs." <> id <> ".catch_up",
+    "schedules." <> id <> ".catch_up",
   ))
   case catch_up |> bool_default(False) {
     False -> Ok(False)
     True ->
       Error(error.ScheduledJobCatchUpUnsupported(
-        "scheduled_jobs." <> id <> ".catch_up=true is not supported in the MVP",
+        "schedules." <> id <> ".catch_up=true is not supported in the MVP",
       ))
   }
 }
@@ -1572,7 +1619,7 @@ fn resolve_scheduled_failure(
       resolve_scheduled_on_failure_map(get_map(node, "on_failure"), id)
     Some(_) ->
       Error(error.InvalidConfig(
-        "scheduled_jobs." <> id <> ".on_failure must be a map",
+        "schedules." <> id <> ".on_failure must be a map",
       ))
   }
 }
@@ -1582,26 +1629,34 @@ fn resolve_scheduled_on_failure_map(
   id: String,
 ) -> Result(config_types.ScheduledFailureConfig, error.ConfigError) {
   case get_node(node, "linear") {
-    None -> Ok(default_scheduled_failure_config())
-    Some(yay.NodeMap(_)) -> {
-      use linear <- result.try(resolve_scheduled_linear_failure(
-        get_map(node, "linear"),
-        id,
-      ))
-      Ok(config_types.ScheduledFailureConfig(linear: linear))
-    }
     Some(_) ->
-      Error(error.InvalidConfig(
-        "scheduled_jobs." <> id <> ".on_failure.linear must be a map",
+      Error(config_migration_hint(
+        "schedules." <> id <> ".on_failure.linear",
+        "schedules." <> id <> ".on_failure.task",
       ))
+    None ->
+      case get_node(node, "task") {
+        None -> Ok(default_scheduled_failure_config())
+        Some(yay.NodeMap(_)) -> {
+          use task <- result.try(resolve_scheduled_task_failure(
+            get_map(node, "task"),
+            id,
+          ))
+          Ok(config_types.ScheduledFailureConfig(task: task))
+        }
+        Some(_) ->
+          Error(error.InvalidConfig(
+            "schedules." <> id <> ".on_failure.task must be a map",
+          ))
+      }
   }
 }
 
-fn resolve_scheduled_linear_failure(
+fn resolve_scheduled_task_failure(
   node: yay.Node,
   id: String,
-) -> Result(config_types.ScheduledLinearFailureConfig, error.ConfigError) {
-  let path = "scheduled_jobs." <> id <> ".on_failure.linear"
+) -> Result(config_types.ScheduledTaskFailureConfig, error.ConfigError) {
+  let path = "schedules." <> id <> ".on_failure.task"
   use enabled_option <- result.try(get_bool_strict(
     node,
     "enabled",
@@ -1623,10 +1678,10 @@ fn resolve_scheduled_linear_failure(
   case enabled, state {
     True, None ->
       Error(error.InvalidConfig(
-        path <> ".state is required when Linear failure reporting is enabled",
+        path <> ".state is required when failure task reporting is enabled",
       ))
     _, _ ->
-      Ok(config_types.ScheduledLinearFailureConfig(
+      Ok(config_types.ScheduledTaskFailureConfig(
         enabled: enabled,
         state: state,
         labels: labels |> normalize_string_list,
@@ -1641,16 +1696,21 @@ fn resolve_scheduled_failure_dedupe(
 ) -> Result(config_types.ScheduledFailureDedupe, error.ConfigError) {
   case get_string_strict(node, "dedupe", path <> ".dedupe") {
     Error(err) -> Error(err)
-    Ok(None) -> Ok(config_types.OpenIssuePerJob)
+    Ok(None) -> Ok(config_types.OpenTaskPerSchedule)
     Ok(Some(value)) ->
       case value |> string.trim |> string.lowercase {
-        "open_issue_per_job" -> Ok(config_types.OpenIssuePerJob)
+        "open_task_per_schedule" -> Ok(config_types.OpenTaskPerSchedule)
+        "open_issue_per_job" ->
+          Error(config_migration_hint(
+            path <> ".dedupe: open_issue_per_job",
+            path <> ".dedupe: open_task_per_schedule",
+          ))
         other ->
           Error(error.InvalidConfig(
             path
             <> ".dedupe unsupported value "
             <> other
-            <> "; the MVP accepts only open_issue_per_job",
+            <> "; the MVP accepts only open_task_per_schedule",
           ))
       }
   }
@@ -1676,9 +1736,9 @@ fn reject_schedule_payload_entries(
       {
         True ->
           Error(error.ScheduledJobUnsupportedInputs(
-            "scheduled_jobs."
+            "schedules."
             <> key
-            <> " is intentionally deferred; put job-specific details in workflow YAML, prompt files, scripts, environment, or repository config",
+            <> " is intentionally deferred; put schedule-specific details in workflow YAML, prompt files, scripts, environment, or repository config",
           ))
         False -> reject_schedule_payload_entries(rest)
       }

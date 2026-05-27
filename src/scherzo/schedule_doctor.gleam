@@ -134,7 +134,7 @@ fn diagnostics_for_job(
     workflow_exists_diagnostic(bundle, job),
     interval_diagnostic(job),
     mvp_shape_diagnostic(job),
-    linear_failure_diagnostic(job),
+    failure_task_diagnostic(job),
     reserved_label_diagnostic(job),
     scheduled_template_diagnostic(bundle, job),
   ]
@@ -247,38 +247,36 @@ fn mvp_shape_diagnostic(job: config_types.ScheduledJobConfig) -> Diagnostic {
   )
 }
 
-fn linear_failure_diagnostic(
-  job: config_types.ScheduledJobConfig,
-) -> Diagnostic {
-  let linear = job.on_failure.linear
-  case linear.enabled, linear.state {
+fn failure_task_diagnostic(job: config_types.ScheduledJobConfig) -> Diagnostic {
+  let task = job.on_failure.task
+  case task.enabled, task.state {
     False, _ ->
       Diagnostic(
-        name: "linear_failure_config",
+        name: "failure_task_config",
         severity: Skip,
-        code: "linear_failure_reporting_disabled",
-        message: "Linear failure reporting is disabled; terminal failures remain local only",
+        code: "failure_task_reporting_disabled",
+        message: "failure task reporting is disabled; terminal failures remain local only",
         fields: [#("job_id", job.id)],
       )
     True, Some(state) ->
       Diagnostic(
-        name: "linear_failure_config",
+        name: "failure_task_config",
         severity: Pass,
         code: "ok",
-        message: "Linear failure reporting has a configured triage state and open_issue_per_job dedupe",
+        message: "failure task reporting has a configured triage state and open_task_per_schedule dedupe",
         fields: [
           #("job_id", job.id),
           #("state", state),
-          #("dedupe", dedupe_to_string(linear.dedupe)),
-          #("configured_labels", string.join(linear.labels, with: ",")),
+          #("dedupe", dedupe_to_string(task.dedupe)),
+          #("configured_labels", string.join(task.labels, with: ",")),
         ],
       )
     True, None ->
       Diagnostic(
-        name: "linear_failure_config",
+        name: "failure_task_config",
         severity: Fail,
-        code: "scheduled_linear_state_missing",
-        message: "Linear failure reporting is enabled but no triage state is configured",
+        code: "scheduled_task_state_missing",
+        message: "failure task reporting is enabled but no triage state is configured",
         fields: [#("job_id", job.id)],
       )
   }
@@ -287,14 +285,14 @@ fn linear_failure_diagnostic(
 fn reserved_label_diagnostic(
   job: config_types.ScheduledJobConfig,
 ) -> Diagnostic {
-  let linear = job.on_failure.linear
-  case linear.enabled {
+  let task = job.on_failure.task
+  case task.enabled {
     False ->
       Diagnostic(
         name: "linear_reserved_labels",
         severity: Skip,
-        code: "linear_failure_reporting_disabled",
-        message: "reserved Linear dedupe labels are not needed while failure reporting is disabled",
+        code: "failure_task_reporting_disabled",
+        message: "reserved Linear dedupe labels are not needed while failure task reporting is disabled",
         fields: [#("job_id", job.id)],
       )
     True -> {
@@ -402,7 +400,7 @@ fn overlap_to_string(overlap: config_types.ScheduledOverlap) -> String {
 
 fn dedupe_to_string(dedupe: config_types.ScheduledFailureDedupe) -> String {
   case dedupe {
-    config_types.OpenIssuePerJob -> "open_issue_per_job"
+    config_types.OpenTaskPerSchedule -> "open_task_per_schedule"
   }
 }
 

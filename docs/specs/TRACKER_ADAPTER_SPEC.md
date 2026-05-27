@@ -156,7 +156,7 @@ Capability names in this table are canonical and MUST match the public fields in
 | `routing_metadata` | No | Workflow label routing when workflow label paths are configured | Extracts labels and blocker refs from normalized tasks. |
 | `links` | No | No required startup feature today | Generic link upsert seam for future use. |
 | `handoff` | No | Handoff comments/reporting when handoff comments are enabled | Current Linear path still uses legacy handoff event variants. |
-| `scheduled_failures` | No | Scheduled job failure publication for enabled `scheduled_jobs.<id>.on_failure` | Publication MUST be idempotent by `dedupe_key`. |
+| `scheduled_failures` | No | Scheduled job failure publication for enabled `schedules.<id>.on_failure.task` | Publication MUST be idempotent by `dedupe_key`. |
 | `readiness` | No | Tracker contract/readiness checks when a caller enables `readiness_checks_enabled` | Current Linear contract doctor uses a compatibility path rather than this adapter capability. |
 | `smoke` | No | Tracker smoke checks when a caller enables `smoke_checks_enabled` | Linear exposes this capability; Linear CLI aliases remain. |
 | `attachments` | No | No required startup feature today | Linear attachment upload is still a Linear-only compatibility helper, not this generic capability. |

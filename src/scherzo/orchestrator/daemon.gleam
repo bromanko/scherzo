@@ -319,8 +319,8 @@ fn scheduled_failure_paths(
 ) -> List(String) {
   jobs
   |> list.filter_map(fn(job) {
-    case job.on_failure.linear.enabled {
-      True -> Ok("scheduled_jobs." <> job.id <> ".on_failure")
+    case job.on_failure.task.enabled {
+      True -> Ok("schedules." <> job.id <> ".on_failure.task")
       False -> Error(Nil)
     }
   })
@@ -5462,8 +5462,8 @@ fn begin_scheduled_failure_report_for_job(
   run_root: Option(String),
   session_id: Option(String),
 ) -> State {
-  let linear_config = job.on_failure.linear
-  case linear_config.enabled, linear_config.state {
+  let task_config = job.on_failure.task
+  case task_config.enabled, task_config.state {
     False, _ -> state
     True, None -> {
       log_state(state, "warn", "scheduled_failure_report_skipped", [
@@ -5491,7 +5491,7 @@ fn begin_scheduled_failure_report_for_job(
           dedupe_key: scheduled_failure_dedupe_key(job.id),
           title: "Scheduled workflow failure: " <> job.id,
           body: reason,
-          labels: linear_config.labels,
+          labels: task_config.labels,
           target_state_name: Some(triage_state),
           previous_task_remote_id: scheduled_failure_issue_id_for_state(
             state,
