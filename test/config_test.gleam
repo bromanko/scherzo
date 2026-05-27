@@ -7,6 +7,7 @@ import scherzo/config/types as config_types
 import scherzo/config/ui_server as ui_server_config
 import scherzo/control/file as control_file
 import scherzo/error
+import scherzo/pi/command as pi_command
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
@@ -80,7 +81,7 @@ pub fn default_values_test() {
     == ["Done", "Canceled", "Cancelled", "Duplicate"]
 
   let agent = config.default_agent_config()
-  assert agent.max_concurrent_agents == 10
+  assert agent.max_concurrent_agents == 1
   assert agent.max_turns == 20
   assert agent.max_retry_backoff_ms == 300_000
   assert agent.max_retry_attempts == 5
@@ -107,7 +108,7 @@ pub fn default_values_test() {
 
 pub fn duration_string_fields_parse_to_milliseconds_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\nagent:\n  max_retry_backoff: 5m\npi:\n  turn_timeout: 1h\n  read_timeout: 5s\n  stall_timeout: 0ms\n  ui_request_timeout: 10m\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\nagents:\n  retries:\n    max_backoff: 5m\n  runtime:\n    type: pi\n    turn_timeout: 1h\n    read_timeout: 5s\n    stall_timeout: 0ms\n    ui_request_timeout: 10m\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
@@ -122,27 +123,36 @@ pub fn duration_string_fields_parse_to_milliseconds_test() {
 
 pub fn duration_string_fields_reject_invalid_values_test() {
   let bare_number =
-    invalid_config_message(minimal_front() <> "pi:\n  read_timeout: 5000\n")
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    read_timeout: 5000\n",
+    )
   assert string.contains(bare_number, "duration string")
 
   let invalid_unit =
-    invalid_config_message(minimal_front() <> "pi:\n  turn_timeout: 1d\n")
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    turn_timeout: 1d\n",
+    )
   assert string.contains(invalid_unit, "unit ms, s, m, or h")
 
   let negative_nonnegative_field =
-    invalid_config_message(minimal_front() <> "pi:\n  stall_timeout: -1ms\n")
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    stall_timeout: -1ms\n",
+    )
   assert string.contains(negative_nonnegative_field, "zero or positive")
 
   let zero_positive_field =
     invalid_config_message(
-      minimal_front() <> "agent:\n  max_retry_backoff: 0s\n",
+      minimal_front() <> "agents:\n  retries:\n    max_backoff: 0s\n",
     )
   assert string.contains(zero_positive_field, "must be positive")
 }
 
 pub fn legacy_non_polling_duration_ms_fields_remain_supported_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout_ms: 2345\nagent:\n  max_retry_backoff_ms: 3456\npi:\n  turn_timeout_ms: 4567\n  read_timeout_ms: 5678\n  stall_timeout_ms: 0\n  ui_request_timeout_ms: 6789\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout_ms: 2345\nagents:\n  retries:\n    max_backoff: 3456ms\n  runtime:\n    type: pi\n    turn_timeout: 4567ms\n    read_timeout: 5678ms\n    stall_timeout: 0ms\n    ui_request_timeout: 6789ms\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
@@ -157,7 +167,7 @@ pub fn legacy_non_polling_duration_ms_fields_remain_supported_test() {
 
 pub fn duration_string_fields_take_precedence_over_legacy_ms_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 2s\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout_ms: 999\nagent:\n  max_retry_backoff: 4s\n  max_retry_backoff_ms: 999\npi:\n  turn_timeout: 5s\n  turn_timeout_ms: 999\n  read_timeout: 6s\n  read_timeout_ms: 999\n  stall_timeout: 0ms\n  stall_timeout_ms: 999\n  ui_request_timeout: 7s\n  ui_request_timeout_ms: 999\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 2s\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout_ms: 999\nagents:\n  retries:\n    max_backoff: 4s\n  runtime:\n    type: pi\n    turn_timeout: 5s\n    read_timeout: 6s\n    stall_timeout: 0ms\n    ui_request_timeout: 7s\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
@@ -848,7 +858,7 @@ pub fn hooks_and_agent_limit_validation_test() {
 
   let paused_front =
     minimal_front()
-    <> "agent:\n  max_concurrent_agents: 0\n  max_turns: 1\n  max_retry_attempts: 1\n  max_sessions_per_issue: 1\n  max_concurrent_agents_by_state:\n    todo: 2\n    bad: 0\n"
+    <> "agents:\n  concurrency:\n    default: 0\n    by_state:\n      todo: 2\n      bad: 0\n  max_turns: 1\n  retries:\n    attempts: 1\n  sessions_per_task: 1\n"
   let assert Ok(paused) =
     config.resolve_with_env(
       definition(paused_front),
@@ -867,7 +877,7 @@ pub fn hooks_and_agent_limit_validation_test() {
     )
     == Error(Nil)
 
-  let invalid_front = minimal_front() <> "agent:\n  max_concurrent_agents: -1\n"
+  let invalid_front = minimal_front() <> "agents:\n  concurrency: -1\n"
   let assert Error(_) =
     config.resolve_with_env(
       definition(invalid_front),
@@ -879,7 +889,7 @@ pub fn hooks_and_agent_limit_validation_test() {
 pub fn context_recovery_agent_config_validation_test() {
   let disabled_front =
     minimal_front()
-    <> "agent:\n  context_recovery_max_attempts: 0\n  context_recovery_prompt_char_limit: 1234\n"
+    <> "agents:\n  recovery:\n    attempts: 0\n    prompt_char_limit: 1234\n"
   let assert Ok(disabled) =
     config.resolve_with_env(
       definition(disabled_front),
@@ -891,29 +901,199 @@ pub fn context_recovery_agent_config_validation_test() {
 
   let negative_attempts =
     invalid_config_message(
-      minimal_front() <> "agent:\n  context_recovery_max_attempts: -1\n",
+      minimal_front() <> "agents:\n  recovery:\n    attempts: -1\n",
     )
-  assert string.contains(negative_attempts, "context_recovery_max_attempts")
+  assert string.contains(negative_attempts, "agents.recovery.attempts")
 
   let nonpositive_limit =
     invalid_config_message(
-      minimal_front() <> "agent:\n  context_recovery_prompt_char_limit: 0\n",
+      minimal_front() <> "agents:\n  recovery:\n    prompt_char_limit: 0\n",
     )
-  assert string.contains(nonpositive_limit, "agent limits must be positive")
+  assert string.contains(nonpositive_limit, "agents limits must be positive")
+}
+
+pub fn agent_scalar_concurrency_parses_test() {
+  let front = minimal_front() <> "agents:\n  concurrency: 4\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  assert configured.agent.max_concurrent_agents == 4
+}
+
+pub fn agents_runtime_defaults_persistent_env_and_forbidden_args_test() {
+  let defaults = minimal_front() <> "agents:\n  runtime:\n    type: pi\n"
+  let assert Ok(defaulted) =
+    config.resolve_with_env(definition(defaults), "test/tmp/scherzo.yaml", env)
+  assert defaulted.pi.command
+    == "pi --mode rpc --no-session --rpc-message-updates off"
+  let assert Some(default_argv) = defaulted.pi.argv_command
+  assert default_argv.executable == "pi"
+  assert default_argv.args
+    == ["--mode", "rpc", "--no-session", "--rpc-message-updates", "off"]
+  assert default_argv.env == []
+  assert defaulted.pi.session_persistence.enabled == False
+  let assert Ok(pi_command.ArgvLaunch(
+    default_launch_executable,
+    default_launch_args,
+    default_launch_env,
+  )) = pi_command.build_launch(defaulted.pi, pi_command.FreshNoSession)
+  assert default_launch_executable == "pi"
+  assert default_launch_args
+    == ["--mode", "rpc", "--no-session", "--rpc-message-updates", "off"]
+  assert default_launch_env == []
+
+  let persistent =
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    sessions: persistent\n    pi:\n      executable: scripts/scherzo-pi\n      args: [--flag]\n      env:\n        FOO: bar\n"
+  let assert Ok(configured_persistent) =
+    config.resolve_with_env(
+      definition(persistent),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert configured_persistent.pi.command
+    == "scripts/scherzo-pi --flag --mode rpc --rpc-message-updates off"
+  let assert Some(persistent_argv) = configured_persistent.pi.argv_command
+  assert persistent_argv.executable == "scripts/scherzo-pi"
+  assert persistent_argv.args
+    == ["--flag", "--mode", "rpc", "--rpc-message-updates", "off"]
+  assert persistent_argv.env == [#("FOO", "bar")]
+  assert configured_persistent.pi.session_persistence.enabled == True
+  assert !string.contains(configured_persistent.pi.command, "FOO")
+  assert !string.contains(configured_persistent.pi.command, "bar")
+
+  let assert Ok(pi_command.ArgvLaunch(
+    launch_executable,
+    launch_args,
+    launch_env,
+  )) =
+    pi_command.build_launch(configured_persistent.pi, pi_command.FreshNoSession)
+  assert launch_executable == "scripts/scherzo-pi"
+  assert launch_args
+    == ["--flag", "--mode", "rpc", "--rpc-message-updates", "off"]
+  assert launch_env == [#("FOO", "bar")]
+
+  let quoted =
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    pi:\n      executable: scripts/scherzo pi\n      args:\n        - \"--label=John's task\"\n"
+  let assert Ok(configured_quoted) =
+    config.resolve_with_env(definition(quoted), "test/tmp/scherzo.yaml", env)
+  assert configured_quoted.pi.command
+    == "'scripts/scherzo pi' '--label=John'\\''s task' --mode rpc --no-session --rpc-message-updates off"
+  let assert Some(quoted_argv) = configured_quoted.pi.argv_command
+  assert quoted_argv.executable == "scripts/scherzo pi"
+  assert quoted_argv.args
+    == [
+      "--label=John's task",
+      "--mode",
+      "rpc",
+      "--no-session",
+      "--rpc-message-updates",
+      "off",
+    ]
+}
+
+pub fn agents_runtime_rejects_invalid_type_sessions_and_owned_args_test() {
+  let invalid_type =
+    invalid_config_message(
+      minimal_front() <> "agents:\n  runtime:\n    type: noop\n",
+    )
+  assert string.contains(invalid_type, "agents.runtime.type")
+
+  let invalid_sessions =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    sessions: forever\n",
+    )
+  assert string.contains(invalid_sessions, "agents.runtime.sessions")
+
+  let session_arg =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    pi:\n      args:\n        - --session\n        - session.json\n",
+    )
+  assert string.contains(session_arg, "agents.runtime.pi.args")
+  assert string.contains(session_arg, "--session")
+
+  let session_equals_arg =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    pi:\n      args:\n        - --session=session.json\n",
+    )
+  assert string.contains(session_equals_arg, "--session=session.json")
+
+  let no_session_arg =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    pi:\n      args:\n        - --no-session\n",
+    )
+  assert string.contains(no_session_arg, "--no-session")
+
+  let mode_arg =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    pi:\n      args:\n        - --mode\n        - rpc\n",
+    )
+  assert string.contains(mode_arg, "--mode")
+
+  let mode_equals_arg =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    pi:\n      args:\n        - --mode=rpc\n",
+    )
+  assert string.contains(mode_equals_arg, "--mode=rpc")
+
+  let rpc_updates_arg =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    pi:\n      args:\n        - --rpc-message-updates\n        - on\n",
+    )
+  assert string.contains(rpc_updates_arg, "--rpc-message-updates")
+
+  let rpc_updates_equals_arg =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    pi:\n      args:\n        - --rpc-message-updates=on\n",
+    )
+  assert string.contains(rpc_updates_equals_arg, "--rpc-message-updates=on")
+
+  let unsafe_env_key =
+    invalid_config_message(
+      minimal_front()
+      <> "agents:\n  runtime:\n    type: pi\n    pi:\n      env:\n        BAD-NAME: value\n",
+    )
+  assert string.contains(unsafe_env_key, "agents.runtime.pi.env")
+  assert string.contains(unsafe_env_key, "BAD-NAME")
+}
+
+pub fn old_agent_and_pi_keys_fail_with_migration_hints_test() {
+  let old_agent =
+    invalid_config_message(
+      minimal_front() <> "agent:\n  max_concurrent_agents: 1\n",
+    )
+  assert string.contains(old_agent, "agent.max_concurrent_agents")
+  assert string.contains(old_agent, "agents.concurrency")
+  assert string.contains(old_agent, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let old_pi =
+    invalid_config_message(minimal_front() <> "pi:\n  command: pi --mode rpc\n")
+  assert string.contains(old_pi, "pi.command")
+  assert string.contains(old_pi, "agents.runtime.pi.executable")
+  assert string.contains(old_pi, "Scherzo owns protocol flags")
 }
 
 pub fn pi_validation_and_unknown_keys_ignored_test() {
   let front =
     minimal_front()
-    <> "pi:\n  command: \"custom pi --mode rpc\"\n  compatibility_probe: false\nunknown: ignored\n"
+    <> "agents:\n  runtime:\n    type: pi\n    compatibility_check: false\n    pi:\n      executable: custom-pi\n      args: [--custom]\nunknown: ignored\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
-  assert configured.pi.command == "custom pi --mode rpc"
+  assert configured.pi.command
+    == "custom-pi --custom --mode rpc --no-session --rpc-message-updates off"
   assert configured.pi.compatibility_probe == False
 
   let operator_policy =
     minimal_front()
-    <> "pi:\n  ui_request_policy: operator\n  ui_request_timeout: 1234ms\n"
+    <> "agents:\n  runtime:\n    type: pi\n    ui_requests: operator\n    ui_request_timeout: 1234ms\n"
   let assert Ok(configured_operator_policy) =
     config.resolve_with_env(
       definition(operator_policy),
@@ -925,7 +1105,8 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
   assert configured_operator_policy.pi.ui_request_timeout_ms == 1234
 
   let cancel_policy =
-    minimal_front() <> "pi:\n  ui_request_policy: \" Cancel \"\n"
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    ui_requests: \" Cancel \"\n"
   let assert Ok(configured_cancel_policy) =
     config.resolve_with_env(
       definition(cancel_policy),
@@ -935,7 +1116,8 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
   assert configured_cancel_policy.pi.ui_request_policy == config_types.Cancel
 
   let explicit_timeout =
-    minimal_front() <> "pi:\n  ui_request_timeout: 1234ms\n"
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    ui_request_timeout: 1234ms\n"
   let assert Ok(configured_timeout) =
     config.resolve_with_env(
       definition(explicit_timeout),
@@ -944,7 +1126,9 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
     )
   assert configured_timeout.pi.ui_request_timeout_ms == 1234
 
-  let fail_policy = minimal_front() <> "pi:\n  ui_request_policy: fail\n"
+  let fail_policy =
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    ui_requests: fail\n"
   let assert Ok(configured_fail_policy) =
     config.resolve_with_env(
       definition(fail_policy),
@@ -953,7 +1137,9 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
     )
   assert configured_fail_policy.pi.ui_request_policy == config_types.Fail
 
-  let ignore_policy = minimal_front() <> "pi:\n  ui_request_policy: ignore\n"
+  let ignore_policy =
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    ui_requests: ignore\n"
   let assert Ok(configured_ignore_policy) =
     config.resolve_with_env(
       definition(ignore_policy),
@@ -962,7 +1148,9 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
     )
   assert configured_ignore_policy.pi.ui_request_policy == config_types.Ignore
 
-  let invalid_policy = minimal_front() <> "pi:\n  ui_request_policy: surprise\n"
+  let invalid_policy =
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    ui_requests: surprise\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_policy),
@@ -970,7 +1158,9 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       env,
     )
 
-  let invalid_timeout = minimal_front() <> "pi:\n  ui_request_timeout: 0ms\n"
+  let invalid_timeout =
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    ui_request_timeout: 0ms\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_timeout),
@@ -978,7 +1168,9 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       env,
     )
 
-  let invalid = minimal_front() <> "pi:\n  command: \"\"\n"
+  let invalid =
+    minimal_front()
+    <> "agents:\n  runtime:\n    type: pi\n    pi:\n      executable: \"\"\n"
   let assert Error(_) =
     config.resolve_with_env(definition(invalid), "test/tmp/scherzo.yaml", env)
 }
@@ -1446,8 +1638,7 @@ pub fn reload_state_preserves_last_good_and_blocks_dispatch_test() {
   assert bad_secrets == []
   let assert Some(_) = invalid.last_known_good
 
-  let paused =
-    definition(minimal_front() <> "agent:\n  max_concurrent_agents: 0\n")
+  let paused = definition(minimal_front() <> "agents:\n  concurrency: 0\n")
   let config.ReloadResult(state: reloaded, resolved_secrets: _) =
     config.apply_reload(invalid, paused, "test/tmp/scherzo.yaml", env)
   assert config.can_dispatch(reloaded)

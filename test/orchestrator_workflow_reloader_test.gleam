@@ -23,10 +23,12 @@ tracker:
     every: " <> int.to_string(interval_ms) <> "ms
 workspace:
   root: " <> root <> "
-agent:
-  max_concurrent_agents: 1
-pi:
-  command: fake
+agents:
+  concurrency: 1
+  runtime:
+    type: pi
+    pi:
+      executable: fake
 task_routing:
   labels:
     require_exactly_one: false

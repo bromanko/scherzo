@@ -212,35 +212,7 @@ fn probe_for_config(
   config: config_types.EffectiveConfig,
   workspace_path: String,
 ) -> Result(Nil, error.PiRpcError) {
-  case config.pi.session_persistence.enabled {
-    False ->
-      probe.probe(config.pi.command, workspace_path, config.pi.read_timeout_ms)
-    True ->
-      case pi_command.build_launch(config.pi, pi_command.FreshPersistent) {
-        Error(_) -> Error(error.PiProtocolError("invalid persistent pi launch"))
-        Ok(spec) ->
-          case
-            client.launch_spec(
-              spec,
-              workspace_path,
-              "scherzo compatibility probe",
-              False,
-              config.pi.read_timeout_ms,
-            )
-          {
-            Ok(session) -> {
-              case
-                client.get_session_stats(session, config.pi.read_timeout_ms)
-              {
-                Ok(#(session, _)) -> client.terminate(session)
-                Error(err) ->
-                  Error(client.terminate_after_failure(session, err))
-              }
-            }
-            Error(err) -> Error(err)
-          }
-      }
-  }
+  probe.probe_config(config.pi, workspace_path, config.pi.read_timeout_ms)
 }
 
 fn run_prepared(

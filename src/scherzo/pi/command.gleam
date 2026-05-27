@@ -24,7 +24,7 @@ pub fn build_launch(
   mode: LaunchMode,
 ) -> Result(LaunchSpec, error.ConfigError) {
   case mode {
-    FreshNoSession -> Ok(ShellLaunch(pi.command))
+    FreshNoSession -> fresh_no_session_launch(pi)
     FreshPersistent -> argv_launch(pi.argv_command)
     ContinueSession(session_file) -> {
       let session_file = string.trim(session_file)
@@ -53,8 +53,24 @@ pub fn build_launch(
   }
 }
 
+fn fresh_no_session_launch(
+  pi: config_types.PiConfig,
+) -> Result(LaunchSpec, error.ConfigError) {
+  case pi.argv_command {
+    None -> Ok(ShellLaunch(pi.command))
+    Some(_) -> argv_launch_with_session_check(pi.argv_command, False)
+  }
+}
+
 fn argv_launch(
   argv_command: Option(config_types.PiArgvCommand),
+) -> Result(LaunchSpec, error.ConfigError) {
+  argv_launch_with_session_check(argv_command, True)
+}
+
+fn argv_launch_with_session_check(
+  argv_command: Option(config_types.PiArgvCommand),
+  reject_session_flags: Bool,
 ) -> Result(LaunchSpec, error.ConfigError) {
   case argv_command {
     None ->
@@ -66,7 +82,7 @@ fn argv_launch(
             "pi.session_persistence requires pi.argv executable to be non-empty",
           ))
         False ->
-          case has_forbidden_session_flag(argv.args) {
+          case reject_session_flags && has_forbidden_session_flag(argv.args) {
             True ->
               Error(error.InvalidConfig(
                 "pi.session_persistence requires pi.argv without --session or --no-session",
@@ -82,6 +98,7 @@ fn has_forbidden_session_flag(args: List(String)) -> Bool {
     [] -> False
     [arg, ..rest] ->
       arg == "--session"
+      || string.starts_with(arg, "--session=")
       || arg == "--no-session"
       || has_forbidden_session_flag(rest)
   }

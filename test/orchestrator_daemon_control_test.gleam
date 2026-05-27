@@ -62,12 +62,15 @@ tracker:
     terminal: [Done]
 workspace:
   root: " <> root <> "
-agent:
-  max_concurrent_agents: " <> int_to_string(max_concurrent_agents) <> "
-  max_retry_attempts: " <> int_to_string(max_retry_attempts) <> "
-  max_sessions_per_issue: " <> int_to_string(max_sessions_per_issue) <> "
-pi:
-  command: fake
+agents:
+  concurrency: " <> int_to_string(max_concurrent_agents) <> "
+  sessions_per_task: " <> int_to_string(max_sessions_per_issue) <> "
+  retries:
+    attempts: " <> int_to_string(max_retry_attempts) <> "
+  runtime:
+    type: pi
+    pi:
+      executable: fake
 task_routing:
   labels:
     require_exactly_one: false

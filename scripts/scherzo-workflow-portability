@@ -96,12 +96,8 @@ def rewrite_config(repo_root: Path, stage_root: Path) -> Path:
 
     required_replacements = [
         (
-            '  command: \'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi"\'',
-            "  command: 'exec pi'",
-        ),
-        (
-            '    - \'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi" "$@"\'',
-            '    - \'exec pi "$@"\'',
+            '        - \'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi" "$@"\'',
+            '        - \'exec pi "$@"\'',
         ),
     ]
     for old, new in required_replacements:

@@ -67,12 +67,15 @@ tracker:
     terminal: [Done]
 workspace:
   root: " <> root <> "
-agent:
-  max_concurrent_agents: 1
-  max_retry_attempts: 3
-  max_sessions_per_issue: 2
-pi:
-  command: fake
+agents:
+  concurrency: 1
+  sessions_per_task: 2
+  retries:
+    attempts: 3
+  runtime:
+    type: pi
+    pi:
+      executable: fake
 task_routing:
   labels:
     require_exactly_one: false

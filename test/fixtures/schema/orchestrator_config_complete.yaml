@@ -22,31 +22,33 @@ hooks:
   before_run: test -d .git
   after_run: echo done
   timeout: 90s
-agent:
-  max_concurrent_agents: 3
+agents:
+  concurrency:
+    default: 3
+    by_state:
+      todo: 1
   max_turns: 12
-  max_retry_backoff: 1m
-  max_retry_attempts: 2
-  max_sessions_per_issue: 2
-  max_concurrent_agents_by_state:
-    todo: 1
-pi:
-  command: pi --mode rpc --no-session --rpc-message-updates off
-  argv: [pi, "--mode", rpc, "--rpc-message-updates", "off"]
-  argv_env:
-    PI_LOG: debug
-  turn_timeout: 10m
-  read_timeout: 7s
-  stall_timeout: 2m
-  auto_retry: false
-  ui_request_policy: operator
-  ui_request_timeout: 10s
-  compatibility_probe: false
-  session_persistence:
-    enabled: true
-    recovery_prompt: Resume safely.
+  sessions_per_task: 2
   model: github-copilot/gpt-5.1-codex
   thinking: high
+  retries:
+    max_backoff: 1m
+    attempts: 2
+  runtime:
+    type: pi
+    sessions: persistent
+    pi:
+      executable: pi
+      args: []
+      env:
+        PI_LOG: debug
+    turn_timeout: 10m
+    read_timeout: 7s
+    stall_timeout: 2m
+    auto_retry: false
+    ui_requests: operator
+    ui_request_timeout: 10s
+    compatibility_check: false
 handoff:
   enabled: true
   comment_on_claim: true

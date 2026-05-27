@@ -40,20 +40,17 @@ resolve_pi_bin() {
 pi_bin=$(resolve_pi_bin)
 
 run_pi() {
-  if [ "${SCHERZO_PI_SESSION_PERSISTENCE:-0}" = "1" ]; then
-    exec "$pi_bin" "$@" --rpc-message-updates off
-  fi
-  exec "$pi_bin" "$@" --no-session --rpc-message-updates off
+  exec "$pi_bin" "$@"
 }
 
 case "$cwd" in
   */.scherzo/workspaces/research/*)
-    run_pi --model "$research_model" --mode rpc "$@"
+    run_pi --model "$research_model" "$@"
     ;;
   */.scherzo/workspaces/execplan/*|*/.scherzo/workspaces/execplan-revision/*|*/.scherzo/workspaces/execplan-implementation/*)
-    run_pi --model "$execplan_model" --mode rpc "$@"
+    run_pi --model "$execplan_model" "$@"
     ;;
   *)
-    run_pi --mode rpc "$@"
+    run_pi "$@"
     ;;
 esac
