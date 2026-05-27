@@ -198,7 +198,7 @@ pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test(
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: driver\n  profiles:\n    driver:\n      driver:\n        command: scripts/driver\ntask_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Triage\n    partial_success: Triage\nworkflows:\n    implementation: workflows/implementation.yaml\n    maintenance: workflows/maintenance.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: driver\n  drivers:\n    driver:\n      type: custom\n      command: scripts/driver\ntask_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Triage\n    partial_success: Triage\nworkflows:\n    implementation: workflows/implementation.yaml\n    maintenance: workflows/maintenance.yaml\n",
     )
 
   let assert Ok(bundle) =
@@ -638,7 +638,7 @@ pub fn scheduled_workflow_rejects_issue_context_references_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    repair: workflows/repair.yaml\nscheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    repair: workflows/repair.yaml\nschedules:\n  - id: repair\n    workflow: repair\n    every: 15m\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)

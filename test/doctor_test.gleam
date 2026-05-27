@@ -143,6 +143,27 @@ pub fn human_report_is_readable_test() {
   assert string.contains(output, "Not ready.")
 }
 
+pub fn human_report_scheduled_jobs_remediation_uses_current_config_keys_test() {
+  let report =
+    doctor.Report([
+      doctor.CheckResult(
+        check: doctor.ScheduledJobs,
+        status: doctor.Fail,
+        code: "invalid_scheduled_job_interval",
+        message: "bad schedule",
+        fields: [],
+      ),
+    ])
+  let output = doctor.human_report(report, None)
+  assert string.contains(
+    output,
+    "Confirm schedules entries reference existing workflows",
+  )
+  assert string.contains(output, "schedules[].on_failure.task.enabled")
+  assert !string.contains(output, "Confirm scheduled_jobs entries")
+  assert !string.contains(output, "on_failure.linear")
+}
+
 pub fn result_events_and_log_fields_are_stable_test() {
   let result =
     doctor.CheckResult(

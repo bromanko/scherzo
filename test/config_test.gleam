@@ -1556,11 +1556,11 @@ pub fn linear_contract_rejects_invalid_values_test() {
     )
 }
 
-pub fn scheduled_jobs_parse_defaults_and_linear_failure_config_test() {
+pub fn schedules_parse_defaults_test() {
   let front =
     minimal_front()
     <> "workflows:\n    pr-conflict-repair: workflows/pr-conflict-repair.yaml\n"
-    <> "scheduled_jobs:\n  - id: pr-conflict-repair\n    workflow: pr-conflict-repair\n    every: 15m\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:pr-conflict-repair\n"
+    <> "schedules:\n  - workflow: pr-conflict-repair\n    every: 15m\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       definition(front),
@@ -1574,20 +1574,45 @@ pub fn scheduled_jobs_parse_defaults_and_linear_failure_config_test() {
   assert job.every_ms == 900_000
   assert job.overlap == config_types.SkipOverlap
   assert job.catch_up == False
-  let config_types.ScheduledFailureConfig(linear: linear) = job.on_failure
-  assert linear.enabled == True
-  assert linear.state == Some("Triage")
-  assert linear.labels == ["job:pr-conflict-repair"]
-  assert linear.dedupe == config_types.OpenIssuePerJob
+  let config_types.ScheduledFailureConfig(task: task) = job.on_failure
+  assert task.enabled == False
+  assert task.state == None
+  assert task.labels == []
+  assert task.dedupe == config_types.OpenTaskPerSchedule
 }
 
-pub fn scheduled_jobs_reject_invalid_duration_and_unsupported_modes_test() {
+pub fn schedules_parse_explicit_options_and_failure_task_config_test() {
+  let front =
+    minimal_front()
+    <> "workflows:\n    pr-conflict-repair: workflows/pr-conflict-repair.yaml\n"
+    <> "schedules:\n  - id: nightly-repair\n    workflow: pr-conflict-repair\n    enabled: true\n    every: 15m\n    overlap: skip\n    catch_up: false\n    on_failure:\n      task:\n        enabled: true\n        state: Triage\n        labels:\n          - job:pr-conflict-repair\n        dedupe: open_task_per_schedule\n"
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let assert [job] = orchestrator.scheduled_jobs
+  assert job.id == "nightly-repair"
+  assert job.workflow == "pr-conflict-repair"
+  assert job.enabled == True
+  assert job.every_ms == 900_000
+  assert job.overlap == config_types.SkipOverlap
+  assert job.catch_up == False
+  let config_types.ScheduledFailureConfig(task: task) = job.on_failure
+  assert task.enabled == True
+  assert task.state == Some("Triage")
+  assert task.labels == ["job:pr-conflict-repair"]
+  assert task.dedupe == config_types.OpenTaskPerSchedule
+}
+
+pub fn schedules_reject_invalid_duration_and_unsupported_modes_test() {
   let base =
     minimal_front() <> "workflows:\n    repair: workflows/repair.yaml\n"
 
   let invalid_duration =
     base
-    <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 500ms\n"
+    <> "schedules:\n  - id: repair\n    workflow: repair\n    every: 500ms\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       definition(invalid_duration),
@@ -1597,7 +1622,7 @@ pub fn scheduled_jobs_reject_invalid_duration_and_unsupported_modes_test() {
 
   let catch_up =
     base
-    <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n    catch_up: true\n"
+    <> "schedules:\n  - id: repair\n    workflow: repair\n    every: 15m\n    catch_up: true\n"
   let assert Error(error.ScheduledJobCatchUpUnsupported(_)) =
     config.resolve_orchestrator_root(
       definition(catch_up),
@@ -1607,7 +1632,7 @@ pub fn scheduled_jobs_reject_invalid_duration_and_unsupported_modes_test() {
 
   let overlap =
     base
-    <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n    overlap: queue\n"
+    <> "schedules:\n  - id: repair\n    workflow: repair\n    every: 15m\n    overlap: queue\n"
   let assert Error(error.InvalidScheduledJobOverlap(_)) =
     config.resolve_orchestrator_root(
       definition(overlap),
@@ -1616,11 +1641,11 @@ pub fn scheduled_jobs_reject_invalid_duration_and_unsupported_modes_test() {
     )
 }
 
-pub fn scheduled_jobs_reject_unknown_workflow_and_payload_fields_test() {
+pub fn schedules_reject_unknown_workflow_and_payload_fields_test() {
   let unknown_workflow =
     minimal_front()
     <> "workflows:\n    repair: workflows/repair.yaml\n"
-    <> "scheduled_jobs:\n  - id: nightly\n    workflow: missing\n    every: 15m\n"
+    <> "schedules:\n  - id: nightly\n    workflow: missing\n    every: 15m\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       definition(unknown_workflow),
@@ -1631,7 +1656,7 @@ pub fn scheduled_jobs_reject_unknown_workflow_and_payload_fields_test() {
   let payload =
     minimal_front()
     <> "workflows:\n    repair: workflows/repair.yaml\n"
-    <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n    vars:\n      key: value\n"
+    <> "schedules:\n  - id: repair\n    workflow: repair\n    every: 15m\n    vars:\n      key: value\n"
   let assert Error(error.ScheduledJobUnsupportedInputs(message)) =
     config.resolve_orchestrator_root(
       definition(payload),
@@ -1639,6 +1664,76 @@ pub fn scheduled_jobs_reject_unknown_workflow_and_payload_fields_test() {
       env,
     )
   assert string.contains(message, "intentionally deferred")
+}
+
+pub fn schedules_and_artifacts_old_keys_fail_with_migration_hints_test() {
+  let base =
+    minimal_front() <> "workflows:\n    repair: workflows/repair.yaml\n"
+
+  let assert Error(error.InvalidConfig(old_schedule)) =
+    config.resolve_orchestrator_root(
+      definition(
+        base <> "scheduled_jobs:\n  - workflow: repair\n    every: 15m\n",
+      ),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert string.contains(old_schedule, "scheduled_jobs")
+  assert string.contains(old_schedule, "schedules")
+  assert string.contains(old_schedule, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let assert Error(error.InvalidConfig(old_failure_task)) =
+    config.resolve_orchestrator_root(
+      definition(
+        base
+        <> "schedules:\n  - workflow: repair\n    every: 15m\n    on_failure:\n      linear:\n        enabled: true\n",
+      ),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert string.contains(old_failure_task, "on_failure.linear")
+  assert string.contains(old_failure_task, "on_failure.task")
+
+  let assert Error(error.InvalidConfig(old_dedupe)) =
+    config.resolve_orchestrator_root(
+      definition(
+        base
+        <> "schedules:\n  - workflow: repair\n    every: 15m\n    on_failure:\n      task:\n        enabled: true\n        state: Triage\n        dedupe: open_issue_per_job\n",
+      ),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert string.contains(old_dedupe, "open_issue_per_job")
+  assert string.contains(old_dedupe, "open_task_per_schedule")
+
+  let assert Error(error.InvalidConfig(old_limits)) =
+    config.resolve_orchestrator_root(
+      definition(
+        base
+        <> "artifact_limits:\n  command_stream_max_chars: 123\n  template_field_max_chars: 456\n  workflow_summary_max_chars: 789\n",
+      ),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert string.contains(old_limits, "artifact_limits.command_stream_max_chars")
+  assert string.contains(old_limits, "artifacts.limits.command_output_chars")
+
+  let assert Error(error.InvalidConfig(old_limit_field)) =
+    config.resolve_orchestrator_root(
+      definition(
+        base <> "artifacts:\n  limits:\n    command_stream_max_chars: 123\n",
+      ),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    old_limit_field,
+    "artifacts.limits.command_stream_max_chars",
+  )
+  assert string.contains(
+    old_limit_field,
+    "artifacts.limits.command_output_chars",
+  )
 }
 
 pub fn reload_state_preserves_last_good_and_blocks_dispatch_test() {

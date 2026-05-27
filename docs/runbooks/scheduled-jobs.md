@@ -4,17 +4,16 @@ Scherzo scheduled jobs run configured workflow DAGs on fixed intervals without c
 
 ## MVP configuration shape
 
-Add `scheduled_jobs` at the top level of `scherzo.yaml`. The MVP supports fixed intervals only, skips overlaps, does not catch up missed intervals, and does not support schedule-level `input`, `vars`, or payload blobs. Put job-specific details in workflow YAML, prompt files, scripts, environment, or repository config.
+Add `schedules` at the top level of `scherzo.yaml`. The MVP supports fixed intervals only, skips overlaps, does not catch up missed intervals, and does not support schedule-level `input`, `vars`, or payload blobs. Put schedule-specific details in workflow YAML, prompt files, scripts, environment, or repository config.
 
 This current conflict-management example schedules the GitHub PR conflict scout. The scout discovers conflicted same-repository PRs and creates normal resolver issues labeled `workflow:merge-conflict-resolution`; the resolver remains an issue-dispatched workflow and is not itself scheduled.
 
 ```yaml
-routing:
-  workflows:
-    merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
-    github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
+workflows:
+  merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
+  github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
 
-scheduled_jobs:
+schedules:
   - id: github-pr-conflict-scout
     workflow: github-pr-conflict-scout
     enabled: false
@@ -22,15 +21,15 @@ scheduled_jobs:
     overlap: skip
     catch_up: false
     on_failure:
-      linear:
+      task:
         enabled: true
         state: Triage
         labels:
           - job:github-pr-conflict-scout
-        dedupe: open_issue_per_job
+        dedupe: open_task_per_schedule
 ```
 
-Start public or copied configs with `enabled: false` until `SCHERZO_GITHUB_REPO`, the Linear project slug, GitHub credentials if needed, and the resolver workflow label are configured. If tracker workflow-label enforcement is enabled, include `merge-conflict-resolution` in `linear_contract.workflow_labels` but do not include `github-pr-conflict-scout`; scheduled workflows are started by `scheduled_jobs`, not tracker labels. Only trusted operators or automation should be able to apply the resolver workflow label because that workflow can publish the validated conflict resolution. The checked-in example config uses the same shape in `examples/scherzo.yaml`.
+Start public or copied configs with `enabled: false` until `SCHERZO_GITHUB_REPO`, the Linear project slug, GitHub credentials if needed, and the resolver workflow label are configured. If tracker workflow-label enforcement is enabled, include `merge-conflict-resolution` in `linear_contract.workflow_labels` but do not include `github-pr-conflict-scout`; scheduled workflows are started by `schedules`, not tracker labels. Only trusted operators or automation should be able to apply the resolver workflow label because that workflow can publish the validated conflict resolution. The checked-in example config uses the same shape in `examples/scherzo.yaml`.
 
 The public example defaults to GitHub API conflict detection, caps each run at `SCHERZO_CONFLICT_MAX_OPEN_PRS` open PRs (`100` by default), and passes `--skip-local-preflight` so scheduled intervals do not perform per-PR git fetch/merge preflight by default. For known-small repositories where local merge preflight is acceptable, set `SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT=true`; the command changes to `repo_root` first so the helper can read the repository origin before it performs temporary-directory git preflight work.
 
@@ -49,7 +48,7 @@ To adopt it in another Scherzo-managed GitHub repository:
 
 The resolver's generic helper validates conflict-specific invariants only: unresolved conflict markers, allowed non-conflicted file drift, mechanical-edit manifests, and the required resolution summary. Project validation is deliberately outside the helper so each repository can define its own command step.
 
-When `on_failure.linear.enabled: true`, the scheduler also applies reserved Linear labels `scherzo:scheduled` and `scherzo:scheduled-job:<job-id>` and writes the marker `<!-- scherzo-dedupe: scheduled-job:<job-id> -->` into the failure task body/comments. Do not rely on configured labels for dedupe.
+When `on_failure.task.enabled: true`, the scheduler also applies reserved Linear labels `scherzo:scheduled` and `scherzo:scheduled-job:<job-id>` and writes the marker `<!-- scherzo-dedupe: scheduled-job:<job-id> -->` into the failure task body/comments. Do not rely on configured labels for dedupe.
 
 ## Workflow and command shape
 
@@ -97,7 +96,7 @@ Useful scheduled variables include `{{ scheduled_job.id }}`, `{{ scheduled_job.w
 
 ## Rollout
 
-Start with `enabled: false` or `on_failure.linear.enabled: false` while validating local behavior. The current production `scheduled_failures` capability is provided by the Linear tracker adapter. Use a conservative interval such as `15m`; the MVP rejects `catch_up: true`, `overlap: queue`, `overlap: cancel`, and intervals below one second. Make scripts idempotent because retries and daemon restarts can run the same due interval more than once.
+Start with `enabled: false` or `on_failure.task.enabled: false` while validating local behavior. The current production `scheduled_failures` capability is provided by the Linear tracker adapter. Use a conservative interval such as `15m`; the MVP rejects `catch_up: true`, `overlap: queue`, `overlap: cancel`, and intervals below one second. Make scripts idempotent because retries and daemon restarts can run the same due interval more than once.
 
 After reload or daemon start, inspect local state:
 

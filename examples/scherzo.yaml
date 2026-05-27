@@ -64,7 +64,7 @@ workflows:
   implementation: workflows/implementation.yaml
   merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
   github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
-scheduled_jobs:
+schedules:
   # Disabled by default because the scout can create Linear resolver issues.
   # Set SCHERZO_GITHUB_REPO and SCHERZO_LINEAR_PROJECT_SLUG, then flip to true.
   # The scout scans up to SCHERZO_CONFLICT_MAX_OPEN_PRS open PRs (default 100),
@@ -77,16 +77,17 @@ scheduled_jobs:
     overlap: skip
     catch_up: false
     on_failure:
-      linear:
+      task:
         enabled: true
         state: Triage
         labels:
           - job:github-pr-conflict-scout
-        dedupe: open_issue_per_job
-artifact_limits:
-  command_stream_max_chars: 20000
-  template_field_max_chars: 8000
-  workflow_summary_max_chars: 20000
+        dedupe: open_task_per_schedule
+artifacts:
+  limits:
+    command_output_chars: 20000
+    template_field_chars: 8000
+    workflow_summary_chars: 20000
 linear_contract:
   enabled: false
   workflow_label_prefix: "workflow:"

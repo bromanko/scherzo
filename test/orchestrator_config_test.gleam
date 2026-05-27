@@ -76,6 +76,10 @@ pub fn simplified_minimal_root_config_loads_with_defaults_test() {
   assert orchestrator.effective.linear_contract.enforce_issue_workflow_labels
     == True
   assert orchestrator.effective.linear_contract.workflow_labels == ["research"]
+  assert orchestrator.artifact_limits.command_stream_max_chars == 20_000
+  assert orchestrator.artifact_limits.template_field_max_chars == 8000
+  assert orchestrator.artifact_limits.workflow_summary_max_chars == 20_000
+  assert orchestrator.scheduled_jobs == []
 }
 
 pub fn task_routing_labels_overrides_linear_contract_defaults_test() {
@@ -102,7 +106,7 @@ pub fn task_routing_labels_overrides_linear_contract_defaults_test() {
 
 pub fn orchestrator_config_resolves_routing_and_driver_profile_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/scherzo-workspace-noop\n      timeout: 1234ms\nworkflows:\n    implementation: workflows/implementation.yaml\nartifact_limits:\n  command_stream_max_chars: 111\n  template_field_max_chars: 222\n  workflow_summary_max_chars: 333\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/scherzo-workspace-noop\n      timeout: 1234ms\nworkflows:\n    implementation: workflows/implementation.yaml\nartifacts:\n  limits:\n    command_output_chars: 111\n    template_field_chars: 222\n    workflow_summary_chars: 333\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(source),
@@ -509,7 +513,7 @@ pub fn orchestrator_config_accepts_matching_linear_contract_labels_test() {
 
 pub fn orchestrator_config_allows_scheduled_only_routes_outside_linear_contract_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n    scheduled-maintenance: workflows/scheduled-maintenance.yaml\nscheduled_jobs:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\nlinear_contract:\n  workflow_labels: [implementation]\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n    scheduled-maintenance: workflows/scheduled-maintenance.yaml\nschedules:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\nlinear_contract:\n  workflow_labels: [implementation]\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(source),

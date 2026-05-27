@@ -502,7 +502,12 @@ pub fn schedules_doctor_reports_config_and_linear_label_checks_test() {
   assert string.contains(transcript, "schedule doctor: nightly")
   assert string.contains(transcript, "config_load")
   assert string.contains(transcript, "workflow_exists")
-  assert string.contains(transcript, "linear_failure_config")
+  assert string.contains(transcript, "failure_task_config")
+  assert string.contains(
+    transcript,
+    "failure task reporting has a configured triage state and open_task_per_schedule dedupe",
+  )
+  assert string.contains(transcript, "dedupe=open_task_per_schedule")
   assert string.contains(transcript, "linear_reserved_labels")
   assert string.contains(transcript, "scherzo:scheduled-job:nightly")
   assert string.contains(transcript, "scheduled_template_context")
@@ -1588,7 +1593,7 @@ fn write_schedule_doctor_config(dir: String, prompt: String) -> String {
       config_path,
       "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
         <> driver_command
-        <> "\n      timeout: 60s\nworkflows:\n    nightly: workflows/nightly.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\nscheduled_jobs:\n  - id: nightly\n    workflow: nightly\n    enabled: true\n    every: 15m\n    overlap: skip\n    catch_up: false\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:nightly\n        dedupe: open_issue_per_job\n",
+        <> "\n      timeout: 60s\nworkflows:\n    nightly: workflows/nightly.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\nschedules:\n  - id: nightly\n    workflow: nightly\n    enabled: true\n    every: 15m\n    overlap: skip\n    catch_up: false\n    on_failure:\n      task:\n        enabled: true\n        state: Triage\n        labels:\n          - job:nightly\n        dedupe: open_task_per_schedule\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
