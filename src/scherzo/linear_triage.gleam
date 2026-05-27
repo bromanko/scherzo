@@ -1,5 +1,4 @@
-import gleam/option.{type Option, None, Some}
-import gleam/string
+import gleam/option.{None, Some}
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
@@ -59,8 +58,9 @@ fn report_invalid_workflow(
   violation: workflow_policy.IssueWorkflowViolation,
 ) -> Result(InvalidWorkflowReportOutcome, error.TrackerError) {
   let comment_enabled = contract_config.comment_on_invalid_workflow
-  let state_id = normalized_state_id(contract_config.invalid_workflow_state_id)
-  case comment_enabled, state_id {
+  let state_target =
+    config_types.normalized_invalid_workflow_state_target(contract_config)
+  case comment_enabled, state_target {
     False, None -> Ok(InvalidWorkflowReportNoop)
     True, None -> {
       use _ <- try_tracker(post_comment(
@@ -72,7 +72,13 @@ fn report_invalid_workflow(
       ))
       Ok(InvalidWorkflowReportComment)
     }
-    False, Some(state_id) -> {
+    False, Some(state_target) -> {
+      use state_id <- try_tracker(resolve_state_target(
+        tracker_config,
+        transport,
+        issue.id,
+        state_target,
+      ))
       use _ <- try_tracker(update_state(
         tracker_config,
         transport,
@@ -81,13 +87,19 @@ fn report_invalid_workflow(
       ))
       Ok(InvalidWorkflowReportState)
     }
-    True, Some(state_id) -> {
+    True, Some(state_target) -> {
       use _ <- try_tracker(post_comment(
         tracker_config,
         contract_config,
         transport,
         issue,
         violation,
+      ))
+      use state_id <- try_tracker(resolve_state_target(
+        tracker_config,
+        transport,
+        issue.id,
+        state_target,
       ))
       use _ <- try_tracker(update_state(
         tracker_config,
@@ -137,17 +149,53 @@ fn update_state(
   linear.parse_mutation_response(response, "issueUpdate")
 }
 
-fn normalized_state_id(value: Option(String)) -> Option(String) {
-  case value {
-    None -> None
-    Some(value) -> {
-      let value = string.trim(value)
-      case value == "" {
-        True -> None
-        False -> Some(value)
-      }
-    }
+fn resolve_state_target(
+  tracker_config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  state_target: config_types.InvalidWorkflowStateTarget,
+) -> Result(String, error.TrackerError) {
+  case state_target {
+    config_types.InvalidWorkflowStateId(state_id) -> Ok(state_id)
+    config_types.InvalidWorkflowStateName(name) ->
+      resolve_state_name(tracker_config, transport, issue_id, name)
   }
+}
+
+fn resolve_state_name(
+  tracker_config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  name: String,
+) -> Result(String, error.TrackerError) {
+  use request <- try_tracker(linear.build_issue_team_states_request(
+    tracker_config,
+    issue_id,
+  ))
+  use response <- try_tracker(transport(request))
+  use states <- try_tracker(linear.parse_issue_team_states_response(response))
+  case linear.resolve_state_name(states, name) {
+    Ok(state_id) -> Ok(state_id)
+    Error(reason) ->
+      Error(invalid_workflow_state_resolution_error(name, reason))
+  }
+}
+
+fn invalid_workflow_state_resolution_error(
+  name: String,
+  reason: linear.StateNameResolutionError,
+) -> error.TrackerError {
+  let reason_text = case reason {
+    linear.StateNameNotFound -> "not found"
+    linear.StateNameAmbiguous -> "ambiguous"
+  }
+  error.LinearApiRequest(
+    "configured invalid workflow state "
+    <> name
+    <> " is "
+    <> reason_text
+    <> "; run scherzo doctor --check tracker-contract",
+  )
 }
 
 fn try_tracker(

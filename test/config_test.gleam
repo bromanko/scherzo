@@ -33,11 +33,11 @@ fn definition(front: String) -> yay.Node {
 }
 
 fn minimal_front() -> String {
-  "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
+  "tracker:\n  linear:\n    project: TEST\nhooks:\n  before_run: test -d .git\n"
 }
 
 fn tracker_validation_front(tracker_fields: String) -> String {
-  "tracker:\n  kind: linear\n  project_slug: TEST\n"
+  "tracker:\n  linear:\n    project: TEST\n"
   <> tracker_fields
   <> "hooks:\n  before_run: test -d .git\n"
 }
@@ -77,7 +77,7 @@ pub fn default_values_test() {
     == ["Todo", "In Progress"]
   assert issue_state.to_strings(tracker.dispatch_states) == ["Todo"]
   assert issue_state.to_strings(tracker.terminal_states)
-    == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    == ["Done", "Canceled", "Cancelled", "Duplicate"]
 
   let agent = config.default_agent_config()
   assert agent.max_concurrent_agents == 10
@@ -107,7 +107,7 @@ pub fn default_values_test() {
 
 pub fn duration_string_fields_parse_to_milliseconds_test() {
   let front =
-    "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\nagent:\n  max_retry_backoff: 5m\npi:\n  turn_timeout: 1h\n  read_timeout: 5s\n  stall_timeout: 0ms\n  ui_request_timeout: 10m\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\nagent:\n  max_retry_backoff: 5m\npi:\n  turn_timeout: 1h\n  read_timeout: 5s\n  stall_timeout: 0ms\n  ui_request_timeout: 10m\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
@@ -140,13 +140,13 @@ pub fn duration_string_fields_reject_invalid_values_test() {
   assert string.contains(zero_positive_field, "must be positive")
 }
 
-pub fn legacy_duration_ms_fields_remain_supported_test() {
+pub fn legacy_non_polling_duration_ms_fields_remain_supported_test() {
   let front =
-    "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\npolling:\n  interval_ms: 1234\nhooks:\n  before_run: test -d .git\n  timeout_ms: 2345\nagent:\n  max_retry_backoff_ms: 3456\npi:\n  turn_timeout_ms: 4567\n  read_timeout_ms: 5678\n  stall_timeout_ms: 0\n  ui_request_timeout_ms: 6789\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout_ms: 2345\nagent:\n  max_retry_backoff_ms: 3456\npi:\n  turn_timeout_ms: 4567\n  read_timeout_ms: 5678\n  stall_timeout_ms: 0\n  ui_request_timeout_ms: 6789\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
-  assert configured.polling.interval_ms == 1234
+  assert configured.polling.interval_ms == 45_000
   assert configured.hooks.timeout_ms == 2345
   assert configured.agent.max_retry_backoff_ms == 3456
   assert configured.pi.turn_timeout_ms == 4567
@@ -157,7 +157,7 @@ pub fn legacy_duration_ms_fields_remain_supported_test() {
 
 pub fn duration_string_fields_take_precedence_over_legacy_ms_test() {
   let front =
-    "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\npolling:\n  interval: 2s\n  interval_ms: 999\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout_ms: 999\nagent:\n  max_retry_backoff: 4s\n  max_retry_backoff_ms: 999\npi:\n  turn_timeout: 5s\n  turn_timeout_ms: 999\n  read_timeout: 6s\n  read_timeout_ms: 999\n  stall_timeout: 0ms\n  stall_timeout_ms: 999\n  ui_request_timeout: 7s\n  ui_request_timeout_ms: 999\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 2s\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout_ms: 999\nagent:\n  max_retry_backoff: 4s\n  max_retry_backoff_ms: 999\npi:\n  turn_timeout: 5s\n  turn_timeout_ms: 999\n  read_timeout: 6s\n  read_timeout_ms: 999\n  stall_timeout: 0ms\n  stall_timeout_ms: 999\n  ui_request_timeout: 7s\n  ui_request_timeout_ms: 999\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
@@ -168,6 +168,61 @@ pub fn duration_string_fields_take_precedence_over_legacy_ms_test() {
   assert configured.pi.read_timeout_ms == 6000
   assert configured.pi.stall_timeout_ms == 0
   assert configured.pi.ui_request_timeout_ms == 7000
+}
+
+pub fn old_polling_keys_fail_with_migration_hint_test() {
+  let interval_ms =
+    invalid_config_message(minimal_front() <> "polling:\n  interval_ms: 1234\n")
+  assert string.contains(interval_ms, "polling.interval_ms")
+  assert string.contains(interval_ms, "tracker.polling.every")
+  assert string.contains(interval_ms, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let interval =
+    invalid_config_message(minimal_front() <> "polling:\n  interval: 2s\n")
+  assert string.contains(interval, "polling.interval")
+  assert string.contains(interval, "tracker.polling.every")
+}
+
+pub fn old_routing_keys_fail_with_migration_hint_test() {
+  let workflows =
+    invalid_config_message(
+      minimal_front()
+      <> "routing:\n  workflows:\n    research: workflows/research.yaml\n",
+    )
+  assert string.contains(workflows, "routing.workflows")
+  assert string.contains(workflows, "top-level workflows")
+  assert string.contains(workflows, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let prefix =
+    invalid_config_message(
+      minimal_front() <> "routing:\n  workflow_label_prefix: \"workflow:\"\n",
+    )
+  assert string.contains(prefix, "routing.workflow_label_prefix")
+  assert string.contains(prefix, "task_routing.labels.prefix")
+
+  let require_exactly_one =
+    invalid_config_message(
+      minimal_front()
+      <> "routing:\n  require_exactly_one_workflow_label: true\n",
+    )
+  assert string.contains(
+    require_exactly_one,
+    "routing.require_exactly_one_workflow_label",
+  )
+  assert string.contains(
+    require_exactly_one,
+    "task_routing.labels.require_exactly_one",
+  )
+
+  let default_workflow =
+    invalid_config_message(
+      minimal_front() <> "routing:\n  default_workflow: research\n",
+    )
+  assert string.contains(default_workflow, "routing.default_workflow")
+  assert string.contains(
+    default_workflow,
+    "task_routing.labels.default_workflow",
+  )
 }
 
 pub fn ui_server_default_and_disabled_config_test() {
@@ -305,62 +360,73 @@ pub fn ui_server_redaction_and_local_control_separation_test() {
   assert enabled.ui_server.enrollment_token == Some("ui-server-secret-token")
 }
 
-pub fn missing_dispatch_states_fails_test() {
-  let message =
-    invalid_config_message(tracker_validation_front(
-      "  active_states: [Todo]\n  terminal_states: [Done]\n",
-    ))
-  assert string.contains(message, "tracker.dispatch_states")
-  assert string.contains(message, "required")
-  assert string.contains(message, "dispatch_states: [Todo]")
+pub fn tracker_states_default_when_absent_test() {
+  let assert Ok(configured) =
+    config.resolve_with_env(
+      definition(minimal_front()),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert issue_state.to_strings(configured.tracker.active_states)
+    == ["Todo", "In Progress"]
+  assert issue_state.to_strings(configured.tracker.dispatch_states) == ["Todo"]
+  assert issue_state.to_strings(configured.tracker.terminal_states)
+    == ["Done", "Canceled", "Cancelled", "Duplicate"]
 }
 
-pub fn wrong_type_dispatch_states_fails_test() {
+pub fn tracker_states_wrong_type_fails_test() {
+  let list_message =
+    invalid_config_message(tracker_validation_front("  states: [Todo]\n"))
+  assert string.contains(list_message, "tracker.states must be a map")
+
+  let scalar_message =
+    invalid_config_message(tracker_validation_front("  states: Todo\n"))
+  assert string.contains(scalar_message, "tracker.states must be a map")
+}
+
+pub fn wrong_type_ready_states_fails_test() {
   let message =
     invalid_config_message(tracker_validation_front(
-      "  active_states: [Todo]\n  dispatch_states: Todo\n  terminal_states: [Done]\n",
+      "  states:\n    active: [Todo]\n    ready: Todo\n    terminal: [Done]\n",
+    ))
+  assert string.contains(message, "tracker.states.ready must be a string list")
+}
+
+pub fn non_string_ready_states_entry_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  states:\n    active: [Todo]\n    ready: [Todo, 123]\n    terminal: [Done]\n",
     ))
   assert string.contains(
     message,
-    "tracker.dispatch_states must be a string list",
+    "tracker.states.ready entries must be strings",
   )
 }
 
-pub fn non_string_dispatch_states_entry_fails_test() {
+pub fn empty_ready_states_fails_test() {
   let message =
     invalid_config_message(tracker_validation_front(
-      "  active_states: [Todo]\n  dispatch_states: [Todo, 123]\n  terminal_states: [Done]\n",
-    ))
-  assert string.contains(
-    message,
-    "tracker.dispatch_states entries must be strings",
-  )
-}
-
-pub fn empty_dispatch_states_fails_test() {
-  let message =
-    invalid_config_message(tracker_validation_front(
-      "  active_states: [Todo]\n  dispatch_states: []\n  terminal_states: [Done]\n",
+      "  states:\n    active: [Todo]\n    ready: []\n    terminal: [Done]\n",
     ))
   assert string.contains(message, "must contain at least one state")
 }
 
-pub fn dispatch_states_outside_active_states_fails_test() {
+pub fn ready_states_outside_active_states_fails_test() {
   let message =
     invalid_config_message(tracker_validation_front(
-      "  active_states: [Todo]\n  dispatch_states: [In Progress]\n  terminal_states: [Done]\n",
+      "  states:\n    active: [Todo]\n    ready: [In Progress]\n    terminal: [Done]\n",
     ))
-  assert string.contains(message, "tracker.dispatch_states")
+  assert string.contains(message, "tracker.states.ready")
   assert string.contains(message, "subset")
-  assert string.contains(message, "tracker.active_states")
+  assert string.contains(message, "tracker.states.active")
   assert string.contains(message, "In Progress")
 }
 
-pub fn dispatch_states_normalized_subset_canonicalizes_test() {
+pub fn ready_states_normalized_subset_canonicalizes_test() {
   let assert Ok(configured) =
     config.resolve_with_env(
       definition(tracker_validation_front(
-        "  active_states: [Todo, In Progress]\n  dispatch_states: [\" todo \"]\n  terminal_states: [Done]\n",
+        "  states:\n    active: [Todo, In Progress]\n    ready: [\" todo \"]\n    terminal: [Done]\n",
       )),
       "test/tmp/scherzo.yaml",
       env,
@@ -368,15 +434,38 @@ pub fn dispatch_states_normalized_subset_canonicalizes_test() {
   assert issue_state.to_strings(configured.tracker.dispatch_states) == ["Todo"]
 }
 
+pub fn old_tracker_state_keys_fail_with_migration_hint_test() {
+  let active =
+    invalid_config_message(tracker_validation_front("  active_states: [Todo]\n"))
+  assert string.contains(active, "tracker.active_states")
+  assert string.contains(active, "tracker.states.active")
+  assert string.contains(active, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let ready =
+    invalid_config_message(tracker_validation_front(
+      "  dispatch_states: [Todo]\n",
+    ))
+  assert string.contains(ready, "tracker.dispatch_states")
+  assert string.contains(ready, "tracker.states.ready")
+
+  let terminal =
+    invalid_config_message(tracker_validation_front(
+      "  terminal_states: [Done]\n",
+    ))
+  assert string.contains(terminal, "tracker.terminal_states")
+  assert string.contains(terminal, "tracker.states.terminal")
+}
+
 pub fn tracker_validation_and_env_resolution_test() {
-  let assert Error(_) =
+  let assert Ok(defaulted_kind) =
     config.resolve_with_env(
       definition(
-        "tracker:\n  project_slug: TEST\nhooks:\n  before_run: test -d .git\n",
+        "tracker:\n  linear:\n    project: TEST\nhooks:\n  before_run: test -d .git\n",
       ),
       "test/tmp/scherzo.yaml",
       env,
     )
+  assert defaulted_kind.tracker.kind == tracker_kind.LinearTracker
   let assert Error(_) =
     config.resolve_with_env(
       definition(
@@ -412,7 +501,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured.tracker.api_key == Some("linearkey")
 
   let env_project =
-    "tracker:\n  kind: linear\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  linear:\n    project: \"$LINEAR_PROJECT_SLUG\"\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured_env_project) =
     config.resolve_with_env(
       definition(env_project),
@@ -422,7 +511,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured_env_project.tracker.project_slug == Some("ENV-PROJECT")
 
   let explicit =
-    "tracker:\n  kind: linear\n  project_slug: TEST\n  api_key: \"$OTHER_VAR\"\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  linear:\n    project: TEST\n  api_key: \"$OTHER_VAR\"\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured_explicit) =
     config.resolve_with_env(definition(explicit), "test/tmp/scherzo.yaml", env)
   assert configured_explicit.tracker.api_key == Some("other-secret")
@@ -430,7 +519,7 @@ pub fn tracker_validation_and_env_resolution_test() {
 
 pub fn flat_linear_tracker_config_aliases_still_parse_test() {
   let front =
-    "tracker:\n  kind: linear\n  endpoint: https://api.linear.app/graphql\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: example-project\n  active_states: [Todo, In Progress]\n  dispatch_states: [Todo]\n  terminal_states: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  endpoint: https://api.linear.app/graphql\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: example-project\n  states:\n    ready: [Todo]\n    active: [Todo, In Progress]\n    terminal: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
@@ -447,7 +536,7 @@ pub fn flat_linear_tracker_config_aliases_still_parse_test() {
 
 pub fn nested_linear_tracker_config_parses_test() {
   let front =
-    "tracker:\n  kind: linear\n  credentials:\n    api_key_env: LINEAR_API_KEY\n  linear:\n    endpoint: https://api.linear.app/graphql\n    project_slug: example-project\n  active_states: [Todo, In Progress]\n  dispatch_states: [Todo]\n  terminal_states: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  credentials:\n    api_key_env: LINEAR_API_KEY\n  linear:\n    endpoint: https://api.linear.app/graphql\n    project: example-project\n  states:\n    ready: [Todo]\n    active: [Todo, In Progress]\n    terminal: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(report) =
     config.resolve_with_env_report(
       definition(front),
@@ -470,7 +559,7 @@ pub fn nested_linear_tracker_config_parses_test() {
 
 pub fn nested_tracker_config_takes_precedence_over_flat_aliases_test() {
   let front =
-    "tracker:\n  kind: linear\n  endpoint: https://flat.linear.test/graphql\n  api_key: \"$OTHER_VAR\"\n  project_slug: flat-project\n  credentials:\n    api_key_env: LINEAR_API_KEY\n  linear:\n    endpoint: https://nested.linear.test/graphql\n    project_slug: nested-project\n  active_states: [Todo, In Progress]\n  dispatch_states: [Todo]\n  terminal_states: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  endpoint: https://flat.linear.test/graphql\n  api_key: \"$OTHER_VAR\"\n  project_slug: flat-project\n  credentials:\n    api_key_env: LINEAR_API_KEY\n  linear:\n    endpoint: https://nested.linear.test/graphql\n    project: nested-project\n  states:\n    ready: [Todo]\n    active: [Todo, In Progress]\n    terminal: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(report) =
     config.resolve_with_env_report(
       definition(front),
@@ -497,7 +586,7 @@ pub fn nested_tracker_config_takes_precedence_over_flat_aliases_test() {
       config_types.ConfigWarning(
         event: "legacy_tracker_field_ignored",
         path: "tracker.project_slug",
-        replacement: "tracker.linear.project_slug",
+        replacement: "tracker.linear.project",
       ),
     ]
   let assert [first_warning, ..] = report.warnings
@@ -509,6 +598,7 @@ fn workspace_driver_env_front(env_body: String) -> String {
   minimal_front()
   <> "workspace:\n  root: test/tmp/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step]\n        timeout: 60s\n"
   <> env_body
+  <> "workflows:\n  implementation: workflows/implementation.yaml\n"
 }
 
 fn workspace_driver_env_error(env_body: String) -> String {
@@ -620,9 +710,7 @@ pub fn path_resolution_and_env_indirection_test() {
 pub fn hooks_and_agent_limit_validation_test() {
   let assert Ok(no_hooks) =
     config.resolve_with_env(
-      definition(
-        "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\n",
-      ),
+      definition("tracker:\n  linear:\n    project: TEST\n"),
       "test/tmp/scherzo.yaml",
       env,
     )
@@ -958,6 +1046,7 @@ pub fn linear_contract_defaults_test() {
   assert dict.to_list(defaults.handoff_state_bindings) == []
   assert defaults.enforce_issue_workflow_labels == False
   assert defaults.invalid_workflow_state_id == None
+  assert defaults.invalid_workflow_state_target == None
   assert defaults.comment_on_invalid_workflow == False
 
   let assert Ok(configured) =
@@ -986,6 +1075,8 @@ pub fn linear_contract_parses_and_normalizes_test() {
   assert dict.get(contract.handoff_state_bindings, "success") == Ok("done")
   assert contract.enforce_issue_workflow_labels == True
   assert contract.invalid_workflow_state_id == Some("state-needs-workflow")
+  assert contract.invalid_workflow_state_target
+    == Some(config_types.InvalidWorkflowStateId("state-needs-workflow"))
   assert contract.comment_on_invalid_workflow == True
 }
 
@@ -998,6 +1089,7 @@ pub fn linear_contract_optional_dispatch_policy_defaults_test() {
   assert configured.linear_contract.enforce_issue_workflow_labels == False
   assert configured.linear_contract.workflow_labels == []
   assert configured.linear_contract.invalid_workflow_state_id == None
+  assert configured.linear_contract.invalid_workflow_state_target == None
   assert configured.linear_contract.comment_on_invalid_workflow == False
 
   let blank_state_id =
@@ -1134,7 +1226,7 @@ pub fn linear_contract_rejects_invalid_values_test() {
 pub fn scheduled_jobs_parse_defaults_and_linear_failure_config_test() {
   let front =
     minimal_front()
-    <> "routing:\n  workflows:\n    pr-conflict-repair: workflows/pr-conflict-repair.yaml\n"
+    <> "workflows:\n    pr-conflict-repair: workflows/pr-conflict-repair.yaml\n"
     <> "scheduled_jobs:\n  - id: pr-conflict-repair\n    workflow: pr-conflict-repair\n    every: 15m\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:pr-conflict-repair\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -1158,8 +1250,7 @@ pub fn scheduled_jobs_parse_defaults_and_linear_failure_config_test() {
 
 pub fn scheduled_jobs_reject_invalid_duration_and_unsupported_modes_test() {
   let base =
-    minimal_front()
-    <> "routing:\n  workflows:\n    repair: workflows/repair.yaml\n"
+    minimal_front() <> "workflows:\n    repair: workflows/repair.yaml\n"
 
   let invalid_duration =
     base
@@ -1195,7 +1286,7 @@ pub fn scheduled_jobs_reject_invalid_duration_and_unsupported_modes_test() {
 pub fn scheduled_jobs_reject_unknown_workflow_and_payload_fields_test() {
   let unknown_workflow =
     minimal_front()
-    <> "routing:\n  workflows:\n    repair: workflows/repair.yaml\n"
+    <> "workflows:\n    repair: workflows/repair.yaml\n"
     <> "scheduled_jobs:\n  - id: nightly\n    workflow: missing\n    every: 15m\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
@@ -1206,7 +1297,7 @@ pub fn scheduled_jobs_reject_unknown_workflow_and_payload_fields_test() {
 
   let payload =
     minimal_front()
-    <> "routing:\n  workflows:\n    repair: workflows/repair.yaml\n"
+    <> "workflows:\n    repair: workflows/repair.yaml\n"
     <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n    vars:\n      key: value\n"
   let assert Error(error.ScheduledJobUnsupportedInputs(message)) =
     config.resolve_orchestrator_root(

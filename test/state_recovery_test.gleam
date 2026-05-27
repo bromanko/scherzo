@@ -1168,6 +1168,7 @@ fn config() -> config_types.EffectiveConfig {
       handoff_state_bindings: dict.new(),
       enforce_issue_workflow_labels: False,
       invalid_workflow_state_id: None,
+      invalid_workflow_state_target: None,
       comment_on_invalid_workflow: False,
     ),
     linear_commands: config_types.LinearCommandConfig(

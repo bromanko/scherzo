@@ -35,6 +35,10 @@ fn contract_config(
     enforce_issue_workflow_labels: True,
     comment_on_invalid_workflow: comment,
     invalid_workflow_state_id: state_id,
+    invalid_workflow_state_target: option.map(
+      state_id,
+      config_types.InvalidWorkflowStateId,
+    ),
   )
 }
 

@@ -66,9 +66,9 @@ fn write_config(dir: String, extra: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
         <> driver_command
-        <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
+        <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nworkflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
         <> extra,
     )
   let assert Ok(Nil) =
@@ -90,7 +90,7 @@ fn write_top_level_hooks_config(dir: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   config_path
 }
@@ -103,7 +103,7 @@ fn write_profile_hooks_config(dir: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -242,7 +242,12 @@ fn contract_board(states: List(String)) -> linear_contract.RemoteBoard {
         key: "ENG",
         name: "Engineering",
         states: list_states(states),
-        labels: [],
+        labels: [
+          linear_contract.RemoteLabel(
+            "label-workflow-implementation",
+            "workflow:implementation",
+          ),
+        ],
       ),
     ],
     workspace_labels: [],
@@ -326,11 +331,11 @@ pub fn doctor_workflow_config_success_prints_human_summary_test() {
   assert string.contains(output, "Selected checks passed.")
 }
 
-pub fn doctor_missing_dispatch_states_failure_is_actionable_test() {
+pub fn doctor_old_tracker_state_key_failure_is_actionable_test() {
   let config_path =
     write_invalid_dispatch_config(
-      "test/tmp/doctor-missing-dispatch-states",
-      "  active_states: [Todo]\n  terminal_states: [Done]\n",
+      "test/tmp/doctor-old-tracker-state-key",
+      "  active_states: [Todo]\n",
     )
   let subject = process.new_subject()
   let deps = successful_deps(subject)
@@ -345,9 +350,9 @@ pub fn doctor_missing_dispatch_states_failure_is_actionable_test() {
     service.build_doctor_report_with_dependencies(options, deps)
   let assert Some(result) = result_for(report, doctor.WorkflowConfig)
   assert result.status == doctor.Fail
-  assert string.contains(result.message, "tracker.dispatch_states")
-  assert string.contains(result.message, "required")
-  assert string.contains(result.message, "dispatch_states: [Todo]")
+  assert string.contains(result.message, "tracker.active_states")
+  assert string.contains(result.message, "tracker.states.active")
+  assert string.contains(result.message, "SCHERZO_YAML_SIMPLIFIED_V1")
 
   assert service.start_doctor_with_dependencies(options, deps)
     == Error(service.StartupError(
@@ -356,40 +361,40 @@ pub fn doctor_missing_dispatch_states_failure_is_actionable_test() {
     ))
   let assert Ok(ListWritten(output)) = process.receive(subject, within: 1000)
   assert string.contains(output, "Workflow config")
-  assert string.contains(output, "tracker.dispatch_states")
-  assert string.contains(output, "required")
-  assert string.contains(output, "dispatch_states: [Todo]")
+  assert string.contains(output, "tracker.active_states")
+  assert string.contains(output, "tracker.states.active")
+  assert string.contains(output, "SCHERZO_YAML_SIMPLIFIED_V1")
 }
 
-pub fn doctor_wrong_type_dispatch_states_failure_is_actionable_test() {
+pub fn doctor_wrong_type_ready_states_failure_is_actionable_test() {
   assert_doctor_dispatch_state_config_failure(
-    "test/tmp/doctor-wrong-dispatch-states",
-    "  active_states: [Todo]\n  dispatch_states: Todo\n  terminal_states: [Done]\n",
-    "tracker.dispatch_states must be a string list",
+    "test/tmp/doctor-wrong-ready-states",
+    "  states:\n    active: [Todo]\n    ready: Todo\n    terminal: [Done]\n",
+    "tracker.states.ready must be a string list",
   )
 }
 
-pub fn doctor_non_string_dispatch_states_failure_is_actionable_test() {
+pub fn doctor_non_string_ready_states_failure_is_actionable_test() {
   assert_doctor_dispatch_state_config_failure(
-    "test/tmp/doctor-non-string-dispatch-states",
-    "  active_states: [Todo]\n  dispatch_states: [Todo, 123]\n  terminal_states: [Done]\n",
-    "tracker.dispatch_states entries must be strings",
+    "test/tmp/doctor-non-string-ready-states",
+    "  states:\n    active: [Todo]\n    ready: [Todo, 123]\n    terminal: [Done]\n",
+    "tracker.states.ready entries must be strings",
   )
 }
 
-pub fn doctor_empty_dispatch_states_failure_is_actionable_test() {
+pub fn doctor_empty_ready_states_failure_is_actionable_test() {
   assert_doctor_dispatch_state_config_failure(
-    "test/tmp/doctor-empty-dispatch-states",
-    "  active_states: [Todo]\n  dispatch_states: []\n  terminal_states: [Done]\n",
-    "tracker.dispatch_states must contain at least one state",
+    "test/tmp/doctor-empty-ready-states",
+    "  states:\n    active: [Todo]\n    ready: []\n    terminal: [Done]\n",
+    "tracker.states.ready must contain at least one state",
   )
 }
 
-pub fn doctor_out_of_subset_dispatch_states_failure_is_actionable_test() {
+pub fn doctor_out_of_subset_ready_states_failure_is_actionable_test() {
   assert_doctor_dispatch_state_config_failure(
-    "test/tmp/doctor-subset-dispatch-states",
-    "  active_states: [Todo]\n  dispatch_states: [In Progress]\n  terminal_states: [Done]\n",
-    "tracker.dispatch_states must be a subset of tracker.active_states",
+    "test/tmp/doctor-subset-ready-states",
+    "  states:\n    active: [Todo]\n    ready: [In Progress]\n    terminal: [Done]\n",
+    "tracker.states.ready must be a subset of tracker.states.active",
   )
 }
 
@@ -414,7 +419,7 @@ fn assert_doctor_dispatch_state_config_failure(
   let assert Some(result) = result_for(report, doctor.WorkflowConfig)
   assert result.status == doctor.Fail
   assert string.contains(result.message, expected_message)
-  assert string.contains(result.message, "tracker.dispatch_states")
+  assert string.contains(result.message, "tracker.states.ready")
 }
 
 pub fn doctor_unknown_check_name_fails_before_loading_workflow_test() {

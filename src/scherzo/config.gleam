@@ -136,6 +136,7 @@ pub fn default_linear_contract_config() -> config_types.LinearContractConfig {
     handoff_state_bindings: dict.new(),
     enforce_issue_workflow_labels: False,
     invalid_workflow_state_id: None,
+    invalid_workflow_state_target: None,
     comment_on_invalid_workflow: False,
   )
 }
@@ -194,6 +195,7 @@ pub fn resolve_root_report(
   config_path: String,
   env: Env,
 ) -> Result(config_types.ResolveReport, error.ConfigError) {
+  use _ <- result.try(tracker_config.reject_root_removed_keys(root))
   use tracker_result <- result.try(tracker_config.resolve(root, env))
   let #(tracker, tracker_warnings) = tracker_result
   use polling <- result.try(resolve_polling(root))
@@ -228,7 +230,10 @@ pub fn resolve_orchestrator_root(
   env: Env,
 ) -> Result(config_types.OrchestratorConfig, error.ConfigError) {
   use effective <- result.try(resolve_root(root, config_path, env))
-  use routing <- result.try(resolve_routing(root, config_path))
+  use routing <- result.try(tracker_config.resolve_root_routing(
+    root,
+    config_path,
+  ))
   use workspace_profiles <- result.try(resolve_workspace_profiles(root))
   use _default_workspace_profile <- result.try(
     resolve_default_workspace_profile(workspace_profiles),
@@ -237,12 +242,14 @@ pub fn resolve_orchestrator_root(
   use artifact_limits <- result.try(resolve_artifact_limits(root))
   use model_settings <- result.try(resolve_workflow_model_settings(root))
   use scheduled_jobs <- result.try(resolve_scheduled_jobs(root, routing))
-  use linear_contract <- result.try(resolve_orchestrator_linear_contract(
-    root,
-    effective.linear_contract,
-    routing,
-    scheduled_jobs,
-  ))
+  use linear_contract <- result.try(
+    tracker_config.resolve_root_orchestrator_linear_contract(
+      root,
+      effective,
+      routing,
+      scheduled_jobs,
+    ),
+  )
   let effective = config_types.EffectiveConfig(..effective, linear_contract:)
   Ok(config_types.OrchestratorConfig(
     effective: effective,
@@ -905,8 +912,15 @@ fn resolve_linear_contract(
   root: yay.Node,
 ) -> Result(config_types.LinearContractConfig, error.ConfigError) {
   let defaults = default_linear_contract_config()
+  use simplified_fields <- result.try(
+    tracker_config.resolve_root_linear_contract_fields(root),
+  )
   case get_node(root, "linear_contract") {
-    None -> Ok(defaults)
+    None ->
+      Ok(tracker_config.apply_root_linear_contract_fields(
+        defaults,
+        simplified_fields,
+      ))
     Some(node) -> {
       case node {
         yay.NodeMap(_) -> {
@@ -982,10 +996,18 @@ fn resolve_linear_contract(
           let enforce_issue_workflow_labels =
             enforce_option
             |> bool_default(defaults.enforce_issue_workflow_labels)
-          let invalid_workflow_state_id =
+          let explicit_invalid_workflow_state_id =
             invalid_state_option
             |> optional_non_empty_string
+          let invalid_workflow_state_id =
+            explicit_invalid_workflow_state_id
             |> option.lazy_or(fn() { defaults.invalid_workflow_state_id })
+          let invalid_workflow_state_target = case
+            explicit_invalid_workflow_state_id
+          {
+            Some(value) -> Some(config_types.InvalidWorkflowStateId(value))
+            None -> defaults.invalid_workflow_state_target
+          }
           let comment_on_invalid_workflow =
             comment_option
             |> bool_default(defaults.comment_on_invalid_workflow)
@@ -1004,17 +1026,23 @@ fn resolve_linear_contract(
           {
             Error(err) -> Error(err)
             Ok(Nil) ->
-              Ok(config_types.LinearContractConfig(
-                enabled: enabled,
-                workflow_label_prefix: workflow_label_prefix,
-                workflow_labels: workflow_labels,
-                support_labels: support_labels,
-                required_states: required_states,
-                handoff_state_bindings: handoff_state_bindings,
-                enforce_issue_workflow_labels: enforce_issue_workflow_labels,
-                invalid_workflow_state_id: invalid_workflow_state_id,
-                comment_on_invalid_workflow: comment_on_invalid_workflow,
-              ))
+              Ok(
+                config_types.LinearContractConfig(
+                  enabled: enabled,
+                  workflow_label_prefix: workflow_label_prefix,
+                  workflow_labels: workflow_labels,
+                  support_labels: support_labels,
+                  required_states: required_states,
+                  handoff_state_bindings: handoff_state_bindings,
+                  enforce_issue_workflow_labels: enforce_issue_workflow_labels,
+                  invalid_workflow_state_id: invalid_workflow_state_id,
+                  invalid_workflow_state_target: invalid_workflow_state_target,
+                  comment_on_invalid_workflow: comment_on_invalid_workflow,
+                )
+                |> tracker_config.apply_root_linear_contract_fields(
+                  simplified_fields,
+                ),
+              )
           }
         }
         _ -> Error(error.InvalidConfig("linear_contract must be a map"))
@@ -1153,102 +1181,6 @@ fn validate_ui_server_env_name(name: String) -> Result(Nil, error.ConfigError) {
       Error(error.InvalidConfig(
         "ui_server.enrollment_token_env has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*",
       ))
-  }
-}
-
-fn resolve_routing(
-  root: yay.Node,
-  config_path: String,
-) -> Result(config_types.RoutingConfig, error.ConfigError) {
-  let routing = get_map(root, "routing")
-  let prefix =
-    get_string(routing, "workflow_label_prefix")
-    |> option.unwrap("workflow:")
-    |> normalize_label
-  let require_exactly_one =
-    get_bool(routing, "require_exactly_one_workflow_label")
-    |> bool_default(False)
-  let default_workflow =
-    get_non_empty_string(routing, "default_workflow")
-    |> option.map(normalize_label)
-  use workflows <- result.try(read_routing_workflows(routing, config_path))
-  use _ <- result.try(validate_default_workflow(default_workflow, workflows))
-  Ok(config_types.RoutingConfig(
-    workflow_label_prefix: prefix,
-    require_exactly_one_workflow_label: require_exactly_one,
-    default_workflow: default_workflow,
-    workflows: workflows,
-  ))
-}
-
-fn validate_default_workflow(
-  default_workflow: Option(String),
-  workflows: dict.Dict(String, String),
-) -> Result(Nil, error.ConfigError) {
-  case default_workflow {
-    None -> Ok(Nil)
-    Some(workflow_id) ->
-      case valid_workflow_name(workflow_id) {
-        False ->
-          Error(error.InvalidConfig(
-            "routing.default_workflow has invalid workflow id: " <> workflow_id,
-          ))
-        True ->
-          case dict.has_key(workflows, workflow_id) {
-            True -> Ok(Nil)
-            False ->
-              Error(error.InvalidConfig(
-                "routing.default_workflow references unknown workflow: "
-                <> workflow_id,
-              ))
-          }
-      }
-  }
-}
-
-fn read_routing_workflows(
-  routing: yay.Node,
-  config_path: String,
-) -> Result(dict.Dict(String, String), error.ConfigError) {
-  case get_node(routing, "workflows") {
-    None -> Ok(dict.new())
-    Some(yay.NodeMap(entries)) ->
-      read_routing_workflow_entries(entries, config_path, [])
-    Some(_) -> Error(error.InvalidConfig("routing.workflows must be a map"))
-  }
-}
-
-fn read_routing_workflow_entries(
-  entries: List(#(yay.Node, yay.Node)),
-  config_path: String,
-  acc: List(#(String, String)),
-) -> Result(dict.Dict(String, String), error.ConfigError) {
-  case entries {
-    [] -> Ok(dict.from_list(list.reverse(acc)))
-    [#(yay.NodeStr(key), yay.NodeStr(value)), ..rest] -> {
-      let workflow_id = normalize_label(key)
-      case valid_workflow_name(workflow_id) {
-        False ->
-          Error(error.InvalidConfig(
-            "routing.workflows has invalid workflow id: " <> key,
-          ))
-        True -> {
-          use path <- result.try(resolve_relative_config_path(
-            value,
-            config_path,
-            "routing.workflows." <> key,
-          ))
-          read_routing_workflow_entries(rest, config_path, [
-            #(workflow_id, path),
-            ..acc
-          ])
-        }
-      }
-    }
-    [#(yay.NodeStr(_), _), ..] ->
-      Error(error.InvalidConfig("routing.workflows values must be strings"))
-    [#(_, _), ..] ->
-      Error(error.InvalidConfig("routing.workflows keys must be strings"))
   }
 }
 
@@ -1981,58 +1913,6 @@ fn get_optional_string_list_strict(
     Some(yay.NodeSeq(values)) -> read_string_values(values, path, [])
     Some(_) -> Error(error.InvalidConfig(path <> " must be a string list"))
   }
-}
-
-fn resolve_orchestrator_linear_contract(
-  root: yay.Node,
-  contract: config_types.LinearContractConfig,
-  routing: config_types.RoutingConfig,
-  scheduled_jobs: List(config_types.ScheduledJobConfig),
-) -> Result(config_types.LinearContractConfig, error.ConfigError) {
-  let result =
-    config_types.resolve_linear_contract_for_routing(
-      contract,
-      routing,
-      scheduled_jobs,
-      linear_contract_field_present(root, "workflow_labels"),
-      linear_contract_field_present(root, "workflow_label_prefix"),
-    )
-  result.map_error(result, fn(err) {
-    error.InvalidConfig(config_types.linear_contract_routing_error_message(err))
-  })
-}
-
-fn linear_contract_field_present(root: yay.Node, key: String) -> Bool {
-  case get_node(get_map(root, "linear_contract"), key) {
-    Some(_) -> True
-    None -> False
-  }
-}
-
-fn resolve_relative_config_path(
-  value: String,
-  config_path: String,
-  field: String,
-) -> Result(String, error.ConfigError) {
-  let trimmed = string.trim(value)
-  case trimmed == "" {
-    True -> Error(error.InvalidConfig(field <> " must be non-empty"))
-    False ->
-      case string.starts_with(trimmed, "/") || has_parent_segment(trimmed) {
-        True ->
-          Error(error.InvalidConfig(
-            field <> " must be a relative path without ..",
-          ))
-        False -> Ok(resolve_path(trimmed, config_path))
-      }
-  }
-}
-
-fn has_parent_segment(value: String) -> Bool {
-  value == ".."
-  || string.starts_with(value, "../")
-  || string.ends_with(value, "/..")
-  || string.contains(value, "/../")
 }
 
 fn valid_workflow_name(value: String) -> Bool {

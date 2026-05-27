@@ -91,7 +91,7 @@ fn orchestrator(
 ) -> config_types.OrchestratorConfig {
   write_lifecycle_driver(dir)
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: default\n  profiles:\n    default:\n      driver:\n        command: ./driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: default\n  profiles:\n    default:\n      driver:\n        command: ./driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 5000\nworkflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(root(source), dir <> "/scherzo.yaml", env)
   let assert Ok(orchestrator) =
@@ -181,7 +181,7 @@ pub fn prepares_logical_workspace_paths_under_run_root_test() {
 
 fn driver_profile_orchestrator(dir: String) -> config_types.OrchestratorConfig {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: ./driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: ./driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 5000\nworkflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(root(source), dir <> "/scherzo.yaml", env)
   let assert Ok(orchestrator) =

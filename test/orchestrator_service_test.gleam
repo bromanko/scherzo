@@ -76,11 +76,11 @@ fn yaml_config_with_max(
 ) -> String {
   let assert Ok(driver_command) =
     path.absolute("scripts/scherzo-workspace-noop")
-  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
+  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
   <> root
   <> "\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
   <> driver_command
-  <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: "
+  <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nworkflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: "
   <> int_to_string(max_concurrent)
   <> "\n  max_turns: 1\n"
   <> extra
@@ -216,15 +216,15 @@ fn workflow_deps() -> workflow_run.Dependencies {
 fn contract_config_text(root: String, active_state: String) -> String {
   let assert Ok(driver_command) =
     path.absolute("scripts/scherzo-workspace-noop")
-  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: ["
+  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: ["
   <> active_state
-  <> "]\n  dispatch_states: ["
+  <> "]\n    active: ["
   <> active_state
-  <> "]\n  terminal_states: [Done]\nworkspace:\n  root: "
+  <> "]\n    terminal: [Done]\nworkspace:\n  root: "
   <> root
   <> "\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
   <> driver_command
-  <> "\n        lifecycle: [create, before-step, after-step, remove]\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+  <> "\n        lifecycle: [create, before-step, after-step, remove]\nworkflows:\n    implementation: workflows/implementation.yaml\n"
 }
 
 fn contract_team(
@@ -235,7 +235,12 @@ fn contract_team(
     key: "ENG",
     name: "Engineering",
     states: states,
-    labels: [],
+    labels: [
+      linear_contract.RemoteLabel(
+        "label-workflow-implementation",
+        "workflow:implementation",
+      ),
+    ],
   )
 }
 
@@ -431,7 +436,7 @@ pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
   assert field_value(diagnostic_fields, "code") == Some("missing_state")
   assert field_value(diagnostic_fields, "team") == Some("ENG")
   assert field_value(diagnostic_fields, "source")
-    == Some("tracker.active_states")
+    == Some("tracker.states.active")
   assert field_value(diagnostic_fields, "name") == Some("Ready for Agent")
 }
 
@@ -538,6 +543,8 @@ pub fn yaml_once_skips_issue_without_workflow_label_test() {
     )
   assert result.dispatched == 0
   assert contains_log(result.logs, "workflow_route_failed")
+  assert contains_log(result.logs, "missing_workflow_label")
+  assert !contains_log(result.logs, "dispatch_started")
 }
 
 pub fn yaml_linear_contract_check_uses_orchestrator_config_test() {

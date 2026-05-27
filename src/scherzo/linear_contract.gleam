@@ -124,15 +124,15 @@ fn state_requirements(
     [
       state_requirements_from_list(
         effective.tracker.active_states,
-        "tracker.active_states",
+        "tracker.states.active",
       ),
       state_requirements_from_list(
         effective.tracker.dispatch_states,
-        "tracker.dispatch_states",
+        "tracker.states.ready",
       ),
       state_requirements_from_list(
         effective.tracker.terminal_states,
-        "tracker.terminal_states",
+        "tracker.states.terminal",
       ),
     ]
     |> list.flatten
@@ -590,31 +590,59 @@ fn append_invalid_workflow_state_diagnostics(
   effective: config_types.EffectiveConfig,
   remote: RemoteBoard,
 ) -> List(ContractDiagnostic) {
-  case effective.linear_contract.invalid_workflow_state_id {
+  case
+    config_types.normalized_invalid_workflow_state_target(
+      effective.linear_contract,
+    )
+  {
     None -> acc
-    Some(id) -> {
-      let id = string.trim(id)
-      case id == "" {
-        True -> acc
-        False ->
-          case list.length(remote.teams) > 1 {
-            True -> [
-              MultiTeamInvalidWorkflowStateUnsupported(
-                id,
-                team_keys(remote.teams),
-              ),
-              ..acc
-            ]
-            False ->
-              append_single_team_invalid_workflow_state_diagnostic(
-                acc,
-                id,
-                effective,
-                remote.teams,
-              )
+    Some(config_types.InvalidWorkflowStateId(id)) ->
+      append_invalid_workflow_state_id_diagnostics(acc, id, effective, remote)
+    Some(config_types.InvalidWorkflowStateName(name)) ->
+      append_invalid_workflow_state_name_diagnostics(acc, name, remote.teams)
+  }
+}
+
+fn append_invalid_workflow_state_id_diagnostics(
+  acc: List(ContractDiagnostic),
+  id: String,
+  effective: config_types.EffectiveConfig,
+  remote: RemoteBoard,
+) -> List(ContractDiagnostic) {
+  case list.length(remote.teams) > 1 {
+    True -> [
+      MultiTeamInvalidWorkflowStateUnsupported(id, team_keys(remote.teams)),
+      ..acc
+    ]
+    False ->
+      append_single_team_invalid_workflow_state_diagnostic(
+        acc,
+        id,
+        effective,
+        remote.teams,
+      )
+  }
+}
+
+fn append_invalid_workflow_state_name_diagnostics(
+  acc: List(ContractDiagnostic),
+  name: String,
+  teams: List(RemoteTeam),
+) -> List(ContractDiagnostic) {
+  case teams {
+    [] -> [MissingInvalidWorkflowStateId(name), ..acc]
+    _ ->
+      case
+        list.all(teams, fn(team) {
+          case matching_state_names(team.states, name) {
+            [_] -> True
+            _ -> False
           }
+        })
+      {
+        True -> acc
+        False -> [MissingInvalidWorkflowStateId(name), ..acc]
       }
-    }
   }
 }
 

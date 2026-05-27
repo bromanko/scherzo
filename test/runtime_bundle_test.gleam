@@ -101,7 +101,7 @@ fn write_default_yaml_project(dir: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/.scherzo/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   Nil
 }
@@ -151,7 +151,7 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -239,7 +239,7 @@ pub fn runtime_bundle_records_config_workflow_and_prompt_dependencies_test() {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
 
   let assert Ok(bundle) = runtime_bundle.load_with_env(Some(config_path), env)
@@ -278,7 +278,7 @@ pub fn loads_workflows_with_workspace_profiles_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/isolated\n    noop:\n      driver:\n        command: scripts/noop\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n    defaulted: workflows/defaulted.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/isolated\n    noop:\n      driver:\n        command: scripts/noop\nworkflows:\n    noop: workflows/noop.yaml\n    defaulted: workflows/defaulted.yaml\n",
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -300,7 +300,7 @@ pub fn rejects_hook_backed_profile_with_no_workspace_capabilities_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -322,7 +322,7 @@ pub fn rejects_missing_selected_workspace_capabilities_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\nworkflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -349,7 +349,7 @@ pub fn loads_driver_profile_with_driver_capabilities_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/scherzo-workspace-jj\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/scherzo-workspace-jj\nworkflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -369,7 +369,7 @@ pub fn loads_selected_driver_profile_after_capability_match_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n        lifecycle: [create, before-step, after-step, remove]\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n        lifecycle: [create, before-step, after-step, remove]\nworkflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -389,7 +389,7 @@ pub fn rejects_malformed_workspace_driver_discovery_before_dispatch_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\nworkflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -498,7 +498,7 @@ pub fn rejects_default_profile_missing_workspace_capabilities_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -519,7 +519,7 @@ pub fn rejects_workflow_with_unknown_workspace_profile_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/isolated\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/isolated\nworkflows:\n    noop: workflows/noop.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -541,7 +541,7 @@ pub fn scheduled_workflow_rejects_issue_context_references_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nrouting:\n  workflows:\n    repair: workflows/repair.yaml\nscheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    repair: workflows/repair.yaml\nscheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -563,7 +563,7 @@ pub fn rejects_absolute_prompt_paths_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, _)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -585,7 +585,7 @@ pub fn rejects_invalid_project_model_thinking_combination_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\npi:\n  model: openai/gpt-4o\n  thinking: high\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\npi:\n  model: openai/gpt-4o\n  thinking: high\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -608,7 +608,7 @@ pub fn rejects_invalid_step_model_thinking_combination_after_default_resolution_
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\npi:\n  thinking: high\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\npi:\n  thinking: high\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -631,7 +631,7 @@ pub fn selects_yaml_workflow_from_issue_label_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n  implementation: workflows/implementation.yaml\n",
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -723,7 +723,7 @@ pub fn routing_rejects_missing_unknown_and_multiple_labels_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    research: workflows/research.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n  research: workflows/research.yaml\n",
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -751,8 +751,8 @@ pub fn default_workflow_is_used_only_when_exact_label_not_required_test() {
       "version: 1\nid: research\nsteps:\n  - id: research\n    kind: agent\n    prompt: prompts/research.md\n",
     )
   let config =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  default_workflow: research\n  require_exactly_one_workflow_label: "
-  let suffix = "\n  workflows:\n    research: workflows/research.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\ntask_routing:\n  labels:\n    default_workflow: research\n    require_exactly_one: "
+  let suffix = "\nworkflows:\n  research: workflows/research.yaml\n"
 
   let assert Ok(Nil) =
     simplifile.write(dir <> "/scherzo.yaml", config <> "false" <> suffix)
@@ -781,7 +781,7 @@ pub fn rejects_escaping_prompt_paths_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, _)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -800,7 +800,7 @@ pub fn invalid_workflow_contract_rejects_bundle_load_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
 
   let assert Error(runtime_bundle.BundleError(code, message)) =

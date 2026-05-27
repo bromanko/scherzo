@@ -111,6 +111,7 @@ fn contract_config(enabled: Bool) -> config_types.LinearContractConfig {
     ]),
     enforce_issue_workflow_labels: False,
     invalid_workflow_state_id: None,
+    invalid_workflow_state_target: None,
     comment_on_invalid_workflow: False,
   )
 }
@@ -211,12 +212,12 @@ pub fn reports_missing_state_for_project_team_test() {
       linear_contract.MissingState(
         team_key: "OPS",
         name: "Ready for Agent",
-        source: "tracker.active_states",
+        source: "tracker.states.active",
       ),
       linear_contract.MissingState(
         team_key: "OPS",
         name: "Ready for Agent",
-        source: "tracker.dispatch_states",
+        source: "tracker.states.ready",
       ),
     ]
   assert string_contains(
@@ -242,7 +243,7 @@ pub fn reports_missing_dispatch_state_source_test() {
       linear_contract.MissingState(
         team_key: "ENG",
         name: "Dispatch Only",
-        source: "tracker.dispatch_states",
+        source: "tracker.states.ready",
       ),
     ]
 }
@@ -402,17 +403,17 @@ pub fn invalid_workflow_state_id_diagnostics_test() {
       linear_contract.MissingState(
         team_key: "ENG",
         name: "Ready for Agent",
-        source: "tracker.active_states",
+        source: "tracker.states.active",
       ),
       linear_contract.MissingState(
         team_key: "ENG",
         name: "Ready for Agent",
-        source: "tracker.dispatch_states",
+        source: "tracker.states.ready",
       ),
       linear_contract.MissingState(
         team_key: "ENG",
         name: "Done",
-        source: "tracker.terminal_states",
+        source: "tracker.states.terminal",
       ),
       linear_contract.InvalidWorkflowStateNameMismatch(
         id: "state-needs-workflow",
@@ -508,7 +509,7 @@ pub fn reports_handoff_state_name_mismatch_test() {
       linear_contract.MissingState(
         team_key: "ENG",
         name: "Done",
-        source: "tracker.terminal_states",
+        source: "tracker.states.terminal",
       ),
       linear_contract.MissingState(
         team_key: "ENG",
