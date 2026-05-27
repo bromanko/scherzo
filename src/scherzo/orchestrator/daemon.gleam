@@ -27,6 +27,7 @@ import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/schedule_core.{next_due_after_persisted_due}
+import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
@@ -118,40 +119,6 @@ type ControlPlane {
   ControlPlane(handle: ControlServerHandle, control_file_path: Option(String))
 }
 
-type ScheduledPendingStart {
-  ScheduledPendingStart(
-    job_id: String,
-    workflow_id: String,
-    due_at_ms: Int,
-    run_id: String,
-    trigger: String,
-    requested_at_ms: Int,
-    attempt: Int,
-    blocking_reason: String,
-  )
-}
-
-type ScheduledRetryStart {
-  ScheduledRetryStart(
-    job_id: String,
-    workflow_id: String,
-    due_at_ms: Int,
-    run_id: String,
-    next_attempt: Int,
-    generation: Int,
-    timer: TimerHandle,
-  )
-}
-
-type ScheduledReportRetryStart {
-  ScheduledReportRetryStart(
-    job_id: String,
-    run_id: String,
-    generation: Int,
-    timer: TimerHandle,
-  )
-}
-
 type StartupRecovery {
   StartupRecovery(
     runtime: orchestrator_state.RuntimeState,
@@ -192,12 +159,9 @@ type State {
     workflow: workflow_reloader.State,
     tracker_client: tracker.Client,
     tracker_adapter: adapter.TrackerAdapter,
-    scheduled_next_due: Dict(String, Int),
-    pending_scheduled_starts: Dict(String, ScheduledPendingStart),
-    scheduled_retries: Dict(String, ScheduledRetryStart),
-    next_scheduled_retry_generation: Int,
-    scheduled_report_retries: Dict(String, ScheduledReportRetryStart),
-    next_scheduled_report_generation: Int,
+    scheduled_runtime: scheduled_runtime.Runtime,
+    scheduled_retry_timers: Dict(String, TimerHandle),
+    scheduled_report_retry_timers: Dict(String, TimerHandle),
     runtime: orchestrator_state.RuntimeState,
     workers: transition_types.WorkerDirectory,
     poll: poll_scheduler.State(TimerHandle),
@@ -531,16 +495,15 @@ pub fn start(
                       workflow: workflow,
                       tracker_client: tracker_client,
                       tracker_adapter: tracker_adapter,
-                      scheduled_next_due: initial_scheduled_next_due(
-                        workflow.bundle,
-                        dependencies.now_ms(),
-                        startup_recovery.scheduled_statuses,
+                      scheduled_runtime: scheduled_runtime.from_next_due(
+                        dict.to_list(initial_scheduled_next_due(
+                          workflow.bundle,
+                          dependencies.now_ms(),
+                          startup_recovery.scheduled_statuses,
+                        )),
                       ),
-                      pending_scheduled_starts: dict.new(),
-                      scheduled_retries: dict.new(),
-                      next_scheduled_retry_generation: 1,
-                      scheduled_report_retries: dict.new(),
-                      next_scheduled_report_generation: 1,
+                      scheduled_retry_timers: dict.new(),
+                      scheduled_report_retry_timers: dict.new(),
                       runtime: runtime,
                       workers: transition_types.new_worker_directory(),
                       poll: poll,
@@ -782,20 +745,16 @@ fn recover_enabled_scheduled_run(
     | projection.ScheduledWaitingForGlobalSlot ->
       State(
         ..state,
-        pending_scheduled_starts: dict.insert(
-          state.pending_scheduled_starts,
-          job.id,
-          ScheduledPendingStart(
+        scheduled_runtime: scheduled_runtime.insert_pending_start(
+          state.scheduled_runtime,
+          scheduled_runtime.PendingStart(
             job_id: job.id,
             workflow_id: job.workflow,
             due_at_ms: run.due_at_ms,
             run_id: run.run_id,
             trigger: run.trigger,
             requested_at_ms: state.dependencies.now_ms(),
-            attempt: case run.attempt <= 0 {
-              True -> 1
-              False -> run.attempt
-            },
+            attempt: normalized_scheduled_attempt(run.attempt),
             blocking_reason: optional_string_or_default(run.reason, ""),
           ),
         ),
@@ -834,30 +793,20 @@ fn recover_scheduled_retry_waiting(
   job: config_types.ScheduledJobConfig,
   run: projection.ScheduledRunSummary,
 ) -> State {
-  let generation = state.next_scheduled_retry_generation
-  let timer =
-    state.dependencies.send_after(
-      state.subject,
-      0,
-      ScheduledRetryTick(run.run_id, generation),
-    )
-  State(
-    ..state,
-    scheduled_retries: dict.insert(
-      state.scheduled_retries,
+  let #(runtime, actions) =
+    scheduled_runtime.schedule_retry(
+      state.scheduled_runtime,
+      job.id,
+      job.workflow,
+      run.due_at_ms,
       run.run_id,
-      ScheduledRetryStart(
-        job_id: job.id,
-        workflow_id: job.workflow,
-        due_at_ms: run.due_at_ms,
-        run_id: run.run_id,
-        next_attempt: normalized_scheduled_attempt(run.attempt),
-        generation: generation,
-        timer: timer,
-      ),
-    ),
-    next_scheduled_retry_generation: generation + 1,
-  )
+      0,
+      normalized_scheduled_attempt(run.attempt),
+      "recovered_retry_waiting",
+      0,
+    )
+  let state = State(..state, scheduled_runtime: runtime)
+  apply_scheduled_runtime_actions(state, actions, append_retry_record: False)
 }
 
 fn recover_scheduled_report_retry_waiting(
@@ -874,30 +823,21 @@ fn recover_scheduled_report_retry_waiting(
         True -> 0
         False -> report_retry.next_retry_at_ms - state.dependencies.now_ms()
       }
-      let timer =
-        state.dependencies.send_after(
-          state.subject,
-          delay_ms,
-          ScheduledReportRetryTick(report_retry.run_id, report_retry.generation),
-        )
-      State(
-        ..state,
-        scheduled_report_retries: dict.insert(
-          state.scheduled_report_retries,
-          report_retry.run_id,
-          ScheduledReportRetryStart(
+      let runtime =
+        scheduled_runtime.insert_report_retry(
+          state.scheduled_runtime,
+          scheduled_runtime.ReportRetryStart(
             job_id: job.id,
             run_id: report_retry.run_id,
             generation: report_retry.generation,
-            timer: timer,
           ),
-        ),
-        next_scheduled_report_generation: case
-          state.next_scheduled_report_generation > report_retry.generation
-        {
-          True -> state.next_scheduled_report_generation
-          False -> report_retry.generation + 1
-        },
+        )
+      let state = State(..state, scheduled_runtime: runtime)
+      schedule_scheduled_report_retry_timer(
+        state,
+        report_retry.run_id,
+        report_retry.generation,
+        delay_ms,
       )
     }
   }
@@ -956,12 +896,25 @@ fn recover_interrupted_scheduled_run(
   run: projection.ScheduledRunSummary,
 ) -> State {
   let attempt = normalized_scheduled_attempt(run.attempt)
-  let next_attempt = attempt + 1
-  let retry_exhausted =
-    schedule_core.retry_exhausted(
-      next_attempt,
+  let #(runtime, follow_up) =
+    scheduled_runtime.worker_failure_follow_up(
+      state.scheduled_runtime,
+      job.id,
+      job.workflow,
+      run.due_at_ms,
+      run.run_id,
+      attempt,
+      "daemon_restart",
+      run.run_root,
+      run.session_id,
       state.workflow.effective.agent.max_retry_attempts,
+      state.workflow.effective.agent.max_retry_backoff_ms,
     )
+  let retry_exhausted = case follow_up {
+    scheduled_runtime.WorkerFailureReport(_) -> True
+    scheduled_runtime.WorkerFailureRetry(_) -> False
+  }
+  let state = State(..state, scheduled_runtime: runtime)
   let _interrupted_failure_appended =
     append_ledger_bodies(
       state,
@@ -980,30 +933,11 @@ fn recover_interrupted_scheduled_run(
       ],
       "scheduled_recovery_append_failed",
     )
-  case retry_exhausted {
-    True ->
-      begin_scheduled_failure_report(
-        state,
-        job.id,
-        job.workflow,
-        run.due_at_ms,
-        run.run_id,
-        attempt,
-        "daemon_restart",
-        run.run_root,
-        run.session_id,
-      )
-    False ->
-      schedule_scheduled_retry_for_run(
-        state,
-        job.id,
-        job.workflow,
-        run.due_at_ms,
-        run.run_id,
-        attempt,
-        next_attempt,
-        "daemon_restart",
-      )
+  case follow_up {
+    scheduled_runtime.WorkerFailureReport(request) ->
+      begin_scheduled_failure_report_request(state, request)
+    scheduled_runtime.WorkerFailureRetry(actions) ->
+      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
   }
 }
 
@@ -1973,12 +1907,25 @@ fn handle_registry_down_resolution(
         handle.session_id,
         session_reason.Failed,
       )
-      let next_attempt = handle.attempt + 1
-      let retry_exhausted =
-        schedule_core.retry_exhausted(
-          next_attempt,
+      let #(runtime, follow_up) =
+        scheduled_runtime.worker_failure_follow_up(
+          state.scheduled_runtime,
+          handle.job_id,
+          handle.workflow_id,
+          handle.due_at_ms,
+          handle.run_id,
+          handle.attempt,
+          "worker_down",
+          Some(handle.run_root),
+          Some(handle.session_id),
           state.workflow.effective.agent.max_retry_attempts,
+          state.workflow.effective.agent.max_retry_backoff_ms,
         )
+      let retry_exhausted = case follow_up {
+        scheduled_runtime.WorkerFailureReport(_) -> True
+        scheduled_runtime.WorkerFailureRetry(_) -> False
+      }
+      let state = State(..state, scheduled_runtime: runtime)
       let _worker_down_failure_appended =
         append_ledger_bodies(
           state,
@@ -1997,15 +1944,14 @@ fn handle_registry_down_resolution(
           ],
           "scheduled_worker_down_append_failed",
         )
-      let state = case retry_exhausted {
-        True -> state
-        False ->
-          schedule_scheduled_retry(
+      let state = case follow_up {
+        scheduled_runtime.WorkerFailureReport(request) ->
+          begin_scheduled_failure_report_request(state, request)
+        scheduled_runtime.WorkerFailureRetry(actions) ->
+          apply_scheduled_runtime_actions(
             state,
-            handle,
-            handle.due_at_ms,
-            next_attempt,
-            "worker_down",
+            actions,
+            append_retry_record: True,
           )
       }
       start_pending_scheduled_runs(state)
@@ -2551,27 +2497,67 @@ fn schedule_run_now_for_enabled_job(
   operator_command: command.OperatorCommand,
   job: config_types.ScheduledJobConfig,
 ) -> #(State, command.CommandResult) {
-  case scheduled_mode_for_job(state, job.id) {
+  case
+    scheduled_runtime.schedule_mode(
+      state.scheduled_runtime,
+      job.id,
+      scheduled_worker_active_for_job(state, job.id),
+    )
+  {
     schedule_core.Idle -> {
       let now_ms = state.dependencies.now_ms()
       let run_id = schedule_core.manual_run_id(job.id, now_ms)
-      let state =
-        state
-        |> apply_scheduled_decision(
-          job,
-          schedule_core.ScheduledDue(now_ms, run_id, "manual"),
+      let pending =
+        scheduled_runtime.PendingStart(
+          job_id: job.id,
+          workflow_id: job.workflow,
+          due_at_ms: now_ms,
+          run_id: run_id,
+          trigger: "manual",
+          requested_at_ms: now_ms,
+          attempt: 1,
+          blocking_reason: "",
         )
-        |> apply_scheduled_decision(
-          job,
-          schedule_core.ScheduledPending(now_ms, run_id, "manual", now_ms),
+      append_ledger_bodies_best_effort(
+        state,
+        [record.ScheduledJobDue(job.id, job.workflow, now_ms, run_id, "manual")],
+        "scheduled_due_append_failed",
+      )
+      append_ledger_bodies_best_effort(
+        state,
+        [
+          record.ScheduledRunPending(
+            job.id,
+            job.workflow,
+            now_ms,
+            run_id,
+            "manual",
+            now_ms,
+          ),
+        ],
+        "scheduled_pending_append_failed",
+      )
+      let state =
+        State(
+          ..state,
+          scheduled_runtime: scheduled_runtime.insert_pending_start(
+            state.scheduled_runtime,
+            pending,
+          ),
         )
         |> start_pending_scheduled_runs
-      case dict.has_key(state.pending_scheduled_starts, job.id) {
-        True -> #(
+      case
+        scheduled_runtime.schedule_mode(
+          state.scheduled_runtime,
+          job.id,
+          scheduled_worker_active_for_job(state, job.id),
+        )
+      {
+        schedule_core.Pending(_) -> #(
           state,
           command.queued(operator_command, Some("scheduled run queued")),
         )
-        False -> #(
+        _ -> #(
           state,
           command.applied(operator_command, Some("scheduled run started")),
         )
@@ -3092,21 +3078,15 @@ fn apply_reloaded_workflow(
 
 fn refresh_scheduled_next_due_after_reload(state: State) -> State {
   let now_ms = state.dependencies.now_ms()
-  let scheduled_next_due =
+  let runtime =
     state.workflow.bundle.orchestrator.scheduled_jobs
     |> list.filter(fn(job) { job.enabled })
-    |> list.fold(state.scheduled_next_due, fn(acc, job) {
-      case dict.get(acc, job.id) {
-        Ok(_) -> acc
-        Error(Nil) ->
-          dict.insert(
-            acc,
-            job.id,
-            schedule_core.initial_next_due(now_ms, job.every_ms),
-          )
-      }
+    |> list.fold(state.scheduled_runtime, fn(runtime, job) {
+      let #(runtime, _) =
+        scheduled_runtime.ensure_next_due(runtime, job.id, now_ms, job.every_ms)
+      runtime
     })
-  State(..state, scheduled_next_due: scheduled_next_due)
+  State(..state, scheduled_runtime: runtime)
 }
 
 fn begin_running_refresh(state: State, generation: Int) -> State {
@@ -3995,69 +3975,17 @@ fn evaluate_scheduled_job(
   job: config_types.ScheduledJobConfig,
   now_ms: Int,
 ) -> State {
-  let #(state, next_due_at_ms) = ensure_scheduled_next_due(state, job, now_ms)
-  let schedule_state =
-    schedule_core.ScheduleState(
-      job_id: job.id,
-      workflow_id: job.workflow,
-      every_ms: job.every_ms,
-      next_due_at_ms: next_due_at_ms,
-      mode: scheduled_mode_for_job(state, job.id),
+  let #(runtime, actions) =
+    scheduled_runtime.admit_due(
+      state.scheduled_runtime,
+      job.id,
+      job.workflow,
+      job.every_ms,
+      now_ms,
+      scheduled_worker_active_for_job(state, job.id),
     )
-  schedule_core.admit_due_boundaries(schedule_state, now_ms)
-  |> apply_scheduled_decisions(state, job)
-}
-
-fn ensure_scheduled_next_due(
-  state: State,
-  job: config_types.ScheduledJobConfig,
-  now_ms: Int,
-) -> #(State, Int) {
-  case dict.get(state.scheduled_next_due, job.id) {
-    Ok(value) -> #(state, value)
-    Error(Nil) -> {
-      let next_due_at_ms = schedule_core.initial_next_due(now_ms, job.every_ms)
-      #(
-        State(
-          ..state,
-          scheduled_next_due: dict.insert(
-            state.scheduled_next_due,
-            job.id,
-            next_due_at_ms,
-          ),
-        ),
-        next_due_at_ms,
-      )
-    }
-  }
-}
-
-fn scheduled_mode_for_job(
-  state: State,
-  job_id: String,
-) -> schedule_core.ScheduleMode {
-  case dict.get(state.pending_scheduled_starts, job_id) {
-    Ok(pending) ->
-      schedule_core.Pending(scheduled_skip_reason_for_block(
-        pending.blocking_reason,
-      ))
-    Error(Nil) ->
-      case scheduled_worker_active_for_job(state, job_id) {
-        True -> schedule_core.Active
-        False ->
-          case scheduled_retry_waiting_for_job(state, job_id) {
-            True -> schedule_core.RetryWaiting
-            False -> schedule_core.Idle
-          }
-      }
-  }
-}
-
-fn scheduled_skip_reason_for_block(reason: String) -> String {
-  case reason {
-    "paused" -> "schedule_paused"
-    _ -> reason
-  }
+  let state = State(..state, scheduled_runtime: runtime)
+  apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
 }
 
 fn scheduled_worker_active_for_job(state: State, job_id: String) -> Bool {
@@ -4066,38 +3994,39 @@ fn scheduled_worker_active_for_job(state: State, job_id: String) -> Bool {
   |> list.any(fn(handle) { handle.job_id == job_id })
 }
 
-fn scheduled_retry_waiting_for_job(state: State, job_id: String) -> Bool {
-  list.any(dict.values(state.scheduled_retries), fn(entry) {
-    entry.job_id == job_id
-  })
-  || list.any(dict.values(state.scheduled_report_retries), fn(entry) {
-    entry.job_id == job_id
+fn apply_scheduled_runtime_actions(
+  state: State,
+  actions: List(scheduled_runtime.Action),
+  append_retry_record append_retry_record: Bool,
+) -> State {
+  list.fold(actions, state, fn(state, action) {
+    apply_scheduled_runtime_action(
+      state,
+      action,
+      append_retry_record: append_retry_record,
+    )
   })
 }
 
-fn apply_scheduled_decisions(
-  decisions: List(schedule_core.ScheduleDecision),
+fn apply_scheduled_runtime_action(
   state: State,
-  job: config_types.ScheduledJobConfig,
+  action: scheduled_runtime.Action,
+  append_retry_record append_retry_record: Bool,
 ) -> State {
-  list.fold(decisions, state, fn(state, decision) {
-    apply_scheduled_decision(state, job, decision)
-  })
-}
-
-fn apply_scheduled_decision(
-  state: State,
-  job: config_types.ScheduledJobConfig,
-  decision: schedule_core.ScheduleDecision,
-) -> State {
-  case decision {
-    schedule_core.ScheduledDue(due_at_ms, run_id, trigger) -> {
+  case action {
+    scheduled_runtime.RecordScheduledDue(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      trigger,
+    ) -> {
       append_ledger_bodies_best_effort(
         state,
         [
           record.ScheduledJobDue(
-            job.id,
-            job.workflow,
+            job_id,
+            workflow_id,
             due_at_ms,
             run_id,
             trigger,
@@ -4107,46 +4036,37 @@ fn apply_scheduled_decision(
       )
       state
     }
-    schedule_core.ScheduledPending(due_at_ms, run_id, trigger, requested_at_ms) -> {
+    scheduled_runtime.RecordScheduledPending(pending) -> {
       append_ledger_bodies_best_effort(
         state,
         [
           record.ScheduledRunPending(
-            job.id,
-            job.workflow,
-            due_at_ms,
-            run_id,
-            trigger,
-            requested_at_ms,
+            pending.job_id,
+            pending.workflow_id,
+            pending.due_at_ms,
+            pending.run_id,
+            pending.trigger,
+            pending.requested_at_ms,
           ),
         ],
         "scheduled_pending_append_failed",
       )
-      State(
-        ..state,
-        pending_scheduled_starts: dict.insert(
-          state.pending_scheduled_starts,
-          job.id,
-          ScheduledPendingStart(
-            job_id: job.id,
-            workflow_id: job.workflow,
-            due_at_ms: due_at_ms,
-            run_id: run_id,
-            trigger: trigger,
-            requested_at_ms: requested_at_ms,
-            attempt: 1,
-            blocking_reason: "",
-          ),
-        ),
-      )
+      state
     }
-    schedule_core.ScheduledSkipped(due_at_ms, run_id, reason, skipped_count) -> {
+    scheduled_runtime.RecordScheduledSkipped(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      reason,
+      skipped_count,
+    ) -> {
       append_ledger_bodies_best_effort(
         state,
         [
           record.ScheduledJobSkipped(
-            job.id,
-            job.workflow,
+            job_id,
+            workflow_id,
             due_at_ms,
             run_id,
             reason,
@@ -4157,21 +4077,115 @@ fn apply_scheduled_decision(
       )
       state
     }
-    schedule_core.ScheduledNextDue(next_due_at_ms) ->
-      State(
-        ..state,
-        scheduled_next_due: dict.insert(
-          state.scheduled_next_due,
-          job.id,
-          next_due_at_ms,
-        ),
+    scheduled_runtime.RecordScheduledPendingBlocked(pending, blocked_at_ms) -> {
+      append_ledger_bodies_best_effort(
+        state,
+        [
+          record.ScheduledRunPendingBlocked(
+            pending.job_id,
+            pending.workflow_id,
+            pending.due_at_ms,
+            pending.run_id,
+            pending.blocking_reason,
+            blocked_at_ms,
+          ),
+        ],
+        "scheduled_pending_blocked_append_failed",
       )
+      state
+    }
+    scheduled_runtime.UpdateNextDue(_, _) -> state
+    scheduled_runtime.ScheduleRetryTimer(run_id, generation, delay_ms) ->
+      schedule_scheduled_retry_timer(state, run_id, generation, delay_ms)
+    scheduled_runtime.ScheduleReportRetryTimer(run_id, generation, delay_ms) ->
+      schedule_scheduled_report_retry_timer(state, run_id, generation, delay_ms)
+    scheduled_runtime.RecordScheduledRetry(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      next_attempt,
+      delay_ms,
+      generation,
+      reason,
+    ) -> {
+      case append_retry_record {
+        True -> {
+          let _retry_scheduled_appended =
+            append_ledger_bodies(
+              state,
+              [
+                record.ScheduledRunRetryScheduled(
+                  job_id,
+                  workflow_id,
+                  due_at_ms,
+                  run_id,
+                  next_attempt,
+                  delay_ms,
+                  generation,
+                  reason,
+                ),
+              ],
+              "scheduled_retry_append_failed",
+            )
+          state
+        }
+        False -> state
+      }
+    }
+    scheduled_runtime.PromoteRetryToPending(_) -> state
+    scheduled_runtime.RetryReport(job_id, run_id) ->
+      retry_scheduled_failure_report_by_identity(state, job_id, run_id)
   }
 }
 
+fn schedule_scheduled_retry_timer(
+  state: State,
+  run_id: String,
+  generation: Int,
+  delay_ms: Int,
+) -> State {
+  let timer =
+    state.dependencies.send_after(
+      state.subject,
+      delay_ms,
+      ScheduledRetryTick(run_id, generation),
+    )
+  State(
+    ..state,
+    scheduled_retry_timers: dict.insert(
+      state.scheduled_retry_timers,
+      run_id,
+      timer,
+    ),
+  )
+}
+
+fn schedule_scheduled_report_retry_timer(
+  state: State,
+  run_id: String,
+  generation: Int,
+  delay_ms: Int,
+) -> State {
+  let timer =
+    state.dependencies.send_after(
+      state.subject,
+      delay_ms,
+      ScheduledReportRetryTick(run_id, generation),
+    )
+  State(
+    ..state,
+    scheduled_report_retry_timers: dict.insert(
+      state.scheduled_report_retry_timers,
+      run_id,
+      timer,
+    ),
+  )
+}
+
 fn start_pending_scheduled_runs(state: State) -> State {
-  state.pending_scheduled_starts
-  |> dict.values
+  state.scheduled_runtime
+  |> scheduled_runtime.pending_starts
   |> list.fold(state, fn(state, pending) {
     start_pending_scheduled_run(state, pending)
   })
@@ -4179,7 +4193,7 @@ fn start_pending_scheduled_runs(state: State) -> State {
 
 fn start_pending_scheduled_run(
   state: State,
-  pending: ScheduledPendingStart,
+  pending: scheduled_runtime.PendingStart,
 ) -> State {
   case state.operator_paused {
     True -> block_pending_scheduled_run(state, pending, "paused")
@@ -4194,37 +4208,18 @@ fn start_pending_scheduled_run(
 
 fn block_pending_scheduled_run(
   state: State,
-  pending: ScheduledPendingStart,
+  pending: scheduled_runtime.PendingStart,
   reason: String,
 ) -> State {
-  case pending.blocking_reason == reason {
-    True -> state
-    False -> {
-      append_ledger_bodies_best_effort(
-        state,
-        [
-          record.ScheduledRunPendingBlocked(
-            pending.job_id,
-            pending.workflow_id,
-            pending.due_at_ms,
-            pending.run_id,
-            reason,
-            state.dependencies.now_ms(),
-          ),
-        ],
-        "scheduled_pending_blocked_append_failed",
-      )
-      let pending = ScheduledPendingStart(..pending, blocking_reason: reason)
-      State(
-        ..state,
-        pending_scheduled_starts: dict.insert(
-          state.pending_scheduled_starts,
-          pending.job_id,
-          pending,
-        ),
-      )
-    }
-  }
+  let #(runtime, actions) =
+    scheduled_runtime.block_pending_start(
+      state.scheduled_runtime,
+      pending.job_id,
+      reason,
+      state.dependencies.now_ms(),
+    )
+  let state = State(..state, scheduled_runtime: runtime)
+  apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
 }
 
 fn scheduled_slot_available_for_start(state: State) -> Bool {
@@ -4482,7 +4477,7 @@ fn spawn_worker(
 
 fn spawn_scheduled_worker_for_pending(
   state: State,
-  pending: ScheduledPendingStart,
+  pending: scheduled_runtime.PendingStart,
 ) -> State {
   case
     runtime_bundle.workflow_by_id(state.workflow.bundle, pending.workflow_id)
@@ -4504,8 +4499,8 @@ fn spawn_scheduled_worker_for_pending(
       )
       State(
         ..state,
-        pending_scheduled_starts: dict.delete(
-          state.pending_scheduled_starts,
+        scheduled_runtime: scheduled_runtime.remove_pending_start(
+          state.scheduled_runtime,
           pending.job_id,
         ),
       )
@@ -4539,8 +4534,8 @@ fn spawn_scheduled_worker_for_pending(
           )
           State(
             ..state,
-            pending_scheduled_starts: dict.delete(
-              state.pending_scheduled_starts,
+            scheduled_runtime: scheduled_runtime.remove_pending_start(
+              state.scheduled_runtime,
               pending.job_id,
             ),
           )
@@ -4553,7 +4548,7 @@ fn spawn_scheduled_worker_for_pending(
 
 fn spawn_scheduled_worker_with_run_root(
   state: State,
-  pending: ScheduledPendingStart,
+  pending: scheduled_runtime.PendingStart,
   dag: workflow_dag.WorkflowDag,
   run_root: String,
 ) -> State {
@@ -4671,8 +4666,8 @@ fn spawn_scheduled_worker_with_run_root(
   State(
     ..state,
     registry: worker_registry.register_scheduled_worker(state.registry, handle),
-    pending_scheduled_starts: dict.delete(
-      state.pending_scheduled_starts,
+    scheduled_runtime: scheduled_runtime.remove_pending_start(
+      state.scheduled_runtime,
       pending.job_id,
     ),
   )
@@ -5347,16 +5342,17 @@ fn finish_scheduled_worker_needs_human(
     ],
     "scheduled_failure_append_failed",
   )
-  begin_scheduled_failure_report(
+  begin_scheduled_failure_report_request(
     state,
-    handle.job_id,
-    handle.workflow_id,
-    handle.due_at_ms,
-    handle.run_id,
-    handle.attempt,
-    "needs_human",
-    Some(handle.run_root),
-    Some(handle.session_id),
+    scheduled_runtime.needs_human_follow_up(
+      handle.job_id,
+      handle.workflow_id,
+      handle.due_at_ms,
+      handle.run_id,
+      handle.attempt,
+      Some(handle.run_root),
+      Some(handle.session_id),
+    ),
   )
 }
 
@@ -5378,12 +5374,26 @@ fn finish_scheduled_worker_failure(
     Some(log.truncate(reason, 200)),
   )
   hub.finish_session(state.event_hub, handle.session_id, session_reason.Failed)
-  let next_attempt = handle.attempt + 1
-  let retry_exhausted =
-    schedule_core.retry_exhausted(
-      next_attempt,
+  let run_root = option.or(failure.run_root, Some(handle.run_root))
+  let #(runtime, follow_up) =
+    scheduled_runtime.worker_failure_follow_up(
+      state.scheduled_runtime,
+      handle.job_id,
+      handle.workflow_id,
+      handle.due_at_ms,
+      handle.run_id,
+      handle.attempt,
+      reason,
+      run_root,
+      Some(handle.session_id),
       state.workflow.effective.agent.max_retry_attempts,
+      state.workflow.effective.agent.max_retry_backoff_ms,
     )
+  let retry_exhausted = case follow_up {
+    scheduled_runtime.WorkerFailureReport(_) -> True
+    scheduled_runtime.WorkerFailureRetry(_) -> False
+  }
+  let state = State(..state, scheduled_runtime: runtime)
   append_ledger_bodies_best_effort(
     state,
     [
@@ -5396,46 +5406,33 @@ fn finish_scheduled_worker_failure(
         state.dependencies.now_ms(),
         reason,
         retry_exhausted,
-        option.or(failure.run_root, Some(handle.run_root)),
+        run_root,
       ),
     ],
     "scheduled_failure_append_failed",
   )
-  case retry_exhausted {
-    True ->
-      begin_scheduled_failure_report(
-        state,
-        handle.job_id,
-        handle.workflow_id,
-        handle.due_at_ms,
-        handle.run_id,
-        handle.attempt,
-        reason,
-        option.or(failure.run_root, Some(handle.run_root)),
-        Some(handle.session_id),
-      )
-    False ->
-      schedule_scheduled_retry(
-        state,
-        handle,
-        handle.due_at_ms,
-        next_attempt,
-        reason,
-      )
+  case follow_up {
+    scheduled_runtime.WorkerFailureReport(request) ->
+      begin_scheduled_failure_report_request(state, request)
+    scheduled_runtime.WorkerFailureRetry(actions) ->
+      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
   }
 }
 
-fn begin_scheduled_failure_report(
+fn begin_scheduled_failure_report_request(
   state: State,
-  job_id: String,
-  workflow_id: String,
-  due_at_ms: Int,
-  run_id: String,
-  attempt: Int,
-  reason: String,
-  run_root: Option(String),
-  session_id: Option(String),
+  request: scheduled_runtime.FailureReportRequest,
 ) -> State {
+  let scheduled_runtime.FailureReportRequest(
+    job_id: job_id,
+    workflow_id: workflow_id,
+    due_at_ms: due_at_ms,
+    run_id: run_id,
+    attempt: attempt,
+    reason: reason,
+    run_root: run_root,
+    session_id: session_id,
+  ) = request
   case scheduled_job_by_id(state, job_id) {
     Error(Nil) -> state
     Ok(job) ->
@@ -5476,7 +5473,9 @@ fn begin_scheduled_failure_report_for_job(
       state
     }
     True, Some(triage_state) -> {
-      let generation = state.next_scheduled_report_generation
+      let #(runtime, generation) =
+        scheduled_runtime.reserve_report_generation(state.scheduled_runtime)
+      let state = State(..state, scheduled_runtime: runtime)
       let publication =
         adapter.ScheduledFailurePublication(
           job_id: job.id,
@@ -5501,7 +5500,7 @@ fn begin_scheduled_failure_report_for_job(
       case state.tracker_adapter.scheduled_failures {
         Some(capability) ->
           enqueue_side_effect(
-            State(..state, next_scheduled_report_generation: generation + 1),
+            state,
             effect_runner.ReportScheduledFailure(
               generation: generation,
               publication: publication,
@@ -5543,146 +5542,39 @@ fn scheduled_failure_issue_id_for_state(
   }
 }
 
-fn schedule_scheduled_retry(
-  state: State,
-  handle: worker_registry.ScheduledWorkerHandle,
-  due_at_ms: Int,
-  next_attempt: Int,
-  reason: String,
-) -> State {
-  schedule_scheduled_retry_for_run(
-    state,
-    handle.job_id,
-    handle.workflow_id,
-    due_at_ms,
-    handle.run_id,
-    handle.attempt,
-    next_attempt,
-    reason,
-  )
-}
-
-fn schedule_scheduled_retry_for_run(
-  state: State,
-  job_id: String,
-  workflow_id: String,
-  due_at_ms: Int,
-  run_id: String,
-  current_attempt: Int,
-  next_attempt: Int,
-  reason: String,
-) -> State {
-  let generation = state.next_scheduled_retry_generation
-  let delay_ms =
-    schedule_core.retry_delay(
-      current_attempt,
-      state.workflow.effective.agent.max_retry_backoff_ms,
-    )
-  let timer =
-    state.dependencies.send_after(
-      state.subject,
-      delay_ms,
-      ScheduledRetryTick(run_id, generation),
-    )
-  let _retry_scheduled_appended =
-    append_ledger_bodies(
-      state,
-      [
-        record.ScheduledRunRetryScheduled(
-          job_id,
-          workflow_id,
-          due_at_ms,
-          run_id,
-          next_attempt,
-          delay_ms,
-          generation,
-          reason,
-        ),
-      ],
-      "scheduled_retry_append_failed",
-    )
-  State(
-    ..state,
-    scheduled_retries: dict.insert(
-      state.scheduled_retries,
-      run_id,
-      ScheduledRetryStart(
-        job_id: job_id,
-        workflow_id: workflow_id,
-        due_at_ms: due_at_ms,
-        run_id: run_id,
-        next_attempt: next_attempt,
-        generation: generation,
-        timer: timer,
-      ),
-    ),
-    next_scheduled_retry_generation: generation + 1,
-  )
-}
-
 fn handle_scheduled_retry_tick(
   state: State,
   run_id: String,
   generation: Int,
 ) -> State {
   let state = evaluate_scheduled_jobs(state)
-  case dict.get(state.scheduled_retries, run_id) {
-    Error(Nil) -> state
-    Ok(entry) ->
-      case entry.generation != generation {
-        True -> state
-        False ->
-          case
-            state.operator_paused || !scheduled_slot_available_for_start(state)
-          {
-            True -> defer_scheduled_retry(state, entry)
-            False -> start_scheduled_retry_now(state, entry)
-          }
-      }
-  }
-}
-
-fn defer_scheduled_retry(state: State, entry: ScheduledRetryStart) -> State {
-  let timer =
-    state.dependencies.send_after(
-      state.subject,
-      1000,
-      ScheduledRetryTick(entry.run_id, entry.generation),
+  let clear_timer =
+    scheduled_runtime.retry_tick_matches(
+      state.scheduled_runtime,
+      run_id,
+      generation,
     )
-  State(
-    ..state,
-    scheduled_retries: dict.insert(
-      state.scheduled_retries,
-      entry.run_id,
-      ScheduledRetryStart(..entry, timer: timer),
-    ),
-  )
-}
-
-fn start_scheduled_retry_now(
-  state: State,
-  entry: ScheduledRetryStart,
-) -> State {
+  let #(runtime, actions) =
+    scheduled_runtime.handle_retry_tick(
+      state.scheduled_runtime,
+      run_id,
+      generation,
+      state.dependencies.now_ms(),
+      scheduled_slot_available_for_start(state),
+      state.operator_paused,
+    )
+  let scheduled_retry_timers = case clear_timer {
+    True -> dict.delete(state.scheduled_retry_timers, run_id)
+    False -> state.scheduled_retry_timers
+  }
   let state =
     State(
       ..state,
-      scheduled_retries: dict.delete(state.scheduled_retries, entry.run_id),
-      pending_scheduled_starts: dict.insert(
-        state.pending_scheduled_starts,
-        entry.job_id,
-        ScheduledPendingStart(
-          job_id: entry.job_id,
-          workflow_id: entry.workflow_id,
-          due_at_ms: entry.due_at_ms,
-          run_id: entry.run_id,
-          trigger: "automatic",
-          requested_at_ms: state.dependencies.now_ms(),
-          attempt: entry.next_attempt,
-          blocking_reason: "",
-        ),
-      ),
+      scheduled_runtime: runtime,
+      scheduled_retry_timers: scheduled_retry_timers,
     )
-  start_pending_scheduled_runs(state)
+  apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
+  |> start_pending_scheduled_runs
 }
 
 fn handle_scheduled_failure_report_finished(
@@ -5720,14 +5612,20 @@ fn handle_scheduled_failure_report_success(
     #("linear_issue_id", issue_id),
     #("action", action),
   ])
-  append_ledger_bodies_best_effort(
+  let state =
     State(
       ..state,
-      scheduled_report_retries: dict.delete(
-        state.scheduled_report_retries,
+      scheduled_runtime: scheduled_runtime.clear_report_retry(
+        state.scheduled_runtime,
         publication.run_id,
       ),
-    ),
+      scheduled_report_retry_timers: dict.delete(
+        state.scheduled_report_retry_timers,
+        publication.run_id,
+      ),
+    )
+  append_ledger_bodies_best_effort(
+    state,
     [
       record.ScheduledFailureReported(
         publication.job_id,
@@ -5742,13 +5640,7 @@ fn handle_scheduled_failure_report_success(
     ],
     "scheduled_failure_report_append_failed",
   )
-  State(
-    ..state,
-    scheduled_report_retries: dict.delete(
-      state.scheduled_report_retries,
-      publication.run_id,
-    ),
-  )
+  state
 }
 
 fn handle_scheduled_failure_report_failure(
@@ -5757,18 +5649,16 @@ fn handle_scheduled_failure_report_failure(
   publication: adapter.ScheduledFailurePublication,
   err: error.TrackerError,
 ) -> State {
-  let delay_ms =
-    schedule_core.retry_delay(
+  let #(runtime, delay_ms, actions) =
+    scheduled_runtime.schedule_report_retry_after_failure(
+      state.scheduled_runtime,
+      publication.job_id,
+      publication.run_id,
       generation,
       state.workflow.effective.agent.max_retry_backoff_ms,
     )
   let next_retry_at_ms = state.dependencies.now_ms() + delay_ms
-  let timer =
-    state.dependencies.send_after(
-      state.subject,
-      delay_ms,
-      ScheduledReportRetryTick(publication.run_id, generation),
-    )
+  let state = State(..state, scheduled_runtime: runtime)
   log_state(state, "warn", "scheduled_failure_report_failed", [
     #("job_id", publication.job_id),
     #("run_id", publication.run_id),
@@ -5792,19 +5682,7 @@ fn handle_scheduled_failure_report_failure(
     ],
     "scheduled_failure_report_failed_append_failed",
   )
-  State(
-    ..state,
-    scheduled_report_retries: dict.insert(
-      state.scheduled_report_retries,
-      publication.run_id,
-      ScheduledReportRetryStart(
-        job_id: publication.job_id,
-        run_id: publication.run_id,
-        generation: generation,
-        timer: timer,
-      ),
-    ),
-  )
+  apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
 }
 
 fn handle_scheduled_report_retry_tick(
@@ -5812,51 +5690,57 @@ fn handle_scheduled_report_retry_tick(
   run_id: String,
   generation: Int,
 ) -> State {
-  case dict.get(state.scheduled_report_retries, run_id) {
-    Error(Nil) -> state
-    Ok(entry) ->
-      case entry.generation != generation {
-        True -> state
-        False ->
-          retry_scheduled_failure_report(
-            State(
-              ..state,
-              scheduled_report_retries: dict.delete(
-                state.scheduled_report_retries,
-                run_id,
-              ),
-            ),
-            entry,
-          )
-      }
+  let clear_timer =
+    scheduled_runtime.report_retry_tick_matches(
+      state.scheduled_runtime,
+      run_id,
+      generation,
+    )
+  let #(runtime, actions) =
+    scheduled_runtime.handle_report_retry_tick(
+      state.scheduled_runtime,
+      run_id,
+      generation,
+    )
+  let scheduled_report_retry_timers = case clear_timer {
+    True -> dict.delete(state.scheduled_report_retry_timers, run_id)
+    False -> state.scheduled_report_retry_timers
   }
+  let state =
+    State(
+      ..state,
+      scheduled_runtime: runtime,
+      scheduled_report_retry_timers: scheduled_report_retry_timers,
+    )
+  apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
 }
 
-fn retry_scheduled_failure_report(
+fn retry_scheduled_failure_report_by_identity(
   state: State,
-  entry: ScheduledReportRetryStart,
+  job_id: String,
+  run_id: String,
 ) -> State {
   case scheduled_projection_for_root(state.workflow.effective.workspace.root) {
     Error(err) -> {
       log_state(state, "warn", "scheduled_report_retry_projection_unavailable", [
-        #("job_id", entry.job_id),
-        #("run_id", entry.run_id),
+        #("job_id", job_id),
+        #("run_id", run_id),
         #("error", ledger_error_message(err)),
       ])
       state
     }
     Ok(projected) ->
-      case projection.scheduled_status_for(projected, entry.job_id) {
+      case projection.scheduled_status_for(projected, job_id) {
         Error(Nil) -> state
         Ok(status) ->
-          case scheduled_job_by_id(state, entry.job_id), status.current_run {
+          case scheduled_job_by_id(state, job_id), status.current_run {
             Ok(job), Some(run) ->
               begin_scheduled_failure_report_for_job(
                 state,
                 job,
                 status.workflow_id,
                 run.due_at_ms,
-                entry.run_id,
+                run_id,
                 normalized_scheduled_attempt(run.attempt),
                 optional_string_or_default(
                   status.last_failure_reason,
@@ -6736,9 +6620,12 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
   |> list.each(fn(handle) { stop_worker(handle) })
   worker_registry.scheduled_worker_handles(state.registry)
   |> list.each(fn(handle) { stop_scheduled_worker(handle) })
-  state.scheduled_retries
+  state.scheduled_retry_timers
   |> dict.values
-  |> list.each(fn(entry) { state.dependencies.cancel_timer(entry.timer) })
+  |> list.each(state.dependencies.cancel_timer)
+  state.scheduled_report_retry_timers
+  |> dict.values
+  |> list.each(state.dependencies.cancel_timer)
   let event_hub_shutdown_timeout_ms = 1000
   case hub.stop_and_wait(state.event_hub, event_hub_shutdown_timeout_ms) {
     Ok(Nil) -> Nil
@@ -6756,8 +6643,9 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
     workers: transition_types.new_worker_directory(),
     pending_claims: dict.new(),
     pending_dispatch_validations: dict.new(),
-    pending_scheduled_starts: dict.new(),
-    scheduled_retries: dict.new(),
+    scheduled_runtime: scheduled_runtime.new(),
+    scheduled_retry_timers: dict.new(),
+    scheduled_report_retry_timers: dict.new(),
     control_server: NoControlServer,
     control_file_path: None,
   )
