@@ -6,8 +6,25 @@ import scherzo/orchestrator/core
 import scherzo/orchestrator/transition_types
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_policy
 
 pub fn select_workflow_route(
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+) -> Result(String, #(String, String)) {
+  case
+    workflow_policy.classify_issue(context.effective.linear_contract, issue)
+  {
+    workflow_policy.WorkflowInvalid(violation) ->
+      Error(workflow_violation_to_route_error(violation))
+    workflow_policy.WorkflowSelected(id, _) ->
+      lookup_workflow(context.available_workflow_ids, id)
+    workflow_policy.WorkflowPolicyDisabled ->
+      select_unenforced_workflow_route(context, issue)
+  }
+}
+
+fn select_unenforced_workflow_route(
   context: transition_types.DispatchContext,
   issue: tracker_issue.Issue,
 ) -> Result(String, #(String, String)) {
@@ -28,6 +45,25 @@ pub fn select_workflow_route(
     [id] -> lookup_workflow(context.available_workflow_ids, id)
     _ ->
       Error(#("multiple_workflow_labels", "issue has multiple workflow labels"))
+  }
+}
+
+fn workflow_violation_to_route_error(
+  violation: workflow_policy.IssueWorkflowViolation,
+) -> #(String, String) {
+  case violation {
+    workflow_policy.MissingWorkflowLabel -> #(
+      "missing_workflow_label",
+      "issue has no workflow label",
+    )
+    workflow_policy.MultipleWorkflowLabels(_) -> #(
+      "multiple_workflow_labels",
+      "issue has multiple workflow labels",
+    )
+    workflow_policy.UnknownWorkflowLabel(label) -> #(
+      "unknown_workflow_label",
+      "unknown workflow label: " <> label,
+    )
   }
 }
 

@@ -193,7 +193,7 @@ fn workflow_label_requirements(
   |> list.map(fn(suffix) {
     LabelRequirement(
       name: normalize_label(contract.workflow_label_prefix <> suffix),
-      source: "linear_contract.workflow_labels",
+      source: "workflows",
     )
   })
   |> list.filter(fn(req) { req.name != "" })
@@ -206,7 +206,7 @@ fn support_label_requirements(
   |> list.map(fn(name) {
     LabelRequirement(
       name: normalize_label(name),
-      source: "linear_contract.support_labels",
+      source: "tracker.linear.labels.support",
     )
   })
   |> list.filter(fn(req) { req.name != "" })

@@ -84,22 +84,14 @@ fn empty_tracker_client() -> tracker.Client {
 }
 
 fn workflow_text(root: String, max_concurrent: Int) -> String {
-  workflow_text_with_linear_contract(root, max_concurrent, "")
+  workflow_text_with_label_policy(root, max_concurrent, False, False)
 }
 
-fn enforcing_linear_contract_text() -> String {
-  "linear_contract:
-  workflow_label_prefix: \"workflow:\"
-  workflow_labels: [implementation]
-  enforce_issue_workflow_labels: true
-  comment_on_invalid_workflow: true
-"
-}
-
-fn workflow_text_with_linear_contract(
+fn workflow_text_with_label_policy(
   root: String,
   max_concurrent: Int,
-  linear_contract_text: String,
+  require_exactly_one: Bool,
+  comment_on_invalid: Bool,
 ) -> String {
   "version: 1
 tracker:
@@ -125,11 +117,20 @@ agents:
       executable: fake
 task_routing:
   labels:
-    require_exactly_one: false
+    require_exactly_one: " <> bool_to_yaml(require_exactly_one) <> "
     default_workflow: implementation
+    on_invalid:
+      comment: " <> bool_to_yaml(comment_on_invalid) <> "
 workflows:
   implementation: workflows/implementation.yaml
-" <> linear_contract_text
+"
+}
+
+fn bool_to_yaml(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
+  }
 }
 
 fn write_workflow(dir: String, max_concurrent: Int) -> String {
@@ -138,11 +139,7 @@ fn write_workflow(dir: String, max_concurrent: Int) -> String {
 }
 
 fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
-  write_workflow_with_contract(
-    dir,
-    max_concurrent,
-    enforcing_linear_contract_text(),
-  )
+  write_workflow_with_label_policy(dir, max_concurrent, True, True)
 }
 
 fn write_enforcing_split_state_workflow(
@@ -151,10 +148,11 @@ fn write_enforcing_split_state_workflow(
 ) -> String {
   test_helpers.reset_dir(dir)
   let config_text =
-    workflow_text_with_linear_contract(
+    workflow_text_with_label_policy(
       dir <> "/workspaces",
       max_concurrent,
-      enforcing_linear_contract_text(),
+      True,
+      True,
     )
     |> string.replace(
       each: "    active: [Todo]",
@@ -342,18 +340,20 @@ steps:
   config_path
 }
 
-fn write_workflow_with_contract(
+fn write_workflow_with_label_policy(
   dir: String,
   max_concurrent: Int,
-  linear_contract_text: String,
+  require_exactly_one: Bool,
+  comment_on_invalid: Bool,
 ) -> String {
   test_helpers.reset_dir(dir)
   write_workflow_files(
     dir,
-    workflow_text_with_linear_contract(
+    workflow_text_with_label_policy(
       dir <> "/workspaces",
       max_concurrent,
-      linear_contract_text,
+      require_exactly_one,
+      comment_on_invalid,
     ),
   )
 }

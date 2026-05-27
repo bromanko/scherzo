@@ -12,6 +12,7 @@ import scherzo/template
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_completion_policy
 import scherzo/workflow_dag
+import scherzo/workflow_policy
 import scherzo/workspace_driver_discovery
 import scherzo/workspace_profile
 import simplifile
@@ -41,7 +42,12 @@ pub fn select_workflow(
   bundle: RuntimeBundle,
   issue: tracker_issue.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
-  select_routed_workflow(bundle.workflows, bundle.orchestrator.routing, issue)
+  select_routed_workflow(
+    bundle.workflows,
+    bundle.orchestrator.routing,
+    bundle.effective.linear_contract,
+    issue,
+  )
 }
 
 pub fn workflow_by_id(
@@ -79,6 +85,21 @@ pub fn load_with_env(
 fn select_routed_workflow(
   workflows: Dict(String, workflow_dag.WorkflowDag),
   routing: config_types.RoutingConfig,
+  linear_contract: config_types.LinearContractConfig,
+  issue: tracker_issue.Issue,
+) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
+  case workflow_policy.classify_issue(linear_contract, issue) {
+    workflow_policy.WorkflowInvalid(violation) ->
+      Error(workflow_violation_to_bundle_error(violation))
+    workflow_policy.WorkflowSelected(id, _) -> lookup_workflow(workflows, id)
+    workflow_policy.WorkflowPolicyDisabled ->
+      select_unenforced_routed_workflow(workflows, routing, issue)
+  }
+}
+
+fn select_unenforced_routed_workflow(
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+  routing: config_types.RoutingConfig,
   issue: tracker_issue.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
   let labels = workflow_labels(issue.labels, routing.workflow_label_prefix, [])
@@ -106,6 +127,22 @@ fn select_routed_workflow(
         "multiple_workflow_labels",
         "issue has multiple workflow labels",
       ))
+  }
+}
+
+fn workflow_violation_to_bundle_error(
+  violation: workflow_policy.IssueWorkflowViolation,
+) -> BundleError {
+  case violation {
+    workflow_policy.MissingWorkflowLabel ->
+      BundleError("missing_workflow_label", "issue has no workflow label")
+    workflow_policy.MultipleWorkflowLabels(_) ->
+      BundleError(
+        "multiple_workflow_labels",
+        "issue has multiple workflow labels",
+      )
+    workflow_policy.UnknownWorkflowLabel(label) ->
+      BundleError("unknown_workflow_label", "unknown workflow label: " <> label)
   }
 }
 

@@ -198,7 +198,7 @@ pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test(
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: driver\n  profiles:\n    driver:\n      driver:\n        command: scripts/driver\ntask_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Triage\n    partial_success: Triage\nworkflows:\n    implementation: workflows/implementation.yaml\n    maintenance: workflows/maintenance.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: driver\n  drivers:\n    driver:\n      type: custom\n      command: scripts/driver\ntask_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Triage\n    partial_success: Triage\nworkflows:\n    implementation: workflows/implementation.yaml\n    maintenance: workflows/maintenance.yaml\n",
     )
 
   let assert Ok(bundle) =
@@ -735,6 +735,38 @@ pub fn selects_yaml_workflow_from_issue_label_test() {
   let assert Ok(#("implementation", dag)) =
     runtime_bundle.select_workflow(bundle, issue(["workflow:implementation"]))
   assert dag.id == "implementation"
+}
+
+pub fn select_workflow_rejects_scheduled_only_label_when_policy_enforced_test() {
+  let dir = "test/tmp/runtime-bundle-scheduled-only-routing"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: run\n    kind: command\n    run: echo implementation\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/scheduled-maintenance.yaml",
+      "version: 1\nid: scheduled-maintenance\nsteps:\n  - id: run\n    kind: command\n    run: echo scheduled\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    project: TEST\n    check_setup: true\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n  implementation: workflows/implementation.yaml\n  scheduled-maintenance: workflows/scheduled-maintenance.yaml\nscheduled_jobs:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\n",
+    )
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert bundle.effective.linear_contract.workflow_labels == ["implementation"]
+  let assert Ok(#("implementation", _)) =
+    runtime_bundle.select_workflow(bundle, issue(["workflow:implementation"]))
+  let assert Error(runtime_bundle.BundleError("unknown_workflow_label", _)) =
+    runtime_bundle.select_workflow(
+      bundle,
+      issue(["workflow:scheduled-maintenance"]),
+    )
 }
 
 pub fn loads_checked_in_execplan_implementation_workflow_test() {

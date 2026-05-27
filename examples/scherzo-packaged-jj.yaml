@@ -6,6 +6,9 @@ tracker:
   linear:
     endpoint: https://api.linear.app/graphql
     project: YOUR_PROJECT_SLUG
+    check_setup: false
+    labels:
+      support: [needs-workflow, needs-clarification]
   states:
     ready: [Todo]
     active: [Todo, In Progress]
@@ -61,19 +64,3 @@ artifact_limits:
   command_stream_max_chars: 20000
   template_field_max_chars: 8000
   workflow_summary_max_chars: 20000
-linear_contract:
-  enabled: false
-  workflow_label_prefix: "workflow:"
-  workflow_labels: [implementation]
-  support_labels: [needs-workflow, needs-clarification]
-  required_states:
-    todo: Todo
-    in_progress: In Progress
-    done: Done
-    needs_workflow: Needs Workflow
-  handoff_state_bindings:
-    claim: in_progress
-    success: done
-    failure: needs_workflow
-  enforce_issue_workflow_labels: false
-  comment_on_invalid_workflow: false
