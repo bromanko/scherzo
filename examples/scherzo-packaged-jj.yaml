@@ -14,24 +14,23 @@ tracker:
     every: 30s
 workspace:
   root: .scherzo/workspaces
-  default_profile: isolated
-  profiles:
+  driver: isolated
+  drivers:
     isolated:
-      driver:
-        command: scherzo-workspace-jj
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
-        # Profile-local driver env values are literal strings, not secrets.
-        # Uncomment and adjust these examples when this packaged profile should
-        # avoid network fetches or use fork/upstream remotes.
-        # env:
-        #   SCHERZO_JJ_WORKSPACE_BASE: "@"
-        #   SCHERZO_JJ_WORKSPACE_FETCH_BASE: "false"
-        #   SCHERZO_JJ_WORKSPACE_REMOTE: upstream
-        #   SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
-        #   SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
-        #   SCHERZO_GITHUB_REPO: your-org/your-repo
-        #   SCHERZO_PR_DRAFT: "true"
+      type: custom
+      command: scherzo-workspace-jj
+      timeout: 60s
+      # Driver env values are literal strings, not secrets.
+      # Uncomment and adjust these examples when this packaged driver should
+      # avoid network fetches or use fork/upstream remotes.
+      # env:
+      #   SCHERZO_JJ_WORKSPACE_BASE: "@"
+      #   SCHERZO_JJ_WORKSPACE_FETCH_BASE: "false"
+      #   SCHERZO_JJ_WORKSPACE_REMOTE: upstream
+      #   SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
+      #   SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
+      #   SCHERZO_GITHUB_REPO: your-org/your-repo
+      #   SCHERZO_PR_DRAFT: "true"
 agent:
   max_concurrent_agents: 1
   max_turns: 20

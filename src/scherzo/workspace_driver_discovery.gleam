@@ -12,8 +12,6 @@ import scherzo/port
 import scherzo/workspace_driver_command
 import scherzo/workspace_driver_env
 
-const repo_root_placeholder = "$SCHERZO_REPO_ROOT"
-
 pub type DiscoveryError {
   DiscoveryError(profile_name: String, command: String, reason: String)
 }
@@ -47,16 +45,23 @@ pub fn enrich_profile(
 ) -> Result(config_types.WorkspaceHookProfile, DiscoveryError) {
   case profile.driver {
     None -> Ok(profile)
-    Some(driver) -> {
-      use capabilities <- result.try(discover_capabilities(
-        profile.name,
-        driver,
-        orchestrator,
-      ))
-      let driver =
-        config_types.WorkspaceDriverConfig(..driver, capabilities: capabilities)
-      Ok(config_types.WorkspaceHookProfile(..profile, driver: Some(driver)))
-    }
+    Some(driver) ->
+      case driver.capabilities {
+        [_, ..] -> Ok(profile)
+        [] -> {
+          use capabilities <- result.try(discover_capabilities(
+            profile.name,
+            driver,
+            orchestrator,
+          ))
+          let driver =
+            config_types.WorkspaceDriverConfig(
+              ..driver,
+              capabilities: capabilities,
+            )
+          Ok(config_types.WorkspaceHookProfile(..profile, driver: Some(driver)))
+        }
+      }
   }
 }
 
@@ -138,7 +143,10 @@ fn discovery_env_args(
 ) -> List(String) {
   let generated = [
     #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),
-    #("SCHERZO_REPO_ROOT", discovery_repo_root(orchestrator)),
+    #(
+      "SCHERZO_REPO_ROOT",
+      workspace_driver_command.default_repo_root(orchestrator),
+    ),
     #("SCHERZO_WORKSPACE_DRIVER", resolved_command),
   ]
   let base = case path.env("PATH") {
@@ -160,16 +168,7 @@ fn resolve_command(
   command: String,
   orchestrator: config_types.OrchestratorConfig,
 ) -> String {
-  case command == repo_root_placeholder {
-    True -> discovery_repo_root(orchestrator)
-    False ->
-      case string.starts_with(command, repo_root_placeholder <> "/") {
-        True ->
-          discovery_repo_root(orchestrator)
-          <> string.drop_start(command, string.length(repo_root_placeholder))
-        False -> command
-      }
-  }
+  workspace_driver_command.resolve(command, orchestrator)
 }
 
 fn discovery_repo_root(

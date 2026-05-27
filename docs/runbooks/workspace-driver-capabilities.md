@@ -1,6 +1,6 @@
 # Workspace driver capability discovery
 
-Scherzo no longer accepts `workspace.profiles.<name>.driver.capabilities` in orchestrator YAML. Driver capability metadata now comes from the trusted driver command itself. The normative discovery and capability contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
+Scherzo no longer accepts capability lists in orchestrator workspace-driver YAML. Built-in drivers provide known capabilities, and custom driver capability metadata comes from the trusted driver command itself. The normative discovery and capability contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
 
 Drivers self-describe through:
 
@@ -19,56 +19,48 @@ The command must print one JSON object with version `1` and the supported capabi
 If config loading reports a message like:
 
 ```text
-workspace.profiles.noop.driver.capabilities was removed; remove this key and ensure the configured driver implements describe --json. See docs/runbooks/workspace-driver-capabilities.md
+workspace.drivers.noop.capabilities was removed. Use driver describe --json. Capabilities are discovered from the workspace driver at runtime. See docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md.
 ```
 
 apply these steps:
 
-1. Remove the `capabilities:` key from the profile's `driver:` block. Keep `command`, `lifecycle`, and `timeout_ms`.
-2. Ensure the configured driver implements `describe --json` and exits 0 with valid metadata.
+1. Remove the `capabilities:` key from `workspace.drivers.<name>`.
+2. For `type: custom`, ensure the configured driver implements `describe --json` and exits 0 with valid metadata. Built-in `type: noop` and `type: jj` do not need discovery config.
 3. Rerun workflow-config validation or the test suite.
 
-A migrated source-tree profile should look like this when the config is at the repository root:
+A migrated artifact-only config can select the built-in no-op driver directly:
 
 ```yaml
 workspace:
-  profiles:
-    noop:
-      driver:
-        command: scripts/scherzo-workspace-noop
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
+  driver: noop
 ```
 
-A packaged deployment should use the installed command name instead:
+If you need a named no-op driver with explicit timeout or env, use `type: noop`:
 
 ```yaml
 workspace:
-  profiles:
-    noop:
-      driver:
-        command: scherzo-workspace-noop
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
+  driver: artifact-only
+  drivers:
+    artifact-only:
+      type: noop
+      timeout: 60s
 ```
 
-The packaged jj driver uses the same installed-command shape and can carry base policy in trusted `driver.env`:
+The jj driver can carry base policy with friendly fields:
 
 ```yaml
 workspace:
-  profiles:
+  driver: isolated
+  drivers:
     isolated:
-      driver:
-        command: scherzo-workspace-jj
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
-        env:
-          SCHERZO_JJ_WORKSPACE_REMOTE: upstream
-          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
-          SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
+      type: jj
+      remote: upstream
+      base_branch: trunk
+      publish_remote: origin
+      timeout: 60s
 ```
 
-For local/offline work use `SCHERZO_JJ_WORKSPACE_BASE=@`; for a repository that already has the selected base locally use `SCHERZO_JJ_WORKSPACE_FETCH_BASE=false`. In a fork/upstream recipe, `upstream` selects the base remote while `origin` selects the publication remote. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` do not configure jj workspace base, fetch, or publication remote behavior; a legacy-only `SCHERZO_PR_REMOTE` makes `publish-change` fail closed instead of silently publishing to `origin`. Set `SCHERZO_GITHUB_REPO=owner/repo` when `publish-change` should use an explicit GitHub repository instead of remote URL inference, for example with SSH host aliases. Set `SCHERZO_PR_DRAFT=true` to create draft GitHub PRs or `SCHERZO_PR_DRAFT=false` to force ready-for-review PRs; when it is unset, `publish-change` keeps the current default PR draft behavior. `publish-change` requires `gh`; packaged `scherzo-workspace-jj` includes it on the wrapper path, while source-tree users must provide `gh` on `PATH`.
+For local/offline work use `base: "@"`; for a repository that already has the selected base locally use `fetch_base: false`. In a fork/upstream recipe, `remote` selects the base remote while `publish_remote` selects the publication remote. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` do not configure jj workspace base, fetch, or publication remote behavior; a legacy-only `SCHERZO_PR_REMOTE` makes `publish-change` fail closed instead of silently publishing to `origin`. Set `github_repo: owner/repo` when `publish-change` should use an explicit GitHub repository instead of remote URL inference, for example with SSH host aliases. Put `SCHERZO_PR_DRAFT` in `env` when you need to force draft or ready-for-review PRs; when it is unset, `publish-change` keeps the current default PR draft behavior. `publish-change` requires `gh`; packaged `scherzo-workspace-jj` includes it on the wrapper path, while source-tree users must provide `gh` on `PATH`.
 
 Workflow requirements still belong in workflow YAML:
 
@@ -107,4 +99,4 @@ direnv exec . env PATH="$PWD/result/bin:$PATH" LINEAR_API_KEY=dummy gleam run --
 direnv exec . gleam test
 ```
 
-If discovery fails with `workspace_driver_discovery_failed`, inspect the profile name and command in the diagnostic. The usual causes are an old driver without `describe --json`, malformed JSON, an unknown or duplicate capability name, a nonzero exit, or a timeout.
+If discovery fails with `workspace_driver_discovery_failed`, inspect the driver name and command in the diagnostic. The usual causes are an old custom driver without `describe --json`, malformed JSON, an unknown or duplicate capability name, a nonzero exit, or a timeout.

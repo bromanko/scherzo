@@ -4,9 +4,9 @@ The portable research workflow lets an operator run a Scherzo research task in a
 
 ## Terms
 
-A workspace is the directory where Scherzo runs a workflow step. A workspace profile is operator configuration that decides how that directory is created, checked, and removed. A workspace driver is a trusted local executable named by the operator in the workspace profile. Workflow YAML may require a capability, but it must not supply the trusted driver command itself. The full normative driver contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
+A workspace is the directory where Scherzo runs a workflow step. A workspace driver is operator configuration that decides how that directory is created, checked, and removed. `workspace.driver` selects a built-in driver or a named `workspace.drivers.<name>` entry. Workflow YAML may require a capability, but it must not supply the trusted driver command itself. The full normative driver contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
 
-The `assert-only --path research-findings.md` capability must exit 0 only when `research-findings.md` is the only produced file or change according to the selected profile's baseline. It must exit nonzero with a bounded diagnostic when the file is missing or when any unexpected artifact is present.
+The `assert-only --path research-findings.md` capability must exit 0 only when `research-findings.md` is the only produced file or change according to the selected driver's baseline. It must exit nonzero with a bounded diagnostic when the file is missing or when any unexpected artifact is present.
 
 ## Files to copy
 
@@ -18,39 +18,42 @@ Copy these files into the target repository's Scherzo workflow directory:
 - `examples/workflows/schemas/provider/workflow-step-recovery-result.v1.schema.json`
 - `examples/workflows/schemas/workflow-step-recovery-result.v1.schema.json`
 
-The workflow selects `workspace_profile: noop` and declares `workspace_capabilities: [assert-only]`. You may rename the profile in your config, but if you do, update the workflow's `workspace_profile` to match.
+The workflow selects `workspace_profile: noop` and declares `workspace_capabilities: [assert-only]`. You may rename the driver in your config, but if you do, update the workflow's `workspace_profile` to match.
 
-## Minimal profile
+## Minimal driver config
 
-Use a driver-backed profile so Scherzo can create, check, and remove the artifact workspace through the same trusted command that provides `assert-only`.
+Use a workspace driver so Scherzo can create, check, and remove the artifact workspace through the same trusted command that provides `assert-only`.
 
-A minimal packaged artifact-only profile looks like this:
-
-    workspace:
-      root: .scherzo/workspaces
-      default_profile: noop
-      profiles:
-        noop:
-          driver:
-            command: scherzo-workspace-noop
-            lifecycle: [create, before-step, after-step, remove]
-            timeout_ms: 60000
-
-A source-tree checkout can instead point at the checked script layout:
+A minimal artifact-only config selects the built-in no-op driver:
 
     workspace:
       root: .scherzo/workspaces
-      default_profile: noop
-      profiles:
-        noop:
-          driver:
-            command: scripts/scherzo-workspace-noop
-            lifecycle: [create, before-step, after-step, remove]
-            timeout_ms: 60000
+      driver: noop
 
-The `driver.command` value should name the trusted executable configured by the operator. If Scherzo is installed as a package, use `command: scherzo-workspace-noop` for artifact-only research workspaces or `command: scherzo-workspace-jj` when the target repository should be prepared as a jj workspace. If the config file is at the repository root, `scripts/scherzo-workspace-noop` works for the checked script layout; the checked-in `examples/scherzo.yaml` lives under `examples/` and therefore uses `../scripts/scherzo-workspace-noop`. In another repository, place the wrapper at the same relative path from the config file, install it on `PATH`, or configure an absolute trusted script path. The driver must self-describe `assert-only` from `describe --json`; do not add profile-local `driver.capabilities`. Command steps receive `SCHERZO_WORKSPACE_DRIVER` verbatim and run from the prepared workspace, so workflows that call driver capabilities should resolve simple relative driver paths against `SCHERZO_CONFIG_DIR`, as `examples/workflows/research.yaml` does. Do not put secret material in `driver.command`.
+If you need to configure timeout or env, use a named `type: noop` driver:
 
-For packaged jj research profiles, use `driver.env` to make base policy explicit. `SCHERZO_JJ_WORKSPACE_BASE=@` is the local/offline recipe, `SCHERZO_JJ_WORKSPACE_FETCH_BASE=false` skips driver fetches, `SCHERZO_JJ_WORKSPACE_REMOTE=upstream` plus `SCHERZO_JJ_WORKSPACE_BASE_BRANCH=trunk` selects `trunk@upstream`, and `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=origin` keeps publication pointed at a fork remote. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` do not affect jj driver base, fetch, or publication remote selection; legacy-only `SCHERZO_PR_REMOTE` fails closed for `publish-change`, which requires `gh` when a workflow uses publication. Set `SCHERZO_GITHUB_REPO=owner/repo` when publication needs an explicit GitHub repository, such as with SSH host aliases.
+    workspace:
+      root: .scherzo/workspaces
+      driver: research
+      drivers:
+        research:
+          type: noop
+          timeout: 60s
+
+For a custom source-tree driver, configure the trusted command explicitly:
+
+    workspace:
+      root: .scherzo/workspaces
+      driver: research
+      drivers:
+        research:
+          type: custom
+          command: scripts/scherzo-workspace-noop
+          timeout: 60s
+
+A custom `command` should name the trusted executable configured by the operator. In another repository, place the wrapper at the configured relative path from the config file, install it on `PATH`, or configure an absolute trusted script path. Custom drivers must self-describe `assert-only` from `describe --json`; do not add capability lists to YAML. Command steps receive `SCHERZO_WORKSPACE_DRIVER` and run from the prepared workspace, so workflows that call driver capabilities should resolve simple relative custom driver paths against `SCHERZO_CONFIG_DIR`, as `examples/workflows/research.yaml` does. Do not put secret material in driver config.
+
+For packaged jj research drivers, prefer `type: jj` friendly fields to make base policy explicit. `base: "@"` is the local/offline recipe, `fetch_base: false` skips driver fetches, `remote: upstream` plus `base_branch: trunk` selects `trunk@upstream`, and `publish_remote: origin` keeps publication pointed at a fork remote. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` do not affect jj driver base, fetch, or publication remote selection; legacy-only `SCHERZO_PR_REMOTE` fails closed for `publish-change`, which requires `gh` when a workflow uses publication. Set `github_repo: owner/repo` when publication needs an explicit GitHub repository, such as with SSH host aliases.
 
 ## Driver behavior by workspace style
 
@@ -98,4 +101,4 @@ Before routing real tasks to the workflow, run a small manual check in a disposa
 3. Add `unexpected-artifact.txt` and run the same command; expect a nonzero exit and a diagnostic naming the unexpected artifact or changed-file set.
 4. Remove the unexpected file and run the workflow against a low-risk task; expect the terminal result to be the contents of `research-findings.md`.
 
-This workflow is safe to roll back by reverting the workflow YAML, prompt, and profile changes. It does not change stored tracker state or repository data beyond the temporary workflow workspace.
+This workflow is safe to roll back by reverting the workflow YAML, prompt, and driver config changes. It does not change stored tracker state or repository data beyond the temporary workflow workspace.

@@ -14,13 +14,12 @@ tracker:
     every: 30s
 workspace:
   root: .scherzo/workspaces
-  default_profile: noop
-  profiles:
+  driver: noop
+  drivers:
     noop:
-      driver:
-        command: scherzo-workspace-noop
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
+      type: custom
+      command: scherzo-workspace-noop
+      timeout: 60s
 agent:
   max_concurrent_agents: 1
   max_turns: 20

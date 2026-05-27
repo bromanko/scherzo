@@ -17,36 +17,29 @@ workspace:
   # land under repo-root/.scherzo/workspaces/<workflow>/<issue>/<run>/.
   root: workspaces
   # All checked-in dogfood workflows select dogfood-jj explicitly. Keep the
-  # same named profile as the documented default for ad-hoc routed workflows.
-  default_profile: dogfood-jj
-  profiles:
+  # same named driver as the documented default for ad-hoc routed workflows.
+  driver: dogfood-jj
+  drivers:
     dogfood-jj:
-      driver:
-        command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
-        env:
-          SCHERZO_JJ_WORKSPACE_REMOTE: scherzo-agent
-          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: main
-          SCHERZO_JJ_WORKSPACE_FETCH_BASE: "true"
-          SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: scherzo-agent
-          SCHERZO_GITHUB_REPO: scherzo-systems/scherzo
+      type: jj
+      remote: scherzo-agent
+      base_branch: main
+      fetch_base: true
+      publish_remote: scherzo-agent
+      github_repo: scherzo-systems/scherzo
+      timeout: 60s
     noop:
-      driver:
-        command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop"
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
-        env:
-          SCHERZO_GITHUB_REPO: scherzo-systems/scherzo
+      type: noop
+      timeout: 60s
+      env:
+        SCHERZO_GITHUB_REPO: scherzo-systems/scherzo
     origin-sync:
-      driver:
-        command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop"
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
-        env:
-          SCHERZO_GITHUB_REPO: scherzo-systems/scherzo
-          SCHERZO_ORIGIN_SYNC_REMOTE: scherzo-agent
-          SCHERZO_ORIGIN_SYNC_BRANCH: main
+      type: noop
+      timeout: 60s
+      env:
+        SCHERZO_GITHUB_REPO: scherzo-systems/scherzo
+        SCHERZO_ORIGIN_SYNC_REMOTE: scherzo-agent
+        SCHERZO_ORIGIN_SYNC_BRANCH: main
 agent:
   # Allow up to four dogfood agents to run in parallel. Set to 0 to pause new
   # dispatch while preserving workflow reload and running-worker reconciliation.

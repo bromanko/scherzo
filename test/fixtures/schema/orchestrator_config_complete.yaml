@@ -12,13 +12,12 @@ tracker:
     every: 45s
 workspace:
   root: workspaces
-  default_profile: fixture
-  profiles:
+  driver: fixture
+  drivers:
     fixture:
-      driver:
-        command: scripts/scherzo-workspace-noop
-        lifecycle: [create, before-step, after-step, remove]
-        timeout: 1234ms
+      type: custom
+      command: scripts/scherzo-workspace-noop
+      timeout: 1234ms
 hooks:
   before_run: test -d .git
   after_run: echo done

@@ -102,7 +102,7 @@ pub fn task_routing_labels_overrides_linear_contract_defaults_test() {
 
 pub fn orchestrator_config_resolves_routing_and_driver_profile_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/scherzo-workspace-noop\n        lifecycle: [create, before-step, after-step, remove]\n        timeout: 1234ms\nworkflows:\n    implementation: workflows/implementation.yaml\nartifact_limits:\n  command_stream_max_chars: 111\n  template_field_max_chars: 222\n  workflow_summary_max_chars: 333\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/scherzo-workspace-noop\n      timeout: 1234ms\nworkflows:\n    implementation: workflows/implementation.yaml\nartifact_limits:\n  command_stream_max_chars: 111\n  template_field_max_chars: 222\n  workflow_summary_max_chars: 333\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(source),
@@ -131,14 +131,14 @@ pub fn legacy_workspace_hooks_are_rejected_test() {
       "  root: workspaces\n  hooks:\n    create: legacy-create\n",
     )
   assert string.contains(message, "workspace.hooks")
-  assert string.contains(message, "no longer supported")
-  assert string.contains(message, "workspace.profiles.<name>.driver")
+  assert string.contains(message, "was removed")
+  assert string.contains(message, "workspace.drivers.<name>.type: custom")
 }
 
-pub fn workspace_profiles_resolve_default_and_named_drivers_test() {
+pub fn workspace_drivers_resolve_default_and_named_drivers_test() {
   let source =
     base_config_with_workspace(
-      "  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/isolated\n        timeout: 111ms\n    noop:\n      driver:\n        command: scripts/noop\n        lifecycle: [create]\n        timeout: 222ms\n",
+      "  root: workspaces\n  driver: isolated\n  drivers:\n    isolated:\n      type: custom\n      command: scripts/isolated\n      timeout: 111ms\n    noop:\n      type: custom\n      command: scripts/noop\n      timeout: 222ms\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -158,36 +158,31 @@ pub fn workspace_profiles_resolve_default_and_named_drivers_test() {
   assert isolated_driver.command == "scripts/isolated"
   assert isolated_driver.timeout_ms == 111
   assert noop_driver.command == "scripts/noop"
-  assert noop_driver.lifecycle == [config_types.LifecycleCreate]
+  assert noop_driver.lifecycle
+    == [
+      config_types.LifecycleCreate,
+      config_types.LifecycleBeforeStep,
+      config_types.LifecycleAfterStep,
+      config_types.LifecycleRemove,
+    ]
   assert noop_driver.timeout_ms == 222
   assert orchestrator.dag_hooks == config_types.empty_dag_hooks()
 }
 
-pub fn workspace_driver_legacy_timeout_ms_remains_supported_test() {
-  let source =
-    base_config_with_workspace(
-      "  root: workspaces\n  default_profile: legacy\n  profiles:\n    legacy:\n      driver:\n        command: scripts/legacy\n        timeout_ms: 1234\n    canonical:\n      driver:\n        command: scripts/canonical\n        timeout: 2s\n        timeout_ms: 999\n",
+pub fn workspace_driver_timeout_ms_is_rejected_test() {
+  let message =
+    invalid_workspace_error(
+      "  root: workspaces\n  driver: legacy\n  drivers:\n    legacy:\n      type: custom\n      command: scripts/legacy\n      timeout_ms: 1234\n",
     )
-  let assert Ok(orchestrator) =
-    config.resolve_orchestrator_root(
-      root(source),
-      "test/tmp/config/scherzo.yaml",
-      env,
-    )
-  let assert Ok(legacy) =
-    dict.get(orchestrator.workspace_profiles.profiles, "legacy")
-  let assert Ok(canonical) =
-    dict.get(orchestrator.workspace_profiles.profiles, "canonical")
-  let assert Some(legacy_driver) = legacy.driver
-  let assert Some(canonical_driver) = canonical.driver
-  assert legacy_driver.timeout_ms == 1234
-  assert canonical_driver.timeout_ms == 2000
+  assert string.contains(message, "workspace.drivers.legacy.timeout_ms")
+  assert string.contains(message, "workspace.drivers.legacy.timeout")
+  assert string.contains(message, "SCHERZO_YAML_SIMPLIFIED_V1")
 }
 
 pub fn driver_workspace_profile_parses_schema_test() {
   let source =
     base_config_with_workspace(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: \"$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop\"\n        lifecycle: [create, remove]\n        timeout: 1234ms\n    default-timeout:\n      driver:\n        command: scripts/default-timeout\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: \"$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop\"\n      timeout: 1234ms\n    default-timeout:\n      type: custom\n      command: scripts/default-timeout\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -205,6 +200,8 @@ pub fn driver_workspace_profile_parses_schema_test() {
   assert driver.lifecycle
     == [
       config_types.LifecycleCreate,
+      config_types.LifecycleBeforeStep,
+      config_types.LifecycleAfterStep,
       config_types.LifecycleRemove,
     ]
   assert driver.capabilities == []
@@ -219,7 +216,7 @@ pub fn driver_workspace_profile_parses_schema_test() {
 pub fn workspace_driver_profiles_resolve_dogfood_jj_shape_test() {
   let source =
     base_config_with_workspace(
-      "  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: \"$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj\"\n        lifecycle: [create, before-step, after-step, remove]\n        timeout: 60s\n",
+      "  root: workspaces\n  driver: dogfood-jj\n  drivers:\n    dogfood-jj:\n      type: jj\n      remote: scherzo-agent\n      base_branch: main\n      fetch_base: true\n      publish_remote: scherzo-agent\n      github_repo: scherzo-systems/scherzo\n      timeout: 60s\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -241,55 +238,72 @@ pub fn workspace_driver_profiles_resolve_dogfood_jj_shape_test() {
       config_types.LifecycleAfterStep,
       config_types.LifecycleRemove,
     ]
-  assert driver.capabilities == []
+  assert driver.capabilities
+    == [
+      config_types.WorkspaceStatus,
+      config_types.WorkspaceDiff,
+      config_types.WorkspaceChangedFiles,
+      config_types.WorkspaceAssertOnly,
+      config_types.WorkspaceBaseline,
+      config_types.WorkspaceRefreshBase,
+      config_types.WorkspacePublishChange,
+    ]
+  assert driver.env
+    == [
+      #("SCHERZO_GITHUB_REPO", "scherzo-systems/scherzo"),
+      #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main"),
+      #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", "true"),
+      #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "scherzo-agent"),
+      #("SCHERZO_JJ_WORKSPACE_REMOTE", "scherzo-agent"),
+    ]
   assert driver.timeout_ms == 60_000
 }
 
 pub fn profile_local_hooks_are_rejected_even_with_driver_test() {
   let message =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n      driver:\n        command: scripts/scherzo-workspace-jj\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/scherzo-workspace-jj\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n",
     )
-  assert string.contains(message, "workspace.profiles.noop.hooks")
-  assert string.contains(message, "no longer supported")
-  assert string.contains(message, "workspace.profiles.<name>.driver")
+  assert string.contains(message, "workspace.drivers.noop.hooks")
+  assert string.contains(message, "was removed")
+  assert string.contains(message, "workspace.drivers.noop.type: custom")
 }
 
 pub fn rejects_removed_driver_capabilities_config_test() {
   let message =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        capabilities: [assert-only]\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: run\n      capabilities: [assert-only]\n",
     )
-  assert string.contains(message, "workspace.profiles.noop.driver.capabilities")
-  assert string.contains(message, "describe --json")
-  assert string.contains(
-    message,
-    "docs/runbooks/workspace-driver-capabilities.md",
-  )
+  assert string.contains(message, "workspace.drivers.noop.capabilities")
+  assert string.contains(message, "driver describe --json")
+  assert string.contains(message, "SCHERZO_YAML_SIMPLIFIED_V1")
 }
 
-pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
-  let missing_shape =
+pub fn workspace_drivers_reject_invalid_driver_shapes_test() {
+  let missing_type =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop: {}\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop: {}\n",
     )
-  assert string.contains(missing_shape, "must define driver")
+  assert string.contains(
+    missing_type,
+    "workspace.drivers.noop.type is required",
+  )
 
   let empty_command =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: \"\"\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: \"\"\n",
     )
   assert string.contains(empty_command, "command must be non-empty")
 
   let command_with_whitespace =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: sh driver.sh\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: sh driver.sh\n",
     )
   assert string.contains(command_with_whitespace, "without whitespace")
 
   let command_with_shell_metacharacter =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/driver;rm\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/driver;rm\n",
     )
   assert string.contains(
     command_with_shell_metacharacter,
@@ -298,45 +312,36 @@ pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
 
   let unsupported_command_env =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: $OTHER_ROOT/scripts/driver\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: $OTHER_ROOT/scripts/driver\n",
     )
   assert string.contains(unsupported_command_env, "$SCHERZO_REPO_ROOT")
 
-  let lifecycle_not_list =
+  let command_on_builtin =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        lifecycle: create\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: noop\n      command: scripts/noop\n",
     )
-  assert string.contains(lifecycle_not_list, "lifecycle must be a list")
+  assert string.contains(command_on_builtin, "only valid for type: custom")
 
-  let unknown_lifecycle =
+  let lifecycle_config =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        lifecycle: [publish]\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: run\n      lifecycle: [create]\n",
     )
-  assert string.contains(unknown_lifecycle, "unknown lifecycle operation")
-
-  let duplicate_lifecycle =
-    invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        lifecycle: [create, create]\n",
-    )
-  assert string.contains(duplicate_lifecycle, "duplicate lifecycle operation")
+  assert string.contains(lifecycle_config, "workspace.drivers.noop.lifecycle")
+  assert string.contains(lifecycle_config, "Lifecycle selection was removed")
 
   let removed_capabilities =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        capabilities: [assert-only]\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: run\n      capabilities: [assert-only]\n",
     )
   assert string.contains(
     removed_capabilities,
-    "workspace.profiles.noop.driver.capabilities",
+    "workspace.drivers.noop.capabilities",
   )
   assert string.contains(removed_capabilities, "describe --json")
-  assert string.contains(
-    removed_capabilities,
-    "docs/runbooks/workspace-driver-capabilities.md",
-  )
 
   let invalid_timeout =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        timeout: 0ms\n",
+      "  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: run\n      timeout: 0ms\n",
     )
   assert string.contains(invalid_timeout, "timeout must be positive")
 }
@@ -344,16 +349,16 @@ pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
 pub fn workspace_hooks_cannot_coexist_with_driver_profiles_test() {
   let message =
     invalid_workspace_error(
-      "  root: workspaces\n  hooks:\n    create: legacy-create\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n",
+      "  root: workspaces\n  hooks:\n    create: legacy-create\n  drivers:\n    noop:\n      type: custom\n      command: scripts/noop\n",
     )
   assert string.contains(message, "workspace.hooks")
-  assert string.contains(message, "no longer supported")
+  assert string.contains(message, "was removed")
 }
 
 pub fn examples_workspace_driver_profiles_remain_parseable_test() {
   let source =
     base_config_with_workspace(
-      "  root: .scherzo/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step, after-step, remove]\n        timeout: 60s\n    noop:\n      driver:\n        command: scripts/scherzo-workspace-noop\n        lifecycle: [create, before-step, after-step, remove]\n        timeout: 60s\n",
+      "  root: .scherzo/workspaces\n  driver: isolated\n  drivers:\n    isolated:\n      type: custom\n      command: scripts/scherzo-workspace-jj\n      timeout: 60s\n    noop:\n      type: custom\n      command: scripts/scherzo-workspace-noop\n      timeout: 60s\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -374,10 +379,10 @@ pub fn examples_workspace_driver_profiles_remain_parseable_test() {
   assert noop_driver.timeout_ms == 60_000
 }
 
-pub fn workspace_profiles_reject_invalid_config_test() {
+pub fn workspace_drivers_reject_invalid_config_test() {
   let invalid_name =
     base_config_with_workspace(
-      "  root: workspaces\n  profiles:\n    Bad:\n      hooks: {}\n",
+      "  root: workspaces\n  drivers:\n    Bad:\n      type: custom\n      command: scripts/noop\n",
     )
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_orchestrator_root(
@@ -385,35 +390,23 @@ pub fn workspace_profiles_reject_invalid_config_test() {
       "test/tmp/config/scherzo.yaml",
       env,
     )
-  assert string.contains(message, "workspace.profiles.Bad")
+  assert string.contains(message, "workspace.drivers.Bad")
 
-  let missing_default =
+  let unknown_driver =
     base_config_with_workspace(
-      "  root: workspaces\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n",
+      "  root: workspaces\n  driver: missing\n  drivers:\n    noop:\n      type: custom\n      command: scripts/noop\n",
     )
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_orchestrator_root(
-      root(missing_default),
+      root(unknown_driver),
       "test/tmp/config/scherzo.yaml",
       env,
     )
-  assert string.contains(message, "workspace.default_profile is required")
-
-  let unknown_default =
-    base_config_with_workspace(
-      "  root: workspaces\n  default_profile: missing\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n",
-    )
-  let assert Error(error.InvalidConfig(message)) =
-    config.resolve_orchestrator_root(
-      root(unknown_default),
-      "test/tmp/config/scherzo.yaml",
-      env,
-    )
-  assert string.contains(message, "workspace.default_profile")
+  assert string.contains(message, "workspace.driver references unknown driver")
 
   let collision =
     base_config_with_workspace(
-      "  root: workspaces\n  hooks:\n    create: legacy\n  profiles:\n    default:\n      driver:\n        command: scripts/noop\n",
+      "  root: workspaces\n  hooks:\n    create: legacy\n  drivers:\n    default:\n      type: custom\n      command: scripts/noop\n",
     )
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_orchestrator_root(
@@ -422,7 +415,7 @@ pub fn workspace_profiles_reject_invalid_config_test() {
       env,
     )
   assert string.contains(message, "workspace.hooks")
-  assert string.contains(message, "no longer supported")
+  assert string.contains(message, "was removed")
 }
 
 pub fn orchestrator_config_parses_project_model_defaults_test() {

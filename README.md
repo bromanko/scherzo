@@ -84,17 +84,17 @@ This repository dogfoods the same shape under `.scherzo/` and keeps reusable exa
 
 ## Core concepts
 
-- **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, workspace profiles, pi settings, agent limits, handoff policy, routing, artifact limits, and Linear contract compatibility checks.
-- **Workspace profiles and drivers** decide where each step runs. Bundled packaged drivers include `scherzo-workspace-noop` for artifact-only workflows and `scherzo-workspace-jj` for jj-backed implementation workspaces. Custom drivers must follow the workspace driver spec.
+- **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, workspace drivers, pi settings, agent limits, handoff policy, routing, artifact limits, and Linear contract compatibility checks.
+- **Workspace drivers** decide where each step runs. Bundled packaged drivers include `scherzo-workspace-noop` for artifact-only workflows and `scherzo-workspace-jj` for jj-backed implementation workspaces. Custom drivers must follow the workspace driver spec.
 - **Workflow DAGs** are YAML files routed by task metadata, currently Linear workflow labels. Steps may be `kind: agent` steps using Markdown prompt templates or `kind: command` steps running shell validation. The `recover` stanza is currently reserved groundwork for bounded step remediation; runtime recovery is tracked as follow-up work.
 - **Structured output** lets an agent step return a required JSON artifact and validate it with baseline checks, JSON Schema validators, command validators, or both.
 - **Operator observability** includes daemon logs, retained artifacts, and outbound Linear comments. **Operator control** is local through `scherzoctl` commands such as `ps`, `session`, `events`, `attach`, `pause`, `resume`, `retry`, `park`, `abort`, and `prompt`.
 
-## Workspace profiles and drivers
+## Workspace drivers
 
-Workspace profiles and drivers decide where workflow steps run and what isolation/publish behavior they get. The normative contract is [docs/specs/WORKSPACE_DRIVER_SPEC.md](docs/specs/WORKSPACE_DRIVER_SPEC.md); migration notes for unsupported legacy workspace.hooks configuration are in [docs/runbooks/workspace-driver-migration.md](docs/runbooks/workspace-driver-migration.md).
+Workspace drivers decide where workflow steps run and what isolation/publish behavior they get. The normative contract is [docs/specs/WORKSPACE_DRIVER_SPEC.md](docs/specs/WORKSPACE_DRIVER_SPEC.md); migration notes for unsupported legacy workspace hooks/profile config are in [docs/runbooks/workspace-driver-migration.md](docs/runbooks/workspace-driver-migration.md).
 
-In config, `workspace.profiles.<name>.driver.command` points at a driver such as `command: scherzo-workspace-noop` for artifact-only workflows or `command: scherzo-workspace-jj` for jj-backed implementation workflows. Workflows request `workspace_capabilities`, and Scherzo exposes driver context such as `SCHERZO_WORKSPACE_DRIVER` and `SCHERZO_WORKSPACE_CAPABILITIES` to steps. Driver-specific settings may live in `driver.env`, for example `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE` or `SCHERZO_PR_DRAFT`, but `driver.env` is not a secret store. `SCHERZO_PR_DRAFT` accepts only `true` or `false`; when unset, PR publication keeps the driver's default draft behavior.
+In config, `workspace.driver` selects the built-in `noop` or `jj` driver, or a named entry under `workspace.drivers`. Named entries use `type: noop`, `type: jj`, or `type: custom`; custom entries provide `command` plus optional `timeout` and `env`, while `type: jj` supports friendly fields such as `publish_remote`, `github_repo`, and `fetch_base` that map to the driver environment. Workflows request `workspace_capabilities`, and Scherzo exposes driver context such as `SCHERZO_WORKSPACE_DRIVER` and `SCHERZO_WORKSPACE_CAPABILITIES` to steps. Driver-specific settings may live in `env`, for example `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE` or `SCHERZO_PR_DRAFT`, but driver env is not a secret store. `SCHERZO_PR_DRAFT` accepts only `true` or `false`; when unset, PR publication keeps the driver's default draft behavior.
 
 ## Using pi as an operator UI
 

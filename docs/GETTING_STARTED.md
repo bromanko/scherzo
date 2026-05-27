@@ -13,7 +13,7 @@ Keep this guide practical and use the normative specs when you need exact contra
 Adapt Scherzo in this order so each layer can be checked before the next one adds risk:
 
 1. `.scherzo/scherzo.yaml`
-2. workspace profile / driver
+2. workspace driver
 3. tracker adapter setup, Linear workflow labels, and routing
 4. workflow DAG
 5. prompt templates
@@ -119,7 +119,7 @@ mkdir -p .scherzo/workflows/prompts schemas scripts
 # ln -sfn "$bundle" .scherzo/workflows
 ```
 
-Start with a minimal no-op workspace profile. This is useful for research, planning, and artifact-only workflows because it does not require a VCS-backed implementation workspace.
+Start with the built-in no-op workspace driver. This is useful for research, planning, and artifact-only workflows because it does not require a VCS-backed implementation workspace.
 
 ```yaml
 # .scherzo/scherzo.yaml
@@ -145,13 +145,8 @@ polling:
 workspace:
   # Relative to .scherzo/scherzo.yaml, so this becomes .scherzo/workspaces/.
   root: workspaces
-  default_profile: noop
-  profiles:
-    noop:
-      driver:
-        command: scherzo-workspace-noop
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
+  # Omit this to use the same built-in no-op default.
+  driver: noop
 
 agent:
   max_concurrent_agents: 1
@@ -324,25 +319,19 @@ Use `_id` keys such as `default_completion_state_id` or `failure_state_id` when 
 
 ## 5. Choose workspace behavior
 
-Workspace profiles are trusted operator policy under `workspace.profiles`. A workflow may select a named profile and require driver capabilities, but workflow YAML cannot define the shell command that creates or removes workspaces.
+Workspace drivers are trusted operator policy under `workspace.driver` and `workspace.drivers`. A workflow may select a named driver and require driver capabilities, but workflow YAML cannot define the shell command that creates or removes workspaces.
 
 ### `noop` for research and artifact-only workflows
 
-Use the bundled no-op driver when a workflow should produce artifacts or comments without modifying a VCS-backed implementation workspace.
+Use the built-in no-op driver when a workflow should produce artifacts or comments without modifying a VCS-backed implementation workspace. Missing `workspace.driver` also defaults to `noop`.
 
 ```yaml
 workspace:
   root: workspaces
-  default_profile: noop
-  profiles:
-    noop:
-      driver:
-        command: scherzo-workspace-noop
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
+  driver: noop
 ```
 
-A workflow can make that choice explicit:
+A workflow can make that choice explicit with the current workflow selector field:
 
 ```yaml
 version: 1
@@ -358,28 +347,26 @@ steps:
 
 ### `jj` for implementation workflows
 
-Use the bundled jj driver when implementation steps need isolated workspaces and later publication. Choose the base, fetch, and publish policy deliberately for your repository.
+Use the built-in jj driver when implementation steps need isolated workspaces and later publication. Choose the base, fetch, and publish policy deliberately for your repository.
 
 ```yaml
 workspace:
   root: workspaces
-  default_profile: isolated
-  profiles:
+  driver: isolated
+  drivers:
     isolated:
-      driver:
-        command: scherzo-workspace-jj
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
-        env:
-          # Local/offline starter policy: use the current jj change as base and
-          # do not fetch. Replace this with your real base/remote policy before
-          # unattended implementation work.
-          SCHERZO_JJ_WORKSPACE_BASE: "@"
-          SCHERZO_JJ_WORKSPACE_FETCH_BASE: "false"
-          # Examples for remote-backed policy:
-          # SCHERZO_JJ_WORKSPACE_REMOTE: upstream
-          # SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
-          # SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
+      type: jj
+      timeout: 60s
+      # Local/offline starter policy: use the current jj change as base and
+      # do not fetch. Replace this with your real base/remote policy before
+      # unattended implementation work.
+      base: "@"
+      fetch_base: false
+      # Examples for remote-backed policy:
+      # remote: upstream
+      # base_branch: trunk
+      # publish_remote: origin
+      # github_repo: your-org/your-repo
 ```
 
 Implementation workflows often require capabilities:
@@ -400,23 +387,22 @@ Configure the trusted command in the orchestrator config:
 ```yaml
 workspace:
   root: workspaces
-  default_profile: myrepo
-  profiles:
+  driver: myrepo
+  drivers:
     myrepo:
-      driver:
-        command: scripts/scherzo-workspace-myrepo
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
+      type: custom
+      command: scripts/scherzo-workspace-myrepo
+      timeout: 60s
 ```
 
-Then let workflows select the profile and require capabilities:
+Then let workflows select the driver name and require capabilities:
 
 ```yaml
 workspace_profile: myrepo
 workspace_capabilities: [status, diff, changed-files]
 ```
 
-A custom driver must implement discovery with `<driver> describe --json`, any configured lifecycle operations, and any advertised capabilities. See the [Workspace Driver Specification](specs/WORKSPACE_DRIVER_SPEC.md) for the exact command, JSON, exit-code, environment, and path-safety contract.
+A custom driver must implement discovery with `<driver> describe --json`, the lifecycle protocol, and any advertised capabilities. See the [Workspace Driver Specification](specs/WORKSPACE_DRIVER_SPEC.md) for the exact command, JSON, exit-code, environment, and path-safety contract.
 
 ## 6. Add workflow routing
 
@@ -656,7 +642,7 @@ Common doctor failures:
 | State/label mismatch | Board does not have configured states or labels | Create labels/states or adjust `linear_contract` and `tracker` config |
 | No workflow route | Task label suffix does not match `routing.workflows` | Add the workflow YAML and routing key or fix the Linear label |
 | Multiple workflow labels | `require_exactly_one_workflow_label: true` and task has more than one | Leave exactly one `workflow:*` label on the task |
-| Workspace driver discovery fails | Driver not on `PATH`, not executable, or invalid `describe --json` | Fix the profile command or implement the driver spec |
+| Workspace driver discovery fails | Driver not on `PATH`, not executable, or invalid `describe --json` | Fix `workspace.driver` / `workspace.drivers` or implement the driver spec |
 | Workspace lifecycle fails | Driver cannot create/remove scratch workspace or selected jj base is unavailable | Fix driver env, VCS state, base branch, or local permissions |
 | Legacy or unsupported shape | Config, workflow, driver, tracker, or local state uses an old shape | Read the diagnostic path/code and the [upgrade policy](runbooks/upgrades.md) or linked specific runbook |
 | Pi probe fails | `pi` missing, provider credentials missing, or command incompatible | Run `pi --mode rpc --no-session --rpc-message-updates off` manually and fix credentials/config |
@@ -669,7 +655,7 @@ After doctor passes, create or choose one low-risk task. With the Linear adapter
 - State is in `tracker.dispatch_states`, for example `Todo`.
 - Project matches `tracker.linear.project_slug`.
 - Exactly one workflow label is present, for example `workflow:getting-started`.
-- The task description is safe for the configured workflow and workspace profile.
+- The task description is safe for the configured workflow and workspace driver.
 
 Run one eligible task and exit:
 
@@ -739,7 +725,7 @@ Use `ps --json` and `session --json` when scripting or when an agent is acting a
 - [ ] Scherzo command is installed and `scherzo --version` works.
 - [ ] `LINEAR_API_KEY` is set outside committed config.
 - [ ] `.scherzo/scherzo.yaml` has the right tracker adapter kind, Linear project slug, states, and dispatch states.
-- [ ] Workspace profile starts with `noop` for artifact-only workflows or a reviewed `jj`/custom driver for implementation workflows.
+- [ ] Workspace driver starts with built-in `noop` for artifact-only workflows or a reviewed `jj`/custom driver for implementation workflows.
 - [ ] Custom workspace driver, if any, passes `describe --json` and follows the workspace driver spec.
 - [ ] Workflow labels exist in the tracker and match `routing.workflows` suffixes.
 - [ ] One workflow YAML DAG exists and has a matching prompt template.

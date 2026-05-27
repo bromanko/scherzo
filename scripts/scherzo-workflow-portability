@@ -81,7 +81,7 @@ def workspace_profile(contents: str) -> str | None:
 
 def rewrite_config(repo_root: Path, stage_root: Path) -> Path:
     source = read_text(repo_root / ".scherzo" / "scherzo.yaml")
-    replacements = [
+    optional_replacements = [
         (
             'command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"',
             'command: scherzo-workspace-jj',
@@ -90,6 +90,11 @@ def rewrite_config(repo_root: Path, stage_root: Path) -> Path:
             'command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop"',
             'command: scherzo-workspace-noop',
         ),
+    ]
+    for old, new in optional_replacements:
+        source = source.replace(old, new)
+
+    required_replacements = [
         (
             '  command: \'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi"\'',
             "  command: 'exec pi'",
@@ -99,7 +104,7 @@ def rewrite_config(repo_root: Path, stage_root: Path) -> Path:
             '    - \'exec pi "$@"\'',
         ),
     ]
-    for old, new in replacements:
+    for old, new in required_replacements:
         if old not in source:
             raise RuntimeError(
                 f"expected .scherzo/scherzo.yaml entry for portability rewrite: {old}"

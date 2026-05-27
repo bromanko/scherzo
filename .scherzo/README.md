@@ -11,7 +11,7 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Put runtime jj workspaces under `.scherzo/workspaces/<workflow-name>/`; they are ignored by git.
 - Config-relative paths are resolved from `.scherzo/scherzo.yaml`, so this repository uses `workspace.root: workspaces` to land at repo-root `.scherzo/workspaces`.
 - Populate Scherzo workspaces with `jj workspace add`, not separate `git clone` checkouts. New root workspaces use the canonical `SCHERZO_JJ_WORKSPACE_*` driver env configured under `.scherzo/scherzo.yaml` (`main@scherzo-agent` for this dogfood profile) and fall back through the selected local base branch and finally `@` only when no canonical base remote/branch is configured; set `SCHERZO_JJ_WORKSPACE_BASE` to override this for deliberate local dogfooding.
-- Keep dogfood workspace lifecycle policy explicit: `.scherzo/scherzo.yaml` defines `workspace.profiles.dogfood-jj.driver` as the documented default, and implementation/review workflows select it with top-level `workspace_profile: dogfood-jj`. Command-only root-maintenance schedules use no-op profiles and explicitly resolve `SCHERZO_REPO_ROOT` before touching the root checkout; `origin-sync` has its own no-op profile so its configured remote is not launcher-only environment.
+- Keep dogfood workspace lifecycle policy explicit: `.scherzo/scherzo.yaml` defines `workspace.drivers.dogfood-jj` as the documented default, and implementation/review workflows select it with top-level `workspace_profile: dogfood-jj`. Command-only root-maintenance schedules use no-op drivers and explicitly resolve `SCHERZO_REPO_ROOT` before touching the root checkout; `origin-sync` has its own no-op driver so its configured remote is not launcher-only environment.
 - The `dogfood-jj` workspace driver uses the trusted command `$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj` for lifecycle operations and self-describes the dogfood capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. The normative driver contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../docs/specs/WORKSPACE_DRIVER_SPEC.md); hook-backed profile configuration is unsupported legacy migration material covered by [`docs/runbooks/workspace-driver-migration.md`](../docs/runbooks/workspace-driver-migration.md). Do not add new dogfood hook snippets as the current convention.
 - Use `scripts/scherzo-pi` as the checked-in `pi.command` wrapper so workflows such as research and bundle-based ExecPlan can select `openai-codex/gpt-5.5:xhigh` while other workflows keep the default pi model.
 - Keep machine-specific variants as `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, `.scherzo/scherzo.local.yaml`, or `.scherzo/scherzo.local.yml`; they are ignored by git.
@@ -76,7 +76,7 @@ export SCHERZO_CLEANUP_WORKSPACE_ROOT="$SCHERZO_REPO_ROOT/.scherzo/workspaces"
 export SCHERZO_WORKSPACE_CLEANUP_ROOT="$SCHERZO_REPO_ROOT/.scherzo/workspaces"
 ```
 
-The checked-in `tracker.linear.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository. The `dogfood-jj` driver profile can infer the repository root from `.scherzo/scherzo.yaml`, while setting `SCHERZO_REPO_ROOT` makes the driver command independent of the current directory layout.
+The checked-in `tracker.linear.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository. The `dogfood-jj` driver can infer the repository root from `.scherzo/scherzo.yaml`, while setting `SCHERZO_REPO_ROOT` makes the driver command independent of the current directory layout.
 
 ### Scherzo agent devenv profile
 
@@ -103,7 +103,7 @@ SCHERZO_AGENT_JJ_WORKSPACE_BASE_BRANCH=main
 SCHERZO_AGENT_GITHUB_REPO=scherzo-systems/scherzo
 ```
 
-The older local aliases `SCHERZO_AGENT_PR_REMOTE` and `SCHERZO_AGENT_PR_REPO` are still accepted by the helper scripts when the new agent names are unset, but they no longer act as the primary jj driver configuration boundary. Keep non-secret driver policy in `.scherzo/scherzo.yaml` `driver.env`.
+The older local aliases `SCHERZO_AGENT_PR_REMOTE` and `SCHERZO_AGENT_PR_REPO` are still accepted by the helper scripts when the new agent names are unset, but they no longer act as the primary jj driver configuration boundary. Keep non-secret driver policy in `.scherzo/scherzo.yaml` under `workspace.drivers.<name>` friendly fields or `env`.
 
 `SCHERZO_AGENT_GITHUB_TOKEN` should be a fine-grained GitHub token limited to `scherzo-systems/scherzo`. It needs metadata read access, pull request read/write access, and issue read/write access for PR creation, PR lookup, feedback collection, and PR comments. The scripts map this value to `GH_TOKEN` and `GITHUB_TOKEN` only inside the profile and set `GH_CONFIG_DIR` to ignored `.scherzo/gh-agent/`; they do not run `gh auth login` or write the token to GitHub CLI config.
 

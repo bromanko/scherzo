@@ -10,7 +10,7 @@ Treat a change as breaking when an existing supported deployment could keep the 
 
 - orchestrator config keys, defaults, meanings, or required fields;
 - workflow YAML schema, prompt/template variables, structured-output declarations, or validator contracts;
-- workspace profile, workspace driver, lifecycle, capability, or environment-variable contracts;
+- workspace driver, lifecycle, capability, or environment-variable contracts;
 - tracker adapter task shape, capability names, handoff behavior, or Linear compatibility aliases;
 - persisted ledger records, projection snapshots, workflow checkpoints, artifacts, control protocol payloads, or offline state layout;
 - `scherzoctl` command behavior where scripts or operators rely on stable output; and
@@ -22,7 +22,7 @@ Internal refactors are not breaking when they preserve the same checked examples
 
 For every breaking change, make the compatibility decision explicit in the same change as the implementation.
 
-1. **Name the old shape.** Identify the exact old key, field, record version, workflow field, driver operation, command output, or runtime condition. Prefer path-like names such as `workspace.hooks`, `workspace.profiles.<name>.hooks`, `tracker.api_key`, or `ledger.schema_version`.
+1. **Name the old shape.** Identify the exact old key, field, record version, workflow field, driver operation, command output, or runtime condition. Prefer path-like names such as `workspace.hooks`, `workspace.default_profile`, `workspace.profiles`, `tracker.api_key`, or `ledger.schema_version`.
 2. **Choose the boundary.** Detect stale shapes at parse/load boundaries for config and workflow YAML, at discovery boundaries for drivers and tracker capabilities, at replay/decode boundaries for durable state, and at command/runtime boundaries when the shape only appears during execution.
 3. **Fail fast instead of emulating.** Do not silently reinterpret old input as new semantics. A temporary compatibility window may warn and continue only when a specific migration plan says so; the warning must still name the old shape and target shape.
 4. **Use stable diagnostic codes.** Diagnostics should have stable warning/error codes suitable for tests and operator search. Include the affected path/field and replacement path when safe. Keep text bounded and redacted.
@@ -38,7 +38,7 @@ A good breaking-change diagnostic is short, searchable, and actionable. It shoul
 
 - a stable `code` or event name, such as `invalid_config`, `legacy_tracker_field_ignored`, or `old_state_reset_required`;
 - the old path or shape, for example `workspace.hooks`;
-- the replacement or required action, for example `workspace.profiles.<name>.driver`;
+- the replacement or required action, for example `workspace.driver` / `workspace.drivers.<name>`;
 - the boundary where it was detected, such as config load, `doctor`, driver discovery, ledger replay, or `scherzoctl state status`;
 - a link to upgrade guidance; and
 - bounded context that avoids secrets, full prompts, raw tracker comments, and raw tool payloads.
@@ -82,18 +82,23 @@ Do not silently replay unsupported records as partial current state. Do not dele
 
 ## Concrete Scherzo examples
 
-### Legacy workspace hooks to workspace drivers
+### Legacy workspace hooks/profiles to workspace drivers
 
 Old shapes:
 
 - `workspace.hooks`
-- `workspace.profiles.<name>.hooks`
+- `workspace.default_profile`
+- `workspace.profiles`
+- `workspace.drivers.<name>.hooks`
+- `workspace.drivers.<name>.lifecycle`
+- `workspace.drivers.<name>.timeout_ms`
 
 Current target shape:
 
-- `workspace.profiles.<name>.driver`
+- `workspace.driver`
+- `workspace.drivers.<name>` with `type: noop`, `type: jj`, or `type: custom`
 
-Current behavior rejects those old shapes during workflow-config loading with `invalid_config`. The diagnostic names the old key, names the driver key, and links to [workspace driver migration](workspace-driver-migration.md). Checked configs must use driver-backed profiles; no compatibility window remains for hook-backed workspace profiles.
+Current behavior rejects those old shapes during workflow-config loading with `invalid_config`. The diagnostic names the old key, names the driver key, and links to [workspace driver migration](workspace-driver-migration.md) or the simplified YAML spec. Checked configs must use workspace drivers; no compatibility window remains for hook-backed workspace profiles.
 
 Recommended operator command:
 

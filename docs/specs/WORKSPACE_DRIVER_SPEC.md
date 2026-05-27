@@ -16,7 +16,7 @@ A Scherzo workspace driver is one trusted, operator-configured local command. Sc
 
 This specification covers:
 
-- the workspace profile fields that select a driver,
+- the workspace driver fields that select and configure a driver,
 - the driver command validation contract,
 - driver discovery through `describe --json`,
 - lifecycle command forms,
@@ -37,9 +37,9 @@ This specification does not prescribe one version-control backend, one publicati
 
 **Run root**: the per-run directory containing one or more logical workspaces, artifacts, and run-local state. `SCHERZO_RUN_ROOT` points at this directory when it is available.
 
-**Workspace profile**: operator-owned policy under `workspace.profiles.<name>` that decides how Scherzo prepares, checks, and removes workspaces.
+**Workspace driver config**: operator-owned policy under `workspace.driver` and `workspace.drivers.<name>` that decides how Scherzo prepares, checks, and removes workspaces.
 
-**Workspace driver**: the trusted local executable configured by `workspace.profiles.<name>.driver.command`.
+**Workspace driver**: the trusted local executable selected by `workspace.driver`. Built-in `noop` and `jj` drivers use bundled commands; `type: custom` entries provide a `command`.
 
 **Lifecycle operation**: a driver operation Scherzo invokes while creating, checking, or removing a workspace. Lifecycle operations may create or delete directories and therefore have stricter target-safety requirements than read-only capabilities.
 
@@ -47,38 +47,40 @@ This specification does not prescribe one version-control backend, one publicati
 
 **Driver reference**: an opaque backend-specific reference string accepted by a VCS-backed driver, such as a base revision, remote branch, change id, bookmark, or hosted-review target. Scherzo treats driver references as strings unless a command in this specification narrows the accepted shape.
 
-## 3. Workspace profile and driver configuration schema
+## 3. Workspace driver configuration schema
 
-A driver-backed profile is configured under the orchestrator `workspace` block:
+Workspace drivers are configured under the orchestrator `workspace` block. `workspace.driver` selects a built-in driver name (`noop` or `jj`) or a named entry under `workspace.drivers`. If `workspace.driver` is omitted, Scherzo selects the built-in `noop` driver.
 
 ```yaml
 workspace:
   root: .scherzo/workspaces
-  default_profile: isolated
-  profiles:
+  driver: isolated
+  drivers:
     isolated:
-      driver:
-        command: scripts/scherzo-workspace-jj
-        lifecycle: [create, before-step, after-step, remove]
-        timeout_ms: 60000
-        env:
-          SCHERZO_JJ_WORKSPACE_BASE: "@"
-          SCHERZO_JJ_WORKSPACE_REMOTE: upstream
-          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
+      type: jj
+      base: "@"
+      remote: upstream
+      base_branch: trunk
+      fetch_base: false
+      publish_remote: origin
+      github_repo: example/repo
+      timeout: 60s
 ```
 
-The driver schema fields are:
+Named driver entries have these fields:
 
 | Field | Required | Contract |
 | --- | --- | --- |
-| `command` | yes | One executable token naming the trusted driver command. See [command validation](#4-driver-command-validation). |
-| `lifecycle` | no | A list of lifecycle operation names Scherzo may invoke: `create`, `before-step`, `after-step`, and `remove`. Missing means the driver declares no lifecycle operations. Entries MUST be strings, known, and unique. |
-| `timeout_ms` | no | Positive integer timeout used by Scherzo for driver lifecycle and discovery invocations. Missing defaults to `60000`. |
-| `env` | no | A map of profile-local environment variable names to literal strings. Missing means no profile-local driver environment. Keys MUST match `[A-Za-z_][A-Za-z0-9_]*`, MUST be unique, and MUST NOT be Scherzo-generated variables such as `SCHERZO_WORKSPACE_DRIVER`, `SCHERZO_WORKSPACE_PATH`, or `SCHERZO_RUN_ID`. `PATH` is allowed. Values MUST be strings, including empty strings. |
+| `type` | yes | `noop`, `jj`, or `custom`. Built-in `noop`/`jj` names can also be selected directly with `workspace.driver`. |
+| `command` | custom only | One executable token naming the trusted driver command for `type: custom`. See [command validation](#4-driver-command-validation). `command` MUST NOT be configured for `type: noop` or `type: jj`. |
+| `timeout` | no | Positive duration used by Scherzo for driver lifecycle and discovery invocations. Missing defaults to `60s`. |
+| `env` | no | A map of driver environment variable names to literal strings. Missing means no driver-local environment. Keys MUST match `[A-Za-z_][A-Za-z0-9_]*`, MUST be unique, and MUST NOT be Scherzo-generated variables such as `SCHERZO_WORKSPACE_DRIVER`, `SCHERZO_WORKSPACE_PATH`, or `SCHERZO_RUN_ID`. `PATH` is allowed. Values MUST be strings, including empty strings. |
 
-`workspace.profiles.<name>.driver.capabilities` MUST NOT be configured. Scherzo discovers driver capabilities by invoking `<driver> describe --json`.
+`type: jj` entries MAY also use friendly fields that Scherzo maps to driver environment variables: `remote`, `base_branch`, `base`, `fetch_base`, `publish_remote`, and `github_repo`. A friendly field MUST NOT duplicate the same environment variable in `env`.
 
-A profile MUST contain a `driver` block and MUST NOT contain legacy `hooks`. Top-level `workspace.hooks` and profile-local `workspace.profiles.<name>.hooks` are unsupported migration input; Scherzo rejects them during config loading. Scherzo invokes the configured driver for supported lifecycle operations, discovers driver capabilities, exposes driver context to workflow code, and validates `workspace_capabilities` against the discovered capabilities.
+Public config MUST NOT set driver capabilities or lifecycle operations. Capabilities are discovered by invoking `<driver> describe --json` for custom drivers and are known for built-in drivers. Scherzo invokes every supported lifecycle operation (`create`, `before-step`, `after-step`, and `remove`) through the selected driver protocol.
+
+Top-level `workspace.hooks`, `workspace.default_profile`, `workspace.profiles`, driver-local `hooks`, driver-local `lifecycle`, and `timeout_ms` are unsupported migration input; Scherzo rejects them during config loading with migration hints.
 
 Workflow DAGs select and require workspace policy with:
 
@@ -87,20 +89,20 @@ workspace_profile: isolated
 workspace_capabilities: [changed-files, assert-only]
 ```
 
-A workflow MAY select a profile with `workspace_profile`. If omitted, Scherzo uses `workspace.default_profile`. A workflow MAY require capability names with `workspace_capabilities`; Scherzo MUST reject loading or dispatch when the selected profile's discovered driver capabilities do not include all required names.
+A workflow MAY select a driver with the current `workspace_profile` selector. If omitted, Scherzo uses `workspace.driver`. A workflow MAY require capability names with `workspace_capabilities`; Scherzo MUST reject loading or dispatch when the selected driver's capabilities do not include all required names.
 
 ## 4. Driver command validation
 
-`driver.command` MUST be a non-empty string after trimming. It MUST be one executable token with no whitespace. It MUST NOT contain shell metacharacters `;`, `&`, `|`, `<`, `>`, backtick, single quote, or double quote.
+A `type: custom` `command` MUST be a non-empty string after trimming. It MUST be one executable token with no whitespace. It MUST NOT contain shell metacharacters `;`, `&`, `|`, `<`, `>`, backtick, single quote, or double quote.
 
-`driver.command` MAY be:
+A custom `command` MAY be:
 
 - an absolute path,
 - a relative path resolved according to the invocation current working directory,
 - a PATH-resolved executable name, or
 - `$SCHERZO_REPO_ROOT` exactly or `$SCHERZO_REPO_ROOT/<path>`.
 
-`$SCHERZO_REPO_ROOT` is the only supported environment placeholder in `driver.command`. A command string containing any other `$` placeholder MUST be rejected by Scherzo config validation. Drivers and workflows MUST NOT rely on shell interpolation of `driver.command`; Scherzo invokes the command as an executable plus arguments, not by evaluating it as shell.
+`$SCHERZO_REPO_ROOT` is the only supported environment placeholder in a custom `command`. A command string containing any other `$` placeholder MUST be rejected by Scherzo config validation. Drivers and workflows MUST NOT rely on shell interpolation of the command; Scherzo invokes the command as an executable plus arguments, not by evaluating it as shell.
 
 Operators SHOULD prefer absolute paths, PATH-installed wrappers, or `$SCHERZO_REPO_ROOT/...` in reusable configs. Example configs under `examples/` use `../scripts/...` because the config file lives under `examples/`; configs copied to a repository root normally use `scripts/...`.
 
@@ -119,18 +121,18 @@ Discovery runs without a prepared workflow workspace. Scherzo runs discovery fro
 Discovery MUST use a minimal environment containing:
 
 - `PATH` when available,
-- profile-local `driver.env` entries,
+- driver-local `env` entries,
 - `SCHERZO_CONFIG_DIR`,
 - `SCHERZO_REPO_ROOT`, and
 - `SCHERZO_WORKSPACE_DRIVER` set to the resolved driver command.
 
-Profile `driver.env` values are trusted operator config and are literal strings. Scherzo MUST NOT expand `$NAME` or append inherited `PATH`; `PATH: "$PATH:/tool/bin"` is passed as the literal text `$PATH:/tool/bin`. If `driver.env` includes `PATH`, it replaces inherited `PATH` for discovery. Generated Scherzo variables override profile entries for the exact same key, and config validation rejects those generated keys before dispatch.
+Driver `env` values are trusted operator config and are literal strings. Scherzo MUST NOT expand `$NAME` or append inherited `PATH`; `PATH: "$PATH:/tool/bin"` is passed as the literal text `$PATH:/tool/bin`. If driver `env` includes `PATH`, it replaces inherited `PATH` for discovery. Generated Scherzo variables override driver entries for the exact same key, and config validation rejects those generated keys before dispatch.
 
 Discovery MUST NOT pass `SCHERZO_WORKSPACE_PATH` or `SCHERZO_WORKSPACE_CAPABILITIES`. A driver MUST NOT require a prepared workspace, credentials, network access, VCS access, or mutable filesystem state for `describe --json`.
 
 ### 5.2 Lifecycle invocation
 
-For driver-only profiles, Scherzo invokes lifecycle operations as argv commands, not shell snippets:
+For selected workspace drivers, Scherzo invokes lifecycle operations as argv commands, not shell snippets:
 
 ```text
 <driver> lifecycle create
@@ -139,13 +141,13 @@ For driver-only profiles, Scherzo invokes lifecycle operations as argv commands,
 <driver> lifecycle remove
 ```
 
-Lifecycle invocations run from the inferred repository root described above. Scherzo passes profile-local `driver.env`, then the selected profile's resolved driver context plus the workflow/run/workspace environment described in [environment variables](#54-environment-variables). Drivers MUST treat `SCHERZO_WORKSPACE_PATH` as the lifecycle target. Destructive lifecycle operations MUST NOT fall back to the current directory when `SCHERZO_WORKSPACE_PATH` is missing or empty.
+Lifecycle invocations run from the inferred repository root described above. Scherzo passes driver-local `env`, then the selected driver's resolved context plus the workflow/run/workspace environment described in [environment variables](#54-environment-variables). Drivers MUST treat `SCHERZO_WORKSPACE_PATH` as the lifecycle target. Destructive lifecycle operations MUST NOT fall back to the current directory when `SCHERZO_WORKSPACE_PATH` is missing or empty.
 
-If a driver-only profile omits `create` from `driver.lifecycle`, Scherzo may create the workspace directory itself. If `before-step`, `after-step`, or `remove` are omitted, Scherzo skips those driver lifecycle calls. Drivers intended for full lifecycle ownership SHOULD declare all four lifecycle operations.
+Public config no longer selects a lifecycle subset. Drivers SHOULD implement all four lifecycle operations; if an implementation intentionally treats an operation as a no-op, it SHOULD document that behavior and still exit successfully for the command form.
 
 ### 5.3 Capability invocation
 
-Workflow code invokes capabilities through `SCHERZO_WORKSPACE_DRIVER`. Command steps and agent-step shells run from the prepared workspace root and receive profile-local `driver.env` in addition to Scherzo-generated variables. A driver SHOULD interpret `SCHERZO_WORKSPACE_PATH` as the workspace root when it is set. Read-only or assertion capability commands MAY fall back to the current directory when `SCHERZO_WORKSPACE_PATH` is unset, because manually running a driver from a prepared workspace is useful for debugging.
+Workflow code invokes capabilities through `SCHERZO_WORKSPACE_DRIVER`. Command steps and agent-step shells run from the prepared workspace root and receive driver-local `env` in addition to Scherzo-generated variables. A driver SHOULD interpret `SCHERZO_WORKSPACE_PATH` as the workspace root when it is set. Read-only or assertion capability commands MAY fall back to the current directory when `SCHERZO_WORKSPACE_PATH` is unset, because manually running a driver from a prepared workspace is useful for debugging.
 
 Relative driver commands are exposed as configured or resolved by Scherzo. Workflow shell code that needs to call a simple relative driver command SHOULD resolve it against `SCHERZO_CONFIG_DIR` before invoking it, as the checked example workflows do.
 
@@ -170,7 +172,7 @@ Scherzo-provided driver environments may include:
 | `SCHERZO_ATTEMPT_KEY` | Stable step-attempt idempotency key. |
 | `SCHERZO_HOOK_IDEMPOTENCY_KEY` | Stable lifecycle idempotency key for the run/step. |
 | `SCHERZO_WORKSPACE_ROOT` | Configured workspace root from the orchestrator config. |
-| `SCHERZO_WORKSPACE_PROFILE` | Selected workspace profile name. |
+| `SCHERZO_WORKSPACE_PROFILE` | Selected workspace driver name; the legacy environment variable name is retained for workflow compatibility. |
 | `SCHERZO_WORKSPACE_NAME` | Logical workspace name for the current step. |
 | `SCHERZO_WORKSPACE_PATH` | Prepared workspace path. |
 | `SCHERZO_SOURCE_WORKSPACE_NAME` | Source logical workspace name when deriving a workspace, otherwise empty. |
@@ -180,7 +182,7 @@ Scherzo-provided driver environments may include:
 | `SCHERZO_SCHEDULE_STARTED_AT` | Scheduled start timestamp for scheduled runs. |
 | `SCHERZO_RUN_ATTEMPT` | Scheduled-run attempt number. |
 
-Drivers MUST tolerate absent optional variables. `driver.env` is not a secret store. Its values are visible to discovery, lifecycle, command-step, and agent-step subprocesses, may be printed by those subprocesses, and are included in execution fingerprints only as key names plus SHA-256 value digests under `value_sha256`. Prompt templates do not receive a `workspace.env` map. Scherzo applies limited redaction to Scherzo-owned diagnostics and artifacts only for likely-sensitive `driver.env` keys such as `SECRET`, `TOKEN`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, or `SESSION_KEY`, and only for non-empty values of at least eight characters. Drivers MUST NOT print secrets. Driver-authored output SHOULD avoid local absolute workspace roots unless it is relaying bounded output from an underlying tool failure.
+Drivers MUST tolerate absent optional variables. Driver `env` is not a secret store. Its values are visible to discovery, lifecycle, command-step, and agent-step subprocesses, may be printed by those subprocesses, and are included in execution fingerprints only as key names plus SHA-256 value digests under `value_sha256`. Prompt templates do not receive a `workspace.env` map. Scherzo applies limited redaction to Scherzo-owned diagnostics and artifacts only for likely-sensitive driver env keys such as `SECRET`, `TOKEN`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, or `SESSION_KEY`, and only for non-empty values of at least eight characters. Drivers MUST NOT print secrets. Driver-authored output SHOULD avoid local absolute workspace roots unless it is relaying bounded output from an underlying tool failure.
 
 ## 6. Metadata command: `describe --json`
 
@@ -477,9 +479,9 @@ Drivers are trusted operator commands, but they are still part of Scherzo's safe
 9. Drivers MUST NOT evaluate workflow-provided strings as shell. When a driver invokes backend tools, it SHOULD pass arguments as argv arrays rather than shell snippets.
 10. Drivers MUST keep diagnostics and relayed backend output bounded.
 
-## 12. Conformance profiles
+## 12. Driver conformance classes
 
-### 12.1 Artifact/no-op profile
+### 12.1 Artifact/no-op driver
 
 An artifact/no-op driver is suitable for workflows that only need an empty workspace and final artifact assertions. A conforming artifact/no-op driver SHOULD:
 
@@ -494,7 +496,7 @@ An artifact/no-op driver is suitable for workflows that only need an empty works
 
 `scripts/scherzo-workspace-noop` is the bundled artifact/no-op driver, and packaged installs expose the same command as `scherzo-workspace-noop`. It reports present files with `status: "modified"` because it has no VCS baseline.
 
-### 12.2 VCS-backed profile
+### 12.2 VCS-backed driver
 
 A VCS-backed driver is suitable for workflows that run in a source workspace and need changed-file inventory, diffs, base refresh, or publication. A conforming VCS-backed driver SHOULD:
 
