@@ -24,6 +24,8 @@ pub fn reject_removed_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
   use _ <- result.try(reject_removed_routing_keys(root))
   use _ <- result.try(reject_removed_polling_keys(root))
   use _ <- result.try(reject_removed_handoff_keys(root))
+  use _ <- result.try(reject_removed_agent_keys(root))
+  use _ <- result.try(reject_removed_pi_keys(root))
   reject_removed_tracker_state_keys(root)
 }
 
@@ -362,6 +364,103 @@ fn reject_removed_handoff_result_tail(
         Some(_) ->
           Error(migration_hint("handoff.enabled", "task_updates.enabled"))
         None -> Error(migration_hint("handoff", "task_updates"))
+      }
+  }
+}
+
+fn reject_removed_agent_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
+  case get_node(root, "agent") {
+    None -> Ok(Nil)
+    Some(agent) ->
+      reject_removed_child_key(
+        agent,
+        "agent",
+        agent_migration_hints(),
+        "agents",
+      )
+  }
+}
+
+fn agent_migration_hints() -> List(#(String, String)) {
+  [
+    #("max_concurrent_agents", "agents.concurrency"),
+    #("max_concurrent_agents_by_state", "agents.concurrency.by_state"),
+    #("max_turns", "agents.max_turns"),
+    #("max_retry_attempts", "agents.retries.attempts"),
+    #("max_retry_backoff_ms", "agents.retries.max_backoff"),
+    #("max_retry_backoff", "agents.retries.max_backoff"),
+    #("max_sessions_per_issue", "agents.sessions_per_task"),
+    #("context_recovery_max_attempts", "agents.recovery.attempts"),
+    #("context_recovery_prompt_char_limit", "agents.recovery.prompt_char_limit"),
+  ]
+}
+
+fn reject_removed_pi_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
+  case get_node(root, "pi") {
+    None -> Ok(Nil)
+    Some(pi) ->
+      reject_removed_child_key(pi, "pi", pi_migration_hints(), "agents.runtime")
+  }
+}
+
+fn pi_migration_hints() -> List(#(String, String)) {
+  [
+    #(
+      "command",
+      "agents.runtime.pi.executable and agents.runtime.pi.args; Scherzo owns protocol flags",
+    ),
+    #(
+      "argv",
+      "agents.runtime.pi.executable and agents.runtime.pi.args; Scherzo owns protocol flags",
+    ),
+    #("argv_env", "agents.runtime.pi.env"),
+    #("session_persistence", "agents.runtime.sessions: persistent"),
+    #("turn_timeout_ms", "agents.runtime.turn_timeout"),
+    #("turn_timeout", "agents.runtime.turn_timeout"),
+    #("read_timeout_ms", "agents.runtime.read_timeout"),
+    #("read_timeout", "agents.runtime.read_timeout"),
+    #("stall_timeout_ms", "agents.runtime.stall_timeout"),
+    #("stall_timeout", "agents.runtime.stall_timeout"),
+    #("ui_request_policy", "agents.runtime.ui_requests"),
+    #("ui_request_timeout_ms", "agents.runtime.ui_request_timeout"),
+    #("ui_request_timeout", "agents.runtime.ui_request_timeout"),
+    #("compatibility_probe", "agents.runtime.compatibility_check"),
+    #("auto_retry", "agents.runtime.auto_retry"),
+    #("model", "agents.model"),
+    #("thinking", "agents.thinking"),
+  ]
+}
+
+fn reject_removed_child_key(
+  node: yay.Node,
+  parent_path: String,
+  hints: List(#(String, String)),
+  generic_replacement: String,
+) -> Result(Nil, error.ConfigError) {
+  case first_present_hint(node, hints) {
+    Some(#(key, replacement)) ->
+      Error(migration_hint(removed_child_path(parent_path, key), replacement))
+    None -> Error(migration_hint(parent_path, generic_replacement))
+  }
+}
+
+fn removed_child_path(parent_path: String, key: String) -> String {
+  case parent_path == "pi" && key == "session_persistence" {
+    True -> "pi.session_persistence.enabled"
+    False -> parent_path <> "." <> key
+  }
+}
+
+fn first_present_hint(
+  node: yay.Node,
+  hints: List(#(String, String)),
+) -> Option(#(String, String)) {
+  case hints {
+    [] -> None
+    [#(key, replacement), ..rest] ->
+      case get_node(node, key) {
+        Some(_) -> Some(#(key, replacement))
+        None -> first_present_hint(node, rest)
       }
   }
 }

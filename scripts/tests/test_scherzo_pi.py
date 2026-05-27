@@ -85,15 +85,13 @@ class ScherzoPiRoutingTests(unittest.TestCase):
         for workspace_kind in ["execplan", "execplan-revision", "execplan-implementation"]:
             with self.subTest(workspace_kind=workspace_kind):
                 args = self.run_wrapper(workspace_kind)
-                self.assertEqual(args[:4], ["--model", "execplan-model", "--mode", "rpc"])
-                self.assertEqual(args[-3:], ["--no-session", "--rpc-message-updates", "off"])
+                self.assertEqual(args, ["--model", "execplan-model", "--prompt", "hello"])
 
     def test_retired_v2_workspace_kind_uses_default_model_routing(self):
         args = self.run_wrapper("execplan-v2")
 
         self.assertNotIn("execplan-model", args)
-        self.assertEqual(args[:2], ["--mode", "rpc"])
-        self.assertEqual(args[-3:], ["--no-session", "--rpc-message-updates", "off"])
+        self.assertEqual(args, ["--prompt", "hello"])
 
     def test_uses_core_direnv_packaged_pi_when_scherzo_pi_bin_unset(self):
         args = self.run_wrapper(
@@ -102,14 +100,12 @@ class ScherzoPiRoutingTests(unittest.TestCase):
             provide_core_direnv=True,
         )
 
-        self.assertEqual(args[:4], ["--model", "execplan-model", "--mode", "rpc"])
-        self.assertEqual(args[-3:], ["--no-session", "--rpc-message-updates", "off"])
+        self.assertEqual(args, ["--model", "execplan-model", "--prompt", "hello"])
 
     def test_research_workspace_uses_research_model(self):
         args = self.run_wrapper("research")
 
-        self.assertEqual(args[:4], ["--model", "research-model", "--mode", "rpc"])
-        self.assertEqual(args[-3:], ["--no-session", "--rpc-message-updates", "off"])
+        self.assertEqual(args, ["--model", "research-model", "--prompt", "hello"])
 
 
 if __name__ == "__main__":

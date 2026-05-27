@@ -196,8 +196,7 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
     )
   assert todo_limit == 1
 
-  assert effective.pi.command
-    == "pi --mode rpc --no-session --rpc-message-updates off"
+  assert effective.pi.command == "pi --mode rpc --rpc-message-updates off"
   assert effective.pi.turn_timeout_ms == 600_000
   assert effective.pi.read_timeout_ms == 7000
   assert effective.pi.stall_timeout_ms == 120_000
@@ -214,7 +213,10 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
       ),
     )
   assert effective.pi.session_persistence.enabled == True
-  assert effective.pi.session_persistence.recovery_prompt == "Resume safely."
+  assert string.contains(
+    effective.pi.session_persistence.recovery_prompt,
+    "being resumed by Scherzo",
+  )
 
   assert effective.handoff.enabled == True
   assert effective.handoff.comment_on_claim == True

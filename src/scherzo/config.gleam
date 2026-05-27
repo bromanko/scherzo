@@ -34,6 +34,18 @@ pub type ReloadResult {
 pub type Env =
   fn(String) -> Option(String)
 
+type AgentConcurrency {
+  AgentConcurrency(
+    default: Int,
+    by_state: dict.Dict(issue_state.IssueStateKey, Int),
+  )
+}
+
+type RuntimeSessions {
+  EphemeralSessions
+  PersistentSessions
+}
+
 pub fn config_warning_message(warning: config_types.ConfigWarning) -> String {
   config_types.config_warning_message(warning)
 }
@@ -65,7 +77,7 @@ pub fn default_hooks_config() -> config_types.HooksConfig {
 
 pub fn default_agent_config() -> config_types.AgentConfig {
   config_types.AgentConfig(
-    max_concurrent_agents: 10,
+    max_concurrent_agents: 1,
     max_turns: 20,
     max_retry_backoff_ms: 300_000,
     max_retry_attempts: 5,
@@ -372,26 +384,35 @@ fn resolve_hooks(
 fn resolve_agent(
   root: yay.Node,
 ) -> Result(config_types.AgentConfig, error.ConfigError) {
-  let agent = get_map(root, "agent")
-  let max_concurrent_agents =
-    get_int(agent, "max_concurrent_agents") |> int_default(10)
-  let max_turns = get_int(agent, "max_turns") |> int_default(20)
+  use agents <- result.try(get_map_strict_or_empty(root, "agents", "agents"))
+  use retries <- result.try(get_map_strict_or_empty(
+    agents,
+    "retries",
+    "agents.retries",
+  ))
+  use recovery <- result.try(get_map_strict_or_empty(
+    agents,
+    "recovery",
+    "agents.recovery",
+  ))
+  use concurrency <- result.try(resolve_agent_concurrency(agents))
+  let AgentConcurrency(default: max_concurrent_agents, by_state:) = concurrency
+  let max_turns = get_int(agents, "max_turns") |> int_default(20)
   use max_retry_backoff_ms <- result.try(
     duration_config.agent_max_retry_backoff_ms(root),
   )
-  let max_retry_attempts =
-    get_int(agent, "max_retry_attempts") |> int_default(5)
+  let max_retry_attempts = get_int(retries, "attempts") |> int_default(5)
   let max_sessions_per_issue =
-    get_int(agent, "max_sessions_per_issue") |> int_default(3)
+    get_int(agents, "sessions_per_task") |> int_default(3)
   let context_recovery_max_attempts =
-    get_int(agent, "context_recovery_max_attempts") |> int_default(1)
+    get_int(recovery, "attempts") |> int_default(1)
   let context_recovery_prompt_char_limit =
-    get_int(agent, "context_recovery_prompt_char_limit") |> int_default(40_000)
+    get_int(recovery, "prompt_char_limit") |> int_default(40_000)
 
   case max_concurrent_agents < 0 || context_recovery_max_attempts < 0 {
     True ->
       Error(error.InvalidConfig(
-        "agent.max_concurrent_agents and agent.context_recovery_max_attempts must be zero or positive",
+        "agents.concurrency and agents.recovery.attempts must be zero or positive",
       ))
     False ->
       case
@@ -401,7 +422,7 @@ fn resolve_agent(
         || max_sessions_per_issue <= 0
         || context_recovery_prompt_char_limit <= 0
       {
-        True -> Error(error.InvalidConfig("agent limits must be positive"))
+        True -> Error(error.InvalidConfig("agents limits must be positive"))
         False ->
           Ok(config_types.AgentConfig(
             max_concurrent_agents: max_concurrent_agents,
@@ -411,22 +432,56 @@ fn resolve_agent(
             max_sessions_per_issue: max_sessions_per_issue,
             context_recovery_max_attempts: context_recovery_max_attempts,
             context_recovery_prompt_char_limit: context_recovery_prompt_char_limit,
-            max_concurrent_agents_by_state: get_positive_int_map(
-              agent,
-              "max_concurrent_agents_by_state",
-            ),
+            max_concurrent_agents_by_state: by_state,
           ))
       }
+  }
+}
+
+fn resolve_agent_concurrency(
+  agents: yay.Node,
+) -> Result(AgentConcurrency, error.ConfigError) {
+  case get_node(agents, "concurrency") {
+    None -> Ok(AgentConcurrency(default: 1, by_state: dict.new()))
+    Some(yay.NodeInt(value)) ->
+      Ok(AgentConcurrency(default: value, by_state: dict.new()))
+    Some(yay.NodeMap(_) as concurrency) ->
+      Ok(AgentConcurrency(
+        default: get_int(concurrency, "default") |> int_default(1),
+        by_state: get_positive_int_map(concurrency, "by_state"),
+      ))
+    Some(_) ->
+      Error(error.InvalidConfig(
+        "agents.concurrency must be an integer or a map with default and by_state",
+      ))
   }
 }
 
 fn resolve_pi(
   root: yay.Node,
 ) -> Result(config_types.PiConfig, error.ConfigError) {
-  let pi = get_map(root, "pi")
-  let command =
-    get_string(pi, "command")
-    |> option.unwrap("pi --mode rpc --no-session --rpc-message-updates off")
+  use agents <- result.try(get_map_strict_or_empty(root, "agents", "agents"))
+  case get_node(agents, "runtime") {
+    None -> Ok(default_pi_config())
+    Some(yay.NodeMap(_) as runtime) -> resolve_pi_runtime(root, runtime)
+    Some(_) -> Error(error.InvalidConfig("agents.runtime must be a map"))
+  }
+}
+
+fn resolve_pi_runtime(
+  root: yay.Node,
+  runtime: yay.Node,
+) -> Result(config_types.PiConfig, error.ConfigError) {
+  use _ <- result.try(resolve_runtime_type(runtime))
+  use runtime_pi <- result.try(get_map_strict_or_empty(
+    runtime,
+    "pi",
+    "agents.runtime.pi",
+  ))
+  use sessions <- result.try(resolve_runtime_sessions(runtime))
+  use executable <- result.try(resolve_runtime_pi_executable(runtime_pi))
+  use user_args <- result.try(resolve_runtime_pi_args(runtime_pi))
+  use env <- result.try(resolve_runtime_pi_env(runtime_pi))
   use turn_timeout_ms <- result.try(duration_config.pi_turn_timeout_ms(root))
   use read_timeout_ms <- result.try(duration_config.pi_read_timeout_ms(root))
   use stall_timeout_ms <- result.try(duration_config.pi_stall_timeout_ms(root))
@@ -434,136 +489,220 @@ fn resolve_pi(
     duration_config.pi_ui_request_timeout_ms(root),
   )
   case
-    string.trim(command) == ""
-    || turn_timeout_ms <= 0
+    turn_timeout_ms <= 0
     || read_timeout_ms <= 0
     || stall_timeout_ms < 0
     || ui_request_timeout_ms <= 0
   {
-    True -> Error(error.InvalidConfig("invalid pi config"))
+    True -> Error(error.InvalidConfig("invalid agents.runtime config"))
     False -> {
-      use ui_request_policy <- result.try(
-        ui_policy(get_string(pi, "ui_request_policy")),
-      )
-      use argv_command <- result.try(resolve_pi_argv(pi))
-      use session_persistence <- result.try(resolve_pi_session_persistence(pi))
-      use _ <- result.try(validate_pi_session_persistence(
-        argv_command,
-        session_persistence,
+      let args = runtime_pi_args(user_args, sessions)
+      let session_persistence =
+        config_types.PiSessionPersistenceConfig(
+          enabled: runtime_sessions_persistent(sessions),
+          recovery_prompt: default_recovery_prompt(),
+        )
+      use ui_request_policy <- result.try(ui_policy_at(
+        get_string(runtime, "ui_requests"),
+        "agents.runtime.ui_requests",
       ))
       Ok(config_types.PiConfig(
-        command: command,
+        command: runtime_pi_shell_command(executable, args),
         turn_timeout_ms: turn_timeout_ms,
         read_timeout_ms: read_timeout_ms,
         stall_timeout_ms: stall_timeout_ms,
-        auto_retry: get_bool(pi, "auto_retry") |> bool_default(True),
+        auto_retry: get_bool(runtime, "auto_retry") |> bool_default(True),
         ui_request_policy: ui_request_policy,
         ui_request_timeout_ms: ui_request_timeout_ms,
-        compatibility_probe: get_bool(pi, "compatibility_probe")
+        compatibility_probe: get_bool(runtime, "compatibility_check")
           |> bool_default(True),
         rate_limit_payload: None,
-        argv_command: argv_command,
+        argv_command: Some(config_types.PiArgvCommand(
+          executable: executable,
+          args: args,
+          env: env,
+        )),
         session_persistence: session_persistence,
       ))
     }
   }
 }
 
-fn resolve_pi_argv(
-  pi: yay.Node,
-) -> Result(Option(config_types.PiArgvCommand), error.ConfigError) {
-  case get_node(pi, "argv") {
-    None -> Ok(None)
-    Some(yay.NodeSeq(values)) -> {
-      use argv <- result.try(read_string_values(values, "pi.argv", []))
-      case argv {
-        [] -> Error(error.InvalidConfig("pi.argv must be non-empty"))
-        [executable, ..args] -> {
-          use env <- result.try(get_string_map_strict(
-            pi,
-            "argv_env",
-            "pi.argv_env",
-          ))
-          Ok(
-            Some(config_types.PiArgvCommand(
-              executable: executable,
-              args: args,
-              env: env,
-            )),
-          )
-        }
-      }
-    }
-    Some(_) -> Error(error.InvalidConfig("pi.argv must be a string list"))
-  }
-}
-
-fn resolve_pi_session_persistence(
-  pi: yay.Node,
-) -> Result(config_types.PiSessionPersistenceConfig, error.ConfigError) {
-  let defaults =
-    config_types.PiSessionPersistenceConfig(
-      enabled: False,
-      recovery_prompt: default_recovery_prompt(),
-    )
-  case get_node(pi, "session_persistence") {
-    None -> Ok(defaults)
-    Some(node) ->
-      case node {
-        yay.NodeMap(_) -> {
-          use enabled_option <- result.try(get_bool_strict(
-            node,
-            "enabled",
-            "pi.session_persistence.enabled",
-          ))
-          use prompt_option <- result.try(get_optional_string_strict(
-            node,
-            "recovery_prompt",
-            "pi.session_persistence.recovery_prompt",
-          ))
-          Ok(config_types.PiSessionPersistenceConfig(
-            enabled: enabled_option |> bool_default(defaults.enabled),
-            recovery_prompt: prompt_option
-              |> optional_non_empty_string
-              |> option.unwrap(defaults.recovery_prompt),
-          ))
-        }
-        _ -> Error(error.InvalidConfig("pi.session_persistence must be a map"))
-      }
-  }
-}
-
-fn validate_pi_session_persistence(
-  argv_command: Option(config_types.PiArgvCommand),
-  session_persistence: config_types.PiSessionPersistenceConfig,
-) -> Result(Nil, error.ConfigError) {
-  case session_persistence.enabled {
-    False -> Ok(Nil)
-    True -> {
-      use argv <- result.try(required_option(
-        argv_command,
-        error.InvalidConfig("pi.session_persistence requires pi.argv"),
+fn resolve_runtime_type(runtime: yay.Node) -> Result(Nil, error.ConfigError) {
+  use type_option <- result.try(get_string_strict(
+    runtime,
+    "type",
+    "agents.runtime.type",
+  ))
+  case type_option {
+    None ->
+      Error(error.InvalidConfig(
+        "agents.runtime.type is required when agents.runtime is present",
       ))
-      case string.trim(argv.executable) == "" {
-        True ->
+    Some(value) ->
+      case value |> string.trim |> string.lowercase {
+        "pi" -> Ok(Nil)
+        other ->
           Error(error.InvalidConfig(
-            "pi.session_persistence requires pi.argv executable to be non-empty",
+            "agents.runtime.type must be pi; unsupported runtime: " <> other,
           ))
-        False ->
-          case has_forbidden_session_flag(argv.args) {
-            True ->
-              Error(error.InvalidConfig(
-                "pi.session_persistence requires pi.argv without --session or --no-session",
-              ))
-            False -> Ok(Nil)
-          }
       }
-    }
   }
 }
 
-fn has_forbidden_session_flag(args: List(String)) -> Bool {
-  list.any(args, fn(arg) { arg == "--session" || arg == "--no-session" })
+fn resolve_runtime_sessions(
+  runtime: yay.Node,
+) -> Result(RuntimeSessions, error.ConfigError) {
+  use sessions_option <- result.try(get_string_strict(
+    runtime,
+    "sessions",
+    "agents.runtime.sessions",
+  ))
+  let sessions = sessions_option |> option.unwrap("ephemeral")
+  case sessions |> string.trim |> string.lowercase {
+    "ephemeral" -> Ok(EphemeralSessions)
+    "persistent" -> Ok(PersistentSessions)
+    other ->
+      Error(error.InvalidConfig(
+        "agents.runtime.sessions must be ephemeral or persistent: " <> other,
+      ))
+  }
+}
+
+fn runtime_sessions_persistent(sessions: RuntimeSessions) -> Bool {
+  case sessions {
+    EphemeralSessions -> False
+    PersistentSessions -> True
+  }
+}
+
+fn resolve_runtime_pi_executable(
+  runtime_pi: yay.Node,
+) -> Result(String, error.ConfigError) {
+  use executable_option <- result.try(get_string_strict(
+    runtime_pi,
+    "executable",
+    "agents.runtime.pi.executable",
+  ))
+  let executable = executable_option |> option.unwrap("pi") |> string.trim
+  case executable == "" {
+    True ->
+      Error(error.InvalidConfig(
+        "agents.runtime.pi.executable must be non-empty",
+      ))
+    False -> Ok(executable)
+  }
+}
+
+fn resolve_runtime_pi_args(
+  runtime_pi: yay.Node,
+) -> Result(List(String), error.ConfigError) {
+  use args <- result.try(get_optional_string_list_strict(
+    runtime_pi,
+    "args",
+    "agents.runtime.pi.args",
+  ))
+  case list.find(args, forbidden_runtime_arg) {
+    Ok(arg) ->
+      Error(error.InvalidConfig(
+        "agents.runtime.pi.args must not contain Scherzo-owned pi flags: "
+        <> arg
+        <> ". Remove --session, --no-session, --mode, and --rpc-message-updates; Scherzo adds protocol and session flags automatically.",
+      ))
+    Error(Nil) -> Ok(args)
+  }
+}
+
+fn forbidden_runtime_arg(arg: String) -> Bool {
+  arg == "--session"
+  || string.starts_with(arg, "--session=")
+  || arg == "--no-session"
+  || arg == "--mode"
+  || string.starts_with(arg, "--mode=")
+  || arg == "--rpc-message-updates"
+  || string.starts_with(arg, "--rpc-message-updates=")
+}
+
+fn resolve_runtime_pi_env(
+  runtime_pi: yay.Node,
+) -> Result(List(#(String, String)), error.ConfigError) {
+  use env <- result.try(get_string_map_strict(
+    runtime_pi,
+    "env",
+    "agents.runtime.pi.env",
+  ))
+  case
+    list.find(env, fn(entry) {
+      let #(key, _) = entry
+      !valid_env_key(key)
+    })
+  {
+    Ok(#(key, _)) ->
+      Error(error.InvalidConfig(
+        "agents.runtime.pi.env keys must be valid environment variable names: "
+        <> key,
+      ))
+    Error(Nil) -> Ok(env)
+  }
+}
+
+fn valid_env_key(key: String) -> Bool {
+  case string.to_graphemes(key) {
+    [] -> False
+    [first, ..rest] -> is_env_key_start(first) && all(rest, is_env_key_char)
+  }
+}
+
+fn is_env_key_start(ch: String) -> Bool {
+  is_between(ch, "a", "z") || is_between(ch, "A", "Z") || ch == "_"
+}
+
+fn is_env_key_char(ch: String) -> Bool {
+  is_env_key_start(ch) || is_between(ch, "0", "9")
+}
+
+fn runtime_pi_args(
+  user_args: List(String),
+  sessions: RuntimeSessions,
+) -> List(String) {
+  list.append(user_args, runtime_protocol_args(sessions))
+}
+
+fn runtime_protocol_args(sessions: RuntimeSessions) -> List(String) {
+  let session_args = case sessions {
+    EphemeralSessions -> ["--no-session"]
+    PersistentSessions -> []
+  }
+  list.append(
+    ["--mode", "rpc"],
+    list.append(session_args, ["--rpc-message-updates", "off"]),
+  )
+}
+
+fn runtime_pi_shell_command(executable: String, args: List(String)) -> String {
+  shell_words([executable, ..args])
+}
+
+fn shell_words(words: List(String)) -> String {
+  words |> list.map(shell_word) |> string.join(with: " ")
+}
+
+fn shell_word(value: String) -> String {
+  case value != "" && all(string.to_graphemes(value), is_shell_safe_char) {
+    True -> value
+    False -> shell_quote(value)
+  }
+}
+
+fn is_shell_safe_char(ch: String) -> Bool {
+  is_between(ch, "a", "z")
+  || is_between(ch, "A", "Z")
+  || is_between(ch, "0", "9")
+  || list.contains(["/", ".", "-", "_", ":", "=", "+", ","], ch)
+}
+
+fn shell_quote(value: String) -> String {
+  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
 
 type TaskUpdateStates {
@@ -1186,10 +1325,10 @@ fn resolve_workspace_profiles(
 ) -> Result(config_types.WorkspaceHookProfiles, error.ConfigError) {
   let workspace = get_map(root, "workspace")
   use _ <- result.try(reject_legacy_workspace_hooks(workspace))
-  let has_configured_profiles = get_node(workspace, "profiles") != None
   use configured_profiles <- result.try(read_configured_workspace_profiles(
     workspace,
   ))
+  let has_configured_profiles = dict.size(configured_profiles) > 0
   let profiles =
     ensure_workspace_default_profile(
       configured_profiles,
@@ -1587,14 +1726,14 @@ fn resolve_artifact_limits(
 fn resolve_workflow_model_settings(
   root: yay.Node,
 ) -> Result(model_config.Settings, error.ConfigError) {
-  let pi = get_map(root, "pi")
+  let agents = get_map(root, "agents")
   model_config.read_settings(
-    pi,
+    agents,
     model_config.SettingsPaths(
-      provider_path: "pi.provider",
-      provider_model_path: "pi.model",
-      model_path: "pi.model",
-      thinking_path: "pi.thinking",
+      provider_path: "agents.provider",
+      provider_model_path: "agents.model",
+      model_path: "agents.model",
+      thinking_path: "agents.thinking",
     ),
     fn(_code, message) { error.InvalidConfig(message) },
   )
@@ -2031,8 +2170,9 @@ fn validate_handoff_binding_entries(
   }
 }
 
-fn ui_policy(
+fn ui_policy_at(
   value: Option(String),
+  path: String,
 ) -> Result(config_types.UiRequestPolicy, error.ConfigError) {
   case value {
     Some(value) ->
@@ -2041,8 +2181,7 @@ fn ui_policy(
         "fail" -> Ok(config_types.Fail)
         "ignore" -> Ok(config_types.Ignore)
         "operator" -> Ok(config_types.Operator)
-        other ->
-          Error(error.InvalidConfig("invalid pi.ui_request_policy: " <> other))
+        other -> Error(error.InvalidConfig("invalid " <> path <> ": " <> other))
       }
     None -> Ok(config_types.Cancel)
   }
@@ -2073,22 +2212,10 @@ fn reject_unknown_map_keys(
   allowed_keys: List(String),
 ) -> Result(Nil, error.ConfigError) {
   case node {
-    yay.NodeMap(entries) ->
-      reject_unknown_map_key_entries(entries, path, allowed_keys)
-    _ -> Ok(Nil)
-  }
-}
-
-fn reject_unknown_map_key_entries(
-  entries: List(#(yay.Node, yay.Node)),
-  path: String,
-  allowed_keys: List(String),
-) -> Result(Nil, error.ConfigError) {
-  case entries {
-    [] -> Ok(Nil)
-    [#(yay.NodeStr(key), _), ..rest] ->
+    yay.NodeMap([]) -> Ok(Nil)
+    yay.NodeMap([#(yay.NodeStr(key), _), ..rest]) ->
       case list.contains(allowed_keys, key) {
-        True -> reject_unknown_map_key_entries(rest, path, allowed_keys)
+        True -> reject_unknown_map_keys(yay.NodeMap(rest), path, allowed_keys)
         False ->
           Error(error.InvalidConfig(
             path
@@ -2098,7 +2225,9 @@ fn reject_unknown_map_key_entries(
             <> string.join(allowed_keys, with: ", "),
           ))
       }
-    [#(_, _), ..] -> Error(error.InvalidConfig(path <> " keys must be strings"))
+    yay.NodeMap([#(_, _), ..]) ->
+      Error(error.InvalidConfig(path <> " keys must be strings"))
+    _ -> Ok(Nil)
   }
 }
 

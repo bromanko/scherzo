@@ -32,20 +32,24 @@ workspace:
         #   SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
         #   SCHERZO_GITHUB_REPO: your-org/your-repo
         #   SCHERZO_PR_DRAFT: "true"
-agent:
-  max_concurrent_agents: 1
+agents:
+  concurrency: 1
   max_turns: 20
-  max_retry_backoff_ms: 300000
-  max_retry_attempts: 5
-  max_sessions_per_issue: 3
-pi:
-  command: "pi --mode rpc --no-session --rpc-message-updates off"
-  turn_timeout_ms: 3600000
-  read_timeout_ms: 5000
-  stall_timeout_ms: 300000
-  auto_retry: true
-  ui_request_policy: cancel
-  compatibility_probe: true
+  sessions_per_task: 3
+  retries:
+    max_backoff: 5m
+    attempts: 5
+  runtime:
+    type: pi
+    pi:
+      executable: pi
+      args: []
+    turn_timeout: 1h
+    read_timeout: 5s
+    stall_timeout: 5m
+    auto_retry: true
+    ui_requests: cancel
+    compatibility_check: true
 task_updates:
   enabled: false
   comment_on: [claim, success, failure, park]
