@@ -428,7 +428,7 @@ pub fn workspace_profiles_reject_invalid_config_test() {
 pub fn orchestrator_config_parses_project_model_defaults_test() {
   let source =
     base_config(
-      "pi:\n  model: github-copilot/gpt-5.1-codex\n  thinking: high\n",
+      "agents:\n  model: github-copilot/gpt-5.1-codex\n  thinking: high\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -442,7 +442,7 @@ pub fn orchestrator_config_parses_project_model_defaults_test() {
 }
 
 pub fn orchestrator_config_rejects_invalid_project_model_defaults_test() {
-  let invalid_thinking = base_config("pi:\n  thinking: extreme\n")
+  let invalid_thinking = base_config("agents:\n  thinking: extreme\n")
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       root(invalid_thinking),
@@ -450,7 +450,7 @@ pub fn orchestrator_config_rejects_invalid_project_model_defaults_test() {
       env,
     )
 
-  let invalid_model = base_config("pi:\n  model: \"sonnet:high\"\n")
+  let invalid_model = base_config("agents:\n  model: \"sonnet:high\"\n")
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       root(invalid_model),
@@ -459,7 +459,7 @@ pub fn orchestrator_config_rejects_invalid_project_model_defaults_test() {
     )
 
   let separate_provider =
-    base_config("pi:\n  provider: openai\n  model: gpt-5\n")
+    base_config("agents:\n  provider: openai\n  model: gpt-5\n")
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       root(separate_provider),

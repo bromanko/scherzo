@@ -47,39 +47,36 @@ workspace:
           SCHERZO_GITHUB_REPO: scherzo-systems/scherzo
           SCHERZO_ORIGIN_SYNC_REMOTE: scherzo-agent
           SCHERZO_ORIGIN_SYNC_BRANCH: main
-agent:
+agents:
   # Allow up to four dogfood agents to run in parallel. Set to 0 to pause new
   # dispatch while preserving workflow reload and running-worker reconciliation.
-  max_concurrent_agents: 4
+  concurrency: 4
   # One pi turn is a full agent loop with tool calls. Keep this at 1 unless a
   # workflow explicitly needs same-session continuation turns before handoff.
   max_turns: 1
-  max_retry_backoff_ms: 300000
-  max_retry_attempts: 2
-  max_sessions_per_issue: 2
-pi:
-  command: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi"'
-  # Persistent launches use argv so Scherzo can safely append
-  # --session <recorded-session-file> during recovery. The wrapper keeps
-  # workflow-specific model selection and omits --no-session only when this
-  # dogfood config opts into persistence.
-  argv:
-    - sh
-    - "-c"
-    - 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi" "$@"'
-    - scherzo-pi
-  argv_env:
-    SCHERZO_PI_SESSION_PERSISTENCE: "1"
-  session_persistence:
-    enabled: true
-  turn_timeout_ms: 3600000
-  read_timeout_ms: 5000
-  stall_timeout_ms: 1200000
-  auto_retry: true
-  # Route extension UI requests to the operator through scherzoctl attach/ui.
-  ui_request_policy: operator
-  ui_request_timeout_ms: 600000
-  compatibility_probe: true
+  sessions_per_task: 2
+  retries:
+    max_backoff: 5m
+    attempts: 2
+  runtime:
+    type: pi
+    sessions: persistent
+    pi:
+      executable: sh
+      args:
+        - "-c"
+        - 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi" "$@"'
+        - scherzo-pi
+      env:
+        SCHERZO_PI_SESSION_PERSISTENCE: "1"
+    turn_timeout: 1h
+    read_timeout: 5s
+    stall_timeout: 20m
+    auto_retry: true
+    # Route extension UI requests to the operator through scherzoctl attach/ui.
+    ui_requests: operator
+    ui_request_timeout: 10m
+    compatibility_check: true
 handoff:
   # Move issues through the checked Linear states so successful daemon runs do
   # not redispatch the same still-active issue on the next poll. Artifact-

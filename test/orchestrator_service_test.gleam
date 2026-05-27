@@ -80,7 +80,7 @@ fn yaml_config_with_max(
   <> root
   <> "\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
   <> driver_command
-  <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nworkflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: "
+  <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: "
   <> int_to_string(max_concurrent)
   <> "\n  max_turns: 1\n"
   <> extra
@@ -325,13 +325,16 @@ pub fn pi_probe_mode_launches_without_prompt_test() {
   let workflow_path = "test/tmp/service-pi-probe/scherzo.yaml"
   let transcript_path = "test/tmp/service-pi-probe/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
-  let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
   let assert Ok(Nil) =
     simplifile.write(
       workflow_path,
       yaml_config(
         root,
-        "pi:\n  command: \"" <> command <> "\"\n  compatibility_probe: true\n",
+        "  runtime:\n    type: pi\n    compatibility_check: true\n    pi:\n      executable: \""
+          <> fake_pi()
+          <> "\"\n      env:\n        FAKE_PI_TRANSCRIPT: \""
+          <> transcript
+          <> "\"\n",
       ),
     )
   let assert Ok(Nil) =

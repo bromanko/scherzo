@@ -585,7 +585,7 @@ pub fn rejects_invalid_project_model_thinking_combination_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\npi:\n  model: openai/gpt-4o\n  thinking: high\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nagents:\n  model: openai/gpt-4o\n  thinking: high\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -608,7 +608,7 @@ pub fn rejects_invalid_step_model_thinking_combination_after_default_resolution_
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\npi:\n  thinking: high\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nagents:\n  thinking: high\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)

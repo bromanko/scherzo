@@ -68,7 +68,7 @@ fn write_config(dir: String, extra: String) -> String {
       config_path,
       "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
         <> driver_command
-        <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nworkflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
+        <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n"
         <> extra,
     )
   let assert Ok(Nil) =
@@ -103,7 +103,7 @@ fn write_profile_hooks_config(dir: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -190,7 +190,7 @@ fn successful_deps(
       process.send(subject, CleanupCalled(run_root, profile.name))
       Ok(Nil)
     },
-    pi_probe: fn(_command, cwd, _timeout) {
+    pi_probe: fn(_launch, cwd, _timeout) {
       process.send(subject, PiCalled(cwd))
       Ok(Nil)
     },
@@ -773,11 +773,14 @@ pub fn doctor_pi_probe_does_not_prompt_test() {
   let dir = "test/tmp/doctor-pi-probe"
   let transcript_path = dir <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
-  let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
   let config_path =
     write_config(
       dir,
-      "pi:\n  command: \"" <> command <> "\"\n  compatibility_probe: true\n",
+      "  runtime:\n    type: pi\n    compatibility_check: true\n    pi:\n      executable: \""
+        <> fake_pi()
+        <> "\"\n      env:\n        FAKE_PI_TRANSCRIPT: \""
+        <> transcript
+        <> "\"\n",
     )
   let subject = process.new_subject()
   let deps =
@@ -785,7 +788,7 @@ pub fn doctor_pi_probe_does_not_prompt_test() {
       ..successful_deps(subject),
       prepare_step: workspace_run.prepare_step,
       cleanup_run: workspace_run.cleanup_run,
-      pi_probe: probe.probe,
+      pi_probe: probe.probe_config,
     )
   let assert Ok(report) =
     service.build_doctor_report_with_dependencies(
