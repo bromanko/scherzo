@@ -92,7 +92,8 @@ pub type DoctorDependencies {
       config_types.OrchestratorConfig,
       config_types.WorkspaceHookProfile,
     ) -> Result(Nil, error.WorkspaceError),
-    pi_probe: fn(String, String, Int) -> Result(Nil, error.PiRpcError),
+    pi_probe: fn(config_types.PiConfig, String, Int) ->
+      Result(Nil, error.PiRpcError),
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
     list_writer: fn(String) -> Result(Nil, Nil),
@@ -128,7 +129,7 @@ pub fn default_doctor_dependencies() -> DoctorDependencies {
     acquire_lock: acquire_doctor_lock,
     prepare_step: workspace_run.prepare_step,
     cleanup_run: workspace_run.cleanup_run,
-    pi_probe: probe.probe,
+    pi_probe: probe.probe_config,
     logger: log_stderr,
     list_writer: fn(line) {
       io.println(line)
@@ -998,7 +999,7 @@ fn run_pi_probe_doctor_check(
 ) -> doctor.CheckResult {
   case
     dependencies.pi_probe(
-      bundle.effective.pi.command,
+      bundle.effective.pi,
       prepared.path,
       bundle.effective.pi.read_timeout_ms,
     )
@@ -1374,8 +1375,8 @@ fn run_pi_probe_orchestrator(
           Error(StartupError(error.hook_code(err), "hook error"))
         Ok(prepared) -> {
           let probe_result =
-            probe.probe(
-              orchestrator.effective.pi.command,
+            probe.probe_config(
+              orchestrator.effective.pi,
               prepared.path,
               orchestrator.effective.pi.read_timeout_ms,
             )
