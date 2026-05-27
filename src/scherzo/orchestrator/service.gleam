@@ -1542,8 +1542,9 @@ fn dispatch_candidates(
             core.BlockersSatisfied ->
               case core.should_dispatch(state, bundle.effective, issue) {
                 False ->
-                  dispatch_candidates(
+                  skip_non_dispatchable_candidate(
                     rest,
+                    issue,
                     bundle,
                     state,
                     tracker_client,
@@ -1589,6 +1590,61 @@ fn dispatch_candidates(
           }
         }
       }
+  }
+}
+
+fn skip_non_dispatchable_candidate(
+  remaining: List(tracker_issue.Issue),
+  issue: tracker_issue.Issue,
+  bundle: runtime_bundle.RuntimeBundle,
+  state: orchestrator_state.RuntimeState,
+  tracker_client: tracker.Client,
+  dependencies: Dependencies,
+  logs: List(String),
+  dispatched: Int,
+) -> Result(ServiceResult, StartupError) {
+  case core.dispatch_preconditions_satisfied(state, bundle.effective, issue) {
+    True ->
+      case runtime_bundle.select_workflow(bundle, issue) {
+        Error(runtime_bundle.BundleError(code, _)) -> {
+          let skipped =
+            log.warn("workflow_route_failed", [
+              #("issue_id", issue.id),
+              #("issue_identifier", issue.identifier),
+              #("error", code),
+            ])
+          emit_best_effort_output(dependencies.logger(skipped))
+          dispatch_candidates(
+            remaining,
+            bundle,
+            state,
+            tracker_client,
+            dependencies,
+            [skipped, ..logs],
+            dispatched,
+          )
+        }
+        Ok(_) ->
+          dispatch_candidates(
+            remaining,
+            bundle,
+            state,
+            tracker_client,
+            dependencies,
+            logs,
+            dispatched,
+          )
+      }
+    False ->
+      dispatch_candidates(
+        remaining,
+        bundle,
+        state,
+        tracker_client,
+        dependencies,
+        logs,
+        dispatched,
+      )
   }
 }
 
@@ -1688,8 +1744,9 @@ fn dispatch_issue(
                 core.should_dispatch(state, bundle.effective, refreshed_issue)
               {
                 False ->
-                  dispatch_candidates(
+                  skip_non_dispatchable_candidate(
                     remaining,
+                    refreshed_issue,
                     bundle,
                     state,
                     tracker_client,

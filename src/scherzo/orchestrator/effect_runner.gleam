@@ -3,7 +3,6 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
-import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
@@ -552,8 +551,9 @@ fn report_invalid_workflow(
   state_transitions: Option(adapter.StateTransitionCapability),
 ) -> Result(InvalidWorkflowReportOutcome, error.TrackerError) {
   let comment_enabled = contract_config.comment_on_invalid_workflow
-  let state_id = normalized_optional(contract_config.invalid_workflow_state_id)
-  case comment_enabled, state_id {
+  let state_target =
+    config_types.normalized_invalid_workflow_state_target(contract_config)
+  case comment_enabled, state_target {
     False, None -> Ok(InvalidWorkflowReportNoop)
     True, None -> {
       use Nil <- try_tracker_adapter(post_invalid_workflow_comment(
@@ -564,15 +564,15 @@ fn report_invalid_workflow(
       ))
       Ok(InvalidWorkflowReportComment)
     }
-    False, Some(state_id) -> {
+    False, Some(state_target) -> {
       use Nil <- try_tracker_adapter(transition_invalid_workflow_state(
         issue,
-        state_id,
+        state_target,
         state_transitions,
       ))
       Ok(InvalidWorkflowReportState)
     }
-    True, Some(state_id) -> {
+    True, Some(state_target) -> {
       use Nil <- try_tracker_adapter(post_invalid_workflow_comment(
         issue,
         violation,
@@ -581,7 +581,7 @@ fn report_invalid_workflow(
       ))
       use Nil <- try_tracker_adapter(transition_invalid_workflow_state(
         issue,
-        state_id,
+        state_target,
         state_transitions,
       ))
       Ok(InvalidWorkflowReportCommentAndState)
@@ -618,34 +618,28 @@ fn post_invalid_workflow_comment(
 
 fn transition_invalid_workflow_state(
   issue: tracker_issue.Issue,
-  state_id: String,
+  state_target: config_types.InvalidWorkflowStateTarget,
   state_transitions: Option(adapter.StateTransitionCapability),
 ) -> Result(Nil, adapter.TrackerError) {
   case state_transitions {
     None -> Error(adapter.UnsupportedCapability("state_transitions"))
     Some(state_transitions) -> {
+      let state_ref =
+        config_types.invalid_workflow_state_target_value(state_target)
+      let target_state_id = case state_target {
+        config_types.InvalidWorkflowStateId(value) -> Some(value)
+        config_types.InvalidWorkflowStateName(_) -> None
+      }
       use _ <- try_adapter(
         state_transitions.transition(adapter.StateTransitionRequest(
           task: task.from_legacy_issue(issue).ref,
-          target_state_id: Some(state_id),
-          target_state_name: state_id,
+          target_state_id: target_state_id,
+          target_state_name: state_ref,
           reason: "invalid_workflow",
         )),
       )
       Ok(Nil)
     }
-  }
-}
-
-fn normalized_optional(value: Option(String)) -> Option(String) {
-  case value {
-    Some(value) -> {
-      case string.trim(value) == "" {
-        True -> None
-        False -> Some(value)
-      }
-    }
-    None -> None
   }
 }
 

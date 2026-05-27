@@ -122,6 +122,11 @@ pub type HandoffConfig {
   )
 }
 
+pub type InvalidWorkflowStateTarget {
+  InvalidWorkflowStateId(String)
+  InvalidWorkflowStateName(String)
+}
+
 pub type LinearContractConfig {
   LinearContractConfig(
     enabled: Bool,
@@ -132,8 +137,46 @@ pub type LinearContractConfig {
     handoff_state_bindings: Dict(String, String),
     enforce_issue_workflow_labels: Bool,
     invalid_workflow_state_id: Option(String),
+    invalid_workflow_state_target: Option(InvalidWorkflowStateTarget),
     comment_on_invalid_workflow: Bool,
   )
+}
+
+pub fn invalid_workflow_state_target_value(
+  target: InvalidWorkflowStateTarget,
+) -> String {
+  case target {
+    InvalidWorkflowStateId(value) -> value
+    InvalidWorkflowStateName(value) -> value
+  }
+}
+
+pub fn normalized_invalid_workflow_state_target(
+  contract: LinearContractConfig,
+) -> Option(InvalidWorkflowStateTarget) {
+  case contract.invalid_workflow_state_target {
+    Some(target) -> normalize_invalid_workflow_state_target(target)
+    None ->
+      case contract.invalid_workflow_state_id {
+        Some(value) ->
+          normalize_invalid_workflow_state_target(InvalidWorkflowStateId(value))
+        None -> None
+      }
+  }
+}
+
+fn normalize_invalid_workflow_state_target(
+  target: InvalidWorkflowStateTarget,
+) -> Option(InvalidWorkflowStateTarget) {
+  let value = invalid_workflow_state_target_value(target) |> string.trim
+  case value == "" {
+    True -> None
+    False ->
+      case target {
+        InvalidWorkflowStateId(_) -> Some(InvalidWorkflowStateId(value))
+        InvalidWorkflowStateName(_) -> Some(InvalidWorkflowStateName(value))
+      }
+  }
 }
 
 pub type LinearContractRoutingError {
@@ -146,9 +189,9 @@ pub fn linear_contract_routing_error_message(
 ) -> String {
   case error {
     LinearContractRoutingPrefixMismatch ->
-      "linear_contract.workflow_label_prefix must match routing.workflow_label_prefix"
+      "linear_contract.workflow_label_prefix must match task_routing.labels.prefix"
     LinearContractRoutingWorkflowLabelsMismatch ->
-      "linear_contract.workflow_labels must match issue-dispatched routing.workflows when routing requires exactly one workflow label"
+      "linear_contract.workflow_labels must match issue-dispatched workflows when task_routing.labels.require_exactly_one is true"
   }
 }
 

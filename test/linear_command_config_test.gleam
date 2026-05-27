@@ -20,7 +20,7 @@ fn definition(front: String) {
 }
 
 fn minimal_front() -> String {
-  "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
+  "tracker:\n  kind: linear\n  project_slug: TEST\n  states:\n    ready: [Todo]\nhooks:\n  before_run: test -d .git\n"
 }
 
 pub fn default_config_disables_linear_commands_test() {

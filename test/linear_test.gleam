@@ -222,7 +222,7 @@ pub fn fetch_candidate_issues_uses_canonical_dispatch_state_names_test() {
   let captured = process.new_subject()
   let assert Ok([document]) =
     yay.parse_string(
-      "tracker:\n  kind: linear\n  api_key: secret-key\n  project_slug: PROJ\n  active_states: [Todo]\n  dispatch_states: [\" todo \"]\n",
+      "tracker:\n  kind: linear\n  api_key: secret-key\n  project_slug: PROJ\n  states:\n    active: [Todo]\n    ready: [\" todo \"]\n",
     )
   let assert Ok(effective) =
     config.resolve_with_env(

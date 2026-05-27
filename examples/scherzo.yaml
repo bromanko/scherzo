@@ -5,12 +5,13 @@ tracker:
     api_key_env: LINEAR_API_KEY
   linear:
     endpoint: https://api.linear.app/graphql
-    project_slug: YOUR_PROJECT_SLUG
-  active_states: [Todo, In Progress]
-  dispatch_states: [Todo]
-  terminal_states: [Closed, Cancelled, Canceled, Duplicate, Done]
-polling:
-  interval_ms: 30000
+    project: YOUR_PROJECT_SLUG
+  states:
+    ready: [Todo]
+    active: [Todo, In Progress]
+    terminal: [Closed, Cancelled, Canceled, Duplicate, Done]
+  polling:
+    every: 30s
 workspace:
   root: .scherzo/workspaces
   default_profile: isolated
@@ -65,14 +66,11 @@ handoff:
   comment_on_park: true
   include_result_on_success: true
   result_max_chars: 8000
-routing:
-  workflow_label_prefix: "workflow:"
-  require_exactly_one_workflow_label: true
-  workflows:
-    research: workflows/research.yaml
-    implementation: workflows/implementation.yaml
-    merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
-    github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
+workflows:
+  research: workflows/research.yaml
+  implementation: workflows/implementation.yaml
+  merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
+  github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
 scheduled_jobs:
   # Disabled by default because the scout can create Linear resolver issues.
   # Set SCHERZO_GITHUB_REPO and SCHERZO_LINEAR_PROJECT_SLUG, then flip to true.

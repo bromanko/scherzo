@@ -5,12 +5,13 @@ tracker:
     api_key_env: LINEAR_API_KEY
   linear:
     endpoint: https://api.linear.app/graphql
-    project_slug: scherzo-f6f4bc92d6d7
-  active_states: [Todo, In Progress]
-  dispatch_states: [Todo]
-  terminal_states: [Canceled, Duplicate, Done]
-polling:
-  interval_ms: 60000
+    project: scherzo-f6f4bc92d6d7
+  states:
+    ready: [Todo]
+    active: [Todo, In Progress]
+    terminal: [Canceled, Duplicate, Done]
+  polling:
+    every: 60s
 workspace:
   # Paths are resolved relative to .scherzo/scherzo.yaml. Runtime workspaces
   # land under repo-root/.scherzo/workspaces/<workflow>/<issue>/<run>/.
@@ -127,19 +128,16 @@ handoff:
       workspace-cleanup:
         produces_reviewable_artifacts: false
         requires_review: false
-routing:
-  workflow_label_prefix: "workflow:"
-  require_exactly_one_workflow_label: true
-  workflows:
-    research: workflows/research.yaml
-    implementation: workflows/implementation.yaml
-    execplan: workflows/execplan.yaml
-    execplan-revision: workflows/execplan-revision.yaml
-    execplan-implementation: workflows/execplan-implementation.yaml
-    merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
-    github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
-    origin-sync: workflows/origin-sync.yaml
-    workspace-cleanup: workflows/workspace-cleanup.yaml
+workflows:
+  research: workflows/research.yaml
+  implementation: workflows/implementation.yaml
+  execplan: workflows/execplan.yaml
+  execplan-revision: workflows/execplan-revision.yaml
+  execplan-implementation: workflows/execplan-implementation.yaml
+  merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
+  github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
+  origin-sync: workflows/origin-sync.yaml
+  workspace-cleanup: workflows/workspace-cleanup.yaml
 scheduled_jobs:
   - id: github-pr-conflict-scout
     workflow: github-pr-conflict-scout

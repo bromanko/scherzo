@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import scherzo/agent/types as agent_types
@@ -10,6 +11,7 @@ import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_policy
 import support/expected_crash
 
 fn hooks() -> config_types.HooksConfig {
@@ -74,6 +76,25 @@ fn start_runner(
       }),
     )
   handle
+}
+
+fn invalid_workflow_contract(
+  state: String,
+) -> config_types.LinearContractConfig {
+  config_types.LinearContractConfig(
+    enabled: False,
+    workflow_label_prefix: "workflow:",
+    workflow_labels: [],
+    support_labels: [],
+    required_states: dict.new(),
+    handoff_state_bindings: dict.new(),
+    enforce_issue_workflow_labels: True,
+    invalid_workflow_state_id: Some(state),
+    invalid_workflow_state_target: Some(config_types.InvalidWorkflowStateName(
+      state,
+    )),
+    comment_on_invalid_workflow: False,
+  )
 }
 
 pub fn effect_runner_emits_generic_handoff_events_test() {
@@ -168,6 +189,187 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
   let assert Ok(effect_runner.Finished(
     _,
     effect_runner.HandoffParkFinished("issue-id", Ok(Nil)),
+  )) = process.receive(completions, within: 1000)
+
+  assert effect_runner.shutdown(runner, 1000) == Ok(Nil)
+}
+
+pub fn effect_runner_uses_state_name_for_invalid_workflow_transition_test() {
+  let completions = process.new_subject()
+  let requests = process.new_subject()
+  let runner = start_runner(completions)
+  let state_transitions =
+    adapter.StateTransitionCapability(transition: fn(request) {
+      let adapter.StateTransitionRequest(
+        task: requested_task,
+        target_state_id: target_state_id,
+        target_state_name: target_state_name,
+        ..,
+      ) = request
+      process.send(requests, request)
+      Ok(adapter.StateTransitionReceipt(
+        task: requested_task,
+        state: task.TaskState(
+          id: target_state_id,
+          name: target_state_name,
+          category: task.Unknown,
+        ),
+      ))
+    })
+
+  effect_runner.enqueue(
+    runner,
+    effect_runner.ReportInvalidWorkflow(
+      issue: issue(),
+      violation: workflow_policy.MissingWorkflowLabel,
+      violation_fingerprint: "violation-fingerprint",
+      reporting_policy_fingerprint: "policy-fingerprint",
+      contract_config: invalid_workflow_contract("Triage"),
+      comments: None,
+      state_transitions: Some(state_transitions),
+    ),
+  )
+
+  let assert Ok(request) = process.receive(requests, within: 1000)
+  let adapter.StateTransitionRequest(
+    target_state_id: target_state_id,
+    target_state_name: target_state_name,
+    reason: reason,
+    ..,
+  ) = request
+  assert target_state_id == None
+  assert target_state_name == "Triage"
+  assert reason == "invalid_workflow"
+  let assert Ok(effect_runner.Finished(
+    _,
+    effect_runner.InvalidWorkflowReportFinished(
+      "issue-id",
+      "violation-fingerprint",
+      "policy-fingerprint",
+      Ok(effect_runner.InvalidWorkflowReportState),
+    ),
+  )) = process.receive(completions, within: 1000)
+
+  assert effect_runner.shutdown(runner, 1000) == Ok(Nil)
+}
+
+pub fn effect_runner_keeps_id_shaped_invalid_workflow_state_names_name_only_test() {
+  let completions = process.new_subject()
+  let requests = process.new_subject()
+  let runner = start_runner(completions)
+  let state_transitions =
+    adapter.StateTransitionCapability(transition: fn(request) {
+      let adapter.StateTransitionRequest(
+        task: requested_task,
+        target_state_id: target_state_id,
+        target_state_name: target_state_name,
+        ..,
+      ) = request
+      process.send(requests, request)
+      Ok(adapter.StateTransitionReceipt(
+        task: requested_task,
+        state: task.TaskState(
+          id: target_state_id,
+          name: target_state_name,
+          category: task.Unknown,
+        ),
+      ))
+    })
+
+  effect_runner.enqueue(
+    runner,
+    effect_runner.ReportInvalidWorkflow(
+      issue: issue(),
+      violation: workflow_policy.MissingWorkflowLabel,
+      violation_fingerprint: "violation-fingerprint",
+      reporting_policy_fingerprint: "policy-fingerprint",
+      contract_config: invalid_workflow_contract("state-needs-workflow"),
+      comments: None,
+      state_transitions: Some(state_transitions),
+    ),
+  )
+
+  let assert Ok(request) = process.receive(requests, within: 1000)
+  let adapter.StateTransitionRequest(
+    target_state_id: target_state_id,
+    target_state_name: target_state_name,
+    ..,
+  ) = request
+  assert target_state_id == None
+  assert target_state_name == "state-needs-workflow"
+  let assert Ok(effect_runner.Finished(
+    _,
+    effect_runner.InvalidWorkflowReportFinished(
+      "issue-id",
+      "violation-fingerprint",
+      "policy-fingerprint",
+      Ok(effect_runner.InvalidWorkflowReportState),
+    ),
+  )) = process.receive(completions, within: 1000)
+
+  assert effect_runner.shutdown(runner, 1000) == Ok(Nil)
+}
+
+pub fn effect_runner_uses_legacy_invalid_workflow_state_ids_when_explicit_test() {
+  let completions = process.new_subject()
+  let requests = process.new_subject()
+  let runner = start_runner(completions)
+  let state_transitions =
+    adapter.StateTransitionCapability(transition: fn(request) {
+      let adapter.StateTransitionRequest(
+        task: requested_task,
+        target_state_id: target_state_id,
+        target_state_name: target_state_name,
+        ..,
+      ) = request
+      process.send(requests, request)
+      Ok(adapter.StateTransitionReceipt(
+        task: requested_task,
+        state: task.TaskState(
+          id: target_state_id,
+          name: target_state_name,
+          category: task.Unknown,
+        ),
+      ))
+    })
+  let state_id = "state-needs-workflow"
+  let contract =
+    config_types.LinearContractConfig(
+      ..invalid_workflow_contract(state_id),
+      invalid_workflow_state_target: Some(config_types.InvalidWorkflowStateId(
+        state_id,
+      )),
+    )
+
+  effect_runner.enqueue(
+    runner,
+    effect_runner.ReportInvalidWorkflow(
+      issue: issue(),
+      violation: workflow_policy.MissingWorkflowLabel,
+      violation_fingerprint: "violation-fingerprint",
+      reporting_policy_fingerprint: "policy-fingerprint",
+      contract_config: contract,
+      comments: None,
+      state_transitions: Some(state_transitions),
+    ),
+  )
+
+  let assert Ok(request) = process.receive(requests, within: 1000)
+  let adapter.StateTransitionRequest(
+    target_state_id: target_state_id,
+    target_state_name: target_state_name,
+    ..,
+  ) = request
+  assert target_state_id == Some(state_id)
+  assert target_state_name == state_id
+  let assert Ok(effect_runner.Finished(
+    _,
+    effect_runner.InvalidWorkflowReportFinished(
+      "issue-id",
+      "violation-fingerprint",
+      "policy-fingerprint",
+      Ok(effect_runner.InvalidWorkflowReportState),
+    ),
   )) = process.receive(completions, within: 1000)
 
   assert effect_runner.shutdown(runner, 1000) == Ok(Nil)

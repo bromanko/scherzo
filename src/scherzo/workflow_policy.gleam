@@ -93,7 +93,7 @@ pub fn reporting_policy_fingerprint(
     "enabled:" <> bool_fingerprint(config.enabled),
     "enforce:" <> bool_fingerprint(config.enforce_issue_workflow_labels),
     "comment:" <> bool_fingerprint(config.comment_on_invalid_workflow),
-    "invalid_state:" <> encode_optional_string(config.invalid_workflow_state_id),
+    "invalid_state:" <> invalid_state_target_fingerprint(config),
     "prefix:" <> encode_string(normalize(config.workflow_label_prefix)),
     "workflows:" <> fingerprint_strings(normalized_allowed_workflows(config)),
     "ready:" <> encode_optional_string(ready_state_name(config)),
@@ -274,6 +274,18 @@ fn fingerprint_strings(values: List(String)) -> String {
   values
   |> list.map(encode_string)
   |> string.join(with: "|")
+}
+
+fn invalid_state_target_fingerprint(
+  config: config_types.LinearContractConfig,
+) -> String {
+  case config_types.normalized_invalid_workflow_state_target(config) {
+    None -> "none"
+    Some(config_types.InvalidWorkflowStateId(value)) ->
+      "id:" <> encode_string(value)
+    Some(config_types.InvalidWorkflowStateName(value)) ->
+      "name:" <> encode_string(value)
+  }
 }
 
 fn encode_optional_string(value: Option(String)) -> String {

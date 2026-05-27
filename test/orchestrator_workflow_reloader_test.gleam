@@ -15,23 +15,24 @@ tracker:
   kind: linear
   api_key: test-key
   project_slug: TEST
-  active_states: [Todo]
-  dispatch_states: [Todo]
-  terminal_states: [Done]
+  states:
+    ready: [Todo]
+    active: [Todo]
+    terminal: [Done]
+  polling:
+    every: " <> int.to_string(interval_ms) <> "ms
 workspace:
   root: " <> root <> "
-polling:
-  interval_ms: " <> int.to_string(interval_ms) <> "
 agent:
   max_concurrent_agents: 1
 pi:
   command: fake
-routing:
-  workflow_label_prefix: \"workflow:\"
-  require_exactly_one_workflow_label: false
-  default_workflow: implementation
-  workflows:
-    implementation: workflows/implementation.yaml
+task_routing:
+  labels:
+    require_exactly_one: false
+    default_workflow: implementation
+workflows:
+  implementation: workflows/implementation.yaml
 "
 }
 
