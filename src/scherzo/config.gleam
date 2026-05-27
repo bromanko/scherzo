@@ -8,6 +8,7 @@ import gleam/uri
 import scherzo/config/duration_config
 import scherzo/config/tracker_config
 import scherzo/config/types as config_types
+import scherzo/config/workspace_driver_config
 import scherzo/error
 import scherzo/model_config
 import scherzo/tracker/state as issue_state
@@ -347,6 +348,9 @@ fn resolve_workspace(
   env: Env,
 ) -> Result(config_types.WorkspaceConfig, error.ConfigError) {
   let workspace = get_map(root, "workspace")
+  use _ <- result.try(workspace_driver_config.reject_removed_public_keys(
+    workspace,
+  ))
   let raw = get_string(workspace, "root")
   let root =
     raw
@@ -1187,26 +1191,7 @@ fn validate_ui_server_env_name(name: String) -> Result(Nil, error.ConfigError) {
 fn resolve_workspace_profiles(
   root: yay.Node,
 ) -> Result(config_types.WorkspaceHookProfiles, error.ConfigError) {
-  let workspace = get_map(root, "workspace")
-  use _ <- result.try(reject_legacy_workspace_hooks(workspace))
-  let has_configured_profiles = get_node(workspace, "profiles") != None
-  use configured_profiles <- result.try(read_configured_workspace_profiles(
-    workspace,
-  ))
-  let profiles =
-    ensure_workspace_default_profile(
-      configured_profiles,
-      has_configured_profiles,
-    )
-  use default_profile <- result.try(resolve_default_workspace_profile_name(
-    workspace,
-    profiles,
-    has_configured_profiles,
-  ))
-  Ok(config_types.WorkspaceHookProfiles(
-    default_profile: default_profile,
-    profiles: profiles,
-  ))
+  workspace_driver_config.resolve(get_map(root, "workspace"))
 }
 
 fn reject_legacy_workspace_hooks(
