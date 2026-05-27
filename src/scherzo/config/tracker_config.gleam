@@ -4,6 +4,7 @@ import gleam/result
 import gleam/string
 import scherzo/config/root_schema
 import scherzo/config/types as config_types
+import scherzo/config/workspace_driver_config
 import scherzo/error
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -36,6 +37,12 @@ pub fn apply_root_linear_contract_fields(
   fields: root_schema.SimplifiedLinearContractFields,
 ) -> config_types.LinearContractConfig {
   root_schema.apply_linear_contract_fields(contract, fields)
+}
+
+pub fn resolve_workspace_drivers(
+  workspace: yay.Node,
+) -> Result(config_types.WorkspaceHookProfiles, error.ConfigError) {
+  workspace_driver_config.resolve(workspace)
 }
 
 pub fn resolve_root_orchestrator_linear_contract(

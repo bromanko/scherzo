@@ -1,11 +1,13 @@
 import gleam/dict
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/path
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workspace_driver_command
 import scherzo/workspace_driver_discovery
 import simplifile
 import support/test_helpers
@@ -55,6 +57,13 @@ fn orchestrator_with_env(
       timeout_ms: timeout_ms,
       env: env,
     )
+  orchestrator_with_driver(dir, driver)
+}
+
+fn orchestrator_with_driver(
+  dir: String,
+  driver: config_types.WorkspaceDriverConfig,
+) -> config_types.OrchestratorConfig {
   config_types.OrchestratorConfig(
     effective: effective(dir),
     config_dir: dir,
@@ -117,6 +126,82 @@ fn selected_driver(
     dict.get(orchestrator.workspace_profiles.profiles, "noop")
   let assert Some(driver) = profile.driver
   driver
+}
+
+pub fn builtin_driver_placeholder_resolves_from_nested_config_dir_test() {
+  let assert Ok(dir) =
+    path.absolute("test/tmp/workspace-driver-discovery-placeholder/config")
+  let orchestrator =
+    orchestrator(
+      dir,
+      "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop",
+      discovery_timeout_ms(),
+    )
+  let resolved = resolve_driver_with_repo_root_unset(orchestrator)
+
+  assert string.ends_with(resolved, "/scripts/scherzo-workspace-noop")
+  assert !string.contains(resolved, "/test/tmp/")
+}
+
+pub fn builtin_driver_placeholder_falls_back_to_packaged_command_test() {
+  let assert Ok(tmp) = path.temp_dir()
+  let orchestrator =
+    orchestrator(
+      tmp <> "/scherzo-workspace-driver-no-source/config",
+      "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop",
+      discovery_timeout_ms(),
+    )
+  let resolved = resolve_driver_with_repo_root_unset(orchestrator)
+
+  assert resolved == "scherzo-workspace-noop"
+}
+
+fn resolve_driver_with_repo_root_unset(
+  orchestrator: config_types.OrchestratorConfig,
+) -> String {
+  let previous_repo_root = path.env("SCHERZO_REPO_ROOT")
+  let assert Ok(Nil) = path.unset_env("SCHERZO_REPO_ROOT")
+  let resolved =
+    workspace_driver_command.resolve(
+      selected_driver(orchestrator).command,
+      orchestrator,
+    )
+  restore_env("SCHERZO_REPO_ROOT", previous_repo_root)
+  resolved
+}
+
+fn restore_env(key: String, previous: Option(String)) -> Nil {
+  case previous {
+    Some(value) -> {
+      let assert Ok(Nil) = path.set_env(key, value)
+      Nil
+    }
+    None -> {
+      let assert Ok(Nil) = path.unset_env(key)
+      Nil
+    }
+  }
+}
+
+pub fn enrich_orchestrator_keeps_known_capabilities_without_describe_test() {
+  let dir = "test/tmp/workspace-driver-discovery-known-capabilities"
+  test_helpers.reset_dir(dir)
+  let driver =
+    config_types.WorkspaceDriverConfig(
+      command: "./missing-driver.sh",
+      lifecycle: [],
+      capabilities: [config_types.WorkspaceStatus],
+      timeout_ms: 1,
+      env: [],
+    )
+
+  let assert Ok(enriched) =
+    workspace_driver_discovery.enrich_orchestrator(orchestrator_with_driver(
+      dir,
+      driver,
+    ))
+  assert selected_driver(enriched).capabilities
+    == [config_types.WorkspaceStatus]
 }
 
 pub fn discovery_receives_profile_env_without_workspace_values_test() {

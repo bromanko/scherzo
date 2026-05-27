@@ -389,7 +389,7 @@ fn impact(check: CheckName) -> String {
     InstanceLock ->
       "Another local Scherzo process may be active, or a stale lock may need operator cleanup."
     WorkspaceHooks ->
-      "The default workspace profile cannot safely prepare and clean up a scratch workspace."
+      "The default workspace driver cannot safely prepare and clean up a scratch workspace."
     PiProbe ->
       "Scherzo may not be able to launch pi RPC in prepared workspaces."
   }
@@ -423,9 +423,9 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- If no process is active, remove the stale instance.lock file manually.",
     ]
     WorkspaceHooks -> [
-      "- Ensure workspace.default_profile names a driver-backed workspace profile.",
-      "- If workflow-config reports workspace.hooks or workspace.profiles.<name>.hooks, remove that unsupported block and reset or update the config to workspace.profiles.<name>.driver.",
-      "- Read docs/runbooks/workspace-driver-migration.md for driver-backed examples.",
+      "- Ensure workspace.driver names a built-in driver or an entry under workspace.drivers.",
+      "- If workflow-config reports workspace.hooks or workspace.drivers.<name>.hooks, remove that unsupported block or implement it in a type: custom driver command.",
+      "- Read docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md for workspace driver examples.",
     ]
     PiProbe -> [
       "- Confirm pi is installed and the configured pi.command supports --mode rpc.",

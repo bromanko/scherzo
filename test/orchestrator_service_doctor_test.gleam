@@ -66,9 +66,9 @@ fn write_config(dir: String, extra: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
         <> driver_command
-        <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n"
+        <> "\n      timeout: 60s\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n"
         <> extra,
     )
   let assert Ok(Nil) =
@@ -103,7 +103,7 @@ fn write_profile_hooks_config(dir: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/noop\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -643,15 +643,18 @@ pub fn doctor_reports_unsupported_top_level_legacy_hooks_test() {
   assert result.status == doctor.Fail
   assert result.code == "invalid_config"
   assert string.contains(result.message, "workspace.hooks")
-  assert string.contains(result.message, "no longer supported")
-  assert string.contains(result.message, "workspace.profiles.<name>.driver")
+  assert string.contains(result.message, "was removed")
+  assert string.contains(
+    result.message,
+    "workspace.drivers.<name>.type: custom",
+  )
   let assert Some(skipped) = result_for(report, doctor.WorkspaceHooks)
   assert skipped.status == doctor.Skip
 
   let assert Error(_) = service.start_doctor_with_dependencies(options, deps)
   let assert Some(output) = receive_list_written(subject)
   assert string.contains(output, "workspace.hooks")
-  assert string.contains(output, "no longer supported")
+  assert string.contains(output, "was removed")
 }
 
 pub fn doctor_reports_unsupported_profile_local_legacy_hooks_test() {
@@ -671,9 +674,9 @@ pub fn doctor_reports_unsupported_profile_local_legacy_hooks_test() {
   let assert Some(result) = result_for(report, doctor.WorkflowConfig)
   assert result.status == doctor.Fail
   assert result.code == "invalid_config"
-  assert string.contains(result.message, "workspace.profiles.noop.hooks")
-  assert string.contains(result.message, "no longer supported")
-  assert string.contains(result.message, "workspace.profiles.<name>.driver")
+  assert string.contains(result.message, "workspace.drivers.noop.hooks")
+  assert string.contains(result.message, "was removed")
+  assert string.contains(result.message, "workspace.drivers.noop.type: custom")
 }
 
 pub fn doctor_cleanup_failure_warns_test() {

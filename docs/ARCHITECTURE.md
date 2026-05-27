@@ -133,15 +133,17 @@ is eliminated.
   `failed_continued` artifact and can unblock downstream dependencies.
 - Workflow runner executes a ready batch concurrently, then applies artifacts in
   DAG order so downstream template rendering is deterministic.
-- Workspaces are prepared by orchestrator-defined workspace profiles. A driver-backed
-  workspace profile names a trusted workspace driver command and the lifecycle operations
-  Scherzo may invoke; driver capability names are discovered from `describe --json`.
-  A workflow may select one trusted profile with top-level `workspace_profile` and may
-  require top-level `workspace_capabilities`; omitted selectors use the orchestrator
-  default profile. Scherzo validates required capabilities against the selected profile
-  before dispatch. `docs/specs/WORKSPACE_DRIVER_SPEC.md` is the normative driver
-  contract. Direct `workspace.hooks` and profile-local hook blocks are unsupported
-  legacy shapes rejected during config loading, not current architecture invariants.
+- Workspaces are prepared by orchestrator-defined workspace drivers. `workspace.driver`
+  selects either a built-in driver (`noop` or `jj`) or a named entry under
+  `workspace.drivers`; custom entries name a trusted command, and driver capability
+  names are discovered from `describe --json` when they are not built in. A workflow may
+  select one trusted driver with top-level `workspace_profile` and may require top-level
+  `workspace_capabilities`; omitted selectors use the orchestrator default driver.
+  Scherzo validates required capabilities against the selected driver before dispatch.
+  `docs/specs/WORKSPACE_DRIVER_SPEC.md` is the normative driver contract. Direct
+  `workspace.hooks`, `workspace.profiles`, and driver-local lifecycle selection are
+  unsupported legacy shapes rejected during config loading, not current architecture
+  invariants.
 
 ### Orchestrator dispatch
 

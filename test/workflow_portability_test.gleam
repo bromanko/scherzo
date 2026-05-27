@@ -411,7 +411,7 @@ pub fn workflow_docs_explain_canonical_execplan_routing_and_validation_test() {
   assert_not_contains(docs, "workflow:execplan-v2")
   assert_not_contains(docs, "workflow:execplan-revision-v2")
   assert_not_contains(docs, "workflow:execplan-implementation-v2")
-  assert_contains(docs, "workspace.profiles.dogfood-jj")
+  assert_contains(docs, "workspace.drivers.dogfood-jj")
   assert_contains(docs, "workspace_profile: dogfood-jj")
   assert_contains(docs, "do not add language-specific review skills")
 }
@@ -496,8 +496,16 @@ pub fn workflow_portability_harness_writes_report_test() {
     "add fake structured-output and agent artifact fixtures",
   )
   assert_contains(invocation, "doctor --check workflow-config")
-  assert_contains(staged_config, "command: scherzo-workspace-jj")
-  assert_contains(staged_config, "command: scherzo-workspace-noop")
+  assert_contains(staged_config, "type: jj")
+  assert_contains(staged_config, "type: noop")
+  assert_not_contains(
+    staged_config,
+    "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj",
+  )
+  assert_not_contains(
+    staged_config,
+    "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop",
+  )
   assert_contains(staged_config, "agents:")
   assert_contains(staged_config, "sessions: persistent")
   assert_contains(staged_config, "executable: sh")

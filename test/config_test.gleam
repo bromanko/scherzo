@@ -606,7 +606,7 @@ pub fn nested_tracker_config_takes_precedence_over_flat_aliases_test() {
 
 fn workspace_driver_env_front(env_body: String) -> String {
   minimal_front()
-  <> "workspace:\n  root: test/tmp/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step]\n        timeout: 60s\n"
+  <> "workspace:\n  root: test/tmp/workspaces\n  driver: isolated\n  drivers:\n    isolated:\n      type: custom\n      command: scripts/scherzo-workspace-jj\n      timeout: 60s\n"
   <> env_body
   <> "workflows:\n  implementation: workflows/implementation.yaml\n"
 }
@@ -624,7 +624,7 @@ fn workspace_driver_env_error(env_body: String) -> String {
 pub fn workspace_driver_env_parses_literal_sorted_values_test() {
   let front =
     workspace_driver_env_front(
-      "        env:\n          SCHERZO_JJ_WORKSPACE_REMOTE: upstream\n          SCHERZO_JJ_WORKSPACE_BASE: \"@\"\n          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk\n          PATH: /profile/bin:/usr/bin\n          EMPTY_VALUE: \"\"\n          LITERAL_REF: \"$LINEAR_API_KEY\"\n",
+      "      env:\n        SCHERZO_JJ_WORKSPACE_REMOTE: upstream\n        SCHERZO_JJ_WORKSPACE_BASE: \"@\"\n        SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk\n        PATH: /profile/bin:/usr/bin\n        EMPTY_VALUE: \"\"\n        LITERAL_REF: \"$LINEAR_API_KEY\"\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -660,26 +660,148 @@ pub fn workspace_driver_env_defaults_empty_when_absent_test() {
 }
 
 pub fn workspace_driver_env_rejects_invalid_shapes_test() {
-  assert workspace_driver_env_error("        env: [A=B]\n")
-    == "workspace.profiles.isolated.driver.env must be a map"
-  assert workspace_driver_env_error("        env:\n          123: value\n")
-    == "workspace.profiles.isolated.driver.env keys must be strings"
-  assert workspace_driver_env_error("        env:\n          1BAD: value\n")
-    == "workspace.profiles.isolated.driver.env.1BAD has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*"
-  assert workspace_driver_env_error("        env:\n          BAD-NAME: value\n")
-    == "workspace.profiles.isolated.driver.env.BAD-NAME has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*"
+  assert workspace_driver_env_error("      env: [A=B]\n")
+    == "workspace.drivers.isolated.env must be a map"
+  assert workspace_driver_env_error("      env:\n        123: value\n")
+    == "workspace.drivers.isolated.env keys must be strings"
+  assert workspace_driver_env_error("      env:\n        1BAD: value\n")
+    == "workspace.drivers.isolated.env.1BAD has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*"
+  assert workspace_driver_env_error("      env:\n        BAD-NAME: value\n")
+    == "workspace.drivers.isolated.env.BAD-NAME has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*"
   assert workspace_driver_env_error(
-      "        env:\n          SCHERZO_WORKSPACE_DRIVER: value\n",
+      "      env:\n        SCHERZO_WORKSPACE_DRIVER: value\n",
     )
-    == "workspace.profiles.isolated.driver.env.SCHERZO_WORKSPACE_DRIVER is reserved by Scherzo and cannot be configured in driver.env"
-  assert workspace_driver_env_error("        env:\n          GOOD: 123\n")
-    == "workspace.profiles.isolated.driver.env.GOOD must be a string"
-  assert workspace_driver_env_error("        env:\n          GOOD:\n")
-    == "workspace.profiles.isolated.driver.env.GOOD must be a string"
+    == "workspace.drivers.isolated.env.SCHERZO_WORKSPACE_DRIVER is reserved by Scherzo and cannot be configured in driver.env"
+  assert workspace_driver_env_error("      env:\n        GOOD: 123\n")
+    == "workspace.drivers.isolated.env.GOOD must be a string"
+  assert workspace_driver_env_error("      env:\n        GOOD:\n")
+    == "workspace.drivers.isolated.env.GOOD must be a string"
   assert workspace_driver_env_error(
-      "        env:\n          SCHERZO_JJ_WORKSPACE_BASE: one\n          SCHERZO_JJ_WORKSPACE_BASE: two\n",
+      "      env:\n        SCHERZO_JJ_WORKSPACE_BASE: one\n        SCHERZO_JJ_WORKSPACE_BASE: two\n",
     )
-    == "workspace.profiles.isolated.driver.env has duplicate key: SCHERZO_JJ_WORKSPACE_BASE"
+    == "workspace.drivers.isolated.env has duplicate key: SCHERZO_JJ_WORKSPACE_BASE"
+}
+
+fn workspace_driver_front(workspace: String) -> String {
+  minimal_front()
+  <> "workspace:\n"
+  <> workspace
+  <> "workflows:\n  implementation: workflows/implementation.yaml\n"
+}
+
+fn workspace_driver_orchestrator_error(workspace: String) -> String {
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_orchestrator_root(
+      definition(workspace_driver_front(workspace)),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  message
+}
+
+pub fn workspace_driver_defaults_to_builtin_noop_test() {
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(
+        minimal_front()
+        <> "workflows:\n  implementation: workflows/implementation.yaml\n",
+      ),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+
+  assert orchestrator.workspace_profiles.default_profile == "noop"
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "noop")
+  let assert Some(driver) = profile.driver
+  assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop"
+  assert driver.timeout_ms == 60_000
+  assert driver.lifecycle
+    == [
+      config_types.LifecycleCreate,
+      config_types.LifecycleBeforeStep,
+      config_types.LifecycleAfterStep,
+      config_types.LifecycleRemove,
+    ]
+}
+
+pub fn workspace_driver_accepts_builtin_jj_selection_test() {
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(workspace_driver_front("  driver: jj\n")),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+
+  assert orchestrator.workspace_profiles.default_profile == "jj"
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "jj")
+  let assert Some(driver) = profile.driver
+  assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
+  assert driver.env == []
+  assert list.contains(driver.capabilities, config_types.WorkspacePublishChange)
+}
+
+pub fn named_jj_workspace_driver_maps_friendly_fields_test() {
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(workspace_driver_front(
+        "  driver: dogfood\n  drivers:\n    dogfood:\n      type: jj\n      remote: upstream\n      base_branch: trunk\n      base: '@'\n      fetch_base: true\n      publish_remote: fork\n      github_repo: scherzo-systems/scherzo\n      timeout: 2m\n      env:\n        PATH: /driver/bin\n",
+      )),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "dogfood")
+  let assert Some(driver) = profile.driver
+
+  assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
+  assert driver.timeout_ms == 120_000
+  assert driver.env
+    == [
+      #("PATH", "/driver/bin"),
+      #("SCHERZO_GITHUB_REPO", "scherzo-systems/scherzo"),
+      #("SCHERZO_JJ_WORKSPACE_BASE", "@"),
+      #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
+      #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", "true"),
+      #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "fork"),
+      #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+    ]
+}
+
+pub fn custom_workspace_driver_requires_command_test() {
+  let message =
+    workspace_driver_orchestrator_error(
+      "  driver: custom\n  drivers:\n    custom:\n      type: custom\n",
+    )
+  assert message == "workspace.drivers.custom.command is required"
+}
+
+pub fn old_workspace_driver_keys_fail_with_migration_hint_test() {
+  let default_profile =
+    invalid_config_message(workspace_driver_front("  default_profile: noop\n"))
+  assert string.contains(default_profile, "workspace.default_profile")
+  assert string.contains(default_profile, "workspace.driver")
+  assert string.contains(default_profile, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let profiles =
+    invalid_config_message(workspace_driver_front("  profiles: {}\n"))
+  assert string.contains(profiles, "workspace.profiles")
+  assert string.contains(profiles, "workspace.drivers")
+
+  let lifecycle =
+    workspace_driver_orchestrator_error(
+      "  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n      lifecycle: [create]\n",
+    )
+  assert string.contains(lifecycle, "workspace.drivers.custom.lifecycle")
+  assert string.contains(lifecycle, "type: custom")
+
+  let timeout_ms =
+    workspace_driver_orchestrator_error(
+      "  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n      timeout_ms: 60000\n",
+    )
+  assert string.contains(timeout_ms, "workspace.drivers.custom.timeout_ms")
+  assert string.contains(timeout_ms, "workspace.drivers.custom.timeout")
 }
 
 pub fn path_resolution_and_env_indirection_test() {

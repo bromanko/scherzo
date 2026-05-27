@@ -78,9 +78,9 @@ fn yaml_config_with_max(
     path.absolute("scripts/scherzo-workspace-noop")
   "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
   <> root
-  <> "\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
+  <> "\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
   <> driver_command
-  <> "\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: "
+  <> "\n      timeout: 60s\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: "
   <> int_to_string(max_concurrent)
   <> "\n  max_turns: 1\n"
   <> extra
@@ -222,9 +222,9 @@ fn contract_config_text(root: String, active_state: String) -> String {
   <> active_state
   <> "]\n    terminal: [Done]\nworkspace:\n  root: "
   <> root
-  <> "\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: "
+  <> "\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
   <> driver_command
-  <> "\n        lifecycle: [create, before-step, after-step, remove]\nworkflows:\n    implementation: workflows/implementation.yaml\n"
+  <> "\nworkflows:\n    implementation: workflows/implementation.yaml\n"
 }
 
 fn contract_team(

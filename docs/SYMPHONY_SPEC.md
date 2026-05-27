@@ -180,7 +180,7 @@ Fields:
 Parsed workflow policy is split across a YAML orchestrator config and one or more YAML workflow DAG files:
 
 - `orchestrator` (typed config)
-  - Tracker, polling, workspace profiles/drivers, agent, pi, handoff, routing, artifact, contract, and command settings.
+  - Tracker, polling, workspace drivers, agent, pi, handoff, routing, artifact, contract, and command settings.
 - `workflows` (map)
   - Workflow ids mapped to DAG definitions.
 - `prompt_templates` (files)
@@ -197,7 +197,7 @@ Examples:
 - active and terminal issue states
 - concurrency limits
 - coding-agent executable/args/timeouts
-- workspace profiles and drivers
+- workspace drivers
 
 #### 4.1.4 Workspace
 
@@ -2076,8 +2076,8 @@ Use the same validation profiles as Section 17:
 - Polling orchestrator with single-authority mutable state
 - Issue tracker client with candidate fetch + state refresh + terminal fetch
 - Workspace manager with sanitized per-issue workspaces
-- Driver-backed workspace profiles with lifecycle operations (`create`, `before-step`, `after-step`, `remove`)
-- Workspace driver timeout config (`workspace.profiles.<name>.driver.timeout_ms`, default `60000`)
+- Workspace drivers with lifecycle operations (`create`, `before-step`, `after-step`, `remove`)
+- Workspace driver timeout config (`workspace.drivers.<name>.timeout`, default `60s`)
 - Coding-agent app-server subprocess client with JSON line protocol
 - Codex launch command config (`codex.command`, default `codex app-server`)
 - Strict prompt rendering with `issue` and `attempt` variables
