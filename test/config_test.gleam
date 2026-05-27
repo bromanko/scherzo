@@ -152,7 +152,7 @@ pub fn duration_string_fields_reject_invalid_values_test() {
 
 pub fn legacy_non_polling_duration_ms_fields_remain_supported_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout_ms: 2345\nagents:\n  retries:\n    max_backoff: 3456ms\n  runtime:\n    type: pi\n    turn_timeout: 4567ms\n    read_timeout: 5678ms\n    stall_timeout: 0ms\n    ui_request_timeout: 6789ms\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 2345ms\nagents:\n  retries:\n    max_backoff: 3456ms\n  runtime:\n    type: pi\n    turn_timeout: 4567ms\n    read_timeout: 5678ms\n    stall_timeout: 0ms\n    ui_request_timeout: 6789ms\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
@@ -167,7 +167,7 @@ pub fn legacy_non_polling_duration_ms_fields_remain_supported_test() {
 
 pub fn duration_string_fields_take_precedence_over_legacy_ms_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 2s\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout_ms: 999\nagents:\n  retries:\n    max_backoff: 4s\n  runtime:\n    type: pi\n    turn_timeout: 5s\n    read_timeout: 6s\n    stall_timeout: 0ms\n    ui_request_timeout: 7s\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 2s\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout: 999ms\nagents:\n  retries:\n    max_backoff: 4s\n  runtime:\n    type: pi\n    turn_timeout: 5s\n    read_timeout: 6s\n    stall_timeout: 0ms\n    ui_request_timeout: 7s\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 

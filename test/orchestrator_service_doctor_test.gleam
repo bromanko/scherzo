@@ -74,7 +74,7 @@ fn write_config(dir: String, extra: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/implementation.yaml",
-      "version: 1\nid: implementation\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\n    run_in: main\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -108,7 +108,7 @@ fn write_profile_hooks_config(dir: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/implementation.yaml",
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\n    run_in: main\n",
     )
   let assert Ok(Nil) =
     simplifile.write(

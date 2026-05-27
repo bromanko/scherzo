@@ -63,7 +63,7 @@ steps:
   - id: implement
     kind: agent
     prompt: prompts/task.md
-    workspace: main
+    run_in: main
 ",
     )
   #(workflow_path, root)

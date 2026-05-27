@@ -1,18 +1,19 @@
 version: 1
 id: research
 description: Investigate a task, write Markdown findings, verify the findings file, and use it as the Linear result artifact.
-workspace_profile: dogfood-jj
-max_parallel_steps: 1
+workspace:
+  driver: dogfood-jj
+concurrency: 1
 steps:
   - id: research
     kind: agent
     prompt: prompts/research.md
-    workspace: main
+    run_in: main
 
   - id: collect_findings
     kind: command
     depends_on: [research]
-    recover:
+    recovery:
       attempts: 1
       prompt: prompts/research-recover-failed-step.md
     run: |
@@ -32,4 +33,4 @@ steps:
           exit 1
         fi
       fi
-    workspace: main
+    run_in: main

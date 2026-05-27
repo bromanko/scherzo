@@ -197,6 +197,12 @@ pub fn rejects_invalid_validator_declarations_test() {
     ),
     #(
       workflow_with_structured_output(
+        "      validators:\n        - type: command\n          argv: [python3]\n          timeout_ms: 30000\n",
+      ),
+      "timeout_ms was removed",
+    ),
+    #(
+      workflow_with_structured_output(
         "      validators:\n        - type: command\n          argv: [python3]\n          working_directory: elsewhere\n",
       ),
       "working_directory",

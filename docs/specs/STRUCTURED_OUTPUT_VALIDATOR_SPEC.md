@@ -101,7 +101,7 @@ A structured-output declaration appears under an agent step:
         argv:
           - python3
           - scripts/validate-artifact
-        timeout_ms: 30000
+        timeout: 30s
         working_directory: repository
     validation_retries: 1
 ```
@@ -126,7 +126,7 @@ A structured-output declaration appears under an agent step:
 
 **SOV-DECL-010:** A JSON Schema validator MUST declare `type: json_schema` and a repository-relative `path`. It MAY declare `draft`; version 1 MUST support `draft: "2020-12"` and MAY treat an omitted draft as `"2020-12"`.
 
-**SOV-DECL-011:** A command validator MUST declare `type: command` and a non-empty `argv` list of strings whose first entry is a non-empty executable token. It MAY declare `timeout_ms`, `working_directory`, and `env`. `timeout_ms` defaults to `30000` and MUST be positive. `working_directory` defaults to `workspace` and MUST be one of `workspace`, `repository`, or `run_root` when provided. `env` MUST be a string-to-string map when provided.
+**SOV-DECL-011:** A command validator MUST declare `type: command` and a non-empty `argv` list of strings whose first entry is a non-empty executable token. It MAY declare duration-string `timeout`, `working_directory`, and `env`. `timeout` defaults to `30s` and MUST be positive. `working_directory` defaults to `workspace` and MUST be one of `workspace`, `repository`, or `run_root` when provided. `env` MUST be a string-to-string map when provided.
 
 **SOV-DECL-012:** A declaration MUST NOT contain both the legacy singular `validator` field and the generic `validators` field. Scherzo MUST reject that ambiguous shape.
 

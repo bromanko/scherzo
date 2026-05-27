@@ -104,7 +104,7 @@ steps:
   - id: implement
     kind: agent
     prompt: prompts/task.md
-    workspace: main
+    run_in: main
 ",
     )
   #(config_path, root)
@@ -134,7 +134,7 @@ steps:
   - id: implement
     kind: agent
     prompt: prompts/task.md
-    workspace: main
+    run_in: main
 ",
     )
   #(config_path, root)

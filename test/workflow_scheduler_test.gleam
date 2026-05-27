@@ -27,9 +27,9 @@ fn command_artifact(
 fn implementation_dag(max_parallel_steps: Int) -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: "
+      "version: 1\nid: implementation\nconcurrency: "
       <> int_to_string(max_parallel_steps)
-      <> "\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement.md\n    workspace: main\n  - id: test_after_implement\n    kind: command\n    depends_on: [implement]\n    run: gleam test\n    workspace: main\n    on_failure: continue\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: code.md\n    workspace:\n      name: code-review\n      from: main\n  - id: security_review\n    kind: agent\n    depends_on: [implement]\n    prompt: security.md\n    workspace:\n      name: security-review\n      from: main\n  - id: apply_feedback\n    kind: agent\n    depends_on: [test_after_implement, code_review, security_review]\n    prompt: apply.md\n    workspace: main\n",
+      <> "\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement.md\n    run_in: main\n  - id: test_after_implement\n    kind: command\n    depends_on: [implement]\n    run: gleam test\n    run_in: main\n    on_failure: continue\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: code.md\n    run_in:\n      name: code-review\n      from: main\n  - id: security_review\n    kind: agent\n    depends_on: [implement]\n    prompt: security.md\n    run_in:\n      name: security-review\n      from: main\n  - id: apply_feedback\n    kind: agent\n    depends_on: [test_after_implement, code_review, security_review]\n    prompt: apply.md\n    run_in: main\n",
     )
   dag
 }

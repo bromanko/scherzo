@@ -1,21 +1,22 @@
 version: 1
 id: merge-conflict-resolution
 description: Resolve merge conflicts on a same-repository GitHub PR or branch without intentional functionality changes.
-workspace_profile: isolated
-workspace_capabilities: [status, diff, changed-files, publish-change]
-max_parallel_steps: 1
+workspace:
+  driver: isolated
+  requires: [status, diff, changed-files, publish-change]
+concurrency: 1
 steps:
   - id: prepare_target
     kind: command
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" prepare'
-    timeout_ms: 300000
-    workspace: main
+    timeout: 5m
+    run_in: main
 
   - id: resolve_conflicts
     kind: agent
     depends_on: [prepare_target]
     prompt: prompts/resolve-merge-conflicts.md
-    workspace:
+    run_in:
       name: main
       from: main
 
@@ -23,8 +24,8 @@ steps:
     kind: command
     depends_on: [resolve_conflicts]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" validate'
-    timeout_ms: 300000
-    workspace:
+    timeout: 5m
+    run_in:
       name: main
       from: main
 
@@ -49,8 +50,8 @@ steps:
         exit 64
       fi
       "$bundle_dir/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c "$SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND"
-    timeout_ms: 1200000
-    workspace:
+    timeout: 20m
+    run_in:
       name: main
       from: main
 
@@ -58,7 +59,7 @@ steps:
     kind: command
     depends_on: [project_validation]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" publish'
-    timeout_ms: 300000
-    workspace:
+    timeout: 5m
+    run_in:
       name: main
       from: main

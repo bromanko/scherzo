@@ -18,7 +18,7 @@ Copy these files into the target repository's Scherzo workflow directory:
 - `examples/workflows/schemas/provider/workflow-step-recovery-result.v1.schema.json`
 - `examples/workflows/schemas/workflow-step-recovery-result.v1.schema.json`
 
-The workflow selects `workspace_profile: noop` and declares `workspace_capabilities: [assert-only]`. You may rename the driver in your config, but if you do, update the workflow's `workspace_profile` to match.
+The workflow selects `workspace.driver: noop` and declares `workspace.requires: [assert-only]`. You may rename the driver in your config, but if you do, update the workflow's `workspace.driver` to match.
 
 ## Minimal driver config
 

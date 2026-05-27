@@ -188,12 +188,12 @@ pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test(
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/implementation.yaml",
-      "version: 1\nid: implementation\nworkspace_profile: driver\nworkspace_capabilities: [publish-change]\nsteps:\n  - id: run\n    kind: command\n    run: echo reviewable\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: driver\n  requires: [publish-change]\nsteps:\n  - id: run\n    kind: command\n    run: echo reviewable\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/maintenance.yaml",
-      "version: 1\nid: maintenance\nworkspace_profile: driver\nsteps:\n  - id: run\n    kind: command\n    run: echo maintenance\n",
+      "version: 1\nid: maintenance\nworkspace:\n  driver: driver\nsteps:\n  - id: run\n    kind: command\n    run: echo maintenance\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -298,7 +298,7 @@ pub fn loads_recovery_prompt_files_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/implementation.yaml",
-      "version: 1\nid: implementation\nrecover:\n  prompt: prompts/recover.md\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n    recover:\n      prompt: prompts/recover-step.md\n",
+      "version: 1\nid: implementation\nrecovery:\n  prompt: prompts/recover.md\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n    recovery:\n      prompt: prompts/recover-step.md\n",
     )
   let assert Ok(dag) =
     runtime_bundle.load_workflow_file(dir <> "/workflows/implementation.yaml")
@@ -360,7 +360,7 @@ pub fn loads_workflows_with_workspace_profiles_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/noop.yaml",
-      "version: 1\nid: noop\nworkspace_profile: noop\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+      "version: 1\nid: noop\nworkspace:\n  driver: noop\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -389,7 +389,7 @@ pub fn rejects_hook_backed_profile_with_no_workspace_capabilities_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/noop.yaml",
-      "version: 1\nid: noop\nworkspace_profile: noop\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+      "version: 1\nid: noop\nworkspace:\n  driver: noop\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -411,7 +411,7 @@ pub fn rejects_missing_selected_workspace_capabilities_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/noop.yaml",
-      "version: 1\nid: noop\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+      "version: 1\nid: noop\nworkspace:\n  driver: noop\n  requires: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -422,7 +422,7 @@ pub fn rejects_missing_selected_workspace_capabilities_test() {
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   assert code == "workspace_capabilities_unavailable"
   assert string.contains(message, "workflow noop")
-  assert string.contains(message, "workspace_profile noop")
+  assert string.contains(message, "workspace.driver noop")
   assert string.contains(message, "missing: assert-only")
 }
 
@@ -438,7 +438,7 @@ pub fn loads_driver_profile_with_driver_capabilities_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/noop.yaml",
-      "version: 1\nid: noop\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+      "version: 1\nid: noop\nworkspace:\n  driver: noop\n  requires: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -458,7 +458,7 @@ pub fn loads_selected_driver_profile_after_capability_match_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/noop.yaml",
-      "version: 1\nid: noop\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+      "version: 1\nid: noop\nworkspace:\n  driver: noop\n  requires: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -478,7 +478,7 @@ pub fn rejects_malformed_workspace_driver_discovery_before_dispatch_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/noop.yaml",
-      "version: 1\nid: noop\nworkspace_profile: noop\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+      "version: 1\nid: noop\nworkspace:\n  driver: noop\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -587,7 +587,7 @@ pub fn default_workspace_driver_is_builtin_noop_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/noop.yaml",
-      "version: 1\nid: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+      "version: 1\nid: noop\nworkspace:\n  requires: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -610,7 +610,7 @@ pub fn rejects_workflow_with_unknown_workspace_profile_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/noop.yaml",
-      "version: 1\nid: noop\nworkspace_profile: missing\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+      "version: 1\nid: noop\nworkspace:\n  driver: missing\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
     )
   write_describe_driver(dir, "isolated", "[]")
   let assert Ok(Nil) =

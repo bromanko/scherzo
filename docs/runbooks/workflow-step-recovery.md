@@ -32,17 +32,16 @@ The recovery configuration shape is:
 ```yaml
 version: 1
 id: implementation
-recover:
+recovery:
   attempts: 1
   prompt: .scherzo/workflows/prompts/recover_failed_step.md
 steps:
   - id: implement
-    kind: agent
     prompt: prompts/implement.md
-    workspace: main
+    run_in: main
 ```
 
-Step overrides shallow-merge onto workflow defaults. `recover.enabled: false` disables recovery for that step.
+Step overrides shallow-merge onto workflow defaults. `recovery.enabled: false` disables recovery for that step.
 
 Supported fields:
 

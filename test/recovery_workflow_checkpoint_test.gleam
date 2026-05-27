@@ -87,25 +87,25 @@ fn parse_dag(content: String) -> workflow_dag.WorkflowDag {
 
 fn agent_dag() -> workflow_dag.WorkflowDag {
   parse_dag(
-    "version: 1\nid: workflow-alpha\nsteps:\n  - id: a\n    kind: agent\n    prompt: a\n    workspace: main\n  - id: b\n    kind: agent\n    depends_on: [a]\n    prompt: b\n    workspace: main\n",
+    "version: 1\nid: workflow-alpha\nsteps:\n  - id: a\n    kind: agent\n    prompt: a\n    run_in: main\n  - id: b\n    kind: agent\n    depends_on: [a]\n    prompt: b\n    run_in: main\n",
   )
 }
 
 fn fatal_dag() -> workflow_dag.WorkflowDag {
   parse_dag(
-    "version: 1\nid: workflow-alpha\nsteps:\n  - id: fatal\n    kind: command\n    run: fatal\n    workspace: main\n",
+    "version: 1\nid: workflow-alpha\nsteps:\n  - id: fatal\n    kind: command\n    run: fatal\n    run_in: main\n",
   )
 }
 
 fn interrupted_command_dag() -> workflow_dag.WorkflowDag {
   parse_dag(
-    "version: 1\nid: workflow-alpha\nsteps:\n  - id: command\n    kind: command\n    run: make changes\n    workspace: main\n",
+    "version: 1\nid: workflow-alpha\nsteps:\n  - id: command\n    kind: command\n    run: make changes\n    run_in: main\n",
   )
 }
 
 fn source_dag() -> workflow_dag.WorkflowDag {
   parse_dag(
-    "version: 1\nid: workflow-alpha\nsteps:\n  - id: seed\n    kind: agent\n    prompt: seed\n    workspace: seed\n  - id: use_seed\n    kind: agent\n    depends_on: [seed]\n    prompt: use\n    workspace:\n      name: derived\n      from: seed\n",
+    "version: 1\nid: workflow-alpha\nsteps:\n  - id: seed\n    kind: agent\n    prompt: seed\n    run_in: seed\n  - id: use_seed\n    kind: agent\n    depends_on: [seed]\n    prompt: use\n    run_in:\n      name: derived\n      from: seed\n",
   )
 }
 

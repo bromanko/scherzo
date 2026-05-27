@@ -102,6 +102,15 @@ fn workflow_paths_with_packaged_helper_commands() -> List(String) {
   ]
 }
 
+fn example_workflow_paths() -> List(String) {
+  [
+    "examples/workflows/github-pr-conflict-scout.yaml",
+    "examples/workflows/implementation.yaml",
+    "examples/workflows/merge-conflict-resolution.yaml",
+    "examples/workflows/research.yaml",
+  ]
+}
+
 fn assert_bundle_dir_initialized_when_referenced(
   path: String,
   step: workflow_dag.WorkflowStep,
@@ -210,6 +219,13 @@ pub fn workflow_command_bundle_dir_references_are_initialized_test() {
   })
 }
 
+pub fn example_workflows_parse_under_current_schema_test() {
+  list.each(example_workflow_paths(), fn(path) {
+    let assert Ok(source) = simplifile.read(path)
+    let assert Ok(_) = workflow_dag.parse(source)
+  })
+}
+
 pub fn execplan_html_fallback_commands_use_bundle_helper_test() {
   let script = read_file(".scherzo/workflows/scripts/scherzo-execplan-html")
 
@@ -275,30 +291,30 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
   let workflow_expectations = [
     #(
       ".scherzo/workflows/implementation.yaml",
-      "workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+      "  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]",
     ),
     #(
       ".scherzo/workflows/execplan.yaml",
-      "workspace_capabilities: [status, diff, changed-files, publish-change]",
+      "  requires: [status, diff, changed-files, publish-change]",
     ),
     #(
       ".scherzo/workflows/execplan-revision.yaml",
-      "workspace_capabilities: [status, diff, changed-files, refresh-base, publish-change]",
+      "  requires: [status, diff, changed-files, refresh-base, publish-change]",
     ),
     #(
       ".scherzo/workflows/execplan-implementation.yaml",
-      "workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+      "  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]",
     ),
     #(
       ".scherzo/workflows/merge-conflict-resolution.yaml",
-      "workspace_capabilities: [status, diff, changed-files, publish-change]",
+      "  requires: [status, diff, changed-files, publish-change]",
     ),
   ]
 
   list.each(workflow_expectations, fn(expectation) {
     let #(path, capabilities) = expectation
     let workflow = read_file(path)
-    assert_contains(workflow, "workspace_profile: dogfood-jj")
+    assert_contains(workflow, "  driver: dogfood-jj")
     assert_contains(workflow, capabilities)
     assert_not_contains(workflow, "--from @- --to @")
   })
@@ -412,7 +428,7 @@ pub fn workflow_docs_explain_canonical_execplan_routing_and_validation_test() {
   assert_not_contains(docs, "workflow:execplan-revision-v2")
   assert_not_contains(docs, "workflow:execplan-implementation-v2")
   assert_contains(docs, "workspace.drivers.dogfood-jj")
-  assert_contains(docs, "workspace_profile: dogfood-jj")
+  assert_contains(docs, "workspace.driver: dogfood-jj")
   assert_contains(docs, "do not add language-specific review skills")
 }
 

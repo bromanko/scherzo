@@ -43,7 +43,7 @@ This specification does not prescribe one version-control backend, one publicati
 
 **Lifecycle operation**: a driver operation Scherzo invokes while creating, checking, or removing a workspace. Lifecycle operations may create or delete directories and therefore have stricter target-safety requirements than read-only capabilities.
 
-**Capability**: a named operation that workflow code may require with `workspace_capabilities` and invoke through the selected driver, such as `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, or `publish-change`.
+**Capability**: a named operation that workflow code may require with `workspace.requires` and invoke through the selected driver, such as `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, or `publish-change`.
 
 **Driver reference**: an opaque backend-specific reference string accepted by a VCS-backed driver, such as a base revision, remote branch, change id, bookmark, or hosted-review target. Scherzo treats driver references as strings unless a command in this specification narrows the accepted shape.
 
@@ -85,11 +85,12 @@ Top-level `workspace.hooks`, `workspace.default_profile`, `workspace.profiles`, 
 Workflow DAGs select and require workspace policy with:
 
 ```yaml
-workspace_profile: isolated
-workspace_capabilities: [changed-files, assert-only]
+workspace:
+  driver: isolated
+  requires: [changed-files, assert-only]
 ```
 
-A workflow MAY select a driver with the current `workspace_profile` selector. If omitted, Scherzo uses `workspace.driver`. A workflow MAY require capability names with `workspace_capabilities`; Scherzo MUST reject loading or dispatch when the selected driver's capabilities do not include all required names.
+A workflow MAY select a driver with `workspace.driver`. If omitted, Scherzo uses the orchestrator default. A workflow MAY require capability names with `workspace.requires`; Scherzo MUST reject loading or dispatch when the selected driver's capabilities do not include all required names.
 
 ## 4. Driver command validation
 

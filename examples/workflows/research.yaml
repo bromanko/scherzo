@@ -1,9 +1,10 @@
 version: 1
 id: research
 description: Investigate a task, write one Markdown findings artifact, verify it through the workspace driver, and stream it as the workflow result.
-workspace_profile: noop
-workspace_capabilities: [assert-only]
-max_parallel_steps: 1
+workspace:
+  driver: noop
+  requires: [assert-only]
+concurrency: 1
 contract:
   version: 1
   inputs:
@@ -25,12 +26,12 @@ steps:
   - id: research
     kind: agent
     prompt: prompts/research.md
-    workspace: main
+    run_in: main
 
   - id: collect_findings
     kind: command
     depends_on: [research]
-    recover:
+    recovery:
       attempts: 1
       prompt: prompts/research-recover-failed-step.md
     run: |
@@ -58,4 +59,4 @@ steps:
       test -f "$findings"
       "$driver" assert-only --path "$findings"
       cat "$findings"
-    workspace: main
+    run_in: main

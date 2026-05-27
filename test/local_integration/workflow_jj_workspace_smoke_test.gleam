@@ -124,7 +124,7 @@ fn empty_tracker() -> tracker.Client {
 }
 
 fn driver_dag() -> workflow_dag.WorkflowDag {
-  dag_source("workspace_profile: dogfood-jj\n")
+  dag_source("workspace:\n  driver: dogfood-jj\n")
 }
 
 fn dag_source(profile_line: String) -> workflow_dag.WorkflowDag {
@@ -132,7 +132,7 @@ fn dag_source(profile_line: String) -> workflow_dag.WorkflowDag {
     workflow_dag.parse(
       "version: 1\nid: smoke\n"
       <> profile_line
-      <> "steps:\n  - id: first\n    kind: command\n    run: printf '%s\\n' \"$PWD\" > smoke.log; printf '%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"\n    workspace: main\n  - id: second\n    kind: command\n    depends_on: [first]\n    run: read first_pwd < smoke.log; test \"$first_pwd\" = \"$PWD\"; printf '%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"\n    workspace: main\n",
+      <> "steps:\n  - id: first\n    kind: command\n    run: printf '%s\\n' \"$PWD\" > smoke.log; printf '%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"\n    run_in: main\n  - id: second\n    kind: command\n    depends_on: [first]\n    run: read first_pwd < smoke.log; test \"$first_pwd\" = \"$PWD\"; printf '%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"\n    run_in: main\n",
     )
   dag
 }

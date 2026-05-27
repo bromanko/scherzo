@@ -1,18 +1,18 @@
 version: 1
 id: implementation
 description: Implement a task, run tests, review in parallel workspaces, apply feedback, and validate.
-max_parallel_steps: 4
+concurrency: 4
 steps:
   - id: implement
     kind: agent
     prompt: prompts/implement.md
-    workspace: main
+    run_in: main
 
   - id: test_after_implement
     kind: command
     depends_on: [implement]
     run: gleam test
-    workspace: main
+    run_in: main
     on_failure: continue
 
   - id: code_review
@@ -21,7 +21,7 @@ steps:
     prompt: prompts/code-review.md
     # Keep the project default model/provider but use more reasoning here.
     thinking: high
-    workspace:
+    run_in:
       name: code-review
       from: main
 
@@ -29,7 +29,7 @@ steps:
     kind: agent
     depends_on: [implement]
     prompt: prompts/security-review.md
-    workspace:
+    run_in:
       name: security-review
       from: main
 
@@ -37,7 +37,7 @@ steps:
     kind: agent
     depends_on: [implement]
     prompt: prompts/performance-review.md
-    workspace:
+    run_in:
       name: performance-review
       from: main
 
@@ -49,10 +49,10 @@ steps:
       - security_review
       - performance_review
     prompt: prompts/apply-feedback.md
-    workspace: main
+    run_in: main
 
   - id: final_test
     kind: command
     depends_on: [apply_feedback]
     run: gleam test
-    workspace: main
+    run_in: main

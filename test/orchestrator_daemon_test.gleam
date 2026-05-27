@@ -182,21 +182,21 @@ fn write_parallel_yaml_agent_workflow(dir: String) -> String {
       workflow_dir <> "/implementation.yaml",
       "version: 1
 id: implementation
-max_parallel_steps: 2
+concurrency: 2
 steps:
   - id: alpha
     kind: agent
     prompt: prompts/task.md
-    workspace: alpha
+    run_in: alpha
   - id: beta
     kind: agent
     prompt: prompts/task.md
-    workspace: beta
+    run_in: beta
   - id: final
     kind: command
     depends_on: [alpha, beta]
     run: final
-    workspace: alpha
+    run_in: alpha
 ",
     )
   config_path
@@ -218,7 +218,7 @@ steps:
   - id: final_test
     kind: command
     run: sh -c 'exit 1'
-    workspace: main
+    run_in: main
 ",
     )
   config_path
@@ -245,7 +245,7 @@ steps:
   - id: scheduled_command
     kind: command
     run: exit 1
-    workspace: main
+    run_in: main
 ",
     )
   config_path
@@ -275,7 +275,7 @@ steps:
   - id: scheduled_command
     kind: command
     run: echo scheduled
-    workspace: main
+    run_in: main
 ",
     )
   config_path
@@ -305,7 +305,7 @@ steps:
   - id: capacity_command
     kind: command
     run: echo capacity
-    workspace: main
+    run_in: main
 ",
     )
   config_path
@@ -336,7 +336,7 @@ steps:
       printf 'stdout-abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\\n'
       printf 'stderr-abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\\n' >&2
       exit 9
-    workspace: main
+    run_in: main
 ",
     )
   config_path
@@ -374,7 +374,7 @@ steps:
   - id: implement
     kind: agent
     prompt: prompts/task.md
-    workspace: main
+    run_in: main
 ",
     )
   config_path
@@ -3491,12 +3491,12 @@ steps:
   - id: first
     kind: command
     run: first
-    workspace: main
+    run_in: main
   - id: second
     kind: command
     depends_on: [first]
     run: second
-    workspace: main
+    run_in: main
 ",
     )
   let candidate = issue("issue-resume", "ABC-99", "Todo")

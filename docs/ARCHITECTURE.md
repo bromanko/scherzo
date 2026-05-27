@@ -122,12 +122,12 @@ is eliminated.
 - Cycles are rejected.
 - More than one terminal sink is rejected; real workflows should have one final
   sink step.
-- `workspace: { name, from }` may only derive from a workspace produced by a
+- `run_in: { name, from }` may only derive from a workspace lane produced by a
   transitive dependency.
 - Prompt file paths are relative to the workflow YAML file and may not escape
   that directory.
 - Command steps cannot set pi model/thinking fields.
-- `workflow_scheduler.ready_steps` respects `max_parallel_steps`, dependency
+- `workflow_scheduler.ready_steps` respects workflow `concurrency`, dependency
   completion, fatal failures/cancellation, and same-workspace serialization.
 - A failed step with `on_failure: continue` records a terminal
   `failed_continued` artifact and can unblock downstream dependencies.
@@ -137,8 +137,8 @@ is eliminated.
   selects either a built-in driver (`noop` or `jj`) or a named entry under
   `workspace.drivers`; custom entries name a trusted command, and driver capability
   names are discovered from `describe --json` when they are not built in. A workflow may
-  select one trusted driver with top-level `workspace_profile` and may require top-level
-  `workspace_capabilities`; omitted selectors use the orchestrator default driver.
+  select one trusted driver with `workspace.driver` and may require capabilities with
+  `workspace.requires`; omitted selectors use the orchestrator default driver.
   Scherzo validates required capabilities against the selected driver before dispatch.
   `docs/specs/WORKSPACE_DRIVER_SPEC.md` is the normative driver contract. Direct
   `workspace.hooks`, `workspace.profiles`, and driver-local lifecycle selection are
