@@ -9,6 +9,7 @@ import scherzo/model_config
 import scherzo/structured_output_source
 import scherzo/workflow_contract
 import scherzo/workflow_dag_validator_parser
+import scherzo/workflow_yaml_migration
 import scherzo/workstream/phase_metadata
 import yay
 
@@ -129,10 +130,11 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
       use _ <- result.try(require_version(root))
       use id <- result.try(required_string(root, "id", "missing_workflow_id"))
       use _ <- result.try(validate_workflow_id(id))
-      use workspace_profile <- result.try(read_workspace_profile(root))
-      use workspace_capabilities <- result.try(read_workspace_capabilities(root))
-      use max_parallel_steps <- result.try(read_max_parallel_steps(root))
-      use recover <- result.try(read_recover(root, "recover"))
+      use _ <- result.try(reject_removed_workflow_keys(root))
+      use workspace <- result.try(read_workflow_workspace(root))
+      let #(workspace_profile, workspace_capabilities) = workspace
+      use max_parallel_steps <- result.try(read_concurrency(root))
+      use recover <- result.try(read_recovery(root, "recovery"))
       use steps <- result.try(read_steps(root))
       use contract <- result.try(read_contract(root))
       use workstream_phase <- result.try(read_workstream_phase(root, contract))
@@ -211,8 +213,8 @@ pub fn effective_recovery_config(
               )
             None ->
               Error(DagError(
-                "missing_recover_prompt",
-                "recover.prompt is required when recovery is enabled",
+                "missing_recovery_prompt",
+                "recovery.prompt is required when recovery is enabled",
               ))
           }
       }
@@ -282,37 +284,56 @@ fn require_version(root: yay.Node) -> Result(Nil, DagError) {
   }
 }
 
-fn read_workspace_profile(root: yay.Node) -> Result(Option(String), DagError) {
-  case get_node(root, "workspace_profile") {
+fn read_workflow_workspace(
+  root: yay.Node,
+) -> Result(#(Option(String), List(config_types.WorkspaceCapability)), DagError) {
+  case get_node(root, "workspace") {
+    None -> Ok(#(None, []))
+    Some(yay.NodeMap(_) as workspace_node) -> {
+      use _ <- result.try(reject_unexpected_workspace_keys(workspace_node))
+      use driver <- result.try(read_workspace_driver(workspace_node))
+      use requires <- result.try(read_workspace_requires(workspace_node))
+      Ok(#(driver, requires))
+    }
+    Some(_) ->
+      Error(DagError(
+        "workflow_workspace_not_map",
+        "workspace must be a map with optional driver and requires fields",
+      ))
+  }
+}
+
+fn read_workspace_driver(node: yay.Node) -> Result(Option(String), DagError) {
+  case get_node(node, "driver") {
     None -> Ok(None)
     Some(yay.NodeStr(profile)) ->
       case valid_workflow_or_workspace_id(profile) {
         True -> Ok(Some(profile))
         False ->
           Error(DagError(
-            "invalid_workspace_profile",
-            "invalid workspace_profile: " <> profile,
+            "invalid_workspace_driver",
+            "invalid workspace.driver: " <> profile,
           ))
       }
     Some(_) ->
       Error(DagError(
-        "workspace_profile_not_string",
-        "workspace_profile must be a string",
+        "workspace_driver_not_string",
+        "workspace.driver must be a string",
       ))
   }
 }
 
-fn read_workspace_capabilities(
-  root: yay.Node,
+fn read_workspace_requires(
+  workspace_node: yay.Node,
 ) -> Result(List(config_types.WorkspaceCapability), DagError) {
-  case get_node(root, "workspace_capabilities") {
+  case get_node(workspace_node, "requires") {
     None -> Ok([])
     Some(yay.NodeSeq(values)) ->
       read_workspace_capability_values(values, [], [])
     Some(_) ->
       Error(DagError(
-        "workspace_capabilities_not_list",
-        "workspace_capabilities must be a list",
+        "workspace_requires_not_list",
+        "workspace.requires must be a list",
       ))
   }
 }
@@ -348,21 +369,24 @@ fn read_workspace_capability_values(
     }
     [_, ..] ->
       Error(DagError(
-        "workspace_capabilities_entry_not_string",
-        "workspace_capabilities entries must be strings",
+        "workspace_requires_entry_not_string",
+        "workspace.requires entries must be strings",
       ))
   }
 }
 
-fn read_max_parallel_steps(root: yay.Node) -> Result(Int, DagError) {
-  let value = optional_int(root, "max_parallel_steps") |> option.unwrap(1)
+fn read_concurrency(root: yay.Node) -> Result(Int, DagError) {
+  let value = case get_node(root, "concurrency") {
+    None -> Ok(1)
+    Some(yay.NodeInt(value)) -> Ok(value)
+    Some(_) ->
+      Error(DagError("concurrency_not_int", "concurrency must be an integer"))
+  }
+  use value <- result.try(value)
   case value >= 1 {
     True -> Ok(value)
     False ->
-      Error(DagError(
-        "invalid_max_parallel_steps",
-        "max_parallel_steps must be at least 1",
-      ))
+      Error(DagError("invalid_concurrency", "concurrency must be at least 1"))
   }
 }
 
@@ -413,16 +437,15 @@ fn read_step_list(
 fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
   case node {
     yay.NodeMap(_) -> {
-      use _ <- result.try(reject_step_workspace_profile(node))
-      use _ <- result.try(reject_step_workspace_capabilities(node))
+      use _ <- result.try(reject_removed_step_keys(node))
       use id <- result.try(required_string(node, "id", "missing_step_id"))
       use _ <- result.try(validate_step_id(id))
       use kind <- result.try(read_step_kind(node, id))
       use depends_on <- result.try(read_depends_on(node))
-      use workspace <- result.try(read_workspace(node))
+      use workspace <- result.try(read_run_in(node))
       use on_failure <- result.try(read_failure_policy(node))
       use model_settings <- result.try(read_model_settings(kind, node))
-      use recover <- result.try(read_recover(node, "step.recover"))
+      use recover <- result.try(read_recovery(node, "step.recovery"))
       Ok(WorkflowStep(
         id: id,
         kind: kind,
@@ -437,32 +460,11 @@ fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
   }
 }
 
-fn reject_step_workspace_profile(node: yay.Node) -> Result(Nil, DagError) {
-  case get_node(node, "workspace_profile") {
-    None -> Ok(Nil)
-    Some(_) ->
-      Error(DagError(
-        "step_workspace_profile_not_supported",
-        "workspace_profile is only valid at workflow top level",
-      ))
-  }
-}
-
-fn reject_step_workspace_capabilities(node: yay.Node) -> Result(Nil, DagError) {
-  case get_node(node, "workspace_capabilities") {
-    None -> Ok(Nil)
-    Some(_) ->
-      Error(DagError(
-        "step_workspace_capabilities_not_supported",
-        "workspace_capabilities is only valid at workflow top level",
-      ))
-  }
-}
-
 fn read_step_kind(
   node: yay.Node,
   step_id: String,
 ) -> Result(StepKind, DagError) {
+  use _ <- result.try(reject_step_discriminator_non_strings(node))
   let kind = optional_string(node, "kind")
   case kind {
     Some(raw) -> {
@@ -806,30 +808,26 @@ fn read_depends_on(node: yay.Node) -> Result(List(String), DagError) {
   }
 }
 
-fn read_workspace(node: yay.Node) -> Result(WorkspaceRef, DagError) {
-  case get_node(node, "workspace") {
+fn read_run_in(node: yay.Node) -> Result(WorkspaceRef, DagError) {
+  case get_node(node, "run_in") {
     None -> Ok(WorkspaceRef(name: "main", from: None))
     Some(yay.NodeStr(name)) -> {
       use _ <- result.try(validate_workspace_name(name))
       Ok(WorkspaceRef(name: name, from: None))
     }
-    Some(workspace_node) ->
-      case workspace_node {
+    Some(run_in_node) ->
+      case run_in_node {
         yay.NodeMap(_) -> {
           use name <- result.try(required_string(
-            workspace_node,
+            run_in_node,
             "name",
-            "missing_workspace_name",
+            "missing_run_in_name",
           ))
           use _ <- result.try(validate_workspace_name(name))
-          use source <- result.try(read_workspace_source(workspace_node))
+          use source <- result.try(read_workspace_source(run_in_node))
           Ok(WorkspaceRef(name: name, from: source))
         }
-        _ ->
-          Error(DagError(
-            "workspace_invalid",
-            "workspace must be a string or map",
-          ))
+        _ -> Error(DagError("run_in_invalid", "run_in must be a string or map"))
       }
   }
 }
@@ -860,19 +858,19 @@ fn read_failure_policy(node: yay.Node) -> Result(FailurePolicy, DagError) {
   }
 }
 
-fn read_recover(
+fn read_recovery(
   node: yay.Node,
   path: String,
 ) -> Result(Option(RecoveryConfigPatch), DagError) {
-  case get_node(node, "recover") {
+  case get_node(node, "recovery") {
     None -> Ok(None)
-    Some(recover_node) ->
-      case recover_node {
+    Some(recovery_node) ->
+      case recovery_node {
         yay.NodeMap(_) -> {
-          use enabled <- result.try(read_recover_enabled(recover_node, path))
-          use attempts <- result.try(read_recover_attempts(recover_node, path))
-          use model <- result.try(read_recover_model(recover_node, path))
-          use prompt <- result.try(read_recover_prompt(recover_node, path))
+          use enabled <- result.try(read_recover_enabled(recovery_node, path))
+          use attempts <- result.try(read_recover_attempts(recovery_node, path))
+          use model <- result.try(read_recover_model(recovery_node, path))
+          use prompt <- result.try(read_recover_prompt(recovery_node, path))
           Ok(
             Some(RecoveryConfigPatch(
               enabled: enabled,
@@ -882,7 +880,7 @@ fn read_recover(
             )),
           )
         }
-        _ -> Error(DagError("recover_not_map", path <> " must be a map"))
+        _ -> Error(DagError("recovery_not_map", path <> " must be a map"))
       }
   }
 }
@@ -896,7 +894,7 @@ fn read_recover_enabled(
     Some(yay.NodeBool(value)) -> Ok(Some(value))
     Some(_) ->
       Error(DagError(
-        "recover_enabled_not_bool",
+        "recovery_enabled_not_bool",
         path <> ".enabled must be a boolean",
       ))
   }
@@ -913,13 +911,13 @@ fn read_recover_attempts(
         True -> Ok(Some(value))
         False ->
           Error(DagError(
-            "invalid_recover_attempts",
+            "invalid_recovery_attempts",
             path <> ".attempts must be at least 1",
           ))
       }
     Some(_) ->
       Error(DagError(
-        "recover_attempts_not_int",
+        "recovery_attempts_not_int",
         path <> ".attempts must be an integer",
       ))
   }
@@ -940,7 +938,7 @@ fn read_recover_model(
       })
     Some(_) ->
       Error(DagError(
-        "recover_model_not_string",
+        "recovery_model_not_string",
         path <> ".model must be a string",
       ))
   }
@@ -955,7 +953,7 @@ fn read_recover_prompt(
     Some(yay.NodeStr(value)) -> Ok(Some(PromptFile(value)))
     Some(_) ->
       Error(DagError(
-        "recover_prompt_not_string",
+        "recovery_prompt_not_string",
         path <> ".prompt must be a string",
       ))
   }
@@ -1626,11 +1624,35 @@ fn first_some(left: Option(a), right: Option(a)) -> Option(a) {
   }
 }
 
-fn optional_int(node: yay.Node, key: String) -> Option(Int) {
-  case get_node(node, key) {
-    Some(yay.NodeInt(value)) -> Some(value)
-    _ -> None
-  }
+fn reject_removed_workflow_keys(root: yay.Node) -> Result(Nil, DagError) {
+  workflow_yaml_migration.reject_workflow_keys(root)
+  |> result.map_error(migration_error_to_dag_error)
+}
+
+fn reject_removed_step_keys(node: yay.Node) -> Result(Nil, DagError) {
+  workflow_yaml_migration.reject_step_keys(node)
+  |> result.map_error(migration_error_to_dag_error)
+}
+
+fn reject_unexpected_workspace_keys(node: yay.Node) -> Result(Nil, DagError) {
+  workflow_yaml_migration.reject_unexpected_workspace_keys(node)
+  |> result.map_error(migration_error_to_dag_error)
+}
+
+fn reject_step_discriminator_non_strings(
+  node: yay.Node,
+) -> Result(Nil, DagError) {
+  workflow_yaml_migration.reject_step_discriminator_non_strings(node)
+  |> result.map_error(migration_error_to_dag_error)
+}
+
+fn migration_error_to_dag_error(
+  error: workflow_yaml_migration.RemovedKeyError,
+) -> DagError {
+  DagError(
+    workflow_yaml_migration.code(error),
+    workflow_yaml_migration.message(error),
+  )
 }
 
 fn get_node(node: yay.Node, key: String) -> Option(yay.Node) {

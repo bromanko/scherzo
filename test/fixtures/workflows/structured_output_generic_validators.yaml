@@ -4,7 +4,7 @@ steps:
   - id: produce_review
     kind: agent
     prompt: prompts/review.md
-    workspace: main
+    run_in: main
     structured_output:
       artifact_name: review_lane_draft
       required: true
@@ -27,6 +27,6 @@ steps:
           argv:
             - python3
             - test/fixtures/structured_output/command_validator_accept.py
-          timeout_ms: 30000
+          timeout: 30s
           working_directory: repository
       validation_retries: 1

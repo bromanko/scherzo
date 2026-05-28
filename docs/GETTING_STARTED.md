@@ -332,18 +332,18 @@ workspace:
   driver: noop
 ```
 
-A workflow can make that choice explicit with the current workflow selector field:
+A workflow can make that choice explicit with the workflow workspace block:
 
 ```yaml
 version: 1
 id: research
-workspace_profile: noop
-workspace_capabilities: [assert-only]
+workspace:
+  driver: noop
+  requires: [assert-only]
 steps:
   - id: research
-    kind: agent
     prompt: prompts/research.md
-    workspace: main
+    run_in: main
 ```
 
 ### `jj` for implementation workflows
@@ -375,8 +375,9 @@ Implementation workflows often require capabilities:
 ```yaml
 version: 1
 id: implementation
-workspace_profile: isolated
-workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]
+workspace:
+  driver: isolated
+  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]
 ```
 
 ### Custom workspace drivers
@@ -399,8 +400,9 @@ workspace:
 Then let workflows select the driver name and require capabilities:
 
 ```yaml
-workspace_profile: myrepo
-workspace_capabilities: [status, diff, changed-files]
+workspace:
+  driver: myrepo
+  requires: [status, diff, changed-files]
 ```
 
 A custom driver must implement discovery with `<driver> describe --json`, the lifecycle protocol, and any advertised capabilities. See the [Workspace Driver Specification](specs/WORKSPACE_DRIVER_SPEC.md) for the exact command, JSON, exit-code, environment, and path-safety contract.
@@ -440,22 +442,21 @@ Create `.scherzo/workflows/getting-started.yaml`:
 version: 1
 id: getting-started
 description: Draft a small plan and verify that the expected artifact exists.
-workspace_profile: noop
-max_parallel_steps: 1
+workspace:
+  driver: noop
+concurrency: 1
 steps:
   - id: draft_plan
-    kind: agent
     prompt: prompts/getting-started.md
-    workspace: main
+    run_in: main
 
   - id: validate_plan_file
-    kind: command
     depends_on: [draft_plan]
     run: |
       set -eu
       test -s implementation-plan.md
       printf 'implementation-plan.md exists and is non-empty\n'
-    workspace: main
+    run_in: main
 ```
 
 Important workflow rules:
@@ -464,7 +465,7 @@ Important workflow rules:
 - `depends_on` forms a DAG; cycles are rejected.
 - Prompt paths are relative to the workflow YAML file and must stay inside that workflow directory.
 - Steps sharing the same logical workspace are serialized.
-- Different logical workspaces may run concurrently up to `max_parallel_steps` and `agent.max_concurrent_agents`.
+- Different logical workspaces may run concurrently up to workflow `concurrency` and `agents.concurrency`.
 - Agent steps inherit project-level `pi` settings unless the step overrides `model` or `thinking`.
 - Command steps run shell commands in the prepared workspace.
 - Retained artifacts use the default filesystem artifact store unless you add a
@@ -588,7 +589,7 @@ validators:
     argv:
       - python3
       - scripts/validate-implementation-plan.py
-    timeout_ms: 30000
+    timeout: 30s
     working_directory: repository
 ```
 

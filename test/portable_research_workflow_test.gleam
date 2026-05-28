@@ -225,7 +225,7 @@ pub fn example_research_package_rejects_profile_without_assert_only_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/research.yaml",
-      "version: 1\nid: research\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: collect\n    kind: command\n    run: echo ok\n",
+      "version: 1\nid: research\nworkspace:\n  driver: noop\n  requires: [assert-only]\nsteps:\n  - id: collect\n    kind: command\n    run: echo ok\n",
     )
   let assert Ok(Nil) =
     simplifile.write(

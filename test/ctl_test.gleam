@@ -1598,7 +1598,7 @@ fn write_schedule_doctor_config(dir: String, prompt: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/nightly.yaml",
-      "version: 1\nid: nightly\nsteps:\n  - id: inspect\n    kind: agent\n    prompt: prompts/nightly.md\n    workspace: main\n",
+      "version: 1\nid: nightly\nsteps:\n  - id: inspect\n    kind: agent\n    prompt: prompts/nightly.md\n    run_in: main\n",
     )
   let assert Ok(Nil) =
     simplifile.write(dir <> "/workflows/prompts/nightly.md", prompt)

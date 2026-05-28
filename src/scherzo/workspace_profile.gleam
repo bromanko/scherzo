@@ -135,9 +135,9 @@ pub fn error_message(error: ProfileResolutionError) -> String {
     UnknownWorkspaceProfile(workflow_id, profile_name, available) ->
       "workflow "
       <> workflow_id
-      <> " selects unknown workspace_profile "
+      <> " selects unknown workspace.driver "
       <> profile_name
-      <> "; available profiles: "
+      <> "; available drivers: "
       <> available_names_to_string(available)
     WorkspaceCapabilitiesUnavailable(
       workflow_id,
@@ -148,9 +148,9 @@ pub fn error_message(error: ProfileResolutionError) -> String {
     ) ->
       "workflow "
       <> workflow_id
-      <> " requires workspace capabilities "
+      <> " requires workspace.requires "
       <> config_types.workspace_capabilities_to_string(required)
-      <> " but workspace_profile "
+      <> " but workspace.driver "
       <> profile_name
       <> " provides "
       <> config_types.workspace_capabilities_to_string(provided)

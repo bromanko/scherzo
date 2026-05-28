@@ -1,11 +1,12 @@
 version: 1
 id: origin-sync
 description: Fetch the configured root remote, advance local main to the configured base when safe, and auto-rebase the empty root jj stack.
-workspace_profile: origin-sync
-max_parallel_steps: 1
+workspace:
+  driver: origin-sync
+concurrency: 1
 steps:
   - id: sync_origin
     kind: command
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-jj-origin-sync"'
-    timeout_ms: 300000
-    workspace: main
+    timeout: 5m
+    run_in: main

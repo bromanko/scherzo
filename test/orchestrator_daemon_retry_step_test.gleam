@@ -367,12 +367,12 @@ steps:
   - id: seed
     kind: command
     run: seed
-    workspace: seed
+    run_in: seed
   - id: apply_feedback
     kind: agent
     prompt: prompts/task.md
     depends_on: [seed]
-    workspace:
+    run_in:
       name: derived
       from: seed
 ",

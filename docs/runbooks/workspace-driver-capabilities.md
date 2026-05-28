@@ -65,8 +65,9 @@ For local/offline work use `base: "@"`; for a repository that already has the se
 Workflow requirements still belong in workflow YAML:
 
 ```yaml
-workspace_profile: noop
-workspace_capabilities: [assert-only]
+workspace:
+  driver: noop
+  requires: [assert-only]
 ```
 
 ## Manual checks

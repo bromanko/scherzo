@@ -778,7 +778,7 @@ pub fn workflow_command_redacts_sensitive_profile_driver_env_test() {
     )
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nworkspace_profile: isolated\nsteps:\n  - id: leak\n    kind: command\n    run: leak\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: isolated\nsteps:\n  - id: leak\n    kind: command\n    run: leak\n    run_in: main\n",
     )
   let dependencies =
     workflow_run.Dependencies(
@@ -828,7 +828,7 @@ pub fn context_recovery_exhausted_agent_failure_marks_artifact_summary_test() {
   let subject = process.new_subject()
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: do it\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: do it\n    run_in: main\n",
     )
   let context_ref =
     "runs/run-1/implement/attempt-1/context-recovery/context-window-exhausted.json"
@@ -899,7 +899,7 @@ pub fn context_recovery_exhausted_agent_failure_marks_artifact_summary_test() {
 fn implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 3\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement prompt\n    workspace: main\n  - id: test_after_implement\n    kind: command\n    depends_on: [implement]\n    run: test command\n    workspace: main\n    on_failure: continue\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: code review prompt\n    workspace:\n      name: code-review\n      from: main\n  - id: apply_feedback\n    kind: agent\n    depends_on: [test_after_implement, code_review]\n    prompt: apply {{ steps.code_review.final_response }} {{ steps.test_after_implement.exit_code }}\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 3\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement prompt\n    run_in: main\n  - id: test_after_implement\n    kind: command\n    depends_on: [implement]\n    run: test command\n    run_in: main\n    on_failure: continue\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: code review prompt\n    run_in:\n      name: code-review\n      from: main\n  - id: apply_feedback\n    kind: agent\n    depends_on: [test_after_implement, code_review]\n    prompt: apply {{ steps.code_review.final_response }} {{ steps.test_after_implement.exit_code }}\n    run_in: main\n",
     )
   dag
 }
@@ -911,7 +911,7 @@ fn structured_output_dag(required: Bool) -> workflow_dag.WorkflowDag {
   }
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      required: "
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    run_in: main\n    structured_output:\n      artifact_name: review_result\n      required: "
       <> required_text
       <> "\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n",
     )
@@ -921,7 +921,7 @@ fn structured_output_dag(required: Bool) -> workflow_dag.WorkflowDag {
 fn tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
   dag
 }
@@ -980,7 +980,7 @@ fn native_review_tool_call_result(
 fn native_review_lane_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    on_failure: continue\n    structured_output:\n      artifact_name: correctness_draft\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n      validator: review_lane_draft\n      schema:\n        required: [schema_version, artifact_type, generated_at_utc, producer, lane, input_refs, draft_findings, review_notes, evidence_requests, self_check, remote_mutations]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: review prompt\n    run_in: main\n    on_failure: continue\n    structured_output:\n      artifact_name: correctness_draft\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n      validator: review_lane_draft\n      schema:\n        required: [schema_version, artifact_type, generated_at_utc, producer, lane, input_refs, draft_findings, review_notes, evidence_requests, self_check, remote_mutations]\n",
     )
   dag
 }
@@ -1000,7 +1000,7 @@ fn native_review_lane_draft_missing_lane_category_json() -> String {
 fn structured_output_downstream_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n  - id: followup\n    kind: agent\n    depends_on: [review_json]\n    prompt: use {{ steps.review_json.structured_output.ref }} {{ steps.review_json.structured_output.path }}\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    run_in: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n  - id: followup\n    kind: agent\n    depends_on: [review_json]\n    prompt: use {{ steps.review_json.structured_output.ref }} {{ steps.review_json.structured_output.path }}\n    run_in: main\n",
     )
   dag
 }
@@ -1063,9 +1063,9 @@ fn over_display_limit_result(
 fn command_dag_with_profile(profile: String) -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nworkspace_profile: "
+      "version: 1\nid: implementation\nworkspace:\n  driver: "
       <> profile
-      <> "\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    workspace: main\n",
+      <> "\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    run_in: main\n",
     )
   dag
 }
@@ -1190,7 +1190,7 @@ pub fn execute_rejects_missing_workspace_capabilities_before_prepare_test() {
 
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: dogfood-jj\n  requires: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    run_in: main\n",
     )
 
   let assert Error(failure) =
@@ -1405,7 +1405,7 @@ pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
     Ok(orchestrator) -> {
       let assert Ok(dag) =
         workflow_dag.parse(
-          "version: 1\nid: implementation\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: collect_findings\n    kind: command\n    run: |\n      set -eu\n      printf 'findings\\n' > research-findings.md\n      driver=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required}\n      \"$driver\" assert-only --path research-findings.md\n    workspace: main\n",
+          "version: 1\nid: implementation\nworkspace:\n  driver: noop\n  requires: [assert-only]\nsteps:\n  - id: collect_findings\n    kind: command\n    run: |\n      set -eu\n      printf 'findings\\n' > research-findings.md\n      driver=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required}\n      \"$driver\" assert-only --path research-findings.md\n    run_in: main\n",
         )
       case
         workflow_run.execute(
@@ -1496,7 +1496,7 @@ pub fn default_agent_step_receives_workspace_driver_environment_test() {
     )
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nsteps:\n  - id: implement\n    kind: agent\n    prompt: check env\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: dogfood-jj\nsteps:\n  - id: implement\n    kind: agent\n    prompt: check env\n    run_in: main\n",
     )
 
   let assert Ok(_) =
@@ -1791,7 +1791,7 @@ pub fn workflow_yaml_cannot_override_workspace_driver_context_test() {
     )
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nworkspace_capabilities: [assert-only]\nworkspace_driver: scripts/malicious-driver\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: dogfood-jj\n  requires: [assert-only]\nworkspace_driver: scripts/malicious-driver\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    run_in: main\n",
     )
   let dependencies =
     workflow_run.Dependencies(
@@ -1858,7 +1858,7 @@ pub fn agent_prompt_renders_workspace_driver_locals_test() {
     )
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nsteps:\n  - id: implement\n    kind: agent\n    prompt: 'driver={{ workspace.driver }} profile={{ workspace.profile }} caps={% for capability in workspace.capabilities %}{{ capability }};{% endfor %}'\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: dogfood-jj\nsteps:\n  - id: implement\n    kind: agent\n    prompt: 'driver={{ workspace.driver }} profile={{ workspace.profile }} caps={% for capability in workspace.capabilities %}{{ capability }};{% endfor %}'\n    run_in: main\n",
     )
 
   let assert Ok(_) =
@@ -1904,7 +1904,7 @@ pub fn agent_prompt_preserves_artifact_locals_with_workspace_driver_locals_test(
     )
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n  - id: summarize\n    kind: agent\n    depends_on: [collect]\n    prompt: 'artifact={{ steps.collect.stdout }} driver={{ workspace.driver }}'\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: dogfood-jj\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n  - id: summarize\n    kind: agent\n    depends_on: [collect]\n    prompt: 'artifact={{ steps.collect.stdout }} driver={{ workspace.driver }}'\n    run_in: main\n",
     )
   let dependencies =
     workflow_run.Dependencies(
@@ -1969,7 +1969,7 @@ pub fn recovery_prompt_does_not_rerender_workspace_driver_locals_test() {
     )
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nsteps:\n  - id: resume\n    kind: agent\n    prompt: ORIGINAL {{ workspace.driver }}\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: dogfood-jj\nsteps:\n  - id: resume\n    kind: agent\n    prompt: ORIGINAL {{ workspace.driver }}\n    run_in: main\n",
     )
   let context =
     workflow_run.RecoveredRunContext(
@@ -2685,7 +2685,7 @@ pub fn workflow_without_structured_output_behaves_unchanged_test() {
   let subject = process.new_subject()
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: plain\n    kind: agent\n    prompt: plain prompt\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: plain\n    kind: agent\n    prompt: plain prompt\n    run_in: main\n",
     )
   let assert Ok(success) =
     workflow_run.execute(
@@ -2714,7 +2714,7 @@ pub fn workflow_run_completed_cleanup_failure_keeps_success_and_appends_diagnost
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let dependencies =
@@ -2775,7 +2775,7 @@ pub fn workflow_run_failure_cleanup_failure_preserves_primary_reason_test() {
   let subject = process.new_subject()
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let dependencies =
     workflow_run.Dependencies(
@@ -2825,7 +2825,7 @@ pub fn workflow_run_on_failure_continue_makes_artifact_available_test() {
 pub fn failed_recovery_finalizer_blocks_downstream_steps_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: gate\n    kind: command\n    run: gate\n    workspace: main\n    on_failure: continue\n  - id: classify\n    kind: command\n    depends_on: [gate]\n    run: classify\n    workspace: main\n  - id: finalize\n    kind: command\n    depends_on: [classify]\n    run: finalize\n    workspace: main\n  - id: review\n    kind: command\n    depends_on: [finalize]\n    run: review\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: gate\n    kind: command\n    run: gate\n    run_in: main\n    on_failure: continue\n  - id: classify\n    kind: command\n    depends_on: [gate]\n    run: classify\n    run_in: main\n  - id: finalize\n    kind: command\n    depends_on: [classify]\n    run: finalize\n    run_in: main\n  - id: review\n    kind: command\n    depends_on: [finalize]\n    run: review\n    run_in: main\n",
     )
   let subject = process.new_subject()
   let base = deps(subject, None)
@@ -2887,7 +2887,7 @@ pub fn failed_recovery_finalizer_blocks_downstream_steps_test() {
 pub fn recovered_completed_upstream_step_is_not_rerun_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    run_in: main\n",
     )
   let collect_artifact =
     step_artifact.from_command_result(
@@ -2932,7 +2932,7 @@ pub fn recovered_completed_upstream_step_is_not_rerun_test() {
 pub fn recovered_failed_continued_artifact_feeds_downstream_prompt_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: lint\n    kind: command\n    run: lint\n    workspace: main\n    on_failure: continue\n  - id: repair\n    kind: agent\n    depends_on: [lint]\n    prompt: fix {{ steps.lint.stderr }} {{ steps.lint.exit_code }}\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: lint\n    kind: command\n    run: lint\n    run_in: main\n    on_failure: continue\n  - id: repair\n    kind: agent\n    depends_on: [lint]\n    prompt: fix {{ steps.lint.stderr }} {{ steps.lint.exit_code }}\n    run_in: main\n",
     )
   let lint_artifact =
     step_artifact.from_command_result(
@@ -2975,7 +2975,7 @@ pub fn recovered_failed_continued_artifact_feeds_downstream_prompt_test() {
 pub fn recovered_pi_resume_validation_failure_is_fatal_even_with_continue_policy_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: resume\n    kind: agent\n    prompt: ORIGINAL_PROMPT_SHOULD_NOT_APPEAR\n    workspace: main\n    on_failure: continue\n  - id: downstream\n    kind: command\n    depends_on: [resume]\n    run: downstream\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: resume\n    kind: agent\n    prompt: ORIGINAL_PROMPT_SHOULD_NOT_APPEAR\n    run_in: main\n    on_failure: continue\n  - id: downstream\n    kind: command\n    depends_on: [resume]\n    run: downstream\n    run_in: main\n",
     )
   let subject = process.new_subject()
   let base = deps(subject, None)
@@ -3065,7 +3065,7 @@ pub fn recovered_pi_resume_validation_failure_is_fatal_even_with_continue_policy
 pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: build\n    kind: command\n    run: build\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: build\n    kind: command\n    run: build\n    run_in: main\n",
     )
   let subject = process.new_subject()
   let base = deps(subject, None)
@@ -3106,7 +3106,7 @@ pub fn recovered_prepare_failure_interrupts_stale_prepared_attempt_before_termin
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: docs\n    kind: command\n    run: docs\n    workspace: docs\n  - id: tests\n    kind: command\n    run: tests\n    workspace: tests\n  - id: finish\n    kind: command\n    depends_on: [docs, tests]\n    run: finish\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: docs\n    kind: command\n    run: docs\n    run_in: docs\n  - id: tests\n    kind: command\n    run: tests\n    run_in: tests\n  - id: finish\n    kind: command\n    depends_on: [docs, tests]\n    run: finish\n    run_in: main\n",
     )
   let dependencies =
     workflow_run.Dependencies(
@@ -3142,7 +3142,7 @@ pub fn recovered_prepare_failure_interrupts_stale_prepared_attempt_before_termin
 pub fn parallel_recovery_runs_only_interrupted_branch_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: docs\n    kind: command\n    run: docs\n    workspace: docs\n  - id: tests\n    kind: command\n    run: tests\n    workspace: tests\n  - id: final\n    kind: command\n    depends_on: [docs, tests]\n    run: final\n    workspace: final\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: docs\n    kind: command\n    run: docs\n    run_in: docs\n  - id: tests\n    kind: command\n    run: tests\n    run_in: tests\n  - id: final\n    kind: command\n    depends_on: [docs, tests]\n    run: final\n    run_in: final\n",
     )
   let docs_artifact =
     step_artifact.from_command_result(
@@ -3214,7 +3214,7 @@ pub fn parallel_recovery_runs_only_interrupted_branch_test() {
 pub fn workflow_run_resolves_default_and_step_model_settings_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: default_step\n    kind: agent\n    prompt: default prompt\n    workspace: main\n  - id: full_override\n    kind: agent\n    depends_on: [default_step]\n    prompt: full prompt\n    workspace: main\n    model: github-copilot/gpt-5.1-codex\n    thinking: high\n  - id: partial_thinking\n    kind: agent\n    depends_on: [full_override]\n    prompt: thinking prompt\n    workspace: main\n    thinking: xhigh\n  - id: partial_model\n    kind: agent\n    depends_on: [partial_thinking]\n    prompt: model prompt\n    workspace: main\n    model: openai/gpt-5.1\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: default_step\n    kind: agent\n    prompt: default prompt\n    run_in: main\n  - id: full_override\n    kind: agent\n    depends_on: [default_step]\n    prompt: full prompt\n    run_in: main\n    model: github-copilot/gpt-5.1-codex\n    thinking: high\n  - id: partial_thinking\n    kind: agent\n    depends_on: [full_override]\n    prompt: thinking prompt\n    run_in: main\n    thinking: xhigh\n  - id: partial_model\n    kind: agent\n    depends_on: [partial_thinking]\n    prompt: model prompt\n    run_in: main\n    model: openai/gpt-5.1\n",
     )
   let event_subject = process.new_subject()
   let command_subject = process.new_subject()
@@ -3331,7 +3331,7 @@ pub fn workflow_run_prepare_hook_failure_is_first_class_test() {
 pub fn workflow_run_ready_batch_runs_steps_concurrently_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: first\n    kind: command\n    run: first\n    workspace: main\n  - id: second\n    kind: command\n    run: second\n    workspace: review\n  - id: final\n    kind: command\n    depends_on: [first, second]\n    run: final\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: first\n    kind: command\n    run: first\n    run_in: main\n  - id: second\n    kind: command\n    run: second\n    run_in: review\n  - id: final\n    kind: command\n    depends_on: [first, second]\n    run: final\n    run_in: main\n",
     )
   let command_subject = process.new_subject()
   let result_subject = process.new_subject()
@@ -3398,7 +3398,7 @@ pub fn workflow_run_ready_batch_runs_steps_concurrently_test() {
 pub fn workflow_run_ready_steps_sharing_workspace_are_serialized_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: first\n    kind: command\n    run: first\n    workspace: main\n  - id: second\n    kind: command\n    run: second\n    workspace: main\n  - id: final\n    kind: command\n    depends_on: [first, second]\n    run: final\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: first\n    kind: command\n    run: first\n    run_in: main\n  - id: second\n    kind: command\n    run: second\n    run_in: main\n  - id: final\n    kind: command\n    depends_on: [first, second]\n    run: final\n    run_in: main\n",
     )
   let command_subject = process.new_subject()
   let result_subject = process.new_subject()
@@ -3469,7 +3469,7 @@ pub fn workflow_run_ready_steps_sharing_workspace_are_serialized_test() {
 pub fn workflow_run_fatal_ready_step_cancels_active_siblings_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: fail\n    kind: command\n    run: fail\n    workspace: main\n  - id: slow\n    kind: command\n    run: slow\n    workspace: review\n  - id: final\n    kind: command\n    depends_on: [fail, slow]\n    run: final\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: fail\n    kind: command\n    run: fail\n    run_in: main\n  - id: slow\n    kind: command\n    run: slow\n    run_in: review\n  - id: final\n    kind: command\n    depends_on: [fail, slow]\n    run: final\n    run_in: main\n",
     )
   let subject = process.new_subject()
   let command_subject = process.new_subject()
@@ -3541,7 +3541,7 @@ pub fn workflow_run_fatal_ready_step_cancels_active_siblings_test() {
 pub fn workflow_run_after_step_runs_in_dag_order_for_ready_batch_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: first\n    kind: command\n    run: first\n    workspace: main\n  - id: second\n    kind: command\n    run: second\n    workspace: review\n  - id: final\n    kind: command\n    depends_on: [first, second]\n    run: final\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: first\n    kind: command\n    run: first\n    run_in: main\n  - id: second\n    kind: command\n    run: second\n    run_in: review\n  - id: final\n    kind: command\n    depends_on: [first, second]\n    run: final\n    run_in: main\n",
     )
   let subject = process.new_subject()
   let result_subject = process.new_subject()
@@ -3625,7 +3625,7 @@ pub fn workflow_run_step_worker_crash_returns_failure_test() {
   ])
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: crash\n    kind: command\n    run: crash\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: crash\n    kind: command\n    run: crash\n    run_in: main\n",
     )
   let subject = process.new_subject()
   let base = deps(subject, None)
@@ -3666,7 +3666,7 @@ pub fn workflow_run_fatal_failure_stops_remaining_steps_test() {
   let subject = process.new_subject()
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: implement\n    kind: command\n    run: fail\n    workspace: main\n  - id: later\n    kind: command\n    depends_on: [implement]\n    run: later\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: implement\n    kind: command\n    run: fail\n    run_in: main\n  - id: later\n    kind: command\n    depends_on: [implement]\n    run: later\n    run_in: main\n",
     )
   let assert Error(failure) =
     workflow_run.execute(
@@ -3691,7 +3691,7 @@ pub fn workflow_run_agent_pi_error_fails_step_artifact_and_report_test() {
   let subject = process.new_subject()
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement prompt\n    workspace: main\n  - id: analyze_changes\n    kind: command\n    depends_on: [implement]\n    run: analyze\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement prompt\n    run_in: main\n  - id: analyze_changes\n    kind: command\n    depends_on: [implement]\n    run: analyze\n    run_in: main\n",
     )
   let base = deps(subject, None)
   let dependencies =
@@ -3755,7 +3755,7 @@ pub fn workflow_run_failure_report_promotes_command_failure_code_test() {
   let subject = process.new_subject()
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: publish_pr\n    kind: command\n    run: publish\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: publish_pr\n    kind: command\n    run: publish\n    run_in: main\n",
     )
   let base = deps(subject, None)
   let dependencies =
@@ -4018,7 +4018,7 @@ fn unsetenv(name: String) -> Nil
 fn generic_tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_lane_submission\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      validators:\n        - name: review_lane_submission_shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    run_in: main\n    structured_output:\n      artifact_name: review_lane_submission\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      validators:\n        - name: review_lane_submission_shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n",
     )
   dag
 }
@@ -4533,7 +4533,7 @@ pub fn resumed_opted_in_workstream_phase_rejects_mismatched_output_manifest_iden
 fn opted_in_workstream_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nworkstream_phase:\n  phase_id: execplan\n  display_name: ExecPlan authored\n  handoff:\n    output: exec_plan_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\n  next_actions:\n    - action_id: implement_exec_plan\n      workflow_id: execplan-implementation\n      state: suggested\n      priority: 0\n      inputs: [exec_plan_bundle]\n      requires_gate: human_review\n      auto_enqueue: false\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    workspace: main\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nworkstream_phase:\n  phase_id: execplan\n  display_name: ExecPlan authored\n  handoff:\n    output: exec_plan_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\n  next_actions:\n    - action_id: implement_exec_plan\n      workflow_id: execplan-implementation\n      state: suggested\n      priority: 0\n      inputs: [exec_plan_bundle]\n      requires_gate: human_review\n      auto_enqueue: false\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    run_in: main\n",
     )
   dag
 }
@@ -4541,7 +4541,7 @@ fn opted_in_workstream_dag() -> workflow_dag.WorkflowDag {
 fn non_opted_in_workstream_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    workspace: main\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    run_in: main\n",
     )
   dag
 }
@@ -4549,7 +4549,7 @@ fn non_opted_in_workstream_dag() -> workflow_dag.WorkflowDag {
 fn metadata_only_workstream_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: execplan\nworkstream_phase:\n  phase_id: execplan\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    workspace: main\n",
+      "version: 1\nid: execplan\nworkstream_phase:\n  phase_id: execplan\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: emit bundle\n    run_in: main\n",
     )
   dag
 }
@@ -4557,7 +4557,7 @@ fn metadata_only_workstream_dag() -> workflow_dag.WorkflowDag {
 fn opted_in_optional_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      required: false\n      source:\n        step: materialize_bundle\n        field: final_response\nworkstream_phase:\n  phase_id: execplan\n  handoff:\n    output: exec_plan_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\nsteps:\n  - id: materialize_bundle\n    kind: agent\n    prompt: emit bundle\n    workspace: main\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      required: false\n      source:\n        step: materialize_bundle\n        field: final_response\nworkstream_phase:\n  phase_id: execplan\n  handoff:\n    output: exec_plan_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\nsteps:\n  - id: materialize_bundle\n    kind: agent\n    prompt: emit bundle\n    run_in: main\n",
     )
   dag
 }
@@ -4905,7 +4905,7 @@ pub fn contracted_required_final_response_output_missing_fails_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    run_in: main\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
@@ -5014,7 +5014,7 @@ pub fn contracted_failed_agent_source_outputs_are_absent_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: draft\n        structured_output: code_change\nsteps:\n  - id: draft\n    kind: agent\n    prompt: write prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_code_change\n      schema:\n        required: [branch]\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: draft\n        structured_output: code_change\nsteps:\n  - id: draft\n    kind: agent\n    prompt: write prompt\n    run_in: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_code_change\n      schema:\n        required: [branch]\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
@@ -5076,7 +5076,7 @@ pub fn contracted_final_response_output_is_retained_as_markdown_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    exec_plan:\n      type: exec_plan\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    exec_plan:\n      type: exec_plan\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    run_in: main\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
@@ -5370,7 +5370,7 @@ pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    artifact_change:\n      type: code_change\n      source:\n        step: review_json\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: review_json\n        inline_json: code_change\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [branch]\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    artifact_change:\n      type: code_change\n      source:\n        step: review_json\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: review_json\n        inline_json: code_change\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    run_in: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [branch]\n",
     )
   let checkpoint = hidden_local_path_checkpoint(root)
 
@@ -5421,7 +5421,7 @@ pub fn contracted_optional_missing_output_allows_success_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    notes:\n      type: document.markdown\n      required: false\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    notes:\n      type: document.markdown\n      required: false\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    run_in: main\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
@@ -5447,7 +5447,7 @@ pub fn resumed_run_without_step_recovery_emits_completed_terminal_outcome_test()
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let resume =
     workflow_run.ResumeState(
@@ -5487,7 +5487,7 @@ pub fn resumed_run_with_step_recovery_emits_succeeded_after_recovery_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let resume =
     workflow_run.ResumeState(
@@ -5528,7 +5528,7 @@ pub fn resumed_run_without_step_recovery_emits_failed_fatal_terminal_outcome_tes
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let resume =
     workflow_run.ResumeState(
@@ -5568,7 +5568,7 @@ pub fn resumed_run_with_step_recovery_retry_requested_emits_failed_after_recover
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let resume =
     workflow_run.ResumeState(
@@ -5782,7 +5782,7 @@ pub fn fatal_command_step_recovery_retries_original_step_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: fixable\n    kind: command\n    run: ignored\n    workspace: main\n    recover:\n      attempts: 1\n      prompt: repair the workspace\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: fixable\n    kind: command\n    run: ignored\n    run_in: main\n    recovery:\n      attempts: 1\n      prompt: repair the workspace\n",
     )
   test_helpers.reset_dir(
     "test/tmp/workflow-run/workspaces/implementation/ABC-123",
@@ -5958,7 +5958,7 @@ pub fn continued_failures_do_not_start_step_recovery_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: optional\n    kind: command\n    run: ignored\n    workspace: main\n    on_failure: continue\n    recover:\n      attempts: 1\n      prompt: ignored\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: optional\n    kind: command\n    run: ignored\n    run_in: main\n    on_failure: continue\n    recovery:\n      attempts: 1\n      prompt: ignored\n",
     )
   let dependencies =
     workflow_run.Dependencies(
@@ -5993,7 +5993,7 @@ pub fn disabled_step_recovery_preserves_original_failure_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: broken\n    kind: command\n    run: ignored\n    workspace: main\n    recover:\n      enabled: false\n      attempts: 1\n      prompt: ignored\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: broken\n    kind: command\n    run: ignored\n    run_in: main\n    recovery:\n      enabled: false\n      attempts: 1\n      prompt: ignored\n",
     )
   let dependencies =
     workflow_run.Dependencies(
@@ -6062,7 +6062,7 @@ fn assert_recovery_tool_spec_unavailable_record(
 fn broken_command_recovery_dag(extra_yaml: String) -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: broken\n    kind: command\n    run: ignored\n    workspace: main\n"
+      "version: 1\nid: implementation\nsteps:\n  - id: broken\n    kind: command\n    run: ignored\n    run_in: main\n"
       <> extra_yaml,
     )
   dag
@@ -6071,7 +6071,7 @@ fn broken_command_recovery_dag(extra_yaml: String) -> workflow_dag.WorkflowDag {
 fn checkpoint_guard_recovery_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: upstream\n    kind: command\n    run: upstream\n    workspace: main\n  - id: broken\n    kind: command\n    run: broken\n    depends_on: [upstream]\n    workspace: main\n    recover:\n      attempts: 1\n      prompt: repair\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: upstream\n    kind: command\n    run: upstream\n    run_in: main\n  - id: broken\n    kind: command\n    run: broken\n    depends_on: [upstream]\n    run_in: main\n    recovery:\n      attempts: 1\n      prompt: repair\n",
     )
   dag
 }
@@ -6079,7 +6079,7 @@ fn checkpoint_guard_recovery_dag() -> workflow_dag.WorkflowDag {
 fn checkpoint_guard_contract_recovery_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    task:\n      type: document.markdown\n      source: issue_context\nsteps:\n  - id: upstream\n    kind: command\n    run: upstream\n    workspace: main\n  - id: broken\n    kind: command\n    run: broken\n    depends_on: [upstream]\n    workspace: main\n    recover:\n      attempts: 1\n      prompt: repair\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    task:\n      type: document.markdown\n      source: issue_context\nsteps:\n  - id: upstream\n    kind: command\n    run: upstream\n    run_in: main\n  - id: broken\n    kind: command\n    run: broken\n    depends_on: [upstream]\n    run_in: main\n    recovery:\n      attempts: 1\n      prompt: repair\n",
     )
   dag
 }
@@ -6243,7 +6243,7 @@ pub fn fatal_agent_step_recovery_preserves_original_definition_test() {
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: draft\n    kind: agent\n    prompt: draft prompt\n    workspace: main\n    model: openai/gpt-5.1\n    structured_output:\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n    recover:\n      attempts: 1\n      prompt: repair draft workspace\n      model: github-copilot/gpt-5.1-codex\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: draft\n    kind: agent\n    prompt: draft prompt\n    run_in: main\n    model: openai/gpt-5.1\n    structured_output:\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n    recovery:\n      attempts: 1\n      prompt: repair draft workspace\n      model: github-copilot/gpt-5.1-codex\n",
     )
   let checkpoint = hidden_local_path_checkpoint(root)
   let base = deps(subject, None)
@@ -6396,7 +6396,7 @@ pub fn step_recovery_gave_up_preserves_original_failure_test() {
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -6986,7 +6986,7 @@ pub fn failed_recovery_worker_preserves_original_failure_test() {
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -7067,7 +7067,7 @@ pub fn timed_out_recovery_worker_preserves_original_failure_test() {
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -7157,7 +7157,7 @@ fn assert_invalid_recovery_output_failure(
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -7332,7 +7332,7 @@ fn assert_recovery_artifact_write_failure_preserves_original_failure(
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -7436,7 +7436,7 @@ pub fn recovery_started_checkpoint_failure_preserves_original_failure_test() {
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -7503,7 +7503,7 @@ pub fn recovery_tool_spec_build_failure_does_not_launch_agent_test() {
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       bad_orchestrator,
       empty_tracker(),
@@ -7563,7 +7563,7 @@ pub fn recovery_tool_spec_write_failure_does_not_launch_agent_test() {
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -7618,7 +7618,7 @@ pub fn recovery_finished_checkpoint_failure_preserves_original_failure_test() {
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -7674,7 +7674,7 @@ pub fn step_recovery_finished_redacts_secrets_and_artifact_uses_decision_test() 
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),
@@ -7784,7 +7784,7 @@ pub fn exhausted_step_recovery_budget_preserves_original_failure_test() {
     workflow_run.execute(
       issue(),
       broken_command_recovery_dag(
-        "    recover:\n      attempts: 1\n      prompt: repair\n",
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
       ),
       orchestrator(),
       empty_tracker(),

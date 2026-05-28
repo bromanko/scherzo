@@ -57,7 +57,7 @@ steps:
   - id: implement
     kind: agent
     prompt: prompts/task.md
-    workspace: main
+    run_in: main
 "
 }
 
@@ -68,7 +68,7 @@ steps:
   - id: implement
     kind: agent
     prompt: prompts/task.md
-    workspace: main
+    run_in: main
   - id: gate_plan_completion
     kind: command
     depends_on: [implement]
@@ -83,7 +83,7 @@ steps:
   - id: implement
     kind: agent
     prompt: prompts/new-task.md
-    workspace: main
+    run_in: main
 "
 }
 
@@ -102,7 +102,7 @@ steps:
   - id: implement
     kind: agent
     prompt: prompts/task.md
-    workspace: main
+    run_in: main
 "
 }
 

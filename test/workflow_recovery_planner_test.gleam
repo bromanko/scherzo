@@ -17,40 +17,40 @@ import scherzo/workflow_scheduler
 fn fan_in_yaml() -> String {
   "version: 1
 id: review-flow
-max_parallel_steps: 3
+concurrency: 3
 steps:
   - id: implement
     kind: agent
     prompt: prompts/implement.md
-    workspace:
+    run_in:
       name: main
   - id: test_after_implement
     depends_on: [implement]
     kind: command
     run: gleam test
     on_failure: continue
-    workspace:
+    run_in:
       name: main
       from: main
   - id: code_review
     depends_on: [implement]
     kind: agent
     prompt: prompts/code-review.md
-    workspace:
+    run_in:
       name: review
       from: main
   - id: security_review
     depends_on: [implement]
     kind: agent
     prompt: prompts/security-review.md
-    workspace:
+    run_in:
       name: security
       from: main
   - id: apply_feedback
     depends_on: [test_after_implement, code_review, security_review]
     kind: agent
     prompt: prompts/apply-feedback.md
-    workspace:
+    run_in:
       name: main
       from: main
 "
@@ -59,23 +59,23 @@ steps:
 fn independent_roots_yaml() -> String {
   "version: 1
 id: parallel-roots
-max_parallel_steps: 2
+concurrency: 2
 steps:
   - id: docs
     kind: agent
     prompt: prompts/docs.md
-    workspace:
+    run_in:
       name: docs
   - id: tests
     kind: command
     run: gleam test
-    workspace:
+    run_in:
       name: test
   - id: final
     depends_on: [docs, tests]
     kind: agent
     prompt: prompts/final.md
-    workspace:
+    run_in:
       name: final
 "
 }
@@ -83,23 +83,23 @@ steps:
 fn same_workspace_roots_yaml() -> String {
   "version: 1
 id: same-workspace-roots
-max_parallel_steps: 2
+concurrency: 2
 steps:
   - id: docs
     kind: agent
     prompt: prompts/docs.md
-    workspace:
+    run_in:
       name: main
   - id: tests
     kind: command
     run: gleam test
-    workspace:
+    run_in:
       name: main
   - id: final
     depends_on: [docs, tests]
     kind: agent
     prompt: prompts/final.md
-    workspace:
+    run_in:
       name: main
 "
 }
@@ -107,19 +107,19 @@ steps:
 fn failure_policy_continue_with_downstream_yaml() -> String {
   "version: 1
 id: review-flow
-max_parallel_steps: 1
+concurrency: 1
 steps:
   - id: test_after_implement
     kind: command
     run: gleam test
     on_failure: continue
-    workspace:
+    run_in:
       name: main
   - id: later
     depends_on: [test_after_implement]
     kind: command
     run: later
-    workspace:
+    run_in:
       name: main
 "
 }
@@ -127,18 +127,18 @@ steps:
 fn failure_policy_default_with_downstream_yaml() -> String {
   "version: 1
 id: review-flow
-max_parallel_steps: 1
+concurrency: 1
 steps:
   - id: test_after_implement
     kind: command
     run: gleam test
-    workspace:
+    run_in:
       name: main
   - id: later
     depends_on: [test_after_implement]
     kind: command
     run: later
-    workspace:
+    run_in:
       name: main
 "
 }
@@ -146,12 +146,12 @@ steps:
 fn single_step_yaml() -> String {
   "version: 1
 id: review-flow
-max_parallel_steps: 1
+concurrency: 1
 steps:
   - id: implement
     kind: agent
     prompt: prompts/implement.md
-    workspace:
+    run_in:
       name: main
 "
 }

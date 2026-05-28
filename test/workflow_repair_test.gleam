@@ -883,28 +883,28 @@ steps:
   - id: implement
     kind: command
     run: implement
-    workspace: main
+    run_in: main
   - id: validate_before_native_review
     kind: command
     depends_on: [implement]
     run: validate
     on_failure: continue
-    workspace: main
+    run_in: main
   - id: code_review
     kind: command
     depends_on: [implement]
     run: review
-    workspace: review
+    run_in: review
   - id: apply_feedback
     kind: command
     depends_on: [validate_before_native_review, code_review]
     run: apply
-    workspace: main
+    run_in: main
   - id: publish
     kind: command
     depends_on: [apply_feedback]
     run: publish
-    workspace: main
+    run_in: main
 "
 }
 
@@ -915,16 +915,16 @@ steps:
   - id: first
     kind: command
     run: first
-    workspace: main
+    run_in: main
   - id: second
     kind: command
     run: second
-    workspace: review
+    run_in: review
   - id: finish
     kind: command
     depends_on: [first, second]
     run: finish
-    workspace: main
+    run_in: main
 "
 }
 
@@ -935,7 +935,7 @@ steps:
   - id: first
     kind: command
     run: first
-    workspace: main
+    run_in: main
 "
 }
 
@@ -946,16 +946,16 @@ steps:
   - id: repairable
     kind: command
     run: repairable
-    workspace: main
+    run_in: main
   - id: selected
     kind: command
     run: selected
-    workspace: review
+    run_in: review
   - id: finish
     kind: command
     depends_on: [repairable, selected]
     run: finish
-    workspace: main
+    run_in: main
 "
 }
 
@@ -966,12 +966,12 @@ steps:
   - id: seed
     kind: command
     run: seed
-    workspace: seed
+    run_in: seed
   - id: apply_feedback
     kind: agent
     prompt: prompts/task.md
     depends_on: [seed]
-    workspace:
+    run_in:
       name: derived
       from: seed
 "
@@ -984,16 +984,16 @@ steps:
   - id: first_agent
     kind: agent
     prompt: prompts/first.md
-    workspace: main
+    run_in: main
   - id: second_agent
     kind: agent
     prompt: prompts/second.md
-    workspace: review
+    run_in: review
   - id: finish
     kind: command
     depends_on: [first_agent, second_agent]
     run: finish
-    workspace: main
+    run_in: main
 "
 }
 
@@ -1004,7 +1004,7 @@ steps:
   - id: apply_feedback
     kind: command
     run: apply
-    workspace: main
+    run_in: main
 "
 }
 

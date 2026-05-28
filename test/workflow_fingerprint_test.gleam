@@ -174,11 +174,11 @@ fn orchestrator_with_profiles(
 pub fn workflow_fingerprint_ignores_yaml_comments_and_step_order_test() {
   let first =
     parse(
-      "version: 1\nid: implementation\n# comment\nmax_parallel_steps: 2\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    workspace: main\n",
+      "version: 1\nid: implementation\n# comment\nconcurrency: 2\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    run_in: main\n",
     )
   let second =
     parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: summarize\n    workspace: main\n    run: summarize\n    depends_on: [collect]\n    kind: command\n  - id: collect\n    workspace: main\n    run: collect\n    kind: command\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: summarize\n    run_in: main\n    run: summarize\n    depends_on: [collect]\n    kind: command\n  - id: collect\n    run_in: main\n    run: collect\n    kind: command\n",
     )
 
   assert workflow_fingerprint.for_dag("implementation", first)
@@ -188,15 +188,15 @@ pub fn workflow_fingerprint_ignores_yaml_comments_and_step_order_test() {
 pub fn workflow_fingerprint_changes_for_semantic_fields_test() {
   let base =
     parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 1\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 1\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    run_in: main\n",
     )
   let changed_command =
     parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 1\nsteps:\n  - id: collect\n    kind: command\n    run: collect changed\n    workspace: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 1\nsteps:\n  - id: collect\n    kind: command\n    run: collect changed\n    run_in: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    run_in: main\n",
     )
   let changed_parallelism =
     parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    run_in: main\n",
     )
 
   let base_fingerprint = workflow_fingerprint.for_dag("implementation", base)
@@ -209,11 +209,11 @@ pub fn workflow_fingerprint_changes_for_semantic_fields_test() {
 pub fn workflow_fingerprint_changes_for_recover_config_test() {
   let base =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let recovered =
     parse(
-      "version: 1\nid: implementation\nrecover:\n  attempts: 2\n  prompt: prompts/recover.md\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nrecovery:\n  attempts: 2\n  prompt: prompts/recover.md\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
 
   assert workflow_fingerprint.for_dag("implementation", base)
@@ -233,7 +233,7 @@ pub fn workflow_fingerprint_changes_for_resolved_recover_prompt_contents_test() 
   let assert Ok(Nil) =
     simplifile.write(
       workflow_path,
-      "version: 1\nid: implementation\nrecover:\n  prompt: prompts/recover.md\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n",
+      "version: 1\nid: implementation\nrecovery:\n  prompt: prompts/recover.md\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n",
     )
   let assert Ok(Nil) = simplifile.write(prompt_path, "Recover v1")
   let assert Ok(first) = runtime_bundle.load_workflow_file(workflow_path)
@@ -250,11 +250,11 @@ pub fn workflow_fingerprint_changes_for_resolved_recover_prompt_contents_test() 
 pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {
   let unstructured =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    run_in: main\n",
     )
   let structured =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    run_in: main\n    structured_output:\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n",
     )
 
   assert workflow_fingerprint.for_dag("implementation", unstructured)
@@ -268,11 +268,11 @@ pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {
 pub fn workflow_fingerprint_changes_for_structured_output_source_test() {
   let first_tool_call =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
   let second_tool_call =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_other_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_other_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
 
   assert workflow_fingerprint.for_dag("implementation", first_tool_call)
@@ -286,19 +286,19 @@ pub fn workflow_fingerprint_changes_for_structured_output_source_test() {
 pub fn workflow_fingerprint_changes_for_structured_output_validators_test() {
   let without_validator =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    run_in: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n",
     )
   let with_schema_validator =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    run_in: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
     )
   let with_command_validator =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout: 30s\n          env:\n            CHECK_MODE: strict\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    run_in: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout: 30s\n          env:\n            CHECK_MODE: strict\n",
     )
   let with_changed_env =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout: 30s\n          env:\n            CHECK_MODE: relaxed\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    run_in: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout: 30s\n          env:\n            CHECK_MODE: relaxed\n",
     )
 
   let base = workflow_fingerprint.for_dag("implementation", without_validator)
@@ -322,7 +322,7 @@ pub fn execution_fingerprint_changes_for_json_schema_content_hash_test() {
   let schema_path = dir <> "/schemas/review.schema.json"
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    run_in: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
     )
   let orchestrator =
     orchestrator_with_profiles([#("noop", profile("noop", hooks(None)))])
@@ -349,15 +349,15 @@ pub fn execution_fingerprint_changes_for_json_schema_content_hash_test() {
 pub fn workflow_dag_fingerprint_includes_explicit_workspace_profile_test() {
   let noop =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let isolated =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: isolated\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: isolated\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let omitted =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   assert workflow_fingerprint.for_dag("implementation", noop)
     != workflow_fingerprint.for_dag("implementation", isolated)
@@ -370,19 +370,19 @@ pub fn workflow_dag_fingerprint_includes_explicit_workspace_profile_test() {
 pub fn workflow_dag_fingerprint_includes_workspace_capabilities_test() {
   let omitted =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let required =
     parse(
-      "version: 1\nid: implementation\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  requires: [assert-only]\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let reordered =
     parse(
-      "version: 1\nid: implementation\nworkspace_capabilities: [changed-files, assert-only]\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  requires: [changed-files, assert-only]\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let canonical =
     parse(
-      "version: 1\nid: implementation\nworkspace_capabilities: [assert-only, changed-files]\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  requires: [assert-only, changed-files]\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
 
   assert workflow_fingerprint.for_dag("implementation", omitted)
@@ -398,7 +398,7 @@ pub fn workflow_dag_fingerprint_includes_workspace_capabilities_test() {
 pub fn execution_fingerprint_uses_selected_workspace_profile_test() {
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let settings = model_config.default_settings()
   let noop = profile("noop", hooks(Some("create")))
@@ -453,7 +453,7 @@ pub fn execution_fingerprint_uses_selected_workspace_profile_test() {
 pub fn execution_fingerprint_includes_selected_driver_metadata_test() {
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let settings = model_config.default_settings()
   let base =
@@ -540,7 +540,7 @@ pub fn execution_fingerprint_includes_selected_driver_metadata_test() {
 pub fn execution_fingerprint_includes_profile_driver_env_digests_test() {
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let settings = model_config.default_settings()
   let base =
@@ -629,7 +629,7 @@ pub fn execution_fingerprint_includes_profile_driver_env_digests_test() {
 pub fn execution_fingerprint_changes_for_hook_profile_driver_context_test() {
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let settings = model_config.default_settings()
   let base =
@@ -674,7 +674,7 @@ pub fn execution_fingerprint_changes_for_hook_profile_driver_context_test() {
 pub fn execution_fingerprint_canonicalizes_driver_list_order_test() {
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let settings = model_config.default_settings()
   let first =
@@ -712,7 +712,7 @@ pub fn execution_fingerprint_uses_discovered_driver_capabilities_test() {
   let driver = dir <> "/driver.sh"
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let base_orchestrator =
     orchestrator_with_profiles([
@@ -743,7 +743,7 @@ pub fn execution_fingerprint_uses_discovered_driver_capabilities_test() {
 pub fn execution_fingerprint_ignores_unselected_driver_profiles_test() {
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let selected = profile("noop", hooks(Some("create")))
   let first_orchestrator =
@@ -777,7 +777,7 @@ pub fn execution_fingerprint_ignores_unselected_driver_profiles_test() {
 pub fn workflow_execution_fingerprint_ignores_legacy_hooks_but_changes_for_artifact_limits_test() {
   let dag =
     parse(
-      "version: 1\nid: implementation\nmax_parallel_steps: 1\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+      "version: 1\nid: implementation\nconcurrency: 1\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
     )
   let settings = model_config.default_settings()
   let base =
@@ -961,23 +961,23 @@ pub fn workflow_fingerprint_changes_for_present_workstream_phase_metadata_test()
 pub fn v2_workflow_fingerprint_includes_structured_output_and_contract_types_test() {
   let base =
     parse(
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    workspace: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_implementation_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    run_in: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_implementation_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle\n",
     )
   let changed_schema =
     parse(
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    workspace: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_implementation_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/exec-plan-revision-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/exec-plan-revision-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    run_in: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_implementation_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/exec-plan-revision-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/exec-plan-revision-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle\n",
     )
   let changed_tool =
     parse(
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    workspace: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_other_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    run_in: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_other_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle\n",
     )
   let changed_command =
     parse(
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    workspace: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_implementation_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --changed\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    run_in: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_implementation_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --changed\n",
     )
   let changed_output_type =
     parse(
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    workspace: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_implementation_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\nsteps:\n  - id: draft\n    kind: agent\n    prompt: prompts/execplan-draft.md\n    run_in: main\n    structured_output:\n      artifact_name: implementation_pack_submission\n      source:\n        type: pi_tool_call\n        tool_name: submit_implementation_pack_submission\n        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json\n  - id: materialize_bundle\n    kind: command\n    depends_on: [draft]\n    run: .scherzo/workflows/scripts/scherzo-execplan materialize-bundle\n",
     )
 
   let fingerprint = workflow_fingerprint.for_dag("execplan", base)

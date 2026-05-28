@@ -5,8 +5,9 @@ description: Scan open same-repository GitHub pull requests and enqueue Linear m
 # only needs the repository root for config/remote discovery. If local preflight
 # is enabled, the command still cd's to SCHERZO_REPO_ROOT; use a custom workflow
 # profile only when that mode needs an isolated jj workspace.
-workspace_profile: noop
-max_parallel_steps: 1
+workspace:
+  driver: noop
+concurrency: 1
 steps:
   - id: scan_open_prs
     kind: command
@@ -35,5 +36,5 @@ steps:
         set -- "$@" --skip-local-preflight
       fi
       "$@"
-    timeout_ms: 300000
-    workspace: main
+    timeout: 5m
+    run_in: main

@@ -89,7 +89,7 @@ fn yaml_config_with_max(
 fn command_workflow_yaml(command: String) -> String {
   "version: 1\nid: implementation\nsteps:\n  - id: final_test\n    kind: command\n    run: "
   <> command
-  <> "\n    workspace: main\n"
+  <> "\n    run_in: main\n"
 }
 
 fn deps(client: tracker.Client) -> service.Dependencies {

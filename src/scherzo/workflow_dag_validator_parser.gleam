@@ -5,6 +5,7 @@ import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
 import scherzo/duration
+import scherzo/workflow_yaml_migration
 import yay
 
 pub type ParsedValidator {
@@ -63,6 +64,12 @@ pub fn parsed_validator_name(validator: ParsedValidator) -> String {
 pub fn parse_command_step_timeout(
   node: yay.Node,
 ) -> Result(Option(Int), ValidatorParseError) {
+  use _ <- result.try(reject_removed_key(
+    node,
+    "timeout_ms",
+    "timeout",
+    "Use a duration string such as timeout: 5m.",
+  ))
   case get_node(node, "timeout") {
     Some(yay.NodeStr(value)) ->
       duration.parse_positive_ms(value, "timeout")
@@ -78,29 +85,7 @@ pub fn parse_command_step_timeout(
         "command_timeout_not_duration",
         "timeout must be a duration string with unit ms, s, m, or h",
       ))
-    None -> parse_legacy_command_step_timeout(node)
-  }
-}
-
-fn parse_legacy_command_step_timeout(
-  node: yay.Node,
-) -> Result(Option(Int), ValidatorParseError) {
-  case get_node(node, "timeout_ms") {
     None -> Ok(None)
-    Some(yay.NodeInt(value)) ->
-      case value > 0 {
-        True -> Ok(Some(value))
-        False ->
-          Error(ValidatorParseError(
-            "invalid_command_timeout_ms",
-            "timeout_ms must be positive",
-          ))
-      }
-    Some(_) ->
-      Error(ValidatorParseError(
-        "command_timeout_ms_not_int",
-        "timeout_ms must be an integer",
-      ))
   }
 }
 
@@ -331,6 +316,12 @@ fn validate_executable_path(
 }
 
 fn read_command_timeout_ms(node: yay.Node) -> Result(Int, ValidatorParseError) {
+  use _ <- result.try(reject_removed_key(
+    node,
+    "timeout_ms",
+    "timeout",
+    "Use a duration string such as timeout: 30s.",
+  ))
   case get_node(node, "timeout") {
     Some(yay.NodeStr(value)) ->
       duration.parse_positive_ms(value, "structured_output.validators.timeout")
@@ -345,29 +336,7 @@ fn read_command_timeout_ms(node: yay.Node) -> Result(Int, ValidatorParseError) {
         "structured_output_validator_timeout_not_duration",
         "structured_output.validators.timeout must be a duration string with unit ms, s, m, or h",
       ))
-    None -> read_legacy_command_timeout_ms(node)
-  }
-}
-
-fn read_legacy_command_timeout_ms(
-  node: yay.Node,
-) -> Result(Int, ValidatorParseError) {
-  case get_node(node, "timeout_ms") {
     None -> Ok(30_000)
-    Some(yay.NodeInt(timeout_ms)) ->
-      case timeout_ms > 0 {
-        True -> Ok(timeout_ms)
-        False ->
-          Error(ValidatorParseError(
-            "invalid_structured_output_validator_timeout_ms",
-            "structured_output.validators.timeout_ms must be positive",
-          ))
-      }
-    Some(_) ->
-      Error(ValidatorParseError(
-        "structured_output_validator_timeout_ms_not_int",
-        "structured_output.validators.timeout_ms must be an integer",
-      ))
   }
 }
 
@@ -588,6 +557,21 @@ fn all(values: List(a), predicate: fn(a) -> Bool) -> Bool {
     [] -> True
     [value, ..rest] -> predicate(value) && all(rest, predicate)
   }
+}
+
+fn reject_removed_key(
+  node: yay.Node,
+  old_key: String,
+  new_key: String,
+  hint: String,
+) -> Result(Nil, ValidatorParseError) {
+  workflow_yaml_migration.reject_key(node, old_key, new_key, hint)
+  |> result.map_error(fn(error) {
+    ValidatorParseError(
+      workflow_yaml_migration.code(error),
+      workflow_yaml_migration.message(error),
+    )
+  })
 }
 
 fn get_node(node: yay.Node, key: String) -> Option(yay.Node) {

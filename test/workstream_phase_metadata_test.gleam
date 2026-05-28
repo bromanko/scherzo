@@ -16,7 +16,7 @@ fn error_code(source: String) -> String {
 }
 
 fn base_workflow(extra: String) -> String {
-  "version: 1\nid: execplan_implementation\ncontract:\n  version: 1\n  outputs:\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: implement\n        path: tmp/code-change-bundle.json\nsteps:\n  - id: implement\n    kind: command\n    run: echo ok\n    workspace: main\n"
+  "version: 1\nid: execplan_implementation\ncontract:\n  version: 1\n  outputs:\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: implement\n        path: tmp/code-change-bundle.json\nsteps:\n  - id: implement\n    kind: command\n    run: echo ok\n    run_in: main\n"
   <> extra
 }
 
@@ -139,7 +139,7 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
 
   let minimal =
     parse_ok(
-      "version: 1\nid: minimal\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    workspace: main\n",
+      "version: 1\nid: minimal\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    run_in: main\n",
     )
   assert minimal.contract == None
   assert minimal.workstream_phase == None

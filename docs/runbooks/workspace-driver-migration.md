@@ -6,13 +6,13 @@ Scherzo workspace configuration has moved from inline hook snippets and public w
 
 Use this guide if your orchestrator config contains legacy `workspace.hooks`, `workspace.default_profile`, `workspace.profiles`, driver-local `hooks`, driver-local `lifecycle`, `timeout_ms`, or examples copied from an older Scherzo README. Current Scherzo rejects those legacy shapes during config loading; update or reset the config to use `workspace.driver` and `workspace.drivers.<name>` before dispatching or running doctor checks that load workflow config.
 
-Workflow authors also need this guide when a workflow previously assumed a particular VCS command. The workflow should declare `workspace_capabilities` and call the driver command exposed in `SCHERZO_WORKSPACE_DRIVER` for capability operations instead of defining trusted shell in workflow YAML. Command steps run inside the prepared workspace, so workflows that call a relative driver command should resolve it against `SCHERZO_CONFIG_DIR` before invoking it.
+Workflow authors also need this guide when a workflow previously assumed a particular VCS command. The workflow should declare `workspace.requires` and call the driver command exposed in `SCHERZO_WORKSPACE_DRIVER` for capability operations instead of defining trusted shell in workflow YAML. Command steps run inside the prepared workspace, so workflows that call a relative driver command should resolve it against `SCHERZO_CONFIG_DIR` before invoking it.
 
 ## What changed
 
 The old model put trusted shell snippets directly in YAML as hooks, and later exposed them through `workspace.profiles`. The current model keeps trusted workspace policy in `workspace.driver` and `workspace.drivers`. Scherzo calls the selected driver for lifecycle operations and exposes the resolved driver command to command steps through `SCHERZO_WORKSPACE_DRIVER`.
 
-Driver commands are trusted operator config, not workflow-defined shell. A workflow can select `workspace_profile: isolated` or require `workspace_capabilities: [assert-only]`, but it cannot set `workspace.drivers.<name>.command` and cannot override the configured command at runtime. Built-in `noop` and `jj` drivers have known capabilities; custom drivers self-describe by running `<driver> describe --json`. Scherzo validates workflow requirements during runtime bundle loading and again before direct workflow execution.
+Driver commands are trusted operator config, not workflow-defined shell. A workflow can select `workspace.driver: isolated` or require `workspace.requires: [assert-only]`, but it cannot set `workspace.drivers.<name>.command` and cannot override the configured command at runtime. Built-in `noop` and `jj` drivers have known capabilities; custom drivers self-describe by running `<driver> describe --json`. Scherzo validates workflow requirements during runtime bundle loading and again before direct workflow execution.
 
 The accepted lifecycle command names remain `create`, `before-step`, `after-step`, and `remove`, but lifecycle selection is no longer public config. The accepted public capability names are `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. `type: custom` `command` values must be one executable token without whitespace or shell metacharacters. They may use `$SCHERZO_REPO_ROOT` as a leading placeholder, which Scherzo resolves before exposing `SCHERZO_WORKSPACE_DRIVER` to workflow steps. Drivers configure `type`, optional `timeout`, optional `env`, and for `type: jj` friendly fields such as `remote`, `base_branch`, `base`, `fetch_base`, `publish_remote`, and `github_repo`.
 
@@ -93,11 +93,11 @@ Then make workflows choose the driver name explicitly when they rely on it:
 ```yaml
 version: 1
 id: research
-workspace_profile: noop
-workspace_capabilities: [assert-only]
+workspace:
+  driver: noop
+  requires: [assert-only]
 steps:
   - id: collect_findings
-    kind: command
     run: |
       set -eu
       driver_command=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required}
@@ -121,7 +121,7 @@ steps:
       esac
       "$driver" assert-only --path research-findings.md
       cat research-findings.md
-    workspace: main
+    run_in: main
 ```
 
 ## Before and after: old named hook profiles
@@ -159,7 +159,7 @@ workspace:
       timeout: 60s
 ```
 
-The name can stay stable, so existing workflows that already say `workspace_profile: isolated` do not need to change unless they also require a new capability.
+The name can stay stable, but workflows must now select it with `workspace.driver: isolated` and move any capability declarations to `workspace.requires`.
 
 Command steps and agent subprocesses run under a selected driver receive `SCHERZO_WORKSPACE_PROFILE=isolated`, `SCHERZO_WORKSPACE_DRIVER=<resolved-driver-command>`, and `SCHERZO_WORKSPACE_CAPABILITIES="status diff changed-files assert-only baseline refresh-base publish-change"`. An original agent prompt can render `{{ workspace.driver }}` or loop over `{% for capability in workspace.capabilities %}`.
 
@@ -170,7 +170,7 @@ Declare only workflow requirements that the workflow actually needs. Workspace d
 - `scripts/scherzo-workspace-noop` and `scherzo-workspace-noop`: `status`, `changed-files`, and `assert-only`.
 - `scripts/scherzo-workspace-jj` and `scherzo-workspace-jj`: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`.
 
-A workflow that invokes the selected driver for `assert-only --path research-findings.md` should declare `workspace_capabilities: [assert-only]`. A workflow that asks the driver for changed files should declare `workspace_capabilities: [changed-files]`. If a workflow declares a capability missing from the selected driver's `describe --json` response, Scherzo fails workflow-config loading before dispatch.
+A workflow that invokes the selected driver for `assert-only --path research-findings.md` should declare `workspace.requires: [assert-only]`. A workflow that asks the driver for changed files should declare `workspace.requires: [changed-files]`. If a workflow declares a capability missing from the selected driver's `describe --json` response, Scherzo fails workflow-config loading before dispatch.
 
 ## No-op or artifact-only workflows
 
@@ -273,7 +273,7 @@ A passing workflow-config check means Scherzo can parse the orchestrator config,
 
 ## Troubleshooting
 
-If workflow-config reports `invalid_config` for `workspace.hooks`, `workspace.default_profile`, `workspace.profiles`, driver-local `hooks`, driver-local `lifecycle`, or `timeout_ms`, migrate that block to `workspace.driver` and `workspace.drivers.<name>`. Keep the old selector name when possible so existing `workspace_profile` selectors continue to work.
+If workflow-config reports `invalid_config` for `workspace.hooks`, `workspace.default_profile`, `workspace.profiles`, driver-local `hooks`, driver-local `lifecycle`, or `timeout_ms`, migrate that block to `workspace.driver` and `workspace.drivers.<name>`. Keep the old selector name when possible, but update workflow files to select it through `workspace.driver`.
 
 If workflow-config fails with `workspace_capabilities_unavailable`, the workflow requires a capability that the selected driver does not provide. Either remove the unnecessary workflow capability, select a driver that reports it, or teach the trusted driver to support it in a separate runtime change.
 

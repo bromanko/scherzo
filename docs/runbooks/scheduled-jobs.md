@@ -58,11 +58,11 @@ The scheduled workflow is a normal workflow DAG. Scheduled prompts and command t
 version: 1
 id: github-pr-conflict-scout
 description: Scan open same-repository GitHub pull requests and enqueue merge-conflict resolver issues.
-workspace_profile: noop
-max_parallel_steps: 1
+workspace:
+  driver: noop
+concurrency: 1
 steps:
   - id: scan_open_prs
-    kind: command
     run: |
       set -eu
       bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
@@ -88,8 +88,8 @@ steps:
         set -- "$@" --skip-local-preflight
       fi
       "$@"
-    timeout_ms: 300000
-    workspace: main
+    timeout: 5m
+    run_in: main
 ```
 
 Useful scheduled variables include `{{ scheduled_job.id }}`, `{{ scheduled_job.workflow }}`, `{{ schedule.due_at }}`, `{{ schedule.started_at }}`, `{{ run.id }}`, and `{{ run.attempt }}`.

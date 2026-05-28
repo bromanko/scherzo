@@ -1,10 +1,11 @@
 version: 1
 id: execplan-implementation
 description: Validate an ExecPlan bundle, implement from the prepared review doc and implementation pack, run plan-completion and native review gates, publish a PR, and emit a code_change_bundle.
-workspace_profile: dogfood-jj
-workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]
-max_parallel_steps: 4
-recover:
+workspace:
+  driver: dogfood-jj
+  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]
+concurrency: 4
+recovery:
   attempts: 1
   prompt: prompts/execplan-implementation-recover-failed-step.md
 contract:
@@ -24,15 +25,15 @@ steps:
   - id: prepare_bundle
     kind: command
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" implementation-prepare --from-issue-context'
-    timeout_ms: 300000
-    workspace: main
+    timeout: 5m
+    run_in: main
 
   - id: refresh_base_before_implementation
     kind: command
     depends_on: [prepare_bundle]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" refresh-base --stage before-implementation'
-    timeout_ms: 300000
-    workspace: main
+    timeout: 5m
+    run_in: main
 
   - id: implement_plan
     kind: agent
@@ -40,31 +41,31 @@ steps:
     prompt: prompts/execplan-implementation-implement.md
     model: openai-codex/gpt-5.4
     thinking: medium
-    workspace: main
+    run_in: main
 
   - id: gate_no_conflict
     kind: command
     depends_on: [implement_plan]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" gate-no-conflict'
-    workspace: main
+    run_in: main
 
   - id: analyze_changes
     kind: command
     depends_on: [gate_no_conflict]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
-    workspace: main
+    run_in: main
 
   - id: restore_execplan_artifacts_before_plan_completion
     kind: command
     depends_on: [analyze_changes]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
-    workspace: main
+    run_in: main
 
   - id: verify_plan_completion
     kind: agent
     depends_on: [restore_execplan_artifacts_before_plan_completion]
     prompt: prompts/execplan-implementation-verify-completion.md
-    workspace: main
+    run_in: main
 
   - id: apply_plan_completion_feedback
     kind: agent
@@ -72,38 +73,38 @@ steps:
     prompt: prompts/execplan-implementation-apply-plan-completion-feedback.md
     model: openai-codex/gpt-5.4
     thinking: medium
-    workspace: main
+    run_in: main
 
   - id: analyze_changes_after_plan_feedback
     kind: command
     depends_on: [apply_plan_completion_feedback]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
-    workspace: main
+    run_in: main
 
   - id: restore_execplan_artifacts_after_plan_feedback
     kind: command
     depends_on: [analyze_changes_after_plan_feedback]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
-    workspace: main
+    run_in: main
 
   - id: verify_plan_completion_after_feedback
     kind: agent
     depends_on: [restore_execplan_artifacts_after_plan_feedback]
     prompt: prompts/execplan-implementation-verify-completion-after-feedback.md
-    workspace: main
+    run_in: main
 
   - id: gate_plan_completion
     kind: command
     depends_on: [verify_plan_completion_after_feedback]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" gate-plan-completion'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: classify_plan_completion_gate
     kind: command
     depends_on: [gate_plan_completion]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2'
-    workspace: main
+    run_in: main
 
   - id: apply_late_plan_completion_feedback
     kind: agent
@@ -111,74 +112,74 @@ steps:
     prompt: prompts/execplan-implementation-apply-late-plan-completion-feedback.md
     model: openai-codex/gpt-5.4
     thinking: medium
-    workspace: main
+    run_in: main
 
   - id: analyze_changes_after_late_plan_feedback
     kind: command
     depends_on: [apply_late_plan_completion_feedback]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
-    workspace: main
+    run_in: main
 
   - id: restore_execplan_artifacts_after_late_plan_feedback
     kind: command
     depends_on: [analyze_changes_after_late_plan_feedback]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
-    workspace: main
+    run_in: main
 
   - id: verify_plan_completion_after_late_repair
     kind: agent
     depends_on: [restore_execplan_artifacts_after_late_plan_feedback]
     prompt: prompts/execplan-implementation-verify-completion-after-late-repair.md
-    workspace: main
+    run_in: main
 
   - id: gate_plan_completion_after_late_repair
     kind: command
     depends_on: [verify_plan_completion_after_late_repair]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" gate-plan-completion'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: finalize_plan_completion_gate_recovery
     kind: command
     depends_on: [gate_plan_completion_after_late_repair]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2'
-    workspace: main
-    recover:
+    run_in: main
+    recovery:
       enabled: false
 
   - id: validate_before_native_review
     kind: command
     depends_on: [finalize_plan_completion_gate_recovery]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
-    timeout_ms: 1200000
+    timeout: 20m
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: assert_native_review_cutover
     kind: command
     depends_on: [validate_before_native_review]
     run: 'output_dir="$SCHERZO_RUN_ROOT/artifacts/review/cutover_contract"; mkdir -p "$output_dir"; forbidden=""; if [ -n "${SCHERZO_NATIVE_REVIEW_SCENARIO:-}" ]; then forbidden="$forbidden SCHERZO_NATIVE_REVIEW_SCENARIO"; fi; if [ -n "${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_STAGED_REVIEW_AGENT_BACKEND"; fi; if [ -n "${SCHERZO_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_REVIEW_AGENT_BACKEND"; fi; if [ -n "$forbidden" ]; then printf "native implementation review cutover refuses fixture/scenario/heuristic override environment variables:%s\n" "$forbidden" | tee "$output_dir/cutover-contract.txt"; exit 1; fi; printf "native_review_cutover=enabled\nsemantic_review=kind_agent\nstructured_output_source=pi_tool_call/submit_review_lane_draft\nlegacy_backend_env=refused\nnative_review_scenario=refused\nremote_mutations=none\n" > "$output_dir/cutover-contract.txt"; cat "$output_dir/cutover-contract.txt"'
-    workspace: main
+    run_in: main
 
   - id: prepare_review
     kind: command
     depends_on: [assert_native_review_cutover]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$bundle_dir/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "execplan-implementation-native" --validation-result tmp/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt; else "$bundle_dir/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "execplan-implementation-native" --validation-result tmp/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt; fi'
-    timeout_ms: 300000
-    workspace: main
+    timeout: 5m
+    run_in: main
 
   - id: assert_clean_before_lanes
     kind: command
     depends_on: [prepare_review]
     run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj log -r @ --no-graph -T commit_id --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes-status.txt"'
-    workspace: main
+    run_in: main
 
   - id: lane_correctness
     kind: agent
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-correctness.md
     on_failure: continue
-    workspace:
+    run_in:
       name: review-correctness
       from: main
     structured_output:
@@ -211,7 +212,7 @@ steps:
     model: openai-codex/gpt-5.4
     thinking: medium
     on_failure: continue
-    workspace:
+    run_in:
       name: review-test-quality
       from: main
     structured_output:
@@ -244,7 +245,7 @@ steps:
     model: openai-codex/gpt-5.4
     thinking: medium
     on_failure: continue
-    workspace:
+    run_in:
       name: review-idioms-maintainability
       from: main
     structured_output:
@@ -275,7 +276,7 @@ steps:
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-security-performance.md
     on_failure: continue
-    workspace:
+    run_in:
       name: review-security-performance
       from: main
     structured_output:
@@ -305,93 +306,93 @@ steps:
     kind: command
     depends_on: [lane_correctness, lane_test_quality, lane_idioms_maintainability, lane_security_performance]
     run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj log -r @ --no-graph -T commit_id --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes-status.txt"; cmp -s "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" || { printf "native review lane mutated the main workspace; commit ids differ; see %s, %s, %s, and %s\n" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes-status.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes-status.txt" >&2; exit 1; }'
-    workspace: main
+    run_in: main
 
   - id: materialize_correctness
     kind: command
     depends_on: [assert_clean_after_lanes]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/correctness"; mkdir -p "$lane_dir"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review-lane-contract" materialize --lane correctness --artifact-dir "$artifact_dir" --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --output "$lane_dir/review-lane-draft.v1.json"'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: materialize_test_quality
     kind: command
     depends_on: [assert_clean_after_lanes]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/test-quality"; mkdir -p "$lane_dir"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review-lane-contract" materialize --lane test-quality --artifact-dir "$artifact_dir" --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --output "$lane_dir/review-lane-draft.v1.json"'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: materialize_idioms_maintainability
     kind: command
     depends_on: [assert_clean_after_lanes]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/idioms-maintainability"; mkdir -p "$lane_dir"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review-lane-contract" materialize --lane idioms-maintainability --artifact-dir "$artifact_dir" --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --output "$lane_dir/review-lane-draft.v1.json"'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: materialize_security_performance
     kind: command
     depends_on: [assert_clean_after_lanes]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/security-performance"; mkdir -p "$lane_dir"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review-lane-contract" materialize --lane security-performance --artifact-dir "$artifact_dir" --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --output "$lane_dir/review-lane-draft.v1.json"'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: verify_correctness_evidence
     kind: command
     depends_on: [materialize_correctness]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/correctness"; mkdir -p "$lane_dir"; draft_path="$lane_dir/review-lane-draft.v1.json"; "$bundle_dir/scripts/scherzo-review" verify-evidence --lane correctness --draft "$draft_path" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --diff-file "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch" --changed-files "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/changed-files.v1.json" --validation-status "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/validation-status.v1.json" --context-manifest "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/context-manifest.v1.json" --output-dir "$lane_dir"'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: verify_test_quality_evidence
     kind: command
     depends_on: [materialize_test_quality]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/test-quality"; mkdir -p "$lane_dir"; draft_path="$lane_dir/review-lane-draft.v1.json"; "$bundle_dir/scripts/scherzo-review" verify-evidence --lane test-quality --draft "$draft_path" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --diff-file "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch" --changed-files "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/changed-files.v1.json" --validation-status "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/validation-status.v1.json" --context-manifest "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/context-manifest.v1.json" --output-dir "$lane_dir"'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: verify_idioms_maintainability_evidence
     kind: command
     depends_on: [materialize_idioms_maintainability]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/idioms-maintainability"; mkdir -p "$lane_dir"; draft_path="$lane_dir/review-lane-draft.v1.json"; "$bundle_dir/scripts/scherzo-review" verify-evidence --lane idioms-maintainability --draft "$draft_path" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --diff-file "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch" --changed-files "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/changed-files.v1.json" --validation-status "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/validation-status.v1.json" --context-manifest "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/context-manifest.v1.json" --output-dir "$lane_dir"'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: verify_security_performance_evidence
     kind: command
     depends_on: [materialize_security_performance]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/security-performance"; mkdir -p "$lane_dir"; draft_path="$lane_dir/review-lane-draft.v1.json"; "$bundle_dir/scripts/scherzo-review" verify-evidence --lane security-performance --draft "$draft_path" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --diff-file "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch" --changed-files "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/changed-files.v1.json" --validation-status "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/validation-status.v1.json" --context-manifest "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/context-manifest.v1.json" --output-dir "$lane_dir"'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: normalize_correctness
     kind: command
     depends_on: [verify_correctness_evidence]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/correctness"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; draft_path="$lane_dir/review-lane-draft.v1.json"; "$bundle_dir/scripts/scherzo-review" normalize-lane-result --lane correctness --draft "$draft_path" --evidence-ledger "$lane_dir/evidence-ledger.v1.json" --agent-artifact-dir "$artifact_dir" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --output-dir "$lane_dir"'
-    workspace: main
+    run_in: main
 
   - id: normalize_test_quality
     kind: command
     depends_on: [verify_test_quality_evidence]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/test-quality"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; draft_path="$lane_dir/review-lane-draft.v1.json"; "$bundle_dir/scripts/scherzo-review" normalize-lane-result --lane test-quality --draft "$draft_path" --evidence-ledger "$lane_dir/evidence-ledger.v1.json" --agent-artifact-dir "$artifact_dir" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --output-dir "$lane_dir"'
-    workspace: main
+    run_in: main
 
   - id: normalize_idioms_maintainability
     kind: command
     depends_on: [verify_idioms_maintainability_evidence]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/idioms-maintainability"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; draft_path="$lane_dir/review-lane-draft.v1.json"; "$bundle_dir/scripts/scherzo-review" normalize-lane-result --lane idioms-maintainability --draft "$draft_path" --evidence-ledger "$lane_dir/evidence-ledger.v1.json" --agent-artifact-dir "$artifact_dir" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --output-dir "$lane_dir"'
-    workspace: main
+    run_in: main
 
   - id: normalize_security_performance
     kind: command
     depends_on: [verify_security_performance_evidence]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/security-performance"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; draft_path="$lane_dir/review-lane-draft.v1.json"; "$bundle_dir/scripts/scherzo-review" normalize-lane-result --lane security-performance --draft "$draft_path" --evidence-ledger "$lane_dir/evidence-ledger.v1.json" --agent-artifact-dir "$artifact_dir" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --output-dir "$lane_dir"'
-    workspace: main
+    run_in: main
 
   - id: synthesize_review
     kind: command
     depends_on: [normalize_correctness, normalize_test_quality, normalize_idioms_maintainability, normalize_security_performance]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-review" synthesize --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/lanes/correctness/review-lane-correctness.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/lanes/test-quality/review-lane-test-quality.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/lanes/idioms-maintainability/review-lane-idioms-maintainability.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/lanes/security-performance/review-lane-security-performance.v1.json" --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review"'
-    workspace: main
+    run_in: main
 
   - id: validate_native_review_artifacts
     kind: command
@@ -426,13 +427,13 @@ steps:
           sys.exit(1)
       print("REVIEW_NATIVE_REVIEW_INFRASTRUCTURE=ok")
       PY
-    workspace: main
+    run_in: main
 
   - id: review_changes
     kind: agent
     depends_on: [validate_native_review_artifacts]
     prompt: prompts/execplan-implementation-review.md
-    workspace: main
+    run_in: main
 
   - id: apply_review_feedback
     kind: agent
@@ -440,7 +441,7 @@ steps:
     prompt: prompts/execplan-implementation-apply-feedback.md
     model: openai-codex/gpt-5.4
     thinking: medium
-    workspace: main
+    run_in: main
     structured_output:
       format: json
       artifact_name: review_finding_disposition_input
@@ -461,7 +462,7 @@ steps:
             - --validator
             - review_finding_disposition_input
           working_directory: repository
-          timeout_ms: 30000
+          timeout: 30s
         - name: review_finding_disposition_provider_shape
           type: json_schema
           path: .scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json
@@ -481,89 +482,89 @@ steps:
     kind: command
     depends_on: [apply_review_feedback]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review" materialize-disposition-input --artifact-dir "$artifact_dir" --submission-step apply_review_feedback --submission-artifact review_finding_disposition_input --output tmp/review-finding-dispositions.v1.json'
-    workspace: main
+    run_in: main
 
   - id: refresh_base_before_validation
     kind: command
     depends_on: [materialize_review_dispositions]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" refresh-base --stage before-validation'
-    timeout_ms: 300000
+    timeout: 5m
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: validate_after_refresh
     kind: command
     depends_on: [refresh_base_before_validation]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
-    timeout_ms: 1200000
+    timeout: 20m
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: repair_base_drift
     kind: agent
     depends_on: [validate_after_refresh]
     prompt: prompts/execplan-implementation-repair-base-drift.md
-    workspace: main
+    run_in: main
 
   - id: restore_execplan_artifacts_before_final_verification
     kind: command
     depends_on: [repair_base_drift]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
-    workspace: main
+    run_in: main
 
   - id: verify_plan_completion_before_final_validation
     kind: agent
     depends_on: [restore_execplan_artifacts_before_final_verification]
     prompt: prompts/execplan-implementation-verify-completion-before-final-validation.md
-    workspace: main
+    run_in: main
 
   - id: checkpoint_final_plan_completion_verdict
     kind: command
     depends_on: [verify_plan_completion_before_final_validation]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" checkpoint-plan-completion-verdict'
-    workspace: main
+    run_in: main
 
   - id: final_validate
     kind: command
     depends_on: [checkpoint_final_plan_completion_verdict]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
-    timeout_ms: 1200000
-    workspace: main
+    timeout: 20m
+    run_in: main
 
   - id: final_plan_completion_gate
     kind: command
     depends_on: [final_validate]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" gate-plan-completion --final'
     on_failure: continue
-    workspace: main
+    run_in: main
 
   - id: finalize_final_plan_completion_gate
     kind: command
     depends_on: [final_plan_completion_gate]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase final --attempt 2 --max-attempts 2'
-    workspace: main
-    recover:
+    run_in: main
+    recovery:
       enabled: false
 
   - id: finalize_review_dispositions
     kind: command
     depends_on: [final_validate]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$bundle_dir/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact tmp/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
-    workspace: main
+    run_in: main
 
   - id: publish_pr
     kind: command
     depends_on: [finalize_final_plan_completion_gate, finalize_review_dispositions]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
-    timeout_ms: 300000
-    workspace: main
-    recover:
+    timeout: 5m
+    run_in: main
+    recovery:
       enabled: false
 
   - id: materialize_code_change_bundle
     kind: command
     depends_on: [publish_pr]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; bundle_path=${SCHERZO_RUN_ROOT:-}/state/implementation/execplan-bundle.json; if [ ! -f "$bundle_path" ]; then bundle_path=tmp/execplan-bundle.json; fi; "$bundle_dir/scripts/scherzo-execplan" materialize-code-change-bundle --bundle "$bundle_path" --output tmp/execplan-code-change-bundle.json'
-    workspace: main
-    recover:
+    run_in: main
+    recovery:
       enabled: false

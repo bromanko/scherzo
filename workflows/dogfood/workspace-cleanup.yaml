@@ -1,8 +1,9 @@
 version: 1
 id: workspace-cleanup
 description: Clean up eligible Scherzo local artifacts under the configured workspace root.
-workspace_profile: noop
-max_parallel_steps: 1
+workspace:
+  driver: noop
+concurrency: 1
 steps:
   - id: cleanup
     kind: command
@@ -34,5 +35,5 @@ steps:
       }
 
       run_scherzoctl cleanup --root "$workspace_root" --json --yes
-    timeout_ms: 300000
-    workspace: main
+    timeout: 5m
+    run_in: main

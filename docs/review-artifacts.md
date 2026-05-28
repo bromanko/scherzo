@@ -286,7 +286,7 @@ After native preparation, the dogfood implementation workflows run the four spec
 
 The brief, lane, synthesis, and final review steps write local artifacts only; they do not post PR comments, update Linear, push, rebase, check out PR branches, or alter PR state.
 
-The checked-in dogfood workflows allow the four native review lanes to run concurrently after the clean-workspace checkpoint, bounded by workflow-level `max_parallel_steps`. Operators who hit provider quota, rate-limit, or local resource pressure can lower `max_parallel_steps` in the workflow YAML to serialize or partially throttle lane execution without changing the lane artifact contract.
+The checked-in dogfood workflows allow the four native review lanes to run concurrently after the clean-workspace checkpoint, bounded by workflow-level `concurrency`. Operators who hit provider quota, rate-limit, or local resource pressure can lower `concurrency` in the workflow YAML to serialize or partially throttle lane execution without changing the lane artifact contract.
 
 ## Compatibility and versioning
 

@@ -4,7 +4,7 @@ steps:
   - id: produce_review
     kind: agent
     prompt: prompts/review.md
-    workspace: main
+    run_in: main
     structured_output:
       artifact_name: review_lane_draft
       required: true

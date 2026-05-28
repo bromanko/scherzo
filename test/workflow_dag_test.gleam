@@ -1,4 +1,5 @@
 import gleam/option.{None, Some}
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/structured_output_source
@@ -13,6 +14,12 @@ fn parse_ok(source: String) -> workflow_dag.WorkflowDag {
 fn error_code(source: String) -> String {
   let assert Error(workflow_dag.DagError(code, _)) = workflow_dag.parse(source)
   code
+}
+
+fn error_message(source: String) -> String {
+  let assert Error(workflow_dag.DagError(_, message)) =
+    workflow_dag.parse(source)
+  message
 }
 
 fn minimal() -> String {
@@ -40,10 +47,45 @@ pub fn parses_minimal_workflow_dag_test() {
   ) = step.kind
 }
 
+pub fn infers_step_kind_from_prompt_or_run_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: infer\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n  - id: validate\n    depends_on: [draft]\n    run: gleam test\n",
+    )
+  let assert [draft, validate] = dag.steps
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/draft.md"),
+    None,
+  ) = draft.kind
+  let assert workflow_dag.CommandStep("gleam test", None) = validate.kind
+}
+
+pub fn rejects_ambiguous_inferred_step_kind_test() {
+  assert error_code(
+      "version: 1\nid: infer\nsteps:\n  - id: both\n    prompt: prompts/draft.md\n    run: gleam test\n",
+    )
+    == "ambiguous_step_kind"
+}
+
+pub fn rejects_malformed_step_discriminator_fields_test() {
+  assert error_code(
+      "version: 1\nid: infer\nsteps:\n  - id: kind\n    kind: 123\n    prompt: prompts/draft.md\n",
+    )
+    == "step_kind_not_string"
+  assert error_code(
+      "version: 1\nid: infer\nsteps:\n  - id: prompt\n    prompt: 123\n    run: gleam test\n",
+    )
+    == "prompt_not_string"
+  assert error_code(
+      "version: 1\nid: infer\nsteps:\n  - id: run\n    prompt: prompts/draft.md\n    run: [gleam, test]\n",
+    )
+    == "run_not_string"
+}
+
 pub fn parses_workflow_and_step_recover_configs_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: recovery\nrecover:\n  attempts: 2\n  model: gpt-5\n  prompt: prompts/recover.md\nsteps:\n  - id: test\n    kind: command\n    run: gleam test\n  - id: fix\n    kind: agent\n    prompt: prompts/fix.md\n    depends_on: [test]\n    recover:\n      attempts: 1\n      prompt: prompts/step-recover.md\n",
+      "version: 1\nid: recovery\nrecovery:\n  attempts: 2\n  model: gpt-5\n  prompt: prompts/recover.md\nsteps:\n  - id: test\n    kind: command\n    run: gleam test\n  - id: fix\n    kind: agent\n    prompt: prompts/fix.md\n    depends_on: [test]\n    recovery:\n      attempts: 1\n      prompt: prompts/step-recover.md\n",
     )
   let assert Some(workflow_dag.RecoveryConfigPatch(
     enabled,
@@ -78,7 +120,7 @@ pub fn parses_workflow_and_step_recover_configs_test() {
 pub fn parses_step_only_recover_and_default_attempts_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: recovery\nsteps:\n  - id: fix\n    kind: agent\n    prompt: prompts/fix.md\n    recover:\n      prompt: prompts/recover.md\n",
+      "version: 1\nid: recovery\nsteps:\n  - id: fix\n    kind: agent\n    prompt: prompts/fix.md\n    recovery:\n      prompt: prompts/recover.md\n",
     )
   let assert [step] = dag.steps
   let assert Ok(Some(recover)) =
@@ -94,7 +136,7 @@ pub fn parses_step_only_recover_and_default_attempts_test() {
 pub fn recover_enabled_false_disables_step_recovery_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: recovery\nrecover:\n  prompt: prompts/recover.md\nsteps:\n  - id: test\n    kind: command\n    run: gleam test\n    recover:\n      enabled: false\n",
+      "version: 1\nid: recovery\nrecovery:\n  prompt: prompts/recover.md\nsteps:\n  - id: test\n    kind: command\n    run: gleam test\n    recovery:\n      enabled: false\n",
     )
   let assert [step] = dag.steps
   assert workflow_dag.effective_recovery_config(dag, step) == Ok(None)
@@ -102,36 +144,36 @@ pub fn recover_enabled_false_disables_step_recovery_test() {
 
 pub fn rejects_invalid_recover_configs_test() {
   assert error_code(
-      "version: 1\nid: recovery\nrecover: true\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+      "version: 1\nid: recovery\nrecovery: true\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
     )
-    == "recover_not_map"
+    == "recovery_not_map"
   assert error_code(
-      "version: 1\nid: recovery\nrecover:\n  enabled: nope\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+      "version: 1\nid: recovery\nrecovery:\n  enabled: nope\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
     )
-    == "recover_enabled_not_bool"
+    == "recovery_enabled_not_bool"
   assert error_code(
-      "version: 1\nid: recovery\nrecover:\n  attempts: once\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+      "version: 1\nid: recovery\nrecovery:\n  attempts: once\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
     )
-    == "recover_attempts_not_int"
+    == "recovery_attempts_not_int"
   assert error_code(
-      "version: 1\nid: recovery\nrecover:\n  attempts: 0\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+      "version: 1\nid: recovery\nrecovery:\n  attempts: 0\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
     )
-    == "invalid_recover_attempts"
+    == "invalid_recovery_attempts"
   assert error_code(
-      "version: 1\nid: recovery\nrecover:\n  model: bad model\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+      "version: 1\nid: recovery\nrecovery:\n  model: bad model\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
     )
     == "invalid_model"
   assert error_code(
-      "version: 1\nid: recovery\nrecover:\n  prompt: 123\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
+      "version: 1\nid: recovery\nrecovery:\n  prompt: 123\nsteps:\n  - id: main\n    kind: command\n    run: true\n",
     )
-    == "recover_prompt_not_string"
+    == "recovery_prompt_not_string"
 }
 
 pub fn rejects_missing_effective_recover_prompt_test() {
   assert error_code(
-      "version: 1\nid: recovery\nrecover:\n  attempts: 2\nsteps:\n  - id: main\n    kind: command\n    run: 'true'\n",
+      "version: 1\nid: recovery\nrecovery:\n  attempts: 2\nsteps:\n  - id: main\n    kind: command\n    run: 'true'\n",
     )
-    == "missing_recover_prompt"
+    == "missing_recovery_prompt"
 }
 
 pub fn parses_agent_structured_output_defaults_test() {
@@ -290,10 +332,10 @@ pub fn rejects_invalid_structured_output_contracts_test() {
     == "structured_output_validation_retries_not_int"
 }
 
-pub fn parses_workspace_capabilities_test() {
+pub fn parses_workspace_requires_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: research\nworkspace_capabilities: [assert-only, changed-files]\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
+      "version: 1\nid: research\nworkspace:\n  requires: [assert-only, changed-files]\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
     )
   assert dag.workspace_capabilities
     == [
@@ -302,60 +344,104 @@ pub fn parses_workspace_capabilities_test() {
     ]
 }
 
-pub fn rejects_invalid_workspace_capabilities_test() {
+pub fn rejects_invalid_workspace_requires_test() {
   assert error_code(
-      "version: 1\nid: research\nworkspace_capabilities: assert-only\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+      "version: 1\nid: research\nworkspace:\n  requires: assert-only\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
-    == "workspace_capabilities_not_list"
+    == "workspace_requires_not_list"
   assert error_code(
-      "version: 1\nid: research\nworkspace_capabilities: [123]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+      "version: 1\nid: research\nworkspace:\n  requires: [123]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
-    == "workspace_capabilities_entry_not_string"
+    == "workspace_requires_entry_not_string"
   assert error_code(
-      "version: 1\nid: research\nworkspace_capabilities: [pull-request]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+      "version: 1\nid: research\nworkspace:\n  requires: [pull-request]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
     == "unknown_workspace_capability"
   assert error_code(
-      "version: 1\nid: research\nworkspace_capabilities: [assert-only, assert-only]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+      "version: 1\nid: research\nworkspace:\n  requires: [assert-only, assert-only]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
     == "duplicate_workspace_capability"
 }
 
-pub fn parses_top_level_workspace_profile_test() {
+pub fn parses_top_level_workspace_driver_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: research\nworkspace_profile: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
+      "version: 1\nid: research\nworkspace:\n  driver: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
     )
   assert dag.workspace_profile == Some("noop")
 }
 
-pub fn rejects_invalid_workspace_profile_test() {
+pub fn rejects_invalid_workspace_driver_test() {
   assert error_code(
-      "version: 1\nid: research\nworkspace_profile: 123\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+      "version: 1\nid: research\nworkspace:\n  driver: 123\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
-    == "workspace_profile_not_string"
+    == "workspace_driver_not_string"
   assert error_code(
-      "version: 1\nid: research\nworkspace_profile: ../noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+      "version: 1\nid: research\nworkspace:\n  driver: ../noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
-    == "invalid_workspace_profile"
+    == "invalid_workspace_driver"
   assert error_code(
-      "version: 1\nid: research\nworkspace_profile: Noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+      "version: 1\nid: research\nworkspace:\n  driver: Noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
-    == "invalid_workspace_profile"
+    == "invalid_workspace_driver"
 }
 
-pub fn rejects_step_level_workspace_profile_test() {
+pub fn rejects_unknown_workflow_workspace_keys_test() {
+  let profile_source =
+    "version: 1\nid: research\nworkspace:\n  profile: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n"
+  assert error_code(profile_source) == "unknown_workflow_workspace_key"
+  assert string.contains(error_message(profile_source), "workspace.profile")
+  assert string.contains(error_message(profile_source), "workspace.driver")
+
+  let require_source =
+    "version: 1\nid: research\nworkspace:\n  require: [assert-only]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n"
+  assert error_code(require_source) == "unknown_workflow_workspace_key"
+  assert string.contains(error_message(require_source), "workspace.require")
+  assert string.contains(error_message(require_source), "workspace.requires")
+}
+
+pub fn rejects_removed_workspace_keys_test() {
+  let profile_source =
+    "version: 1\nid: research\nworkspace_profile: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n"
+  assert error_code(profile_source) == "removed_workspace_profile"
+  let profile_message = error_message(profile_source)
+  assert string.contains(profile_message, "workspace_profile")
+  assert string.contains(profile_message, "workspace.driver")
+  assert string.contains(profile_message, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let capabilities_source =
+    "version: 1\nid: research\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n"
+  assert error_code(capabilities_source) == "removed_workspace_capabilities"
+  assert string.contains(
+    error_message(capabilities_source),
+    "workspace.requires",
+  )
+
+  let concurrency_source =
+    "version: 1\nid: research\nmax_parallel_steps: 2\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n"
+  assert error_code(concurrency_source) == "removed_max_parallel_steps"
+  assert string.contains(error_message(concurrency_source), "concurrency")
+
+  let recover_source =
+    "version: 1\nid: research\nrecover:\n  prompt: prompts/recover.md\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n"
+  assert error_code(recover_source) == "removed_recover"
+  assert string.contains(error_message(recover_source), "recovery")
+}
+
+pub fn rejects_removed_step_workspace_keys_test() {
   assert error_code(
       "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace_profile: noop\n    prompt: a.md\n",
     )
-    == "step_workspace_profile_not_supported"
-}
-
-pub fn rejects_step_level_workspace_capabilities_test() {
+    == "removed_workspace_profile"
   assert error_code(
       "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace_capabilities: [assert-only]\n    prompt: a.md\n",
     )
-    == "step_workspace_capabilities_not_supported"
+    == "removed_workspace_capabilities"
+
+  let run_in_source =
+    "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace: main\n    prompt: a.md\n"
+  assert error_code(run_in_source) == "removed_workspace"
+  assert string.contains(error_message(run_in_source), "run_in")
 }
 
 pub fn parses_command_step_duration_timeout_test() {
@@ -383,25 +469,11 @@ pub fn rejects_invalid_command_step_duration_timeout_test() {
     == "invalid_command_timeout"
 }
 
-pub fn parses_legacy_command_step_timeout_ms_test() {
-  let dag =
-    parse_ok(
+pub fn rejects_removed_command_step_timeout_ms_test() {
+  assert error_code(
       "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout_ms: 120000\n",
     )
-  let assert [step] = dag.steps
-  let assert workflow_dag.CommandStep(_, Some(timeout_ms)) = step.kind
-  assert timeout_ms == 120_000
-}
-
-pub fn rejects_invalid_legacy_command_step_timeout_ms_test() {
-  assert error_code(
-      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout_ms: 0\n",
-    )
-    == "invalid_command_timeout_ms"
-  assert error_code(
-      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout_ms: nope\n",
-    )
-    == "command_timeout_ms_not_int"
+    == "removed_timeout_ms"
 }
 
 pub fn parses_optional_description_test() {
@@ -485,7 +557,7 @@ pub fn terminal_step_uses_dependency_sink_test() {
 pub fn accepts_string_workspace_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    workspace: main\n    run: gleam test\n",
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run_in: main\n    run: gleam test\n",
     )
   let assert [step] = dag.steps
   assert step.workspace == workflow_dag.WorkspaceRef(name: "main", from: None)
@@ -494,7 +566,7 @@ pub fn accepts_string_workspace_test() {
 pub fn accepts_derived_workspace_from_transitive_dependency_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement.md\n    workspace: main\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: review.md\n    workspace:\n      name: code-review\n      from: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement.md\n    run_in: main\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: review.md\n    run_in:\n      name: code-review\n      from: main\n",
     )
   let assert [_, review] = dag.steps
   assert review.workspace
@@ -504,7 +576,7 @@ pub fn accepts_derived_workspace_from_transitive_dependency_test() {
 pub fn rejects_derived_workspace_without_transitive_source_test() {
   let code =
     error_code(
-      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement.md\n    workspace: main\n  - id: code_review\n    kind: agent\n    prompt: review.md\n    workspace:\n      name: code-review\n      from: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement.md\n    run_in: main\n  - id: code_review\n    kind: agent\n    prompt: review.md\n    run_in:\n      name: code-review\n      from: main\n",
     )
   assert code == "invalid_workspace_from"
 }
@@ -515,24 +587,24 @@ pub fn rejects_invalid_identifiers_test() {
     )
     == "invalid_step_id"
   assert error_code(
-      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace: \"\"\n    prompt: a.md\n",
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    run_in: \"\"\n    prompt: a.md\n",
     )
     == "invalid_workspace_name"
   assert error_code(
-      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace: ../main\n    prompt: a.md\n",
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    run_in: ../main\n    prompt: a.md\n",
     )
     == "invalid_workspace_name"
   assert error_code(
-      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace: dir/main\n    prompt: a.md\n",
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    run_in: dir/main\n    prompt: a.md\n",
     )
     == "invalid_workspace_name"
 }
 
 pub fn rejects_zero_parallelism_test() {
   assert error_code(
-      "version: 1\nid: research\nmax_parallel_steps: 0\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+      "version: 1\nid: research\nconcurrency: 0\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
-    == "invalid_max_parallel_steps"
+    == "invalid_concurrency"
 }
 
 pub fn defaults_depends_on_and_on_failure_test() {
