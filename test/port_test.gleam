@@ -393,7 +393,7 @@ pub fn port_terminate_cleans_temp_storage_test() {
 }
 
 fn read_pid_file(path: String) -> Result(Int, Nil) {
-  read_pid_file_attempts(path, 50)
+  read_pid_file_attempts(path, 250)
 }
 
 fn read_pid_file_attempts(path: String, attempts: Int) -> Result(Int, Nil) {

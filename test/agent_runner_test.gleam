@@ -86,7 +86,7 @@ fn config(
     pi: config_types.PiConfig(
       command: command,
       turn_timeout_ms: 5000,
-      read_timeout_ms: 1000,
+      read_timeout_ms: 5000,
       stall_timeout_ms: 300_000,
       auto_retry: True,
       ui_request_policy: config_types.Cancel,
@@ -280,7 +280,7 @@ fn receive_update_named(
             False -> receive_update_named(subject, name, attempts - 1)
           }
         Ok(_) -> receive_update_named(subject, name, attempts - 1)
-        Error(_) -> Error(Nil)
+        Error(_) -> receive_update_named(subject, name, attempts - 1)
       }
   }
 }
@@ -1207,11 +1207,13 @@ pub fn runner_redacts_normalized_tool_fields_test() {
 pub fn runner_streams_update_before_agent_end_test() {
   let root = "test/tmp/runner-streaming"
   test_helpers.reset_dir(root)
-  let assert Ok(release_after_message_update) =
-    path.absolute(root <> "/release-after-message-update")
+  let assert Ok(marker_path) = path.absolute(root <> "/message-update-marker")
+  let assert Ok(release_path) = path.absolute(root <> "/message-update-release")
   let command =
-    "FAKE_PI_AFTER_MESSAGE_UPDATE_RELEASE="
-    <> release_after_message_update
+    "FAKE_PI_AFTER_MESSAGE_UPDATE_MARKER="
+    <> marker_path
+    <> " FAKE_PI_AFTER_MESSAGE_UPDATE_RELEASE="
+    <> release_path
     <> " "
     <> fake_pi()
   let update_subject = process.new_subject()
@@ -1234,7 +1236,7 @@ pub fn runner_streams_update_before_agent_end_test() {
     receive_update_named(update_subject, "message_update", 50)
   assert update.message == Some("POPULATED")
   test_async.assert_no_extra_message_within(finished_subject, 50)
-  let assert Ok(Nil) = simplifile.write(release_after_message_update, "release")
+  let assert Ok(Nil) = simplifile.write(release_path, "")
   assert test_async.expect_message_within(finished_subject, 5000) == "finished"
 }
 

@@ -607,6 +607,30 @@ fn adapter_with_scheduled_reporter(
   )
 }
 
+fn adapter_with_park_report_subject(
+  client: tracker.Client,
+  subject: process.Subject(#(String, String, Option(String))),
+) -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    ..legacy_adapter(client),
+    handoff: Some(
+      adapter.HandoffCapability(report: fn(event) {
+        case event {
+          adapter.HandoffPark(report) -> {
+            process.send(subject, #(
+              report.task.remote_id,
+              report.reason,
+              report.run_id,
+            ))
+            Ok(Nil)
+          }
+          _ -> Ok(Nil)
+        }
+      }),
+    ),
+  )
+}
+
 fn publish_scheduled_failure_for_test(
   reporter: scheduled_failure_reporter.Client,
   publication: adapter.ScheduledFailurePublication,
@@ -3468,6 +3492,144 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
   assert wait_for_event(log_subject, "worker_exited", 20)
   process.send(started.data, daemon.RetryTick("retry-id", 1))
   assert wait_for_event(log_subject, "retry_timer_stale", 10)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_startup_recovers_interrupted_run_retry_generation_test() {
+  let dir = "test/tmp/daemon-startup-interrupted-retry"
+  let workflow_path = write_workflow(dir, 1)
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let candidate = issue("retry-id", "ABC-RETRY", "Todo")
+  let workspace_root = bundle.effective.workspace.root
+  append_test_ledger_bodies(workspace_root, [
+    record.RunStarted(
+      run_id: "run-1",
+      issue_id: candidate.id,
+      issue_identifier: candidate.identifier,
+      workspace_path: workspace_root <> "/ABC-RETRY",
+    ),
+  ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(ids) {
+        Ok(list.filter([candidate], fn(issue) { list.contains(ids, issue.id) }))
+      },
+    )
+  let log_subject = process.new_subject()
+  let deps = base_dependencies(client, log_subject)
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_event(log_subject, "recovered_retry_scheduled", 20)
+  process.send(started.data, daemon.RetryTick("retry-id", 99))
+  assert wait_for_event(log_subject, "retry_timer_stale", 10)
+
+  process.send(started.data, daemon.RetryTick("retry-id", 1))
+  assert wait_for_event(log_subject, "worker_exited", 20)
+  process.send(started.data, daemon.RetryTick("retry-id", 1))
+  assert wait_for_event(log_subject, "retry_timer_stale", 10)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_startup_cleanup_workspace_for_terminal_interrupted_run_test() {
+  let dir = "test/tmp/daemon-startup-cleanup"
+  let workflow_path = write_workflow(dir, 1)
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let candidate = issue("cleanup-id", "ABC-CLEAN", "Done")
+  let workspace_root = bundle.effective.workspace.root
+  let workspace_path = workspace_root <> "/ABC-CLEAN"
+  append_test_ledger_bodies(workspace_root, [
+    record.RunStarted(
+      run_id: "run-1",
+      issue_id: candidate.id,
+      issue_identifier: candidate.identifier,
+      workspace_path: workspace_path,
+    ),
+  ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(ids) {
+        Ok(list.filter([candidate], fn(issue) { list.contains(ids, issue.id) }))
+      },
+    )
+  let log_subject = process.new_subject()
+  let cleanup_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      cleanup: fn(_, workspace_path, _) {
+        process.send(cleanup_subject, workspace_path)
+        Ok(Nil)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_event(log_subject, "recovered_workspace_cleanup", 20)
+  assert process.receive(cleanup_subject, within: 1000) == Ok(workspace_path)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_startup_identity_mismatch_parks_without_resuming_test() {
+  let dir = "test/tmp/daemon-startup-identity-mismatch"
+  let workflow_path = write_workflow(dir, 1)
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let original_issue = issue("issue-park", "ABC-PARK", "Todo")
+  let changed_issue =
+    tracker_issue.Issue(..original_issue, title: "Changed title ABC-PARK")
+  let workspace_root = bundle.effective.workspace.root
+  let run_root = workspace_root <> "/implementation/ABC-PARK/run-1"
+  let assert Ok(#(_, dag)) =
+    runtime_bundle.select_workflow(bundle, original_issue)
+  let assert Ok(fingerprint) =
+    workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
+  append_test_ledger_bodies(workspace_root, [
+    record.WorkflowRunStarted(
+      "run-1",
+      "implementation",
+      fingerprint,
+      original_issue.id,
+      original_issue.identifier,
+      core.issue_fingerprint(original_issue),
+      0,
+      run_root,
+    ),
+  ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(ids) {
+        Ok(
+          list.filter([changed_issue], fn(issue) {
+            list.contains(ids, issue.id)
+          }),
+        )
+      },
+    )
+  let log_subject = process.new_subject()
+  let park_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter_with_park_report_subject(client, park_subject)
+      },
+      logger: fn(_, _, _, _) { Ok(Nil) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(#(issue_id, reason, Some(run_id))) =
+    process.receive(park_subject, within: 1000)
+  assert issue_id == "issue-park"
+  assert string.starts_with(reason, "issue_content_drift:")
+  assert run_id == "run-1"
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  let identity = orchestrator_state.issue_identity(changed_issue)
+  assert dict.has_key(snapshot.parked, identity)
+  assert !dict.has_key(snapshot.running, identity)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 

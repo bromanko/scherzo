@@ -27,8 +27,9 @@ import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/retry_scheduler
-import scherzo/orchestrator/schedule_core.{next_due_after_persisted_due}
+import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
+import scherzo/orchestrator/startup_recovery
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
@@ -118,20 +119,6 @@ pub type ControlServerHandle {
 
 type ControlPlane {
   ControlPlane(handle: ControlServerHandle, control_file_path: Option(String))
-}
-
-type StartupRecovery {
-  StartupRecovery(
-    runtime: orchestrator_state.RuntimeState,
-    retry_timers: List(recovery.RecoveredRetry),
-    cleanup_workspaces: List(recovery.CleanupRequest),
-    outbox_to_replay: List(recovery.OutboxReplay),
-    park_reports: List(adapter.ParkReport),
-    recovery_by_issue: Dict(String, session_event.RecoveryInfo),
-    warnings: List(String),
-    workflow_resumptions: List(recovery.RecoveredWorkflowRun),
-    scheduled_statuses: List(projection.ScheduledJobStatus),
-  )
 }
 
 pub type RuntimeDependencies {
@@ -505,12 +492,18 @@ pub fn start(
   ))
   let tracker_client = adapter_legacy.workflow_compat_client(tracker_adapter)
   let secrets = config.resolved_secrets(effective)
-  use startup_recovery <- try_startup(load_startup_recovery(
-    bundle,
-    tracker_adapter,
-    dependencies,
-    secrets,
-  ))
+  use startup_recovery <- try_startup(
+    startup_recovery.load(
+      bundle,
+      tracker_adapter,
+      startup_recovery.Dependencies(
+        logger: dependencies.logger,
+        now_ms: dependencies.now_ms,
+      ),
+      secrets,
+    )
+    |> map_startup_recovery_error,
+  )
   let runtime = startup_recovery.runtime
   use event_hub <- try_startup(dependencies.start_event_hub() |> map_hub_error)
   let builder =
@@ -589,13 +582,7 @@ pub fn start(
                           workflow: workflow,
                           tracker_client: tracker_client,
                           tracker_adapter: tracker_adapter,
-                          scheduled_runtime: scheduled_runtime.from_next_due(
-                            dict.to_list(initial_scheduled_next_due(
-                              workflow.bundle,
-                              dependencies.now_ms(),
-                              startup_recovery.scheduled_statuses,
-                            )),
-                          ),
+                          scheduled_runtime: startup_recovery.scheduled.runtime,
                           scheduled_retry_timers: dict.new(),
                           scheduled_report_retry_timers: dict.new(),
                           runtime: runtime,
@@ -620,8 +607,8 @@ pub fn start(
                           dependencies: dependencies,
                         )
                         |> apply_startup_recovery(startup_recovery)
-                        |> recover_scheduled_runtime_state(
-                          startup_recovery.scheduled_statuses,
+                        |> apply_scheduled_startup_recovery(
+                          startup_recovery.scheduled,
                         )
                         |> spawn_recovered_workflow_resumptions(
                           startup_recovery.workflow_resumptions,
@@ -683,122 +670,6 @@ pub fn get_snapshot(
   process.receive(reply, within: timeout_ms)
 }
 
-fn load_startup_recovery(
-  bundle: runtime_bundle.RuntimeBundle,
-  tracker_adapter: adapter.TrackerAdapter,
-  dependencies: RuntimeDependencies,
-  secrets: List(String),
-) -> Result(StartupRecovery, StartupError) {
-  let effective = bundle.effective
-  use ledger_path <- try_startup(
-    ledger.path_for_workspace_root(effective.workspace.root)
-    |> map_ledger_error("ledger_path_failed"),
-  )
-  use replayed <- try_startup(
-    ledger.replay(ledger_path)
-    |> map_ledger_error("ledger_replay_failed"),
-  )
-  case replayed.truncated_tail {
-    True ->
-      emit_runtime_log(
-        dependencies,
-        "warn",
-        "ledger_truncated_tail_ignored",
-        [],
-        secrets,
-      )
-    False -> Nil
-  }
-  use refreshed_issues <- try_startup(fetch_recovery_task_states(
-    tracker_adapter,
-    recovery.known_task_refs(replayed.projection),
-  ))
-  use recovery_plan <- try_startup(
-    recovery.plan(
-      replayed.projection,
-      effective,
-      refreshed_issues,
-      dependencies.now_ms(),
-    )
-    |> map_recovery_error,
-  )
-  let workflow_candidates = recovery.workflow_candidates(replayed.projection)
-  let observations =
-    workflow_recovery_observations(
-      bundle,
-      workflow_candidates,
-      refreshed_issues,
-    )
-  use workflow_finalization <- try_startup(
-    recovery.finalize_workflow_candidates_with_config(
-      replayed.projection,
-      workflow_candidates,
-      observations,
-      artifact_store.new(effective.workspace.root),
-      dependencies.now_ms(),
-      effective,
-    )
-    |> map_recovery_error,
-  )
-  let records_to_append =
-    list.append(
-      recovery_plan.records_to_append,
-      workflow_finalization.records_to_append,
-    )
-  use Nil <- try_startup(
-    ledger.append_many(ledger_path, records_to_append, True)
-    |> map_ledger_error("ledger_recovery_append_failed"),
-  )
-  Ok(StartupRecovery(
-    runtime: recovery_plan.runtime,
-    retry_timers: recovery_plan.retry_timers,
-    cleanup_workspaces: recovery_plan.cleanup_workspaces,
-    outbox_to_replay: recovery_plan.outbox_to_replay,
-    park_reports: startup_park_reports(records_to_append),
-    recovery_by_issue: startup_recovery_by_issue(
-      replayed.projection,
-      recovery_plan,
-    ),
-    warnings: list.append(
-      recovery_plan.warnings,
-      workflow_finalization.warnings,
-    ),
-    workflow_resumptions: workflow_finalization.resumptions,
-    scheduled_statuses: projection.scheduled_statuses(replayed.projection),
-  ))
-}
-
-fn initial_scheduled_next_due(
-  bundle: runtime_bundle.RuntimeBundle,
-  now_ms: Int,
-  scheduled_statuses: List(projection.ScheduledJobStatus),
-) -> Dict(String, Int) {
-  bundle.orchestrator.scheduled_jobs
-  |> list.filter(fn(job) { job.enabled })
-  |> list.fold(dict.new(), fn(acc, job) {
-    let next_due = case scheduled_status_for(scheduled_statuses, job.id) {
-      Some(status) ->
-        case status.last_due_at_ms {
-          Some(due_at_ms) ->
-            next_due_after_persisted_due(due_at_ms, now_ms, job.every_ms)
-          None -> schedule_core.initial_next_due(now_ms, job.every_ms)
-        }
-      None -> schedule_core.initial_next_due(now_ms, job.every_ms)
-    }
-    dict.insert(acc, job.id, next_due)
-  })
-}
-
-fn scheduled_status_for(
-  statuses: List(projection.ScheduledJobStatus),
-  job_id: String,
-) -> Option(projection.ScheduledJobStatus) {
-  case list.find(statuses, fn(status) { status.job_id == job_id }) {
-    Ok(status) -> Some(status)
-    Error(Nil) -> None
-  }
-}
-
 fn scheduled_projection_for_root(
   workspace_root: String,
 ) -> Result(projection.Projection, ledger.LedgerError) {
@@ -806,66 +677,34 @@ fn scheduled_projection_for_root(
   ledger.load_projection(ledger_path)
 }
 
-fn recover_scheduled_runtime_state(
+fn apply_scheduled_startup_recovery(
   state: State,
-  scheduled_statuses: List(projection.ScheduledJobStatus),
+  scheduled: startup_recovery.ScheduledRecovery,
 ) -> State {
-  scheduled_statuses
-  |> list.fold(state, fn(state, status) {
-    recover_scheduled_status(state, status)
+  list.fold(scheduled.effects, state, fn(state, effect) {
+    apply_scheduled_startup_effect(state, effect)
   })
 }
 
-fn recover_scheduled_status(
+fn apply_scheduled_startup_effect(
   state: State,
-  status: projection.ScheduledJobStatus,
+  effect: startup_recovery.ScheduledRecoveryEffect,
 ) -> State {
-  case scheduled_job_by_id(state, status.job_id), status.current_run {
-    Ok(job), Some(run) ->
-      case job.enabled {
-        False -> recover_disabled_scheduled_run(state, status, run)
-        True -> recover_enabled_scheduled_run(state, job, status, run)
-      }
-    Error(Nil), Some(run) -> recover_disabled_scheduled_run(state, status, run)
-    _, None -> state
-  }
-}
-
-fn recover_enabled_scheduled_run(
-  state: State,
-  job: config_types.ScheduledJobConfig,
-  status: projection.ScheduledJobStatus,
-  run: projection.ScheduledRunSummary,
-) -> State {
-  case status.state {
-    projection.ScheduledDuePending
-    | projection.ScheduledPaused
-    | projection.ScheduledWaitingForGlobalSlot ->
-      State(
-        ..state,
-        scheduled_runtime: scheduled_runtime.insert_pending_start(
-          state.scheduled_runtime,
-          scheduled_runtime.PendingStart(
-            job_id: job.id,
-            workflow_id: job.workflow,
-            due_at_ms: run.due_at_ms,
-            run_id: run.run_id,
-            trigger: run.trigger,
-            requested_at_ms: state.dependencies.now_ms(),
-            attempt: normalized_scheduled_attempt(run.attempt),
-            blocking_reason: optional_string_or_default(run.reason, ""),
-          ),
-        ),
+  case effect {
+    startup_recovery.AppendLedger(record_bodies, failure_event) -> {
+      append_ledger_bodies_best_effort(state, record_bodies, failure_event)
+      state
+    }
+    startup_recovery.ApplyScheduledRuntimeActions(actions, append_retry_record) ->
+      apply_scheduled_runtime_actions(
+        state,
+        actions,
+        append_retry_record: append_retry_record,
       )
-    projection.ScheduledActive ->
-      recover_interrupted_scheduled_run(state, job, run)
-    projection.ScheduledRetryWaiting ->
-      recover_scheduled_retry_waiting(state, job, run)
-    projection.ScheduledReportRetryWaiting ->
-      recover_scheduled_report_retry_waiting(state, job, status)
-    projection.ScheduledIdle
-    | projection.ScheduledTerminalSuccess
-    | projection.ScheduledTerminalFailure -> state
+    startup_recovery.ScheduleReportRetryTimer(run_id, generation, delay_ms) ->
+      schedule_scheduled_report_retry_timer(state, run_id, generation, delay_ms)
+    startup_recovery.BeginFailureReport(request) ->
+      begin_scheduled_failure_report_request(state, request)
   }
 }
 
@@ -886,185 +725,6 @@ fn optional_string_or_default(
   }
 }
 
-fn recover_scheduled_retry_waiting(
-  state: State,
-  job: config_types.ScheduledJobConfig,
-  run: projection.ScheduledRunSummary,
-) -> State {
-  let #(runtime, actions) =
-    scheduled_runtime.schedule_retry(
-      state.scheduled_runtime,
-      job.id,
-      job.workflow,
-      run.due_at_ms,
-      run.run_id,
-      0,
-      normalized_scheduled_attempt(run.attempt),
-      "recovered_retry_waiting",
-      0,
-    )
-  let state = State(..state, scheduled_runtime: runtime)
-  apply_scheduled_runtime_actions(state, actions, append_retry_record: False)
-}
-
-fn recover_scheduled_report_retry_waiting(
-  state: State,
-  job: config_types.ScheduledJobConfig,
-  status: projection.ScheduledJobStatus,
-) -> State {
-  case status.report_retry {
-    None -> state
-    Some(report_retry) -> {
-      let delay_ms = case
-        report_retry.next_retry_at_ms <= state.dependencies.now_ms()
-      {
-        True -> 0
-        False -> report_retry.next_retry_at_ms - state.dependencies.now_ms()
-      }
-      let runtime =
-        scheduled_runtime.insert_report_retry(
-          state.scheduled_runtime,
-          scheduled_runtime.ReportRetryStart(
-            job_id: job.id,
-            run_id: report_retry.run_id,
-            generation: report_retry.generation,
-          ),
-        )
-      let state = State(..state, scheduled_runtime: runtime)
-      schedule_scheduled_report_retry_timer(
-        state,
-        report_retry.run_id,
-        report_retry.generation,
-        delay_ms,
-      )
-    }
-  }
-}
-
-fn recover_disabled_scheduled_run(
-  state: State,
-  status: projection.ScheduledJobStatus,
-  run: projection.ScheduledRunSummary,
-) -> State {
-  case status.state {
-    projection.ScheduledDuePending
-    | projection.ScheduledPaused
-    | projection.ScheduledWaitingForGlobalSlot -> {
-      append_ledger_bodies_best_effort(
-        state,
-        [
-          record.ScheduledRunPendingCancelled(
-            status.job_id,
-            status.workflow_id,
-            run.due_at_ms,
-            run.run_id,
-            "job_disabled",
-            state.dependencies.now_ms(),
-          ),
-        ],
-        "scheduled_recovery_append_failed",
-      )
-      state
-    }
-    projection.ScheduledActive ->
-      recover_interrupted_scheduled_run_for_status(state, status, run)
-    projection.ScheduledRetryWaiting -> {
-      let _retry_cancel_appended =
-        append_ledger_bodies(
-          state,
-          [
-            record.ScheduledRunRetryCancelled(
-              status.job_id,
-              run.run_id,
-              0,
-              "job_disabled",
-            ),
-          ],
-          "scheduled_recovery_append_failed",
-        )
-      state
-    }
-    _ -> state
-  }
-}
-
-fn recover_interrupted_scheduled_run(
-  state: State,
-  job: config_types.ScheduledJobConfig,
-  run: projection.ScheduledRunSummary,
-) -> State {
-  let attempt = normalized_scheduled_attempt(run.attempt)
-  let #(runtime, follow_up) =
-    scheduled_runtime.worker_failure_follow_up(
-      state.scheduled_runtime,
-      job.id,
-      job.workflow,
-      run.due_at_ms,
-      run.run_id,
-      attempt,
-      "daemon_restart",
-      run.run_root,
-      run.session_id,
-      state.workflow.effective.agent.max_retry_attempts,
-      state.workflow.effective.agent.max_retry_backoff_ms,
-    )
-  let retry_exhausted = case follow_up {
-    scheduled_runtime.WorkerFailureReport(_) -> True
-    scheduled_runtime.WorkerFailureRetry(_) -> False
-  }
-  let state = State(..state, scheduled_runtime: runtime)
-  let _interrupted_failure_appended =
-    append_ledger_bodies(
-      state,
-      [
-        record.ScheduledRunFailed(
-          job.id,
-          job.workflow,
-          run.due_at_ms,
-          run.run_id,
-          attempt,
-          state.dependencies.now_ms(),
-          "daemon_restart",
-          retry_exhausted,
-          run.run_root,
-        ),
-      ],
-      "scheduled_recovery_append_failed",
-    )
-  case follow_up {
-    scheduled_runtime.WorkerFailureReport(request) ->
-      begin_scheduled_failure_report_request(state, request)
-    scheduled_runtime.WorkerFailureRetry(actions) ->
-      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
-  }
-}
-
-fn recover_interrupted_scheduled_run_for_status(
-  state: State,
-  status: projection.ScheduledJobStatus,
-  run: projection.ScheduledRunSummary,
-) -> State {
-  let _disabled_interrupted_failure_appended =
-    append_ledger_bodies(
-      state,
-      [
-        record.ScheduledRunFailed(
-          status.job_id,
-          status.workflow_id,
-          run.due_at_ms,
-          run.run_id,
-          normalized_scheduled_attempt(run.attempt),
-          state.dependencies.now_ms(),
-          "daemon_restart",
-          True,
-          run.run_root,
-        ),
-      ],
-      "scheduled_recovery_append_failed",
-    )
-  state
-}
-
 fn scheduled_job_by_id(
   state: State,
   job_id: String,
@@ -1073,330 +733,9 @@ fn scheduled_job_by_id(
   |> list.find(fn(job) { job.id == job_id })
 }
 
-fn startup_park_reports(
-  records: List(record.LedgerRecord),
-) -> List(adapter.ParkReport) {
-  let run_ids = startup_park_report_run_ids(records)
-  startup_park_reports_loop(records, run_ids, [], [])
-}
-
-fn startup_park_reports_loop(
-  records: List(record.LedgerRecord),
-  run_ids: Dict(String, String),
-  seen_issue_ids: List(String),
-  reports: List(adapter.ParkReport),
-) -> List(adapter.ParkReport) {
-  case records {
-    [] -> list.reverse(reports)
-    [ledger_record, ..rest] ->
-      case ledger_record.body {
-        record.IssueParked(issue_id, issue_identifier, reason_text, _) ->
-          add_startup_park_report(
-            rest,
-            run_ids,
-            seen_issue_ids,
-            reports,
-            issue_id,
-            issue_identifier,
-            reason_text,
-            None,
-          )
-        record.IssueParkedV2(
-          issue_id,
-          issue_identifier,
-          reason_text,
-          release_policy,
-          _,
-          _,
-        ) ->
-          add_startup_park_report(
-            rest,
-            run_ids,
-            seen_issue_ids,
-            reports,
-            issue_id,
-            issue_identifier,
-            reason_text,
-            Some(release_policy),
-          )
-        _ -> startup_park_reports_loop(rest, run_ids, seen_issue_ids, reports)
-      }
-  }
-}
-
-fn add_startup_park_report(
-  rest: List(record.LedgerRecord),
-  run_ids: Dict(String, String),
-  seen_issue_ids: List(String),
-  reports: List(adapter.ParkReport),
-  issue_id: String,
-  issue_identifier: String,
-  reason_text: String,
-  release_policy: Option(String),
-) -> List(adapter.ParkReport) {
-  case list.contains(seen_issue_ids, issue_id) {
-    True -> startup_park_reports_loop(rest, run_ids, seen_issue_ids, reports)
-    False ->
-      startup_park_reports_loop(rest, run_ids, [issue_id, ..seen_issue_ids], [
-        adapter.ParkReport(
-          task: task.TaskRef(
-            backend_kind: "linear",
-            remote_id: issue_id,
-            key: Some(issue_identifier),
-            url: None,
-          ),
-          issue_identifier: issue_identifier,
-          reason: reason_text,
-          release_policy: release_policy,
-          run_id: optional_run_id(run_ids, issue_id),
-        ),
-        ..reports
-      ])
-  }
-}
-
-fn startup_park_report_run_ids(
-  records: List(record.LedgerRecord),
-) -> Dict(String, String) {
-  list.fold(records, dict.new(), fn(run_ids, ledger_record) {
-    case ledger_record.body {
-      record.RunInterrupted(run_id, issue_id, _) ->
-        insert_run_id_if_missing(run_ids, issue_id, run_id)
-      record.WorkflowRunInterrupted(run_id, _, issue_id, _) ->
-        insert_run_id_if_missing(run_ids, issue_id, run_id)
-      record.IssueCounterUpdated(issue_id, _, _, _, _, Some(run_id)) ->
-        insert_run_id_if_missing(run_ids, issue_id, run_id)
-      _ -> run_ids
-    }
-  })
-}
-
-fn insert_run_id_if_missing(
-  run_ids: Dict(String, String),
-  issue_id: String,
-  run_id: String,
-) -> Dict(String, String) {
-  case string.trim(run_id) == "" || dict.has_key(run_ids, issue_id) {
-    True -> run_ids
-    False -> dict.insert(run_ids, issue_id, run_id)
-  }
-}
-
-fn optional_run_id(
-  run_ids: Dict(String, String),
-  issue_id: String,
-) -> Option(String) {
-  case dict.get(run_ids, issue_id) {
-    Ok(run_id) -> Some(run_id)
-    Error(Nil) -> None
-  }
-}
-
-fn workflow_recovery_observations(
-  bundle: runtime_bundle.RuntimeBundle,
-  candidates: List(recovery.WorkflowRecoveryCandidate),
-  refreshed_issues: List(tracker_issue.Issue),
-) -> Dict(String, recovery.CurrentWorkflowObservation) {
-  let issue_by_id =
-    refreshed_issues
-    |> list.map(fn(issue) { #(issue.id, issue) })
-    |> dict.from_list
-  candidates
-  |> list.map(fn(candidate) {
-    let observation = case dict.get(issue_by_id, candidate.issue_id) {
-      Error(Nil) -> recovery.IssueUnavailable
-      Ok(issue) -> current_workflow_observation(bundle, issue)
-    }
-    #(candidate.run_id, observation)
-  })
-  |> dict.from_list
-}
-
-fn current_workflow_observation(
-  bundle: runtime_bundle.RuntimeBundle,
-  issue: tracker_issue.Issue,
-) -> recovery.CurrentWorkflowObservation {
-  case runtime_bundle.select_workflow(bundle, issue) {
-    Error(runtime_bundle.BundleError(code, message)) ->
-      recovery.WorkflowUnavailable(code <> ":" <> message)
-    Ok(#(_, dag)) ->
-      case
-        workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
-      {
-        Error(err) ->
-          recovery.WorkflowUnavailable(
-            "workflow_fingerprint_failed:" <> fingerprint_error_message(err),
-          )
-        Ok(fingerprint) ->
-          recovery.CurrentWorkflow(
-            issue,
-            dag.id,
-            fingerprint,
-            core.issue_fingerprint(issue),
-            dag,
-            bundle.effective.workspace.root,
-          )
-      }
-  }
-}
-
-fn fingerprint_error_message(
-  err: workflow_fingerprint.FingerprintError,
-) -> String {
-  case err {
-    workflow_fingerprint.PromptFileReadFailed(path) ->
-      "prompt_file_read_failed:" <> path
-    workflow_fingerprint.UnsupportedWorkflowShape(reason) ->
-      "unsupported_workflow_shape:" <> reason
-    workflow_fingerprint.WorkspaceProfileUnavailable(profile_name) ->
-      "workspace_profile_unavailable:" <> profile_name
-  }
-}
-
-fn fetch_recovery_task_states(
-  tracker_adapter: adapter.TrackerAdapter,
-  task_refs: List(record.TaskRefFields),
-) -> Result(List(tracker_issue.Issue), StartupError) {
-  let refs =
-    task_refs
-    |> list.filter(fn(ref) { ref.task_backend_kind == tracker_adapter.kind })
-    |> list.map(record_task_ref_to_task_ref)
-  fetch_recovery_task_chunks(tracker_adapter, chunk_task_refs(refs, 50), [])
-}
-
-fn fetch_recovery_task_chunks(
-  tracker_adapter: adapter.TrackerAdapter,
-  chunks: List(List(task.TaskRef)),
-  acc: List(tracker_issue.Issue),
-) -> Result(List(tracker_issue.Issue), StartupError) {
-  case chunks {
-    [] -> Ok(list.reverse(acc))
-    [chunk, ..rest] ->
-      case
-        adapter_legacy.refresh_runtime_issues_by_refs(tracker_adapter, chunk)
-      {
-        Ok(issues) ->
-          fetch_recovery_task_chunks(
-            tracker_adapter,
-            rest,
-            list.append(list.reverse(issues), acc),
-          )
-        Error(err) ->
-          Error(StartupError(
-            "recovery_issue_fetch_failed",
-            adapter_legacy.adapter_error_message(err),
-          ))
-      }
-  }
-}
-
-fn record_task_ref_to_task_ref(ref: record.TaskRefFields) -> task.TaskRef {
-  task.TaskRef(
-    backend_kind: ref.task_backend_kind,
-    remote_id: ref.task_remote_id,
-    key: ref.task_key,
-    url: ref.task_url,
-  )
-}
-
-fn chunk_task_refs(
-  values: List(task.TaskRef),
-  size: Int,
-) -> List(List(task.TaskRef)) {
-  case values {
-    [] -> []
-    values -> {
-      let chunk = list.take(values, size)
-      let rest = list.drop(values, size)
-      [chunk, ..chunk_task_refs(rest, size)]
-    }
-  }
-}
-
-fn startup_recovery_by_issue(
-  projection: projection.Projection,
-  recovery_plan: recovery.RecoveryPlan,
-) -> Dict(String, session_event.RecoveryInfo) {
-  dict.new()
-  |> insert_interrupted_recovery(projection)
-  |> insert_recovered_retry_recovery(recovery_plan.retry_timers)
-  |> insert_parked_recovery(projection)
-  |> insert_cleanup_recovery(recovery_plan.cleanup_workspaces)
-}
-
-fn insert_interrupted_recovery(
-  acc: Dict(String, session_event.RecoveryInfo),
-  projection: projection.Projection,
-) -> Dict(String, session_event.RecoveryInfo) {
-  projection.runs
-  |> dict.to_list
-  |> list.fold(acc, fn(acc, entry) {
-    let #(run_id, status) = entry
-    case session_recovery.interrupted_run(run_id, status, None) {
-      Some(info) -> dict.insert(acc, issue_id_for_run_status(status), info)
-      None -> acc
-    }
-  })
-}
-
-fn insert_recovered_retry_recovery(
-  acc: Dict(String, session_event.RecoveryInfo),
-  retries: List(recovery.RecoveredRetry),
-) -> Dict(String, session_event.RecoveryInfo) {
-  list.fold(retries, acc, fn(acc, retry) {
-    let recovery.RecoveredRetry(issue_id, _, _, _, reason) = retry
-    insert_if_missing(
-      acc,
-      issue_id,
-      session_recovery.recovered("recovery.recovered_retry", Some(reason)),
-    )
-  })
-}
-
-fn insert_parked_recovery(
-  acc: Dict(String, session_event.RecoveryInfo),
-  projection: projection.Projection,
-) -> Dict(String, session_event.RecoveryInfo) {
-  projection.parked_issues
-  |> dict.to_list
-  |> list.fold(acc, fn(acc, entry) {
-    let #(issue_id, parked) = entry
-    dict.insert(acc, issue_id, session_recovery.parked_issue(parked))
-  })
-}
-
-fn insert_cleanup_recovery(
-  acc: Dict(String, session_event.RecoveryInfo),
-  cleanups: List(recovery.CleanupRequest),
-) -> Dict(String, session_event.RecoveryInfo) {
-  list.fold(cleanups, acc, fn(acc, cleanup) {
-    let recovery.CleanupRequest(issue_id, _, _) = cleanup
-    dict.insert(acc, issue_id, session_recovery.cleanup_request(cleanup))
-  })
-}
-
-fn insert_if_missing(
-  acc: Dict(String, session_event.RecoveryInfo),
-  issue_id: String,
-  info: session_event.RecoveryInfo,
-) -> Dict(String, session_event.RecoveryInfo) {
-  case dict.has_key(acc, issue_id) {
-    True -> acc
-    False -> dict.insert(acc, issue_id, info)
-  }
-}
-
-fn issue_id_for_run_status(status: projection.RunStatus) -> String {
-  case status {
-    projection.RunRunning(issue_id, ..)
-    | projection.RunInterrupted(issue_id, ..)
-    | projection.RunFinished(issue_id, ..) -> issue_id
-  }
-}
-
 fn apply_startup_recovery(
   state: State,
-  startup_recovery: StartupRecovery,
+  startup_recovery: startup_recovery.StartupRecovery,
 ) -> State {
   run_transition_messages(state, [
     transition_types.StartupRecoveryApplied(
@@ -1597,7 +936,7 @@ fn run_recovered_workflow_worker(
         Error(err) ->
           Error(yaml_worker_failure(
             "workflow_recovery_invalid:workflow_fingerprint_failed:"
-              <> fingerprint_error_message(err),
+              <> startup_recovery.fingerprint_error_message(err),
             Some(recovered.run_root),
             recovered.issue,
           ))
@@ -1736,16 +1075,6 @@ fn recovered_workspaces_to_prepared(
   |> dict.from_list
 }
 
-fn map_ledger_error(
-  result: Result(a, ledger.LedgerError),
-  code: String,
-) -> Result(a, StartupError) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(StartupError(code, ledger_error_message(err)))
-  }
-}
-
 fn ledger_error_message(error: ledger.LedgerError) -> String {
   case error {
     ledger.Io(message) -> message
@@ -1757,16 +1086,13 @@ fn ledger_error_message(error: ledger.LedgerError) -> String {
   }
 }
 
-fn map_recovery_error(
-  result: Result(a, recovery.RecoveryError),
+fn map_startup_recovery_error(
+  result: Result(a, startup_recovery.StartupError),
 ) -> Result(a, StartupError) {
   case result {
     Ok(value) -> Ok(value)
-    Error(err) ->
-      Error(StartupError(
-        "startup_recovery_failed",
-        recovery.describe_error(err),
-      ))
+    Error(startup_recovery.StartupError(code, message)) ->
+      Error(StartupError(code, message))
   }
 }
 
@@ -2294,7 +1620,7 @@ fn retry_workflow_step_for_operator(
                     )
                     Ok(issue) -> {
                       let observation =
-                        current_workflow_observation(
+                        startup_recovery.current_workflow_observation(
                           state.workflow.bundle,
                           issue,
                         )
