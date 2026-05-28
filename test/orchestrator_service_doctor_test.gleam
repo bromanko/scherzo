@@ -66,7 +66,7 @@ fn write_config(dir: String, extra: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
+      "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
         <> driver_command
         <> "\n      timeout: 60s\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n"
         <> extra,
@@ -90,7 +90,7 @@ fn write_top_level_hooks_config(dir: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   config_path
 }
@@ -103,7 +103,7 @@ fn write_profile_hooks_config(dir: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/noop\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/noop\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        remove: |\n          rm -rf \"$SCHERZO_WORKSPACE_PATH\"\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -127,7 +127,7 @@ fn write_invalid_dispatch_config(
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n"
+      "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n"
         <> tracker_fields,
     )
   config_path

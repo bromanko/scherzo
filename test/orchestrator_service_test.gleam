@@ -65,6 +65,11 @@ fn issue(state: String) -> tracker_issue.Issue {
   )
 }
 
+fn required_env(name: String) -> String {
+  let assert Some(value) = path.env(name)
+  value
+}
+
 fn yaml_config(root: String, extra: String) -> String {
   yaml_config_with_max(root, 1, extra)
 }
@@ -76,7 +81,7 @@ fn yaml_config_with_max(
 ) -> String {
   let assert Ok(driver_command) =
     path.absolute("scripts/scherzo-workspace-noop")
-  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
+  "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
   <> root
   <> "\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
   <> driver_command
@@ -216,7 +221,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
 fn contract_config_text(root: String, active_state: String) -> String {
   let assert Ok(driver_command) =
     path.absolute("scripts/scherzo-workspace-noop")
-  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  states:\n    ready: ["
+  "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: ["
   <> active_state
   <> "]\n    active: ["
   <> active_state
@@ -383,7 +388,7 @@ pub fn linear_contract_check_success_logs_structured_summary_test() {
     fields: fields,
     secrets: secrets,
   )) = process.receive(log_subject, within: 1000)
-  assert secrets == ["test-key"]
+  assert secrets == [required_env("HOME")]
   assert field_value(fields, "project_slug") == Some("TEST")
   assert field_value(fields, "project_id") == Some("project-id")
   assert field_value(fields, "team_count") == Some("1")

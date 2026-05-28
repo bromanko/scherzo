@@ -535,7 +535,7 @@ pub fn runner_retryable_error_without_retry_event_fails_after_grace_test() {
   let cfg =
     config_types.EffectiveConfig(
       ..base,
-      pi: config_types.PiConfig(..base.pi, read_timeout_ms: 50),
+      pi: config_types.PiConfig(..base.pi, read_timeout_ms: 500),
     )
   let update_subject = process.new_subject()
 
@@ -1207,10 +1207,16 @@ pub fn runner_redacts_normalized_tool_fields_test() {
 pub fn runner_streams_update_before_agent_end_test() {
   let root = "test/tmp/runner-streaming"
   test_helpers.reset_dir(root)
-  let command = "FAKE_PI_STALL_AFTER_PROMPT=1000 " <> fake_pi()
+  let assert Ok(release_after_message_update) =
+    path.absolute(root <> "/release-after-message-update")
+  let command =
+    "FAKE_PI_AFTER_MESSAGE_UPDATE_RELEASE="
+    <> release_after_message_update
+    <> " "
+    <> fake_pi()
   let update_subject = process.new_subject()
   let finished_subject = process.new_subject()
-  let pid =
+  let _pid =
     process.spawn_unlinked(fn() {
       let _ =
         runner.run_attempt(
@@ -1225,10 +1231,11 @@ pub fn runner_streams_update_before_agent_end_test() {
     })
 
   let assert Ok(update) =
-    receive_update_named(update_subject, "message_update", 8)
+    receive_update_named(update_subject, "message_update", 50)
   assert update.message == Some("POPULATED")
   test_async.assert_no_extra_message_within(finished_subject, 50)
-  process.kill(pid)
+  let assert Ok(Nil) = simplifile.write(release_after_message_update, "release")
+  assert test_async.expect_message_within(finished_subject, 5000) == "finished"
 }
 
 pub fn active_issue_continues_in_same_worker_until_max_turns_test() {

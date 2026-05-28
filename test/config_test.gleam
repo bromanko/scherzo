@@ -479,7 +479,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   let assert Error(_) =
     config.resolve_with_env(
       definition(
-        "tracker:\n  kind: github\n  project_slug: TEST\nhooks:\n  before_run: test -d .git\n",
+        "tracker:\n  kind: github\n  linear:\n    project: TEST\nhooks:\n  before_run: test -d .git\n",
       ),
       "test/tmp/scherzo.yaml",
       env,
@@ -487,7 +487,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   let assert Error(_) =
     config.resolve_with_env(
       definition(
-        "tracker:\n  kind: linear\nhooks:\n  before_run: test -d .git\n",
+        "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\nhooks:\n  before_run: test -d .git\n",
       ),
       "test/tmp/scherzo.yaml",
       env,
@@ -496,7 +496,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   let assert Error(_) =
     config.resolve_with_env(
       definition(
-        "tracker:\n  kind: linear\n  endpoint: http://api.linear.test/graphql\n  project_slug: TEST\nhooks:\n  before_run: test -d .git\n",
+        "tracker:\n  linear:\n    endpoint: http://api.linear.test/graphql\n    project: TEST\nhooks:\n  before_run: test -d .git\n",
       ),
       "test/tmp/scherzo.yaml",
       env,
@@ -511,7 +511,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured.tracker.api_key == Some("linearkey")
 
   let env_project =
-    "tracker:\n  kind: linear\n  linear:\n    project: \"$LINEAR_PROJECT_SLUG\"\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: \"$LINEAR_PROJECT_SLUG\"\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured_env_project) =
     config.resolve_with_env(
       definition(env_project),
@@ -521,7 +521,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured_env_project.tracker.project_slug == Some("ENV-PROJECT")
 
   let explicit =
-    "tracker:\n  kind: linear\n  linear:\n    project: TEST\n  api_key: \"$OTHER_VAR\"\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  linear:\n    api_key_env: OTHER_VAR\n    project: TEST\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured_explicit) =
     config.resolve_with_env(definition(explicit), "test/tmp/scherzo.yaml", env)
   assert configured_explicit.tracker.api_key == Some("other-secret")
@@ -546,7 +546,7 @@ pub fn flat_linear_tracker_config_aliases_still_parse_test() {
 
 pub fn nested_linear_tracker_config_parses_test() {
   let front =
-    "tracker:\n  kind: linear\n  credentials:\n    api_key_env: LINEAR_API_KEY\n  linear:\n    endpoint: https://api.linear.app/graphql\n    project: example-project\n  states:\n    ready: [Todo]\n    active: [Todo, In Progress]\n    terminal: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    endpoint: https://api.linear.app/graphql\n    project: example-project\n  states:\n    ready: [Todo]\n    active: [Todo, In Progress]\n    terminal: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(report) =
     config.resolve_with_env_report(
       definition(front),
@@ -1692,7 +1692,7 @@ pub fn reload_state_preserves_last_good_and_blocks_dispatch_test() {
   assert secrets == ["linearkey"]
   let assert Some(_) = loaded.last_known_good
 
-  let bad = definition("tracker:\n  kind: linear\n")
+  let bad = definition("tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n")
   let config.ReloadResult(state: invalid, resolved_secrets: bad_secrets) =
     config.apply_reload(loaded, bad, "test/tmp/scherzo.yaml", env)
   assert !config.can_dispatch(invalid)

@@ -222,13 +222,18 @@ pub fn fetch_candidate_issues_uses_canonical_dispatch_state_names_test() {
   let captured = process.new_subject()
   let assert Ok([document]) =
     yay.parse_string(
-      "tracker:\n  kind: linear\n  api_key: secret-key\n  project_slug: PROJ\n  states:\n    active: [Todo]\n    ready: [\" todo \"]\n",
+      "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: PROJ\n  states:\n    active: [Todo]\n    ready: [\" todo \"]\n",
     )
   let assert Ok(effective) =
     config.resolve_with_env(
       yay.document_root(document),
       "test/tmp/scherzo.yaml",
-      fn(_) { None },
+      fn(name) {
+        case name {
+          "LINEAR_API_KEY" -> Some("secret-key")
+          _ -> None
+        }
+      },
     )
   let transport = fn(request: linear.Request) {
     process.send(captured, request.body)
