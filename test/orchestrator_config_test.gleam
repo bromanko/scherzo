@@ -4,6 +4,7 @@ import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/linear_contract
 import scherzo/model_config
 import yay
 
@@ -486,34 +487,102 @@ pub fn orchestrator_config_validates_default_workflow_test() {
     )
 }
 
-pub fn orchestrator_config_derives_linear_contract_workflow_labels_test() {
+pub fn orchestrator_config_derives_linear_setup_workflow_labels_test() {
+  let source =
+    "version: 1\ntracker:\n  linear:\n    project: TEST\n    check_setup: true\nworkspace:\n  root: workspaces\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: implementation\nworkflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
-      root(base_config("linear_contract:\n  enabled: true\n")),
+      root(source),
       "test/tmp/config/scherzo.yaml",
       env,
     )
   let contract = orchestrator.effective.linear_contract
+  assert contract.enabled == True
   assert contract.workflow_label_prefix == "workflow:"
   assert contract.workflow_labels == ["implementation"]
+  assert contract.enforce_issue_workflow_labels == False
 }
 
-pub fn orchestrator_config_accepts_matching_linear_contract_labels_test() {
+pub fn orchestrator_config_reads_linear_support_labels_test() {
+  let source =
+    "version: 1\ntracker:\n  linear:\n    project: TEST\n    check_setup: true\n    labels:\n      support: [Needs-Workflow, needs-workflow, Needs-Clarification]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
-      root(base_config(
-        "linear_contract:\n  workflow_labels: [implementation]\n",
-      )),
+      root(source),
       "test/tmp/config/scherzo.yaml",
       env,
     )
-  assert orchestrator.effective.linear_contract.workflow_labels
-    == ["implementation"]
+  assert orchestrator.effective.linear_contract.support_labels
+    == ["needs-workflow", "needs-clarification"]
 }
 
-pub fn orchestrator_config_allows_scheduled_only_routes_outside_linear_contract_test() {
+pub fn orchestrator_config_derives_linear_setup_state_requirements_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n    scheduled-maintenance: workflows/scheduled-maintenance.yaml\nschedules:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\nlinear_contract:\n  workflow_labels: [implementation]\n"
+    "version: 1\ntracker:\n  linear:\n    project: TEST\n    check_setup: true\n  states:\n    ready: [Todo]\n    active: [Todo, In Progress]\n    terminal: [Done]\nworkspace:\n  root: workspaces\ntask_updates:\n  enabled: true\n  states:\n    claim: In Progress\n    success: In Review\n    failure: Triage\nworkflows:\n    implementation: workflows/implementation.yaml\n"
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  let diagnostics =
+    linear_contract.check(
+      orchestrator.effective,
+      linear_contract.RemoteBoard(
+        project_id: "project-id",
+        project_slug: "TEST",
+        project_name: "Project",
+        teams: [
+          linear_contract.RemoteTeam(
+            id: "team-eng",
+            key: "ENG",
+            name: "Engineering",
+            states: [
+              linear_contract.RemoteState(
+                id: "state-todo",
+                name: "Todo",
+                type_: "unstarted",
+              ),
+              linear_contract.RemoteState(
+                id: "state-progress",
+                name: "In Progress",
+                type_: "started",
+              ),
+              linear_contract.RemoteState(
+                id: "state-done",
+                name: "Done",
+                type_: "completed",
+              ),
+            ],
+            labels: [
+              linear_contract.RemoteLabel(
+                id: "label-implementation",
+                name: "workflow:implementation",
+              ),
+            ],
+          ),
+        ],
+        workspace_labels: [],
+      ),
+    )
+  assert diagnostics
+    == [
+      linear_contract.MissingState(
+        team_key: "ENG",
+        name: "In Review",
+        source: "task_updates.states.success",
+      ),
+      linear_contract.MissingState(
+        team_key: "ENG",
+        name: "Triage",
+        source: "task_updates.states.failure",
+      ),
+    ]
+}
+
+pub fn orchestrator_config_allows_scheduled_only_routes_outside_linear_setup_labels_test() {
+  let source =
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n    scheduled-maintenance: workflows/scheduled-maintenance.yaml\nschedules:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(source),
@@ -522,15 +591,6 @@ pub fn orchestrator_config_allows_scheduled_only_routes_outside_linear_contract_
     )
   assert orchestrator.effective.linear_contract.workflow_labels
     == ["implementation"]
-}
-
-pub fn orchestrator_config_rejects_disagreeing_linear_contract_labels_test() {
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_orchestrator_root(
-      root(base_config("linear_contract:\n  workflow_labels: [research]\n")),
-      "test/tmp/config/scherzo.yaml",
-      env,
-    )
 }
 
 pub fn orchestrator_config_rejects_escaping_routing_paths_test() {

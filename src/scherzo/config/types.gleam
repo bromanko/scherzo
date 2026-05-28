@@ -246,7 +246,11 @@ fn resolve_linear_contract_names(
     contract.workflow_labels
     |> normalize_label_list
     |> list.sort(by: string.compare)
-  case require_exactly_one_workflow_label, has_labels {
+  let should_derive_names =
+    require_exactly_one_workflow_label
+    || contract.enabled
+    || contract.enforce_issue_workflow_labels
+  case should_derive_names, has_labels {
     True, False ->
       Ok(
         LinearContractConfig(

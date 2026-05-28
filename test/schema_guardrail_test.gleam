@@ -248,21 +248,12 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
   assert effective.linear_contract.workflow_label_prefix == "workflow:"
   assert effective.linear_contract.workflow_labels == ["implementation"]
   assert effective.linear_contract.support_labels == ["needs-workflow"]
-  let assert Ok(todo_state) =
-    dict.get(effective.linear_contract.required_states, "todo")
-  assert todo_state == "Todo"
-  let assert Ok(done_state) =
-    dict.get(effective.linear_contract.required_states, "done")
-  assert done_state == "Done"
-  let assert Ok(claim_binding) =
-    dict.get(effective.linear_contract.handoff_state_bindings, "claim")
-  assert claim_binding == "todo"
-  let assert Ok(success_binding) =
-    dict.get(effective.linear_contract.handoff_state_bindings, "success")
-  assert success_binding == "done"
+  assert dict.to_list(effective.linear_contract.required_states) == []
+  assert dict.to_list(effective.linear_contract.handoff_state_bindings) == []
   assert effective.linear_contract.enforce_issue_workflow_labels == True
-  assert effective.linear_contract.invalid_workflow_state_id
-    == Some("state-invalid")
+  assert effective.linear_contract.invalid_workflow_state_id == Some("Triage")
+  assert effective.linear_contract.invalid_workflow_state_target
+    == Some(config_types.InvalidWorkflowStateName("Triage"))
   assert effective.linear_contract.comment_on_invalid_workflow == True
 
   assert effective.linear_commands == config.default_linear_command_config()
@@ -302,7 +293,7 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
 
   let assert [job] = orchestrator.scheduled_jobs
   assert job.id == "nightly-repair"
-  assert job.workflow == "implementation"
+  assert job.workflow == "nightly-repair"
   assert job.enabled == True
   assert job.every_ms == 900_000
   assert job.overlap == config_types.SkipOverlap

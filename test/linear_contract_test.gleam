@@ -300,7 +300,7 @@ pub fn reports_missing_required_label_for_project_team_test() {
       linear_contract.MissingLabel(
         team_key: "OPS",
         name: "workflow:research",
-        source: "linear_contract.workflow_labels",
+        source: "workflows",
       ),
     ]
 }
@@ -356,7 +356,7 @@ pub fn enforcement_requires_workflow_labels_without_support_labels_test() {
       linear_contract.MissingLabel(
         team_key: "ENG",
         name: "workflow:bugfix",
-        source: "linear_contract.workflow_labels",
+        source: "workflows",
       ),
     ]
 }
@@ -442,6 +442,68 @@ pub fn invalid_workflow_state_id_diagnostics_test() {
         actual_team_key: "ENG",
       ),
     ]
+}
+
+pub fn invalid_workflow_state_name_diagnostics_test() {
+  let contract =
+    config_types.LinearContractConfig(
+      ..contract_config(False),
+      invalid_workflow_state_id: Some("Triage"),
+      invalid_workflow_state_target: Some(config_types.InvalidWorkflowStateName(
+        " Triage ",
+      )),
+    )
+  let configured =
+    effective(
+      contract,
+      handoff_config(False, None, None, None),
+      ["Ready for Agent"],
+      ["Done"],
+    )
+
+  let matching_diagnostics =
+    linear_contract.check(
+      configured,
+      board(
+        [
+          team(
+            "ENG",
+            list.append(all_states(), [state("state-triage", "Triage")]),
+            [],
+          ),
+        ],
+        [],
+      ),
+    )
+  assert matching_diagnostics == []
+
+  let missing_diagnostics =
+    linear_contract.check(
+      configured,
+      board([team("ENG", all_states(), [])], []),
+    )
+  assert missing_diagnostics
+    == [linear_contract.MissingInvalidWorkflowStateId("Triage")]
+
+  let ambiguous_diagnostics =
+    linear_contract.check(
+      configured,
+      board(
+        [
+          team(
+            "ENG",
+            list.append(all_states(), [
+              state("state-triage-a", "Triage"),
+              state("state-triage-b", "Triage"),
+            ]),
+            [],
+          ),
+        ],
+        [],
+      ),
+    )
+  assert ambiguous_diagnostics
+    == [linear_contract.MissingInvalidWorkflowStateId("Triage")]
 }
 
 pub fn multi_team_invalid_workflow_state_fails_closed_test() {

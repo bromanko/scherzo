@@ -6,7 +6,6 @@ import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
-import scherzo/tracker/state as issue_state
 import yay
 
 const simplified_schema_doc = "docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md"
@@ -24,6 +23,7 @@ pub fn reject_removed_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
   use _ <- result.try(reject_removed_routing_keys(root))
   use _ <- result.try(reject_removed_polling_keys(root))
   use _ <- result.try(reject_removed_handoff_keys(root))
+  use _ <- result.try(reject_removed_linear_contract_keys(root))
   use _ <- result.try(reject_removed_scheduled_job_keys(root))
   use _ <- result.try(reject_removed_artifact_limit_keys(root))
   use _ <- result.try(reject_removed_agent_keys(root))
@@ -160,11 +160,7 @@ pub fn resolve_orchestrator_linear_contract(
       ))
     }),
   )
-  Ok(
-    contract
-    |> apply_task_routing_enforcement(root, routing)
-    |> derive_linear_contract_ready_state(effective.tracker),
-  )
+  Ok(contract |> apply_task_routing_enforcement(root, routing))
 }
 
 fn migration_hint(old_path: String, replacement: String) -> error.ConfigError {
@@ -418,6 +414,41 @@ fn reject_removed_handoff_result_tail(
   }
 }
 
+fn reject_removed_linear_contract_keys(
+  root: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(root, "linear_contract") {
+    None -> Ok(Nil)
+    Some(linear_contract) ->
+      reject_removed_child_key(
+        linear_contract,
+        "linear_contract",
+        linear_contract_migration_hints(),
+        "tracker.linear.check_setup with labels and states derived from workflows, tracker.states, and task_updates.states",
+      )
+  }
+}
+
+fn linear_contract_migration_hints() -> List(#(String, String)) {
+  [
+    #("enabled", "tracker.linear.check_setup"),
+    #("workflow_label_prefix", "task_routing.labels.prefix"),
+    #("workflow_labels", "top-level workflows"),
+    #("support_labels", "tracker.linear.labels.support"),
+    #("required_states", "tracker.states and task_updates.states"),
+    #("handoff_state_bindings", "task_updates.states"),
+    #(
+      "enforce_issue_workflow_labels",
+      "task_routing.labels.require_exactly_one",
+    ),
+    #(
+      "invalid_workflow_state_id",
+      "task_routing.labels.on_invalid.state using the Linear state name",
+    ),
+    #("comment_on_invalid_workflow", "task_routing.labels.on_invalid.comment"),
+  ]
+}
+
 fn reject_removed_agent_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
   case get_node(root, "agent") {
     None -> Ok(Nil)
@@ -655,28 +686,6 @@ fn apply_task_routing_enforcement(
         ..contract,
         enforce_issue_workflow_labels: routing.require_exactly_one_workflow_label,
       )
-  }
-}
-
-fn derive_linear_contract_ready_state(
-  contract: config_types.LinearContractConfig,
-  tracker: config_types.TrackerConfig,
-) -> config_types.LinearContractConfig {
-  case dict.has_key(contract.required_states, "ready") {
-    True -> contract
-    False ->
-      case tracker.dispatch_states {
-        [] -> contract
-        [ready, ..] ->
-          config_types.LinearContractConfig(
-            ..contract,
-            required_states: dict.insert(
-              contract.required_states,
-              "ready",
-              issue_state.to_string(ready),
-            ),
-          )
-      }
   }
 }
 

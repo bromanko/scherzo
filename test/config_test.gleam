@@ -1391,169 +1391,116 @@ pub fn linear_contract_defaults_test() {
   assert configured.linear_contract == defaults
 }
 
-pub fn linear_contract_parses_and_normalizes_test() {
+pub fn linear_setup_fields_parse_and_normalize_test() {
   let front =
-    minimal_front()
-    <> "linear_contract:\n  enabled: true\n  workflow_label_prefix: \" Workflow: \"\n  workflow_labels: [Bugfix, \" bugfix \", Research, \"\"]\n  support_labels: [Needs-Workflow, \" needs-workflow \", Needs-Clarification]\n  required_states:\n    Ready: \"Ready for Agent\"\n    in_progress: \" In Progress \"\n    done: Done\n  handoff_state_bindings:\n    claim: IN_PROGRESS\n    success: done\n  enforce_issue_workflow_labels: true\n  invalid_workflow_state_id: \" state-needs-workflow \"\n  comment_on_invalid_workflow: true\n"
+    "tracker:\n  linear:\n    project: TEST\n    check_setup: true\n    labels:\n      support: [Needs-Workflow, \" needs-workflow \", Needs-Clarification, \"\"]\nhooks:\n  before_run: test -d .git\ntask_routing:\n  labels:\n    on_invalid:\n      state: \" Triage \"\n      comment: true\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   let contract = configured.linear_contract
   assert contract.enabled == True
-  assert contract.workflow_label_prefix == "workflow:"
-  assert contract.workflow_labels == ["bugfix", "research"]
   assert contract.support_labels == ["needs-workflow", "needs-clarification"]
-  assert dict.get(contract.required_states, "ready") == Ok("Ready for Agent")
-  assert dict.get(contract.required_states, "in_progress") == Ok("In Progress")
-  assert dict.get(contract.handoff_state_bindings, "claim") == Ok("in_progress")
-  assert dict.get(contract.handoff_state_bindings, "success") == Ok("done")
-  assert contract.enforce_issue_workflow_labels == True
-  assert contract.invalid_workflow_state_id == Some("state-needs-workflow")
+  assert contract.invalid_workflow_state_id == Some("Triage")
   assert contract.invalid_workflow_state_target
-    == Some(config_types.InvalidWorkflowStateId("state-needs-workflow"))
+    == Some(config_types.InvalidWorkflowStateName("Triage"))
   assert contract.comment_on_invalid_workflow == True
 }
 
-pub fn linear_contract_optional_dispatch_policy_defaults_test() {
+pub fn linear_setup_optional_invalid_policy_defaults_test() {
   let front =
-    minimal_front()
-    <> "linear_contract:\n  workflow_labels: []\n  invalid_workflow_state_id: null\n"
+    "tracker:\n  linear:\n    project: TEST\n    check_setup: false\nhooks:\n  before_run: test -d .git\ntask_routing:\n  labels:\n    on_invalid:\n      state: null\n      comment: false\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
-  assert configured.linear_contract.enforce_issue_workflow_labels == False
-  assert configured.linear_contract.workflow_labels == []
+  assert configured.linear_contract.enabled == False
   assert configured.linear_contract.invalid_workflow_state_id == None
   assert configured.linear_contract.invalid_workflow_state_target == None
   assert configured.linear_contract.comment_on_invalid_workflow == False
-
-  let blank_state_id =
-    minimal_front()
-    <> "linear_contract:\n  invalid_workflow_state_id: \"   \"\n"
-  let assert Ok(configured_blank) =
-    config.resolve_with_env(
-      definition(blank_state_id),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
-  assert configured_blank.linear_contract.invalid_workflow_state_id == None
 }
 
-pub fn linear_contract_rejects_invalid_values_test() {
-  let empty_prefix =
-    minimal_front()
-    <> "linear_contract:\n  enabled: true\n  workflow_label_prefix: \"  \"\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(empty_prefix),
-      "test/tmp/scherzo.yaml",
-      env,
+pub fn old_linear_contract_keys_fail_with_migration_hint_test() {
+  let enabled =
+    invalid_config_message(
+      minimal_front() <> "linear_contract:\n  enabled: true\n",
     )
+  assert string.contains(enabled, "linear_contract.enabled")
+  assert string.contains(enabled, "tracker.linear.check_setup")
+  assert string.contains(enabled, "SCHERZO_YAML_SIMPLIFIED_V1")
 
-  let enforcement_without_labels =
-    minimal_front()
-    <> "linear_contract:\n  enforce_issue_workflow_labels: true\n  workflow_labels: []\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(enforcement_without_labels),
-      "test/tmp/scherzo.yaml",
-      env,
+  let workflow_labels =
+    invalid_config_message(
+      minimal_front() <> "linear_contract:\n  workflow_labels: [research]\n",
     )
+  assert string.contains(workflow_labels, "linear_contract.workflow_labels")
+  assert string.contains(workflow_labels, "top-level workflows")
 
-  let enforcement_empty_prefix =
-    minimal_front()
-    <> "linear_contract:\n  enforce_issue_workflow_labels: true\n  workflow_label_prefix: \"  \"\n  workflow_labels: [bugfix]\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(enforcement_empty_prefix),
-      "test/tmp/scherzo.yaml",
-      env,
+  let support_labels =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  support_labels: [needs-workflow]\n",
     )
+  assert string.contains(support_labels, "linear_contract.support_labels")
+  assert string.contains(support_labels, "tracker.linear.labels.support")
 
-  let invalid_bool =
-    minimal_front()
-    <> "linear_contract:\n  enforce_issue_workflow_labels: yes\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(invalid_bool),
-      "test/tmp/scherzo.yaml",
-      env,
+  let required_states =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  required_states:\n    done: Done\n",
     )
+  assert string.contains(required_states, "linear_contract.required_states")
+  assert string.contains(required_states, "tracker.states")
+  assert string.contains(required_states, "task_updates.states")
 
-  let unknown_binding_key =
-    minimal_front()
-    <> "linear_contract:\n  required_states:\n    done: Done\n  handoff_state_bindings:\n    surprise: done\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(unknown_binding_key),
-      "test/tmp/scherzo.yaml",
-      env,
+  let handoff_bindings =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  handoff_state_bindings:\n    success: done\n",
     )
+  assert string.contains(
+    handoff_bindings,
+    "linear_contract.handoff_state_bindings",
+  )
+  assert string.contains(handoff_bindings, "task_updates.states")
 
-  let missing_binding_target =
-    minimal_front()
-    <> "linear_contract:\n  required_states:\n    done: Done\n  handoff_state_bindings:\n    success: closed\n"
-  let assert Error(error.InvalidConfig(missing_binding_message)) =
-    config.resolve_with_env(
-      definition(missing_binding_target),
-      "test/tmp/scherzo.yaml",
-      env,
+  let enforce =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  enforce_issue_workflow_labels: true\n",
     )
-  assert missing_binding_message
-    == "linear_contract.handoff_state_bindings.success references unknown required state: closed"
+  assert string.contains(
+    enforce,
+    "linear_contract.enforce_issue_workflow_labels",
+  )
+  assert string.contains(enforce, "task_routing.labels.require_exactly_one")
 
-  let non_string_list_entry =
-    minimal_front() <> "linear_contract:\n  workflow_labels: [bugfix, 123]\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(non_string_list_entry),
-      "test/tmp/scherzo.yaml",
-      env,
+  let invalid_state =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  invalid_workflow_state_id: state-invalid\n",
     )
+  assert string.contains(
+    invalid_state,
+    "linear_contract.invalid_workflow_state_id",
+  )
+  assert string.contains(invalid_state, "task_routing.labels.on_invalid.state")
+  assert string.contains(invalid_state, "state name")
 
-  let non_string_map_key =
-    minimal_front() <> "linear_contract:\n  required_states:\n    123: Done\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(non_string_map_key),
-      "test/tmp/scherzo.yaml",
-      env,
+  let invalid_comment =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  comment_on_invalid_workflow: true\n",
     )
+  assert string.contains(
+    invalid_comment,
+    "linear_contract.comment_on_invalid_workflow",
+  )
+  assert string.contains(
+    invalid_comment,
+    "task_routing.labels.on_invalid.comment",
+  )
 
-  let non_string_map_value =
-    minimal_front() <> "linear_contract:\n  required_states:\n    ready: 123\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(non_string_map_value),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
-
-  let blank_map_key =
-    minimal_front()
-    <> "linear_contract:\n  required_states:\n    \"  \": Done\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(blank_map_key),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
-
-  let blank_map_value =
-    minimal_front()
-    <> "linear_contract:\n  required_states:\n    ready: \"  \"\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(blank_map_value),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
-
-  let non_map_section = minimal_front() <> "linear_contract: true\n"
-  let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(
-      definition(non_map_section),
-      "test/tmp/scherzo.yaml",
-      env,
-    )
+  let non_map =
+    invalid_config_message(minimal_front() <> "linear_contract: true\n")
+  assert string.contains(non_map, "linear_contract")
+  assert string.contains(non_map, "tracker.linear.check_setup")
 }
 
 pub fn schedules_parse_defaults_test() {

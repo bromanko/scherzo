@@ -1,10 +1,19 @@
-import gleam/option.{Some}
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/command_step
+import scherzo/runtime_bundle
 import scherzo/step_artifact
 import simplifile
 import support/test_helpers
 import workflow_context_test_support
+
+fn env(name: String) -> Option(String) {
+  case name {
+    "LINEAR_API_KEY" -> Some("linearkey")
+    _ -> None
+  }
+}
 
 fn run_helper(command: String) -> step_artifact.StepArtifact {
   command_step.run(
@@ -513,7 +522,13 @@ pub fn checked_in_merge_conflict_workflow_is_routed_and_guarded_test() {
     config,
     "merge-conflict-resolution: workflows/merge-conflict-resolution.yaml",
   )
-  assert string.contains(config, "merge-conflict-resolution]")
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
+  let checked_workflow_labels = bundle.effective.linear_contract.workflow_labels
+  assert list.contains(checked_workflow_labels, "merge-conflict-resolution")
+  assert !list.contains(checked_workflow_labels, "github-pr-conflict-scout")
+  assert !list.contains(checked_workflow_labels, "origin-sync")
+  assert !list.contains(checked_workflow_labels, "workspace-cleanup")
   assert string.contains(workflow, "id: merge-conflict-resolution")
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" prepare")
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" validate")

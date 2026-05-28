@@ -4,6 +4,9 @@ tracker:
   api_key: "$LINEAR_API_KEY"
   linear:
     project: "$LINEAR_PROJECT_SLUG"
+    check_setup: true
+    labels:
+      support: [needs-workflow]
   states:
     ready: [Todo]
     active: [Todo, "In Progress"]
@@ -61,27 +64,17 @@ task_updates:
   result:
     on_success: attachment
     max_chars: 4000
-linear_contract:
-  enabled: true
-  workflow_label_prefix: "workflow:"
-  workflow_labels: [implementation]
-  support_labels: [needs-workflow]
-  required_states:
-    todo: Todo
-    done: Done
-  handoff_state_bindings:
-    claim: todo
-    success: done
-  enforce_issue_workflow_labels: true
-  invalid_workflow_state_id: state-invalid
-  comment_on_invalid_workflow: true
 task_routing:
   labels:
     prefix: "workflow:"
     require_exactly_one: true
     default_workflow: implementation
+    on_invalid:
+      state: Triage
+      comment: true
 workflows:
   implementation: workflows/implementation.yaml
+  nightly-repair: workflows/nightly-repair.yaml
 artifacts:
   limits:
     command_output_chars: 111
@@ -89,7 +82,7 @@ artifacts:
     workflow_summary_chars: 333
 schedules:
   - id: nightly-repair
-    workflow: implementation
+    workflow: nightly-repair
     enabled: true
     every: 15m
     overlap: skip
