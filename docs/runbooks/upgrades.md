@@ -11,7 +11,7 @@ Treat a change as breaking when an existing supported deployment could keep the 
 - orchestrator config keys, defaults, meanings, or required fields;
 - workflow YAML schema, prompt/template variables, structured-output declarations, or validator contracts;
 - workspace driver, lifecycle, capability, or environment-variable contracts;
-- tracker adapter task shape, capability names, handoff behavior, or Linear compatibility aliases;
+- tracker adapter task shape, capability names, task-update behavior, or Linear compatibility aliases;
 - persisted ledger records, projection snapshots, workflow checkpoints, artifacts, control protocol payloads, or offline state layout;
 - `scherzoctl` command behavior where scripts or operators rely on stable output; and
 - runtime behavior that changes retry, recovery, parking, cleanup, publication, or destructive action semantics.
@@ -26,7 +26,7 @@ For every breaking change, make the compatibility decision explicit in the same 
 2. **Choose the boundary.** Detect stale shapes at parse/load boundaries for config and workflow YAML, at discovery boundaries for drivers and tracker capabilities, at replay/decode boundaries for durable state, and at command/runtime boundaries when the shape only appears during execution.
 3. **Fail fast instead of emulating.** Do not silently reinterpret old input as new semantics. A temporary compatibility window may warn and continue only when a specific migration plan says so; the warning must still name the old shape and target shape.
 4. **Use stable diagnostic codes.** Diagnostics should have stable warning/error codes suitable for tests and operator search. Include the affected path/field and replacement path when safe. Keep text bounded and redacted.
-5. **Link the runbook.** Operator-facing diagnostics should point to this runbook or a more specific runbook, for example `docs/runbooks/workspace-driver-migration.md`, `docs/runbooks/tracker-adapters.md`, or `docs/runbooks/workflow-recovery.md`.
+5. **Link the runbook.** Operator-facing diagnostics should point to this runbook or a more specific runbook, for example `docs/runbooks/simplified-yaml-migration.md`, `docs/runbooks/workspace-driver-migration.md`, `docs/runbooks/tracker-adapters.md`, or `docs/runbooks/workflow-recovery.md`.
 6. **Add `doctor` coverage when static.** If Scherzo can discover the old shape without dispatching work, add or update a `doctor` check. `doctor` should report the same stable code and path details that runtime errors use.
 7. **Prefer explicit operator actions for durable state.** For unsupported local state, require deliberate actions such as `archive-old`, `discard-old`, or `reinitialize`. Do not mutate, delete, or partially replay old durable data automatically.
 8. **Update examples and docs.** Checked examples, README documentation-map links, architecture checklists, and focused runbooks must describe the current shape and the upgrade path.
@@ -117,21 +117,32 @@ Current behavior rejects silent in-process compatibility for those tuple shapes 
 
 Recommended operator action is to stop and restart Scherzo after upgrading instead of hot-swapping modules. If durable local state cannot be replayed by the current tree, follow the unsupported local state flow below (`archive-old` or `discard-old`, then `reinitialize`) rather than expecting DAG tuple normalization.
 
-### Flat tracker fields to nested tracker config
+### Older orchestrator config to simplified YAML
 
-Old flat fields:
+Old shapes include:
 
-- `tracker.api_key`
-- `tracker.endpoint`
-- `tracker.project_slug`
-
-Current target fields:
-
+- `tracker.kind`
 - `tracker.credentials.api_key_env`
-- `tracker.linear.endpoint`
 - `tracker.linear.project_slug`
+- `tracker.active_states`, `tracker.dispatch_states`, and `tracker.terminal_states`
+- `polling.interval_ms`
+- `routing.workflows`
+- `handoff`
+- top-level `agent`
+- top-level `pi`
 
-When both flat and nested fields are present, the nested value wins and Scherzo reports `legacy_tracker_field_ignored` with `path` and `replacement`. New examples should use the nested tracker shape. A future hard removal should fail during config load or `doctor --check workflow-config`, not silently choose one meaning. See [tracker adapters](tracker-adapters.md) for the current tracker configuration guidance.
+Current target fields include:
+
+- `tracker.linear.api_key_env`
+- `tracker.linear.project`
+- `tracker.states.active`, `tracker.states.ready`, and `tracker.states.terminal`
+- `tracker.polling.every`
+- top-level `workflows`
+- `task_routing`
+- `task_updates`
+- `agents` and `agents.runtime`
+
+Current behavior rejects removed simplified-YAML keys during config loading with an `invalid_config` diagnostic that names the old key, names the replacement or removal, and links to [simplified YAML migration](simplified-yaml-migration.md) or the [simplified schema](../specs/SCHERZO_YAML_SIMPLIFIED_V1.md). Do not keep old and new sections side by side.
 
 ### Unsupported local state
 
