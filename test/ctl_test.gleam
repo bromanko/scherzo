@@ -287,6 +287,16 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     == Ok(ctl.StateStatus("work", True))
   assert ctl.parse(["state", "archive-old", "--root", "work", "--yes"])
     == Ok(ctl.StateArchiveOld("work", False, True))
+  assert ctl.parse([
+      "state",
+      "repair-run-provenance",
+      "run:run-1",
+      "--root",
+      "work",
+      "--dry-run",
+      "--json",
+    ])
+    == Ok(ctl.StateRepairRunProvenance("work", True, "run-1", True, False))
 }
 
 pub fn parse_operator_commands_test() {
@@ -1026,6 +1036,127 @@ pub fn root_option_resolves_relative_to_caller_cwd_test() {
   )
 }
 
+pub fn state_repair_run_provenance_dry_run_yes_and_idempotent_test() {
+  let root = "test/tmp/ctl-state-repair-provenance/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-state-repair-provenance")
+  seed_missing_provenance_state(root)
+  let subject = process.new_subject()
+
+  assert ctl.run_with_deps(
+      ctl.StateRepairRunProvenance(root, True, "run-1", True, False),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let dry_run = drain_output(subject)
+  assert string.contains(dry_run, "\"status\":\"dry_run\"")
+  assert string.contains(dry_run, "\"repair_status\":\"would_repair\"")
+  assert !has_provenance_repair_record(root)
+
+  assert ctl.run_with_deps(
+      ctl.StateRepairRunProvenance(root, True, "run-1", False, True),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let repaired = drain_output(subject)
+  assert string.contains(repaired, "\"status\":\"repaired\"")
+  assert has_provenance_repair_record(root)
+
+  assert ctl.run_with_deps(
+      ctl.StateRepairRunProvenance(root, True, "run-1", False, True),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let already = drain_output(subject)
+  assert string.contains(already, "\"status\":\"already_repaired\"")
+  assert provenance_repair_record_count(root) == 1
+}
+
+pub fn state_repair_run_provenance_rejects_parent_traversal_run_root_test() {
+  let root = "test/tmp/ctl-state-repair-provenance-traversal/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-state-repair-provenance-traversal")
+  seed_missing_provenance_state_with(
+    root,
+    root <> "/runs/../../outside",
+    "implementation",
+    "wf-1",
+    True,
+  )
+  let subject = process.new_subject()
+
+  assert ctl.run_with_deps(
+      ctl.StateRepairRunProvenance(root, True, "run-1", False, True),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let rejected = drain_output(subject)
+  assert string.contains(rejected, "\"status\":\"rejected\"")
+  assert string.contains(rejected, "\"reason\":\"workspace_recovery_failed\"")
+  assert !has_provenance_repair_record(root)
+}
+
+pub fn state_repair_run_provenance_rejects_incomplete_evidence_test() {
+  let root = "test/tmp/ctl-state-repair-provenance-incomplete/workspaces"
+  let run_root = root <> "/runs/run-1"
+  test_helpers.reset_dir("test/tmp/ctl-state-repair-provenance-incomplete")
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root)
+  seed_missing_provenance_state_with(
+    root,
+    run_root,
+    "implementation",
+    "wf-1",
+    False,
+  )
+  let subject = process.new_subject()
+
+  assert ctl.run_with_deps(
+      ctl.StateRepairRunProvenance(root, True, "run-1", False, True),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let rejected = drain_output(subject)
+  assert string.contains(rejected, "\"status\":\"rejected\"")
+  assert string.contains(
+    rejected,
+    "\"reason\":\"workflow_provenance_incomplete\"",
+  )
+  assert string.contains(rejected, "issue_identifier")
+  assert !has_provenance_repair_record(root)
+}
+
+pub fn state_repair_run_provenance_rejects_ambiguous_evidence_test() {
+  let root = "test/tmp/ctl-state-repair-provenance-ambiguous/workspaces"
+  let run_root = root <> "/runs/run-1"
+  test_helpers.reset_dir("test/tmp/ctl-state-repair-provenance-ambiguous")
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root)
+  seed_missing_provenance_state_with(
+    root,
+    run_root,
+    "other-workflow",
+    "wf-1",
+    True,
+  )
+  let subject = process.new_subject()
+
+  assert ctl.run_with_deps(
+      ctl.StateRepairRunProvenance(root, True, "run-1", False, True),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let rejected = drain_output(subject)
+  assert string.contains(rejected, "\"status\":\"rejected\"")
+  assert string.contains(
+    rejected,
+    "\"reason\":\"workflow_provenance_ambiguous\"",
+  )
+  assert !has_provenance_repair_record(root)
+}
+
 pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
   let path = "test/tmp/ctl-ps/json-control.json"
   write_control_file(path)
@@ -1393,6 +1524,123 @@ fn replay_event(session_id: String) -> event.SessionEvent {
       event.LifecycleName(event.WorkerStarted),
     ),
   )
+}
+
+fn seed_missing_provenance_state(root: String) -> Nil {
+  let run_root = root <> "/runs/run-1"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(run_root <> "/workspaces/main")
+  seed_missing_provenance_state_with(
+    root,
+    run_root,
+    "implementation",
+    "wf-1",
+    True,
+  )
+}
+
+fn seed_missing_provenance_state_with(
+  root: String,
+  run_root: String,
+  attempt_workflow_id: String,
+  workflow_fingerprint: String,
+  include_known_workspace: Bool,
+) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let records =
+    list.append(
+      [
+        record.with_id(
+          "inputs",
+          1,
+          record.WorkflowRunInputsRecorded(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            workflow_fingerprint: workflow_fingerprint,
+            artifact_ref: "runs/run-1/inputs.json",
+            artifact_sha256: "sha-inputs",
+            artifact_bytes: 10,
+          ),
+        ),
+      ],
+      list.append(known_workspace_records(root, include_known_workspace), [
+        record.with_id(
+          "prepared",
+          3,
+          record.StepAttemptPrepared(
+            run_id: "run-1",
+            workflow_id: attempt_workflow_id,
+            step_id: "apply_feedback",
+            attempt_index: 1,
+            workspace_name: "main",
+            workspace_path: run_root <> "/workspaces/main",
+            run_root: run_root,
+            source_workspace_name: None,
+            source_workspace_path: None,
+          ),
+        ),
+        record.with_id(
+          "interrupted-attempt",
+          4,
+          record.StepAttemptInterrupted(
+            run_id: "run-1",
+            workflow_id: attempt_workflow_id,
+            step_id: "apply_feedback",
+            attempt_index: 1,
+            reason: "daemon_shutdown",
+          ),
+        ),
+        record.with_id(
+          "interrupted-run",
+          5,
+          record.WorkflowRunInterrupted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            issue_id: "issue-1",
+            reason: "daemon_shutdown",
+          ),
+        ),
+      ]),
+    )
+  let assert Ok(Nil) = ledger.append_many(ledger_path, records, True)
+  Nil
+}
+
+fn known_workspace_records(
+  root: String,
+  include_known_workspace: Bool,
+) -> List(record.LedgerRecord) {
+  case include_known_workspace {
+    True -> [
+      record.with_id(
+        "known-workspace",
+        2,
+        record.KnownWorkspace(
+          issue_id: "issue-1",
+          issue_identifier: "LIV-695",
+          workspace_path: root <> "/LIV-695",
+        ),
+      ),
+    ]
+    False -> []
+  }
+}
+
+fn has_provenance_repair_record(root: String) -> Bool {
+  provenance_repair_record_count(root) > 0
+}
+
+fn provenance_repair_record_count(root: String) -> Int {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(read) = ledger.read_records(ledger_path)
+  read.records
+  |> list.filter(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowRunProvenanceRepaired(..) -> True
+      _ -> False
+    }
+  })
+  |> list.length
 }
 
 fn write_workflow_recovery_history(root: String) -> Nil {

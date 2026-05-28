@@ -570,6 +570,41 @@ pub fn encodes_and_decodes_scheduled_records_test() {
   ))
 }
 
+pub fn encodes_and_decodes_workflow_run_provenance_repaired_test() {
+  let repair =
+    record.with_id(
+      "provenance-repair-1",
+      11_000,
+      record.WorkflowRunProvenanceRepaired(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        workflow_fingerprint: "wf-1",
+        issue_id: "issue-1",
+        issue_identifier: "LIV-695",
+        task_ref: record.linear_task_ref_fields(
+          "issue-1",
+          Some("LIV-695"),
+          None,
+        ),
+        issue_fingerprint: "issue-fp-1",
+        observed_updated_at_ms: 10_999,
+        run_root: "test/tmp/run-root",
+        repair_mode: "state_repair_explicit",
+        source_evidence: [
+          "workflow_run_interrupted:run-1",
+          "workflow_run_inputs_recorded:run-1",
+        ],
+      ),
+    )
+
+  assert_roundtrip(repair)
+  assert string.contains(
+    record.to_string(repair),
+    "workflow_run_provenance_repaired",
+  )
+  assert string.contains(record.to_string(repair), "source_evidence")
+}
+
 pub fn encodes_and_decodes_workflow_contract_manifest_records_test() {
   let inputs =
     record.with_id(

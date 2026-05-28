@@ -53,6 +53,38 @@ pub fn started_with_task_entries(
   )
 }
 
+pub fn provenance_repaired_entries(
+  run_id: String,
+  workflow_id: String,
+  workflow_fingerprint: String,
+  issue_id: String,
+  issue_identifier: String,
+  task_ref_entries: List(#(String, json.Json)),
+  issue_fingerprint: String,
+  observed_updated_at_ms: Int,
+  run_root: String,
+  repair_mode: String,
+  source_evidence: List(String),
+) -> List(#(String, json.Json)) {
+  list.append(
+    started_with_task_entries(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      task_ref_entries,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+    ),
+    [
+      #("repair_mode", json.string(repair_mode)),
+      #("source_evidence", json.array(source_evidence, of: json.string)),
+    ],
+  )
+}
+
 pub fn finished_entries(
   run_id: String,
   workflow_id: String,

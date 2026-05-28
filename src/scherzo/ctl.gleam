@@ -16,11 +16,14 @@ import scherzo/path
 import scherzo/schedule_doctor
 import scherzo/session/event
 import scherzo/session/reason as session_reason
+import scherzo/state/ledger
 import scherzo/state/local_artifacts
 import scherzo/state/projection
+import scherzo/state/record
 import scherzo/terminal/render
 import scherzo/terminal/style
 import scherzo/turn_telemetry
+import scherzo/workflow_repair
 import simplifile
 
 pub type OutputMode {
@@ -99,6 +102,13 @@ pub type Command {
   StateArchiveOld(root: String, json: Bool, yes: Bool)
   StateDiscardOld(root: String, json: Bool, yes: Bool)
   StateReinitialize(root: String, json: Bool, yes: Bool)
+  StateRepairRunProvenance(
+    root: String,
+    json: Bool,
+    run_id: String,
+    dry_run: Bool,
+    yes: Bool,
+  )
 }
 
 pub type Error {
@@ -140,6 +150,18 @@ type ScheduleDoctorReport {
     job_id: String,
     config_path: Option(String),
     diagnostics: List(schedule_doctor.Diagnostic),
+  )
+}
+
+type StateRunProvenanceRepairResult {
+  StateRunProvenanceRepairResult(
+    status: String,
+    run_id: String,
+    repair_status: String,
+    repair_mode: String,
+    source_evidence: List(String),
+    reason: Option(String),
+    message: Option(String),
   )
 }
 
@@ -212,7 +234,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path; relative paths resolve from the caller working directory.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands, including target context; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n  state repair-run-provenance run:<run-id> --root <workspace-root> --dry-run|--yes\n                               Inspect or append an auditable workflow provenance repair.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path; relative paths resolve from the caller working directory.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands, including target context; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -464,9 +486,31 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
       use root <- try_ctl(required_root(flags))
       Ok(StateReinitialize(root, flags.json, flags.yes))
     }
+    "state", ["repair-run-provenance", target] -> {
+      use root <- try_ctl(required_root(flags))
+      use run_id <- try_ctl(repair_run_provenance_target(target))
+      case flags.yes, flags.dry_run {
+        True, True ->
+          Error(UsageError(
+            "state repair-run-provenance requires exactly one of --dry-run or --yes",
+          ))
+        False, False ->
+          Error(UsageError(
+            "state repair-run-provenance requires --dry-run or --yes",
+          ))
+        _, _ ->
+          Ok(StateRepairRunProvenance(
+            root,
+            flags.json,
+            run_id,
+            flags.dry_run,
+            flags.yes,
+          ))
+      }
+    }
     "state", _ ->
       Error(UsageError(
-        "state usage: state status|archive-old|discard-old|reinitialize --root <workspace-root>",
+        "state usage: state status|archive-old|discard-old|reinitialize|repair-run-provenance --root <workspace-root>",
       ))
     _, _ -> Error(UsageError("unknown or invalid ctl command: " <> name))
   }
@@ -550,6 +594,19 @@ fn retry_workflow_step_target(
           control_command.RetryWorkflowStepRunId(string.drop_start(value, 4))
         False -> control_command.RetryWorkflowStepAutoTarget(value)
       }
+  }
+}
+
+fn repair_run_provenance_target(value: String) -> Result(String, Error) {
+  case string.starts_with(value, "run:") {
+    True -> {
+      let run_id = string.drop_start(value, 4) |> string.trim
+      case run_id == "" {
+        True -> Error(UsageError("repair-run-provenance requires run:<run-id>"))
+        False -> Ok(run_id)
+      }
+    }
+    False -> Error(UsageError("repair-run-provenance requires run:<run-id>"))
   }
 }
 
@@ -720,6 +777,15 @@ pub fn run_with_deps(
       run_state_discard_old(resolve_path_option(root), json, yes, output)
     StateReinitialize(root, json, yes) ->
       run_state_reinitialize(resolve_path_option(root), json, yes, output)
+    StateRepairRunProvenance(root, json, run_id, dry_run, yes) ->
+      run_state_repair_run_provenance(
+        resolve_path_option(root),
+        json,
+        run_id,
+        dry_run,
+        yes,
+        output,
+      )
   }
 }
 
@@ -1527,6 +1593,258 @@ fn run_state_reinitialize(
   let result = local_artifacts.reinitialize_state(root, yes: yes)
   print_state_mutation(result, json_output, output)
   Ok(Nil)
+}
+
+fn run_state_repair_run_provenance(
+  root: String,
+  json_output: Bool,
+  run_id: String,
+  dry_run: Bool,
+  yes: Bool,
+  output: Output,
+) -> Result(Nil, Error) {
+  let result = state_repair_run_provenance(root, run_id, dry_run, yes)
+  print_state_repair_run_provenance(result, json_output, output)
+  Ok(Nil)
+}
+
+fn state_repair_run_provenance(
+  root: String,
+  run_id: String,
+  dry_run: Bool,
+  yes: Bool,
+) -> StateRunProvenanceRepairResult {
+  case ledger.path_for_workspace_root(root) {
+    Error(error) ->
+      rejected_state_repair_result(
+        run_id,
+        "ledger_path_failed",
+        ledger_error_message(error),
+      )
+    Ok(ledger_path) ->
+      case ledger.read_records(ledger_path) {
+        Error(error) ->
+          rejected_state_repair_result(
+            run_id,
+            "ledger_read_failed",
+            ledger_error_message(error),
+          )
+        Ok(read) -> {
+          let projection_state = projection.fold(read.records)
+          case
+            workflow_repair.inspect_run_provenance_repair(
+              projection_state,
+              run_id,
+              workflow_repair.state_repair_explicit_mode,
+            )
+          {
+            Error(error) ->
+              rejected_state_repair_result(
+                run_id,
+                workflow_repair.describe_error(error),
+                repair_error_message_text(error),
+              )
+            Ok(workflow_repair.RunProvenanceRepairAlreadyPresent(..)) ->
+              StateRunProvenanceRepairResult(
+                status: "already_repaired",
+                run_id: run_id,
+                repair_status: "already_repaired",
+                repair_mode: workflow_repair.state_repair_explicit_mode,
+                source_evidence: [],
+                reason: None,
+                message: Some("workflow run provenance is already present"),
+              )
+            Ok(workflow_repair.RunProvenanceRepairRequired(plan)) ->
+              case
+                workflow_repair.validate_run_root_for_repair(
+                  run_id,
+                  plan.run_root,
+                  root,
+                )
+              {
+                Error(error) ->
+                  rejected_state_repair_result(
+                    run_id,
+                    workflow_repair.describe_error(error),
+                    repair_error_message_text(error),
+                  )
+                Ok(Nil) ->
+                  case dry_run, yes {
+                    True, _ ->
+                      StateRunProvenanceRepairResult(
+                        status: "dry_run",
+                        run_id: run_id,
+                        repair_status: "would_repair",
+                        repair_mode: plan.repair_mode,
+                        source_evidence: plan.source_evidence,
+                        reason: None,
+                        message: Some("workflow run provenance can be repaired"),
+                      )
+                    _, True ->
+                      append_state_repair_run_provenance(ledger_path, plan)
+                    _, _ ->
+                      rejected_state_repair_result(
+                        run_id,
+                        "confirmation_required",
+                        "pass --dry-run to inspect or --yes to repair",
+                      )
+                  }
+              }
+          }
+        }
+      }
+  }
+}
+
+fn append_state_repair_run_provenance(
+  ledger_path: ledger.LedgerPath,
+  plan: workflow_repair.RunProvenanceRepairPlan,
+) -> StateRunProvenanceRepairResult {
+  let ledger_record =
+    record.with_id(
+      "workflow-run-provenance-repaired-" <> plan.run_id,
+      local_artifacts.now_ms(),
+      plan.record_body,
+    )
+  case ledger.append_idempotent(ledger_path, ledger_record, True) {
+    Ok(ledger.Appended) ->
+      StateRunProvenanceRepairResult(
+        status: "repaired",
+        run_id: plan.run_id,
+        repair_status: "repaired",
+        repair_mode: plan.repair_mode,
+        source_evidence: plan.source_evidence,
+        reason: None,
+        message: Some("workflow run provenance repaired"),
+      )
+    Ok(ledger.AlreadyRecorded(_)) ->
+      StateRunProvenanceRepairResult(
+        status: "already_repaired",
+        run_id: plan.run_id,
+        repair_status: "already_repaired",
+        repair_mode: plan.repair_mode,
+        source_evidence: plan.source_evidence,
+        reason: None,
+        message: Some("workflow run provenance repair was already recorded"),
+      )
+    Error(error) ->
+      rejected_state_repair_result(
+        plan.run_id,
+        "ledger_append_failed",
+        append_idempotent_error_message(error),
+      )
+  }
+}
+
+fn repair_error_message_text(error: workflow_repair.RepairError) -> String {
+  case workflow_repair.error_message(error) {
+    Some(message) -> message
+    None -> workflow_repair.describe_error(error)
+  }
+}
+
+fn rejected_state_repair_result(
+  run_id: String,
+  reason: String,
+  message: String,
+) -> StateRunProvenanceRepairResult {
+  StateRunProvenanceRepairResult(
+    status: "rejected",
+    run_id: run_id,
+    repair_status: "rejected",
+    repair_mode: workflow_repair.state_repair_explicit_mode,
+    source_evidence: [],
+    reason: Some(reason),
+    message: Some(message),
+  )
+}
+
+fn print_state_repair_run_provenance(
+  result: StateRunProvenanceRepairResult,
+  json_output: Bool,
+  output: Output,
+) -> Nil {
+  case json_output {
+    True ->
+      output.line(
+        result
+        |> state_repair_run_provenance_to_json
+        |> json.to_string,
+      )
+    False -> {
+      output.line("state repair-run-provenance " <> result.status)
+      output.line("run_id: " <> result.run_id)
+      output.line("repair_status: " <> result.repair_status)
+      case result.reason {
+        Some(reason) -> output.line("reason: " <> reason)
+        None -> Nil
+      }
+      case result.message {
+        Some(message) -> output.line("message: " <> message)
+        None -> Nil
+      }
+      case result.source_evidence {
+        [] -> Nil
+        _ -> {
+          output.line("source_evidence:")
+          list.each(result.source_evidence, fn(evidence) {
+            output.line("  " <> evidence)
+          })
+        }
+      }
+    }
+  }
+}
+
+fn state_repair_run_provenance_to_json(
+  result: StateRunProvenanceRepairResult,
+) -> json.Json {
+  [
+    #("command", json.string("state repair-run-provenance")),
+    #("status", json.string(result.status)),
+    #("run_id", json.string(result.run_id)),
+    #("repair_status", json.string(result.repair_status)),
+    #("repair_mode", json.string(result.repair_mode)),
+    #("source_evidence", json.array(result.source_evidence, of: json.string)),
+    #("reason", optional_string_json(result.reason)),
+    #("message", optional_string_json(result.message)),
+  ]
+  |> json.object
+}
+
+fn ledger_error_message(error: ledger.LedgerError) -> String {
+  case error {
+    ledger.Io(message) -> message
+    ledger.UnsupportedVersion(version) ->
+      "unsupported ledger schema version " <> int.to_string(version)
+    ledger.CorruptRecord(line, reason) ->
+      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
+    ledger.LedgerFfiFailed(error) -> ledger_ffi_error_message(error)
+  }
+}
+
+fn ledger_ffi_error_message(error: ledger.LedgerFfiError) -> String {
+  case error {
+    ledger.OpenFailed(reason) -> "open failed: " <> reason
+    ledger.WriteFailed(reason) -> "write failed: " <> reason
+    ledger.SyncFailed(reason) -> "sync failed: " <> reason
+    ledger.CloseFailed(reason) -> "close failed: " <> reason
+    ledger.ReadFailed(reason) -> "read failed: " <> reason
+    ledger.StepFailed(reason) -> "step failed: " <> reason
+    ledger.LockFailed(reason) -> "lock failed: " <> reason
+    ledger.UnexpectedFfiFailure(function, detail) ->
+      "unexpected ffi failure in " <> function <> ": " <> detail
+  }
+}
+
+fn append_idempotent_error_message(
+  error: ledger.AppendIdempotentError,
+) -> String {
+  case error {
+    ledger.AppendLedgerError(error) -> ledger_error_message(error)
+    ledger.RecordIdConflict(record_id) ->
+      "ledger record id conflict: " <> record_id
+  }
 }
 
 fn print_state_status(

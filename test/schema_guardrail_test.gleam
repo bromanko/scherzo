@@ -407,6 +407,35 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "WorkflowRunProvenanceRepaired",
+      "workflow_run_provenance_repaired",
+      record.with_id(
+        "record-workflow-run-provenance-repaired",
+        1003,
+        record.WorkflowRunProvenanceRepaired(
+          run_id: "workflow-run-1-task",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-fingerprint",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-1",
+          task_ref: record.TaskRefFields(
+            task_backend_kind: "linear",
+            task_remote_id: "issue-1",
+            task_key: Some("LIV-1"),
+            task_url: Some("https://linear.app/living-systems/issue/LIV-1"),
+          ),
+          issue_fingerprint: "issue-fingerprint",
+          observed_updated_at_ms: 999,
+          run_root: ".scherzo/workflows/implementation/run-1",
+          repair_mode: "state_repair_explicit",
+          source_evidence: [
+            "workflow_run_interrupted:workflow-run-1-task",
+            "workflow_run_inputs_recorded:workflow-run-1-task",
+          ],
+        ),
+      ),
+    ),
+    LedgerExample(
       "WorkflowRunFinished",
       "workflow_run_finished",
       record.with_id(
