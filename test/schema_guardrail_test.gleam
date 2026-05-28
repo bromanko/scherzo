@@ -180,9 +180,7 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
     "/test/tmp/schema_guardrail/workspaces",
   )
 
-  assert effective.hooks.before_run == Some("test -d .git")
-  assert effective.hooks.after_run == Some("echo done")
-  assert effective.hooks.timeout_ms == 90_000
+  assert effective.hooks == config.default_hooks_config()
 
   assert effective.agent.max_concurrent_agents == 3
   assert effective.agent.max_turns == 12
@@ -303,6 +301,23 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
   assert task_failure.state == Some("Triage")
   assert task_failure.labels == ["job:nightly-repair"]
   assert task_failure.dedupe == config_types.OpenTaskPerSchedule
+}
+
+pub fn legacy_top_level_hooks_parse_guardrail_test() {
+  let source =
+    "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkflows:\n  implementation: workflows/implementation.yaml\nhooks:\n  before_run: test -d .git\n  after_run: echo done\n  timeout: 90s\n"
+  let assert Ok([document]) = yay.parse_string(source)
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      yay.document_root(document),
+      "test/tmp/schema_guardrail/scherzo.yaml",
+      schema_env,
+    )
+
+  let hooks = orchestrator.effective.hooks
+  assert hooks.before_run == Some("test -d .git")
+  assert hooks.after_run == Some("echo done")
+  assert hooks.timeout_ms == 90_000
 }
 
 fn ledger_examples() -> List(LedgerExample) {

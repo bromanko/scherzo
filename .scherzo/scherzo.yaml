@@ -1,9 +1,7 @@
 version: 1
 tracker:
-  kind: linear
-  credentials:
-    api_key_env: LINEAR_API_KEY
   linear:
+    api_key_env: LINEAR_API_KEY
     endpoint: https://api.linear.app/graphql
     project: scherzo-f6f4bc92d6d7
     check_setup: true

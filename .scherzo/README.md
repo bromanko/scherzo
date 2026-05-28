@@ -13,7 +13,7 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Populate Scherzo workspaces with `jj workspace add`, not separate `git clone` checkouts. New root workspaces use the canonical `SCHERZO_JJ_WORKSPACE_*` driver env configured under `.scherzo/scherzo.yaml` (`main@scherzo-agent` for this dogfood profile) and fall back through the selected local base branch and finally `@` only when no canonical base remote/branch is configured; set `SCHERZO_JJ_WORKSPACE_BASE` to override this for deliberate local dogfooding.
 - Keep dogfood workspace lifecycle policy explicit: `.scherzo/scherzo.yaml` defines `workspace.drivers.dogfood-jj` as the documented default, and implementation/review workflows select it with top-level `workspace.driver: dogfood-jj`. Command-only root-maintenance schedules use no-op drivers and explicitly resolve `SCHERZO_REPO_ROOT` before touching the root checkout; `origin-sync` has its own no-op driver so its configured remote is not launcher-only environment.
 - The `dogfood-jj` workspace driver uses the trusted command `$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj` for lifecycle operations and self-describes the dogfood capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. The normative driver contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../docs/specs/WORKSPACE_DRIVER_SPEC.md); hook-backed profile configuration is unsupported legacy migration material covered by [`docs/runbooks/workspace-driver-migration.md`](../docs/runbooks/workspace-driver-migration.md). Do not add new dogfood hook snippets as the current convention.
-- Use `scripts/scherzo-pi` as the checked-in `pi.command` wrapper so workflows such as research and bundle-based ExecPlan can select `openai-codex/gpt-5.5:xhigh` while other workflows keep the default pi model.
+- Use `scripts/scherzo-pi` through the checked-in `agents.runtime.pi.executable`/`args` wrapper so workflows such as research and bundle-based ExecPlan can select `openai-codex/gpt-5.5:xhigh` while other workflows keep the default pi model.
 - Keep machine-specific variants as `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, `.scherzo/scherzo.local.yaml`, or `.scherzo/scherzo.local.yml`; they are ignored by git.
 - Do not put secrets in workflow files. Use environment variables for secrets and deployment-specific values.
 
@@ -76,7 +76,7 @@ export SCHERZO_CLEANUP_WORKSPACE_ROOT="$SCHERZO_REPO_ROOT/.scherzo/workspaces"
 export SCHERZO_WORKSPACE_CLEANUP_ROOT="$SCHERZO_REPO_ROOT/.scherzo/workspaces"
 ```
 
-The checked-in `tracker.linear.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository. The `dogfood-jj` driver can infer the repository root from `.scherzo/scherzo.yaml`, while setting `SCHERZO_REPO_ROOT` makes the driver command independent of the current directory layout.
+The checked-in `tracker.linear.project` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository. The `dogfood-jj` driver can infer the repository root from `.scherzo/scherzo.yaml`, while setting `SCHERZO_REPO_ROOT` makes the driver command independent of the current directory layout.
 
 ### Scherzo agent devenv profile
 
@@ -151,7 +151,7 @@ direnv exec . devenv shell -P scherzo-agent scherzo-agent-run
 
 ## Linear project contract
 
-`linear_contract.enabled: true` makes Scherzo fail readiness checks if the Linear project drifts from this checked-in dogfood contract. The project must expose these states for every associated Linear team:
+`tracker.linear.check_setup: true` makes Scherzo fail readiness checks if the Linear project drifts from this checked-in dogfood contract. The project must expose these states for every associated Linear team:
 
 - `Todo`
 - `In Progress`

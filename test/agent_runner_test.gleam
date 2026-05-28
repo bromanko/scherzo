@@ -535,7 +535,7 @@ pub fn runner_retryable_error_without_retry_event_fails_after_grace_test() {
   let cfg =
     config_types.EffectiveConfig(
       ..base,
-      pi: config_types.PiConfig(..base.pi, read_timeout_ms: 5000),
+      pi: config_types.PiConfig(..base.pi, read_timeout_ms: 500),
     )
   let update_subject = process.new_subject()
 
@@ -1218,7 +1218,7 @@ pub fn runner_streams_update_before_agent_end_test() {
     <> fake_pi()
   let update_subject = process.new_subject()
   let finished_subject = process.new_subject()
-  let pid =
+  let _pid =
     process.spawn_unlinked(fn() {
       let _ =
         runner.run_attempt(
@@ -1233,16 +1233,11 @@ pub fn runner_streams_update_before_agent_end_test() {
     })
 
   let assert Ok(update) =
-    receive_update_named(update_subject, "message_update", 8)
+    receive_update_named(update_subject, "message_update", 50)
   assert update.message == Some("POPULATED")
   test_async.assert_no_extra_message_within(finished_subject, 50)
   let assert Ok(Nil) = simplifile.write(release_path, "")
-  let assert Ok("finished") =
-    process.receive(
-      finished_subject,
-      within: test_async.default_receive_timeout_ms,
-    )
-  process.kill(pid)
+  assert test_async.expect_message_within(finished_subject, 5000) == "finished"
 }
 
 pub fn active_issue_continues_in_same_worker_until_max_turns_test() {

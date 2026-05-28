@@ -22,12 +22,12 @@ fn root(source: String) -> yay.Node {
 }
 
 fn base_config(extra: String) -> String {
-  "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n"
+  "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n"
   <> extra
 }
 
 fn base_config_with_workspace(workspace: String) -> String {
-  "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n"
+  "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n"
   <> workspace
   <> "workflows:\n    implementation: workflows/implementation.yaml\n"
 }
@@ -107,7 +107,7 @@ pub fn task_routing_labels_overrides_linear_contract_defaults_test() {
 
 pub fn orchestrator_config_resolves_routing_and_driver_profile_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/scherzo-workspace-noop\n      timeout: 1234ms\nworkflows:\n    implementation: workflows/implementation.yaml\nartifacts:\n  limits:\n    command_output_chars: 111\n    template_field_chars: 222\n    workflow_summary_chars: 333\n"
+    "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: scripts/scherzo-workspace-noop\n      timeout: 1234ms\nworkflows:\n    implementation: workflows/implementation.yaml\nartifacts:\n  limits:\n    command_output_chars: 111\n    template_field_chars: 222\n    workflow_summary_chars: 333\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(source),
@@ -468,7 +468,7 @@ pub fn orchestrator_config_rejects_invalid_project_model_defaults_test() {
 
 pub fn orchestrator_config_validates_default_workflow_test() {
   let with_default =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\ntask_routing:\n  labels:\n    default_workflow: Implementation\nworkflows:\n  implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\ntask_routing:\n  labels:\n    default_workflow: Implementation\nworkflows:\n  implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(with_default),
@@ -478,7 +478,7 @@ pub fn orchestrator_config_validates_default_workflow_test() {
   assert orchestrator.routing.default_workflow == Some("implementation")
 
   let invalid_default =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\ntask_routing:\n  labels:\n    default_workflow: research\nworkflows:\n  implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\ntask_routing:\n  labels:\n    default_workflow: research\nworkflows:\n  implementation: workflows/implementation.yaml\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       root(invalid_default),
@@ -582,7 +582,7 @@ pub fn orchestrator_config_derives_linear_setup_state_requirements_test() {
 
 pub fn orchestrator_config_allows_scheduled_only_routes_outside_linear_setup_labels_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n    scheduled-maintenance: workflows/scheduled-maintenance.yaml\nschedules:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\n"
+    "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: \"$LINEAR_PROJECT_SLUG\"\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n    scheduled-maintenance: workflows/scheduled-maintenance.yaml\nschedules:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(source),
@@ -595,7 +595,7 @@ pub fn orchestrator_config_allows_scheduled_only_routes_outside_linear_setup_lab
 
 pub fn orchestrator_config_rejects_escaping_routing_paths_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    research: ../outside.yaml\n"
+    "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    research: ../outside.yaml\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       root(source),
@@ -606,7 +606,7 @@ pub fn orchestrator_config_rejects_escaping_routing_paths_test() {
 
 pub fn orchestrator_config_rejects_home_relative_workflow_paths_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    research: ~/outside.yaml\n"
+    "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    research: ~/outside.yaml\n"
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_orchestrator_root(
       root(source),

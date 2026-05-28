@@ -95,9 +95,9 @@ fn workflow_text_with_label_policy(
 ) -> String {
   "version: 1
 tracker:
-  kind: linear
-  api_key: test-key
-  project_slug: TEST
+  linear:
+    api_key_env: HOME
+    project: TEST
   states:
     ready: [Todo]
     active: [Todo]

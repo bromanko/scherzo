@@ -333,9 +333,9 @@ fn write_retry_step_workflow(dir: String) -> #(String, String) {
   let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
   let assert Ok(Nil) = simplifile.write(config_path, "version: 1
 tracker:
-  kind: linear
-  api_key: test-key
-  project_slug: TEST
+  linear:
+    api_key_env: HOME
+    project: TEST
   states:
     ready: [Todo]
     active: [Todo]

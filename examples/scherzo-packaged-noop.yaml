@@ -1,9 +1,7 @@
 version: 1
 tracker:
-  kind: linear
-  credentials:
-    api_key_env: LINEAR_API_KEY
   linear:
+    api_key_env: LINEAR_API_KEY
     endpoint: https://api.linear.app/graphql
     project: YOUR_PROJECT_SLUG
     check_setup: false

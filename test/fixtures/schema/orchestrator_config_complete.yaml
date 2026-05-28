@@ -1,8 +1,7 @@
 version: 1
 tracker:
-  kind: linear
-  api_key: "$LINEAR_API_KEY"
   linear:
+    api_key_env: LINEAR_API_KEY
     project: "$LINEAR_PROJECT_SLUG"
     check_setup: true
     labels:
@@ -21,10 +20,6 @@ workspace:
       type: custom
       command: scripts/scherzo-workspace-noop
       timeout: 1234ms
-hooks:
-  before_run: test -d .git
-  after_run: echo done
-  timeout: 90s
 agents:
   concurrency:
     default: 3

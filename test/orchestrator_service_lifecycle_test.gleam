@@ -18,9 +18,9 @@ import test_async
 fn workflow_text(root: String) -> String {
   "version: 1
 tracker:
-  kind: linear
-  api_key: test-key
-  project_slug: TEST
+  linear:
+    api_key_env: HOME
+    project: TEST
   states:
     ready: [Todo]
     active: [Todo]
