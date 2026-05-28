@@ -232,7 +232,7 @@ fn write_scheduled_reporting_workflow(dir: String) -> String {
     simplifile.write(
       config_path,
       workflow_text(root, 1)
-        <> "scheduled_jobs:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:scheduled-job\n        dedupe: open_issue_per_job\n",
+        <> "schedules:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n    on_failure:\n      task:\n        enabled: true\n        state: Triage\n        labels:\n          - job:scheduled-job\n        dedupe: open_task_per_schedule\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -262,7 +262,7 @@ fn write_scheduled_command_workflow(
     simplifile.write(
       config_path,
       workflow_text(root, max_concurrent)
-        <> "scheduled_jobs:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
+        <> "schedules:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -292,7 +292,7 @@ fn write_scheduled_capacity_workflow(
     simplifile.write(
       config_path,
       workflow_text(root, max_concurrent)
-        <> "scheduled_jobs:\n  - id: capacity-a\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n  - id: capacity-b\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n  - id: capacity-c\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
+        <> "schedules:\n  - id: capacity-a\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n  - id: capacity-b\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n  - id: capacity-c\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -319,7 +319,7 @@ fn write_real_failing_command_workflow(dir: String) -> String {
     simplifile.write(
       config_path,
       workflow_text(root, 1)
-        <> "artifact_limits:\n  command_stream_max_chars: 40\n  template_field_max_chars: 200\n  workflow_summary_max_chars: 200\n",
+        <> "artifacts:\n  limits:\n    command_output_chars: 40\n    template_field_chars: 200\n    workflow_summary_chars: 200\n",
     )
   let assert Ok(Nil) =
     simplifile.write(

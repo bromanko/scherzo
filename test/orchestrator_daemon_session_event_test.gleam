@@ -122,7 +122,7 @@ fn write_scheduled_workflow(dir: String) -> #(String, String) {
     simplifile.write(
       config_path,
       workflow_text(root)
-        <> "scheduled_jobs:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
+        <> "schedules:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
     )
   let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
   let assert Ok(Nil) =

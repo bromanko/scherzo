@@ -102,7 +102,7 @@ workflows:
   github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
   origin-sync: workflows/origin-sync.yaml
   workspace-cleanup: workflows/workspace-cleanup.yaml
-scheduled_jobs:
+schedules:
   - id: github-pr-conflict-scout
     workflow: github-pr-conflict-scout
     enabled: true
@@ -110,10 +110,10 @@ scheduled_jobs:
     overlap: skip
     catch_up: false
     on_failure:
-      linear:
+      task:
         enabled: true
         state: Triage
-        dedupe: open_issue_per_job
+        dedupe: open_task_per_schedule
   - id: origin-sync
     workflow: origin-sync
     enabled: true
@@ -121,10 +121,10 @@ scheduled_jobs:
     overlap: skip
     catch_up: false
     on_failure:
-      linear:
+      task:
         enabled: true
         state: Triage
-        dedupe: open_issue_per_job
+        dedupe: open_task_per_schedule
   - id: workspace-cleanup
     workflow: workspace-cleanup
     enabled: true
@@ -132,14 +132,15 @@ scheduled_jobs:
     overlap: skip
     catch_up: false
     on_failure:
-      linear:
+      task:
         enabled: true
         state: Triage
-        dedupe: open_issue_per_job
-artifact_limits:
-  command_stream_max_chars: 20000
-  template_field_max_chars: 8000
-  workflow_summary_max_chars: 20000
+        dedupe: open_task_per_schedule
+artifacts:
+  limits:
+    command_output_chars: 20000
+    template_field_chars: 8000
+    workflow_summary_chars: 20000
 ui_server:
   # Disabled-by-default identity/config primitive. This does not open a live
   # browser UI or server transport in the current slice.

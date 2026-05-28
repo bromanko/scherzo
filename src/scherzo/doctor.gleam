@@ -403,10 +403,10 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- Confirm routed workflow DAG and prompt-template files exist.",
     ]
     ScheduledJobs -> [
-      "- Confirm scheduled_jobs entries reference existing workflows and use every: <n><ms|s|m|h> with at least 1000ms.",
+      "- Confirm schedules entries reference existing workflows and use every: <n><ms|s|m|h> with at least 1000ms.",
       "- Keep schedule-level input, vars, payload, catch_up: true, and non-skip overlap modes out of the MVP config.",
       "- Replace issue.* references in scheduled workflows with scheduled_job.*, schedule.*, or run.* variables.",
-      "- When tracker failure reporting is enabled, configure a Linear triage state and let Scherzo ensure reserved scheduled-job dedupe labels.",
+      "- When schedules[].on_failure.task.enabled is true, configure a Linear triage state and let Scherzo ensure reserved scheduled-job dedupe labels.",
     ]
     LinearContract -> [
       "- Confirm tracker.linear.project_slug points to the expected Linear project.",

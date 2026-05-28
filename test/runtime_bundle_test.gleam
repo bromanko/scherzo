@@ -638,7 +638,7 @@ pub fn scheduled_workflow_rejects_issue_context_references_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    repair: workflows/repair.yaml\nscheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  states:\n    ready: [Todo]\nworkflows:\n    repair: workflows/repair.yaml\nschedules:\n  - id: repair\n    workflow: repair\n    every: 15m\n",
     )
   let assert Error(runtime_bundle.BundleError(code, message)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
@@ -754,7 +754,7 @@ pub fn select_workflow_rejects_scheduled_only_label_when_policy_enforced_test() 
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  linear:\n    project: TEST\n    check_setup: true\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n  implementation: workflows/implementation.yaml\n  scheduled-maintenance: workflows/scheduled-maintenance.yaml\nscheduled_jobs:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\n",
+      "version: 1\ntracker:\n  linear:\n    project: TEST\n    check_setup: true\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n  implementation: workflows/implementation.yaml\n  scheduled-maintenance: workflows/scheduled-maintenance.yaml\nschedules:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\n",
     )
 
   let assert Ok(bundle) =

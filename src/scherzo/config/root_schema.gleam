@@ -24,6 +24,8 @@ pub fn reject_removed_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
   use _ <- result.try(reject_removed_polling_keys(root))
   use _ <- result.try(reject_removed_handoff_keys(root))
   use _ <- result.try(reject_removed_linear_contract_keys(root))
+  use _ <- result.try(reject_removed_scheduled_job_keys(root))
+  use _ <- result.try(reject_removed_artifact_limit_keys(root))
   use _ <- result.try(reject_removed_agent_keys(root))
   use _ <- result.try(reject_removed_pi_keys(root))
   reject_removed_tracker_state_keys(root)
@@ -231,6 +233,54 @@ fn reject_removed_polling_keys(
             Some(_) ->
               Error(migration_hint("polling.interval", "tracker.polling.every"))
             None -> Error(migration_hint("polling", "tracker.polling"))
+          }
+      }
+  }
+}
+
+fn reject_removed_scheduled_job_keys(
+  root: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(root, "scheduled_jobs") {
+    None -> Ok(Nil)
+    Some(_) -> Error(migration_hint("scheduled_jobs", "schedules"))
+  }
+}
+
+fn reject_removed_artifact_limit_keys(
+  root: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(root, "artifact_limits") {
+    None -> Ok(Nil)
+    Some(yay.NodeMap(_) as limits) -> reject_removed_artifact_limit_map(limits)
+    Some(_) -> Error(migration_hint("artifact_limits", "artifacts.limits"))
+  }
+}
+
+fn reject_removed_artifact_limit_map(
+  limits: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(limits, "command_stream_max_chars") {
+    Some(_) ->
+      Error(migration_hint(
+        "artifact_limits.command_stream_max_chars",
+        "artifacts.limits.command_output_chars",
+      ))
+    None ->
+      case get_node(limits, "template_field_max_chars") {
+        Some(_) ->
+          Error(migration_hint(
+            "artifact_limits.template_field_max_chars",
+            "artifacts.limits.template_field_chars",
+          ))
+        None ->
+          case get_node(limits, "workflow_summary_max_chars") {
+            Some(_) ->
+              Error(migration_hint(
+                "artifact_limits.workflow_summary_max_chars",
+                "artifacts.limits.workflow_summary_chars",
+              ))
+            None -> Error(migration_hint("artifact_limits", "artifacts.limits"))
           }
       }
   }

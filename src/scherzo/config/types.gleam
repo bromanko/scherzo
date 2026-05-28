@@ -571,11 +571,11 @@ pub type ScheduledOverlap {
 }
 
 pub type ScheduledFailureDedupe {
-  OpenIssuePerJob
+  OpenTaskPerSchedule
 }
 
-pub type ScheduledLinearFailureConfig {
-  ScheduledLinearFailureConfig(
+pub type ScheduledTaskFailureConfig {
+  ScheduledTaskFailureConfig(
     enabled: Bool,
     state: Option(String),
     labels: List(String),
@@ -584,7 +584,7 @@ pub type ScheduledLinearFailureConfig {
 }
 
 pub type ScheduledFailureConfig {
-  ScheduledFailureConfig(linear: ScheduledLinearFailureConfig)
+  ScheduledFailureConfig(task: ScheduledTaskFailureConfig)
 }
 
 pub type ScheduledJobConfig {

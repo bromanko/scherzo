@@ -298,12 +298,11 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
   assert job.every_ms == 900_000
   assert job.overlap == config_types.SkipOverlap
   assert job.catch_up == False
-  let config_types.ScheduledFailureConfig(linear: linear_failure) =
-    job.on_failure
-  assert linear_failure.enabled == True
-  assert linear_failure.state == Some("Triage")
-  assert linear_failure.labels == ["job:nightly-repair"]
-  assert linear_failure.dedupe == config_types.OpenIssuePerJob
+  let config_types.ScheduledFailureConfig(task: task_failure) = job.on_failure
+  assert task_failure.enabled == True
+  assert task_failure.state == Some("Triage")
+  assert task_failure.labels == ["job:nightly-repair"]
+  assert task_failure.dedupe == config_types.OpenTaskPerSchedule
 }
 
 fn ledger_examples() -> List(LedgerExample) {
