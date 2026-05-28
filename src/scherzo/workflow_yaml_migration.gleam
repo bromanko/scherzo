@@ -75,6 +75,12 @@ pub fn reject_step_keys(node: yay.Node) -> Result(Nil, RemovedKeyError) {
     "run_in",
     "Rename step workspace selection to run_in.",
   ))
+  use _ <- result.try(reject_key(
+    node,
+    "timeout_ms",
+    "timeout",
+    "Use a duration string such as timeout: 5m.",
+  ))
   reject_key(
     node,
     "recover",

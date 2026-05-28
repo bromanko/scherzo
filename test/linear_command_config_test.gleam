@@ -3,9 +3,9 @@ import scherzo/config
 import scherzo/error
 import yay
 
-const removed_remote_commands_message = "remote_commands has been removed; remove this section and use scherzoctl for operator control"
+const removed_remote_commands_message = "remote_commands was removed. Remove this section; use scherzoctl for operator control. See docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md."
 
-const removed_linear_commands_message = "linear_commands has been removed; remove this section and use scherzoctl for operator control"
+const removed_linear_commands_message = "linear_commands was removed. Remove this section; use scherzoctl for operator control. See docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md."
 
 fn env(name: String) -> Option(String) {
   case name {
