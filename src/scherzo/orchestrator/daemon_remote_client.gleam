@@ -4,6 +4,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/uri
 import scherzo/config/types as config_types
+import scherzo/control/command
 import scherzo/control/remote/client
 import scherzo/control/remote_envelope
 import scherzo/daemon_identity
@@ -27,6 +28,31 @@ pub fn start(
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
+  start_with_control(
+    effective,
+    event_hub,
+    fn(operator_command, _timeout_ms) {
+      Ok(command.rejected(
+        operator_command,
+        "remote_control_unavailable",
+        Some("remote control callbacks unavailable"),
+      ))
+    },
+    fn(_) { Ok(False) },
+    secrets,
+    logger,
+  )
+}
+
+pub fn start_with_control(
+  effective: config_types.EffectiveConfig,
+  event_hub: process.Subject(hub.Message),
+  apply_command: fn(command.OperatorCommand, Int) ->
+    Result(command.CommandResult, Nil),
+  dispatch_paused: fn(Int) -> Result(Bool, Nil),
+  secrets: List(String),
+  logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
+) -> Result(Handle, StartError) {
   use identity <- result.try(load_daemon_identity(effective.workspace.root))
   use endpoint <- result.try(required_ui_server_endpoint(effective))
   use _ <- result.try(validate_endpoint(endpoint))
@@ -45,6 +71,7 @@ pub fn start(
       retry_initial_ms: 500,
       retry_max_ms: 30_000,
       connect_timeout_ms: 1000,
+      command_timeout_ms: 1000,
       redaction_secrets: secrets,
     )
   let dependencies =
@@ -52,6 +79,7 @@ pub fn start(
       now_ms: wall_clock_ms,
       connect: connect_endpoint,
       send_line: socket_send_line,
+      recv_line: socket_recv_line,
       close: socket_close,
       send_after: process.send_after,
       cancel_timer: fn(timer) {
@@ -59,6 +87,13 @@ pub fn start(
         Nil
       },
       list_sessions: fn() { list_sessions_for_remote_snapshot(event_hub, 1000) },
+      apply_command: apply_command,
+      dispatch_paused: fn(timeout_ms) {
+        case dispatch_paused(timeout_ms) {
+          Ok(paused) -> Ok(paused)
+          Error(Nil) -> Error("daemon_dispatch_paused_timeout")
+        }
+      },
       logger: logger,
     )
   case client.start(settings, dependencies) {
@@ -198,6 +233,10 @@ fn socket_send_line(
   line: String,
   timeout_ms: Int,
 ) -> Result(Nil, String)
+
+// nolint: stringly_typed_error -- erlang socket ffi returns raw transport errors.
+@external(erlang, "scherzo_control_ffi", "recv_line")
+fn socket_recv_line(socket: Socket, timeout_ms: Int) -> Result(String, String)
 
 @external(erlang, "scherzo_control_ffi", "close_socket")
 fn socket_close(socket: Socket) -> Nil

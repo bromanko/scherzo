@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/remote/client as remote_client
 import scherzo/control/remote_envelope
@@ -34,6 +35,7 @@ pub type Scenario {
     transcript_path: Option(String),
     run_nonce: String,
     use_real_client: Bool,
+    command_demo: Bool,
   )
 }
 
@@ -45,6 +47,9 @@ pub type TranscriptEvent {
     kind: String,
     digest: Option(String),
     redacted_line: Option(String),
+    command_id: Option(String),
+    command_status: Option(String),
+    dispatch_paused: Option(Bool),
   )
 }
 
@@ -105,6 +110,7 @@ pub fn default_scenario(
     transcript_path: Some(transcript_path),
     run_nonce: run_nonce,
     use_real_client: True,
+    command_demo: False,
   ))
 }
 
@@ -114,6 +120,14 @@ pub fn run_demo(
 ) -> Result(Report, HarnessError) {
   use scenario <- result.try(default_scenario(token, transcript_path))
   run_scenario(scenario)
+}
+
+pub fn run_command_demo(
+  token: String,
+  transcript_path: String,
+) -> Result(Report, HarnessError) {
+  use scenario <- result.try(default_scenario(token, transcript_path))
+  run_scenario(Scenario(..scenario, command_demo: True))
 }
 
 pub fn run_scenario(scenario: Scenario) -> Result(Report, HarnessError) {
@@ -230,7 +244,7 @@ fn run_real_client_scenario(
           server_process,
           scenario,
           bound_port,
-          client_events_from_subject(client_lines),
+          client_events_from_subject(client_lines, scenario),
         )
       let _ = remote_client.stop(handle, 1000)
       outcome
@@ -297,26 +311,16 @@ fn report_from_outcome(
 }
 
 pub fn help_text() -> String {
-  "Usage: scherzo-ui-control-harness demo --token <token> --transcript <path>\n\nDevelopment-only loopback harness for the remote control hello/heartbeat/state path. It binds 127.0.0.1 on an ephemeral port, runs the real outbound client, and writes a redacted transcript derived from live socket traffic."
+  "Usage: scherzo-ui-control-harness demo --token <token> --transcript <path>\n       scherzo-ui-control-harness command-demo --token <token> --transcript <path>\n\nDevelopment-only loopback harness for the remote control path. It binds 127.0.0.1 on an ephemeral port, runs the real outbound client, and writes a redacted transcript derived from live socket traffic."
 }
 
 pub fn main() -> Nil {
   case parse_args(args()) {
     Ok(Help) -> io.println(help_text())
     Ok(Demo(token, transcript_path)) ->
-      case run_demo(token, transcript_path) {
-        Ok(report) -> {
-          io.println("REMOTE_HARNESS_RUN_NONCE=" <> report.run_nonce)
-          io.println(
-            "REMOTE_HARNESS_BOUND_PORT=" <> int.to_string(report.bound_port),
-          )
-          io.println("REMOTE_HARNESS_TRANSCRIPT=" <> transcript_path)
-        }
-        Error(err) -> {
-          io.println_error(err.code <> ": " <> err.message)
-          halt(1)
-        }
-      }
+      print_report(run_demo(token, transcript_path), transcript_path)
+    Ok(CommandDemo(token, transcript_path)) ->
+      print_report(run_command_demo(token, transcript_path), transcript_path)
     Error(err) -> {
       io.println_error(err.message)
       io.println_error(help_text())
@@ -325,9 +329,29 @@ pub fn main() -> Nil {
   }
 }
 
+fn print_report(
+  result: Result(Report, HarnessError),
+  transcript_path: String,
+) -> Nil {
+  case result {
+    Ok(report) -> {
+      io.println("REMOTE_HARNESS_RUN_NONCE=" <> report.run_nonce)
+      io.println(
+        "REMOTE_HARNESS_BOUND_PORT=" <> int.to_string(report.bound_port),
+      )
+      io.println("REMOTE_HARNESS_TRANSCRIPT=" <> transcript_path)
+    }
+    Error(err) -> {
+      io.println_error(err.code <> ": " <> err.message)
+      halt(1)
+    }
+  }
+}
+
 type CliAction {
   Help
   Demo(String, String)
+  CommandDemo(String, String)
 }
 
 type CliError {
@@ -342,6 +366,10 @@ fn parse_args(args: List(String)) -> Result(CliAction, CliError) {
       Ok(Demo(token, transcript_path))
     ["demo", "--transcript", transcript_path, "--token", token] ->
       Ok(Demo(token, transcript_path))
+    ["command-demo", "--token", token, "--transcript", transcript_path] ->
+      Ok(CommandDemo(token, transcript_path))
+    ["command-demo", "--transcript", transcript_path, "--token", token] ->
+      Ok(CommandDemo(token, transcript_path))
     _ -> Error(CliError("invalid arguments"))
   }
 }
@@ -403,6 +431,7 @@ fn client_settings(
     retry_initial_ms: 50,
     retry_max_ms: 100,
     connect_timeout_ms: 1000,
+    command_timeout_ms: 1000,
     redaction_secrets: [scenario.expected_token, scenario.client_token],
   )
 }
@@ -420,6 +449,7 @@ fn client_dependencies(
       process.send(client_lines, line)
       Ok(Nil)
     },
+    recv_line: recv_line,
     close: close_socket,
     send_after: process.send_after,
     cancel_timer: fn(timer) {
@@ -427,23 +457,30 @@ fn client_dependencies(
       Nil
     },
     list_sessions: fn() { Ok(scenario.state_sessions) },
+    apply_command: fn(operator_command, _timeout_ms) {
+      Ok(command.applied(operator_command, Some("applied")))
+    },
+    dispatch_paused: fn(_timeout_ms) { Error("dispatch_state_unavailable") },
     logger: fn(_, _, _, _) { Ok(Nil) },
   )
 }
 
 fn client_events_from_subject(
   subject: process.Subject(String),
+  scenario: Scenario,
 ) -> List(TranscriptEvent) {
-  collect_client_lines(subject, 3, [])
+  collect_client_lines(subject, expected_client_event_count(scenario), [])
   |> list.index_map(fn(line, index) {
     let sequence = index * 2 + 1
-    let kind = case index {
-      0 -> "hello"
-      1 -> "heartbeat"
-      _ -> "state"
-    }
-    line_event(sequence, 1, "client_send", kind, line)
+    line_event(sequence, 1, "client_send", event_kind(line), line)
   })
+}
+
+fn expected_client_event_count(scenario: Scenario) -> Int {
+  case scenario.command_demo {
+    True -> 9
+    False -> 3
+  }
 }
 
 fn collect_client_lines(
@@ -550,23 +587,34 @@ fn server_exchange(
             recv_line(server, 1000)
             |> result.map_error(socket_error("recv state failed")),
           )
-          let state_event = line_event(6, 1, "server_recv", "state", state_line)
+          let state_event =
+            line_event(6, 1, "server_recv", "state_snapshot", state_line)
           use state <- result.try(
             remote_envelope.decode(state_line)
             |> result.map_error(fn(err) { HarnessError(err.code, err.message) }),
           )
           case state {
-            remote_envelope.RemoteStateSnapshot(_, sessions)
+            remote_envelope.RemoteStateSnapshot(_, False, sessions)
               if sessions == scenario.state_sessions
             ->
-              Ok(
-                ServerOutcome(refreshed, [hello_view, heartbeat_view], [
-                  hello_event,
-                  heartbeat_event,
-                  state_event,
-                ]),
-              )
-            remote_envelope.RemoteStateSnapshot(_, _) ->
+              case scenario.command_demo {
+                False ->
+                  Ok(
+                    ServerOutcome(refreshed, [hello_view, heartbeat_view], [
+                      hello_event,
+                      heartbeat_event,
+                      state_event,
+                    ]),
+                  )
+                True ->
+                  command_demo_exchange(
+                    server,
+                    refreshed,
+                    [hello_view, heartbeat_view],
+                    [hello_event, heartbeat_event, state_event],
+                  )
+              }
+            remote_envelope.RemoteStateSnapshot(_, _, _) ->
               Error(HarnessError("invalid_state", "unexpected state snapshot"))
             _ -> Error(HarnessError("invalid_state", "expected state envelope"))
           }
@@ -574,6 +622,71 @@ fn server_exchange(
       }
     }
     _ -> Error(HarnessError("invalid_heartbeat", "expected heartbeat envelope"))
+  }
+}
+
+fn command_demo_exchange(
+  server: Socket,
+  registry: remote_liveness.Registry,
+  observations: List(remote_liveness.View),
+  base_events: List(TranscriptEvent),
+) -> Result(ServerOutcome, HarnessError) {
+  let pause_line =
+    remote_envelope.RemoteServerCommand("pause-1", command.PauseDispatch)
+    |> remote_envelope.to_string
+  use _ <- result.try(
+    send_line(server, pause_line, 1000)
+    |> result.map_error(socket_error("send pause failed")),
+  )
+  use pause_receipt <- result.try(recv_and_expect(server, 8, "command_receipt"))
+  use pause_result <- result.try(recv_and_expect(server, 9, "command_result"))
+  use pause_state <- result.try(recv_and_expect(server, 10, "state_snapshot"))
+
+  let resume_line =
+    remote_envelope.RemoteServerCommand("resume-1", command.ResumeDispatch)
+    |> remote_envelope.to_string
+  use _ <- result.try(
+    send_line(server, resume_line, 1000)
+    |> result.map_error(socket_error("send resume failed")),
+  )
+  use resume_receipt <- result.try(recv_and_expect(
+    server,
+    12,
+    "command_receipt",
+  ))
+  use resume_result <- result.try(recv_and_expect(server, 13, "command_result"))
+  use resume_state <- result.try(recv_and_expect(server, 14, "state_snapshot"))
+
+  Ok(ServerOutcome(
+    registry,
+    observations,
+    list.append(base_events, [
+      line_event(7, 1, "server_send", "server_command", pause_line),
+      pause_receipt,
+      pause_result,
+      pause_state,
+      line_event(11, 1, "server_send", "server_command", resume_line),
+      resume_receipt,
+      resume_result,
+      resume_state,
+    ]),
+  ))
+}
+
+fn recv_and_expect(
+  server: Socket,
+  sequence: Int,
+  expected_kind: String,
+) -> Result(TranscriptEvent, HarnessError) {
+  use line <- result.try(
+    recv_line(server, 1000)
+    |> result.map_error(socket_error("recv command event failed")),
+  )
+  let event = line_event(sequence, 1, "server_recv", expected_kind, line)
+  case event.kind == expected_kind {
+    True -> Ok(event)
+    False ->
+      Error(HarnessError("invalid_command_event", "unexpected event order"))
   }
 }
 
@@ -587,9 +700,11 @@ fn line_event(
   sequence: Int,
   connection_sequence: Int,
   direction: String,
-  kind: String,
+  fallback_kind: String,
   line: String,
 ) -> TranscriptEvent {
+  let #(kind, command_id, command_status, dispatch_paused) =
+    envelope_metadata(line, fallback_kind)
   TranscriptEvent(
     sequence: sequence,
     connection_sequence: connection_sequence,
@@ -597,7 +712,50 @@ fn line_event(
     kind: kind,
     digest: Some(hash.short_sha256_hex(line, 12)),
     redacted_line: Some(remote_harness_hello.redact_auth(line)),
+    command_id: command_id,
+    command_status: command_status,
+    dispatch_paused: dispatch_paused,
   )
+}
+
+fn event_kind(line: String) -> String {
+  let #(kind, _, _, _) = envelope_metadata(line, "hello")
+  kind
+}
+
+fn envelope_metadata(
+  line: String,
+  fallback_kind: String,
+) -> #(String, Option(String), Option(String), Option(Bool)) {
+  case remote_envelope.decode(line) {
+    Ok(remote_envelope.RemoteHeartbeat(_)) -> #("heartbeat", None, None, None)
+    Ok(remote_envelope.RemoteServerCommand(command_id, _)) -> #(
+      "server_command",
+      Some(command_id),
+      None,
+      None,
+    )
+    Ok(remote_envelope.RemoteCommandReceipt(command_id, _, _)) -> #(
+      "command_receipt",
+      Some(command_id),
+      None,
+      None,
+    )
+    Ok(remote_envelope.RemoteCommandResult(command_id, result)) -> #(
+      "command_result",
+      Some(command_id),
+      Some(command.status_to_string(result.status)),
+      None,
+    )
+    Ok(remote_envelope.RemoteStateSnapshot(_, dispatch_paused, _)) -> #(
+      "state_snapshot",
+      None,
+      None,
+      Some(dispatch_paused),
+    )
+    Ok(remote_envelope.RemoteHello(_)) -> #("hello", None, None, None)
+    Error(_) -> #(fallback_kind, None, None, None)
+  }
 }
 
 fn transcript_json_string(
@@ -624,6 +782,9 @@ fn transcript_event_to_json(event: TranscriptEvent) -> json.Json {
     #("kind", json.string(event.kind)),
     #("digest", option_string_to_json(event.digest)),
     #("redacted_line", option_string_to_json(event.redacted_line)),
+    #("command_id", option_string_to_json(event.command_id)),
+    #("command_status", option_string_to_json(event.command_status)),
+    #("dispatch_paused", option_bool_to_json(event.dispatch_paused)),
   ])
 }
 
@@ -640,6 +801,13 @@ fn view_to_json(view: remote_liveness.View) -> json.Json {
 fn option_string_to_json(value: Option(String)) -> json.Json {
   case value {
     Some(value) -> json.string(value)
+    None -> json.null()
+  }
+}
+
+fn option_bool_to_json(value: Option(Bool)) -> json.Json {
+  case value {
+    Some(value) -> json.bool(value)
     None -> json.null()
   }
 }

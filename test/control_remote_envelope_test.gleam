@@ -28,7 +28,7 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
     ),
   ))
   assert_roundtrip(
-    remote_envelope.RemoteStateSnapshot(999, [
+    remote_envelope.RemoteStateSnapshot(999, False, [
       remote_envelope.RemoteSession(
         session_id: "session-1",
         display_name: "LIV-1-fancy-otter",
@@ -84,6 +84,10 @@ pub fn remote_envelope_rejects_bad_versions_types_and_shapes_test() {
   )
   assert_invalid_envelope(
     "{\"version\":1,\"type\":\"state_snapshot\",\"now_ms\":10}",
+    "invalid_envelope",
+  )
+  assert_invalid_envelope(
+    "{\"version\":1,\"type\":\"state_snapshot\",\"now_ms\":10,\"sessions\":[]}",
     "invalid_envelope",
   )
 }
