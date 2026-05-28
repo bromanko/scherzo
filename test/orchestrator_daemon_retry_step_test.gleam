@@ -425,6 +425,7 @@ fn in_process_dependencies(
   ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
+    ..daemon.default_dependencies(),
     make_tracker_adapter: fn(_) {
       let legacy =
         adapter_legacy.adapter_from_legacy_client(tracker_client, "linear")

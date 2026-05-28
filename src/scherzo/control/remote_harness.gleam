@@ -7,6 +7,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/control/file as control_file
+import scherzo/control/remote/client as remote_client
 import scherzo/control/remote_envelope
 import scherzo/control/remote_harness_hello
 import scherzo/control/remote_liveness
@@ -29,8 +30,10 @@ pub type Scenario {
     offline_after_ms: Int,
     send_malformed_hello: Bool,
     heartbeat_envelope: Option(remote_envelope.Envelope),
+    state_sessions: List(remote_envelope.RemoteSession),
     transcript_path: Option(String),
     run_nonce: String,
+    use_real_client: Bool,
   )
 }
 
@@ -89,8 +92,19 @@ pub fn default_scenario(
     offline_after_ms: 100,
     send_malformed_hello: False,
     heartbeat_envelope: None,
+    state_sessions: [
+      remote_envelope.RemoteSession(
+        session_id: "session-1",
+        display_name: "Harness demo session",
+        issue_identifier: "LIV-686",
+        status: "running",
+        current_turn: 1,
+        last_event_at_ms: now_ms,
+      ),
+    ],
     transcript_path: Some(transcript_path),
     run_nonce: run_nonce,
+    use_real_client: True,
   ))
 }
 
@@ -116,6 +130,33 @@ pub fn run_scenario(scenario: Scenario) -> Result(Report, HarnessError) {
     process.spawn_unlinked(fn() {
       server_loop(listener, registry, scenario, server_subject)
     })
+  case scenario.use_real_client {
+    True ->
+      run_real_client_scenario(
+        listener,
+        bound_port,
+        server_subject,
+        server_process,
+        scenario,
+      )
+    False ->
+      run_manual_client_scenario(
+        listener,
+        bound_port,
+        server_subject,
+        server_process,
+        scenario,
+      )
+  }
+}
+
+fn run_manual_client_scenario(
+  listener: Listener,
+  bound_port: Int,
+  server_subject: process.Subject(Result(ServerOutcome, HarnessError)),
+  server_process: process.Pid,
+  scenario: Scenario,
+) -> Result(Report, HarnessError) {
   case
     connect("127.0.0.1", bound_port, 1000)
     |> result.map_error(socket_error("connect failed"))
@@ -126,7 +167,7 @@ pub fn run_scenario(scenario: Scenario) -> Result(Report, HarnessError) {
       Error(err)
     }
     Ok(client) ->
-      run_connected_scenario(
+      run_connected_manual_scenario(
         listener,
         bound_port,
         server_subject,
@@ -137,7 +178,7 @@ pub fn run_scenario(scenario: Scenario) -> Result(Report, HarnessError) {
   }
 }
 
-fn run_connected_scenario(
+fn run_connected_manual_scenario(
   listener: Listener,
   bound_port: Int,
   server_subject: process.Subject(Result(ServerOutcome, HarnessError)),
@@ -153,26 +194,75 @@ fn run_connected_scenario(
       process.kill(server_process)
       Error(err)
     }
-    Ok(client_events) -> {
-      let outcome_result = case process.receive(server_subject, within: 1000) {
-        Ok(Ok(outcome)) -> Ok(outcome)
-        Ok(Error(err)) -> Error(err)
-        Error(Nil) ->
-          Error(HarnessError("server_timeout", "server did not finish in time"))
-      }
+    Ok(client_events) ->
+      finish_server_outcome(
+        listener,
+        server_subject,
+        server_process,
+        scenario,
+        bound_port,
+        client_events,
+      )
+  }
+}
+
+fn run_real_client_scenario(
+  listener: Listener,
+  bound_port: Int,
+  server_subject: process.Subject(Result(ServerOutcome, HarnessError)),
+  server_process: process.Pid,
+  scenario: Scenario,
+) -> Result(Report, HarnessError) {
+  let client_lines = process.new_subject()
+  let settings = client_settings(bound_port, scenario)
+  let dependencies = client_dependencies(bound_port, scenario, client_lines)
+  case remote_client.start(settings, dependencies) {
+    Error(remote_client.ClientError(code: code, message: message)) -> {
       close_listener(listener)
-      case outcome_result {
-        Error(err) -> {
-          case err.code == "server_timeout" {
-            True -> process.kill(server_process)
-            False -> Nil
-          }
-          Error(err)
-        }
-        Ok(outcome) ->
-          report_from_outcome(scenario, bound_port, client_events, outcome)
-      }
+      process.kill(server_process)
+      Error(HarnessError(code, message))
     }
+    Ok(handle) -> {
+      let outcome =
+        finish_server_outcome(
+          listener,
+          server_subject,
+          server_process,
+          scenario,
+          bound_port,
+          client_events_from_subject(client_lines),
+        )
+      let _ = remote_client.stop(handle, 1000)
+      outcome
+    }
+  }
+}
+
+fn finish_server_outcome(
+  listener: Listener,
+  server_subject: process.Subject(Result(ServerOutcome, HarnessError)),
+  server_process: process.Pid,
+  scenario: Scenario,
+  bound_port: Int,
+  client_events: List(TranscriptEvent),
+) -> Result(Report, HarnessError) {
+  let outcome_result = case process.receive(server_subject, within: 1000) {
+    Ok(Ok(outcome)) -> Ok(outcome)
+    Ok(Error(err)) -> Error(err)
+    Error(Nil) ->
+      Error(HarnessError("server_timeout", "server did not finish in time"))
+  }
+  close_listener(listener)
+  case outcome_result {
+    Error(err) -> {
+      case err.code == "server_timeout" {
+        True -> process.kill(server_process)
+        False -> Nil
+      }
+      Error(err)
+    }
+    Ok(outcome) ->
+      report_from_outcome(scenario, bound_port, client_events, outcome)
   }
 }
 
@@ -207,7 +297,7 @@ fn report_from_outcome(
 }
 
 pub fn help_text() -> String {
-  "Usage: scherzo-ui-control-harness demo --token <token> --transcript <path>\n\nDevelopment-only loopback harness for the remote control hello/heartbeat path. It binds 127.0.0.1 on an ephemeral port, runs a minimal client, and writes a redacted transcript derived from live socket traffic."
+  "Usage: scherzo-ui-control-harness demo --token <token> --transcript <path>\n\nDevelopment-only loopback harness for the remote control hello/heartbeat/state path. It binds 127.0.0.1 on an ephemeral port, runs the real outbound client, and writes a redacted transcript derived from live socket traffic."
 }
 
 pub fn main() -> Nil {
@@ -298,6 +388,79 @@ fn client_exchange(
   }
 }
 
+fn client_settings(
+  bound_port: Int,
+  scenario: Scenario,
+) -> remote_client.Settings {
+  remote_client.Settings(
+    endpoint: "https://127.0.0.1:" <> int.to_string(bound_port),
+    daemon_id: scenario.daemon_id,
+    boot_id: scenario.boot_id,
+    enrollment_token: scenario.client_token,
+    capabilities: ["control_commands", "session_snapshots"],
+    heartbeat_interval_ms: 10_000,
+    state_interval_ms: 10_000,
+    retry_initial_ms: 50,
+    retry_max_ms: 100,
+    connect_timeout_ms: 1000,
+    redaction_secrets: [scenario.expected_token, scenario.client_token],
+  )
+}
+
+fn client_dependencies(
+  bound_port: Int,
+  scenario: Scenario,
+  client_lines: process.Subject(String),
+) -> remote_client.Dependencies(Socket, process.Timer) {
+  remote_client.Dependencies(
+    now_ms: fn() { scenario.heartbeat_now_ms },
+    connect: fn(_, timeout_ms) { connect("127.0.0.1", bound_port, timeout_ms) },
+    send_line: fn(socket, line, timeout_ms) {
+      use _ <- result.try(send_line(socket, line, timeout_ms))
+      process.send(client_lines, line)
+      Ok(Nil)
+    },
+    close: close_socket,
+    send_after: process.send_after,
+    cancel_timer: fn(timer) {
+      let _ = process.cancel_timer(timer)
+      Nil
+    },
+    list_sessions: fn() { Ok(scenario.state_sessions) },
+    logger: fn(_, _, _, _) { Ok(Nil) },
+  )
+}
+
+fn client_events_from_subject(
+  subject: process.Subject(String),
+) -> List(TranscriptEvent) {
+  collect_client_lines(subject, 3, [])
+  |> list.index_map(fn(line, index) {
+    let sequence = index * 2 + 1
+    let kind = case index {
+      0 -> "hello"
+      1 -> "heartbeat"
+      _ -> "state"
+    }
+    line_event(sequence, 1, "client_send", kind, line)
+  })
+}
+
+fn collect_client_lines(
+  subject: process.Subject(String),
+  remaining: Int,
+  acc: List(String),
+) -> List(String) {
+  case remaining <= 0 {
+    True -> list.reverse(acc)
+    False ->
+      case process.receive(subject, within: 1000) {
+        Ok(line) -> collect_client_lines(subject, remaining - 1, [line, ..acc])
+        Error(Nil) -> list.reverse(acc)
+      }
+  }
+}
+
 fn server_loop(
   listener: Listener,
   registry: remote_liveness.Registry,
@@ -374,12 +537,41 @@ fn server_exchange(
         )
         |> result.map_error(registry_error),
       )
-      Ok(
-        ServerOutcome(refreshed, [hello_view, heartbeat_view], [
-          hello_event,
-          heartbeat_event,
-        ]),
-      )
+      case scenario.use_real_client {
+        False ->
+          Ok(
+            ServerOutcome(refreshed, [hello_view, heartbeat_view], [
+              hello_event,
+              heartbeat_event,
+            ]),
+          )
+        True -> {
+          use state_line <- result.try(
+            recv_line(server, 1000)
+            |> result.map_error(socket_error("recv state failed")),
+          )
+          let state_event = line_event(6, 1, "server_recv", "state", state_line)
+          use state <- result.try(
+            remote_envelope.decode(state_line)
+            |> result.map_error(fn(err) { HarnessError(err.code, err.message) }),
+          )
+          case state {
+            remote_envelope.RemoteStateSnapshot(_, sessions)
+              if sessions == scenario.state_sessions
+            ->
+              Ok(
+                ServerOutcome(refreshed, [hello_view, heartbeat_view], [
+                  hello_event,
+                  heartbeat_event,
+                  state_event,
+                ]),
+              )
+            remote_envelope.RemoteStateSnapshot(_, _) ->
+              Error(HarnessError("invalid_state", "unexpected state snapshot"))
+            _ -> Error(HarnessError("invalid_state", "expected state envelope"))
+          }
+        }
+      }
     }
     _ -> Error(HarnessError("invalid_heartbeat", "expected heartbeat envelope"))
   }

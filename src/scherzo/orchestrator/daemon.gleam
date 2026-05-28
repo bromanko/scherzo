@@ -19,6 +19,7 @@ import scherzo/error
 import scherzo/log
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
+import scherzo/orchestrator/daemon_remote_client
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/effects/interpreter as transition_interpreter
 import scherzo/orchestrator/effects/types as transition_effects
@@ -150,6 +151,14 @@ pub type RuntimeDependencies {
     start_control_server: fn(control_server.Settings, control_server.Backend) ->
       Result(ControlServerHandle, StartupError),
     stop_control_server: fn(ControlServerHandle) -> Nil,
+    start_remote_client: fn(
+      config_types.EffectiveConfig,
+      process.Subject(hub.Message),
+      List(String),
+      fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
+    ) -> Result(daemon_remote_client.Handle, StartupError),
+    stop_remote_client: fn(daemon_remote_client.Handle, Int) -> Result(Nil, Nil),
+    monitor_remote_client: fn(daemon_remote_client.Handle) -> process.Monitor,
   )
 }
 
@@ -179,6 +188,8 @@ type State {
     event_hub: process.Subject(hub.Message),
     control_server: ControlServerHandle,
     control_file_path: Option(String),
+    remote_client: Option(daemon_remote_client.Handle),
+    remote_client_monitor: Option(process.Monitor),
     operator_paused: Bool,
     last_operator_command_result: Option(command.CommandResult),
     shell_state_overrides_transition: Bool,
@@ -224,6 +235,15 @@ pub fn default_dependencies() -> RuntimeDependencies {
         RealControlServer(server) -> control_server.stop(server)
       }
     },
+    start_remote_client: fn(effective, event_hub, secrets, logger) {
+      daemon_remote_client.start(effective, event_hub, secrets, logger)
+      |> result.map_error(fn(err) {
+        let daemon_remote_client.StartError(code: code, message: message) = err
+        StartupError(code, message)
+      })
+    },
+    stop_remote_client: daemon_remote_client.stop,
+    monitor_remote_client: daemon_remote_client.monitor,
   )
 }
 
@@ -388,6 +408,60 @@ fn stop_control_plane(
   }
 }
 
+fn start_remote_client_if_enabled(
+  effective: config_types.EffectiveConfig,
+  event_hub: process.Subject(hub.Message),
+  secrets: List(String),
+  dependencies: RuntimeDependencies,
+) -> Result(
+  #(Option(daemon_remote_client.Handle), Option(process.Monitor)),
+  StartupError,
+) {
+  case effective.ui_server.enabled {
+    False -> Ok(#(None, None))
+    True -> {
+      use handle <- try_startup(dependencies.start_remote_client(
+        effective,
+        event_hub,
+        secrets,
+        dependencies.logger,
+      ))
+      Ok(#(Some(handle), Some(dependencies.monitor_remote_client(handle))))
+    }
+  }
+}
+
+fn restart_remote_client_if_enabled(state: State) -> State {
+  case state.workflow.effective.ui_server.enabled {
+    False -> State(..state, remote_client: None, remote_client_monitor: None)
+    True ->
+      case
+        state.dependencies.start_remote_client(
+          state.workflow.effective,
+          state.event_hub,
+          state.workflow.secrets,
+          state.dependencies.logger,
+        )
+      {
+        Ok(handle) ->
+          State(
+            ..state,
+            remote_client: Some(handle),
+            remote_client_monitor: Some(
+              state.dependencies.monitor_remote_client(handle),
+            ),
+          )
+        Error(StartupError(code, message)) -> {
+          log_state(state, "warn", "remote_client_restart_failed", [
+            #("code", code),
+            #("message", message),
+          ])
+          State(..state, remote_client: None, remote_client_monitor: None)
+        }
+      }
+  }
+}
+
 fn control_backend(
   event_hub: process.Subject(hub.Message),
   daemon_subject: process.Subject(Message),
@@ -486,63 +560,86 @@ pub fn start(
                   )
                 }
                 True -> {
-                  let poll =
-                    poll_scheduler.start(fn(generation) {
-                      dependencies.send_after(subject, 0, PollTick(generation))
-                    })
-                  let state =
-                    State(
-                      subject: subject,
-                      workflow: workflow,
-                      tracker_client: tracker_client,
-                      tracker_adapter: tracker_adapter,
-                      scheduled_runtime: scheduled_runtime.from_next_due(
-                        dict.to_list(initial_scheduled_next_due(
-                          workflow.bundle,
-                          dependencies.now_ms(),
+                  case
+                    start_remote_client_if_enabled(
+                      effective,
+                      event_hub,
+                      secrets,
+                      dependencies,
+                    )
+                  {
+                    Error(err) -> {
+                      process.demonitor_process(effect_runner_monitor)
+                      let _ = effect_runner.shutdown(effect_runner_handle, 1000)
+                      stop_control_plane(dependencies, control_plane)
+                      Error(encode_startup_error(err))
+                    }
+                    Ok(#(remote_client_handle, remote_client_monitor)) -> {
+                      let poll =
+                        poll_scheduler.start(fn(generation) {
+                          dependencies.send_after(
+                            subject,
+                            0,
+                            PollTick(generation),
+                          )
+                        })
+                      let state =
+                        State(
+                          subject: subject,
+                          workflow: workflow,
+                          tracker_client: tracker_client,
+                          tracker_adapter: tracker_adapter,
+                          scheduled_runtime: scheduled_runtime.from_next_due(
+                            dict.to_list(initial_scheduled_next_due(
+                              workflow.bundle,
+                              dependencies.now_ms(),
+                              startup_recovery.scheduled_statuses,
+                            )),
+                          ),
+                          scheduled_retry_timers: dict.new(),
+                          scheduled_report_retry_timers: dict.new(),
+                          runtime: runtime,
+                          workers: transition_types.new_worker_directory(),
+                          poll: poll,
+                          retry: retry_scheduler.new(),
+                          registry: worker_registry.new(),
+                          pending_claims: dict.new(),
+                          pending_dispatch_validations: dict.new(),
+                          next_dispatch_validation_generation: 1,
+                          recovery_by_issue: startup_recovery.recovery_by_issue,
+                          effect_runner: effect_runner_handle,
+                          effect_runner_monitor: effect_runner_monitor,
+                          event_hub: event_hub,
+                          control_server: control_plane.handle,
+                          control_file_path: control_plane.control_file_path,
+                          remote_client: remote_client_handle,
+                          remote_client_monitor: remote_client_monitor,
+                          operator_paused: False,
+                          last_operator_command_result: None,
+                          shell_state_overrides_transition: False,
+                          dependencies: dependencies,
+                        )
+                        |> apply_startup_recovery(startup_recovery)
+                        |> recover_scheduled_runtime_state(
                           startup_recovery.scheduled_statuses,
-                        )),
-                      ),
-                      scheduled_retry_timers: dict.new(),
-                      scheduled_report_retry_timers: dict.new(),
-                      runtime: runtime,
-                      workers: transition_types.new_worker_directory(),
-                      poll: poll,
-                      retry: retry_scheduler.new(),
-                      registry: worker_registry.new(),
-                      pending_claims: dict.new(),
-                      pending_dispatch_validations: dict.new(),
-                      next_dispatch_validation_generation: 1,
-                      recovery_by_issue: startup_recovery.recovery_by_issue,
-                      effect_runner: effect_runner_handle,
-                      effect_runner_monitor: effect_runner_monitor,
-                      event_hub: event_hub,
-                      control_server: control_plane.handle,
-                      control_file_path: control_plane.control_file_path,
-                      operator_paused: False,
-                      last_operator_command_result: None,
-                      shell_state_overrides_transition: False,
-                      dependencies: dependencies,
-                    )
-                    |> apply_startup_recovery(startup_recovery)
-                    |> recover_scheduled_runtime_state(
-                      startup_recovery.scheduled_statuses,
-                    )
-                    |> spawn_recovered_workflow_resumptions(
-                      startup_recovery.workflow_resumptions,
-                    )
-                  let selector =
-                    process.new_selector()
-                    |> process.select(subject)
-                    |> process.select_specific_monitor(
-                      effect_runner_monitor,
-                      fn(down) { EffectRunnerDown(down) },
-                    )
-                    |> process.select_monitors(WorkerDown)
-                  actor.initialised(state)
-                  |> actor.selecting(selector)
-                  |> actor.returning(subject)
-                  |> Ok
+                        )
+                        |> spawn_recovered_workflow_resumptions(
+                          startup_recovery.workflow_resumptions,
+                        )
+                      let selector =
+                        process.new_selector()
+                        |> process.select(subject)
+                        |> process.select_specific_monitor(
+                          effect_runner_monitor,
+                          fn(down) { EffectRunnerDown(down) },
+                        )
+                        |> process.select_monitors(WorkerDown)
+                      actor.initialised(state)
+                      |> actor.selecting(selector)
+                      |> actor.returning(subject)
+                      |> Ok
+                    }
+                  }
                 }
               }
             }
@@ -5875,10 +5972,21 @@ fn workflow_id_from_status(status: projection.WorkflowRunStatus) -> String {
 fn worker_down_to_transition(state: State, down: process.Down) -> State {
   case down {
     process.ProcessDown(monitor, _, _) ->
-      handle_registry_down_resolution(
-        state,
-        worker_registry.resolve_down(state.registry, monitor),
-      )
+      case state.remote_client_monitor {
+        Some(remote_client_monitor) if monitor == remote_client_monitor -> {
+          log_state(state, "warn", "remote_client_down", [
+            #("monitor", "remote_client"),
+          ])
+          restart_remote_client_if_enabled(
+            State(..state, remote_client: None, remote_client_monitor: None),
+          )
+        }
+        _ ->
+          handle_registry_down_resolution(
+            state,
+            worker_registry.resolve_down(state.registry, monitor),
+          )
+      }
     process.PortDown(_, _, _) -> state
   }
 }
@@ -6607,6 +6715,19 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       }
     False -> Nil
   }
+  case state.remote_client {
+    Some(handle) ->
+      case state.dependencies.stop_remote_client(handle, 1000) {
+        Ok(Nil) -> Nil
+        Error(Nil) -> {
+          daemon_remote_client.kill(handle)
+          log_state(state, "warn", "remote_client_shutdown_timeout", [
+            #("timeout_ms", "1000"),
+          ])
+        }
+      }
+    None -> Nil
+  }
   state.dependencies.stop_control_server(state.control_server)
   case state.control_file_path {
     Some(path) -> control_file.remove(path)
@@ -6649,6 +6770,8 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
     scheduled_report_retry_timers: dict.new(),
     control_server: NoControlServer,
     control_file_path: None,
+    remote_client: None,
+    remote_client_monitor: None,
   )
 }
 
