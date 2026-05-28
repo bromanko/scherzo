@@ -146,6 +146,12 @@ fn read_structured_validator_entry(
 ) -> Result(ParsedValidator, ValidatorParseError) {
   case node {
     yay.NodeMap(_) -> {
+      use _ <- result.try(reject_removed_key(
+        node,
+        "timeout_ms",
+        "timeout",
+        "Use a duration string such as timeout: 30s.",
+      ))
       use validator_type <- result.try(read_validator_type(node))
       let default_name = "validator_" <> int.to_string(index)
       use name <- result.try(read_validator_name(node, default_name))

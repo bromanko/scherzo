@@ -246,6 +246,18 @@ pub fn rejects_invalid_validator_declarations_test() {
   })
 }
 
+pub fn removed_validator_timeout_ms_fails_before_missing_type_test() {
+  let workflow_dag.DagError(code, message) =
+    error(workflow_with_structured_output(
+      "      validators:\n        - timeout_ms: 30000\n",
+    ))
+
+  assert code == "removed_timeout_ms"
+  assert string.contains(message, "timeout_ms")
+  assert string.contains(message, "timeout")
+  assert string.contains(message, "SCHERZO_YAML_SIMPLIFIED_V1")
+}
+
 pub fn legacy_review_validator_lowers_to_command_validator_test() {
   let spec =
     structured_spec(workflow_with_structured_output(

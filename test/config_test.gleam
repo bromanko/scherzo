@@ -235,6 +235,20 @@ pub fn old_routing_keys_fail_with_migration_hint_test() {
   )
 }
 
+pub fn old_command_control_root_keys_fail_fast_with_migration_hint_test() {
+  let remote = invalid_config_message("remote_commands:\n  enabled: true\n")
+  assert string.contains(remote, "remote_commands")
+  assert string.contains(remote, "Remove this section")
+  assert string.contains(remote, "scherzoctl")
+  assert string.contains(remote, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let linear = invalid_config_message("linear_commands:\n  enabled: true\n")
+  assert string.contains(linear, "linear_commands")
+  assert string.contains(linear, "Remove this section")
+  assert string.contains(linear, "scherzoctl")
+  assert string.contains(linear, "SCHERZO_YAML_SIMPLIFIED_V1")
+}
+
 pub fn ui_server_default_and_disabled_config_test() {
   let assert Ok(defaulted) =
     config.resolve_with_env(

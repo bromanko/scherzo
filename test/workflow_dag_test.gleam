@@ -409,6 +409,13 @@ pub fn rejects_removed_workspace_keys_test() {
   assert string.contains(profile_message, "workspace.driver")
   assert string.contains(profile_message, "SCHERZO_YAML_SIMPLIFIED_V1")
 
+  let fail_fast_source = "version: 1\nmax_parallel_steps: 2\n"
+  assert error_code(fail_fast_source) == "removed_max_parallel_steps"
+  let fail_fast_message = error_message(fail_fast_source)
+  assert string.contains(fail_fast_message, "max_parallel_steps")
+  assert string.contains(fail_fast_message, "concurrency")
+  assert string.contains(fail_fast_message, "SCHERZO_YAML_SIMPLIFIED_V1")
+
   let capabilities_source =
     "version: 1\nid: research\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n"
   assert error_code(capabilities_source) == "removed_workspace_capabilities"
@@ -442,6 +449,14 @@ pub fn rejects_removed_step_workspace_keys_test() {
     "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace: main\n    prompt: a.md\n"
   assert error_code(run_in_source) == "removed_workspace"
   assert string.contains(error_message(run_in_source), "run_in")
+
+  let timeout_source =
+    "version: 1\nid: research\nsteps:\n  - timeout_ms: 120000\n"
+  assert error_code(timeout_source) == "removed_timeout_ms"
+  let timeout_message = error_message(timeout_source)
+  assert string.contains(timeout_message, "timeout_ms")
+  assert string.contains(timeout_message, "timeout")
+  assert string.contains(timeout_message, "SCHERZO_YAML_SIMPLIFIED_V1")
 }
 
 pub fn parses_command_step_duration_timeout_test() {

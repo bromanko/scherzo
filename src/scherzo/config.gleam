@@ -1206,13 +1206,13 @@ fn resolve_linear_commands(
   case get_node(root, "remote_commands") {
     Some(_) ->
       Error(error.InvalidConfig(
-        "remote_commands has been removed; remove this section and use scherzoctl for operator control",
+        "remote_commands was removed. Remove this section; use scherzoctl for operator control. See docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md.",
       ))
     None ->
       case get_node(root, "linear_commands") {
         Some(_) ->
           Error(error.InvalidConfig(
-            "linear_commands has been removed; remove this section and use scherzoctl for operator control",
+            "linear_commands was removed. Remove this section; use scherzoctl for operator control. See docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md.",
           ))
         None -> Ok(default_linear_command_config())
       }

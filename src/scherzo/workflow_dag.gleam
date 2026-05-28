@@ -128,9 +128,9 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
   case root {
     yay.NodeMap(_) -> {
       use _ <- result.try(require_version(root))
+      use _ <- result.try(reject_removed_workflow_keys(root))
       use id <- result.try(required_string(root, "id", "missing_workflow_id"))
       use _ <- result.try(validate_workflow_id(id))
-      use _ <- result.try(reject_removed_workflow_keys(root))
       use workspace <- result.try(read_workflow_workspace(root))
       let #(workspace_profile, workspace_capabilities) = workspace
       use max_parallel_steps <- result.try(read_concurrency(root))

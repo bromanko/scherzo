@@ -24,6 +24,7 @@ pub fn reject_removed_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
   use _ <- result.try(reject_removed_polling_keys(root))
   use _ <- result.try(reject_removed_handoff_keys(root))
   use _ <- result.try(reject_removed_linear_contract_keys(root))
+  use _ <- result.try(reject_removed_command_control_keys(root))
   use _ <- result.try(reject_removed_scheduled_job_keys(root))
   use _ <- result.try(reject_removed_artifact_limit_keys(root))
   use _ <- result.try(reject_removed_agent_keys(root))
@@ -174,6 +175,17 @@ fn migration_hint(old_path: String, replacement: String) -> error.ConfigError {
   )
 }
 
+fn removal_hint(old_path: String, note: String) -> error.ConfigError {
+  error.InvalidConfig(
+    old_path
+    <> " was removed. "
+    <> note
+    <> " See "
+    <> simplified_schema_doc
+    <> ".",
+  )
+}
+
 fn reject_removed_routing_keys(
   root: yay.Node,
 ) -> Result(Nil, error.ConfigError) {
@@ -234,6 +246,27 @@ fn reject_removed_polling_keys(
               Error(migration_hint("polling.interval", "tracker.polling.every"))
             None -> Error(migration_hint("polling", "tracker.polling"))
           }
+      }
+  }
+}
+
+fn reject_removed_command_control_keys(
+  root: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(root, "remote_commands") {
+    Some(_) ->
+      Error(removal_hint(
+        "remote_commands",
+        "Remove this section; use scherzoctl for operator control.",
+      ))
+    None ->
+      case get_node(root, "linear_commands") {
+        Some(_) ->
+          Error(removal_hint(
+            "linear_commands",
+            "Remove this section; use scherzoctl for operator control.",
+          ))
+        None -> Ok(Nil)
       }
   }
 }
