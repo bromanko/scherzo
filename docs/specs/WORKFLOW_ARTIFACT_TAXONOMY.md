@@ -30,6 +30,7 @@ Required common fields:
 
 - `name`: stable role name used by downstream consumers, mappings, and humans. This is not a filename and not a display title.
 - `kind`: one of the core carrier kinds defined below.
+- `schema_version`: integer schema version for the descriptor model. Version 1 is the target contract shape in this document.
 
 Optional common fields:
 
@@ -39,7 +40,7 @@ Optional common fields:
 - `validation`: summaries of validators that checked the payload or reference.
 - `metadata`: small JSON object for domain-neutral annotations. Domain-critical fields should live in the artifact payload or be enforced by validators, not hidden in metadata.
 
-`name` is required because it is the stable contract key. `artifact_type` is optional because not every retained file or inline value has formal domain semantics.
+`name` is required because it is the stable contract key. `schema_version` is required so core can evolve the descriptor shape without changing workflow semantics. `artifact_type` is optional because not every retained file or inline value has formal domain semantics.
 
 ## 4. Core kinds
 
@@ -51,6 +52,7 @@ A `file` is a leaf artifact whose exact bytes are retained by Scherzo and indepe
 
 Required fields for `kind: file`:
 
+- `schema_version`
 - `name`
 - `kind: "file"`
 - `ref`: backend-neutral Scherzo artifact-store ref.
@@ -66,6 +68,7 @@ Example:
 
 ```json
 {
+  "schema_version": 1,
   "name": "plan",
   "kind": "file",
   "media_type": "text/markdown",
@@ -91,12 +94,13 @@ Optional fields:
 - `media_type`: defaults to `application/json`. Version 1 should only use `application/json`; the field exists for forward compatibility.
 - `artifact_type`, `source`, `validation`, `description`, and `metadata`.
 
-A `value` is always inline, always JSON-encoded, and has no independent artifact ref, hash, or byte count. Use `value` for small status values, parameters, verdicts, or other data that does not need independent retention.
+A `value` is always inline, always JSON-encoded, and has no independent artifact ref, hash, or byte count. Use `value` for small status values, parameters, verdicts, or other data that does not need independent retention. A `value` still participates in the workflow contract manifest and still requires `schema_version` and `name`.
 
 Example:
 
 ```json
 {
+  "schema_version": 1,
   "name": "verdict",
   "kind": "value",
   "media_type": "application/json",
@@ -113,6 +117,7 @@ A `ref` is a durable pointer to something not stored as a Scherzo artifact. Sche
 
 Required fields for `kind: ref`:
 
+- `schema_version`
 - `name`
 - `kind: "ref"`
 - `ref_type`: reference namespace or protocol.
@@ -131,6 +136,7 @@ Examples:
 
 ```json
 {
+  "schema_version": 1,
   "name": "pull_request",
   "kind": "ref",
   "ref_type": "url",
@@ -140,6 +146,7 @@ Examples:
 
 ```json
 {
+  "schema_version": 1,
   "name": "branch",
   "kind": "ref",
   "ref_type": "git_ref",
@@ -166,12 +173,15 @@ When an artifact set is itself a durable workflow output or cross-workflow hando
 - `bytes`
 - `media_type: "application/json"`
 
+Artifact set entries must themselves obey this descriptor model. Core validates the aggregate manifest shape, while workflow-owned schemas validate the semantics of the nested entries.
+
 This lets downstream workflows depend on the exact aggregate membership and hashes rather than on a local path or mutable workspace state.
 
 Example:
 
 ```json
 {
+  "schema_version": 1,
   "name": "exec_plan_bundle",
   "kind": "artifact_set",
   "media_type": "application/json",
@@ -181,6 +191,7 @@ Example:
   "bytes": 4096,
   "entries": [
     {
+      "schema_version": 1,
       "name": "plan",
       "kind": "file",
       "media_type": "text/markdown",
@@ -190,6 +201,7 @@ Example:
       "bytes": 18422
     },
     {
+      "schema_version": 1,
       "name": "implementation_pack",
       "kind": "file",
       "media_type": "application/json",
@@ -202,7 +214,15 @@ Example:
 }
 ```
 
-## 5. Remote-store compatibility
+## 5. Retention, refs, and consumption
+
+For retained outputs, Scherzo records a manifest entry and stores the exact bytes under a backend-neutral `ref`. The manifest is the durable contract between steps and runs.
+
+Downstream steps should refer to outputs by contract `name` and, when needed, by the retained `ref` recorded for that name. Steps must not depend on local workspace paths for durability. If a workflow needs a path for a command, Scherzo may materialize the artifact into the workspace as an execution convenience, but the stored contract identity remains the `ref`.
+
+For exact bytes, `sha256` and `bytes` are calculated over the artifact-store payload for `ref`. This remains true regardless of whether the backend is a filesystem directory, database row, object-store object, or remote API response.
+
+## 6. Remote-store compatibility
 
 The durable contract must use `ref`, `sha256`, `bytes`, `media_type`, and `kind`, not filesystem paths.
 
@@ -210,7 +230,24 @@ Scherzo may expose operator convenience fields such as `uri`, `display_path`, or
 
 For retained bytes, `sha256` and `bytes` are calculated over the exact bytes returned by the artifact store for `ref`. This remains true regardless of whether the backend is a filesystem directory, database row, object-store object, or remote API response.
 
-## 6. Legacy type mapping
+## 7. Validation, compatibility, and failure behavior
+
+Core validates the generic descriptor shape, required fields, JSON types, and built-in `ref_type` values before accepting a workflow output. Workflow-owned schemas and validators validate semantic fields, payload structure, and bundle membership.
+
+Compatibility rules:
+
+- Adding optional fields is non-breaking.
+- Adding new `artifact_type` strings is workflow-owned and non-breaking for core.
+- Bumping `schema_version` requires a documented migration or compatibility alias.
+- Consumers must ignore unknown fields in otherwise valid versioned descriptors unless a workflow-specific policy says otherwise.
+
+Failure behavior:
+
+- Invalid descriptor shapes are workflow-contract failures.
+- Retention failures are run failures if the output is required for completion, otherwise they should fail the producing step and surface a bounded diagnostic.
+- If a later step requires a missing output, Scherzo must fail before dispatch or before step execution, depending on when the missing dependency can be detected.
+
+## 8. Legacy type mapping
 
 The current `ContractType` enum can be treated as legacy aliases during migration.
 
@@ -229,7 +266,7 @@ The current `ContractType` enum can be treated as legacy aliases during migratio
 
 The current runtime has one hard-coded semantic check for inline `code_change`: it must contain one of `pr_url`, `branch`, `merge_commit`, or `patch_ref`. In the target model, that rule should move to a workflow-owned schema or command validator.
 
-## 7. Core-versus-workflow ownership boundary
+## 9. Core-versus-workflow ownership boundary
 
 Scherzo core should own:
 
@@ -251,7 +288,7 @@ Workflows, schemas, and validators should own:
 - bundle membership rules beyond generic descriptor validity;
 - code-review, ExecPlan, implementation-pack, proof-bundle, release-note, or other domain meanings.
 
-## 8. Refactoring direction
+## 10. Refactoring direction
 
 A safe refactor should be additive first.
 
