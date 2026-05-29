@@ -5,6 +5,7 @@ import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
 import scherzo/json_value
+import scherzo/workflow_artifact_descriptor as artifact_descriptor
 import scherzo/workflow_contract
 
 pub const schema_version = 1
@@ -274,10 +275,10 @@ pub fn manifest_value_decoder() -> decode.Decoder(ManifestValue) {
     None,
     decode.optional(decode.string),
   )
-  use value <- decode.optional_field(
+  use raw_value <- decode.optional_field(
     "value",
     None,
-    decode.optional(json_value.decoder()),
+    optional_json_value_decoder(),
   )
   use source <- decode.optional_field(
     "source",
@@ -297,7 +298,7 @@ pub fn manifest_value_decoder() -> decode.Decoder(ManifestValue) {
     sha256: sha256,
     bytes: bytes,
     media_type: media_type,
-    value: value,
+    value: manifest_json_value(ref_kind, raw_value),
     source: source,
     diagnostic: diagnostic,
   ))
@@ -379,7 +380,24 @@ fn named_value_to_json(value: NamedManifestValue) -> json.Json {
   json.object([
     #("name", json.string(value.name)),
     #("value", manifest_value_to_json(value.value)),
+    #(
+      "descriptor",
+      option_descriptor_to_json(descriptor_for_named_value(
+        value.name,
+        value.value,
+      )),
+    ),
   ])
+}
+
+pub fn descriptor_for_named_value(
+  name: String,
+  value: ManifestValue,
+) -> Option(artifact_descriptor.ArtifactDescriptor) {
+  case value.status {
+    Absent -> None
+    Present -> validated_descriptor(manifest_value_descriptor(name, value))
+  }
 }
 
 pub fn manifest_value_to_json(value: ManifestValue) -> json.Json {
@@ -400,7 +418,19 @@ pub fn manifest_value_to_json(value: ManifestValue) -> json.Json {
 fn named_manifest_value_decoder() -> decode.Decoder(NamedManifestValue) {
   use name <- decode.field("name", decode.string)
   use value <- decode.field("value", manifest_value_decoder())
-  decode.success(NamedManifestValue(name: name, value: value))
+  use descriptor <- decode.optional_field(
+    "descriptor",
+    None,
+    decode.optional(artifact_descriptor.decoder()),
+  )
+  case descriptor_matches_manifest_value(name, value, descriptor) {
+    True -> decode.success(NamedManifestValue(name: name, value: value))
+    False ->
+      decode.failure(
+        NamedManifestValue(name: name, value: value),
+        expected: "descriptor compatible with manifest entry value",
+      )
+  }
 }
 
 fn status_decoder() -> decode.Decoder(ManifestStatus) {
@@ -600,6 +630,201 @@ fn option_json_value_to_json(value: Option(json_value.JsonValue)) -> json.Json {
   case value {
     Some(value) -> json_value.to_json(value)
     None -> json.null()
+  }
+}
+
+fn optional_json_value_decoder() -> decode.Decoder(Option(json_value.JsonValue)) {
+  json_value.decoder() |> decode.map(Some)
+}
+
+fn manifest_json_value(
+  ref_kind: Option(RefKind),
+  value: Option(json_value.JsonValue),
+) -> Option(json_value.JsonValue) {
+  case ref_kind, value {
+    Some(InlineJsonRef), Some(value) -> Some(value)
+    _, Some(json_value.JNull) -> None
+    _, _ -> value
+  }
+}
+
+fn option_descriptor_to_json(
+  value: Option(artifact_descriptor.ArtifactDescriptor),
+) -> json.Json {
+  case value {
+    Some(value) -> artifact_descriptor.to_json(value)
+    None -> json.null()
+  }
+}
+
+fn validated_descriptor(
+  descriptor: Option(artifact_descriptor.ArtifactDescriptor),
+) -> Option(artifact_descriptor.ArtifactDescriptor) {
+  case descriptor {
+    Some(descriptor) ->
+      case artifact_descriptor.validate(descriptor) {
+        Ok(Nil) -> Some(descriptor)
+        Error(_) -> None
+      }
+    None -> None
+  }
+}
+
+fn descriptor_matches_manifest_value(
+  name: String,
+  value: ManifestValue,
+  descriptor: Option(artifact_descriptor.ArtifactDescriptor),
+) -> Bool {
+  case descriptor {
+    None -> True
+    Some(descriptor) ->
+      case descriptor_for_named_value(name, value) {
+        Some(expected) -> descriptors_compatible(descriptor, expected)
+        None -> False
+      }
+  }
+}
+
+fn descriptors_compatible(
+  descriptor: artifact_descriptor.ArtifactDescriptor,
+  expected: artifact_descriptor.ArtifactDescriptor,
+) -> Bool {
+  descriptor.name == expected.name
+  && descriptor.kind == expected.kind
+  && descriptor.artifact_type == expected.artifact_type
+  && descriptor.ref_type == expected.ref_type
+  && descriptor.ref == expected.ref
+  && descriptor.sha256 == expected.sha256
+  && descriptor.bytes == expected.bytes
+  && descriptor.media_type == expected.media_type
+  && descriptor.value == expected.value
+}
+
+fn manifest_value_descriptor(
+  name: String,
+  value: ManifestValue,
+) -> Option(artifact_descriptor.ArtifactDescriptor) {
+  case value.ref_kind {
+    Some(RunArtifact) -> Some(run_artifact_descriptor(name, value))
+    Some(UrlRef) ->
+      Some(
+        artifact_descriptor.ArtifactDescriptor(
+          name: name,
+          kind: artifact_descriptor.RefKind,
+          artifact_type: legacy_descriptor_artifact_type(value.type_),
+          description: None,
+          source: value.source,
+          validation: None,
+          metadata: None,
+          ref_type: Some("url"),
+          ref: value.ref,
+          sha256: None,
+          bytes: None,
+          media_type: None,
+          value: None,
+          entries: [],
+        ),
+      )
+    Some(GitRefRef) ->
+      Some(
+        artifact_descriptor.ArtifactDescriptor(
+          name: name,
+          kind: artifact_descriptor.RefKind,
+          artifact_type: legacy_descriptor_artifact_type(value.type_),
+          description: None,
+          source: value.source,
+          validation: None,
+          metadata: None,
+          ref_type: Some("git_ref"),
+          ref: value.ref,
+          sha256: None,
+          bytes: None,
+          media_type: None,
+          value: None,
+          entries: [],
+        ),
+      )
+    Some(InlineJsonRef) ->
+      Some(
+        artifact_descriptor.ArtifactDescriptor(
+          name: name,
+          kind: artifact_descriptor.ValueKind,
+          artifact_type: legacy_descriptor_artifact_type(value.type_),
+          description: None,
+          source: value.source,
+          validation: None,
+          metadata: None,
+          ref_type: None,
+          ref: None,
+          sha256: None,
+          bytes: None,
+          media_type: value.media_type,
+          value: value.value,
+          entries: [],
+        ),
+      )
+    None -> None
+  }
+}
+
+fn run_artifact_descriptor(
+  name: String,
+  value: ManifestValue,
+) -> artifact_descriptor.ArtifactDescriptor {
+  case value.type_ {
+    workflow_contract.ArtifactList
+    | workflow_contract.ExecPlanBundle
+    | workflow_contract.CodeChangeBundle ->
+      artifact_descriptor.ArtifactDescriptor(
+        name: name,
+        kind: artifact_descriptor.ArtifactSetKind,
+        artifact_type: legacy_descriptor_artifact_type(value.type_),
+        description: None,
+        source: value.source,
+        validation: None,
+        metadata: None,
+        ref_type: None,
+        ref: value.ref,
+        sha256: value.sha256,
+        bytes: value.bytes,
+        media_type: value.media_type,
+        value: None,
+        entries: [],
+      )
+    _ ->
+      artifact_descriptor.ArtifactDescriptor(
+        name: name,
+        kind: artifact_descriptor.FileKind,
+        artifact_type: legacy_descriptor_artifact_type(value.type_),
+        description: None,
+        source: value.source,
+        validation: None,
+        metadata: None,
+        ref_type: None,
+        ref: value.ref,
+        sha256: value.sha256,
+        bytes: value.bytes,
+        media_type: value.media_type,
+        value: None,
+        entries: [],
+      )
+  }
+}
+
+fn legacy_descriptor_artifact_type(
+  type_: workflow_contract.ContractType,
+) -> Option(String) {
+  case type_ {
+    workflow_contract.ExecPlan -> Some("exec_plan")
+    workflow_contract.ExecPlanBundle -> Some("exec_plan_bundle")
+    workflow_contract.ImplementationPack -> Some("implementation_pack")
+    workflow_contract.CodeChangeBundle -> Some("code_change_bundle")
+    workflow_contract.CodeChange -> Some("code_change")
+    workflow_contract.ArtifactList -> Some("artifact[]")
+    workflow_contract.DocumentMarkdown -> Some("document.markdown")
+    workflow_contract.Url -> Some("url")
+    workflow_contract.GitRef -> Some("git_ref")
+    workflow_contract.Text -> None
   }
 }
 

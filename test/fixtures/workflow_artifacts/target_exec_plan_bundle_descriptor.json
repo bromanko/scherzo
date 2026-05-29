@@ -1,0 +1,35 @@
+{
+  "name": "exec_plan_bundle",
+  "kind": "artifact_set",
+  "artifact_type": "scherzo.exec_plan_bundle.v2",
+  "ref": "runs/run-1/outputs/exec_plan_bundle.json",
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "bytes": 4096,
+  "media_type": "application/json",
+  "entries": [
+    {
+      "name": "plan",
+      "kind": "file",
+      "artifact_type": "scherzo.exec_plan.v1",
+      "ref": "runs/run-1/outputs/plan.md",
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "bytes": 18422,
+      "media_type": "text/markdown"
+    },
+    {
+      "name": "implementation_handoff",
+      "kind": "value",
+      "artifact_type": "scherzo.implementation_handoff.v1",
+      "value": {
+        "issue_identifier": "LIV-726",
+        "workflow_label": "workflow:execplan-implementation"
+      }
+    },
+    {
+      "name": "review_doc",
+      "kind": "ref",
+      "ref_type": "url",
+      "ref": "https://linear.app/living-systems/issue/LIV-718/write-execplan-additive-workflow-artifact-descriptor-compatibility"
+    }
+  ]
+}

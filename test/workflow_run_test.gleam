@@ -4684,14 +4684,19 @@ fn read_input_manifest(
   manifest
 }
 
-fn read_output_manifest(
-  root: String,
-  run_id: String,
-) -> workflow_contract_manifest.ContractOutputManifest {
+fn read_output_manifest_text(root: String, run_id: String) -> String {
   let assert Ok(text) =
     simplifile.read(
       root <> "/.scherzo-state/artifacts/runs/" <> run_id <> "/outputs.v1.json",
     )
+  text
+}
+
+fn read_output_manifest(
+  root: String,
+  run_id: String,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  let text = read_output_manifest_text(root, run_id)
   let assert Ok(manifest) =
     workflow_contract_manifest.decode_output_manifest(text)
   manifest
@@ -4811,6 +4816,7 @@ pub fn handoff_derived_contract_values_are_recorded_in_input_manifest_test() {
     input_manifest_text,
     "\"artifact_type\":\"workflow_contract_inputs\"",
   )
+  assert string.contains(input_manifest_text, "\"descriptor\":null")
 
   let manifest = read_input_manifest(root, "run-1")
   let assert [reviewed_plan] = manifest.inputs
@@ -5097,8 +5103,13 @@ pub fn contracted_final_response_output_is_retained_as_markdown_test() {
     )
 
   let manifest = read_output_manifest(root, "run-1")
+  let raw_manifest = read_output_manifest_text(root, "run-1")
   let assert [exec_plan] = manifest.outputs
   assert exec_plan.value.ref == Some("runs/run-1/outputs/exec_plan.md")
+  assert string.contains(
+    raw_manifest,
+    "\"descriptor\":{\"name\":\"exec_plan\",\"kind\":\"file\"",
+  )
   let assert Ok(blob) =
     simplifile.read(
       root <> "/.scherzo-state/artifacts/runs/run-1/outputs/exec_plan.md",
@@ -5152,12 +5163,25 @@ pub fn contracted_execplan_v2_step_field_outputs_are_retained_as_json_test() {
     )
 
   let manifest = read_output_manifest(root, "run-1")
+  let raw_manifest = read_output_manifest_text(root, "run-1")
   assert output_named(manifest.outputs, "exec_plan_bundle").ref
     == Some("runs/run-1/outputs/exec_plan_bundle.json")
   assert output_named(manifest.outputs, "implementation_pack").ref
     == Some("runs/run-1/outputs/implementation_pack.json")
   assert output_named(manifest.outputs, "code_change_bundle").ref
     == Some("runs/run-1/outputs/code_change_bundle.json")
+  assert string.contains(
+    raw_manifest,
+    "\"descriptor\":{\"name\":\"exec_plan_bundle\",\"kind\":\"artifact_set\"",
+  )
+  assert string.contains(
+    raw_manifest,
+    "\"descriptor\":{\"name\":\"implementation_pack\",\"kind\":\"file\"",
+  )
+  assert string.contains(
+    raw_manifest,
+    "\"descriptor\":{\"name\":\"code_change_bundle\",\"kind\":\"artifact_set\"",
+  )
 }
 
 pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
@@ -5219,8 +5243,13 @@ pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
     )
 
   let manifest = read_output_manifest(root, "run-1")
+  let raw_manifest = read_output_manifest_text(root, "run-1")
   let pack = output_named(manifest.outputs, "implementation_pack")
   assert pack.ref == Some("runs/run-1/outputs/implementation_pack.json")
+  assert string.contains(
+    raw_manifest,
+    "\"descriptor\":{\"name\":\"implementation_pack\",\"kind\":\"file\"",
+  )
   assert pack.bytes == Some(string.length(large_json))
   let assert Ok(blob) =
     simplifile.read(
@@ -5228,6 +5257,65 @@ pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
       <> "/.scherzo-state/artifacts/runs/run-1/outputs/implementation_pack.json",
     )
   assert blob == large_json
+}
+
+pub fn contracted_inline_json_and_static_refs_emit_descriptors_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-inline-json-and-static-refs"
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change:\n      type: code_change\n      source:\n        step: draft\n        inline_json: code_change\n    review_doc:\n      type: url\n      source:\n        type: url\n        value: https://example.invalid/pr/1\n    branch:\n      type: git_ref\n      source:\n        type: git_ref\n        value: feature/liv-726\nsteps:\n  - id: draft\n    kind: agent\n    prompt: write prompt\n    run_in: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_code_change\n      schema:\n        required: [branch]\n",
+    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_result(
+        subject,
+        result_artifact.from_final_response_with_tool_calls(
+          Some("done"),
+          False,
+          "test",
+          [
+            result_artifact.ToolCallSubmission(
+              name: "submit_code_change",
+              arguments_json: Some("{\"branch\":\"feature/liv-726\"}"),
+              status: Some("success"),
+              sibling_count: 1,
+              receipt_json: None,
+            ),
+          ],
+        ),
+        checkpoint,
+      ),
+    )
+
+  let manifest = read_output_manifest(root, "run-1")
+  let raw_manifest = read_output_manifest_text(root, "run-1")
+  assert output_named(manifest.outputs, "code_change").ref_kind
+    == Some(workflow_contract_manifest.InlineJsonRef)
+  assert output_named(manifest.outputs, "review_doc").ref
+    == Some("https://example.invalid/pr/1")
+  assert output_named(manifest.outputs, "branch").ref == Some("feature/liv-726")
+  assert string.contains(
+    raw_manifest,
+    "\"descriptor\":{\"name\":\"code_change\",\"kind\":\"value\"",
+  )
+  assert string.contains(
+    raw_manifest,
+    "\"descriptor\":{\"name\":\"review_doc\",\"kind\":\"ref\",\"artifact_type\":\"url\",\"ref_type\":\"url\",\"ref\":\"https://example.invalid/pr/1\"",
+  )
+  assert string.contains(
+    raw_manifest,
+    "\"descriptor\":{\"name\":\"branch\",\"kind\":\"ref\",\"artifact_type\":\"git_ref\",\"ref_type\":\"git_ref\",\"ref\":\"feature/liv-726\"",
+  )
 }
 
 pub fn contracted_json_stdout_output_truncation_fails_publication_test() {
