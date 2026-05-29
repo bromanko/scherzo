@@ -106,6 +106,7 @@ pub fn fixture_workflow_dag(id: String) -> workflow_dag.WorkflowDag {
     max_parallel_steps: 1,
     recover: None,
     contract: None,
+    publication_routes: [],
     workstream_phase: None,
     steps: [
       workflow_dag.WorkflowStep(

@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
@@ -110,6 +111,7 @@ fn driver_orchestrator(
       ]),
     ),
     artifact_limits: test_helpers.default_artifact_limits(),
+    artifact_repositories: artifact_publication_config.empty_repositories(),
     model_settings: model_config.default_settings(),
     scheduled_jobs: [],
   )

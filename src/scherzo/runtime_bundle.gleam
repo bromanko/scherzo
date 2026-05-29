@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
@@ -199,6 +200,7 @@ fn load_orchestrator(
       [],
     ),
   )
+  use _ <- result.try(validate_publication_repositories(orchestrator, workflows))
   let orchestrator = enrich_completion_state_policy(orchestrator, workflows)
   use orchestrator <- result.try(
     workspace_driver_discovery.enrich_orchestrator(orchestrator)
@@ -450,6 +452,96 @@ fn resolve_recover_prompt(
         }
         _ -> Ok(#(recover, []))
       }
+  }
+}
+
+fn validate_publication_repositories(
+  orchestrator: config_types.OrchestratorConfig,
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+) -> Result(Nil, BundleError) {
+  validate_workflow_publication_repositories(
+    dict.to_list(workflows),
+    orchestrator.artifact_repositories,
+  )
+}
+
+fn validate_workflow_publication_repositories(
+  workflows: List(#(String, workflow_dag.WorkflowDag)),
+  repositories: artifact_publication_config.ArtifactRepositories,
+) -> Result(Nil, BundleError) {
+  case workflows {
+    [] -> Ok(Nil)
+    [#(workflow_id, dag), ..rest] -> {
+      use _ <- result.try(validate_publication_repository_routes(
+        workflow_id,
+        dag.publication_routes,
+        repositories,
+      ))
+      validate_workflow_publication_repositories(rest, repositories)
+    }
+  }
+}
+
+fn validate_publication_repository_routes(
+  workflow_id: String,
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+) -> Result(Nil, BundleError) {
+  case routes {
+    [] -> Ok(Nil)
+    [route, ..rest] -> {
+      use _ <- result.try(validate_publication_repository_route(
+        workflow_id,
+        route,
+        repositories,
+      ))
+      validate_publication_repository_routes(workflow_id, rest, repositories)
+    }
+  }
+}
+
+fn validate_publication_repository_route(
+  workflow_id: String,
+  route: artifact_publication_config.PublicationRoute,
+  repositories: artifact_publication_config.ArtifactRepositories,
+) -> Result(Nil, BundleError) {
+  use #(backend, name) <- result.try(
+    artifact_publication_config.repository_ref_parts(
+      route.repository,
+      "artifacts.publications[].repository",
+    )
+    |> result.map_error(fn(parse_error) {
+      BundleError(
+        artifact_publication_config.error_code(parse_error),
+        artifact_publication_config.error_message(parse_error),
+      )
+    }),
+  )
+  case backend {
+    "github" ->
+      case dict.get(repositories.github, name) {
+        Ok(_) -> Ok(Nil)
+        Error(_) ->
+          Error(BundleError(
+            "publication_repository_missing",
+            "workflow "
+              <> workflow_id
+              <> " publication "
+              <> route.id
+              <> " references unknown repository "
+              <> route.repository,
+          ))
+      }
+    _ ->
+      Error(BundleError(
+        "unsupported_publication_repository_backend",
+        "workflow "
+          <> workflow_id
+          <> " publication "
+          <> route.id
+          <> " references unsupported repository backend "
+          <> backend,
+      ))
   }
 }
 

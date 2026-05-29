@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
@@ -166,6 +167,7 @@ fn orchestrator_with_profiles(
       profiles: dict.from_list(profiles),
     ),
     artifact_limits: limits(1000),
+    artifact_repositories: artifact_publication_config.empty_repositories(),
     model_settings: model_config.default_settings(),
     scheduled_jobs: [],
   )

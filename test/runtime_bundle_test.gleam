@@ -101,6 +101,34 @@ fn load_default_from_dir(
   result
 }
 
+fn write_publication_yaml_project(
+  dir: String,
+  repository_ref: String,
+  root_extra: String,
+) -> Nil {
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: implement\n        field: final_response\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: "
+        <> repository_ref
+        <> "\n      files:\n        - select:\n            output: exec_plan_bundle\n            entry: plan\n          path: docs/plans/{{ work.identifier }}.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/implement.md", "Implement")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n"
+        <> root_extra
+        <> "workflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+  Nil
+}
+
 fn write_default_yaml_project(dir: String) -> Nil {
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) =
@@ -121,6 +149,37 @@ fn write_default_yaml_project(dir: String) -> Nil {
       "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n",
     )
   Nil
+}
+
+pub fn loads_configured_publication_repository_test() {
+  let dir = "test/tmp/runtime-bundle-publication-configured"
+  write_publication_yaml_project(dir, "github.docs", "")
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let assert Ok(dag) = dict.get(bundle.workflows, "implementation")
+  let assert [route] = dag.publication_routes
+  assert route.repository == "github.docs"
+}
+
+pub fn rejects_missing_publication_repository_test() {
+  let dir = "test/tmp/runtime-bundle-publication-missing"
+  write_publication_yaml_project(dir, "github.missing", "")
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "publication_repository_missing"
+  assert string.contains(message, "github.missing")
+}
+
+pub fn rejects_unsupported_publication_repository_backend_test() {
+  let dir = "test/tmp/runtime-bundle-publication-backend"
+  write_publication_yaml_project(dir, "gitlab.docs", "")
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "unsupported_publication_repository_backend"
+  assert string.contains(message, "gitlab")
 }
 
 pub fn rejects_markdown_paths_as_unsupported_config_path_test() {

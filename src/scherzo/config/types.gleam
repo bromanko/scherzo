@@ -2,6 +2,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/model_config
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -607,6 +608,7 @@ pub type OrchestratorConfig {
     dag_hooks: DagHooksConfig,
     workspace_profiles: WorkspaceHookProfiles,
     artifact_limits: ArtifactLimits,
+    artifact_repositories: artifact_publication_config.ArtifactRepositories,
     model_settings: model_config.Settings,
     scheduled_jobs: List(ScheduledJobConfig),
   )
