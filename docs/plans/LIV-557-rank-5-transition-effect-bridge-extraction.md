@@ -1,0 +1,86 @@
+# LIV-557 Rank 5 transition/effect bridge extraction review
+
+This is a focused ExecPlan review for LIV-557, derived from Rank 5 of `docs/plans/LIV-523-daemon-decomposition-v2.md`. It plans a follow-up behavior-preserving extraction; it does not perform the extraction.
+
+## Purpose / Big Picture
+
+This rank makes the daemon easier to review and safer to change by moving the daemon-specific bridge between pure transition decisions and impure effect completion handling out of `src/scherzo/orchestrator/daemon.gleam`. After implementation, the daemon should still be the public actor, mailbox, process owner, and compatibility shell, but transition shell construction, transition-state merge, ledger append callbacks, effect-result interpretation, crash-result mapping, handoff completion, invalid-workflow report completion, scheduled-failure report completion, cleanup completion, and park-report enqueueing should live in focused bridge modules. The follow-up implementation is acceptable only when it captures automated parity evidence before publish; no manual/browser/dogfood runtime check is a pre-publish requirement for this internal extraction, and any live operator dogfood is deferred until after the implementation gates pass.
+
+## Problem Framing and Constraints
+
+`src/scherzo/orchestrator/daemon.gleam` currently remains a large compatibility actor; `wc -l src/scherzo/orchestrator/daemon.gleam` reported 6250 lines during this review. The rank 5 concern is the transition/effect bridge band: `run_transition_messages`, `transition_shell`, `transition_append_ledger`, transition-state merge behavior, shell callback wiring, `handle_side_effect_completed`, `handle_side_effect_result`, `crash_result_for_effect`, and the effect-result handlers that turn `effect_runner.EffectResult` values into transition messages, daemon state updates, logging, scheduled-runtime updates, or cleanup logs.
+
+The extraction must preserve behavior exactly. It must not change ledger record shape or ordering, handoff state behavior, EventHub event shape or ordering, retry and dispatch semantics, scheduled-failure semantics, public daemon messages, workflow YAML behavior, provider-live or provider-cache behavior, or the OTP/process architecture. Documentation/helper migration is out of scope except for mechanical test-helper import repair if a moved symbol breaks a test. Because `State` in `daemon.gleam` is daemon-local, the new modules should use generic context and callback records, following the existing `worker_lifecycle.gleam` and `operator_runtime.gleam` pattern, rather than importing `scherzo/orchestrator/daemon` or forcing a broader daemon state visibility change.
+
+## Strategy Overview
+
+Use characterization-first extraction. Add parity coverage around the current daemon bridge before moving code, then introduce `src/scherzo/orchestrator/daemon_transition_shell.gleam` for transition shell construction, transition runner invocation, state merge, ledger append callback wrapping, and transition-runner exhaustion logging. Introduce `src/scherzo/orchestrator/effect_completion_handler.gleam` for `effect_runner.Completion` and `effect_runner.EffectResult` handling, including crash-to-result conversion for every current `effect_runner.Effect` variant.
+
+The bridge modules should be generic over daemon state and receive explicit context records for daemon-only operations such as logging, enqueueing effects, polling snapshots, dispatch context construction, worker/session callbacks, scheduled-runtime updates, cleanup logging, and ledger append bodies. `daemon.gleam` should remain the only module that owns the actor mailbox, process subjects, runtime dependencies, EventHub subject, and concrete daemon state fields. Each extraction step should be paired with targeted tests, then the full format, full test, glinter, and `scherzo_lint` gates before publish.
+
+## Alternatives Considered
+
+Leaving the bridge in `daemon.gleam` was rejected because it keeps effect semantics and transition application hidden inside a large actor. Moving the bridge into pure transition modules was rejected because the bridge performs daemon-specific side effects such as logging, ledger append, timers, process stops, EventHub calls, scheduled-runtime updates, and effect enqueueing. Moving this logic into `effect_runner.gleam` was rejected because `effect_runner` should run side effects and report completions, not interpret completions against daemon state. A broader rank-combining extraction was rejected because ranks 1-4 and 6 have separate ownership boundaries and this ticket is scoped only to Rank 5.
+
+## Risks and Countermeasures
+
+The main risk is a subtle behavior change in effect completion. Counter this with parity testing for every current `effect_runner.EffectResult` variant and every crash-to-result mapping before extraction, including `ScheduledFailureReportFinished` as well as handoff, invalid-workflow, cleanup, candidate fetch, running refresh, retry refresh, and dispatch validation paths.
+
+A second risk is changing transition ordering or state merge behavior. Counter this with characterization coverage for `run_transition_messages`, shell data merge, `shell_state_overrides_transition`, ledger append success/failure, transition-runner exhaustion logging, and shell callbacks that enqueue fetch, validation, handoff, invalid-workflow, cleanup, park, worker, retry, YAML-step, and operator effects.
+
+A third risk is over-broad extraction or import-cycle pressure. Counter this by keeping the new modules generic over state, forbidding imports from the new bridge modules back to `scherzo/orchestrator/daemon`, and limiting changes to bridge modules, daemon delegation, and focused tests. Guardrails, docs/helper migration, provider-live/cache changes, and new operator features remain non-goals for this rank.
+
+A fourth risk is accepting a shorter daemon without evidence. Counter this by requiring targeted test output, full `direnv exec . gleam test` output, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint` before publish. The final implementation handoff must not leave validation work as unchecked progress TODOs.
+
+## Scope Boundaries
+
+In scope: `src/scherzo/orchestrator/daemon_transition_shell.gleam`, `src/scherzo/orchestrator/effect_completion_handler.gleam`, daemon delegation in `src/scherzo/orchestrator/daemon.gleam`, characterization tests, parity tests, and any small test helpers needed to exercise the bridge. Expected new or extended tests include focused bridge tests plus retained coverage in `test/orchestrator_effect_interpreter_test.gleam`, `test/orchestrator_transition_runner_test.gleam`, `test/orchestrator_transition_test.gleam`, `test/orchestrator_transition_dispatch_test.gleam`, `test/orchestrator_daemon_retry_step_test.gleam`, and `test/orchestrator_daemon_test.gleam`.
+
+Out of scope: implementing ranks 1-4 or 6, changing `effect_runner.Effect` or `effect_runner.EffectResult` shapes, changing ledger records, changing handoff state behavior, changing EventHub events, changing retry/dispatch semantics, changing scheduled runtime behavior, changing provider-live/cache behavior, migrating docs or helper infrastructure, changing workflow YAML semantics, adding new operator features, or adding daemon boundary guardrails beyond focused source checks needed to prove the new bridge modules do not import the daemon.
+
+## Milestones
+
+Milestone 1 is baseline characterization before code motion. It is complete when the implementation branch has tests that prove the current bridge behavior for transition shell callbacks, transition-state merge, `shell_state_overrides_transition`, ledger append success and failure, transition-runner exhaustion logging, every current `effect_runner.EffectResult` variant, and every crash-to-result mapping for current `effect_runner.Effect` variants. The evidence must name the added or extended test functions and include targeted output from the focused bridge tests plus the retained transition/effect and daemon retry/dispatch tests. If a focused file does not already exist, create `test/orchestrator_daemon_transition_shell_test.gleam` or `test/orchestrator_effect_completion_handler_test.gleam` rather than dropping the surface.
+
+Milestone 2 extracts the transition shell bridge. It is complete when `daemon_transition_shell.gleam` owns shell construction, transition runner invocation, transition-state merge, ledger append callback wrapping, and exhaustion logging through a generic context record, while `daemon.gleam` supplies daemon-specific callbacks and stores the returned state. The proof is targeted tests for callback wiring, state merge precedence, ledger append bodies and errors, and a source search showing `src/scherzo/orchestrator/daemon_transition_shell.gleam` does not import `scherzo/orchestrator/daemon`.
+
+Milestone 3 extracts effect completion handling. It is complete when `effect_completion_handler.gleam` owns `effect_runner.Finished` and `effect_runner.Crashed` handling, `crash_result_for_effect`, dispatch from each `EffectResult` variant, and completion-specific logging or state update decisions through an explicit context. The proof is tests for candidate fetch, running refresh, retry refresh, dispatch validation, handoff claim/success/failure/park, invalid-workflow report outcomes, scheduled-failure report success/failure, cleanup success/failure, and crash conversion for each effect variant.
+
+Milestone 4 reduces daemon-local duplicates and collects acceptance evidence. It is complete when `daemon.gleam` remains the public actor and mailbox, the old daemon-local bridge bodies are gone or reduced to thin adapters, the bridge modules remain daemon-import-free, all targeted characterization tests pass, documentation/helper migration remains absent except for mechanical test-helper import repair, provider-live/cache behavior is unchanged, and the full format, unit, contract, glinter, and Scherzo lint gates have passed. The deferred human/operator dogfood check, if performed, happens after implementation and is not a pre-publish blocker.
+
+## Progress
+
+- [x] (2026-05-29) Verified the prepared output target is the default directory `docs/plans`.
+- [x] (2026-05-29) Reviewed `docs/plans/LIV-523-daemon-decomposition-v2.md` and confirmed Rank 5 names the transition/effect bridge boundary and target modules.
+- [x] (2026-05-29) Reviewed current orchestrator files and tests relevant to `effect_runner.EffectResult`, transition shell callbacks, and daemon retry/dispatch coverage.
+- [x] (2026-05-29) Wrote this review document without implementing the extraction.
+- [x] (2026-05-29) Incorporated review feedback by making acceptance evidence, milestone-specific test obligations, manual/operator dogfood timing, docs/helper migration scope, provider-live/cache non-goals, full validation, and linting explicit.
+- [x] (2026-05-29) Re-checked that every required level-2 review section is present and non-empty; `direnv exec . .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-557-rank-5-transition-effect-bridge-extraction.md` reported `REVIEW_DOC_VALID=ok`.
+
+## Decision Log
+
+- Decision: Keep this as a Rank 5-only plan. Rationale: the source planning issue already separates ranks, and this task explicitly excludes ranks 1-4 and 6 except as prerequisites or non-goals. Date: 2026-05-29.
+- Decision: Split the extraction into `daemon_transition_shell.gleam` and `effect_completion_handler.gleam`. Rationale: shell construction/state merge and effect completion handling have different responsibilities and test seams. Date: 2026-05-29.
+- Decision: Use generic context records rather than importing `daemon.gleam` from the bridge modules. Rationale: the daemon state type is daemon-local, existing extracted modules use generic state contexts, and daemon imports would preserve the architectural coupling this rank is meant to remove. Date: 2026-05-29.
+- Decision: Require automated parity evidence before publish and defer operator-visible dogfood to a human/operator after implementation. Rationale: this is an internal behavior-preserving extraction, so automated characterization and full validation are the publish gates while manual runtime dogfood is optional post-handoff evidence. Date: 2026-05-29.
+- Decision: Keep docs/helper migration and provider-live/cache behavior out of scope except for mechanical test-helper import repair. Rationale: review feedback called out these surfaces as risks, and this rank should not expand from bridge extraction into documentation infrastructure or provider-cache redesign. Date: 2026-05-29.
+
+## Validation and Acceptance
+
+This review artifact is accepted when `test -f docs/plans/LIV-557-rank-5-transition-effect-bridge-extraction.md` succeeds and `direnv exec . .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-557-rank-5-transition-effect-bridge-extraction.md` reports `REVIEW_DOC_VALID=ok` and `REVIEW_DOC_PATH=docs/plans/LIV-557-rank-5-transition-effect-bridge-extraction.md`.
+
+The follow-up implementation is accepted only with concrete evidence that existing transition/effect behavior stayed unchanged. Required targeted evidence is: keep and pass `test/orchestrator_effect_interpreter_test.gleam`, `test/orchestrator_transition_runner_test.gleam`, `test/orchestrator_transition_test.gleam`, daemon retry tests such as `test/orchestrator_daemon_retry_step_test.gleam`, and daemon dispatch coverage such as `test/orchestrator_transition_dispatch_test.gleam` and `test/orchestrator_daemon_test.gleam`; add focused parity coverage for every current `effect_runner.EffectResult` variant; add crash-to-result mapping coverage for every current `effect_runner.Effect` variant; and include a source check that `src/scherzo/orchestrator/daemon_transition_shell.gleam` and `src/scherzo/orchestrator/effect_completion_handler.gleam` do not import `scherzo/orchestrator/daemon`.
+
+Acceptance evidence must include tests for candidate fetch completion, running refresh completion, retry refresh completion, dispatch claim validation completion, handoff claim success/failure, handoff success/failure report completion, handoff park completion, invalid-workflow report noop/comment/state/comment-and-state/failure outcomes, scheduled-failure report success/failure, cleanup success/failure logging, transition shell callback enqueueing, ledger append success/failure, transition runner exhaustion logging, state merge precedence, and crash conversion for `FetchCandidates`, `RefreshRunning`, `RefreshRetry`, `ValidateDispatchClaim`, `ClaimIssue`, `ReportSuccess`, `ReportFailure`, `ReportPark`, `ReportInvalidWorkflow`, `ReportScheduledFailure`, and `CleanupWorkspace`. A shorter `daemon.gleam` alone is not acceptance evidence.
+
+Before publish, the implementation owner must attach passing output from the repository root for `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam test -- --suite contract` when daemon retry/dispatch or contract-tagged coverage is touched, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`. Success means the format check exits zero, the full Gleam test suite reports no failures, and both lint commands exit zero with no new production policy errors. No pre-publish operator-visible dogfood/manual check is required for this planning artifact or for the internal extraction; manual/operator dogfood is explicitly deferred to a human/operator after implementation if desired. Do not leave required implementation or validation work as unchecked progress TODOs in the final handoff.
+
+## Rollout, Recovery, and Idempotence
+
+Rollout should be additive: add characterization tests, add bridge modules, delegate transition-shell work from `daemon.gleam`, delegate effect-completion work from `daemon.gleam`, then remove only the daemon-local bridge bodies that are covered by the new modules. Each step should keep the daemon as the public actor and should be reversible by reverting the relevant delegation commit while keeping the tests that exposed any regression.
+
+Recovery is to revert the extraction commit or the specific delegation commit that changed behavior. No data migration, ledger rewrite, docs/helper migration, provider-live/cache change, cache invalidation, Linear-side cleanup, or operator cleanup is involved. Re-running tests, source checks, review-doc validation, and lint gates is idempotent as long as the module split remains behavior-preserving and tests remain the source of truth. If deferred dogfood later finds an operator-visible mismatch, restore the daemon-local adapter path from the previous commit and keep or add the characterization test that reproduces the mismatch.
+
+## Open Questions and Clarifications Needed
+
+No open question blocks the follow-up implementation. The implementer may split Milestone 3 into separate handoff/reporting, scheduled-failure, and cleanup commits if the diff becomes too large for safe review, but any split must still preserve the Rank 5 boundary, the daemon-import-free bridge modules, and the required parity tests.
