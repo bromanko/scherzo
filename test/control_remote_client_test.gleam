@@ -42,6 +42,7 @@ type ConnectRequest {
 type ApplyBehavior {
   ApplyImmediately
   ApplyDelay(Int)
+  ApplyTimeout
 }
 
 type SendFailure {
@@ -114,6 +115,41 @@ pub fn remote_client_receipt_result_and_state_order_for_pause_test() {
   let assert remote_envelope.RemoteStateSnapshot(_, dispatch_paused, _) =
     receive_envelope(fixture.outbound)
   assert dispatch_paused
+
+  let assert Ok(Nil) = client.stop(handle, 1000)
+}
+
+pub fn remote_client_rejects_apply_timeout_with_existing_status_reason_and_message_test() {
+  let fixture =
+    new_fixture(SessionList([session_fixture()]), NoSendFailure, ApplyTimeout)
+
+  let assert Ok(handle) = client.start(fixture.settings, fixture.dependencies)
+  let connection = connect_ok(fixture)
+  let _ = assert_hello(fixture)
+  let _ = assert_heartbeat(fixture)
+  let _ = receive_envelope(fixture.outbound)
+
+  send_server_command(connection, "pause-1", command.PauseDispatch)
+
+  let assert remote_envelope.RemoteCommandReceipt(command_id, accepted, _) =
+    receive_envelope_of_kind(fixture.outbound, "command_receipt")
+  assert command_id == "pause-1"
+  assert accepted
+
+  let ApplyRequest(applied_command, timeout_ms) =
+    test_async.expect_message(fixture.apply_requests)
+  assert applied_command == command.PauseDispatch
+  assert timeout_ms == fixture.settings.command_timeout_ms
+
+  let assert remote_envelope.RemoteCommandResult(result_id, result) =
+    receive_envelope_of_kind(fixture.outbound, "command_result")
+  assert result_id == "pause-1"
+  assert result.status == command.Rejected("remote_command_timeout")
+  assert result.message == Some("remote command timed out")
+
+  let assert remote_envelope.RemoteStateSnapshot(_, dispatch_paused, _) =
+    receive_envelope(fixture.outbound)
+  assert dispatch_paused == False
 
   let assert Ok(Nil) = client.stop(handle, 1000)
 }
@@ -566,6 +602,7 @@ fn new_fixture_with_settings(
             process.sleep(delay_ms)
             Ok(command.applied(operator_command, Some("applied")))
           }
+          ApplyTimeout -> Error(Nil)
         }
       },
       dispatch_paused: fn(_timeout_ms) { Error("dispatch_state_unavailable") },
