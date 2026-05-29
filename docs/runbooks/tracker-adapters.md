@@ -18,26 +18,35 @@ These Linear names remain compatibility aliases or Linear-only surfaces:
 
 - `linear-smoke` and `--linear-smoke` are compatibility aliases for tracker smoke checks.
 - `linear-contract` and `--linear-contract-check` are compatibility aliases for tracker contract checks.
-- `linear_contract` remains the Linear board validation config section. `linear_commands` and `remote_commands` are removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead.
+- `tracker.linear.check_setup` is the current Linear board validation switch. The old `linear_contract` section is replaced by fields derived from `tracker`, `workflows`, `task_routing`, and `task_updates`. `linear_commands` and `remote_commands` are removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_ID`, `SCHERZO_ISSUE_IDENTIFIER`, and issue-shaped ledger fields remain compatibility aliases until the runtime task context is fully migrated.
 - `--linear-attach-comment-file`, `.scherzo/workflows/scripts/scherzo-execplan`, and `.scherzo/workflows/scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today.
 
 ## Preferred Linear tracker config
 
-New examples should use the nested tracker shape. The old flat `tracker.endpoint`, `tracker.api_key`, and `tracker.project_slug` fields still parse for one migration window. When both are present, the nested fields win and Scherzo reports `legacy_tracker_field_ignored` warnings.
+New examples should use the simplified tracker shape. Keep the API key in the environment, name the Linear project under `tracker.linear.project`, and use `tracker.states.ready` for initial dispatch states.
 
 ```yaml
+version: 1
+
 tracker:
-  kind: linear
-  credentials:
-    api_key_env: LINEAR_API_KEY
   linear:
+    project: YOUR_LINEAR_PROJECT_SLUG
+    api_key_env: LINEAR_API_KEY
     endpoint: https://api.linear.app/graphql
-    project_slug: YOUR_LINEAR_PROJECT_SLUG
-  active_states: [Todo, In Progress]
-  dispatch_states: [Todo]
-  terminal_states: [Done, Canceled, Cancelled, Duplicate]
+    check_setup: true
+  states:
+    ready: [Todo]
+    active: [Todo, In Progress]
+    terminal: [Done, Canceled, Cancelled, Duplicate]
+  polling:
+    every: 30s
+
+workflows:
+  research: workflows/research.yaml
 ```
+
+Older tracker fields such as `tracker.kind`, `tracker.credentials.api_key_env`, `tracker.linear.project_slug`, `tracker.dispatch_states`, and `polling.interval_ms` belong to the pre-simplified config shape. Migrate them with [simplified YAML migration](simplified-yaml-migration.md).
 
 Use the backend-neutral doctor aliases first:
 
@@ -55,7 +64,7 @@ The matrix summarizes current operator readiness. The normative capability defin
 
 | Adapter | Status | task_source | comments | remote_commands | state_transitions | routing_metadata | links | handoff | scheduled_failures | readiness | smoke | attachments | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Linear | Production | Yes | Yes | No | Yes | Yes | No adapter capability | Yes | Yes | Compatibility path | Yes | No adapter capability | Linear is the only production backend. Contract/readiness checks still run through `linear_contract`; inbound Linear command comments are removed; attachment upload is still exposed through the Linear-only comment-file helper rather than generic `attachments`. |
+| Linear | Production | Yes | Yes | No | Yes | Yes | No adapter capability | Yes | Yes | Compatibility path | Yes | No adapter capability | Linear is the only production backend. Contract/readiness checks use `tracker.linear.check_setup`; inbound Linear command comments are removed; attachment upload is still exposed through the Linear-only comment-file helper rather than generic `attachments`. |
 | Jira follow-up | Future | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Requires a future production adapter plan and live backend design. Do not claim support from the current architecture alone. |
 | Trello follow-up | Future | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Requires a future production adapter plan and live backend design. Do not claim support from the current architecture alone. |
 | test-memory | Test fixture | Yes | Yes | No by default | Yes | Yes | No | No | Yes | No | No | No | Test-only fake adapter for adapter contract and non-Linear seam tests. Do not use it in production examples. |
@@ -78,7 +87,7 @@ Before enabling a new production adapter, verify these facts with tests and oper
 
 1. Candidate task reads, task refresh, and operator lookup are implemented through `task_source`.
 2. Every enabled feature has a startup capability validation error when the adapter does not support it.
-3. Handoff and scheduled failure publication are either implemented through capabilities or disabled in config; remote command ingestion remains disabled and must not be advertised as an operator control path.
+3. Task updates and scheduled failure publication are either implemented through capabilities or disabled in config; remote command ingestion remains disabled and must not be advertised as an operator control path.
 4. Readiness and smoke checks have backend-neutral operator names and Linear aliases only where they are truly compatibility aliases.
 5. Prompt examples use task language while explicitly documenting any remaining `issue.*` compatibility variables.
 

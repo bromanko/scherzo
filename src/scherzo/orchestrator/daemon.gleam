@@ -36,6 +36,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_lifecycle
 import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
+import scherzo/orchestrator/yaml_step_orphans
 import scherzo/orchestrator/yaml_workflow_lifecycle
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
@@ -55,6 +56,7 @@ import scherzo/tracker/adapter
 import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/linear_adapter
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
@@ -1112,7 +1114,7 @@ fn handle_message(
       )
     WorkerFinished(issue_id, run_id, result) ->
       actor.continue(worker_lifecycle.worker_finished_to_transition(
-        worker_finished_context(state),
+        worker_finished_context(state, run_id, result),
         issue_id,
         run_id,
         result,
@@ -1472,6 +1474,7 @@ fn operator_issue_resolution(
     | command.UnparkIssue(_)
     | command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
+    | command.CleanupOrphanSteps(_, _)
     | command.PromptSession(_, _)
     | command.RespondUi(_, _, _)
     | command.RunScheduleNow(_) -> transition_types.OperatorIssueNotResolved
@@ -1502,6 +1505,7 @@ fn parked_issue_resolution(
     | command.ParkIssue(_, _)
     | command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
+    | command.CleanupOrphanSteps(_, _)
     | command.PromptSession(_, _)
     | command.RespondUi(_, _, _)
     | command.RunScheduleNow(_) -> transition_types.ParkedIssueNotResolved
@@ -1536,6 +1540,13 @@ fn apply_shell_operator_command(
         fn(subject, reply) {
           process.send(subject, worker_command.StopAfterCurrentTurn(reply))
         },
+      )
+    command.CleanupOrphanSteps(run_id, dry_run) ->
+      cleanup_orphan_steps_for_operator(
+        state,
+        operator_command,
+        run_id,
+        dry_run,
       )
     command.PromptSession(session_id, message) ->
       route_worker_command_sync(
@@ -1598,169 +1609,197 @@ fn retry_workflow_step_for_operator(
           ),
         )
         Ok(#(_run_id, issue_id, _issue_identifier)) ->
-          case issue_is_active_or_pending(state, issue_id) {
-            True -> #(
+          case
+            retry_step_issue_preflight(
               state,
-              command.rejected(
-                operator_command,
-                "issue_already_active",
-                Some("issue already has an active or pending workflow"),
-              ),
+              operator_command,
+              target,
+              issue_id,
             )
-            False ->
-              case
-                dict.get(
-                  state.runtime.parked,
-                  orchestrator_state.linear_issue_id_identity(issue_id),
+          {
+            Error(result) -> #(state, result)
+            Ok(issue) ->
+              continue_retry_workflow_step_for_operator(
+                state,
+                operator_command,
+                projection_state,
+                target,
+                step_id,
+                issue,
+              )
+          }
+      }
+  }
+}
+
+fn retry_step_issue_preflight(
+  state: State,
+  operator_command: command.OperatorCommand,
+  target: command.RetryWorkflowStepTarget,
+  issue_id: String,
+) -> Result(tracker_issue.Issue, command.CommandResult) {
+  case issue_is_active_or_pending(state, issue_id) {
+    True ->
+      Error(command.rejected(
+        operator_command,
+        "issue_already_active",
+        Some("issue already has an active or pending workflow"),
+      ))
+    False ->
+      case
+        dict.get(
+          state.runtime.parked,
+          orchestrator_state.linear_issue_id_identity(issue_id),
+        )
+      {
+        Ok(parked) ->
+          Error(command.rejected(
+            operator_command,
+            "issue_parked",
+            Some(
+              "issue is parked for "
+              <> orchestrator_reason.park_to_string(parked.reason)
+              <> "; unpark before retry-step",
+            ),
+          ))
+        Error(Nil) ->
+          case fetch_issue_by_id(state, issue_id) {
+            Error(status) ->
+              Error(command.result_for(operator_command, status, None))
+            Ok(issue) ->
+              case core.is_terminal(state.workflow.effective, issue.state) {
+                True ->
+                  Error(command.rejected(
+                    operator_command,
+                    "issue_state_drift:terminal_state",
+                    Some(
+                      "run "
+                      <> command.retry_workflow_step_target_to_string(target)
+                      <> " for issue "
+                      <> issue.identifier
+                      <> " is currently in terminal state "
+                      <> issue_state.to_string(issue.state),
+                    ),
+                  ))
+                False ->
+                  case core.is_active(state.workflow.effective, issue.state) {
+                    True -> Ok(issue)
+                    False ->
+                      Error(command.rejected(
+                        operator_command,
+                        "issue_state_drift:non_active_state",
+                        Some(
+                          "run "
+                          <> command.retry_workflow_step_target_to_string(
+                            target,
+                          )
+                          <> " for issue "
+                          <> issue.identifier
+                          <> " is currently in non-active state "
+                          <> issue_state.to_string(issue.state)
+                          <> "; move the issue to a configured active state before retrying",
+                        ),
+                      ))
+                  }
+              }
+          }
+      }
+  }
+}
+
+fn continue_retry_workflow_step_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  projection_state: projection.Projection,
+  target: command.RetryWorkflowStepTarget,
+  step_id: Option(String),
+  issue: tracker_issue.Issue,
+) -> #(State, command.CommandResult) {
+  let observation =
+    startup_recovery.current_workflow_observation(state.workflow.bundle, issue)
+  case workflow_repair.plan(projection_state, target, step_id, observation) {
+    Error(error) -> #(
+      state,
+      command.rejected(
+        operator_command,
+        workflow_repair.describe_error(error),
+        workflow_repair.error_message(error),
+      ),
+    )
+    Ok(plan) ->
+      case
+        recovery.finalize_workflow_candidates_with_config(
+          projection_state,
+          [plan.candidate],
+          dict.from_list([#(plan.run_id, observation)]),
+          artifact_store.new(state.workflow.effective.workspace.root),
+          state.dependencies.now_ms(),
+          state.workflow.effective,
+        )
+      {
+        Error(error) -> #(
+          state,
+          command.rejected(
+            operator_command,
+            recovery.describe_error(error),
+            Some(recovery.describe_error(error)),
+          ),
+        )
+        Ok(finalization) ->
+          case finalization.resumptions {
+            [resumption] -> {
+              let bodies =
+                list.append(
+                  plan.records_to_append,
+                  ledger_record_bodies(finalization.records_to_append),
                 )
+              case
+                append_ledger_bodies(state, bodies, "retry_step_append_failed")
               {
-                Ok(parked) -> #(
+                False -> #(
                   state,
                   command.rejected(
                     operator_command,
-                    "issue_parked",
-                    Some(
-                      "issue is parked for "
-                      <> orchestrator_reason.park_to_string(parked.reason)
-                      <> "; unpark before retry-step",
-                    ),
+                    "ledger_append_failed",
+                    Some("failed to append retry-step repair records"),
                   ),
                 )
-                Error(Nil) ->
-                  case issue_for_id(state, issue_id) {
-                    Error(status) -> #(
-                      state,
-                      command.result_for(operator_command, status, None),
-                    )
-                    Ok(issue) -> {
-                      let observation =
-                        startup_recovery.current_workflow_observation(
-                          state.workflow.bundle,
-                          issue,
-                        )
-                      case
-                        workflow_repair.plan(
-                          projection_state,
-                          target,
-                          step_id,
-                          observation,
-                        )
-                      {
-                        Error(error) -> #(
-                          state,
-                          command.rejected(
-                            operator_command,
-                            workflow_repair.describe_error(error),
-                            workflow_repair.error_message(error),
-                          ),
-                        )
-                        Ok(plan) ->
-                          case
-                            recovery.finalize_workflow_candidates_with_config(
-                              projection_state,
-                              [plan.candidate],
-                              dict.from_list([
-                                #(plan.run_id, observation),
-                              ]),
-                              artifact_store.new(
-                                state.workflow.effective.workspace.root,
-                              ),
-                              state.dependencies.now_ms(),
-                              config_types.with_additional_active_state(
-                                state.workflow.effective,
-                                issue.state,
-                              ),
-                            )
-                          {
-                            Error(error) -> #(
-                              state,
-                              command.rejected(
-                                operator_command,
-                                recovery.describe_error(error),
-                                Some(recovery.describe_error(error)),
-                              ),
-                            )
-                            Ok(finalization) ->
-                              case finalization.resumptions {
-                                [resumption] -> {
-                                  let bodies =
-                                    list.append(
-                                      plan.records_to_append,
-                                      ledger_record_bodies(
-                                        finalization.records_to_append,
-                                      ),
-                                    )
-                                  case
-                                    append_ledger_bodies(
-                                      state,
-                                      bodies,
-                                      "retry_step_append_failed",
-                                    )
-                                  {
-                                    False -> #(
-                                      state,
-                                      command.rejected(
-                                        operator_command,
-                                        "ledger_append_failed",
-                                        Some(
-                                          "failed to append retry-step repair records",
-                                        ),
-                                      ),
-                                    )
-                                    True -> {
-                                      let state =
-                                        spawn_recovered_workflow_resumption(
-                                          state,
-                                          resumption,
-                                        )
-                                      #(
-                                        state,
-                                        command.applied(
-                                          operator_command,
-                                          Some(
-                                            "retrying run "
-                                            <> plan.run_id
-                                            <> " step "
-                                            <> plan.selected_step_id
-                                            <> " at attempt "
-                                            <> int.to_string(
-                                              plan.next_attempt_index,
-                                            ),
-                                          ),
-                                        ),
-                                      )
-                                    }
-                                  }
-                                }
-                                _ ->
-                                  case
-                                    append_ledger_bodies(
-                                      state,
-                                      retry_step_rejection_diagnostic_bodies(
-                                        finalization,
-                                      ),
-                                      "retry_step_rejection_diagnostic_append_failed",
-                                    )
-                                  {
-                                    False | True -> #(
-                                      state,
-                                      command.rejected(
-                                        operator_command,
-                                        rejection_reason_from_finalization(
-                                          finalization,
-                                        ),
-                                        rejection_message_from_finalization(
-                                          finalization,
-                                        ),
-                                      ),
-                                    )
-                                  }
-                              }
-                          }
-                      }
-                    }
-                  }
+                True -> {
+                  let state =
+                    spawn_recovered_workflow_resumption(state, resumption)
+                  #(
+                    state,
+                    command.applied(
+                      operator_command,
+                      Some(
+                        "retrying run "
+                        <> plan.run_id
+                        <> " step "
+                        <> plan.selected_step_id
+                        <> " at attempt "
+                        <> int.to_string(plan.next_attempt_index),
+                      ),
+                    ),
+                  )
+                }
               }
+            }
+            _ -> {
+              let _ =
+                append_ledger_bodies(
+                  state,
+                  retry_step_rejection_diagnostic_bodies(finalization),
+                  "retry_step_rejection_diagnostic_append_failed",
+                )
+              #(
+                state,
+                command.rejected(
+                  operator_command,
+                  rejection_reason_from_finalization(finalization),
+                  rejection_message_from_finalization(finalization),
+                ),
+              )
+            }
           }
       }
   }
@@ -1777,6 +1816,316 @@ fn replay_projection_for_operator(
     ledger.read_records(ledger_path) |> result.map_error(ledger_error_message),
   )
   Ok(projection.fold(read.records))
+}
+
+fn cleanup_orphan_steps_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  dry_run: Bool,
+) -> #(State, command.CommandResult) {
+  case replay_projection_for_operator(state) {
+    Error(reason) -> #(
+      state,
+      command.rejected(operator_command, "ledger_read_failed", Some(reason)),
+    )
+    Ok(projected) -> {
+      let active_session_ids =
+        worker_registry.active_yaml_step_sessions_for_run(
+          state.registry,
+          run_id,
+        )
+      let parent_active = case
+        worker_registry.worker_for_run(state.registry, run_id)
+      {
+        Ok(_) -> True
+        Error(Nil) -> False
+      }
+      case
+        yaml_step_orphans.plan_cleanup(
+          projected,
+          run_id,
+          active_session_ids,
+          parent_active,
+        )
+      {
+        Error(yaml_step_orphans.UnknownRun) -> #(
+          state,
+          command.not_found(
+            operator_command,
+            Some("workflow run not found: " <> run_id),
+          ),
+        )
+        Error(yaml_step_orphans.ParentStillActive(parent_state)) -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "parent_run_active",
+            Some(
+              "workflow run "
+              <> run_id
+              <> " is still active ("
+              <> parent_state
+              <> ")",
+            ),
+          ),
+        )
+        Ok(plan) -> {
+          let message = cleanup_orphan_steps_message(plan, dry_run)
+          case dry_run {
+            True -> #(state, command.applied(operator_command, Some(message)))
+            False ->
+              case cleanup_orphaned_yaml_children_from_plan(state, plan, None) {
+                Ok(state) -> #(
+                  state,
+                  command.applied(operator_command, Some(message)),
+                )
+                Error(Nil) -> #(
+                  state,
+                  command.rejected(
+                    operator_command,
+                    "ledger_append_failed",
+                    Some("failed to append orphan step interruption records"),
+                  ),
+                )
+              }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn cleanup_orphan_steps_message(
+  plan: yaml_step_orphans.CleanupPlan,
+  dry_run: Bool,
+) -> String {
+  yaml_step_orphans.describe_cleanup(plan, dry_run: dry_run)
+}
+
+fn orphan_cleanup_plan_for_run(
+  state: State,
+  run_id: String,
+  parent_state: String,
+) -> Result(yaml_step_orphans.CleanupPlan, Nil) {
+  let active_session_ids =
+    worker_registry.active_yaml_step_sessions_for_run(state.registry, run_id)
+  case active_session_ids {
+    [] ->
+      Ok(
+        yaml_step_orphans.CleanupPlan(
+          run_id: run_id,
+          parent_state: parent_state,
+          candidates: [],
+        ),
+      )
+    _ ->
+      case replay_projection_for_operator(state) {
+        Error(_) -> Error(Nil)
+        Ok(projected) ->
+          Ok(yaml_step_orphans.CleanupPlan(
+            run_id: run_id,
+            parent_state: parent_state,
+            candidates: yaml_step_orphans.unfinished_candidates(
+              projected,
+              run_id,
+              active_session_ids,
+            ),
+          ))
+      }
+  }
+}
+
+fn cleanup_orphaned_yaml_children_after_parent_stop(
+  state: State,
+  run_id: String,
+  _stop_reason: String,
+  issue_state_name: Option(String),
+) -> State {
+  case orphan_cleanup_plan_for_run(state, run_id, "stopped") {
+    Error(Nil) -> state
+    Ok(plan) ->
+      case
+        cleanup_orphaned_yaml_children_from_plan(state, plan, issue_state_name)
+      {
+        Ok(state) -> state
+        Error(Nil) -> state
+      }
+  }
+}
+
+fn record_orphaned_yaml_children_from_plan(
+  state: State,
+  plan: yaml_step_orphans.CleanupPlan,
+  issue_state_name: Option(String),
+) -> Bool {
+  let bodies =
+    yaml_step_orphans.interruption_records(
+      plan.run_id,
+      plan.candidates,
+      "orphaned_parent_stopped",
+    )
+  let appended = case bodies {
+    [] -> True
+    _ ->
+      append_ledger_bodies(
+        state,
+        bodies,
+        "yaml_step_orphan_cleanup_append_failed",
+      )
+  }
+  case appended {
+    True ->
+      list.each(plan.candidates, fn(candidate) {
+        case candidate.session_id {
+          Some(session_id) -> {
+            let recovery =
+              yaml_child_recovery_info(
+                plan.run_id,
+                candidate.step_id,
+                candidate.attempt_index,
+                issue_state_name,
+                orphan_status: Some("orphaned_parent_stopped"),
+                recommended_action: Some("cleanup_orphan_steps"),
+              )
+            hub.update_recovery(state.event_hub, session_id, Some(recovery))
+            publish_recovery_lifecycle(
+              state.event_hub,
+              session_id,
+              Some(recovery),
+            )
+          }
+          None -> Nil
+        }
+      })
+    False -> Nil
+  }
+  appended
+}
+
+fn record_orphaned_yaml_children_after_parent_stop(
+  state: State,
+  run_id: String,
+  issue_state_name: Option(String),
+) -> State {
+  case orphan_cleanup_plan_for_run(state, run_id, "stopping") {
+    Error(Nil) -> state
+    Ok(plan) -> {
+      record_orphaned_yaml_children_from_plan(state, plan, issue_state_name)
+      state
+    }
+  }
+}
+
+fn cleanup_orphaned_yaml_children_from_plan(
+  state: State,
+  plan: yaml_step_orphans.CleanupPlan,
+  issue_state_name: Option(String),
+) -> Result(State, Nil) {
+  case record_orphaned_yaml_children_from_plan(state, plan, issue_state_name) {
+    False -> Error(Nil)
+    True -> {
+      request_abort_for_orphaned_yaml_children(state, plan.candidates)
+      let state =
+        finish_yaml_step_sessions_for_run(
+          state,
+          plan.run_id,
+          session_reason.Stopped,
+        )
+      let state = clear_yaml_step_command_routes_for_run(state, plan.run_id)
+      Ok(
+        State(
+          ..state,
+          registry: worker_registry.mark_yaml_run_stopping(
+            state.registry,
+            plan.run_id,
+            session_reason.Stopped,
+          ),
+        ),
+      )
+    }
+  }
+}
+
+fn request_abort_for_orphaned_yaml_children(
+  state: State,
+  candidates: List(yaml_step_orphans.CleanupCandidate),
+) -> Nil {
+  list.each(candidates, fn(candidate) {
+    case candidate.session_id {
+      Some(session_id) ->
+        case
+          worker_registry.step_command_subject_for_session(
+            state.registry,
+            session_id,
+          )
+        {
+          Ok(subject) -> {
+            let reply = process.new_subject()
+            process.send(subject, worker_command.Abort(reply))
+            Nil
+          }
+          Error(Nil) -> Nil
+        }
+      None -> Nil
+    }
+  })
+}
+
+fn yaml_child_recovery_info(
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  issue_state_name: Option(String),
+  orphan_status orphan_status: Option(String),
+  recommended_action recommended_action: Option(String),
+) -> session_event.RecoveryInfo {
+  session_event.RecoveryInfo(
+    ..session_recovery.base_info(
+      session_event.Cleanup,
+      "workflow.yaml_step_orphan_cleanup",
+      Some("parent workflow run stopped before child step completed"),
+      [],
+    ),
+    workflow_run_id: Some(run_id),
+    workflow_step_id: Some(step_id),
+    workflow_attempt_index: Some(attempt_index),
+    parent_session_id: Some(run_id),
+    orphan_status: orphan_status,
+    issue_state: issue_state_name,
+    recommended_action: recommended_action,
+  )
+}
+
+fn worker_issue_state_name(state: State, run_id: String) -> Option(String) {
+  case worker_registry.worker_for_run(state.registry, run_id) {
+    Ok(handle) -> Some(issue_state.to_string(handle.issue.state))
+    Error(Nil) -> None
+  }
+}
+
+fn worker_run_id_from_resolution(
+  resolution: worker_registry.DownResolution,
+) -> Option(String) {
+  case resolution {
+    worker_registry.WorkerDown(_, _, handle) -> Some(handle.run_id)
+    worker_registry.UnknownDown(_)
+    | worker_registry.StepCommandDown(_, _)
+    | worker_registry.WorkerDownStale(_, _)
+    | worker_registry.ScheduledWorkerDown(_, _, _)
+    | worker_registry.ScheduledWorkerDownStale(_, _) -> None
+  }
+}
+
+fn worker_issue_state_name_from_resolution(
+  _state: State,
+  resolution: worker_registry.DownResolution,
+) -> Option(String) {
+  case resolution {
+    worker_registry.WorkerDown(_, _, handle) ->
+      Some(issue_state.to_string(handle.issue.state))
+    _ -> None
+  }
 }
 
 fn issue_is_active_or_pending(state: State, issue_id: String) -> Bool {
@@ -2248,8 +2597,14 @@ fn stop_session_for_operator(
       state,
       command.not_found(operator_command, Some("session not found")),
     )
-    Ok(_) -> {
+    Ok(handle) -> {
       let reason_text = session_reason.to_string(reason)
+      let state =
+        record_orphaned_yaml_children_after_parent_stop(
+          state,
+          handle.run_id,
+          Some(issue_state.to_string(handle.issue.state)),
+        )
       let state =
         run_transition_messages(state, [
           transition_types.WorkerStopRequested(
@@ -4969,13 +5324,32 @@ fn tracker_error_message(err: error.TrackerError) -> String {
 
 fn worker_finished_context(
   state: State,
+  run_id: String,
+  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> worker_lifecycle.WorkerFinishedContext(State) {
+  let issue_state_name = worker_issue_state_name(state, run_id)
+  let cleanup_reason = case result {
+    Ok(_) -> None
+    Error(failure) -> Some(error.agent_code(failure.reason))
+  }
   worker_lifecycle.WorkerFinishedContext(
     state: state,
     evaluate_scheduled_jobs: evaluate_scheduled_jobs,
     run_transition_messages: run_transition_messages,
     lifecycle_context: transition_lifecycle_context,
-    start_pending_scheduled_runs: start_pending_scheduled_runs,
+    start_pending_scheduled_runs: fn(state) {
+      let state = case cleanup_reason {
+        Some(reason) ->
+          cleanup_orphaned_yaml_children_after_parent_stop(
+            state,
+            run_id,
+            reason,
+            issue_state_name,
+          )
+        None -> state
+      }
+      start_pending_scheduled_runs(state)
+    },
   )
 }
 
@@ -5081,10 +5455,24 @@ fn worker_down_context(
       worker_registry.resolve_down(state.registry, monitor)
     },
     handle_registry_down_resolution: fn(state, resolution) {
-      worker_lifecycle.handle_registry_down_resolution(
-        registry_down_resolution_context(state),
-        resolution,
-      )
+      let issue_state_name =
+        worker_issue_state_name_from_resolution(state, resolution)
+      let cleanup_run_id = worker_run_id_from_resolution(resolution)
+      let state =
+        worker_lifecycle.handle_registry_down_resolution(
+          registry_down_resolution_context(state),
+          resolution,
+        )
+      case cleanup_run_id {
+        Some(run_id) ->
+          cleanup_orphaned_yaml_children_after_parent_stop(
+            state,
+            run_id,
+            "worker_down",
+            issue_state_name,
+          )
+        None -> state
+      }
     },
   )
 }

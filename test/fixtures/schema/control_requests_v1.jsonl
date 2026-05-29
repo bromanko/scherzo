@@ -12,6 +12,7 @@
 {"issue_identifier":"LIV-94","version":1,"id":"req-unpark","token":"secret","type":"unpark"}
 {"session_id":"session-1","version":1,"id":"req-abort","token":"secret","type":"abort"}
 {"session_id":"session-1","version":1,"id":"req-stop","token":"secret","type":"stop_after_current_turn"}
+{"run_id":"run-1","dry_run":true,"version":1,"id":"req-cleanup-orphans","token":"secret","type":"cleanup_orphan_steps"}
 {"session_id":"session-1","message":"continue please","version":1,"id":"req-prompt","token":"secret","type":"prompt"}
 {"session_id":"session-1","request_id":"ui-1","value":"approved","version":1,"id":"req-respond-ui","token":"secret","type":"respond_ui"}
 {"job_id":"nightly-repair","version":1,"id":"req-schedule-now","token":"secret","type":"schedule_run_now"}

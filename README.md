@@ -11,7 +11,7 @@ Use Scherzo when you want to:
 - run the same agent workflow for every eligible task instead of one-off chats;
 - route tasks by labels such as `workflow:implementation` or `workflow:research`; Linear issues are the supported production task source today;
 - isolate implementation attempts in workspace-driver-managed directories;
-- combine agent steps, command validation steps, review steps, and handoff comments;
+- combine agent steps, command validation steps, review steps, and tracker task updates;
 - retain artifacts and operator-visible events for inspection and recovery; and
 - start cautiously with `doctor` and `--once` before daemon mode.
 
@@ -25,10 +25,11 @@ Workflow files and workspace drivers are trusted local configuration. Scherzo en
 
 If you are adapting Scherzo to another repository, start with the guided adopter path:
 
-- [Getting started](docs/GETTING_STARTED.md) — from empty repo config to a cautious `--once` run.
+- [Getting started](docs/GETTING_STARTED.md) — from minimal repo config to a cautious `--once` run.
+- [Simplified YAML migration guide](docs/runbooks/simplified-yaml-migration.md) — old/new config examples and upgrade checklist.
 - [Example orchestrator config](examples/scherzo.yaml) — complete source-tree example.
-- [Packaged no-op profile example](examples/scherzo-packaged-noop.yaml) — artifact-only/research workflows.
-- [Packaged jj profile example](examples/scherzo-packaged-jj.yaml) — implementation workflows with the bundled jj driver.
+- [Packaged no-op driver example](examples/scherzo-packaged-noop.yaml) — artifact-only/research workflows.
+- [Packaged jj driver example](examples/scherzo-packaged-jj.yaml) — implementation workflows with the bundled jj driver.
 - [Example workflows](examples/workflows/) — YAML DAGs and prompt templates.
 
 The usual first run is:
@@ -50,6 +51,7 @@ When working from this source checkout, run the same entrypoints through devenv,
 | End-to-end adoption path | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
 | Repository architecture and change checklist | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Breaking-change upgrade policy | [docs/runbooks/upgrades.md](docs/runbooks/upgrades.md) |
+| Simplified YAML schema and migration | [docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md](docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md) and [docs/runbooks/simplified-yaml-migration.md](docs/runbooks/simplified-yaml-migration.md) |
 | Workspace driver contract | [docs/specs/WORKSPACE_DRIVER_SPEC.md](docs/specs/WORKSPACE_DRIVER_SPEC.md) |
 | Structured output and validators | [docs/specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md](docs/specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md) |
 | Workspace driver migration notes | [docs/runbooks/workspace-driver-migration.md](docs/runbooks/workspace-driver-migration.md) |
@@ -84,7 +86,7 @@ This repository dogfoods the same shape under `.scherzo/` and keeps reusable exa
 
 ## Core concepts
 
-- **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, workspace drivers, pi settings, agent limits, handoff policy, routing, artifact limits, and Linear contract compatibility checks.
+- **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, top-level workflow routes, workspace drivers, agent runtime settings, task-update policy, artifact limits, and Linear setup checks.
 - **Workspace drivers** decide where each step runs. Bundled packaged drivers include `scherzo-workspace-noop` for artifact-only workflows and `scherzo-workspace-jj` for jj-backed implementation workspaces. Custom drivers must follow the workspace driver spec.
 - **Workflow DAGs** are YAML files routed by task metadata, currently Linear workflow labels. Steps infer agent vs command behavior from `prompt` or `run`, run in lanes selected by `run_in`, and use `recovery` for bounded step remediation.
 - **Structured output** lets an agent step return a required JSON artifact and validate it with baseline checks, JSON Schema validators, command validators, or both.
