@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/structured_output_source
@@ -23,6 +24,7 @@ pub type WorkflowDag {
     recover: Option(RecoveryConfigPatch),
     steps: List(WorkflowStep),
     contract: Option(workflow_contract.Contract),
+    publication_routes: List(artifact_publication_config.PublicationRoute),
     workstream_phase: Option(phase_metadata.PhaseMetadata),
   )
 }
@@ -137,6 +139,10 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
       use recover <- result.try(read_recovery(root, "recovery"))
       use steps <- result.try(read_steps(root))
       use contract <- result.try(read_contract(root))
+      use publication_routes <- result.try(read_publication_routes(
+        root,
+        contract,
+      ))
       use workstream_phase <- result.try(read_workstream_phase(root, contract))
       let dag =
         WorkflowDag(
@@ -148,6 +154,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
           recover: recover,
           steps: steps,
           contract: contract,
+          publication_routes: publication_routes,
           workstream_phase: workstream_phase,
         )
       validate(dag)
@@ -262,6 +269,18 @@ pub fn validator_working_directory_to_string(
     ValidatorInRepository -> "repository"
     ValidatorInRunRoot -> "run_root"
   }
+}
+
+fn read_publication_routes(
+  root: yay.Node,
+  contract: Option(workflow_contract.Contract),
+) -> Result(List(artifact_publication_config.PublicationRoute), DagError) {
+  artifact_publication_config.parse_workflow_publications(root, contract)
+  |> result.map_error(fn(parse_error) {
+    let artifact_publication_config.PublicationConfigError(code, message) =
+      parse_error
+    DagError(code, message)
+  })
 }
 
 fn validate(dag: WorkflowDag) -> Result(WorkflowDag, DagError) {

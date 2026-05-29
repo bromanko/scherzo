@@ -8,6 +8,7 @@ import gleam/result
 import gleam/string
 import scherzo/agent/pi_rpc
 import scherzo/agent/types as agent_types
+import scherzo/artifact_publication_config
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
@@ -194,6 +195,7 @@ fn orchestrator() -> config_types.OrchestratorConfig {
       template_field_max_chars: 1000,
       workflow_summary_max_chars: 4000,
     ),
+    artifact_repositories: artifact_publication_config.empty_repositories(),
     model_settings: model_config.default_settings(),
     scheduled_jobs: [],
   )

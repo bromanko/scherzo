@@ -483,6 +483,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
       workspace_capabilities: [],
       max_parallel_steps: 2,
       recover: None,
+      publication_routes: [],
       workstream_phase: None,
       steps: [
         workflow_dag.WorkflowStep(
