@@ -16,6 +16,7 @@ import scherzo/workflow_contract_manifest
 import scherzo/workflow_run
 import scherzo/workstream/artifact_store
 import scherzo/workstream/artifacts
+import scherzo/workstream/decision
 import scherzo/workstream/id as workstream_id
 import scherzo/workstream/ledger
 import scherzo/workstream/start_key
@@ -154,6 +155,14 @@ pub fn from_handoff(
     handoff_sha256,
   ))
   use inputs <- result.try(inputs_from_handoff(handoff.outputs, contract))
+  use gate_decision_ids <- result.try(authorize_gate(
+    checkpoint,
+    projected,
+    handoff.workstream_id,
+    action_id,
+    inputs,
+    gate_decision_ids,
+  ))
   queue_start(
     workstream_id: handoff.workstream_id,
     workflow_id: workflow_id,
@@ -194,6 +203,14 @@ pub fn from_input_bundle(
     input_bundle_sha256,
   ))
   use inputs <- result.try(inputs_from_bundle(bundle.inputs))
+  use gate_decision_ids <- result.try(authorize_gate(
+    checkpoint,
+    projected,
+    bundle.workstream_id,
+    action_id,
+    inputs,
+    gate_decision_ids,
+  ))
   let idempotency_key =
     derive_key(bundle.workstream_id, action_id, inputs, gate_decision_ids)
   let contract_values = contract_values_for(inputs)
@@ -286,8 +303,21 @@ pub fn from_manual(
         |> result.map_error(manual_error),
       )
       let preview_inputs = resolved_manual_inputs(preview_inputs)
+      use preview_gate_decision_ids <- result.try(authorize_gate(
+        checkpoint,
+        projected,
+        workstream_id,
+        action_id,
+        preview_inputs,
+        gate_decision_ids,
+      ))
       let idempotency_key =
-        derive_key(workstream_id, action_id, preview_inputs, gate_decision_ids)
+        derive_key(
+          workstream_id,
+          action_id,
+          preview_inputs,
+          preview_gate_decision_ids,
+        )
       let contract_values = contract_values_for(preview_inputs)
       use existing <- result.try(projected_start_result(
         projected,
@@ -309,6 +339,14 @@ pub fn from_manual(
             |> result.map_error(manual_error),
           )
           let inputs = resolved_manual_inputs(inputs)
+          use gate_decision_ids <- result.try(authorize_gate(
+            checkpoint,
+            projected,
+            workstream_id,
+            action_id,
+            inputs,
+            gate_decision_ids,
+          ))
           let at_ms = checkpoint.now_ms()
           let task_ref =
             record.linear_task_ref_fields(
@@ -849,6 +887,33 @@ fn input_binding(input: ResolvedInput) -> types.InputBinding {
     artifact_type: Some(input.artifact_type),
     source_kind: Some(input.source_kind),
   )
+}
+
+fn authorize_gate(
+  checkpoint: workflow_checkpoint.Writer,
+  projected: projection.Projection,
+  workstream_id: String,
+  action_id: String,
+  inputs: List(ResolvedInput),
+  gate_decision_ids: List(String),
+) -> Result(List(String), StartError) {
+  decision.authorize_gate(
+    checkpoint,
+    projected,
+    workstream_id,
+    action_id,
+    list.map(inputs, decision_input),
+    gate_decision_ids,
+  )
+  |> result.map_error(decision_error)
+}
+
+fn decision_input(input: ResolvedInput) -> decision.DecisionInput {
+  decision.DecisionInput(name: input.name, ref: input.ref, sha256: input.sha256)
+}
+
+fn decision_error(error: decision.DecisionError) -> StartError {
+  StartError(decision.error_code(error), decision.error_message(error))
 }
 
 fn derive_key(

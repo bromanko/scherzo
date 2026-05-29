@@ -32,7 +32,16 @@ pub type ArtifactDetail {
     auto_enqueue: Bool,
     resolved_by_phase_run_id: Option(String),
   )
-  DecisionDetail(kind: String, summary: String, decided_by: String)
+  DecisionDetail(
+    action_id: String,
+    gate_id: String,
+    kind: String,
+    decided_at_ms: Int,
+    decided_by: String,
+    rationale: String,
+    inputs: List(DecisionInputInspection),
+    summary: String,
+  )
   InputBundleDetail(
     workflow_id: String,
     source_handoff_ref: String,
@@ -118,12 +127,21 @@ pub type NextActionInspection {
   )
 }
 
+pub type DecisionInputInspection {
+  DecisionInputInspection(name: String, ref: String, sha256: String)
+}
+
 pub type DecisionInspection {
   DecisionInspection(
     artifact_id: String,
+    action_id: String,
+    gate_id: String,
     kind: String,
-    summary: String,
+    decided_at_ms: Int,
     decided_by: String,
+    rationale: String,
+    inputs: List(DecisionInputInspection),
+    summary: String,
     snapshot_ref: String,
     snapshot_sha256: String,
     recorded_at_ms: Int,
@@ -517,9 +535,14 @@ fn decode_artifact_detail(
       case artifacts.decode_decision(contents) {
         Ok(decoded) ->
           DecisionDetail(
+            action_id: decoded.action_id,
+            gate_id: decoded.gate_id,
             kind: decoded.kind,
-            summary: truncate(decoded.summary),
+            decided_at_ms: decoded.decided_at_ms,
             decided_by: truncate(decoded.decided_by),
+            rationale: truncate(decoded.rationale),
+            inputs: list.map(decoded.inputs, decision_input_inspection),
+            summary: truncate(decoded.summary),
           )
         Error(error) -> spec_detail("artifact_decode_failed", error)
       }
@@ -537,6 +560,16 @@ fn decode_artifact_detail(
       }
     _ -> ArtifactUndecoded
   }
+}
+
+fn decision_input_inspection(
+  input: types.DecisionInputRef,
+) -> DecisionInputInspection {
+  DecisionInputInspection(
+    name: input.name,
+    ref: input.ref,
+    sha256: input.sha256,
+  )
 }
 
 fn spec_detail(code: String, error: types.SpecError) -> ArtifactDetail {
@@ -620,12 +653,26 @@ fn decisions_from_artifacts(
   artifacts
   |> list.filter_map(fn(artifact) {
     case artifact.detail {
-      DecisionDetail(kind, summary, decided_by) ->
+      DecisionDetail(
+        action_id,
+        gate_id,
+        kind,
+        decided_at_ms,
+        decided_by,
+        rationale,
+        inputs,
+        summary,
+      ) ->
         Ok(DecisionInspection(
           artifact_id: artifact.artifact_id,
+          action_id: action_id,
+          gate_id: gate_id,
           kind: kind,
-          summary: summary,
+          decided_at_ms: decided_at_ms,
           decided_by: decided_by,
+          rationale: rationale,
+          inputs: inputs,
+          summary: summary,
           snapshot_ref: artifact.snapshot_ref,
           snapshot_sha256: artifact.snapshot_sha256,
           recorded_at_ms: artifact.recorded_at_ms,

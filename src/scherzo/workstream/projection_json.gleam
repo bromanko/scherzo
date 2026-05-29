@@ -147,12 +147,27 @@ fn next_action_to_json(action: projection.NextActionInspection) -> json.Json {
 fn decision_to_json(decision: projection.DecisionInspection) -> json.Json {
   json.object([
     #("artifact_id", json.string(decision.artifact_id)),
+    #("action_id", json.string(decision.action_id)),
+    #("gate_id", json.string(decision.gate_id)),
     #("kind", json.string(decision.kind)),
-    #("summary", json.string(decision.summary)),
+    #("decided_at_ms", json.int(decision.decided_at_ms)),
     #("decided_by", json.string(decision.decided_by)),
+    #("rationale", json.string(decision.rationale)),
+    #("inputs", json.array(decision.inputs, of: decision_input_to_json)),
+    #("summary", json.string(decision.summary)),
     #("snapshot_ref", json.string(decision.snapshot_ref)),
     #("snapshot_sha256", json.string(decision.snapshot_sha256)),
     #("recorded_at_ms", json.int(decision.recorded_at_ms)),
+  ])
+}
+
+fn decision_input_to_json(
+  input: projection.DecisionInputInspection,
+) -> json.Json {
+  json.object([
+    #("name", json.string(input.name)),
+    #("ref", json.string(input.ref)),
+    #("sha256", json.string(input.sha256)),
   ])
 }
 
@@ -204,12 +219,26 @@ fn detail_to_json(detail: projection.ArtifactDetail) -> json.Json {
           option_string_to_json(resolved_by_phase_run_id),
         ),
       ])
-    projection.DecisionDetail(kind, summary, decided_by) ->
+    projection.DecisionDetail(
+      action_id,
+      gate_id,
+      kind,
+      decided_at_ms,
+      decided_by,
+      rationale,
+      inputs,
+      summary,
+    ) ->
       json.object([
         #("kind", json.string("decision")),
+        #("action_id", json.string(action_id)),
+        #("gate_id", json.string(gate_id)),
         #("decision_kind", json.string(kind)),
-        #("summary", json.string(summary)),
+        #("decided_at_ms", json.int(decided_at_ms)),
         #("decided_by", json.string(decided_by)),
+        #("rationale", json.string(rationale)),
+        #("inputs", json.array(inputs, of: decision_input_to_json)),
+        #("summary", json.string(summary)),
       ])
     projection.InputBundleDetail(
       workflow_id,

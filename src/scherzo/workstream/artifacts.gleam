@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/json_value
 import scherzo/workflow_contract
 import scherzo/workstream/artifact_values
+import scherzo/workstream/decision_artifact
 import scherzo/workstream/types
 
 pub fn decode_workstream(
@@ -114,47 +115,7 @@ pub fn decode_handoff(
 pub fn decode_decision(
   contents: String,
 ) -> Result(types.DecisionArtifact, types.SpecError) {
-  use entries <- result.try(parse_object(contents))
-  use Nil <- result.try(validate_headers(entries, types.decision_artifact_type))
-  use artifact_id <- result.try(required_string(
-    entries,
-    "artifact_id",
-    "workstream_artifact_id_missing",
-  ))
-  use workstream_id <- result.try(required_string(
-    entries,
-    "workstream_id",
-    "workstream_workstream_id_missing",
-  ))
-  use kind <- result.try(required_string(
-    entries,
-    "kind",
-    "workstream_decision_kind_missing",
-  ))
-  use Nil <- result.try(validate_decision_kind(kind))
-  use summary <- result.try(required_string(
-    entries,
-    "summary",
-    "workstream_summary_missing",
-  ))
-  use decided_by <- result.try(required_string(
-    entries,
-    "decided_by",
-    "workstream_decided_by_missing",
-  ))
-  use rationale <- result.try(required_string(
-    entries,
-    "rationale",
-    "workstream_rationale_missing",
-  ))
-  Ok(types.DecisionArtifact(
-    artifact_id: artifact_id,
-    workstream_id: workstream_id,
-    kind: kind,
-    summary: summary,
-    decided_by: decided_by,
-    rationale: rationale,
-  ))
+  decision_artifact.decode(contents)
 }
 
 pub fn decode_input_bundle(
@@ -339,11 +300,11 @@ pub fn handoff_to_string(value: types.HandoffArtifact) -> String {
 }
 
 pub fn decision_to_json(value: types.DecisionArtifact) -> json.Json {
-  json_value.to_json(artifact_values.decision_to_value(value))
+  decision_artifact.to_json(value)
 }
 
 pub fn decision_to_string(value: types.DecisionArtifact) -> String {
-  decision_to_json(value) |> json.to_string
+  decision_artifact.to_string(value)
 }
 
 pub fn input_bundle_to_json(value: types.InputBundleArtifact) -> json.Json {
@@ -993,17 +954,6 @@ fn validate_contract_type(value: String) -> Result(Nil, types.SpecError) {
     Ok(_) -> Ok(Nil)
     Error(workflow_contract.ContractError(_, message)) ->
       spec_error("workstream_contract_type_unknown", message)
-  }
-}
-
-fn validate_decision_kind(value: String) -> Result(Nil, types.SpecError) {
-  case value {
-    "approve" | "request_changes" | "reject" | "deviate" -> Ok(Nil)
-    _ ->
-      spec_error(
-        "workstream_decision_kind_unknown",
-        "unknown decision kind: " <> value,
-      )
   }
 }
 

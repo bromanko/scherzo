@@ -3,8 +3,18 @@
   "artifact_type": "scherzo.decision.v1",
   "artifact_id": "decision-linear-liv-370-approve",
   "workstream_id": "linear:LIV-370",
+  "action_id": "implement_exec_plan",
+  "gate_id": "human_review",
   "kind": "escalate",
-  "summary": "Artifact taxonomy accepted.",
+  "decided_at_ms": 1770000000000,
   "decided_by": "reviewer@example.invalid",
-  "rationale": "Fixture and schema coverage is complete."
+  "rationale": "Fixture and schema coverage is complete.",
+  "inputs": [
+    {
+      "name": "exec_plan_bundle",
+      "ref": "workstream-artifacts/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "summary": "Artifact taxonomy accepted."
 }
