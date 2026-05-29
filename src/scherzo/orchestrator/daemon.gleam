@@ -19,13 +19,14 @@ import scherzo/error
 import scherzo/log
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
-import scherzo/orchestrator/daemon_remote_client
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/effects/interpreter as transition_interpreter
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/event_publisher
+import scherzo/orchestrator/operator_runtime
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/reason as orchestrator_reason
+import scherzo/orchestrator/remote_command_runtime
 import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
@@ -146,9 +147,10 @@ pub type RuntimeDependencies {
       process.Subject(Message),
       List(String),
       fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
-    ) -> Result(daemon_remote_client.Handle, StartupError),
-    stop_remote_client: fn(daemon_remote_client.Handle, Int) -> Result(Nil, Nil),
-    monitor_remote_client: fn(daemon_remote_client.Handle) -> process.Monitor,
+    ) -> Result(remote_command_runtime.Handle, StartupError),
+    stop_remote_client: fn(remote_command_runtime.Handle, Int) ->
+      Result(Nil, Nil),
+    monitor_remote_client: fn(remote_command_runtime.Handle) -> process.Monitor,
   )
 }
 
@@ -178,7 +180,7 @@ type State {
     event_hub: process.Subject(hub.Message),
     control_server: ControlServerHandle,
     control_file_path: Option(String),
-    remote_client: Option(daemon_remote_client.Handle),
+    remote_client: Option(remote_command_runtime.Handle),
     remote_client_monitor: Option(process.Monitor),
     operator_paused: Bool,
     last_operator_command_result: Option(command.CommandResult),
@@ -232,25 +234,24 @@ pub fn default_dependencies() -> RuntimeDependencies {
       secrets,
       logger,
     ) {
-      daemon_remote_client.start_with_control(
+      remote_command_runtime.start_remote_client(
         effective,
         event_hub,
-        fn(operator_command, timeout_ms) {
-          apply_operator_command(daemon_subject, operator_command, timeout_ms)
-        },
-        fn(timeout_ms) {
-          get_remote_dispatch_paused(daemon_subject, timeout_ms)
-        },
+        daemon_subject,
         secrets,
         logger,
+        remote_command_runtime.control_dependencies(
+          apply_operator_command: apply_operator_command,
+          get_remote_dispatch_paused: get_remote_dispatch_paused,
+        ),
       )
       |> result.map_error(fn(err) {
-        let daemon_remote_client.StartError(code: code, message: message) = err
+        let #(code, message) = remote_command_runtime.start_error_fields(err)
         StartupError(code, message)
       })
     },
-    stop_remote_client: daemon_remote_client.stop,
-    monitor_remote_client: daemon_remote_client.monitor,
+    stop_remote_client: remote_command_runtime.stop,
+    monitor_remote_client: remote_command_runtime.monitor,
   )
 }
 
@@ -1454,135 +1455,49 @@ fn operator_issue_resolution(
   state: State,
   operator_command: command.OperatorCommand,
 ) -> transition_types.OperatorIssueResolution {
-  case operator_command {
-    command.RetryIssue(issue_ref) | command.ParkIssue(issue_ref, _) ->
-      case issue_for_ref(state, issue_ref) {
-        Ok(issue) -> transition_types.OperatorIssueResolved(issue)
-        Error(command.NotFound) -> transition_types.OperatorIssueNotFound
-        Error(command.Rejected(reason)) ->
-          transition_types.OperatorIssueRejected(reason)
-        Error(command.NotAllowed(reason)) ->
-          transition_types.OperatorIssueNotAllowed(reason)
-        Error(command.Applied) | Error(command.Queued) ->
-          transition_types.OperatorIssueResolutionFailed
-      }
-    command.PauseDispatch
-    | command.ResumeDispatch
-    | command.ReloadWorkflow
-    | command.RetryWorkflowStep(_, _)
-    | command.UnparkIssue(_)
-    | command.AbortSession(_)
-    | command.StopAfterCurrentTurn(_)
-    | command.CleanupOrphanSteps(_, _)
-    | command.PromptSession(_, _)
-    | command.RespondUi(_, _, _)
-    | command.RunScheduleNow(_) -> transition_types.OperatorIssueNotResolved
-  }
+  operator_runtime.operator_issue_resolution(
+    operator_runtime.lookup(
+      issue_for_ref: fn(issue_ref) { issue_for_ref(state, issue_ref) },
+      parked_issue_id_for_ref: fn(issue_ref) {
+        parked_issue_id_for_ref(state, issue_ref)
+      },
+    ),
+    operator_command,
+  )
 }
 
 fn parked_issue_resolution(
   state: State,
   operator_command: command.OperatorCommand,
 ) -> transition_types.ParkedIssueResolution {
-  case operator_command {
-    command.UnparkIssue(issue_ref) ->
-      case parked_issue_id_for_ref(state, issue_ref) {
-        Ok(issue_id) -> transition_types.ParkedIssueResolved(issue_id)
-        Error(command.NotFound) -> transition_types.ParkedIssueNotFound
-        Error(command.Rejected(reason)) ->
-          transition_types.ParkedIssueRejected(reason)
-        Error(command.NotAllowed(reason)) ->
-          transition_types.ParkedIssueNotAllowed(reason)
-        Error(command.Applied) | Error(command.Queued) ->
-          transition_types.ParkedIssueResolutionFailed
-      }
-    command.PauseDispatch
-    | command.ResumeDispatch
-    | command.ReloadWorkflow
-    | command.RetryIssue(_)
-    | command.RetryWorkflowStep(_, _)
-    | command.ParkIssue(_, _)
-    | command.AbortSession(_)
-    | command.StopAfterCurrentTurn(_)
-    | command.CleanupOrphanSteps(_, _)
-    | command.PromptSession(_, _)
-    | command.RespondUi(_, _, _)
-    | command.RunScheduleNow(_) -> transition_types.ParkedIssueNotResolved
-  }
+  operator_runtime.parked_issue_resolution(
+    operator_runtime.lookup(
+      issue_for_ref: fn(issue_ref) { issue_for_ref(state, issue_ref) },
+      parked_issue_id_for_ref: fn(issue_ref) {
+        parked_issue_id_for_ref(state, issue_ref)
+      },
+    ),
+    operator_command,
+  )
 }
 
 fn apply_shell_operator_command(
   state: State,
   request: transition_effects.OperatorCommandRequest,
 ) -> #(State, command.CommandResult) {
-  let operator_command = request.operator_command
-  let #(state, result) = case operator_command {
-    command.ReloadWorkflow ->
-      reload_workflow_for_operator(state, operator_command)
-    command.RetryWorkflowStep(target, step_id) ->
-      retry_workflow_step_for_operator(state, operator_command, target, step_id)
-    command.RunScheduleNow(job_id) ->
-      schedule_run_now_for_operator(state, operator_command, job_id)
-    command.AbortSession(session_id) ->
-      abort_session_for_operator_sync(
-        state,
-        operator_command,
-        session_id,
-        request.timeout_ms,
-      )
-    command.StopAfterCurrentTurn(session_id) ->
-      route_worker_command_sync(
-        state,
-        operator_command,
-        session_id,
-        request.timeout_ms,
-        fn(subject, reply) {
-          process.send(subject, worker_command.StopAfterCurrentTurn(reply))
-        },
-      )
-    command.CleanupOrphanSteps(run_id, dry_run) ->
-      cleanup_orphan_steps_for_operator(
-        state,
-        operator_command,
-        run_id,
-        dry_run,
-      )
-    command.PromptSession(session_id, message) ->
-      route_worker_command_sync(
-        state,
-        operator_command,
-        session_id,
-        request.timeout_ms,
-        fn(subject, reply) {
-          process.send(subject, worker_command.QueuePrompt(message, reply))
-        },
-      )
-    command.RespondUi(session_id, request_id, response) ->
-      route_worker_command_sync(
-        state,
-        operator_command,
-        session_id,
-        request.timeout_ms,
-        fn(subject, reply) {
-          process.send(
-            subject,
-            worker_command.RespondToUi(request_id, response, reply),
-          )
-        },
-      )
-    command.PauseDispatch
-    | command.ResumeDispatch
-    | command.RetryIssue(_)
-    | command.ParkIssue(_, _)
-    | command.UnparkIssue(_) -> #(
+  let #(state, result) =
+    operator_runtime.apply_shell_operator_command(
       state,
-      command.rejected(
-        operator_command,
-        "operator_command_already_handled",
-        None,
+      request,
+      operator_runtime.shell_handlers(
+        reload_workflow_for_operator: reload_workflow_for_operator,
+        retry_workflow_step_for_operator: retry_workflow_step_for_operator,
+        schedule_run_now_for_operator: schedule_run_now_for_operator,
+        abort_session_for_operator_sync: abort_session_for_operator_sync,
+        route_worker_command_sync: route_worker_command_sync,
+        cleanup_orphan_steps_for_operator: cleanup_orphan_steps_for_operator,
       ),
     )
-  }
   #(State(..state, shell_state_overrides_transition: True), result)
 }
 
@@ -6212,7 +6127,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       case state.dependencies.stop_remote_client(handle, 1000) {
         Ok(Nil) -> Nil
         Error(Nil) -> {
-          daemon_remote_client.kill(handle)
+          remote_command_runtime.kill(handle)
           log_state(state, "warn", "remote_client_shutdown_timeout", [
             #("timeout_ms", "1000"),
           ])
