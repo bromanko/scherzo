@@ -1,7 +1,8 @@
 { lib
-, stdenvNoCC
+, stdenv
 , fetchurl
 , unzip
+, autoPatchelfHook
 ,
 }:
 
@@ -37,12 +38,12 @@ let
   };
 
   source =
-    sources.${stdenvNoCC.hostPlatform.system}
-      or (throw "linear-cli is not packaged for ${stdenvNoCC.hostPlatform.system}");
+    sources.${stdenv.hostPlatform.system}
+      or (throw "linear-cli is not packaged for ${stdenv.hostPlatform.system}");
 
   isZip = lib.hasSuffix ".zip" source.artifact;
 in
-stdenvNoCC.mkDerivation {
+stdenv.mkDerivation {
   pname = "linear-cli";
   inherit version;
 
@@ -51,7 +52,12 @@ stdenvNoCC.mkDerivation {
     sha256 = source.sha256;
   };
 
-  nativeBuildInputs = lib.optionals isZip [ unzip ];
+  nativeBuildInputs =
+    lib.optionals isZip [ unzip ] ++ lib.optionals stdenv.hostPlatform.isLinux [ autoPatchelfHook ];
+
+  buildInputs = lib.optionals stdenv.hostPlatform.isLinux [
+    stdenv.cc.cc.lib
+  ];
 
   dontConfigure = true;
   dontBuild = true;
