@@ -28,7 +28,7 @@ Tracker tasks (Linear issues in the production adapter today)
   -> command steps via src/scherzo/command_step.gleam
      or agent steps via src/scherzo/agent/* + src/scherzo/pi/*
   -> session events in src/scherzo/session/hub.gleam
-  -> handoff/tracker comments, currently Linear comments
+  -> task updates/tracker comments, currently Linear comments
   -> durable state under workspace.root/.scherzo-state/
 ```
 
@@ -61,7 +61,7 @@ scripts/scherzoctl / scherzo ctl
 | --- | --- | --- |
 | CLI/service startup | `src/scherzo/main.gleam`, `src/scherzo/orchestrator/service.gleam`, `src/scherzo/runtime_bundle.gleam` | CLI modes, doctor, once/daemon startup, config/workflow bundle loading. |
 | Config types/resolution | `src/scherzo/config.gleam`, `src/scherzo/config/types.gleam`, `src/scherzo/model_config.gleam` | YAML orchestrator config is resolved to typed `EffectiveConfig`/`OrchestratorConfig`; runtime `.md` workflows are no longer supported. |
-| Task/tracker adapter/handoff | `src/scherzo/task.gleam`, `src/scherzo/tracker/adapter.gleam`, `src/scherzo/tracker/linear_adapter.gleam`, `src/scherzo/tracker.gleam`, `src/scherzo/linear.gleam`, `src/scherzo/handoff.gleam`, `src/scherzo/linear_*` | Backend-neutral task model and capability contract; see the normative [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md). Linear GraphQL transport, issue compatibility normalization, board contract checks, comments/state changes, attachments. |
+| Task/tracker adapter/task updates | `src/scherzo/task.gleam`, `src/scherzo/tracker/adapter.gleam`, `src/scherzo/tracker/linear_adapter.gleam`, `src/scherzo/tracker.gleam`, `src/scherzo/linear.gleam`, `src/scherzo/handoff.gleam`, `src/scherzo/linear_*` | Backend-neutral task model and capability contract; see the normative [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md). Linear GraphQL transport, issue compatibility normalization, board setup checks, comments/state changes, attachments. |
 | Workflow DAGs | `src/scherzo/workflow_dag.gleam`, `src/scherzo/workflow_scheduler.gleam`, `src/scherzo/workflow_run.gleam`, `src/scherzo/workflow_fingerprint.gleam`, `src/scherzo/workspace_run.gleam` | Parse/validate YAML DAGs, schedule ready steps, prepare step workspaces, execute agent/command steps, checkpoint durable facts. |
 | Orchestrator | `src/scherzo/orchestrator/daemon.gleam`, `core.gleam`, `state.gleam`, `effect_runner.gleam`, `worker_registry.gleam`, `workflow_reloader.gleam`, `control_command_handler.gleam` | Daemon actor owns polling, retry timers, claims, running sessions, reload, side-effect queue, and local controls. `core.gleam` is the pure policy layer. |
 | Agent/pi execution | `src/scherzo/agent/run_attempt.gleam`, `turn_loop.gleam`, `operator_control.gleam`, `worker_command.gleam`, `src/scherzo/pi/client.gleam`, `protocol.gleam`, `command.gleam` | Launch pi RPC, send prompts/abort/UI responses, stream turn records, record token/session observations. |
@@ -110,10 +110,11 @@ is eliminated.
 - Relative config, workflow, prompt, workspace, and driver-related paths are resolved from
   the config/workflow file directory as implemented by `config.gleam`,
   `runtime_bundle.gleam`, and `path.gleam`.
-- Workflow routing uses normalized labels with `routing.workflow_label_prefix`.
-  With `require_exactly_one_workflow_label: true`, missing/multiple labels are
+- Workflow routing uses top-level `workflows` plus normalized labels with
+  `task_routing.labels.prefix` (default `workflow:`). With
+  `task_routing.labels.require_exactly_one: true`, missing/multiple labels are
   route errors. Contract enforcement is separate in `workflow_policy.gleam`.
-- `routing.workflows` keys must match the loaded DAG `id`.
+- Top-level `workflows` keys must match the loaded DAG `id`.
 
 ### Workflow DAGs and execution
 
@@ -153,10 +154,10 @@ is eliminated.
   non-terminal state, no running/claimed worker for the task, not parked,
   blockers satisfied, workflow-policy satisfied, global concurrency, and
   per-state concurrency.
-- `agent.max_concurrent_agents: 0` pauses new dispatch while daemon reload and
+- `agents.concurrency: 0` pauses new dispatch while daemon reload and
   reconciliation remain alive.
-- Dispatch validates the task with a fresh tracker read before claim/handoff.
-- Claims, handoff comments, invalid-workflow reports, tracker refreshes, and
+- Dispatch validates the task with a fresh tracker read before claim/task update.
+- Claims, task-update comments, invalid-workflow reports, tracker refreshes, and
   orchestrator cleanup effects run through `effect_runner.gleam`; workflow-run
   cleanup is part of
   `workflow_run.gleam` dependencies. Some compatibility paths still use Linear
@@ -302,7 +303,7 @@ Use direnv-backed commands from the repository root.
 
 | Command | When to run |
 | --- | --- |
-| `direnv exec . gleam test` | Default deterministic unit suite; run for normal source changes and before handoff when cheap. |
+| `direnv exec . gleam test` | Default deterministic unit suite; run for normal source changes and before review when cheap. |
 | `direnv exec . gleam format --check src test` | Source/test formatting check. Docs-only changes normally do not need it, but SelfCI runs it. |
 | `direnv exec . scherzo-test-unit` | Explicit alias for the default unit suite. |
 | `direnv exec . scherzo-test-contract` | Shell-heavy helper-script, workflow, renderer, daemon/service, port/process, pi-client, and workspace-driver contract coverage excluded from the default unit loop. SelfCI runs this suite for the final dogfood gate. |
@@ -391,7 +392,7 @@ Run tests:
 - `test/state_workflow_checkpoint_test.gleam`
 - `test/recovery_workflow_checkpoint_test.gleam` for checkpoint/recovery changes
 
-## If changing orchestrator dispatch, retry, or handoff
+## If changing orchestrator dispatch, retry, or task updates
 
 Touch:
 
@@ -477,7 +478,7 @@ Run tests:
 - `test/state_local_artifacts_test.gleam`
 - `test/ctl_test.gleam` for offline state/cleanup CLI changes
 
-## If changing tracker adapters, Linear integration, handoff, or control protocol
+## If changing tracker adapters, Linear integration, task updates, or control protocol
 
 Touch:
 

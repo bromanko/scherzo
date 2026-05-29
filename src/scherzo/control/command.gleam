@@ -32,6 +32,7 @@ pub type OperatorCommand {
   UnparkIssue(IssueRef)
   AbortSession(session_id: String)
   StopAfterCurrentTurn(session_id: String)
+  CleanupOrphanSteps(run_id: String, dry_run: Bool)
   PromptSession(session_id: String, message: String)
   RespondUi(session_id: String, request_id: String, response: UiResponse)
   RunScheduleNow(job_id: String)
@@ -73,6 +74,7 @@ type CommandFields {
     cancel: Option(Bool),
     value: Option(String),
     job_id: Option(String),
+    dry_run: Option(Bool),
   )
 }
 
@@ -97,6 +99,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     UnparkIssue(_) -> "unpark"
     AbortSession(_) -> "abort"
     StopAfterCurrentTurn(_) -> "stop_after_current_turn"
+    CleanupOrphanSteps(_, _) -> "cleanup_orphan_steps"
     PromptSession(_, _) -> "prompt"
     RespondUi(_, _, _) -> "respond_ui"
     RunScheduleNow(_) -> "schedule_run_now"
@@ -114,6 +117,7 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
     | StopAfterCurrentTurn(session_id)
     | PromptSession(session_id, _)
     | RespondUi(session_id, _, _) -> Some(session_id)
+    CleanupOrphanSteps(run_id, _) -> Some("run:" <> run_id)
     RunScheduleNow(job_id) -> Some(job_id)
   }
 }
@@ -201,6 +205,13 @@ pub fn operator_command_to_json(
       [
         #("session_id", json.string(session_id)),
         ..base_command_entries("stop_after_current_turn")
+      ]
+      |> json.object
+    CleanupOrphanSteps(run_id, dry_run) ->
+      [
+        #("run_id", json.string(run_id)),
+        #("dry_run", json.bool(dry_run)),
+        ..base_command_entries("cleanup_orphan_steps")
       ]
       |> json.object
     PromptSession(session_id, message) ->
@@ -426,6 +437,11 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     None,
     decode.optional(decode.string),
   )
+  use dry_run <- decode.optional_field(
+    "dry_run",
+    None,
+    decode.optional(decode.bool),
+  )
   decode.success(CommandFields(
     type_: type_,
     issue_id: issue_id,
@@ -440,6 +456,7 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     cancel: cancel,
     value: value,
     job_id: job_id,
+    dry_run: dry_run,
   ))
 }
 
@@ -468,6 +485,10 @@ fn operator_command_from_fields(
         "abort" -> required_session_id(fields) |> result.map(AbortSession)
         "stop_after_current_turn" ->
           required_session_id(fields) |> result.map(StopAfterCurrentTurn)
+        "cleanup_orphan_steps" -> {
+          use run_id <- result.try(required_run_id(fields))
+          Ok(CleanupOrphanSteps(run_id, command_dry_run(fields)))
+        }
         "prompt" -> {
           use session_id <- result.try(required_session_id(fields))
           use message <- result.try(required_message(fields))
@@ -574,6 +595,20 @@ fn required_job_id(fields: CommandFields) -> Result(String, CodecError) {
   case fields.job_id {
     Some(job_id) -> trimmed_non_empty(job_id, "job_id must not be empty")
     None -> invalid_command("missing job_id")
+  }
+}
+
+fn required_run_id(fields: CommandFields) -> Result(String, CodecError) {
+  case fields.run_id {
+    Some(run_id) -> trimmed_non_empty(run_id, "run_id must not be empty")
+    None -> invalid_command("missing run_id")
+  }
+}
+
+fn command_dry_run(fields: CommandFields) -> Bool {
+  case fields.dry_run {
+    Some(value) -> value
+    None -> True
   }
 }
 

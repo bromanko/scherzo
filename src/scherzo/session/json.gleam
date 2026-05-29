@@ -151,6 +151,11 @@ pub fn recovery_to_json(recovery: event.RecoveryInfo) -> json.Json {
     ),
     #("workflow_run_id", optional_string(recovery.workflow_run_id)),
     #("workflow_step_id", optional_string(recovery.workflow_step_id)),
+    #("workflow_attempt_index", optional_int(recovery.workflow_attempt_index)),
+    #("parent_session_id", optional_string(recovery.parent_session_id)),
+    #("orphan_status", optional_string(recovery.orphan_status)),
+    #("issue_state", optional_string(recovery.issue_state)),
+    #("recommended_action", optional_string(recovery.recommended_action)),
     #("current_pi_session_id", optional_string(recovery.current_pi_session_id)),
     #(
       "previous_pi_session_id",

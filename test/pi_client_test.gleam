@@ -298,7 +298,16 @@ pub fn malformed_json_and_timeout_fail_test() {
   let timeout_result =
     client.launch("FAKE_PI_DELAY_MS=2000 " <> fake_pi(), cwd, "name", False, 10)
   terminate_if_launch_succeeded(timeout_result)
-  let assert Error(_) = timeout_result
+  let assert Error(error.PiReadTimeout) = timeout_result
+}
+
+pub fn launch_retries_transient_handshake_read_timeouts_test() {
+  let cwd = "test/tmp/pi-rpc-launch-timeout-retry"
+  test_helpers.reset_dir(cwd)
+  let command = "FAKE_PI_DELAY_MS=35 " <> fake_pi()
+  let assert Ok(session) = client.launch(command, cwd, "name", False, 25)
+  assert session.session_id == Some("fake-session")
+  let _ = client.terminate(session)
 }
 
 pub fn launch_spec_terminates_fake_pi_after_handshake_failure_test() {
