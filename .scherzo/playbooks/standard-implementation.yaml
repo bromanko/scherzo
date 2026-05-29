@@ -1,0 +1,71 @@
+version: 1
+id: standard-implementation
+display_name: Standard implementation workstream
+auto_enqueue:
+  enabled: false
+  max_actions_per_evaluation: 1
+phases:
+  - phase_id: execplan
+    display_name: Draft ExecPlan
+    workflow_id: execplan
+    required_inputs:
+      - name: brief
+        contract_type: text
+    expected_outputs:
+      - name: exec_plan_bundle
+        contract_type: exec_plan_bundle
+        artifact_type: scherzo.exec_plan_bundle.v1
+    gates:
+      - human_review
+  - phase_id: implementation
+    display_name: Implement approved ExecPlan
+    workflow_id: execplan-implementation
+    required_inputs:
+      - name: exec_plan_bundle
+        contract_type: exec_plan_bundle
+        artifact_type: scherzo.exec_plan_bundle.v1
+    expected_outputs:
+      - name: code_change_bundle
+        contract_type: code_change_bundle
+        artifact_type: scherzo.code_change_bundle.v1
+    gates:
+      - implementation_review
+  - phase_id: publish
+    display_name: Publish reviewed change
+    workflow_id: implementation
+    required_inputs:
+      - name: code_change_bundle
+        contract_type: code_change_bundle
+        artifact_type: scherzo.code_change_bundle.v1
+    expected_outputs:
+      - name: published_change
+        contract_type: url
+        artifact_type: scherzo.published_change.v1
+    gates: []
+next_actions:
+  - action_id: implement_exec_plan
+    label: Implement approved ExecPlan
+    from_phase: execplan
+    to_phase: implementation
+    workflow_id: execplan-implementation
+    reason: Approved ExecPlan bundle can be implemented in a bounded phase workflow.
+    required_inputs:
+      - exec_plan_bundle
+    expected_outputs:
+      - code_change_bundle
+    requires_gate: human_review
+    priority: 10
+    auto_enqueue: false
+  - action_id: publish_change
+    label: Publish reviewed change
+    from_phase: implementation
+    to_phase: publish
+    workflow_id: implementation
+    reason: A reviewed code-change bundle can be published by the configured implementation workflow.
+    required_inputs:
+      - code_change_bundle
+    expected_outputs:
+      - published_change
+    requires_gate: implementation_review
+    priority: 20
+    auto_enqueue: false

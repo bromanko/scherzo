@@ -14,6 +14,8 @@ erl_crash.dump
 !.scherzo/README.md
 !.scherzo/scherzo.yaml
 !.scherzo/workflows
+!.scherzo/playbooks/
+!.scherzo/playbooks/*.yaml
 workflows/dogfood/**/*.local.yaml
 workflows/dogfood/**/*.local.yml
 workflows/dogfood/**/.scherzo/
