@@ -166,14 +166,12 @@ fn contract_input_names(outcome: start.StartOutcome) -> List(String) {
 fn load_workflow_contract(
   workflow_id: String,
 ) -> Result(Option(workflow_contract.Contract), #(String, String)) {
-  case runtime_bundle.load(None) {
+  case runtime_bundle.load_workflow_by_id(None, workflow_id) {
+    Ok(#(_, dag)) -> Ok(dag.contract)
     Error(runtime_bundle.BundleError(code, message)) ->
-      Error(#("workflow_config_load_failed:" <> code, message))
-    Ok(bundle) ->
-      case runtime_bundle.workflow_by_id(bundle, workflow_id) {
-        Ok(#(_, dag)) -> Ok(dag.contract)
-        Error(runtime_bundle.BundleError(code, message)) ->
-          Error(#("workflow_lookup_failed:" <> code, message))
+      case code == "unknown_workflow_label" {
+        True -> Error(#("workflow_lookup_failed:" <> code, message))
+        False -> Error(#("workflow_config_load_failed:" <> code, message))
       }
   }
 }
