@@ -176,6 +176,60 @@ pub fn retry_step_appends_repair_records_before_spawning_recovered_worker_test()
   hub.stop(hub_subject)
 }
 
+pub fn retry_step_repairs_missing_provenance_after_finalization_accepts_test() {
+  let dir = "test/tmp/daemon-retry-step-missing-provenance"
+  let issue = issue("issue-1", "LIV-695", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run_missing_provenance(root, issue)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _effective) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "applied"
+  assert result.message
+    == Some(
+      "provenance_repaired; retrying run run-1 step apply_feedback at attempt 2",
+    )
+  assert contains_kind_sequence(root, [
+    "workflow_run_provenance_repaired",
+    "workflow_repair_requested",
+    "step_attempt_superseded",
+    "workflow_run_started",
+  ])
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 20)
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnostic_test() {
   let dir = "test/tmp/daemon-retry-step-artifact-detail"
   let issue = issue("issue-1", "LIV-509", "Todo")
@@ -230,6 +284,52 @@ pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnosti
     == Some("retry-step repair was rejected by recovery validation: " <> detail)
   assert retained_workflow_diagnostic_reason(root, detail)
   assert !retained_workflow_interruption_reason(root, detail)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_does_not_append_provenance_repair_when_finalization_rejects_test() {
+  let dir = "test/tmp/daemon-retry-step-missing-provenance-corrupt-artifact"
+  let issue = issue("issue-1", "LIV-696", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run_missing_provenance(root, issue)
+  let artifact_ref = artifact_store.artifact_ref("run-1", "seed", 1)
+  let artifact_path = root <> "/.scherzo-state/artifacts/" <> artifact_ref
+  let assert Ok(Nil) =
+    simplifile.write(artifact_path, "corrupted retained artifact")
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status)
+    == Some("artifact_recovery_failed")
+  assert !contains_kind(root, "workflow_run_provenance_repaired")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -1132,6 +1232,150 @@ fn seed_interrupted_retry_step_run(
   Nil
 }
 
+fn seed_interrupted_retry_step_run_missing_provenance(
+  root: String,
+  issue: tracker_issue.Issue,
+) -> Nil {
+  let run_root = root <> "/implementation/" <> issue.identifier <> "/run-1"
+  let seed_workspace = run_root <> "/workspaces/seed"
+  let assert Ok(Nil) = simplifile.create_directory_all(seed_workspace)
+  let store = artifact_store.new(root)
+  let artifact =
+    step_artifact.from_command_result(
+      "seed",
+      0,
+      "done",
+      "",
+      False,
+      [],
+      artifact_limits(),
+    )
+  let assert Ok(written) =
+    artifact_store.write_step_artifact(
+      store,
+      "run-1",
+      "implementation",
+      "seed",
+      1,
+      artifact,
+    )
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-inputs",
+          1,
+          record.WorkflowRunInputsRecorded(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            workflow_fingerprint: "",
+            artifact_ref: "runs/run-1/inputs.json",
+            artifact_sha256: "sha-inputs",
+            artifact_bytes: 10,
+          ),
+        ),
+        record.with_id(
+          "seed-prepared",
+          2,
+          record.StepAttemptPrepared(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "seed",
+            attempt_index: 1,
+            workspace_name: "seed",
+            workspace_path: seed_workspace,
+            run_root: run_root,
+            source_workspace_name: None,
+            source_workspace_path: None,
+          ),
+        ),
+        record.with_id(
+          "seed-started",
+          3,
+          record.StepAttemptStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "seed",
+            attempt_index: 1,
+            operator_session_id: "session-seed-1",
+            external_session_ref: None,
+            continuation_capable: False,
+          ),
+        ),
+        record.with_id(
+          "seed-finished",
+          4,
+          record.StepAttemptFinished(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "seed",
+            attempt_index: 1,
+            outcome: "completed",
+            artifact_ref: written.ref,
+            artifact_sha256: written.sha256,
+            workspace_name: "seed",
+            workspace_path: seed_workspace,
+            token_total: 0,
+            turns: 0,
+          ),
+        ),
+        record.with_id(
+          "feedback-prepared",
+          5,
+          record.StepAttemptPrepared(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "apply_feedback",
+            attempt_index: 1,
+            workspace_name: "derived",
+            workspace_path: run_root <> "/workspaces/derived",
+            run_root: run_root,
+            source_workspace_name: Some("seed"),
+            source_workspace_path: Some(seed_workspace),
+          ),
+        ),
+        record.with_id(
+          "feedback-started",
+          6,
+          record.StepAttemptStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "apply_feedback",
+            attempt_index: 1,
+            operator_session_id: "session-feedback-1",
+            external_session_ref: None,
+            continuation_capable: False,
+          ),
+        ),
+        record.with_id(
+          "feedback-interrupted",
+          7,
+          record.StepAttemptInterrupted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "apply_feedback",
+            attempt_index: 1,
+            reason: "daemon_shutdown",
+          ),
+        ),
+        record.with_id(
+          "workflow-interrupted",
+          8,
+          record.WorkflowRunInterrupted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            issue_id: issue.id,
+            reason: "daemon_shutdown",
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
+}
+
 fn seed_interrupted_review_retry_step_run(
   root: String,
   issue: tracker_issue.Issue,
@@ -1549,6 +1793,11 @@ fn retained_workflow_interruption_reason(
       _ -> False
     }
   })
+}
+
+fn contains_kind(root: String, expected: String) -> Bool {
+  ledger_bodies(root)
+  |> list.any(fn(body) { record.kind(body) == expected })
 }
 
 fn contains_kind_sequence(root: String, expected: List(String)) -> Bool {

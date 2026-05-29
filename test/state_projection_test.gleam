@@ -356,6 +356,53 @@ pub fn workflow_run_provenance_survives_interrupted_and_snapshot_round_trip_test
   assert decoded_provenance == provenance
 }
 
+pub fn workflow_run_provenance_repair_does_not_change_terminal_status_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "run-interrupted",
+        1010,
+        record.WorkflowRunInterrupted(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          issue_id: "issue-1",
+          reason: "daemon_shutdown",
+        ),
+      ),
+      record.with_id(
+        "run-provenance-repaired",
+        1020,
+        record.WorkflowRunProvenanceRepaired(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-1",
+          task_ref: record.linear_task_ref_fields(
+            "issue-1",
+            Some("LIV-1"),
+            None,
+          ),
+          issue_fingerprint: "issue-fp-1",
+          observed_updated_at_ms: 900,
+          run_root: "test/tmp/projection/run-1",
+          repair_mode: "state_repair_explicit",
+          source_evidence: ["workflow_run_interrupted:run-1"],
+        ),
+      ),
+    ])
+
+  let assert Ok(projection.WorkflowRunInterrupted(
+    reason: "daemon_shutdown",
+    run_root: "",
+    ..,
+  )) = dict.get(folded.workflow_runs, "run-1")
+  let assert Ok(provenance) =
+    projection.workflow_run_provenance(folded, "run-1")
+  assert provenance.run_root == "test/tmp/projection/run-1"
+  assert provenance.task_ref.task_key == Some("LIV-1")
+}
+
 pub fn projection_snapshot_with_partial_workstream_task_ref_fails_test() {
   let malformed_snapshot =
     "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[],\"workstreams\":[{\"workstream_id\":\"linear:LIV-393\",\"task_backend_kind\":\"linear\"}]}"

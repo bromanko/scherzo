@@ -77,8 +77,32 @@ pub fn contains(root: String, path: String) -> Bool {
   path == root || string.starts_with(path, root <> "/")
 }
 
+pub fn has_parent_segment(value: String) -> Bool {
+  has_forward_parent_segment(value) || has_backslash_parent_segment(value)
+}
+
+pub fn contains_control_character(value: String) -> Bool {
+  string.contains(value, "\n")
+  || string.contains(value, "\r")
+  || string.contains(value, "\t")
+}
+
 pub fn join(root: String, child: String) -> String {
   trim_trailing_slash(root) <> "/" <> child
+}
+
+fn has_forward_parent_segment(value: String) -> Bool {
+  value == ".."
+  || string.starts_with(value, "../")
+  || string.ends_with(value, "/..")
+  || string.contains(value, "/../")
+}
+
+fn has_backslash_parent_segment(value: String) -> Bool {
+  value == ".."
+  || string.starts_with(value, "..\\")
+  || string.ends_with(value, "\\..")
+  || string.contains(value, "\\..\\")
 }
 
 fn trim_trailing_slash(path: String) -> String {

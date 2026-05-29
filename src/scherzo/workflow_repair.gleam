@@ -1,4 +1,6 @@
+import birl
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
@@ -13,8 +15,39 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import scherzo/workflow_outcome
 
+pub const retry_step_auto_repair_mode = "retry_step_auto"
+
+pub const state_repair_explicit_mode = "state_repair_explicit"
+
 pub type RepairError {
   RepairError(reason: String, message: Option(String))
+}
+
+pub type RunProvenanceRepairPlan {
+  RunProvenanceRepairPlan(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    issue_id: String,
+    issue_identifier: String,
+    issue_fingerprint: String,
+    observed_updated_at_ms: Int,
+    run_root: String,
+    task_ref: record.TaskRefFields,
+    repair_mode: String,
+    source_evidence: List(String),
+    record_body: record.RecordBody,
+  )
+}
+
+pub type RunProvenanceRepairInspection {
+  RunProvenanceRepairAlreadyPresent(
+    run_id: String,
+    issue_id: String,
+    issue_identifier: String,
+    run_root: String,
+  )
+  RunProvenanceRepairRequired(plan: RunProvenanceRepairPlan)
 }
 
 pub type RepairPlan {
@@ -25,6 +58,7 @@ pub type RepairPlan {
     selected_step_id: String,
     failed_attempt_index: Int,
     next_attempt_index: Int,
+    provenance_repair: Option(RunProvenanceRepairPlan),
     records_to_append: List(record.RecordBody),
     candidate: recovery.WorkflowRecoveryCandidate,
   )
@@ -44,6 +78,7 @@ type SelectedRun {
     task_ref: record.TaskRefFields,
     recovery_evidence: workflow_outcome.RecoveryEvidence,
     terminal_failed: Bool,
+    provenance_repair: Option(RunProvenanceRepairPlan),
   )
 }
 
@@ -76,6 +111,63 @@ pub fn describe_error(error: RepairError) -> String {
 pub fn error_message(error: RepairError) -> Option(String) {
   let RepairError(_, message) = error
   message
+}
+
+pub fn inspect_run_provenance_repair(
+  projection_state: projection.Projection,
+  run_id: String,
+  repair_mode: String,
+) -> Result(RunProvenanceRepairInspection, RepairError) {
+  use status <- result.try(workflow_run_status_for_repair(
+    projection_state,
+    run_id,
+  ))
+  use _ <- result.try(repairable_run_status_info(
+    projection_state,
+    run_id,
+    status,
+  ))
+  case projection.workflow_run_provenance(projection_state, run_id) {
+    Ok(provenance) ->
+      Ok(RunProvenanceRepairAlreadyPresent(
+        run_id,
+        provenance.issue_id,
+        provenance.issue_identifier,
+        provenance.run_root,
+      ))
+    Error(Nil) -> {
+      use repair <- result.try(reconstruct_run_provenance(
+        projection_state,
+        run_id,
+        status,
+        repair_mode,
+      ))
+      Ok(RunProvenanceRepairRequired(repair))
+    }
+  }
+}
+
+pub fn validate_run_root_for_repair(
+  run_id: String,
+  run_root: String,
+  workspace_root: String,
+) -> Result(Nil, RepairError) {
+  use _ <- result.try(validate_run_root(run_id, run_root, workspace_root))
+  validate_existing_run_root(run_id, run_root, workspace_root)
+}
+
+fn workflow_run_status_for_repair(
+  projection_state: projection.Projection,
+  run_id: String,
+) -> Result(projection.WorkflowRunStatus, RepairError) {
+  case dict.get(projection_state.workflow_runs, run_id) {
+    Ok(status) -> Ok(status)
+    Error(Nil) ->
+      Error(RepairError(
+        "no_failed_workflow_run",
+        Some("workflow run not found"),
+      ))
+  }
 }
 
 pub fn plan(
@@ -132,6 +224,32 @@ pub fn plan(
           failed_attempt.attempt_index,
           projection_state,
         )
+      let task_ref = task_ref_for_current_issue(run.task_ref, issue)
+      let observed_updated_at_ms =
+        observed_updated_at_ms_for_candidate(run.observed_updated_at_ms, issue)
+      let issue_fingerprint =
+        issue_fingerprint_for_candidate(
+          run.issue_fingerprint,
+          current_issue_fingerprint,
+        )
+      let workflow_fingerprint =
+        workflow_fingerprint_for_candidate(
+          run.workflow_fingerprint,
+          current_workflow_fingerprint,
+        )
+      let provenance_repair =
+        run.provenance_repair
+        |> option.map(fn(repair) {
+          repair_plan_with_current_issue(
+            repair,
+            issue,
+            task_ref,
+            workflow_fingerprint,
+            issue_fingerprint,
+            observed_updated_at_ms,
+            retry_step_auto_repair_mode,
+          )
+        })
       let records_to_append =
         repair_records(
           projection_state,
@@ -139,7 +257,11 @@ pub fn plan(
           selected_step_id,
           run,
           issue,
-          current_issue_fingerprint,
+          workflow_fingerprint,
+          task_ref,
+          issue_fingerprint,
+          observed_updated_at_ms,
+          provenance_repair,
           failed_attempt,
           next_attempt_index,
           excluded_steps,
@@ -147,27 +269,22 @@ pub fn plan(
         )
       Ok(RepairPlan(
         run_id: run.run_id,
-        issue_id: run.issue_id,
-        issue_identifier: run.issue_identifier,
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
         selected_step_id: failed_attempt.step_id,
         failed_attempt_index: failed_attempt.attempt_index,
         next_attempt_index: next_attempt_index,
+        provenance_repair: provenance_repair,
         records_to_append: records_to_append,
         candidate: recovery.WorkflowRecoveryCandidate(
           run_id: run.run_id,
           workflow_id: run.workflow_id,
-          workflow_fingerprint: workflow_fingerprint_for_candidate(
-            run.workflow_fingerprint,
-            current_workflow_fingerprint,
-          ),
-          issue_id: run.issue_id,
-          issue_identifier: run.issue_identifier,
-          task_ref: run.task_ref,
-          issue_fingerprint: issue_fingerprint_for_candidate(
-            run.issue_fingerprint,
-            current_issue_fingerprint,
-          ),
-          observed_updated_at_ms: run.observed_updated_at_ms,
+          workflow_fingerprint: workflow_fingerprint,
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          task_ref: task_ref,
+          issue_fingerprint: issue_fingerprint,
+          observed_updated_at_ms: observed_updated_at_ms,
           run_root: run.run_root,
           recovery_evidence: run.recovery_evidence,
           attempts: candidate_attempts,
@@ -244,15 +361,13 @@ fn select_latest_failed_run(
     |> dict.to_list
     |> list.fold([], fn(acc, entry) {
       let #(run_id, status) = entry
-      case
-        status_matches_issue_target(projection_state, run_id, status, target)
-      {
-        False -> acc
-        True ->
-          case selected_run_from_status(projection_state, run_id, status) {
-            Ok(selected_run) -> [selected_run, ..acc]
-            Error(_) -> acc
+      case selected_run_from_status(projection_state, run_id, status) {
+        Ok(selected_run) ->
+          case selected_run_matches_issue_target(selected_run, target) {
+            True -> [selected_run, ..acc]
+            False -> acc
           }
+        Error(RepairError(_, _)) -> acc
       }
     })
     |> list.sort(by: compare_selected_runs_desc)
@@ -278,21 +393,22 @@ fn select_latest_failed_run(
   }
 }
 
-fn status_matches_issue_target(
-  projection_state: projection.Projection,
-  run_id: String,
-  status: projection.WorkflowRunStatus,
+fn selected_run_matches_issue_target(
+  selected_run: SelectedRun,
   target: IssueTarget,
 ) -> Bool {
-  case selected_run_from_status(projection_state, run_id, status) {
-    Error(_) -> False
-    Ok(selected_run) ->
-      case target {
-        ByIssueId(target_issue_id) -> selected_run.issue_id == target_issue_id
-        ByIssueIdentifier(identifier) ->
-          selected_run.issue_identifier == identifier
-      }
+  case target {
+    ByIssueId(target_issue_id) -> selected_run.issue_id == target_issue_id
+    ByIssueIdentifier(identifier) -> selected_run.issue_identifier == identifier
   }
+}
+
+type RepairableRunStatusInfo {
+  RepairableRunStatusInfo(
+    repairable_at_ms: Int,
+    recovery_evidence: workflow_outcome.RecoveryEvidence,
+    terminal_failed: Bool,
+  )
 }
 
 fn selected_run_from_status(
@@ -300,16 +416,42 @@ fn selected_run_from_status(
   run_id: String,
   status: projection.WorkflowRunStatus,
 ) -> Result(SelectedRun, RepairError) {
-  use provenance <- result.try(
-    projection.workflow_run_provenance(projection_state, run_id)
-    |> result.map_error(fn(_) {
-      RepairError(
-        "workspace_recovery_failed",
-        Some("workflow run provenance is missing"),
-      )
-    }),
-  )
+  use info <- result.try(repairable_run_status_info(
+    projection_state,
+    run_id,
+    status,
+  ))
+  case projection.workflow_run_provenance(projection_state, run_id) {
+    Ok(provenance) ->
+      Ok(selected_run_from_provenance(
+        run_id,
+        provenance,
+        info.repairable_at_ms,
+        info.recovery_evidence,
+        info.terminal_failed,
+      ))
+    Error(Nil) -> {
+      use repair <- result.try(reconstruct_run_provenance(
+        projection_state,
+        run_id,
+        status,
+        retry_step_auto_repair_mode,
+      ))
+      Ok(selected_run_from_repair(
+        repair,
+        info.repairable_at_ms,
+        info.recovery_evidence,
+        info.terminal_failed,
+      ))
+    }
+  }
+}
 
+fn repairable_run_status_info(
+  projection_state: projection.Projection,
+  run_id: String,
+  status: projection.WorkflowRunStatus,
+) -> Result(RepairableRunStatusInfo, RepairError) {
   case status {
     projection.WorkflowRunFinished(
       outcome: outcome,
@@ -323,9 +465,7 @@ fn selected_run_from_status(
             Some("workflow run is not repairable"),
           ))
         True ->
-          Ok(selected_run_from_provenance(
-            run_id,
-            provenance,
+          Ok(RepairableRunStatusInfo(
             finished_at_ms,
             case outcome == workflow_outcome.failed_after_recovery {
               True -> workflow_outcome.StepRecoveryRan
@@ -335,9 +475,7 @@ fn selected_run_from_status(
           ))
       }
     projection.WorkflowRunInterrupted(interrupted_at_ms: interrupted_at_ms, ..) ->
-      Ok(selected_run_from_provenance(
-        run_id,
-        provenance,
+      Ok(RepairableRunStatusInfo(
         interrupted_at_ms,
         recovery.step_recovery_evidence_for_run(projection_state, run_id),
         False,
@@ -370,7 +508,644 @@ fn selected_run_from_provenance(
     task_ref: provenance.task_ref,
     recovery_evidence: recovery_evidence,
     terminal_failed: terminal_failed,
+    provenance_repair: None,
   )
+}
+
+fn selected_run_from_repair(
+  repair: RunProvenanceRepairPlan,
+  repairable_at_ms: Int,
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
+  terminal_failed: Bool,
+) -> SelectedRun {
+  SelectedRun(
+    run_id: repair.run_id,
+    workflow_id: repair.workflow_id,
+    workflow_fingerprint: repair.workflow_fingerprint,
+    issue_id: repair.issue_id,
+    issue_identifier: repair.issue_identifier,
+    issue_fingerprint: repair.issue_fingerprint,
+    observed_updated_at_ms: repair.observed_updated_at_ms,
+    repairable_at_ms: repairable_at_ms,
+    run_root: repair.run_root,
+    task_ref: repair.task_ref,
+    recovery_evidence: recovery_evidence,
+    terminal_failed: terminal_failed,
+    provenance_repair: Some(repair),
+  )
+}
+
+fn reconstruct_run_provenance(
+  projection_state: projection.Projection,
+  run_id: String,
+  status: projection.WorkflowRunStatus,
+  repair_mode: String,
+) -> Result(RunProvenanceRepairPlan, RepairError) {
+  let attempts = attempts_for_run(projection_state, run_id)
+  use workflow_id <- result.try(single_evidence_value(
+    "workflow_id",
+    list.append(
+      status_workflow_id_evidence(run_id, status),
+      list.append(
+        manifest_workflow_id_evidence(projection_state, run_id),
+        attempt_workflow_id_evidence(attempts),
+      ),
+    ),
+  ))
+  use workflow_fingerprint <- result.try(optional_evidence_value(
+    "workflow_fingerprint",
+    manifest_workflow_fingerprint_evidence(projection_state, run_id),
+  ))
+  use issue_id <- result.try(single_evidence_value(
+    "issue_id",
+    list.append(
+      status_issue_id_evidence(run_id, status),
+      task_ref_issue_id_evidence(projection_state, run_id),
+    ),
+  ))
+  use issue_identifier <- result.try(optional_evidence_value(
+    "issue_identifier",
+    issue_identifier_evidence(projection_state, run_id, issue_id),
+  ))
+  use run_root <- result.try(single_evidence_value(
+    "run_root",
+    list.append(
+      status_run_root_evidence(run_id, status),
+      attempt_run_root_evidence(attempts),
+    ),
+  ))
+  let task_ref =
+    reconstructed_task_ref(projection_state, run_id, issue_id, issue_identifier)
+  let issue_fingerprint =
+    reconstructed_issue_fingerprint(projection_state, issue_id)
+  let observed_updated_at_ms =
+    reconstructed_observed_updated_at_ms(projection_state, issue_id)
+  let source_evidence =
+    evidence_sources([
+      status_workflow_id_evidence(run_id, status),
+      manifest_workflow_id_evidence(projection_state, run_id),
+      manifest_workflow_fingerprint_evidence(projection_state, run_id),
+      status_issue_id_evidence(run_id, status),
+      task_ref_issue_id_evidence(projection_state, run_id),
+      issue_identifier_evidence(projection_state, run_id, issue_id),
+      status_run_root_evidence(run_id, status),
+      attempt_workflow_id_evidence(attempts),
+      attempt_run_root_evidence(attempts),
+    ])
+  case
+    explicit_repair_incomplete(
+      repair_mode,
+      workflow_fingerprint,
+      issue_identifier,
+    )
+  {
+    Some(field) ->
+      Error(RepairError(
+        "workflow_provenance_incomplete",
+        Some(
+          "workflow run provenance is missing and fallback evidence did not include "
+          <> field,
+        ),
+      ))
+    None ->
+      Ok(make_run_provenance_repair_plan(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        issue_id,
+        issue_identifier,
+        issue_fingerprint,
+        observed_updated_at_ms,
+        run_root,
+        task_ref,
+        repair_mode,
+        source_evidence,
+      ))
+  }
+}
+
+fn make_run_provenance_repair_plan(
+  run_id: String,
+  workflow_id: String,
+  workflow_fingerprint: String,
+  issue_id: String,
+  issue_identifier: String,
+  issue_fingerprint: String,
+  observed_updated_at_ms: Int,
+  run_root: String,
+  task_ref: record.TaskRefFields,
+  repair_mode: String,
+  source_evidence: List(String),
+) -> RunProvenanceRepairPlan {
+  let body =
+    record.WorkflowRunProvenanceRepaired(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      task_ref,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+      repair_mode,
+      source_evidence,
+    )
+  RunProvenanceRepairPlan(
+    run_id: run_id,
+    workflow_id: workflow_id,
+    workflow_fingerprint: workflow_fingerprint,
+    issue_id: issue_id,
+    issue_identifier: issue_identifier,
+    issue_fingerprint: issue_fingerprint,
+    observed_updated_at_ms: observed_updated_at_ms,
+    run_root: run_root,
+    task_ref: task_ref,
+    repair_mode: repair_mode,
+    source_evidence: source_evidence,
+    record_body: body,
+  )
+}
+
+fn repair_plan_with_current_issue(
+  repair: RunProvenanceRepairPlan,
+  issue: tracker_issue.Issue,
+  task_ref: record.TaskRefFields,
+  workflow_fingerprint: String,
+  issue_fingerprint: String,
+  observed_updated_at_ms: Int,
+  repair_mode: String,
+) -> RunProvenanceRepairPlan {
+  make_run_provenance_repair_plan(
+    repair.run_id,
+    repair.workflow_id,
+    workflow_fingerprint,
+    issue.id,
+    issue.identifier,
+    issue_fingerprint,
+    observed_updated_at_ms,
+    repair.run_root,
+    task_ref,
+    repair_mode,
+    dedupe_strings([
+      "current_issue:" <> issue.identifier,
+      ..repair.source_evidence
+    ]),
+  )
+}
+
+fn explicit_repair_incomplete(
+  repair_mode: String,
+  workflow_fingerprint: String,
+  issue_identifier: String,
+) -> Option(String) {
+  case repair_mode == state_repair_explicit_mode {
+    False -> None
+    True ->
+      case string.trim(workflow_fingerprint) == "" {
+        True -> Some("workflow_fingerprint")
+        False ->
+          case string.trim(issue_identifier) == "" {
+            True -> Some("issue_identifier")
+            False -> None
+          }
+      }
+  }
+}
+
+fn single_evidence_value(
+  field: String,
+  candidates: List(#(String, String)),
+) -> Result(String, RepairError) {
+  let candidates = non_empty_evidence(candidates)
+  case candidates {
+    [] ->
+      Error(RepairError(
+        "workflow_provenance_incomplete",
+        Some(
+          "workflow run provenance is missing and fallback evidence did not include "
+          <> field,
+        ),
+      ))
+    [#(value, _), ..rest] ->
+      case
+        list.all(rest, fn(candidate) {
+          let #(candidate_value, _) = candidate
+          candidate_value == value
+        })
+      {
+        True -> Ok(value)
+        False ->
+          Error(RepairError(
+            "workflow_provenance_ambiguous",
+            Some(
+              "workflow run provenance is missing and fallback evidence conflicts for "
+              <> field,
+            ),
+          ))
+      }
+  }
+}
+
+fn optional_evidence_value(
+  field: String,
+  candidates: List(#(String, String)),
+) -> Result(String, RepairError) {
+  case non_empty_evidence(candidates) {
+    [] -> Ok("")
+    non_empty -> single_evidence_value(field, non_empty)
+  }
+}
+
+fn non_empty_evidence(
+  candidates: List(#(String, String)),
+) -> List(#(String, String)) {
+  candidates
+  |> list.filter(fn(candidate) {
+    let #(value, _) = candidate
+    string.trim(value) != ""
+  })
+}
+
+fn status_workflow_id_evidence(
+  run_id: String,
+  status: projection.WorkflowRunStatus,
+) -> List(#(String, String)) {
+  case status {
+    projection.WorkflowRunFinished(workflow_id: workflow_id, ..) -> [
+      #(workflow_id, "workflow_run_finished:" <> run_id),
+    ]
+    projection.WorkflowRunInterrupted(workflow_id: workflow_id, ..) -> [
+      #(workflow_id, "workflow_run_interrupted:" <> run_id),
+    ]
+    projection.WorkflowRunSuperseded(workflow_id: workflow_id, ..) -> [
+      #(workflow_id, "workflow_run_superseded:" <> run_id),
+    ]
+    projection.WorkflowRunActive(workflow_id: workflow_id, ..) -> [
+      #(workflow_id, "workflow_run_active:" <> run_id),
+    ]
+  }
+}
+
+fn status_issue_id_evidence(
+  run_id: String,
+  status: projection.WorkflowRunStatus,
+) -> List(#(String, String)) {
+  case status {
+    projection.WorkflowRunFinished(issue_id: issue_id, ..) -> [
+      #(issue_id, "workflow_run_finished:" <> run_id),
+    ]
+    projection.WorkflowRunInterrupted(issue_id: issue_id, ..) -> [
+      #(issue_id, "workflow_run_interrupted:" <> run_id),
+    ]
+    projection.WorkflowRunSuperseded(issue_id: issue_id, ..) -> [
+      #(issue_id, "workflow_run_superseded:" <> run_id),
+    ]
+    projection.WorkflowRunActive(issue_id: issue_id, ..) -> [
+      #(issue_id, "workflow_run_active:" <> run_id),
+    ]
+  }
+}
+
+fn status_run_root_evidence(
+  run_id: String,
+  status: projection.WorkflowRunStatus,
+) -> List(#(String, String)) {
+  case status {
+    projection.WorkflowRunFinished(run_root: run_root, ..) -> [
+      #(run_root, "workflow_run_finished:" <> run_id),
+    ]
+    projection.WorkflowRunInterrupted(run_root: run_root, ..) -> [
+      #(run_root, "workflow_run_interrupted:" <> run_id),
+    ]
+    projection.WorkflowRunSuperseded(run_root: run_root, ..) -> [
+      #(run_root, "workflow_run_superseded:" <> run_id),
+    ]
+    projection.WorkflowRunActive(run_root: run_root, ..) -> [
+      #(run_root, "workflow_run_active:" <> run_id),
+    ]
+  }
+}
+
+fn manifest_workflow_id_evidence(
+  projection_state: projection.Projection,
+  run_id: String,
+) -> List(#(String, String)) {
+  case projection.workflow_input_manifest(projection_state, run_id) {
+    Some(manifest) -> [
+      #(manifest.workflow_id, "workflow_run_inputs_recorded:" <> run_id),
+    ]
+    None -> []
+  }
+}
+
+fn manifest_workflow_fingerprint_evidence(
+  projection_state: projection.Projection,
+  run_id: String,
+) -> List(#(String, String)) {
+  case projection.workflow_input_manifest(projection_state, run_id) {
+    Some(manifest) -> [
+      #(
+        manifest.workflow_fingerprint,
+        "workflow_run_inputs_recorded:" <> run_id,
+      ),
+    ]
+    None -> []
+  }
+}
+
+fn task_ref_issue_id_evidence(
+  projection_state: projection.Projection,
+  run_id: String,
+) -> List(#(String, String)) {
+  case projection.workflow_task_ref(projection_state, run_id) {
+    Ok(task_ref) -> [#(task_ref.task_remote_id, "workflow_task_ref:" <> run_id)]
+    Error(Nil) -> []
+  }
+}
+
+fn issue_identifier_evidence(
+  projection_state: projection.Projection,
+  run_id: String,
+  issue_id: String,
+) -> List(#(String, String)) {
+  let task_key = case projection.workflow_task_ref(projection_state, run_id) {
+    Ok(task_ref) ->
+      case task_ref.task_key {
+        Some(key) -> [#(key, "workflow_task_ref:" <> run_id)]
+        None -> []
+      }
+    Error(Nil) -> []
+  }
+  let workspace = case dict.get(projection_state.known_workspaces, issue_id) {
+    Ok(workspace) -> [
+      #(workspace.issue_identifier, "known_workspace:" <> issue_id),
+    ]
+    Error(Nil) -> []
+  }
+  let counter = case dict.get(projection_state.issue_counters, issue_id) {
+    Ok(counter) -> [
+      #(counter.issue_identifier, "issue_counter_updated:" <> issue_id),
+    ]
+    Error(Nil) -> []
+  }
+  let parked = case dict.get(projection_state.parked_issues, issue_id) {
+    Ok(parked) -> [#(parked.issue_identifier, "issue_parked_v2:" <> issue_id)]
+    Error(Nil) -> []
+  }
+  list.append(task_key, list.append(workspace, list.append(counter, parked)))
+}
+
+fn attempt_workflow_id_evidence(
+  attempts: List(projection.StepAttemptStatus),
+) -> List(#(String, String)) {
+  attempts
+  |> list.fold([], fn(acc, attempt) {
+    case attempt_workflow_id(attempt) {
+      #(workflow_id, evidence) -> [#(workflow_id, evidence), ..acc]
+    }
+  })
+}
+
+fn attempt_run_root_evidence(
+  attempts: List(projection.StepAttemptStatus),
+) -> List(#(String, String)) {
+  attempts
+  |> list.fold([], fn(acc, attempt) {
+    case attempt_run_root(attempt) {
+      #(run_root, evidence) -> [#(run_root, evidence), ..acc]
+    }
+  })
+}
+
+fn attempt_workflow_id(
+  attempt: projection.StepAttemptStatus,
+) -> #(String, String) {
+  case attempt {
+    projection.StepAttemptPending(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) -> #(
+      workflow_id,
+      "step_attempt_prepared:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+    projection.StepAttemptRunning(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) -> #(
+      workflow_id,
+      "step_attempt_started:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+    projection.StepAttemptFinishedStatus(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) -> #(
+      workflow_id,
+      "step_attempt_finished:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+    projection.StepAttemptInterruptedStatus(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) -> #(
+      workflow_id,
+      "step_attempt_interrupted:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+    projection.StepAttemptSupersededStatus(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) -> #(
+      workflow_id,
+      "step_attempt_superseded:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+  }
+}
+
+fn attempt_run_root(
+  attempt: projection.StepAttemptStatus,
+) -> #(String, String) {
+  case attempt {
+    projection.StepAttemptPending(
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      run_root: run_root,
+      ..,
+    ) -> #(
+      run_root,
+      "step_attempt_prepared:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+    projection.StepAttemptRunning(
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      run_root: run_root,
+      ..,
+    ) -> #(
+      run_root,
+      "step_attempt_started:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+    projection.StepAttemptFinishedStatus(
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      run_root: run_root,
+      ..,
+    ) -> #(
+      run_root,
+      "step_attempt_finished:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+    projection.StepAttemptInterruptedStatus(
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      run_root: run_root,
+      ..,
+    ) -> #(
+      run_root,
+      "step_attempt_interrupted:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+    projection.StepAttemptSupersededStatus(
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) -> #(
+      "",
+      "step_attempt_superseded:"
+        <> run_id
+        <> ":"
+        <> step_id
+        <> ":"
+        <> int.to_string(attempt_index),
+    )
+  }
+}
+
+fn reconstructed_task_ref(
+  projection_state: projection.Projection,
+  run_id: String,
+  issue_id: String,
+  issue_identifier: String,
+) -> record.TaskRefFields {
+  projection.workflow_task_ref(projection_state, run_id)
+  |> result.unwrap(record.linear_task_ref_fields(
+    issue_id,
+    optional_non_empty(issue_identifier),
+    None,
+  ))
+}
+
+fn optional_non_empty(value: String) -> Option(String) {
+  case string.trim(value) == "" {
+    True -> None
+    False -> Some(value)
+  }
+}
+
+fn reconstructed_issue_fingerprint(
+  projection_state: projection.Projection,
+  issue_id: String,
+) -> String {
+  case dict.get(projection_state.parked_issues, issue_id) {
+    Ok(parked) -> parked.issue_fingerprint
+    Error(Nil) -> ""
+  }
+}
+
+fn reconstructed_observed_updated_at_ms(
+  projection_state: projection.Projection,
+  issue_id: String,
+) -> Int {
+  case dict.get(projection_state.issue_counters, issue_id) {
+    Ok(counter) -> counter.observed_updated_at_ms
+    Error(Nil) ->
+      case dict.get(projection_state.parked_issues, issue_id) {
+        Ok(parked) -> parked.observed_updated_at_ms
+        Error(Nil) -> 0
+      }
+  }
+}
+
+fn evidence_sources(groups: List(List(#(String, String)))) -> List(String) {
+  groups
+  |> list.fold([], fn(acc, group) { list.append(group, acc) })
+  |> non_empty_evidence
+  |> list.map(fn(entry) {
+    let #(_, evidence) = entry
+    evidence
+  })
+  |> dedupe_strings
+}
+
+fn dedupe_strings(values: List(String)) -> List(String) {
+  values
+  |> list.fold([], fn(acc, value) {
+    case list.contains(acc, value) {
+      True -> acc
+      False -> [value, ..acc]
+    }
+  })
+  |> list.reverse
 }
 
 fn compare_selected_runs_desc(a: SelectedRun, b: SelectedRun) -> Order {
@@ -413,40 +1188,57 @@ fn validate_drift(
   current_workflow_fingerprint: String,
   current_issue_fingerprint: String,
 ) -> Result(Nil, RepairError) {
-  case run.workflow_id != current_workflow_id {
-    True -> Error(RepairError("workflow_drift", Some("workflow id drifted")))
+  case run.issue_id != issue.id {
+    True -> Error(RepairError("issue_drift", Some("issue id drifted")))
     False ->
       case
-        run.workflow_fingerprint != ""
-        && run.workflow_fingerprint != current_workflow_fingerprint
+        run.issue_identifier != "" && run.issue_identifier != issue.identifier
       {
         True ->
-          Error(RepairError(
-            "workflow_drift",
-            Some("workflow fingerprint drifted"),
-          ))
+          Error(RepairError("issue_drift", Some("issue identifier drifted")))
         False ->
-          case
-            run.issue_fingerprint != ""
-            && !tracker_issue.fingerprint_equivalent(
-              run.issue_fingerprint,
-              current_issue_fingerprint,
-            )
-          {
+          case run.workflow_id != current_workflow_id {
             True ->
-              Error(RepairError(
-                "issue_drift",
-                Some("issue fingerprint drifted"),
-              ))
+              Error(RepairError("workflow_drift", Some("workflow id drifted")))
             False ->
-              case task_ref_matches_issue(run.task_ref, issue) {
-                True -> Ok(Nil)
-                False ->
-                  Error(RepairError(
-                    "issue_drift",
-                    Some("task identity drifted"),
-                  ))
-              }
+              validate_fingerprints_and_task(
+                run,
+                issue,
+                current_workflow_fingerprint,
+                current_issue_fingerprint,
+              )
+          }
+      }
+  }
+}
+
+fn validate_fingerprints_and_task(
+  run: SelectedRun,
+  issue: tracker_issue.Issue,
+  current_workflow_fingerprint: String,
+  current_issue_fingerprint: String,
+) -> Result(Nil, RepairError) {
+  case
+    run.workflow_fingerprint != ""
+    && run.workflow_fingerprint != current_workflow_fingerprint
+  {
+    True ->
+      Error(RepairError("workflow_drift", Some("workflow fingerprint drifted")))
+    False ->
+      case
+        run.issue_fingerprint != ""
+        && !tracker_issue.fingerprint_equivalent(
+          run.issue_fingerprint,
+          current_issue_fingerprint,
+        )
+      {
+        True ->
+          Error(RepairError("issue_drift", Some("issue fingerprint drifted")))
+        False ->
+          case task_ref_matches_issue(run.task_ref, issue) {
+            True -> Ok(Nil)
+            False ->
+              Error(RepairError("issue_drift", Some("task identity drifted")))
           }
       }
   }
@@ -472,6 +1264,51 @@ fn issue_fingerprint_for_candidate(
   }
 }
 
+fn observed_updated_at_ms_for_candidate(
+  recorded: Int,
+  issue: tracker_issue.Issue,
+) -> Int {
+  case recorded > 0 {
+    True -> recorded
+    False -> observed_updated_at_ms(issue)
+  }
+}
+
+fn observed_updated_at_ms(issue: tracker_issue.Issue) -> Int {
+  case issue.updated_at {
+    Some(time) -> birl.to_unix_milli(time)
+    None -> 0
+  }
+}
+
+fn task_ref_for_current_issue(
+  task_ref: record.TaskRefFields,
+  issue: tracker_issue.Issue,
+) -> record.TaskRefFields {
+  case
+    task_ref.task_backend_kind == "linear"
+    && task_ref.task_remote_id == issue.id
+  {
+    True ->
+      record.TaskRefFields(
+        ..task_ref,
+        task_key: Some(issue.identifier),
+        task_url: first_some(task_ref.task_url, issue.url),
+      )
+    False -> task_ref
+  }
+}
+
+fn first_some(
+  value: Option(String),
+  fallback: Option(String),
+) -> Option(String) {
+  case value {
+    Some(_) -> value
+    None -> fallback
+  }
+}
+
 fn validate_run_root(
   run_id: String,
   run_root: String,
@@ -479,18 +1316,59 @@ fn validate_run_root(
 ) -> Result(Nil, RepairError) {
   let root_abs = path.absolute(workspace_root) |> result.unwrap(workspace_root)
   let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
-  case
-    string.trim(run_root_abs) == ""
-    || run_root_abs == root_abs
-    || !path.contains(root_abs, run_root_abs)
-  {
-    True ->
-      Error(RepairError(
-        "workspace_recovery_failed",
-        Some("invalid run root for " <> run_id),
-      ))
+  case invalid_run_root_syntax(run_root, run_root_abs) {
+    True -> invalid_run_root_error(run_id)
+    False ->
+      case path.realpath(root_abs), path.realpath(run_root_abs) {
+        Ok(root_real), Ok(run_root_real) ->
+          validate_run_root_containment(run_id, root_real, run_root_real)
+        _, _ -> validate_run_root_containment(run_id, root_abs, run_root_abs)
+      }
+  }
+}
+
+fn validate_existing_run_root(
+  run_id: String,
+  run_root: String,
+  workspace_root: String,
+) -> Result(Nil, RepairError) {
+  let root_abs = path.absolute(workspace_root) |> result.unwrap(workspace_root)
+  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
+  case invalid_run_root_syntax(run_root, run_root_abs) {
+    True -> invalid_run_root_error(run_id)
+    False ->
+      case path.realpath(root_abs), path.realpath(run_root_abs) {
+        Ok(root_real), Ok(run_root_real) ->
+          validate_run_root_containment(run_id, root_real, run_root_real)
+        _, _ -> invalid_run_root_error(run_id)
+      }
+  }
+}
+
+fn invalid_run_root_syntax(run_root: String, run_root_abs: String) -> Bool {
+  string.trim(run_root) == ""
+  || string.trim(run_root_abs) == ""
+  || path.has_parent_segment(run_root)
+  || path.has_parent_segment(run_root_abs)
+  || path.contains_control_character(run_root)
+}
+
+fn validate_run_root_containment(
+  run_id: String,
+  root: String,
+  run_root: String,
+) -> Result(Nil, RepairError) {
+  case run_root == root || !path.contains(root, run_root) {
+    True -> invalid_run_root_error(run_id)
     False -> Ok(Nil)
   }
+}
+
+fn invalid_run_root_error(run_id: String) -> Result(Nil, RepairError) {
+  Error(RepairError(
+    "workspace_recovery_failed",
+    Some("invalid run root for " <> run_id),
+  ))
 }
 
 fn task_ref_matches_issue(
@@ -808,7 +1686,11 @@ fn repair_records(
   requested_step_id: Option(String),
   run: SelectedRun,
   issue: tracker_issue.Issue,
-  current_issue_fingerprint: String,
+  workflow_fingerprint: String,
+  task_ref: record.TaskRefFields,
+  issue_fingerprint: String,
+  observed_updated_at_ms: Int,
+  provenance_repair: Option(RunProvenanceRepairPlan),
   failed_attempt: RepairBoundary,
   next_attempt_index: Int,
   excluded_steps: List(String),
@@ -817,21 +1699,28 @@ fn repair_records(
   let workspace_path =
     projection.known_workspace_for_issue(projection_state, issue.id)
     |> result.unwrap(run.run_root)
+  let provenance_repair_records = case provenance_repair {
+    Some(repair) -> [repair.record_body]
+    None -> []
+  }
   let prefix =
-    list.append(failed_attempt.normalization_records, [
-      record.WorkflowRepairRequested(
-        run.run_id,
-        run.workflow_id,
-        issue.id,
-        issue.identifier,
-        command.retry_workflow_step_target_to_string(target),
-        requested_step_id,
-        failed_attempt.step_id,
-        failed_attempt.attempt_index,
-        next_attempt_index,
-        "retry-step",
-      ),
-    ])
+    list.append(
+      provenance_repair_records,
+      list.append(failed_attempt.normalization_records, [
+        record.WorkflowRepairRequested(
+          run.run_id,
+          run.workflow_id,
+          issue.id,
+          issue.identifier,
+          command.retry_workflow_step_target_to_string(target),
+          requested_step_id,
+          failed_attempt.step_id,
+          failed_attempt.attempt_index,
+          next_attempt_index,
+          "retry-step",
+        ),
+      ]),
+    )
   let middle =
     supersede_records(
       attempts,
@@ -844,15 +1733,12 @@ fn repair_records(
     record.WorkflowRunStartedWithTask(
       run.run_id,
       run.workflow_id,
-      run.workflow_fingerprint,
+      workflow_fingerprint,
       issue.id,
       issue.identifier,
-      run.task_ref,
-      issue_fingerprint_for_candidate(
-        run.issue_fingerprint,
-        current_issue_fingerprint,
-      ),
-      run.observed_updated_at_ms,
+      task_ref,
+      issue_fingerprint,
+      observed_updated_at_ms,
       run.run_root,
     ),
     record.RunStarted(run.run_id, issue.id, issue.identifier, workspace_path),
@@ -862,7 +1748,7 @@ fn repair_records(
       issue.identifier,
       projection.latest_counter(projection_state, issue.id).failure_attempts,
       projection.latest_counter(projection_state, issue.id).worker_sessions,
-      run.observed_updated_at_ms,
+      observed_updated_at_ms,
       Some(run.run_id),
     ),
   ]

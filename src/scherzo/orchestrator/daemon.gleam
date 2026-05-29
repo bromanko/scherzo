@@ -1755,14 +1755,7 @@ fn continue_retry_workflow_step_for_operator(
                     state,
                     command.applied(
                       operator_command,
-                      Some(
-                        "retrying run "
-                        <> plan.run_id
-                        <> " step "
-                        <> plan.selected_step_id
-                        <> " at attempt "
-                        <> int.to_string(plan.next_attempt_index),
-                      ),
+                      Some(retry_step_applied_message(plan)),
                     ),
                   )
                 }
@@ -2125,6 +2118,20 @@ fn ledger_record_bodies(
 ) -> List(record.RecordBody) {
   records
   |> list.map(fn(ledger_record) { ledger_record.body })
+}
+
+fn retry_step_applied_message(plan: workflow_repair.RepairPlan) -> String {
+  let repair_status = case plan.provenance_repair {
+    Some(_) -> "provenance_repaired; "
+    None -> "provenance_ok; "
+  }
+  repair_status
+  <> "retrying run "
+  <> plan.run_id
+  <> " step "
+  <> plan.selected_step_id
+  <> " at attempt "
+  <> int.to_string(plan.next_attempt_index)
 }
 
 fn rejection_message_from_finalization(

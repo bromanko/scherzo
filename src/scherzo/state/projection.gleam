@@ -793,6 +793,41 @@ pub fn apply(
           task_ref,
         ),
       )
+    record.WorkflowRunProvenanceRepaired(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      task_ref,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+      _,
+      _,
+    ) ->
+      Projection(
+        ..projection,
+        workflow_run_provenances: dict.insert(
+          projection.workflow_run_provenances,
+          run_id,
+          WorkflowRunProvenance(
+            workflow_id: workflow_id,
+            workflow_fingerprint: workflow_fingerprint,
+            issue_id: issue_id,
+            issue_identifier: issue_identifier,
+            issue_fingerprint: issue_fingerprint,
+            observed_updated_at_ms: observed_updated_at_ms,
+            run_root: run_root,
+            task_ref: task_ref,
+          ),
+        ),
+        workflow_task_refs: dict.insert(
+          projection.workflow_task_refs,
+          run_id,
+          task_ref,
+        ),
+      )
     record.WorkflowRunFinished(
       run_id,
       workflow_id,

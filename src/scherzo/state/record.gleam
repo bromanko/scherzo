@@ -86,6 +86,19 @@ pub type RecordBody {
     observed_updated_at_ms: Int,
     run_root: String,
   )
+  WorkflowRunProvenanceRepaired(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    issue_id: String,
+    issue_identifier: String,
+    task_ref: TaskRefFields,
+    issue_fingerprint: String,
+    observed_updated_at_ms: Int,
+    run_root: String,
+    repair_mode: String,
+    source_evidence: List(String),
+  )
   WorkflowRunFinished(
     run_id: String,
     workflow_id: String,
@@ -584,6 +597,8 @@ type RecordFields {
     source_run_id: Option(String),
     release_policy: Option(String),
     issue_fingerprint: Option(String),
+    repair_mode: Option(String),
+    source_evidence: List(String),
     requested_target: Option(String),
     requested_step_id: Option(String),
     selected_step_id: Option(String),
@@ -680,6 +695,7 @@ pub fn kind(body: RecordBody) -> String {
     RunInterrupted(..) -> "run_interrupted"
     WorkflowRunStarted(..) -> "workflow_run_started"
     WorkflowRunStartedWithTask(..) -> "workflow_run_started"
+    WorkflowRunProvenanceRepaired(..) -> "workflow_run_provenance_repaired"
     WorkflowRunFinished(..) -> "workflow_run_finished"
     WorkflowRunFinishedWithTask(..) -> "workflow_run_finished"
     WorkflowRunInputsRecorded(..) -> "workflow_run_inputs_recorded"
@@ -841,6 +857,32 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         issue_fingerprint,
         observed_updated_at_ms,
         run_root,
+      )
+    WorkflowRunProvenanceRepaired(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      task_ref,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+      repair_mode,
+      source_evidence,
+    ) ->
+      workflow_run_record.provenance_repaired_entries(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        issue_id,
+        issue_identifier,
+        task_ref_entries(task_ref),
+        issue_fingerprint,
+        observed_updated_at_ms,
+        run_root,
+        repair_mode,
+        source_evidence,
       )
     WorkflowRunFinished(
       run_id,
@@ -1783,6 +1825,49 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
             run_root,
           ))
       }
+    }
+    "workflow_run_provenance_repaired" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use workflow_fingerprint <- result.try(required_string(
+        fields.workflow_fingerprint,
+        "workflow_fingerprint",
+      ))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use issue_identifier <- result.try(required_string(
+        fields.issue_identifier,
+        "issue_identifier",
+      ))
+      use task_ref <- result.try(required_task_ref_fields(fields))
+      use issue_fingerprint <- result.try(required_string(
+        fields.issue_fingerprint,
+        "issue_fingerprint",
+      ))
+      use observed_updated_at_ms <- result.try(required_int(
+        fields.observed_updated_at_ms,
+        "observed_updated_at_ms",
+      ))
+      use run_root <- result.try(required_string(fields.run_root, "run_root"))
+      use repair_mode <- result.try(required_string(
+        fields.repair_mode,
+        "repair_mode",
+      ))
+      Ok(WorkflowRunProvenanceRepaired(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        issue_id,
+        issue_identifier,
+        task_ref,
+        issue_fingerprint,
+        observed_updated_at_ms,
+        run_root,
+        repair_mode,
+        fields.source_evidence,
+      ))
     }
     "workflow_run_finished" -> {
       use run_id <- result.try(required_string(fields.run_id, "run_id"))
@@ -3200,6 +3285,16 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use repair_mode <- decode.optional_field(
+    "repair_mode",
+    None,
+    decode.optional(decode.string),
+  )
+  use source_evidence <- decode.optional_field(
+    "source_evidence",
+    [],
+    decode.list(of: decode.string),
+  )
   use requested_target <- decode.optional_field(
     "requested_target",
     None,
@@ -3574,6 +3669,8 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     source_run_id: source_run_id,
     release_policy: release_policy,
     issue_fingerprint: issue_fingerprint,
+    repair_mode: repair_mode,
+    source_evidence: source_evidence,
     requested_target: requested_target,
     requested_step_id: requested_step_id,
     selected_step_id: selected_step_id,

@@ -66,6 +66,96 @@ pub fn retry_step_can_repair_interrupted_attempt_test() {
   )
 }
 
+pub fn retry_step_reconstructs_missing_workflow_run_provenance_test() {
+  let projection = projection.fold(missing_provenance_interrupted_run_records())
+  let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_workflow(dag),
+    )
+
+  assert plan.run_id == "run-1"
+  assert plan.issue_identifier == "LIV-509"
+  assert plan.candidate.issue_fingerprint
+    == tracker_issue.content_fingerprint(issue())
+  assert has_provenance_repair(
+    plan.records_to_append,
+    "retry_step_auto",
+    "workflow_run_inputs_recorded:run-1",
+  )
+}
+
+pub fn retry_step_rejects_ambiguous_missing_provenance_evidence_test() {
+  let projection =
+    projection.fold(
+      missing_provenance_interrupted_run_records_with_input_workflow(
+        "other-workflow",
+        "workflow-fp-1",
+      ),
+    )
+  let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
+
+  let assert Error(error) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_workflow(dag),
+    )
+
+  assert workflow_repair.describe_error(error)
+    == "workflow_provenance_ambiguous"
+}
+
+pub fn retry_step_rejects_missing_provenance_without_run_root_test() {
+  let projection =
+    projection.fold(missing_provenance_without_run_root_records())
+  let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
+
+  let assert Error(error) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_workflow(dag),
+    )
+
+  assert workflow_repair.describe_error(error)
+    == "workflow_provenance_incomplete"
+}
+
+pub fn retry_step_rejects_missing_provenance_issue_identifier_drift_test() {
+  let projection =
+    projection.fold(
+      list.append(missing_provenance_interrupted_run_records(), [
+        record.with_id(
+          "known-drift",
+          70,
+          record.KnownWorkspace(
+            issue_id: "issue-1",
+            issue_identifier: "LIV-OLD",
+            workspace_path: "test/tmp/workflow-repair/runs/run-1",
+          ),
+        ),
+      ]),
+    )
+  let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
+
+  let assert Error(error) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_workflow(dag),
+    )
+
+  assert workflow_repair.describe_error(error) == "issue_drift"
+}
+
 pub fn retry_step_interrupted_run_carries_step_recovery_evidence_test() {
   let projection = projection.fold(interrupted_run_records_with_step_recovery())
   let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
@@ -1068,6 +1158,66 @@ fn interrupted_run_records() -> List(record.LedgerRecord) {
   )
 }
 
+fn missing_provenance_interrupted_run_records() -> List(record.LedgerRecord) {
+  case interrupted_run_records() {
+    [_started, ..rest] -> rest
+    [] -> []
+  }
+}
+
+fn missing_provenance_interrupted_run_records_with_input_workflow(
+  workflow_id: String,
+  workflow_fingerprint: String,
+) -> List(record.LedgerRecord) {
+  case missing_provenance_interrupted_run_records() {
+    [_inputs, ..rest] -> [
+      record.with_id(
+        "inputs-drift",
+        2,
+        record.WorkflowRunInputsRecorded(
+          run_id: "run-1",
+          workflow_id: workflow_id,
+          workflow_fingerprint: workflow_fingerprint,
+          artifact_ref: "runs/run-1/inputs.json",
+          artifact_sha256: "sha-inputs",
+          artifact_bytes: 10,
+        ),
+      ),
+      ..rest
+    ]
+    [] -> []
+  }
+}
+
+fn missing_provenance_without_run_root_records() -> List(record.LedgerRecord) {
+  [
+    record.with_id(
+      "inputs",
+      2,
+      record.WorkflowRunInputsRecorded(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        workflow_fingerprint: "workflow-fp-1",
+        artifact_ref: "runs/run-1/inputs.json",
+        artifact_sha256: "sha-inputs",
+        artifact_bytes: 10,
+      ),
+    ),
+    record.with_id(
+      "apply-feedback-interrupted",
+      42,
+      record.StepAttemptInterrupted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        reason: "daemon_shutdown",
+      ),
+    ),
+    workflow_interrupted_record(60),
+  ]
+}
+
 fn interrupted_run_records_with_step_recovery() -> List(record.LedgerRecord) {
   list.append(interrupted_run_records(), [
     step_recovery_started_record("run-1", "validate_before_native_review", 25),
@@ -2014,6 +2164,25 @@ fn artifact_limits() -> config_types.ArtifactLimits {
     template_field_max_chars: 1000,
     workflow_summary_max_chars: 4000,
   )
+}
+
+fn has_provenance_repair(
+  records: List(record.RecordBody),
+  repair_mode: String,
+  evidence: String,
+) -> Bool {
+  list.any(records, fn(body) {
+    case body {
+      record.WorkflowRunProvenanceRepaired(
+        repair_mode: body_repair_mode,
+        source_evidence: source_evidence,
+        ..,
+      ) ->
+        body_repair_mode == repair_mode
+        && list.contains(source_evidence, evidence)
+      _ -> False
+    }
+  })
 }
 
 fn has_superseded_attempt(
