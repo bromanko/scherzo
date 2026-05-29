@@ -1,11 +1,13 @@
 import gleam/dict
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
-import scherzo/control/client
+import scherzo/control/client as control_client
+import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/remote/client as remote_client
 import scherzo/control/remote_envelope
@@ -23,8 +25,12 @@ import simplifile
 import support/test_helpers
 import test_async
 
+type Connection {
+  Connection(outbound: process.Subject(String), inbound_path: String)
+}
+
 type RemoteMode {
-  RemoteConnectOk(process.Subject(String))
+  RemoteConnectOk(Connection)
   RemoteConnectError(String)
 }
 
@@ -133,27 +139,35 @@ pub fn daemon_enabled_ui_server_reuses_daemon_id_and_stops_remote_client_test() 
     write_workflow("test/tmp/daemon-remote-client-enabled", True)
   let starts = process.new_subject()
   let stops = process.new_subject()
-  let lines = process.new_subject()
+  let wire = new_wire()
   let deps =
     remote_dependencies(
       starts,
       stops,
       None,
-      RemoteConnectOk(lines),
+      RemoteConnectOk(wire),
       [],
       UseNoControlServer,
     )
 
   let assert Ok(first) = daemon.start(Some(workflow_path), deps)
   let first_settings = test_async.expect_message(starts)
-  let _ = test_async.expect_message(lines)
-  let _ = test_async.expect_message(lines)
-  let _ = test_async.expect_message(lines)
-  let assert Ok(snapshot) = daemon.get_snapshot(first.data, 1000)
-  assert dict.size(snapshot.running) == 0
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
   assert daemon.shutdown(first.data, 1000) == Ok(Nil)
   assert test_async.expect_message(stops) == "stop"
 
+  let second_wire = new_wire()
+  let deps =
+    remote_dependencies(
+      starts,
+      stops,
+      None,
+      RemoteConnectOk(second_wire),
+      [],
+      UseNoControlServer,
+    )
   let assert Ok(second) = daemon.start(Some(workflow_path), deps)
   let second_settings = test_async.expect_message(starts)
   assert first_settings.daemon_id == second_settings.daemon_id
@@ -167,14 +181,14 @@ pub fn daemon_shutdown_logs_remote_client_stop_timeout_test() {
     write_workflow("test/tmp/daemon-remote-client-stop-timeout", True)
   let starts = process.new_subject()
   let stops = process.new_subject()
-  let lines = process.new_subject()
+  let wire = new_wire()
   let logs = process.new_subject()
   let base_deps =
     remote_dependencies(
       starts,
       stops,
       None,
-      RemoteConnectOk(lines),
+      RemoteConnectOk(wire),
       [],
       UseNoControlServer,
     )
@@ -194,9 +208,9 @@ pub fn daemon_shutdown_logs_remote_client_stop_timeout_test() {
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let _ = test_async.expect_message(starts)
-  let _ = test_async.expect_message(lines)
-  let _ = test_async.expect_message(lines)
-  let _ = test_async.expect_message(lines)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   assert test_async.expect_message(stops) == "stop"
@@ -247,7 +261,7 @@ pub fn daemon_enabled_ui_server_unreachable_remote_keeps_local_control_ping_test
   let _ = test_async.expect_message(starts)
   let control_path = control_file.path_for_workspace(dir <> "/workspaces")
   let assert Ok(control) = control_file.read(control_path)
-  assert client.ping(control) == Ok(Nil)
+  assert control_client.ping(control) == Ok(Nil)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   assert test_async.expect_message(stops) == "stop"
@@ -258,13 +272,13 @@ pub fn daemon_restarts_remote_client_after_monitored_down_test() {
   let starts = process.new_subject()
   let stops = process.new_subject()
   let handles = process.new_subject()
-  let lines = process.new_subject()
+  let first_wire = new_wire()
   let deps =
     remote_dependencies(
       starts,
       stops,
       Some(handles),
-      RemoteConnectOk(lines),
+      RemoteConnectOk(first_wire),
       [],
       UseNoControlServer,
     )
@@ -272,17 +286,14 @@ pub fn daemon_restarts_remote_client_after_monitored_down_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let _ = test_async.expect_message(starts)
   let first_handle = test_async.expect_message(handles)
-  let _ = test_async.expect_message(lines)
-  let _ = test_async.expect_message(lines)
-  let _ = test_async.expect_message(lines)
+  let _ = test_async.expect_message(first_wire.outbound)
+  let _ = test_async.expect_message(first_wire.outbound)
+  let _ = test_async.expect_message(first_wire.outbound)
 
   assert daemon_remote_client.stop(first_handle, 1000) == Ok(Nil)
 
   let _ = test_async.expect_message(starts)
   let _ = test_async.expect_message(handles)
-  let _ = test_async.expect_message(lines)
-  let _ = test_async.expect_message(lines)
-  let _ = test_async.expect_message(lines)
 
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.size(snapshot.running) == 0
@@ -295,31 +306,84 @@ pub fn daemon_remote_client_state_snapshot_uses_event_hub_sessions_test() {
     write_workflow("test/tmp/daemon-remote-client-state", True)
   let starts = process.new_subject()
   let stops = process.new_subject()
-  let lines = process.new_subject()
+  let wire = new_wire()
   let summary = session_summary()
   let deps =
     remote_dependencies(
       starts,
       stops,
       None,
-      RemoteConnectOk(lines),
+      RemoteConnectOk(wire),
       [summary],
       UseNoControlServer,
     )
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let _ = test_async.expect_message(starts)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
 
-  let _hello_line = test_async.expect_message(lines)
-
-  let heartbeat_line = test_async.expect_message(lines)
-  let assert Ok(remote_envelope.RemoteHeartbeat(_)) =
-    remote_envelope.decode(heartbeat_line)
-
-  let state_line = test_async.expect_message(lines)
-  let assert Ok(remote_envelope.RemoteStateSnapshot(_, sessions)) =
-    remote_envelope.decode(state_line)
+  let assert Ok(remote_envelope.RemoteStateSnapshot(
+    _,
+    dispatch_paused,
+    sessions,
+  )) = remote_envelope.decode(test_async.expect_message(wire.outbound))
+  assert dispatch_paused == False
   assert sessions == [expected_remote_session(summary)]
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert test_async.expect_message(stops) == "stop"
+}
+
+pub fn daemon_remote_pause_resume_uses_apply_operator_command_and_updates_state_test() {
+  let workflow_path =
+    write_workflow("test/tmp/daemon-remote-client-command", True)
+  let starts = process.new_subject()
+  let stops = process.new_subject()
+  let wire = new_wire()
+  let deps =
+    remote_dependencies(
+      starts,
+      stops,
+      None,
+      RemoteConnectOk(wire),
+      [session_summary()],
+      UseNoControlServer,
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let _ = test_async.expect_message(starts)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+
+  append_inbound_line(
+    wire.inbound_path,
+    remote_envelope.RemoteServerCommand("pause-1", command.PauseDispatch)
+      |> remote_envelope.to_string,
+  )
+  let assert Ok(remote_envelope.RemoteCommandReceipt("pause-1", True, _)) =
+    receive_envelope_of_kind(wire.outbound, "command_receipt")
+  let assert Ok(remote_envelope.RemoteCommandResult("pause-1", pause_result)) =
+    receive_envelope_of_kind(wire.outbound, "command_result")
+  assert pause_result.status == command.Applied
+  let assert Ok(remote_envelope.RemoteStateSnapshot(_, True, _)) =
+    receive_envelope_of_kind(wire.outbound, "state_snapshot")
+  let assert Ok(True) = daemon.get_remote_dispatch_paused(started.data, 1000)
+
+  append_inbound_line(
+    wire.inbound_path,
+    remote_envelope.RemoteServerCommand("resume-1", command.ResumeDispatch)
+      |> remote_envelope.to_string,
+  )
+  let assert Ok(remote_envelope.RemoteCommandReceipt("resume-1", True, _)) =
+    receive_envelope_of_kind(wire.outbound, "command_receipt")
+  let assert Ok(remote_envelope.RemoteCommandResult("resume-1", resume_result)) =
+    receive_envelope_of_kind(wire.outbound, "command_result")
+  assert resume_result.status == command.Applied
+  let assert Ok(remote_envelope.RemoteStateSnapshot(_, False, _)) =
+    receive_envelope_of_kind(wire.outbound, "state_snapshot")
+  let assert Ok(False) = daemon.get_remote_dispatch_paused(started.data, 1000)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   assert test_async.expect_message(stops) == "stop"
@@ -428,7 +492,10 @@ fn remote_dependencies(
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, _, _, _) { Ok(Nil) },
     now_ms: fn() { 42 },
-    send_after: fn(_, delay, _) { daemon.TestTimer(delay) },
+    send_after: fn(subject, delay, message) {
+      let _ = process.send_after(subject, delay, message)
+      daemon.TestTimer(delay)
+    },
     cancel_timer: fn(_) { Nil },
     start_event_hub: fn() { start_event_hub_with_sessions(session_summaries) },
     make_control_token: fn() {
@@ -452,6 +519,7 @@ fn remote_dependencies(
     start_remote_client: fn(
       effective: config_types.EffectiveConfig,
       event_hub,
+      daemon_subject,
       secrets,
       logger,
     ) {
@@ -471,9 +539,10 @@ fn remote_dependencies(
           retry_initial_ms: 50,
           retry_max_ms: 100,
           connect_timeout_ms: 50,
+          command_timeout_ms: 100,
           redaction_secrets: secrets,
         )
-      let deps = client_dependencies(mode, logger, event_hub)
+      let deps = client_dependencies(mode, logger, event_hub, daemon_subject)
       case remote_client.start(settings, deps) {
         Ok(handle) -> {
           let wrapped = daemon_remote_client.wrap(handle)
@@ -500,19 +569,21 @@ fn client_dependencies(
   mode: RemoteMode,
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
   event_hub: process.Subject(hub.Message),
-) -> remote_client.Dependencies(process.Subject(String), process.Timer) {
+  daemon_subject: process.Subject(daemon.Message),
+) -> remote_client.Dependencies(Connection, process.Timer) {
   remote_client.Dependencies(
     now_ms: fn() { 42 },
     connect: fn(_, _) {
       case mode {
-        RemoteConnectOk(lines) -> Ok(lines)
+        RemoteConnectOk(connection) -> Ok(connection)
         RemoteConnectError(message) -> Error(message)
       }
     },
     send_line: fn(connection, line, _) {
-      process.send(connection, line)
+      process.send(connection.outbound, line)
       Ok(Nil)
     },
+    recv_line: fn(connection, _) { read_inbound_line(connection.inbound_path) },
     close: fn(_) { Nil },
     send_after: process.send_after,
     cancel_timer: fn(timer) {
@@ -521,6 +592,19 @@ fn client_dependencies(
     },
     list_sessions: fn() {
       daemon_remote_client.list_sessions_for_remote_snapshot(event_hub, 1000)
+    },
+    apply_command: fn(operator_command, timeout_ms) {
+      daemon.apply_operator_command(
+        daemon_subject,
+        operator_command,
+        timeout_ms,
+      )
+    },
+    dispatch_paused: fn(timeout_ms) {
+      case daemon.get_remote_dispatch_paused(daemon_subject, timeout_ms) {
+        Ok(value) -> Ok(value)
+        Error(Nil) -> Error("dispatch_paused_timeout")
+      }
     },
     logger: logger,
   )
@@ -548,10 +632,10 @@ fn session_summary() -> event.SessionSummary {
     recovery: None,
     current_turn: 3,
     current_turn_status: None,
-    current_turn_started_at_ms: None,
     last_turn_finished_at_ms: None,
     last_turn_duration_ms: None,
     last_turn_token_delta: session_tokens.zero_token_totals(),
+    current_turn_started_at_ms: None,
     last_turn_reason: None,
     started_at_ms: 10,
     last_event_at_ms: 123,
@@ -579,3 +663,63 @@ fn empty_tracker() -> tracker.Client {
     fetch_issue_states_by_ids: fn(_) { Ok([]) },
   )
 }
+
+fn new_wire() -> Connection {
+  let root =
+    "test/tmp/daemon-remote-client-wire/" <> int.to_string(unique_integer())
+  test_helpers.reset_dir(root)
+  Connection(process.new_subject(), root <> "/inbound.txt")
+}
+
+fn receive_envelope_of_kind(
+  outbound: process.Subject(String),
+  expected: String,
+) -> Result(remote_envelope.Envelope, remote_envelope.DecodeError) {
+  let decoded = remote_envelope.decode(test_async.expect_message(outbound))
+  case decoded {
+    Ok(envelope) ->
+      case envelope_kind(envelope) == expected {
+        True -> Ok(envelope)
+        False -> receive_envelope_of_kind(outbound, expected)
+      }
+    Error(_) -> receive_envelope_of_kind(outbound, expected)
+  }
+}
+
+fn envelope_kind(envelope: remote_envelope.Envelope) -> String {
+  case envelope {
+    remote_envelope.RemoteHello(_) -> "hello"
+    remote_envelope.RemoteHeartbeat(_) -> "heartbeat"
+    remote_envelope.RemoteServerCommand(_, _) -> "server_command"
+    remote_envelope.RemoteCommandReceipt(_, _, _) -> "command_receipt"
+    remote_envelope.RemoteCommandResult(_, _) -> "command_result"
+    remote_envelope.RemoteStateSnapshot(_, _, _) -> "state_snapshot"
+  }
+}
+
+fn append_inbound_line(path: String, line: String) -> Nil {
+  let existing = case simplifile.read(path) {
+    Ok(contents) -> contents
+    Error(_) -> ""
+  }
+  let assert Ok(Nil) = simplifile.write(path, existing <> line <> "\n")
+  Nil
+}
+
+fn read_inbound_line(path: String) -> Result(String, String) {
+  case simplifile.read(path) {
+    Error(_) -> Error("timeout")
+    Ok(contents) ->
+      case string.split(contents, "\n") {
+        [first, ..rest] if first != "" -> {
+          let remaining = rest |> string.join(with: "\n")
+          let assert Ok(Nil) = simplifile.write(path, remaining)
+          Ok(first)
+        }
+        _ -> Error("timeout")
+      }
+  }
+}
+
+@external(erlang, "erlang", "unique_integer")
+fn unique_integer() -> Int

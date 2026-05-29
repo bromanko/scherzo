@@ -34,7 +34,11 @@ pub type Envelope {
     message: Option(String),
   )
   RemoteCommandResult(command_id: String, result: command.CommandResult)
-  RemoteStateSnapshot(now_ms: Int, sessions: List(RemoteSession))
+  RemoteStateSnapshot(
+    now_ms: Int,
+    dispatch_paused: Bool,
+    sessions: List(RemoteSession),
+  )
 }
 
 type EnvelopeFields {
@@ -49,6 +53,7 @@ type EnvelopeFields {
     command: Option(Dynamic),
     result: Option(Dynamic),
     now_ms: Option(Int),
+    dispatch_paused: Option(Bool),
     sessions: Option(List(RemoteSession)),
   )
 }
@@ -85,9 +90,10 @@ pub fn to_json(envelope: Envelope) -> json.Json {
         ..base_entries("command_result")
       ]
       |> json.object
-    RemoteStateSnapshot(now_ms, sessions) ->
+    RemoteStateSnapshot(now_ms, dispatch_paused, sessions) ->
       [
         #("now_ms", json.int(now_ms)),
+        #("dispatch_paused", json.bool(dispatch_paused)),
         #("sessions", json.array(sessions, of: remote_session_to_json)),
         ..base_entries("state_snapshot")
       ]
@@ -189,6 +195,11 @@ fn envelope_fields_decoder() -> decode.Decoder(EnvelopeFields) {
     None,
     decode.optional(decode.int),
   )
+  use dispatch_paused <- decode.optional_field(
+    "dispatch_paused",
+    None,
+    decode.optional(decode.bool),
+  )
   use sessions <- decode.optional_field(
     "sessions",
     None,
@@ -205,6 +216,7 @@ fn envelope_fields_decoder() -> decode.Decoder(EnvelopeFields) {
     command: command_value,
     result: result_value,
     now_ms: now_ms,
+    dispatch_paused: dispatch_paused,
     sessions: sessions,
   ))
 }
@@ -269,8 +281,12 @@ fn envelope_from_fields(
     }
     "state_snapshot" -> {
       use now_ms <- result.try(required_int_field(fields.now_ms, "now_ms"))
+      use dispatch_paused <- result.try(required_bool_field(
+        fields.dispatch_paused,
+        "dispatch_paused",
+      ))
       use sessions <- result.try(required_sessions(fields.sessions))
-      Ok(RemoteStateSnapshot(now_ms, sessions))
+      Ok(RemoteStateSnapshot(now_ms, dispatch_paused, sessions))
     }
     _ ->
       Error(DecodeError(

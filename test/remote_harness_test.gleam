@@ -1,5 +1,6 @@
+import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/control/remote_envelope
 import scherzo/control/remote_harness
@@ -37,6 +38,7 @@ pub fn remote_harness_runs_live_loopback_and_updates_liveness_test() {
       transcript_path: Some(transcript_path),
       run_nonce: "run_nonce_aaaaaaaaaaaaaaaaaaaaaaaa",
       use_real_client: True,
+      command_demo: False,
     )
   let assert Ok(report) = remote_harness.run_scenario(scenario)
 
@@ -48,9 +50,59 @@ pub fn remote_harness_runs_live_loopback_and_updates_liveness_test() {
   assert list.length(report.observations) == 2
   assert matching_digest(report.events, "hello")
   assert matching_digest(report.events, "heartbeat")
-  assert matching_digest(report.events, "state")
+  assert matching_digest(report.events, "state_snapshot")
   assert !string.contains(report.transcript_json, "test-token")
   assert string.contains(report.transcript_json, "[REDACTED]")
+}
+
+pub fn remote_harness_command_demo_records_live_pause_resume_evidence_test() {
+  let root = "test/tmp/remote-harness-command-demo"
+  test_helpers.reset_dir(root)
+  let transcript_path = root <> "/command-transcript.json"
+
+  let assert Ok(report) =
+    remote_harness.run_command_demo("test-token", transcript_path)
+
+  assert report.bound_port > 0
+  assert event_exists(
+    report.events,
+    "server_send",
+    "server_command",
+    Some("pause-1"),
+  )
+  assert event_exists(
+    report.events,
+    "server_send",
+    "server_command",
+    Some("resume-1"),
+  )
+  assert event_exists(
+    report.events,
+    "server_recv",
+    "command_receipt",
+    Some("pause-1"),
+  )
+  assert event_exists(
+    report.events,
+    "server_recv",
+    "command_receipt",
+    Some("resume-1"),
+  )
+  assert result_status_exists(report.events, "pause-1", "applied")
+  assert result_status_exists(report.events, "resume-1", "applied")
+  assert state_value_exists(report.events, True)
+  assert state_value_exists(report.events, False)
+  assert !string.contains(report.transcript_json, "test-token")
+  assert string.contains(report.transcript_json, "[REDACTED]")
+  assert string.contains(report.transcript_json, report.run_nonce)
+  assert string.contains(
+    report.transcript_json,
+    int_to_string(report.bound_port),
+  )
+
+  let assert Ok(contents) = simplifile.read(transcript_path)
+  assert string.contains(contents, "pause-1")
+  assert string.contains(contents, "resume-1")
 }
 
 pub fn remote_harness_rejects_wrong_auth_without_online_entry_test() {
@@ -70,6 +122,7 @@ pub fn remote_harness_rejects_wrong_auth_without_online_entry_test() {
       transcript_path: None,
       run_nonce: "run_nonce_wrong_auth_aaaaaaaaaaaa",
       use_real_client: False,
+      command_demo: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -94,6 +147,7 @@ pub fn remote_harness_rejects_malformed_hello_without_online_entry_test() {
       transcript_path: None,
       run_nonce: "run_nonce_bad_hello_aaaaaaaaaaaaa",
       use_real_client: False,
+      command_demo: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -118,6 +172,7 @@ pub fn remote_harness_rejects_non_heartbeat_after_valid_hello_test() {
       transcript_path: None,
       run_nonce: "run_nonce_bad_heartbeat_aaaaaaaa",
       use_real_client: False,
+      command_demo: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -142,6 +197,7 @@ pub fn remote_harness_uses_server_receipt_time_for_liveness_test() {
       transcript_path: None,
       run_nonce: "run_nonce_future_heartbeat_aaaaa",
       use_real_client: False,
+      command_demo: False,
     )
   let assert Ok(report) = remote_harness.run_scenario(scenario)
 
@@ -165,10 +221,10 @@ pub fn remote_harness_demo_writes_distinct_live_transcripts_test() {
   assert first.run_nonce != second.run_nonce
   assert matching_digest(first.events, "hello")
   assert matching_digest(first.events, "heartbeat")
-  assert matching_digest(first.events, "state")
+  assert matching_digest(first.events, "state_snapshot")
   assert matching_digest(second.events, "hello")
   assert matching_digest(second.events, "heartbeat")
-  assert matching_digest(second.events, "state")
+  assert matching_digest(second.events, "state_snapshot")
 
   let assert Ok(first_contents) = simplifile.read(first_path)
   let assert Ok(second_contents) = simplifile.read(second_path)
@@ -198,4 +254,42 @@ fn matching_digest(
     -> client_digest == server_digest
     _, _ -> False
   }
+}
+
+fn event_exists(
+  events: List(remote_harness.TranscriptEvent),
+  direction: String,
+  kind: String,
+  command_id: Option(String),
+) -> Bool {
+  list.any(events, fn(event) {
+    event.direction == direction
+    && event.kind == kind
+    && event.command_id == command_id
+  })
+}
+
+fn result_status_exists(
+  events: List(remote_harness.TranscriptEvent),
+  command_id: String,
+  status: String,
+) -> Bool {
+  list.any(events, fn(event) {
+    event.kind == "command_result"
+    && event.command_id == Some(command_id)
+    && event.command_status == Some(status)
+  })
+}
+
+fn state_value_exists(
+  events: List(remote_harness.TranscriptEvent),
+  expected: Bool,
+) -> Bool {
+  list.any(events, fn(event) {
+    event.kind == "state_snapshot" && event.dispatch_paused == Some(expected)
+  })
+}
+
+fn int_to_string(value: Int) -> String {
+  int.to_string(value)
 }
