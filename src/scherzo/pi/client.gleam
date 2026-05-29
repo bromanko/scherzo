@@ -1,3 +1,4 @@
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -11,6 +12,10 @@ import scherzo/session/tokens as session_tokens
 const max_interleaved_response_records = 100
 
 const max_interleaved_response_bytes = 1_000_000
+
+const launch_read_timeout_attempts = 3
+
+const launch_read_timeout_retry_delay_ms = 50
 
 pub type Session {
   Session(
@@ -49,6 +54,61 @@ pub fn launch(
 }
 
 pub fn launch_spec(
+  spec: pi_command.LaunchSpec,
+  cwd: String,
+  session_name: String,
+  auto_retry: Bool,
+  read_timeout_ms: Int,
+) -> Result(Session, error.PiRpcError) {
+  launch_spec_attempt(
+    spec,
+    cwd,
+    session_name,
+    auto_retry,
+    read_timeout_ms,
+    attempt: 1,
+  )
+}
+
+fn launch_spec_attempt(
+  spec: pi_command.LaunchSpec,
+  cwd: String,
+  session_name: String,
+  auto_retry: Bool,
+  read_timeout_ms: Int,
+  attempt attempt: Int,
+) -> Result(Session, error.PiRpcError) {
+  let attempt_timeout_ms = read_timeout_ms * attempt
+  case
+    launch_spec_once(spec, cwd, session_name, auto_retry, attempt_timeout_ms)
+  {
+    Ok(session) -> Ok(session)
+    Error(err) ->
+      case should_retry_launch(err, attempt) {
+        True -> {
+          process.sleep(launch_read_timeout_retry_delay_ms)
+          launch_spec_attempt(
+            spec,
+            cwd,
+            session_name,
+            auto_retry,
+            read_timeout_ms,
+            attempt: attempt + 1,
+          )
+        }
+        False -> Error(err)
+      }
+  }
+}
+
+fn should_retry_launch(err: error.PiRpcError, attempt: Int) -> Bool {
+  case err {
+    error.PiReadTimeout -> attempt < launch_read_timeout_attempts
+    _ -> False
+  }
+}
+
+fn launch_spec_once(
   spec: pi_command.LaunchSpec,
   cwd: String,
   session_name: String,

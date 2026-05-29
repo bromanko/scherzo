@@ -1455,6 +1455,15 @@ fn request_examples() -> List(RequestExample) {
       protocol.StopAfterCurrentTurn("req-stop", "secret", "session-1"),
     ),
     RequestExample(
+      "CleanupOrphanSteps",
+      protocol.CleanupOrphanSteps(
+        "req-cleanup-orphans",
+        "secret",
+        "run-1",
+        True,
+      ),
+    ),
+    RequestExample(
       "PromptSession",
       protocol.PromptSession(
         "req-prompt",
@@ -1876,6 +1885,11 @@ fn sample_recovery() -> event.RecoveryInfo {
     safe_actions: [event.Inspect, event.ViewEvents, event.Retry, event.Park],
     workflow_run_id: Some("workflow-run-1"),
     workflow_step_id: Some("implement"),
+    workflow_attempt_index: None,
+    parent_session_id: None,
+    orphan_status: None,
+    issue_state: None,
+    recommended_action: None,
     current_pi_session_id: Some("pi-session-1"),
     previous_pi_session_id: None,
     park_reason: None,

@@ -294,6 +294,8 @@ fn authenticate(
       protocol.AbortSession(id, control_file.token, session_id)
     protocol.StopAfterCurrentTurn(id, _, session_id) ->
       protocol.StopAfterCurrentTurn(id, control_file.token, session_id)
+    protocol.CleanupOrphanSteps(id, _, run_id, dry_run) ->
+      protocol.CleanupOrphanSteps(id, control_file.token, run_id, dry_run)
     protocol.PromptSession(id, _, session_id, message) ->
       protocol.PromptSession(id, control_file.token, session_id, message)
     protocol.RespondUi(id, _, session_id, request_id, response) ->

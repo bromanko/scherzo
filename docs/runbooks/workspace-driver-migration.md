@@ -289,4 +289,4 @@ There is no stored data migration in this transition. Legacy hook/profile config
 
 Keep config and Scherzo binary versions together. Do not mix a workspace-driver Scherzo binary with old direct-hook/profile config; either finish the migration or roll back both the binary and config.
 
-If the migrated driver fails validation or lifecycle execution, switch back to the old config, keep dispatch paused with `agent.max_concurrent_agents: 0` if needed, and rerun the workflow-config doctor check before resuming real dispatch.
+If the migrated driver fails validation or lifecycle execution, keep dispatch paused with `agents.concurrency: 0` if needed, and rerun the workflow-config doctor check before resuming real dispatch.

@@ -327,6 +327,15 @@ pub fn parse_operator_commands_test() {
       False,
       command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
     ))
+  assert ctl.parse(["recovery", "cleanup-orphan-steps", "run:run-1"])
+    == Ok(ctl.Operator(None, False, command.CleanupOrphanSteps("run-1", True)))
+  assert ctl.parse([
+      "recovery",
+      "cleanup-orphan-steps",
+      "run:run-1",
+      "--yes",
+    ])
+    == Ok(ctl.Operator(None, False, command.CleanupOrphanSteps("run-1", False)))
   assert ctl.parse(["park", "ABC-123", "--reason", "manual", "--yes"])
     == Ok(ctl.Operator(
       None,
@@ -370,6 +379,14 @@ pub fn parse_operator_commands_test() {
     ctl.parse(["schedules", "run", "nightly"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["schedules", "logs", "nightly"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse([
+      "recovery",
+      "cleanup-orphan-steps",
+      "run:run-1",
+      "--yes",
+      "--dry-run",
+    ])
 }
 
 pub fn parse_rejects_usage_errors_test() {
@@ -679,6 +696,11 @@ pub fn ps_and_session_human_output_show_recovery_metadata_test() {
       safe_actions: [event.Inspect, event.ViewEvents, event.Retry, event.Park],
       workflow_run_id: Some("run-1"),
       workflow_step_id: None,
+      workflow_attempt_index: None,
+      parent_session_id: None,
+      orphan_status: None,
+      issue_state: None,
+      recommended_action: None,
       current_pi_session_id: Some("pi-current"),
       previous_pi_session_id: None,
       park_reason: None,
