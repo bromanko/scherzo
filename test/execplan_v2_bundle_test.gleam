@@ -392,6 +392,58 @@ fn write_artifact_backed_plan_bundle(
   #(bundle_ref, hash.sha256_hex(bundle_text), plan_text)
 }
 
+fn write_exec_plan_bundle_input_manifest(
+  artifact_workspace: String,
+  run_id: String,
+  bundle_ref: String,
+  bundle_sha: String,
+) -> Nil {
+  let manifest_dir =
+    artifact_workspace <> "/.scherzo-state/artifacts/runs/" <> run_id
+  let assert Ok(Nil) = simplifile.create_directory_all(manifest_dir)
+  let manifest =
+    "{\n"
+    <> "  \"schema_version\": 1,\n"
+    <> "  \"inputs\": [\n"
+    <> "    {\n"
+    <> "      \"name\": \"exec_plan_bundle\",\n"
+    <> "      \"value\": {\n"
+    <> "        \"status\": \"present\",\n"
+    <> "        \"type\": \"exec_plan_bundle\",\n"
+    <> "        \"ref\": \""
+    <> bundle_ref
+    <> "\",\n"
+    <> "        \"sha256\": \""
+    <> bundle_sha
+    <> "\"\n"
+    <> "      }\n"
+    <> "    }\n"
+    <> "  ]\n"
+    <> "}\n"
+  let assert Ok(Nil) =
+    simplifile.write(manifest_dir <> "/inputs.v1.json", manifest)
+  Nil
+}
+
+fn copy_bundle_to_workstream_artifact(
+  dir: String,
+  bundle_ref: String,
+  bundle_sha: String,
+) -> String {
+  let assert Ok(bundle_text) =
+    simplifile.read(dir <> "/.scherzo-state/artifacts/" <> bundle_ref)
+  let workstream_ref = "workstream-artifacts/sha256/" <> bundle_sha <> ".json"
+  let output_dir =
+    dir <> "/.scherzo-state/artifacts/workstream-artifacts/sha256"
+  let assert Ok(Nil) = simplifile.create_directory_all(output_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/.scherzo-state/artifacts/" <> workstream_ref,
+      bundle_text,
+    )
+  workstream_ref
+}
+
 pub fn validate_bundle_accepts_valid_fixture_test() {
   let artifact =
     run_helper(
@@ -483,6 +535,154 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
   assert string.contains(metadata, "\"canonical_plan_path\":")
   assert string.contains(metadata, "\"canonical_execplan_v2_bundle_path\":")
   assert string.contains(metadata, "\"legacy_review_doc_path\": \"\"")
+}
+
+pub fn implementation_prepare_uses_workstream_input_manifest_test() {
+  let dir = "test/tmp/execplan-workstream-input-prepare"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
+  let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
+  let #(bundle_ref, bundle_sha, plan_text) =
+    write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
+  let workstream_ref =
+    copy_bundle_to_workstream_artifact(dir, bundle_ref, bundle_sha)
+  write_exec_plan_bundle_input_manifest(
+    dir,
+    "run-workstream-input",
+    workstream_ref,
+    bundle_sha,
+  )
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_RUN_ROOT=$PWD/run-root SCHERZO_RUN_ID=run-workstream-input "
+        <> helper
+        <> " implementation-prepare --from-workstream-input",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PLAN=tmp/execplan-review-doc.md")
+  let assert Ok(prepared_plan) =
+    simplifile.read(dir <> "/tmp/execplan-review-doc.md")
+  assert prepared_plan == plan_text
+}
+
+pub fn implementation_prepare_workstream_input_rejects_issue_context_fallback_test() {
+  let dir = "test/tmp/execplan-workstream-input-no-fallback"
+  test_helpers.reset_dir(dir)
+  let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
+  let #(bundle_ref, bundle_sha, _plan_text) =
+    write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_RUN_ID=run-without-input SCHERZO_ISSUE_CONTEXT="
+        <> test_helpers.shell_quote(issue_context)
+        <> " "
+        <> helper
+        <> " implementation-prepare --from-workstream-input",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert artifact.failure_code == Some("execplan_v2_input_bundle_missing")
+}
+
+pub fn implementation_prepare_prefer_workstream_input_falls_back_to_issue_context_test() {
+  let dir = "test/tmp/execplan-prefer-workstream-input-fallback"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
+  let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
+  let #(bundle_ref, bundle_sha, _plan_text) =
+    write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_RUN_ROOT=$PWD/run-root SCHERZO_RUN_ID=run-without-input SCHERZO_ISSUE_CONTEXT="
+        <> test_helpers.shell_quote(issue_context)
+        <> " "
+        <> helper
+        <> " implementation-prepare --prefer-workstream-input",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+}
+
+pub fn implementation_prepare_issue_context_ignores_workstream_input_manifest_test() {
+  let dir = "test/tmp/execplan-issue-context-ignores-input"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
+  let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
+  let #(bundle_ref, bundle_sha, _plan_text) =
+    write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
+  let manifest_dir = dir <> "/.scherzo-state/artifacts/runs/run-bad-input"
+  let assert Ok(Nil) = simplifile.create_directory_all(manifest_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      manifest_dir <> "/inputs.v1.json",
+      "{\"inputs\":[{\"name\":\"exec_plan_bundle\",\"value\":{\"status\":\"present\",\"type\":\"exec_plan_bundle\"}}]}",
+    )
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+  let helper = "../../../.scherzo/workflows/scripts/scherzo-execplan"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_REPO_ROOT=$PWD SCHERZO_RUN_ROOT=$PWD/run-root SCHERZO_RUN_ID=run-bad-input SCHERZO_ISSUE_CONTEXT="
+        <> test_helpers.shell_quote(issue_context)
+        <> " "
+        <> helper
+        <> " implementation-prepare --from-issue-context",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+}
+
+pub fn prepare_revision_uses_workstream_input_manifest_test() {
+  let dir = "test/tmp/execplan-prepare-revision-workstream-input"
+  test_helpers.reset_dir(dir)
+  let #(bundle_ref, bundle_sha) =
+    write_revision_bundle(dir, "test/fixtures/execplan_v2/review-doc.valid.md")
+  write_exec_plan_bundle_input_manifest(
+    dir <> "/repo",
+    "run-revision-input",
+    bundle_ref,
+    bundle_sha,
+  )
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> test_helpers.shell_quote(dir <> "/repo")
+      <> " SCHERZO_RUN_ID=run-revision-input .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-workstream-input --write-bundle "
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> test_helpers.shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PREPARE_REVISION_STATUS=ok")
+  assert string.contains(
+    artifact.stdout,
+    "BUNDLE_DISCOVERY_STATUS=mapped_input",
+  )
 }
 
 pub fn implementation_prepare_rejects_plan_hash_mismatch_test() {

@@ -12,6 +12,10 @@ contract:
       type: text
       required: true
       source: issue_context
+    exec_plan_bundle:
+      type: exec_plan_bundle
+      required: false
+      source: mapped_output
   outputs:
     plan:
       type: exec_plan
@@ -28,10 +32,31 @@ contract:
       source:
         step: materialize_revision
         path: tmp/execplan-bundle.json
+workstream_phase:
+  phase_id: execplan_revision
+  display_name: ExecPlan revised
+  handoff:
+    output: exec_plan_bundle
+    artifact_type: scherzo.handoff.v1
+    snapshot: required
+  next_actions:
+    - action_id: implement_exec_plan
+      workflow_id: execplan-implementation
+      state: suggested
+      priority: 0
+      inputs: [exec_plan_bundle]
+      requires_gate: human_review
+      auto_enqueue: false
+    - action_id: revise_exec_plan
+      workflow_id: execplan-revision
+      state: suggested
+      priority: 1
+      inputs: [exec_plan_bundle]
+      auto_enqueue: false
 steps:
   - id: prepare_revision
     kind: command
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" prepare-revision --from-issue-context --write-bundle tmp/execplan-previous-bundle.json --write-review-doc-path tmp/execplan-review-doc.path --write-pack tmp/execplan-previous-pack.json'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" prepare-revision --prefer-workstream-input --write-bundle tmp/execplan-previous-bundle.json --write-review-doc-path tmp/execplan-review-doc.path --write-pack tmp/execplan-previous-pack.json'
     timeout: 5m
     run_in: main
 

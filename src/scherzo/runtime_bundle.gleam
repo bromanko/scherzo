@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/config
+import scherzo/config/tracker_config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
@@ -74,12 +75,26 @@ pub fn load_with_env(
   let selected = select_config_path(explicit)
   case is_yaml_config_path(selected) {
     True -> load_orchestrator(selected, env)
-    False ->
-      Error(BundleError(
-        "unsupported_config_path",
-        "runtime config path must end in .yaml or .yml",
-      ))
+    False -> unsupported_config_path_error()
   }
+}
+
+pub fn load_workflow_by_id(
+  explicit: Option(String),
+  workflow_id: String,
+) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
+  let selected = select_config_path(explicit)
+  case is_yaml_config_path(selected) {
+    True -> load_routed_workflow(selected, workflow_id)
+    False -> unsupported_config_path_error()
+  }
+}
+
+fn unsupported_config_path_error() -> Result(a, BundleError) {
+  Error(BundleError(
+    "unsupported_config_path",
+    "runtime config path must end in .yaml or .yml",
+  ))
 }
 
 fn select_routed_workflow(
@@ -179,6 +194,22 @@ fn workflow_labels(
       }
     }
   }
+}
+
+fn load_routed_workflow(
+  selected: String,
+  workflow_id: String,
+) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
+  use content <- result.try(read_file(selected, "missing_config_file"))
+  use root <- result.try(parse_yaml_root(content, selected))
+  use routing <- result.try(
+    tracker_config.resolve_root_routing(root, selected)
+    |> map_config_error,
+  )
+  use #(workflows, _) <- result.try(
+    load_workflow_map(dict.to_list(routing.workflows), dict.new(), []),
+  )
+  lookup_workflow(workflows, workflow_id)
 }
 
 fn load_orchestrator(

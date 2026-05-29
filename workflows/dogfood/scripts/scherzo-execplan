@@ -166,9 +166,10 @@ COMPLETION_PREFLIGHT_STOP_WORDS = {
     "verify",
     "workflow",
 }
-BUNDLE_REF_RE = re.compile(r"(?i)\bBundle\s+ref:\s*`?(runs/[^\s`<>)\],;]+)`?")
+BUNDLE_REF_RE = re.compile(r"(?i)\bBundle\s+ref:\s*`?((?:runs|workstream-artifacts)/[^\s`<>)\],;]+)`?")
 BUNDLE_SHA_RE = re.compile(r"(?i)\bBundle\s+sha256:\s*`?([a-f0-9]{64})`?")
 RUN_ARTIFACT_REF_RE = re.compile(r"\bruns/[A-Za-z0-9._~/-]+")
+WORKSTREAM_ARTIFACT_REF_RE = re.compile(r"workstream-artifacts/sha256/[a-f0-9]{64}\.json")
 URL_RE = re.compile(r"https?://[^\s`<>)\]\"']+")
 GITHUB_PR_URL_RE = re.compile(r"https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)", re.IGNORECASE)
 GITHUB_PR_TEXT_RE = re.compile(r"\b(?:PR|pull request)\s*#?\s*(\d+)\b", re.IGNORECASE)
@@ -215,9 +216,9 @@ Commands:
   validate-bundle --bundle PATH [--bundle-sha256 SHA] [--artifact-root PATH] --repo-root PATH
   publish-review-doc --review-doc-path-file PATH --publish-context PATH [--pack PATH] [--previous-bundle PATH --skip-if-unchanged]
   materialize-bundle --review-doc-path-file PATH --pack PATH --publish-context PATH --output PATH
-  prepare-revision --from-issue-context --write-bundle PATH --write-review-doc-path PATH --write-pack PATH
+  prepare-revision (--from-workstream-input|--from-issue-context|--prefer-workstream-input) --write-bundle PATH --write-review-doc-path PATH --write-pack PATH
   materialize-revision --previous-bundle PATH --review-doc-path-file PATH --pack PATH --publish-context PATH --status auto --output PATH
-  implementation-prepare --from-issue-context
+  implementation-prepare (--from-workstream-input|--from-issue-context|--prefer-workstream-input)
   gate-no-conflict
   materialize-code-change-bundle --bundle PATH --output PATH
 """,
@@ -1050,6 +1051,51 @@ def resolve_artifact_ref(ref: str, *, artifact_root: str | None = None, repo_roo
         f"could not resolve artifact ref {ref}; tried artifact roots from --artifact-root, SCHERZO_RUN_ARTIFACT_DIR parent, SCHERZO_RUN_ROOT, SCHERZO_REPO_ROOT, .scherzo-state/artifacts, and test fixtures: {', '.join(tried)}",
         code=code,
     )
+
+
+def validate_workstream_artifact_ref(ref: str) -> None:
+    if not WORKSTREAM_ARTIFACT_REF_RE.fullmatch(ref):
+        fail(f"workstream artifact ref must be an immutable sha256 snapshot: {ref!r}")
+    ensure_repo_relative_path(ref, label="workstream artifact ref")
+
+
+def resolve_stored_artifact_ref(ref: str, *, code: str | None = None) -> Path:
+    if ref.startswith("runs/"):
+        return resolve_artifact_ref(ref, code=code)
+    if ref.startswith("workstream-artifacts/"):
+        validate_workstream_artifact_ref(ref)
+        tried: list[str] = []
+        for root in artifact_roots(repo_root_arg=str(Path.cwd())):
+            tried.append(str(root))
+            candidate = root / ref
+            try:
+                candidate.resolve().relative_to(root.resolve())
+            except Exception:
+                continue
+            if candidate.exists():
+                return candidate
+        fail(
+            f"could not resolve workstream artifact ref {ref}; tried artifact roots: {', '.join(tried)}",
+            code=code,
+        )
+    fail(f"unsupported artifact ref for exec_plan_bundle input: {ref!r}", code=code)
+
+
+def current_input_manifest_path() -> Path | None:
+    run_id = os.environ.get("SCHERZO_RUN_ID", "").strip()
+    if not run_id:
+        return None
+    ref = f"runs/{run_id}/inputs.v1.json"
+    validate_artifact_ref(ref)
+    for root in artifact_roots(repo_root_arg=str(Path.cwd())):
+        candidate = root / ref
+        try:
+            candidate.resolve().relative_to(root.resolve())
+        except Exception:
+            continue
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def canonical_plan_ref(run_id: str) -> str:
@@ -1990,7 +2036,7 @@ def parse_bundle_ref_and_sha(text: str) -> tuple[str, str]:
 
 def load_bundle_payload_from_context() -> tuple[dict[str, Any], Path, str, str]:
     ref, sha = parse_bundle_ref_and_sha(issue_context_text())
-    bundle_path = resolve_artifact_ref(ref, code="execplan_v2_bundle_missing")
+    bundle_path = resolve_stored_artifact_ref(ref, code="execplan_v2_bundle_missing")
     bundle, actual_sha = load_execplan_bundle_payload(
         bundle_path,
         bundle_sha256=sha,
@@ -2304,14 +2350,92 @@ def discover_bundle_from_issue_context(text: str) -> tuple[dict[str, Any], dict[
     fail(missing_bundle_discovery_message(anchors, skipped), code="execplan_v2_missing_bundle_discovery")
 
 
+def load_bundle_from_mapped_input(
+    *, validate_review_doc: bool = True
+) -> tuple[dict[str, Any], dict[str, Any], Path, str, str, dict[str, Any]] | None:
+    manifest_path = current_input_manifest_path()
+    if manifest_path is None:
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        fail(
+            f"could not read workflow input manifest {manifest_path}: {exc}",
+            code="execplan_v2_input_manifest_invalid",
+        )
+    inputs = manifest.get("inputs") if isinstance(manifest, dict) else None
+    if not isinstance(inputs, list):
+        fail(
+            f"workflow input manifest {manifest_path} does not contain an inputs list",
+            code="execplan_v2_input_manifest_invalid",
+        )
+    selected: dict[str, Any] | None = None
+    for entry in inputs:
+        if isinstance(entry, dict) and entry.get("name") == "exec_plan_bundle":
+            value = entry.get("value")
+            if isinstance(value, dict):
+                selected = value
+                break
+            fail(
+                "workflow input manifest exec_plan_bundle entry is malformed",
+                code="execplan_v2_input_manifest_invalid",
+            )
+    if selected is None or selected.get("status") == "absent":
+        return None
+    if selected.get("status") != "present" or selected.get("type") != "exec_plan_bundle":
+        fail(
+            "workflow input manifest exec_plan_bundle entry is not a present exec_plan_bundle",
+            code="execplan_v2_input_manifest_invalid",
+        )
+    ref = selected.get("ref")
+    sha = selected.get("sha256")
+    if not isinstance(ref, str) or not isinstance(sha, str) or not ref or not sha:
+        fail(
+            "workflow input manifest exec_plan_bundle entry is missing ref or sha256",
+            code="execplan_v2_input_manifest_invalid",
+        )
+    bundle_path = resolve_stored_artifact_ref(ref, code="execplan_v2_bundle_missing")
+    bundle, actual_sha = load_execplan_bundle_payload(
+        bundle_path,
+        bundle_sha256=sha,
+        repo_root_arg=str(Path.cwd()),
+    )
+    if validate_review_doc:
+        validate_bundle_canonical_plan(bundle, artifact_root=None, repo_root_arg=str(Path.cwd()))
+    pack, pack_path = validate_bundle_implementation_pack(
+        bundle,
+        artifact_root=None,
+        repo_root_arg=str(Path.cwd()),
+    )
+    return (
+        bundle,
+        pack,
+        pack_path,
+        ref,
+        actual_sha,
+        {"source": "mapped_input", "manifest": str(manifest_path)},
+    )
+
+
 def load_bundle_from_context(
-    *, allow_discovery: bool = False, validate_review_doc: bool = True
+    *, source_mode: str, allow_discovery: bool = False, validate_review_doc: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any], Path, str, str, dict[str, Any]]:
+    if source_mode in {"workstream_input", "prefer_workstream_input"}:
+        mapped = load_bundle_from_mapped_input(validate_review_doc=validate_review_doc)
+        if mapped is not None:
+            return mapped
+        if source_mode == "workstream_input":
+            fail(
+                "workflow input manifest does not contain a present exec_plan_bundle input",
+                code="execplan_v2_input_bundle_missing",
+            )
+    elif source_mode != "issue_context":
+        fail(f"unsupported exec_plan_bundle source mode: {source_mode!r}", code="execplan_v2_source_mode_invalid")
     text = issue_context_text()
     explicit = explicit_bundle_ref_and_sha(text)
     if explicit is not None:
         ref, sha = explicit
-        bundle_path = resolve_artifact_ref(ref, code="execplan_v2_bundle_missing")
+        bundle_path = resolve_stored_artifact_ref(ref, code="execplan_v2_bundle_missing")
         bundle, actual_sha = load_execplan_bundle_payload(
             bundle_path,
             bundle_sha256=sha,
@@ -2332,6 +2456,14 @@ def load_bundle_from_context(
         validate_bundle_canonical_plan(bundle, artifact_root=None, repo_root_arg=str(Path.cwd()))
     return bundle, pack, pack_path, ref, sha, diagnostics
 
+
+
+def source_mode_from_args(ns: argparse.Namespace) -> str:
+    if getattr(ns, "from_workstream_input", False):
+        return "workstream_input"
+    if getattr(ns, "prefer_workstream_input", False):
+        return "prefer_workstream_input"
+    return "issue_context"
 
 
 def review_doc_state_for_bundle(bundle: dict[str, Any], *, repo_root_arg: str | None = None) -> tuple[str, dict[str, Any] | None, str]:
@@ -2517,12 +2649,17 @@ def ensure_revision_review_doc_available(bundle: dict[str, Any], *, repo_root_ar
 
 def command_prepare_revision(args: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="scherzo-execplan prepare-revision")
-    parser.add_argument("--from-issue-context", action="store_true", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--from-issue-context", action="store_true")
+    source.add_argument("--from-workstream-input", action="store_true")
+    source.add_argument("--prefer-workstream-input", action="store_true")
     parser.add_argument("--write-bundle", required=True)
     parser.add_argument("--write-review-doc-path", required=True)
     parser.add_argument("--write-pack", required=True)
     ns = parser.parse_args(args)
+    source_mode = source_mode_from_args(ns)
     bundle, _pack, pack_path, ref, sha, diagnostics = load_bundle_from_context(
+        source_mode=source_mode,
         allow_discovery=True,
         validate_review_doc=False,
     )
@@ -2689,13 +2826,17 @@ def implementation_issue_title_for_prepare(
 
 def command_implementation_prepare(args: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="scherzo-execplan implementation-prepare")
-    parser.add_argument("--from-issue-context", action="store_true", required=True)
-    parser.parse_args(args)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--from-issue-context", action="store_true")
+    source.add_argument("--from-workstream-input", action="store_true")
+    source.add_argument("--prefer-workstream-input", action="store_true")
+    ns = parser.parse_args(args)
+    source_mode = source_mode_from_args(ns)
     marker = write_implementation_retention_marker(
         "execplan",
         os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "unknown-issue").strip() or "unknown-issue",
     )
-    bundle, _pack, pack_path, _ref, _sha, _diagnostics = load_bundle_from_context()
+    bundle, _pack, pack_path, _ref, _sha, _diagnostics = load_bundle_from_context(source_mode=source_mode)
     plan_meta, plan_source_path = validate_bundle_canonical_plan(
         bundle,
         artifact_root=None,
