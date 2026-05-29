@@ -1,6 +1,8 @@
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/workflow_contract
 import scherzo/workflow_dag
 import scherzo/workstream/phase_metadata
 import simplifile
@@ -122,11 +124,27 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
   assert execplan.contract != None
   assert revision.contract != None
   assert implementation.contract != None
+  let assert Some(revision_contract) = revision.contract
+  let assert Ok(revision_bundle_input) =
+    list.find(revision_contract.inputs, fn(input) {
+      input.name == "exec_plan_bundle"
+    })
+  assert revision_bundle_input.required == False
+  assert revision_bundle_input.source
+    == Some(workflow_contract.MappedOutputSource)
+  let assert Some(implementation_contract) = implementation.contract
+  let assert Ok(implementation_bundle_input) =
+    list.find(implementation_contract.inputs, fn(input) {
+      input.name == "exec_plan_bundle"
+    })
+  assert implementation_bundle_input.required == False
+  assert implementation_bundle_input.source
+    == Some(workflow_contract.MappedOutputSource)
   let assert Some(execplan_phase) = execplan.workstream_phase
   assert execplan_phase.phase_id == "execplan"
   let assert Some(handoff) = execplan_phase.handoff
   assert handoff.output == "exec_plan_bundle"
-  let assert [next_action] = execplan_phase.next_actions
+  let assert [next_action, revise_action] = execplan_phase.next_actions
   assert next_action.action_id == "implement_exec_plan"
   assert next_action.workflow_id == "execplan-implementation"
   assert next_action.state == "suggested"
@@ -134,8 +152,32 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
   assert next_action.inputs == ["exec_plan_bundle"]
   assert next_action.requires_gate == Some("human_review")
   assert next_action.auto_enqueue == False
-  assert revision.workstream_phase == None
-  assert implementation.workstream_phase == None
+  assert revise_action.action_id == "revise_exec_plan"
+  assert revise_action.workflow_id == "execplan-revision"
+  assert revise_action.priority == 1
+  assert revise_action.requires_gate == None
+  let assert Some(revision_phase) = revision.workstream_phase
+  assert revision_phase.phase_id == "execplan_revision"
+  let assert Some(revision_handoff) = revision_phase.handoff
+  assert revision_handoff.output == "exec_plan_bundle"
+  let assert [revision_next_action, revision_revise_action] =
+    revision_phase.next_actions
+  assert revision_next_action.action_id == "implement_exec_plan"
+  assert revision_next_action.workflow_id == "execplan-implementation"
+  assert revision_next_action.requires_gate == Some("human_review")
+  assert revision_revise_action.action_id == "revise_exec_plan"
+  assert revision_revise_action.workflow_id == "execplan-revision"
+  let assert Some(implementation_phase) = implementation.workstream_phase
+  assert implementation_phase.phase_id == "implementation"
+  assert implementation_phase.gates
+    == [
+      "implementation_review",
+      "validation_proof",
+      "publish_pr",
+    ]
+  let assert Some(implementation_handoff) = implementation_phase.handoff
+  assert implementation_handoff.output == "code_change_bundle"
+  assert implementation_phase.final_phase == False
 
   let minimal =
     parse_ok(

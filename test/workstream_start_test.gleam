@@ -1,7 +1,10 @@
 import gleam/bit_array
 import gleam/dict
+import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
+import scherzo/ctl/workstream as ctl_workstream
 import scherzo/hash
 import scherzo/state/artifact_store as state_artifact_store
 import scherzo/state/ledger as state_ledger
@@ -18,6 +21,174 @@ import scherzo/workstream/start_key
 import scherzo/workstream/types
 import simplifile
 import support/test_helpers
+
+type CtlOutMsg {
+  CtlOutLine(String)
+  CtlOutInline(String)
+}
+
+fn capture_line(subject: process.Subject(CtlOutMsg)) -> fn(String) -> Nil {
+  fn(text) {
+    process.send(subject, CtlOutLine(text))
+    Nil
+  }
+}
+
+fn capture_inline(subject: process.Subject(CtlOutMsg)) -> fn(String) -> Nil {
+  fn(text) {
+    process.send(subject, CtlOutInline(text))
+    Nil
+  }
+}
+
+fn drain_ctl_output(subject: process.Subject(CtlOutMsg)) -> String {
+  drain_ctl_output_loop(subject, "")
+}
+
+fn drain_ctl_output_loop(
+  subject: process.Subject(CtlOutMsg),
+  acc: String,
+) -> String {
+  case process.receive(subject, within: 10) {
+    Ok(CtlOutLine(text)) -> drain_ctl_output_loop(subject, acc <> text <> "\n")
+    Ok(CtlOutInline(text)) -> drain_ctl_output_loop(subject, acc <> text)
+    Error(Nil) -> acc
+  }
+}
+
+pub fn ctl_start_from_handoff_run_emits_json_and_records_start_test() {
+  let root = "test/tmp/workstream-start/ctl-from-handoff-json"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let subject = process.new_subject()
+
+  let assert Ok(Nil) =
+    ctl_workstream.run(
+      ctl_workstream.StartFromHandoff(
+        control_path: None,
+        root: Some(root),
+        json_output: True,
+        workflow_id: "execplan-implementation",
+        action_id: "implement_exec_plan",
+        handoff_ref: handoff_snapshot.ref,
+        handoff_sha256: handoff_snapshot.sha256,
+        gate_decision_ids: [],
+      ),
+      capture_line(subject),
+      capture_inline(subject),
+    )
+
+  let transcript = drain_ctl_output(subject)
+  assert string.contains(transcript, "\"status\":\"queued\"")
+  assert string.contains(
+    transcript,
+    "\"workflow_id\":\"execplan-implementation\"",
+  )
+  assert string.contains(transcript, "\"action_id\":\"implement_exec_plan\"")
+  assert string.contains(
+    transcript,
+    "\"contract_inputs\":[\"exec_plan_bundle\"]",
+  )
+  let assert Ok(after_start) = load_projection(root)
+  let assert Ok(workstream) =
+    dict.get(after_start.workstreams, "linear:LIV-461")
+  assert dict.size(workstream.queued_phase_runs) == 1
+}
+
+pub fn ctl_start_from_input_bundle_run_emits_human_queued_and_duplicate_test() {
+  let root = "test/tmp/workstream-start/ctl-from-input-bundle-human"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(projected) = load_projection(root)
+  let assert Ok(start.Queued(source)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+  let command =
+    ctl_workstream.StartFromInputBundle(
+      control_path: None,
+      root: Some(root),
+      json_output: False,
+      workflow_id: "execplan-implementation",
+      action_id: "rerun_from_bundle",
+      input_bundle_ref: source.input_bundle_ref,
+      input_bundle_sha256: source.input_bundle_sha256,
+      gate_decision_ids: [],
+    )
+
+  let first_subject = process.new_subject()
+  let assert Ok(Nil) =
+    ctl_workstream.run(
+      command,
+      capture_line(first_subject),
+      capture_inline(first_subject),
+    )
+  let first_transcript = drain_ctl_output(first_subject)
+  assert string.contains(first_transcript, "workstream start queued:")
+  assert string.contains(first_transcript, "workflow=execplan-implementation")
+  assert string.contains(first_transcript, "action=rerun_from_bundle")
+  assert string.contains(first_transcript, "contract_inputs: exec_plan_bundle")
+
+  let duplicate_subject = process.new_subject()
+  let assert Ok(Nil) =
+    ctl_workstream.run(
+      command,
+      capture_line(duplicate_subject),
+      capture_inline(duplicate_subject),
+    )
+  let duplicate_transcript = drain_ctl_output(duplicate_subject)
+  assert string.contains(duplicate_transcript, "workstream start duplicate:")
+  assert string.contains(duplicate_transcript, "action=rerun_from_bundle")
+}
+
+pub fn ctl_start_from_input_bundle_run_propagates_start_errors_test() {
+  let root = "test/tmp/workstream-start/ctl-input-bundle-error"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(projected) = load_projection(root)
+  let assert Ok(start.Queued(source)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+  let subject = process.new_subject()
+
+  let assert Error(error) =
+    ctl_workstream.run(
+      ctl_workstream.StartFromInputBundle(
+        control_path: None,
+        root: Some(root),
+        json_output: False,
+        workflow_id: "execplan-revision",
+        action_id: "rerun_from_bundle",
+        input_bundle_ref: source.input_bundle_ref,
+        input_bundle_sha256: source.input_bundle_sha256,
+        gate_decision_ids: [],
+      ),
+      capture_line(subject),
+      capture_inline(subject),
+    )
+  let #(code, message) = error
+  assert code == "input_bundle_workflow_mismatch"
+  assert string.contains(message, "execplan-implementation")
+  assert drain_ctl_output(subject) == ""
+}
 
 pub fn start_from_handoff_queues_input_bundle_from_snapshot_refs_test() {
   let root = "test/tmp/workstream-start/from-handoff"
@@ -93,6 +264,215 @@ pub fn start_from_recorded_input_bundle_queues_without_handoff_contents_test() {
 
   assert second.input_bundle_ref == first.input_bundle_ref
   assert second.action_id == "rerun_from_bundle"
+}
+
+pub fn start_from_handoff_rejects_unrecommended_workflow_test() {
+  let root = "test/tmp/workstream-start/unrecommended-workflow"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(Nil) = write_recorded_next_action(checkpoint)
+  let assert Ok(handoff_snapshot) =
+    write_recorded_handoff_payload_with_next_actions(
+      checkpoint,
+      "handoff-1",
+      "{\"bundle\":true}",
+      ["next-action-implement_exec_plan"],
+    )
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-revision",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+
+  let start.StartError(code, _) = error
+  assert code == "next_action_mismatch"
+}
+
+pub fn start_from_input_bundle_rejects_workflow_mismatch_test() {
+  let root = "test/tmp/workstream-start/input-bundle-workflow-mismatch"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(projected) = load_projection(root)
+  let assert Ok(start.Queued(first)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+  let assert Ok(after_first) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_input_bundle(
+      "execplan-revision",
+      "rerun_from_bundle",
+      first.input_bundle_ref,
+      first.input_bundle_sha256,
+      [],
+      after_first,
+      checkpoint,
+    )
+
+  let start.StartError(code, _) = error
+  assert code == "input_bundle_workflow_mismatch"
+}
+
+pub fn start_from_handoff_rejects_corrupt_snapshot_test() {
+  let root = "test/tmp/workstream-start/corrupt-handoff-snapshot"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/.scherzo-state/artifacts/" <> handoff_snapshot.ref,
+      "{}",
+    )
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+
+  let start.StartError(code, _) = error
+  assert code == "snapshot_hash_mismatch"
+}
+
+pub fn start_from_handoff_requires_recorded_next_action_test() {
+  let root = "test/tmp/workstream-start/next-action-not-recorded"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) =
+    write_recorded_handoff_payload_with_next_actions(
+      checkpoint,
+      "handoff-1",
+      "{\"bundle\":true}",
+      ["next-action-implement_exec_plan"],
+    )
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+
+  let start.StartError(code, _) = error
+  assert code == "next_action_not_recorded"
+}
+
+pub fn start_from_handoff_rejects_invalid_recorded_next_action_test() {
+  let root = "test/tmp/workstream-start/next-action-invalid"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(Nil) =
+    write_invalid_next_action_record(
+      checkpoint,
+      "next-action-implement_exec_plan",
+    )
+  let assert Ok(handoff_snapshot) =
+    write_recorded_handoff_payload_with_next_actions(
+      checkpoint,
+      "handoff-1",
+      "{\"bundle\":true}",
+      ["next-action-implement_exec_plan"],
+    )
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+
+  let start.StartError(code, _) = error
+  assert string.starts_with(code, "next_action_invalid:")
+}
+
+pub fn start_from_input_bundle_requires_recorded_bundle_test() {
+  let root = "test/tmp/workstream-start/input-bundle-not-recorded"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(input_bundle) =
+    write_unrecorded_input_bundle(checkpoint, handoff_snapshot.ref)
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_input_bundle(
+      "execplan-implementation",
+      "rerun_from_bundle",
+      input_bundle.ref,
+      input_bundle.sha256,
+      [],
+      projected,
+      checkpoint,
+    )
+
+  let start.StartError(code, _) = error
+  assert code == "input_bundle_not_recorded"
+}
+
+pub fn start_from_input_bundle_rejects_record_mismatch_test() {
+  let root = "test/tmp/workstream-start/input-bundle-record-mismatch"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(input_bundle) =
+    write_unrecorded_input_bundle(checkpoint, handoff_snapshot.ref)
+  let assert Ok(Nil) =
+    record_input_bundle_snapshot(
+      checkpoint,
+      input_bundle,
+      "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_input_bundle(
+      "execplan-implementation",
+      "rerun_from_bundle",
+      input_bundle.ref,
+      input_bundle.sha256,
+      [],
+      projected,
+      checkpoint,
+    )
+
+  let start.StartError(code, _) = error
+  assert code == "input_bundle_record_mismatch"
 }
 
 pub fn gated_start_from_input_bundle_requires_exact_approval_test() {
@@ -746,6 +1126,23 @@ fn write_recorded_handoff_payload(
   workflow_checkpoint.ArtifactWritten,
   workflow_checkpoint.CheckpointError,
 ) {
+  write_recorded_handoff_payload_with_next_actions(
+    checkpoint,
+    handoff_id,
+    output_json,
+    [],
+  )
+}
+
+fn write_recorded_handoff_payload_with_next_actions(
+  checkpoint: workflow_checkpoint.Writer,
+  handoff_id: String,
+  output_json: String,
+  next_actions: List(String),
+) -> Result(
+  workflow_checkpoint.ArtifactWritten,
+  workflow_checkpoint.CheckpointError,
+) {
   let assert Ok(output_snapshot) =
     checkpoint.snapshot_workstream_bytes(
       "workstream/outputs/exec-plan-bundle.json",
@@ -784,7 +1181,7 @@ fn write_recorded_handoff_payload(
           snapshot: artifact_snapshot,
         ),
       ],
-      recommended_next_actions: [],
+      recommended_next_actions: next_actions,
       open_questions: [],
     )
   let handoff_json = artifacts.handoff_to_string(handoff)
@@ -821,6 +1218,94 @@ fn write_recorded_handoff_payload(
     sha256: snapshot.sha256,
     bytes: snapshot.bytes,
   ))
+}
+
+fn write_unrecorded_input_bundle(
+  checkpoint: workflow_checkpoint.Writer,
+  source_handoff_ref: String,
+) -> Result(
+  workflow_checkpoint.ArtifactWritten,
+  workflow_checkpoint.CheckpointError,
+) {
+  let input_bundle =
+    types.InputBundleArtifact(
+      artifact_id: "input-bundle-test",
+      workstream_id: "linear:LIV-461",
+      source_handoff_ref: source_handoff_ref,
+      workflow_id: "execplan-implementation",
+      inputs: [],
+      source_kind: Some("handoff"),
+      source_reason: Some("test"),
+    )
+  let contents = artifacts.input_bundle_to_string(input_bundle)
+  let assert Ok(snapshot) =
+    checkpoint.snapshot_workstream_bytes(
+      "workstream/input-bundles/input-bundle-test.json",
+      "application/json",
+      bit_array.from_string(contents),
+    )
+  Ok(workflow_checkpoint.ArtifactWritten(
+    ref: snapshot.ref,
+    sha256: snapshot.sha256,
+    bytes: snapshot.bytes,
+  ))
+}
+
+fn record_input_bundle_snapshot(
+  checkpoint: workflow_checkpoint.Writer,
+  snapshot: workflow_checkpoint.ArtifactWritten,
+  recorded_sha256: String,
+) -> Result(Nil, workflow_checkpoint.CheckpointError) {
+  let record =
+    ledger.workstream_artifact_recorded(
+      123,
+      "linear:LIV-461",
+      "input-bundle-test",
+      types.input_bundle_artifact_type,
+      snapshot.ref,
+      recorded_sha256,
+      snapshot.bytes,
+      "workstream/input-bundles/input-bundle-test.json",
+      "input_bundle",
+      "application/json",
+      "execplan-implementation",
+      "run-1",
+      "prepare_bundle",
+      "input-bundle-test",
+    )
+  let assert Ok(_) = checkpoint.append_workstream_record_idempotent(record)
+  Ok(Nil)
+}
+
+fn write_invalid_next_action_record(
+  checkpoint: workflow_checkpoint.Writer,
+  artifact_id: String,
+) -> Result(Nil, workflow_checkpoint.CheckpointError) {
+  let assert Ok(snapshot) =
+    checkpoint.snapshot_workstream_bytes(
+      "workstream/next-actions/invalid.json",
+      "application/json",
+      bit_array.from_string("{}"),
+    )
+  let record =
+    ledger.workstream_artifact_recorded(
+      123,
+      "linear:LIV-461",
+      artifact_id,
+      types.next_action_artifact_type,
+      snapshot.ref,
+      snapshot.sha256,
+      snapshot.bytes,
+      snapshot.original_path,
+      "artifact[]",
+      snapshot.media_type,
+      "execplan",
+      "run-1",
+      "next_action",
+      artifact_id,
+    )
+  let assert Ok(_) = checkpoint.append_workstream_record_idempotent(record)
+  Ok(Nil)
 }
 
 fn write_recorded_next_action(
