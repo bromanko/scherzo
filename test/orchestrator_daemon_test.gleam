@@ -593,6 +593,29 @@ fn adapter_with_handoff_failure_subject(
   )
 }
 
+fn adapter_with_handoff_claim_subject(
+  client: tracker.Client,
+  subject: process.Subject(#(String, String)),
+) -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    ..legacy_adapter(client),
+    handoff: Some(
+      adapter.HandoffCapability(report: fn(event) {
+        case event {
+          adapter.HandoffClaim(task_context, _, run_id) -> {
+            let claimed_issue = task.to_runtime_issue(task_context)
+            process.send(subject, #(claimed_issue.id, run_id))
+            Ok(Nil)
+          }
+          adapter.HandoffSuccess(_, _, _, _)
+          | adapter.HandoffFailure(_, _, _, _)
+          | adapter.HandoffPark(_) -> Ok(Nil)
+        }
+      }),
+    ),
+  )
+}
+
 fn adapter_with_scheduled_reporter(
   client: tracker.Client,
   reporter: scheduled_failure_reporter.Client,
@@ -1453,6 +1476,22 @@ fn load_test_records(root: String) -> List(record.LedgerRecord) {
   read.records
 }
 
+fn ledger_kinds(root: String) -> Result(List(String), String) {
+  case ledger.path_for_workspace_root(root) {
+    Error(_) -> Error("ledger_path_failed")
+    Ok(ledger_path) ->
+      case ledger.read_records(ledger_path) {
+        Error(_) -> Error("ledger_read_failed")
+        Ok(read) ->
+          Ok(
+            list.map(read.records, fn(ledger_record) {
+              record.kind(ledger_record.body)
+            }),
+          )
+      }
+  }
+}
+
 fn write_corrupt_current_ledger(root: String) -> Nil {
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) = simplifile.create_directory_all(ledger_path.ledger_dir)
@@ -2143,6 +2182,54 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "dispatch_started", 10)
   test_async.assert_no_extra_message_within(triage_subject, 100)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_claim_handoff_appends_parent_records_before_worker_spawn_test() {
+  let dir = "test/tmp/daemon-claim-handoff-ledger"
+  let workflow_path = write_workflow(dir, 1)
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let root = bundle.effective.workspace.root
+  let candidate = issue("issue-id", "ABC-1", "Todo")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+    )
+  let log_subject = process.new_subject()
+  let claim_subject = process.new_subject()
+  let ledger_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter_with_handoff_claim_subject(client, claim_subject)
+      },
+      logger: fn(_, event, _, _) {
+        process.send(log_subject, event)
+        case event == "dispatch_started" {
+          True -> process.send(ledger_subject, ledger_kinds(root))
+          False -> Nil
+        }
+        Ok(Nil)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert process.receive(claim_subject, within: 1000)
+    == Ok(#("issue-id", "ABC-1-42-1"))
+  let assert Ok(Ok(kinds_before_spawn)) =
+    process.receive(ledger_subject, within: 1000)
+  assert kinds_before_spawn
+    == [
+      "workflow_run_started",
+      "known_workspace",
+      "run_started",
+      "issue_counter_updated",
+    ]
+
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 

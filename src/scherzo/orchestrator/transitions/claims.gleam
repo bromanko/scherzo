@@ -285,16 +285,34 @@ pub fn handle_requested(
       case pending.run_id == run_id && pending.session_id == session_id {
         False -> stale_continuation(state, correlation_id, issue_id, run_id)
         True ->
-          transition_types.Outcome(state: state, effects: [
-            effects_types.AppendLedger(effects_types.LedgerAppend(
-              correlation_id: correlation_id,
-              bodies: bodies,
-              failure_event: failure_event,
-              policy: effects_types.ContinueWith(
-                effects_types.SpawnClaimedWorker(issue_id, run_id, session_id),
-              ),
-            )),
-          ])
+          case bodies {
+            [] ->
+              transition_types.Outcome(
+                state: clear_pending_claim(state, issue_id),
+                effects: [
+                  effects_types.Log("warn", "claim_ledger_append_empty", [
+                    #("issue_id", issue_id),
+                    #("run_id", run_id),
+                    #("correlation_id", correlation_id),
+                  ]),
+                ],
+              )
+            _ ->
+              transition_types.Outcome(state: state, effects: [
+                effects_types.AppendLedger(effects_types.LedgerAppend(
+                  correlation_id: correlation_id,
+                  bodies: bodies,
+                  failure_event: failure_event,
+                  policy: effects_types.ContinueWith(
+                    effects_types.SpawnClaimedWorker(
+                      issue_id,
+                      run_id,
+                      session_id,
+                    ),
+                  ),
+                )),
+              ])
+          }
       }
   }
 }

@@ -326,10 +326,7 @@ fn handoff_state_moves_enabled(handoff: config_types.HandoffConfig) -> Bool {
 }
 
 fn option_is_some(value: Option(a)) -> Bool {
-  case value {
-    Some(_) -> True
-    None -> False
-  }
+  value != None
 }
 
 fn workflow_label_paths(routing: config_types.RoutingConfig) -> List(String) {
@@ -5524,7 +5521,10 @@ fn handoff_claim_result_for_transition(
   case result {
     Error(err) -> transition_types.HandoffClaimFailed(error.tracker_code(err))
     Ok(Nil) ->
-      case dict.get(state.pending_claims, issue_id) {
+      case
+        state.pending_claims
+        |> dict.get(orchestrator_state.linear_issue_id_identity(issue_id))
+      {
         Error(Nil) -> transition_types.HandoffClaimSucceeded([])
         Ok(pending) ->
           case pending.run_id == run_id {

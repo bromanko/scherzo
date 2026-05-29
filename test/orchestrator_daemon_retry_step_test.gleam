@@ -176,6 +176,63 @@ pub fn retry_step_appends_repair_records_before_spawning_recovered_worker_test()
   hub.stop(hub_subject)
 }
 
+pub fn retry_step_repairs_claim_handoff_interrupted_run_test() {
+  let dir = "test/tmp/daemon-retry-step-claim-handoff"
+  let issue = issue("issue-1", "LIV-749", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_claim_handoff_interrupted_retry_step_run(root, issue)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _effective) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "applied"
+  assert contains_kind_sequence(root, [
+    "workflow_run_started",
+    "known_workspace",
+    "run_started",
+    "issue_counter_updated",
+  ])
+  assert contains_kind_sequence(root, [
+    "workflow_run_interrupted",
+    "run_interrupted",
+    "workflow_repair_requested",
+    "step_attempt_superseded",
+    "workflow_run_started",
+  ])
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 20)
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn retry_step_repairs_missing_provenance_after_finalization_accepts_test() {
   let dir = "test/tmp/daemon-retry-step-missing-provenance"
   let issue = issue("issue-1", "LIV-695", "Todo")
@@ -1071,8 +1128,35 @@ fn seed_interrupted_retry_step_run(
   issue: tracker_issue.Issue,
   include_parked parked: Bool,
 ) -> Nil {
+  seed_interrupted_retry_step_run_with_claim_lifecycle(
+    root,
+    issue,
+    include_parked: parked,
+    include_claim_lifecycle: False,
+  )
+}
+
+fn seed_claim_handoff_interrupted_retry_step_run(
+  root: String,
+  issue: tracker_issue.Issue,
+) -> Nil {
+  seed_interrupted_retry_step_run_with_claim_lifecycle(
+    root,
+    issue,
+    include_parked: False,
+    include_claim_lifecycle: True,
+  )
+}
+
+fn seed_interrupted_retry_step_run_with_claim_lifecycle(
+  root: String,
+  issue: tracker_issue.Issue,
+  include_parked parked: Bool,
+  include_claim_lifecycle claim_lifecycle: Bool,
+) -> Nil {
   let run_root = root <> "/implementation/" <> issue.identifier <> "/run-1"
   let seed_workspace = run_root <> "/workspaces/seed"
+  let workflow_workspace = root <> "/" <> issue.identifier
   let assert Ok(Nil) = simplifile.create_directory_all(seed_workspace)
   let store = artifact_store.new(root)
   let artifact =
@@ -1095,7 +1179,40 @@ fn seed_interrupted_retry_step_run(
       artifact,
     )
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
-  let base_records = [
+  let claim_offset = case claim_lifecycle {
+    True -> 3
+    False -> 0
+  }
+  let terminal_offset = case claim_lifecycle {
+    True -> 1
+    False -> 0
+  }
+  let claim_records = case claim_lifecycle {
+    True -> [
+      record.with_id(
+        "known-workspace",
+        2,
+        record.KnownWorkspace(issue.id, issue.identifier, workflow_workspace),
+      ),
+      record.with_id(
+        "run-started",
+        3,
+        record.RunStarted(
+          "run-1",
+          issue.id,
+          issue.identifier,
+          workflow_workspace,
+        ),
+      ),
+      record.with_id(
+        "issue-counter",
+        4,
+        record.IssueCounterUpdated(issue.id, issue.identifier, 0, 1, 100, None),
+      ),
+    ]
+    False -> []
+  }
+  let workflow_started =
     record.with_id(
       "workflow-started",
       1,
@@ -1114,10 +1231,11 @@ fn seed_interrupted_retry_step_run(
         observed_updated_at_ms: 100,
         run_root: run_root,
       ),
-    ),
+    )
+  let step_records = [
     record.with_id(
       "seed-prepared",
-      2,
+      2 + claim_offset,
       record.StepAttemptPrepared(
         run_id: "run-1",
         workflow_id: "implementation",
@@ -1132,7 +1250,7 @@ fn seed_interrupted_retry_step_run(
     ),
     record.with_id(
       "seed-started",
-      3,
+      3 + claim_offset,
       record.StepAttemptStarted(
         run_id: "run-1",
         workflow_id: "implementation",
@@ -1145,7 +1263,7 @@ fn seed_interrupted_retry_step_run(
     ),
     record.with_id(
       "seed-finished",
-      4,
+      4 + claim_offset,
       record.StepAttemptFinished(
         run_id: "run-1",
         workflow_id: "implementation",
@@ -1162,7 +1280,7 @@ fn seed_interrupted_retry_step_run(
     ),
     record.with_id(
       "feedback-prepared",
-      5,
+      5 + claim_offset,
       record.StepAttemptPrepared(
         run_id: "run-1",
         workflow_id: "implementation",
@@ -1177,7 +1295,7 @@ fn seed_interrupted_retry_step_run(
     ),
     record.with_id(
       "feedback-started",
-      6,
+      6 + claim_offset,
       record.StepAttemptStarted(
         run_id: "run-1",
         workflow_id: "implementation",
@@ -1190,7 +1308,7 @@ fn seed_interrupted_retry_step_run(
     ),
     record.with_id(
       "feedback-interrupted",
-      7,
+      7 + claim_offset,
       record.StepAttemptInterrupted(
         run_id: "run-1",
         workflow_id: "implementation",
@@ -1201,7 +1319,7 @@ fn seed_interrupted_retry_step_run(
     ),
     record.with_id(
       "workflow-interrupted",
-      8,
+      8 + claim_offset,
       record.WorkflowRunInterrupted(
         run_id: "run-1",
         workflow_id: "implementation",
@@ -1210,12 +1328,27 @@ fn seed_interrupted_retry_step_run(
       ),
     ),
   ]
+  let terminal_records = case claim_lifecycle {
+    True -> [
+      record.with_id(
+        "run-interrupted",
+        9 + claim_offset,
+        record.RunInterrupted("run-1", issue.id, "daemon_shutdown"),
+      ),
+    ]
+    False -> []
+  }
+  let base_records =
+    list.append(
+      [workflow_started],
+      list.append(claim_records, list.append(step_records, terminal_records)),
+    )
   let records = case parked {
     True ->
       list.append(base_records, [
         record.with_id(
           "issue-parked",
-          9,
+          9 + claim_offset + terminal_offset,
           record.IssueParkedV2(
             issue.id,
             issue.identifier,
