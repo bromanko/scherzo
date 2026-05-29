@@ -700,6 +700,9 @@ direnv exec . scripts/scherzoctl pause
 direnv exec . scripts/scherzoctl resume
 direnv exec . scripts/scherzoctl reload
 direnv exec . scripts/scherzoctl retry ABC-123
+direnv exec . scripts/scherzoctl retry-step run:<run-id> --step <step-id>
+direnv exec . scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --dry-run
+direnv exec . scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --yes
 direnv exec . scripts/scherzoctl park ABC-123 --reason "operator inspection" --yes
 direnv exec . scripts/scherzoctl unpark ABC-123
 direnv exec . scripts/scherzoctl prompt <session-id> "summarize current progress"
@@ -707,7 +710,7 @@ direnv exec . scripts/scherzoctl stop-after-turn <session-id> --yes
 direnv exec . scripts/scherzoctl abort <session-id> --yes
 ```
 
-Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. Linear comments are not an operator command transport; comments beginning with old command prefixes are ignored by Scherzo. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
+Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. Recovery metadata for workflow child sessions now includes parent run/step/attempt details plus orphan cleanup hints. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. Linear comments are not an operator command transport; comments beginning with old command prefixes are ignored by Scherzo. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
 
 ## 14. Adaptation checklist and troubleshooting
 

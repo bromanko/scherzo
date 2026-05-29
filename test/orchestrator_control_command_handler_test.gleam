@@ -280,6 +280,31 @@ pub fn control_command_handler_rejects_run_schedule_now_for_legacy_context_test(
     process.receive(log_subject, within: 100)
 }
 
+pub fn control_command_handler_rejects_cleanup_orphan_steps_for_legacy_path_test() {
+  let log_subject = process.new_subject()
+  let route_subject = process.new_subject()
+  let context =
+    base_context(
+      TestState(paused: False, pending: 0, routed: 0),
+      log_subject,
+      route_subject,
+    )
+
+  let #(_, result) =
+    control_command_handler.apply(
+      context,
+      command.CleanupOrphanSteps("run-1", True),
+      1000,
+    )
+  assert result.command == "cleanup_orphan_steps"
+  assert result.status
+    == command.Rejected("cleanup_orphan_steps_requires_daemon_shell")
+  assert result.message
+    == Some("cleanup-orphan-steps must be handled by the daemon shell path")
+  let assert Ok(#("cleanup_orphan_steps", "rejected", [])) =
+    process.receive(log_subject, within: 100)
+}
+
 pub fn control_command_handler_delegates_state_commands_to_callbacks_test() {
   let log_subject = process.new_subject()
   let callback_subject = process.new_subject()

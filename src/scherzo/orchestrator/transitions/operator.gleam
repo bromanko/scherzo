@@ -102,6 +102,7 @@ pub fn handle_submitted(
     command.ReloadWorkflow
     | command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
+    | command.CleanupOrphanSteps(_, _)
     | command.RunScheduleNow(_) -> shell_command(state, request)
   }
 }

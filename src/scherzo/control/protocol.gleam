@@ -46,6 +46,7 @@ pub type Request {
   UnparkIssue(id: String, token: String, issue_ref: command.IssueRef)
   AbortSession(id: String, token: String, session_id: String)
   StopAfterCurrentTurn(id: String, token: String, session_id: String)
+  CleanupOrphanSteps(id: String, token: String, run_id: String, dry_run: Bool)
   PromptSession(id: String, token: String, session_id: String, message: String)
   RespondUi(
     id: String,
@@ -94,6 +95,7 @@ type RequestFields {
     cancel: Option(Bool),
     value: Option(String),
     job_id: Option(String),
+    dry_run: Option(Bool),
   )
 }
 
@@ -113,6 +115,7 @@ pub fn request_id(request: Request) -> String {
     UnparkIssue(id, _, _) -> id
     AbortSession(id, _, _) -> id
     StopAfterCurrentTurn(id, _, _) -> id
+    CleanupOrphanSteps(id, _, _, _) -> id
     PromptSession(id, _, _, _) -> id
     RespondUi(id, _, _, _, _) -> id
     RunScheduleNow(id, _, _) -> id
@@ -135,6 +138,7 @@ pub fn request_token(request: Request) -> String {
     UnparkIssue(_, token, _) -> token
     AbortSession(_, token, _) -> token
     StopAfterCurrentTurn(_, token, _) -> token
+    CleanupOrphanSteps(_, token, _, _) -> token
     PromptSession(_, token, _, _) -> token
     RespondUi(_, token, _, _, _) -> token
     RunScheduleNow(_, token, _) -> token
@@ -210,6 +214,13 @@ pub fn request_to_json(request: Request) -> json.Json {
       [
         #("session_id", json.string(session_id)),
         ..base_request_entries(id, token, "stop_after_current_turn")
+      ]
+      |> json.object
+    CleanupOrphanSteps(id, token, run_id, dry_run) ->
+      [
+        #("run_id", json.string(run_id)),
+        #("dry_run", json.bool(dry_run)),
+        ..base_request_entries(id, token, "cleanup_orphan_steps")
       ]
       |> json.object
     PromptSession(id, token, session_id, message) ->
@@ -391,6 +402,17 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
           Ok(StopAfterCurrentTurn(fields.id, fields.token, session_id))
         Error(err) -> Error(err)
       }
+    "cleanup_orphan_steps" ->
+      case required_run_id(fields) {
+        Ok(run_id) ->
+          Ok(CleanupOrphanSteps(
+            fields.id,
+            fields.token,
+            run_id,
+            request_dry_run(fields),
+          ))
+        Error(err) -> Error(err)
+      }
     "prompt" | "prompt_session" ->
       case required_session_id(fields), required_message(fields) {
         Ok(session_id), Ok(message) ->
@@ -562,6 +584,26 @@ fn required_job_id(fields: RequestFields) -> Result(String, RequestError) {
   }
 }
 
+fn required_run_id(fields: RequestFields) -> Result(String, RequestError) {
+  case fields.run_id {
+    Some(run_id) -> {
+      let run_id = string.trim(run_id)
+      case run_id == "" {
+        True -> invalid(fields.id, "run_id must not be empty")
+        False -> Ok(run_id)
+      }
+    }
+    None -> invalid(fields.id, "missing run_id")
+  }
+}
+
+fn request_dry_run(fields: RequestFields) -> Bool {
+  case fields.dry_run {
+    Some(value) -> value
+    None -> True
+  }
+}
+
 fn required_ui_response(
   fields: RequestFields,
 ) -> Result(command.UiResponse, RequestError) {
@@ -655,6 +697,11 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use dry_run <- decode.optional_field(
+    "dry_run",
+    None,
+    decode.optional(decode.bool),
+  )
   decode.success(RequestFields(
     version: version,
     id: id,
@@ -674,6 +721,7 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     cancel: cancel,
     value: value,
     job_id: job_id,
+    dry_run: dry_run,
   ))
 }
 
@@ -794,6 +842,8 @@ pub fn command_request(
     command.AbortSession(session_id) -> AbortSession(id, token, session_id)
     command.StopAfterCurrentTurn(session_id) ->
       StopAfterCurrentTurn(id, token, session_id)
+    command.CleanupOrphanSteps(run_id, dry_run) ->
+      CleanupOrphanSteps(id, token, run_id, dry_run)
     command.PromptSession(session_id, message) ->
       PromptSession(id, token, session_id, message)
     command.RespondUi(session_id, request_id, response) ->
@@ -818,6 +868,8 @@ pub fn request_operator_command(
     AbortSession(_, _, session_id) -> Some(command.AbortSession(session_id))
     StopAfterCurrentTurn(_, _, session_id) ->
       Some(command.StopAfterCurrentTurn(session_id))
+    CleanupOrphanSteps(_, _, run_id, dry_run) ->
+      Some(command.CleanupOrphanSteps(run_id, dry_run))
     PromptSession(_, _, session_id, message) ->
       Some(command.PromptSession(session_id, message))
     RespondUi(_, _, session_id, request_id, response) ->
@@ -1136,6 +1188,31 @@ fn recovery_info_decoder() -> decode.Decoder(event.RecoveryInfo) {
     None,
     decode.optional(decode.string),
   )
+  use workflow_attempt_index <- decode.optional_field(
+    "workflow_attempt_index",
+    None,
+    decode.optional(decode.int),
+  )
+  use parent_session_id <- decode.optional_field(
+    "parent_session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use orphan_status <- decode.optional_field(
+    "orphan_status",
+    None,
+    decode.optional(decode.string),
+  )
+  use issue_state <- decode.optional_field(
+    "issue_state",
+    None,
+    decode.optional(decode.string),
+  )
+  use recommended_action <- decode.optional_field(
+    "recommended_action",
+    None,
+    decode.optional(decode.string),
+  )
   use current_pi_session_id <- decode.optional_field(
     "current_pi_session_id",
     None,
@@ -1190,6 +1267,11 @@ fn recovery_info_decoder() -> decode.Decoder(event.RecoveryInfo) {
         safe_actions: safe_actions,
         workflow_run_id: workflow_run_id,
         workflow_step_id: workflow_step_id,
+        workflow_attempt_index: workflow_attempt_index,
+        parent_session_id: parent_session_id,
+        orphan_status: orphan_status,
+        issue_state: issue_state,
+        recommended_action: recommended_action,
         current_pi_session_id: current_pi_session_id,
         previous_pi_session_id: previous_pi_session_id,
         park_reason: park_reason,
@@ -1209,6 +1291,11 @@ fn recovery_info_decoder() -> decode.Decoder(event.RecoveryInfo) {
           safe_actions: safe_actions,
           workflow_run_id: workflow_run_id,
           workflow_step_id: workflow_step_id,
+          workflow_attempt_index: workflow_attempt_index,
+          parent_session_id: parent_session_id,
+          orphan_status: orphan_status,
+          issue_state: issue_state,
+          recommended_action: recommended_action,
           current_pi_session_id: current_pi_session_id,
           previous_pi_session_id: previous_pi_session_id,
           park_reason: park_reason,

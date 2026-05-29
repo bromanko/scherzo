@@ -88,6 +88,16 @@ pub fn apply(
       log_context_result(context, context.state, result, [])
       #(context.state, result)
     }
+    command.CleanupOrphanSteps(_, _) -> {
+      let result =
+        command.rejected(
+          operator_command,
+          "cleanup_orphan_steps_requires_daemon_shell",
+          Some("cleanup-orphan-steps must be handled by the daemon shell path"),
+        )
+      log_context_result(context, context.state, result, [])
+      #(context.state, result)
+    }
     command.ParkIssue(issue_ref, reason) ->
       log_transition(
         context,
