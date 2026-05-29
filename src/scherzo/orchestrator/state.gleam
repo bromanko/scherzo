@@ -1,7 +1,7 @@
 import birl.{type Time}
 import gleam/dict.{type Dict}
 import gleam/int
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/orchestrator/reason
 import scherzo/session/live as session_live
@@ -22,26 +22,59 @@ pub fn task_identity(item: task.Task) -> String {
 }
 
 pub fn issue_ref(issue: tracker_issue.Issue) -> task.TaskRef {
-  task.from_legacy_issue(issue).ref
+  issue_ref_for_backend(issue, "linear")
+}
+
+pub fn issue_ref_for_backend(
+  issue: tracker_issue.Issue,
+  backend_kind: String,
+) -> task.TaskRef {
+  task.TaskRef(
+    backend_kind: backend_kind,
+    remote_id: issue.id,
+    key: Some(issue.identifier),
+    url: issue.url,
+  )
 }
 
 // Linear compatibility boundary: legacy orchestrator paths still receive a
 // tracker_issue.Issue, so derive the TaskRef identity from the Linear-shaped
 // issue at the edge instead of using the bare issue id as a runtime key.
 pub fn issue_identity(issue: tracker_issue.Issue) -> String {
-  task.from_legacy_issue(issue).ref |> task_ref_identity
+  issue_ref(issue) |> task_ref_identity
+}
+
+pub fn issue_identity_for_backend(
+  issue: tracker_issue.Issue,
+  backend_kind: String,
+) -> String {
+  issue_ref_for_backend(issue, backend_kind) |> task_ref_identity
 }
 
 // Linear compatibility boundary: timer, ledger, and operator continuations are
 // still serialized with bare issue ids. Convert them before touching runtime
 // dictionaries.
 pub fn linear_issue_id_identity(issue_id: String) -> String {
-  linear_issue_id_ref(issue_id) |> task_ref_identity
+  issue_id_identity_for_backend(issue_id, "linear")
+}
+
+pub fn issue_id_identity_for_backend(
+  issue_id: String,
+  backend_kind: String,
+) -> String {
+  issue_id_ref_for_backend(issue_id, backend_kind) |> task_ref_identity
 }
 
 pub fn linear_issue_id_ref(issue_id: String) -> task.TaskRef {
+  issue_id_ref_for_backend(issue_id, "linear")
+}
+
+pub fn issue_id_ref_for_backend(
+  issue_id: String,
+  backend_kind: String,
+) -> task.TaskRef {
   task.TaskRef(
-    backend_kind: "linear",
+    backend_kind: backend_kind,
     remote_id: issue_id,
     key: None,
     url: None,

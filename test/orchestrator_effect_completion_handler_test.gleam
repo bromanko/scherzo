@@ -150,6 +150,7 @@ pub fn handle_completed_logs_crashes_before_dispatch_test() {
       effect_runner.Crashed(
         1,
         effect_runner.ReportFailure(
+          issue_task_ref("issue-1", "ABC-1"),
           "issue-1",
           issue("issue-1", "ABC-1"),
           worker_failure(),
@@ -173,6 +174,7 @@ pub fn handle_completed_crash_paths_match_daemon_error_outcomes_test() {
       effect_runner.Crashed(
         1,
         effect_runner.ReportSuccess(
+          issue_task_ref("issue-1", "ABC-1"),
           "issue-1",
           issue("issue-1", "ABC-1"),
           worker_success(issue("issue-1", "ABC-1")),
@@ -189,6 +191,7 @@ pub fn handle_completed_crash_paths_match_daemon_error_outcomes_test() {
       effect_runner.Crashed(
         2,
         effect_runner.ReportFailure(
+          issue_task_ref("issue-1", "ABC-1"),
           "issue-1",
           issue("issue-1", "ABC-1"),
           worker_failure(),
@@ -416,6 +419,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ClaimIssue(
+        task_ref: issue_task_ref("issue-1", "ABC-1"),
         issue: issue("issue-1", "ABC-1"),
         workspace_path: "test/tmp/workspaces/ABC-1",
         run_id: "run-1",
@@ -430,6 +434,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ReportSuccess(
+        issue_task_ref("issue-1", "ABC-1"),
         "issue-1",
         issue("issue-1", "ABC-1"),
         worker_success(issue("issue-1", "ABC-1")),
@@ -446,6 +451,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ReportFailure(
+        issue_task_ref("issue-1", "ABC-1"),
         "issue-1",
         issue("issue-1", "ABC-1"),
         worker_failure(),
@@ -673,6 +679,15 @@ fn issue(id: String, identifier: String) -> tracker_issue.Issue {
     blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
+  )
+}
+
+fn issue_task_ref(remote_id: String, key: String) -> task.TaskRef {
+  task.TaskRef(
+    backend_kind: "linear",
+    remote_id: remote_id,
+    key: Some(key),
+    url: None,
   )
 }
 

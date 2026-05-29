@@ -71,6 +71,7 @@ pub fn fixture_effective() -> config_types.EffectiveConfig {
 pub fn fixture_context() -> transition_types.DispatchContext {
   transition_types.DispatchContext(
     effective: fixture_effective(),
+    tracker_backend_kind: "linear",
     routing: config_types.RoutingConfig(
       workflow_label_prefix: "workflow:",
       require_exactly_one_workflow_label: False,

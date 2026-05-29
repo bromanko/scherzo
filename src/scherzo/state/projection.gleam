@@ -884,7 +884,7 @@ pub fn apply(
             run_root,
           ),
         ),
-        workflow_task_refs: dict.insert(
+        workflow_task_refs: preserve_or_insert_workflow_task_ref(
           projection.workflow_task_refs,
           run_id,
           task_ref,
@@ -3124,7 +3124,17 @@ fn preserve_or_insert_workflow_task_ref(
   run_id: String,
   fallback: record.TaskRefFields,
 ) -> Dict(String, record.TaskRefFields) {
-  workflow_runs_projection.preserve_or_insert_task_ref(refs, run_id, fallback)
+  case dict.get(refs, run_id) {
+    Ok(existing) ->
+      case
+        existing.task_backend_kind != "linear"
+        && fallback.task_backend_kind == "linear"
+      {
+        True -> refs
+        False -> dict.insert(refs, run_id, fallback)
+      }
+    Error(Nil) -> dict.insert(refs, run_id, fallback)
+  }
 }
 
 fn workflow_run_root(projection: Projection, run_id: String) -> String {

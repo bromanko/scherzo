@@ -10,6 +10,7 @@ import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
+import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
@@ -30,7 +31,8 @@ pub opaque type ShellHandlers(state) {
     fetch_candidates: fn(state, Int) -> state,
     begin_dispatch_validation: fn(state, String, Int) -> state,
     reserve_session_sequence: fn(state, Int) -> state,
-    claim_issue: fn(state, tracker_issue.Issue, String, String) -> state,
+    claim_issue: fn(state, task.TaskRef, tracker_issue.Issue, String, String) ->
+      state,
     report_invalid_workflow: fn(
       state,
       tracker_issue.Issue,
@@ -124,8 +126,13 @@ pub fn shell_handlers(
   begin_dispatch_validation begin_dispatch_validation: fn(state, String, Int) ->
     state,
   reserve_session_sequence reserve_session_sequence: fn(state, Int) -> state,
-  claim_issue claim_issue: fn(state, tracker_issue.Issue, String, String) ->
+  claim_issue claim_issue: fn(
     state,
+    task.TaskRef,
+    tracker_issue.Issue,
+    String,
+    String,
+  ) -> state,
   report_invalid_workflow report_invalid_workflow: fn(
     state,
     tracker_issue.Issue,

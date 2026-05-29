@@ -56,8 +56,10 @@ pub fn seam_adapter() -> adapter.TrackerAdapter {
   adapter.TrackerAdapter(
     ..read_only_adapter(),
     comments: Some(comment_capability()),
+    remote_commands: Some(remote_command_capability()),
     state_transitions: Some(state_transition_capability()),
     routing_metadata: Some(routing_metadata_capability()),
+    handoff: Some(handoff_capability()),
     scheduled_failures: Some(scheduled_failure_capability()),
   )
 }
@@ -182,6 +184,61 @@ fn state_category(name: String) -> task.TaskStateCategory {
     "Canceled" -> task.Canceled
     "Duplicate" -> task.Duplicate
     _ -> task.Unknown
+  }
+}
+
+fn remote_command_capability() -> adapter.RemoteCommandCapability {
+  adapter.RemoteCommandCapability(
+    fetch_events: fn(fetch) {
+      let event =
+        adapter.RemoteCommandEvent(
+          event_id: "fake-command-1",
+          task: task_ref(),
+          author_id: "fake-user",
+          body: "/scherzo status",
+          command_name: "status",
+          excerpt: "status",
+          observed_at_ms: 42,
+        )
+      case list.any(fetch.task_refs, fn(ref) { same_ref(ref, task_ref()) }) {
+        False -> Ok([])
+        True ->
+          case list.contains(fetch.since_event_ids, event.event_id) {
+            True -> Ok([])
+            False -> Ok([event])
+          }
+      }
+    },
+    post_ack: fn(ack) {
+      Ok(adapter.CommentReceipt(
+        id: "fake-ack-" <> ack.event.event_id,
+        task: ack.event.task,
+        url: ack.event.task.url,
+        created: True,
+      ))
+    },
+  )
+}
+
+fn handoff_capability() -> adapter.HandoffCapability {
+  adapter.HandoffCapability(report: fn(event) {
+    let ref = handoff_task_ref(event)
+    case ref.backend_kind == backend_kind {
+      True -> Ok(Nil)
+      False ->
+        Error(adapter.Permanent(
+          "handoff event used unexpected backend " <> ref.backend_kind,
+        ))
+    }
+  })
+}
+
+fn handoff_task_ref(event: adapter.HandoffEvent) -> task.TaskRef {
+  case event {
+    adapter.HandoffClaim(task: item, ..)
+    | adapter.HandoffSuccess(task: item, ..)
+    | adapter.HandoffFailure(task: item, ..) -> item.ref
+    adapter.HandoffPark(report) -> report.task
   }
 }
 

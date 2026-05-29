@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/error
@@ -409,7 +410,15 @@ fn reconcile_running_issues(
     transition_types.Outcome(state: state, effects: []),
     fn(outcome, issue) {
       let core.Transition(state: runtime, effects: core_effects) =
-        core.reconcile_issue(outcome.state.runtime, context.effective, issue)
+        core.reconcile_task_issue(
+          outcome.state.runtime,
+          context.effective,
+          orchestrator_state.issue_ref_for_backend(
+            issue,
+            context.tracker_backend_kind,
+          ),
+          issue,
+        )
       let state = transition_types.State(..outcome.state, runtime: runtime)
       let transition_types.Outcome(state: state, effects: effects) =
         map_core_effects(state, context, core_effects)
@@ -593,7 +602,11 @@ fn begin_dispatch_validation(
     True -> dispatch_candidates_outcome(remaining_candidates, state, context)
     False -> {
       let generation = state.next_dispatch_validation_generation
-      let task_ref = task.from_legacy_issue(issue).ref
+      let task_ref =
+        orchestrator_state.issue_ref_for_backend(
+          issue,
+          context.tracker_backend_kind,
+        )
       let identity = orchestrator_state.task_ref_identity(task_ref)
       let pending =
         transition_types.PendingDispatchValidation(
@@ -637,7 +650,11 @@ fn handle_dispatch_validation_completed(
   result: Result(tracker_issue.Issue, transition_types.DispatchValidationError),
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(
+      issue_id,
+      context.tracker_backend_kind,
+    )
   case dict.get(state.pending_dispatch_validations, identity) {
     Error(Nil) -> stale_dispatch_validation(state, issue_id, generation)
     Ok(pending) ->
@@ -839,13 +856,30 @@ fn clear_pending_claim(
   state: transition_types.State,
   issue_id: String,
 ) -> transition_types.State {
-  transition_types.State(
-    ..state,
-    pending_claims: dict.delete(
-      state.pending_claims,
-      orchestrator_state.linear_issue_id_identity(issue_id),
-    ),
-  )
+  case pending_claim_key_for_issue_id(state, issue_id) {
+    Ok(identity) ->
+      transition_types.State(
+        ..state,
+        pending_claims: dict.delete(state.pending_claims, identity),
+      )
+    Error(Nil) -> state
+  }
+}
+
+fn pending_claim_key_for_issue_id(
+  state: transition_types.State,
+  issue_id: String,
+) -> Result(String, Nil) {
+  state.pending_claims
+  |> dict.to_list
+  |> list.find(fn(entry) {
+    let #(_, pending) = entry
+    pending.issue_id == issue_id
+  })
+  |> result.map(fn(entry) {
+    let #(identity, _) = entry
+    identity
+  })
 }
 
 fn handle_handoff_claim_completed(
@@ -854,67 +888,79 @@ fn handle_handoff_claim_completed(
   run_id: String,
   result: transition_types.HandoffClaimResult,
 ) -> transition_types.Outcome {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
-  case dict.get(state.pending_claims, identity) {
+  case pending_claim_key_for_issue_id(state, issue_id) {
     Error(Nil) ->
       transition_types.Outcome(state: state, effects: [
         effects_types.Log("warn", "handoff_claim_stale", [
           #("issue_id", issue_id),
         ]),
       ])
-    Ok(pending) ->
-      case pending.run_id != run_id {
-        True ->
+    Ok(identity) ->
+      case dict.get(state.pending_claims, identity) {
+        Error(Nil) ->
           transition_types.Outcome(state: state, effects: [
             effects_types.Log("warn", "handoff_claim_stale", [
               #("issue_id", issue_id),
-              #("run_id", run_id),
             ]),
           ])
-        False ->
-          case result {
-            transition_types.HandoffClaimFailed(err) -> {
-              let state = clear_pending_claim(state, issue_id)
-              let outcome =
-                dispatch_candidates_outcome(
-                  pending.remaining_candidates,
-                  state,
-                  pending.dispatch_context,
-                )
-              transition_types.Outcome(state: outcome.state, effects: [
-                effects_types.Log("warn", "handoff_claim_failed", [
+        Ok(pending) ->
+          case pending.run_id != run_id {
+            True ->
+              transition_types.Outcome(state: state, effects: [
+                effects_types.Log("warn", "handoff_claim_stale", [
                   #("issue_id", issue_id),
-                  #("error", err),
+                  #("run_id", run_id),
                 ]),
-                ..outcome.effects
               ])
-            }
-            transition_types.HandoffClaimStartRecordFailed(reason) -> {
-              let state = clear_pending_claim(state, issue_id)
-              let outcome =
-                dispatch_candidates_outcome(
-                  pending.remaining_candidates,
-                  state,
-                  pending.dispatch_context,
-                )
-              transition_types.Outcome(state: outcome.state, effects: [
-                effects_types.Log("warn", "workflow_checkpoint_start_failed", [
-                  #("issue_id", issue_id),
-                  #("error", reason),
-                ]),
-                ..outcome.effects
-              ])
-            }
-            transition_types.HandoffClaimSucceeded(bodies) ->
-              claims.handle_requested(
-                state,
-                claims.claim_correlation_id(issue_id, run_id),
-                issue_id,
-                run_id,
-                pending.session_id,
-                bodies,
-                "ledger_append_failed",
-              )
+            False ->
+              case result {
+                transition_types.HandoffClaimFailed(err) -> {
+                  let state = clear_pending_claim(state, issue_id)
+                  let outcome =
+                    dispatch_candidates_outcome(
+                      pending.remaining_candidates,
+                      state,
+                      pending.dispatch_context,
+                    )
+                  transition_types.Outcome(state: outcome.state, effects: [
+                    effects_types.Log("warn", "handoff_claim_failed", [
+                      #("issue_id", issue_id),
+                      #("error", err),
+                    ]),
+                    ..outcome.effects
+                  ])
+                }
+                transition_types.HandoffClaimStartRecordFailed(reason) -> {
+                  let state = clear_pending_claim(state, issue_id)
+                  let outcome =
+                    dispatch_candidates_outcome(
+                      pending.remaining_candidates,
+                      state,
+                      pending.dispatch_context,
+                    )
+                  transition_types.Outcome(state: outcome.state, effects: [
+                    effects_types.Log(
+                      "warn",
+                      "workflow_checkpoint_start_failed",
+                      [
+                        #("issue_id", issue_id),
+                        #("error", reason),
+                      ],
+                    ),
+                    ..outcome.effects
+                  ])
+                }
+                transition_types.HandoffClaimSucceeded(bodies) ->
+                  claims.handle_requested(
+                    state,
+                    claims.claim_correlation_id(issue_id, run_id),
+                    issue_id,
+                    run_id,
+                    pending.session_id,
+                    bodies,
+                    "ledger_append_failed",
+                  )
+              }
           }
       }
   }
@@ -926,7 +972,11 @@ fn handle_retry_tick(
   generation: Int,
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(
+      issue_id,
+      context.tracker_backend_kind,
+    )
   case dict.get(state.runtime.retry_attempts, identity) {
     Error(Nil) -> retry_timer_stale(state, issue_id, generation, False)
     Ok(entry) ->
@@ -994,7 +1044,11 @@ fn handle_retry_refresh_completed(
   result: Result(List(tracker_issue.Issue), String),
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(
+      issue_id,
+      context.tracker_backend_kind,
+    )
   let finish_effect = effects_types.FinishRetryRefresh(issue_id)
   let outcome = case dict.get(state.runtime.retry_attempts, identity) {
     Error(Nil) -> retry_timer_stale(state, issue_id, generation, False)
@@ -1061,7 +1115,8 @@ fn handle_retry_candidate_after_refresh(
         ..outcome.effects
       ])
     }
-    Ok(None) -> release_retry_claim(state, issue_id, "retry_issue_missing")
+    Ok(None) ->
+      release_retry_claim(state, issue_id, "retry_issue_missing", context)
     Ok(Some(issue)) ->
       handle_retry_issue_candidate(state, issue_id, issue, context)
   }
@@ -1118,7 +1173,7 @@ fn handle_retry_issue_candidate(
           issue,
         )
       {
-        Some(reason) -> release_retry_claim(state, issue_id, reason)
+        Some(reason) -> release_retry_claim(state, issue_id, reason, context)
         None ->
           case
             workflow_policy.classify_issue(
@@ -1163,12 +1218,22 @@ fn release_retry_claim(
   state: transition_types.State,
   issue_id: String,
   cancel_reason: String,
+  context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let generation = current_retry_generation(state.runtime, issue_id)
+  let generation =
+    current_retry_generation(
+      state.runtime,
+      issue_id,
+      context.tracker_backend_kind,
+    )
   transition_types.Outcome(
     state: transition_types.State(
       ..state,
-      runtime: release_claim(clear_retry(state.runtime, issue_id), issue_id),
+      runtime: release_claim(
+        clear_retry(state.runtime, issue_id, context.tracker_backend_kind),
+        issue_id,
+        context.tracker_backend_kind,
+      ),
     ),
     effects: list.append(
       cancel_retry_effects(issue_id, generation, cancel_reason),
@@ -1183,11 +1248,20 @@ fn dispatch_retry_claim(
   issue: tracker_issue.Issue,
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let generation = current_retry_generation(state.runtime, issue_id)
+  let generation =
+    current_retry_generation(
+      state.runtime,
+      issue_id,
+      context.tracker_backend_kind,
+    )
   let state =
     transition_types.State(
       ..state,
-      runtime: clear_retry(state.runtime, issue_id),
+      runtime: clear_retry(
+        state.runtime,
+        issue_id,
+        context.tracker_backend_kind,
+      ),
     )
   let outcome =
     claims.begin_for_issue(state, issue, [], context, claim_callbacks())
@@ -1203,13 +1277,11 @@ fn dispatch_retry_claim(
 fn current_retry_generation(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
+  backend_kind: String,
 ) -> Int {
-  case
-    dict.get(
-      runtime.retry_attempts,
-      orchestrator_state.linear_issue_id_identity(issue_id),
-    )
-  {
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
+  case dict.get(runtime.retry_attempts, identity) {
     Ok(entry) -> entry.timer_generation
     Error(Nil) -> 0
   }
@@ -1221,17 +1293,39 @@ fn schedule_retry_with_backoff(
   issue_id: String,
   retry_reason: orchestrator_reason.RetryReason,
 ) -> transition_types.Outcome {
-  let core.Transition(state: runtime, effects: core_effects) =
-    core.schedule_retry_with_backoff(
-      state.runtime,
-      context.effective,
+  let retry_identity =
+    orchestrator_state.issue_id_identity_for_backend(
       issue_id,
+      context.tracker_backend_kind,
+    )
+  let retry_entry = dict.get(state.runtime.retry_attempts, retry_identity)
+  let task_ref = case retry_entry {
+    Ok(entry) -> entry.task_ref
+    Error(Nil) ->
+      orchestrator_state.issue_id_ref_for_backend(
+        issue_id,
+        context.tracker_backend_kind,
+      )
+  }
+  let attempt = case retry_entry {
+    Ok(entry) -> entry.timer_generation + 1
+    Error(Nil) -> 1
+  }
+  let delay_ms =
+    core.backoff_delay(attempt, context.effective.agent.max_retry_backoff_ms)
+  let core.Transition(state: runtime, effects: core_effects) =
+    core.schedule_task_retry(
+      state.runtime,
+      task_ref,
+      issue_id,
+      delay_ms,
       retry_reason,
     )
-  map_core_effects(
+  map_lifecycle_core_effects(
     transition_types.State(..state, runtime: runtime),
-    context,
     core_effects,
+    None,
+    Some(task_ref),
   )
 }
 
@@ -1240,12 +1334,11 @@ fn stop_retry_for_policy_invalid(
   issue_id: String,
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let core.Transition(state: runtime, effects: core_effects) =
-    core.stop_retry_for_policy_invalid(state.runtime, issue_id)
-  map_core_effects(
-    transition_types.State(..state, runtime: runtime),
-    context,
-    core_effects,
+  stop_retry_for_issue(
+    state,
+    issue_id,
+    context.tracker_backend_kind,
+    "policy_invalid",
   )
 }
 
@@ -1254,12 +1347,36 @@ fn stop_retry_for_dependency_blocked(
   issue_id: String,
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let core.Transition(state: runtime, effects: core_effects) =
-    core.stop_retry_for_dependency_blocked(state.runtime, issue_id)
-  map_core_effects(
-    transition_types.State(..state, runtime: runtime),
-    context,
-    core_effects,
+  stop_retry_for_issue(
+    state,
+    issue_id,
+    context.tracker_backend_kind,
+    "linear_dependency_blocked",
+  )
+}
+
+fn stop_retry_for_issue(
+  state: transition_types.State,
+  issue_id: String,
+  backend_kind: String,
+  cancel_reason: String,
+) -> transition_types.Outcome {
+  let generation =
+    current_retry_generation(state.runtime, issue_id, backend_kind)
+  let runtime =
+    release_claim(
+      clear_retry(state.runtime, issue_id, backend_kind),
+      issue_id,
+      backend_kind,
+    )
+  transition_types.Outcome(
+    state: transition_types.State(..state, runtime: runtime),
+    effects: list.append(
+      cancel_retry_effects(issue_id, generation, cancel_reason),
+      [
+        effects_types.ReleaseClaim(issue_id),
+      ],
+    ),
   )
 }
 
@@ -1407,12 +1524,7 @@ fn stop_worker_after_issue_refresh(
   issue_id: String,
   reason: orchestrator_reason.StopReason,
 ) -> transition_types.Outcome {
-  case
-    dict.get(
-      state.workers.by_issue,
-      orchestrator_state.linear_issue_id_identity(issue_id),
-    )
-  {
+  case worker_entry_for_refreshed_issue(state, issue_id) {
     Error(Nil) -> transition_types.Outcome(state: state, effects: [])
     Ok(entry) -> {
       let identity = worker_identity(entry)
@@ -1421,6 +1533,24 @@ fn stop_worker_after_issue_refresh(
         effects: [effects_types.StopWorkerAfterIssueRefresh(identity, reason)],
       )
     }
+  }
+}
+
+fn worker_entry_for_refreshed_issue(
+  state: transition_types.State,
+  issue_id: String,
+) -> Result(transition_types.WorkerEntry, Nil) {
+  case
+    dict.get(
+      state.workers.by_issue,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
+    Ok(entry) -> Ok(entry)
+    Error(Nil) ->
+      state.workers.by_issue
+      |> dict.values
+      |> list.find(fn(entry) { entry.issue_id == issue_id })
   }
 }
 
@@ -2798,7 +2928,11 @@ fn issue_is_running_claimed_or_pending(
   context: transition_types.DispatchContext,
   issue_id: String,
 ) -> Bool {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(
+      issue_id,
+      context.tracker_backend_kind,
+    )
   list.contains(active_issue_ids(state, context), issue_id)
   || dict.has_key(state.runtime.running, identity)
   || dict.has_key(state.runtime.claimed, identity)
@@ -2953,8 +3087,10 @@ fn append_unique_issues(
 fn clear_retry(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
+  backend_kind: String,
 ) -> orchestrator_state.RuntimeState {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
   orchestrator_state.RuntimeState(
     ..state,
     retry_attempts: dict.delete(state.retry_attempts, identity),
@@ -2964,8 +3100,10 @@ fn clear_retry(
 fn release_claim(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
+  backend_kind: String,
 ) -> orchestrator_state.RuntimeState {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
   orchestrator_state.RuntimeState(
     ..state,
     claimed: dict.delete(state.claimed, identity),

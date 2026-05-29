@@ -116,6 +116,7 @@ pub fn interpret_effects_covers_callback_surface_test() {
         effects_types.BeginDispatchValidation(issue.id, 6),
         effects_types.ReserveSessionSequence(7),
         effects_types.ClaimIssue(
+          task_ref: task.from_legacy_issue(issue).ref,
           issue: issue,
           workspace_path: "test/tmp/workspaces/ABC-1",
           run_id: "run-1",
@@ -358,7 +359,7 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     reserve_session_sequence: fn(state, sequence) {
       append_event(state, "reserve:" <> int.to_string(sequence))
     },
-    claim_issue: fn(state, issue, _, _) {
+    claim_issue: fn(state, _, issue, _, _) {
       append_event(state, "claim:" <> issue.id)
     },
     report_invalid_workflow: fn(state, issue, _, _, _) {
@@ -539,7 +540,7 @@ fn failing_handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
       append_event(state, "validate:" <> issue_id)
     },
     reserve_session_sequence: fn(state, _) { state },
-    claim_issue: fn(state, issue, _, _) {
+    claim_issue: fn(state, _, issue, _, _) {
       append_event(state, "claim:" <> issue.id)
     },
     report_invalid_workflow: fn(state, issue, _, _, _) {

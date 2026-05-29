@@ -9,6 +9,7 @@ import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
+import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
@@ -31,7 +32,8 @@ pub opaque type ShellState(shell) {
     fetch_candidates: fn(shell, Int) -> shell,
     begin_dispatch_validation: fn(shell, String, Int) -> shell,
     reserve_session_sequence: fn(shell, Int) -> shell,
-    claim_issue: fn(shell, tracker_issue.Issue, String, String) -> shell,
+    claim_issue: fn(shell, task.TaskRef, tracker_issue.Issue, String, String) ->
+      shell,
     report_invalid_workflow: fn(
       shell,
       tracker_issue.Issue,
@@ -136,7 +138,7 @@ pub fn new_shell_state(
     fetch_candidates: fn(started_workers, _) { started_workers },
     begin_dispatch_validation: fn(started_workers, _, _) { started_workers },
     reserve_session_sequence: fn(started_workers, _) { started_workers },
-    claim_issue: fn(started_workers, _, _, _) { started_workers },
+    claim_issue: fn(started_workers, _, _, _, _) { started_workers },
     report_invalid_workflow: fn(started_workers, _, _, _, _) { started_workers },
     remove_retry_timer: fn(started_workers, _) { started_workers },
     finish_retry_refresh: fn(started_workers, _) { started_workers },
@@ -204,8 +206,13 @@ pub fn new_production_shell_state(
   begin_dispatch_validation begin_dispatch_validation: fn(shell, String, Int) ->
     shell,
   reserve_session_sequence reserve_session_sequence: fn(shell, Int) -> shell,
-  claim_issue claim_issue: fn(shell, tracker_issue.Issue, String, String) ->
+  claim_issue claim_issue: fn(
     shell,
+    task.TaskRef,
+    tracker_issue.Issue,
+    String,
+    String,
+  ) -> shell,
   report_invalid_workflow report_invalid_workflow: fn(
     shell,
     tracker_issue.Issue,
@@ -463,9 +470,15 @@ fn apply_loop(
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }
-        effects_types.ClaimIssue(issue, workspace_path, run_id) -> {
+        effects_types.ClaimIssue(task_ref, issue, workspace_path, run_id) -> {
           let data =
-            shell.claim_issue(shell.data, issue, workspace_path, run_id)
+            shell.claim_issue(
+              shell.data,
+              task_ref,
+              issue,
+              workspace_path,
+              run_id,
+            )
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }

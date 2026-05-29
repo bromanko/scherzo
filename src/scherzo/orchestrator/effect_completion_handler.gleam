@@ -206,19 +206,19 @@ pub fn crash_result_for_effect(
           )),
         ),
       )
-    effect_runner.ClaimIssue(issue, _, run_id, _) ->
+    effect_runner.ClaimIssue(_, issue, _, run_id, _) ->
       effect_runner.HandoffClaimFinished(
         issue.id,
         run_id,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportSuccess(issue_id, _, _, run_id, _, _) ->
+    effect_runner.ReportSuccess(_, issue_id, _, _, run_id, _, _) ->
       effect_runner.HandoffSuccessFinished(
         issue_id,
         run_id,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportFailure(issue_id, _, _, run_id, _, _) ->
+    effect_runner.ReportFailure(_, issue_id, _, _, run_id, _, _) ->
       effect_runner.HandoffFailureFinished(
         issue_id,
         run_id,

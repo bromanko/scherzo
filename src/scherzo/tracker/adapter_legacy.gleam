@@ -11,7 +11,20 @@ import scherzo/tracker/state as issue_state
 pub fn workflow_compat_client(
   tracker_adapter: adapter.TrackerAdapter,
 ) -> tracker.Client {
-  legacy_client(tracker_adapter)
+  tracker.Client(
+    fetch_candidate_issues: fn() {
+      fetch_runtime_candidate_issues(tracker_adapter)
+      |> map_runtime_adapter_error
+    },
+    fetch_issues_by_states: fn(states) {
+      fetch_runtime_issues_by_states(tracker_adapter, states)
+      |> map_runtime_adapter_error
+    },
+    fetch_issue_states_by_ids: fn(ids) {
+      refresh_runtime_issues_by_ids(tracker_adapter, ids)
+      |> map_runtime_adapter_error
+    },
+  )
 }
 
 pub fn fetch_runtime_candidate_issues(
@@ -21,6 +34,25 @@ pub fn fetch_runtime_candidate_issues(
     adapter.TaskSearchRequest(
       active_states: [],
       dispatch_states: [],
+      terminal_states: [],
+      workflow_labels: [],
+      limit: 100,
+    )
+  case tracker_adapter.task_source.fetch_candidates(request) {
+    Ok(tasks) -> tasks_to_runtime_issues(tracker_adapter.kind, tasks)
+    Error(err) -> Error(err)
+  }
+}
+
+pub fn fetch_runtime_issues_by_states(
+  tracker_adapter: adapter.TrackerAdapter,
+  states: List(issue_state.IssueState),
+) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
+  let state_names = issue_state.to_strings(states)
+  let request =
+    adapter.TaskSearchRequest(
+      active_states: state_names,
+      dispatch_states: state_names,
       terminal_states: [],
       workflow_labels: [],
       limit: 100,
@@ -250,6 +282,15 @@ fn try_legacy(
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(map_legacy_error(err))
+  }
+}
+
+fn map_runtime_adapter_error(
+  result: Result(a, adapter.TrackerError),
+) -> Result(a, error.TrackerError) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(err) -> Error(map_adapter_error(err))
   }
 }
 

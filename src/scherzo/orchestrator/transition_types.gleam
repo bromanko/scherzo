@@ -232,6 +232,7 @@ pub type PollSnapshot {
 pub type DispatchContext {
   DispatchContext(
     effective: config_types.EffectiveConfig,
+    tracker_backend_kind: String,
     routing: config_types.RoutingConfig,
     available_workflow_ids: List(String),
     dispatch_enabled: Bool,
@@ -257,6 +258,7 @@ pub type ReviewLanePreflightContext {
 
 pub fn dispatch_context(
   effective: config_types.EffectiveConfig,
+  tracker_backend_kind: String,
   routing: config_types.RoutingConfig,
   workflow_dags: dict.Dict(String, workflow_dag.WorkflowDag),
   dispatch_enabled: Bool,
@@ -271,6 +273,7 @@ pub fn dispatch_context(
 ) -> DispatchContext {
   DispatchContext(
     effective: effective,
+    tracker_backend_kind: tracker_backend_kind,
     routing: routing,
     available_workflow_ids: dict.keys(workflow_dags),
     dispatch_enabled: dispatch_enabled,

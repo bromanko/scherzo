@@ -2036,7 +2036,11 @@ fn worker_issue_state_name_from_resolution(
 }
 
 fn issue_is_active_or_pending(state: State, issue_id: String) -> Bool {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(
+      issue_id,
+      state.tracker_adapter.kind,
+    )
   has_active_run(state, issue_id)
   || dict.has_key(state.runtime.running, identity)
   || dict.has_key(state.pending_claims, identity)
@@ -2892,6 +2896,7 @@ fn transition_dispatch_context(
 ) -> transition_types.DispatchContext {
   transition_types.dispatch_context(
     state.workflow.effective,
+    state.tracker_adapter.kind,
     state.workflow.bundle.orchestrator.routing,
     runtime_bundle.normalized_workflows(state.workflow.bundle),
     config.can_dispatch(state.workflow.reload_state),
@@ -2999,10 +3004,11 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
       )
     },
     reserve_session_sequence: transition_reserve_session_sequence,
-    claim_issue: fn(state, issue, workspace_path, run_id) {
+    claim_issue: fn(state, task_ref, issue, workspace_path, run_id) {
       enqueue_side_effect(
         state,
         effect_runner.ClaimIssue(
+          task_ref: task_ref,
           issue: issue,
           workspace_path: workspace_path,
           run_id: run_id,
@@ -3246,6 +3252,7 @@ fn transition_report_worker_success(
   enqueue_side_effect(
     state,
     effect_runner.ReportSuccess(
+      task_ref: identity.task_ref,
       issue_id: identity.issue_id,
       issue: final_issue,
       success: success,
@@ -3264,6 +3271,7 @@ fn transition_report_worker_failure(
   enqueue_side_effect(
     state,
     effect_runner.ReportFailure(
+      task_ref: identity.task_ref,
       issue_id: identity.issue_id,
       issue: identity.issue,
       failure: failure,
@@ -4085,10 +4093,11 @@ fn workflow_run_started_body_for_claim(
         fingerprint,
         pending.issue.id,
         pending.issue.identifier,
-        record.linear_task_ref_fields(
-          pending.issue.id,
-          Some(pending.issue.identifier),
-          pending.issue.url,
+        record.TaskRefFields(
+          pending.task_ref.backend_kind,
+          pending.task_ref.remote_id,
+          pending.task_ref.key,
+          pending.task_ref.url,
         ),
         core.issue_fingerprint(pending.issue),
         observed_updated_at_ms(pending.issue),
@@ -5524,7 +5533,15 @@ fn handoff_claim_result_for_transition(
   case result {
     Error(err) -> transition_types.HandoffClaimFailed(error.tracker_code(err))
     Ok(Nil) ->
-      case dict.get(state.pending_claims, issue_id) {
+      case
+        dict.get(
+          state.pending_claims,
+          orchestrator_state.issue_id_identity_for_backend(
+            issue_id,
+            state.tracker_adapter.kind,
+          ),
+        )
+      {
         Error(Nil) -> transition_types.HandoffClaimSucceeded([])
         Ok(pending) ->
           case pending.run_id == run_id {
@@ -5540,8 +5557,9 @@ fn claim_ledger_bodies_for_pending(
   pending: transition_types.PendingClaim,
 ) -> transition_types.HandoffClaimResult {
   let post_spawn_runtime =
-    core.apply_worker_start(
+    core.apply_task_ref_start(
       state.runtime,
+      pending.task_ref,
       pending.issue,
       pending.workspace_path,
     )

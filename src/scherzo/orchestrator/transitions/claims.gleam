@@ -1,6 +1,8 @@
 import gleam/dict
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import scherzo/error
 import scherzo/orchestrator/core
@@ -82,7 +84,11 @@ pub fn begin_for_issue(
               let run_id = helpers.make_run_id(issue, context.now_ms, sequence)
               let session_id =
                 helpers.make_session_id(issue.identifier, run_id, sequence)
-              let task_ref = task.from_legacy_issue(issue).ref
+              let task_ref =
+                orchestrator_state.issue_ref_for_backend(
+                  issue,
+                  context.tracker_backend_kind,
+                )
               let identity = orchestrator_state.task_ref_identity(task_ref)
               let recovery =
                 dict.get(context.recovery_by_issue, issue.id)
@@ -117,7 +123,12 @@ pub fn begin_for_issue(
                 ),
                 effects: [
                   effects_types.ReserveSessionSequence(sequence),
-                  effects_types.ClaimIssue(issue, workspace_path, run_id),
+                  effects_types.ClaimIssue(
+                    task_ref,
+                    issue,
+                    workspace_path,
+                    run_id,
+                  ),
                 ],
               )
             }
@@ -278,8 +289,7 @@ pub fn handle_requested(
   bodies: List(record.RecordBody),
   failure_event: String,
 ) -> transition_types.Outcome {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
-  case dict.get(state.pending_claims, identity) {
+  case pending_claim_by_issue_id(state, issue_id) {
     Error(Nil) -> stale_continuation(state, correlation_id, issue_id, run_id)
     Ok(pending) ->
       case pending.run_id == run_id && pending.session_id == session_id {
@@ -308,8 +318,7 @@ pub fn handle_spawn(
   result: Result(Nil, ledger.LedgerError),
   callbacks: Callbacks,
 ) -> transition_types.Outcome {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
-  case dict.get(state.pending_claims, identity) {
+  case pending_claim_by_issue_id(state, issue_id) {
     Error(Nil) -> stale_continuation(state, correlation_id, issue_id, run_id)
     Ok(pending) ->
       case pending.run_id == run_id && pending.session_id == session_id {
@@ -417,13 +426,44 @@ fn clear_pending_claim(
   state: transition_types.State,
   issue_id: String,
 ) -> transition_types.State {
-  transition_types.State(
-    ..state,
-    pending_claims: dict.delete(
-      state.pending_claims,
-      orchestrator_state.linear_issue_id_identity(issue_id),
-    ),
-  )
+  case pending_claim_key_by_issue_id(state, issue_id) {
+    Ok(identity) ->
+      transition_types.State(
+        ..state,
+        pending_claims: dict.delete(state.pending_claims, identity),
+      )
+    Error(Nil) -> state
+  }
+}
+
+fn pending_claim_by_issue_id(
+  state: transition_types.State,
+  issue_id: String,
+) -> Result(transition_types.PendingClaim, Nil) {
+  use entry <- result.try(pending_claim_entry_by_issue_id(state, issue_id))
+  let #(_, pending) = entry
+  Ok(pending)
+}
+
+fn pending_claim_key_by_issue_id(
+  state: transition_types.State,
+  issue_id: String,
+) -> Result(String, Nil) {
+  use entry <- result.try(pending_claim_entry_by_issue_id(state, issue_id))
+  let #(identity, _) = entry
+  Ok(identity)
+}
+
+fn pending_claim_entry_by_issue_id(
+  state: transition_types.State,
+  issue_id: String,
+) -> Result(#(String, transition_types.PendingClaim), Nil) {
+  state.pending_claims
+  |> dict.to_list
+  |> list.find(fn(entry) {
+    let #(_, pending) = entry
+    pending.issue_id == issue_id
+  })
 }
 
 fn ledger_error_code(err: ledger.LedgerError) -> String {

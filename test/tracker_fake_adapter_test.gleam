@@ -3,6 +3,8 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/task
 import scherzo/tracker/adapter
+import scherzo/tracker/adapter_legacy
+import scherzo/tracker/state as issue_state
 import simplifile
 import support/fake_tracker_adapter
 
@@ -75,7 +77,26 @@ pub fn fake_adapter_fetches_refreshes_and_looks_up_non_linear_task_test() {
   assert found_by_id.ref == candidate.ref
 }
 
-pub fn fake_adapter_comment_transition_and_scheduled_failure_seams_test() {
+pub fn fake_adapter_workflow_compat_client_refreshes_non_linear_task_test() {
+  let client =
+    fake_tracker_adapter.seam_adapter()
+    |> adapter_legacy.workflow_compat_client
+
+  let assert Ok([candidate]) = client.fetch_candidate_issues()
+  assert candidate.id == "card-1"
+  assert candidate.identifier == "CARD-1"
+
+  let assert Ok([by_state]) =
+    client.fetch_issues_by_states(issue_state.list_from_strings(["Todo"]))
+  assert by_state.id == "card-1"
+  assert by_state.identifier == "CARD-1"
+
+  let assert Ok([refreshed]) = client.fetch_issue_states_by_ids(["card-1"])
+  assert refreshed.id == "card-1"
+  assert refreshed.identifier == "CARD-1"
+}
+
+pub fn fake_adapter_comment_remote_handoff_transition_and_scheduled_failure_seams_test() {
   let tracker = fake_tracker_adapter.seam_adapter()
   let ref = fake_tracker_adapter.task_ref()
 
@@ -94,6 +115,32 @@ pub fn fake_adapter_comment_transition_and_scheduled_failure_seams_test() {
       url: Some("https://tracker.test/cards/CARD-1"),
       created: True,
     )
+
+  let assert Some(adapter.RemoteCommandCapability(
+    fetch_events: fetch_events,
+    post_ack: post_ack,
+  )) = tracker.remote_commands
+  let assert Ok([event]) =
+    fetch_events(adapter.RemoteCommandFetch(
+      task_refs: [ref],
+      since_event_ids: [],
+      limit_per_task: 10,
+    ))
+  assert event.task == ref
+  assert event.command_name == "status"
+  let assert Ok(ack_receipt) =
+    post_ack(adapter.RemoteCommandAck(event: event, body: "ack"))
+  assert ack_receipt.id == "fake-ack-fake-command-1"
+  assert ack_receipt.task == ref
+
+  let assert Some(adapter.HandoffCapability(report: report_handoff)) =
+    tracker.handoff
+  let assert Ok(Nil) =
+    report_handoff(adapter.HandoffClaim(
+      fake_tracker_adapter.task(),
+      "root",
+      "run-1",
+    ))
 
   let assert Some(adapter.StateTransitionCapability(transition: transition)) =
     tracker.state_transitions
