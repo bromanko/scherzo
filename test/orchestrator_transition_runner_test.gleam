@@ -74,6 +74,36 @@ pub fn transition_runner_applies_snapshot_reply_effect_test() {
   assert interpreter.data(shell) == ["snapshot"]
 }
 
+pub fn handoff_claim_empty_ledger_does_not_spawn_worker_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let state = orchestrator_transition_test.state_with_pending_claim(issue)
+
+  let transition_runner.RunResult(
+    state: next,
+    shell: shell,
+    exhausted: exhausted,
+  ) =
+    transition_runner.run(
+      state: state,
+      shell: event_shell(),
+      messages: [
+        transition_types.HandoffClaimCompleted(
+          issue.id,
+          "run-1",
+          transition_types.HandoffClaimSucceeded([]),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell) == ["log:claim_ledger_append_empty"]
+  let identity = orchestrator_state.issue_identity(issue)
+  assert dict.get(next.pending_claims, identity) == Error(Nil)
+  assert dict.get(next.runtime.running, identity) == Error(Nil)
+  assert dict.get(next.workers.by_issue, identity) == Error(Nil)
+}
+
 pub fn transition_runner_retry_continue_regardless_keeps_timer_after_append_failure_test() {
   let runtime =
     orchestrator_state.RuntimeState(

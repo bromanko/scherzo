@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
@@ -103,6 +104,290 @@ pub fn task_routing_labels_overrides_linear_contract_defaults_test() {
   assert contract.invalid_workflow_state_target
     == Some(config_types.InvalidWorkflowStateName("Triage"))
   assert contract.comment_on_invalid_workflow == True
+}
+
+pub fn orchestrator_config_parses_artifact_publication_repositories_test() {
+  let source =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n",
+    )
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  let artifact_publication_config.ArtifactRepositories(github: github) =
+    orchestrator.artifact_repositories
+  let assert Ok(target) = dict.get(github, "docs")
+  assert target.repo == "scherzo-systems/scherzo"
+  assert target.base == "main"
+  assert target.branch.template
+    == "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}"
+  assert target.pull_request.enabled == True
+  assert target.pull_request.draft == False
+}
+
+pub fn orchestrator_config_defaults_artifact_publication_repositories_to_empty_test() {
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      root(base_config("")),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  let artifact_publication_config.ArtifactRepositories(github: github) =
+    orchestrator.artifact_repositories
+  assert dict.size(github) == 0
+}
+
+pub fn orchestrator_config_rejects_legacy_publication_draft_pr_test() {
+  let source =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        draft_pr: true\n",
+    )
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  assert string.contains(message, "artifacts.repositories.github.docs.draft_pr")
+  assert string.contains(message, "pull_request.draft")
+}
+
+pub fn orchestrator_config_parses_artifact_publication_repository_explicit_defaults_test() {
+  let source =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        checkout:\n          strategy: managed_git\n        branch:\n          strategy: stable_per_work\n          template: scherzo/{{ workflow.id }}/drafts/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: \"Review {{ publication.id }}\"\n          body_template: docs/pr-body.md\n",
+    )
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  let artifact_publication_config.ArtifactRepositories(github: github) =
+    orchestrator.artifact_repositories
+  let assert Ok(target) = dict.get(github, "docs")
+  assert target.checkout.strategy == artifact_publication_config.ManagedGit
+  assert target.branch.strategy == artifact_publication_config.StablePerWork
+  assert target.branch.template
+    == "scherzo/{{ workflow.id }}/drafts/{{ publication.id }}"
+  assert target.pull_request.enabled == True
+  assert target.pull_request.strategy
+    == artifact_publication_config.UpdateExisting
+  assert target.pull_request.draft == True
+  assert target.pull_request.title == Some("Review {{ publication.id }}")
+  assert target.pull_request.body_template == Some("docs/pr-body.md")
+}
+
+pub fn orchestrator_config_rejects_invalid_artifact_publication_repository_values_test() {
+  let invalid_repo =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems\n        base: main\n",
+    )
+  let assert Error(error.InvalidConfig(invalid_repo_message)) =
+    config.resolve_orchestrator_root(
+      root(invalid_repo),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    invalid_repo_message,
+    "artifacts.repositories.github.docs.repo must be owner/repo",
+  )
+
+  let invalid_checkout =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        checkout:\n          strategy: shared_git\n",
+    )
+  let assert Error(error.InvalidConfig(invalid_checkout_message)) =
+    config.resolve_orchestrator_root(
+      root(invalid_checkout),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    invalid_checkout_message,
+    "artifacts.repositories.github.docs.checkout.strategy must be managed_git",
+  )
+
+  let invalid_branch_strategy =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: per_run\n",
+    )
+  let assert Error(error.InvalidConfig(invalid_branch_strategy_message)) =
+    config.resolve_orchestrator_root(
+      root(invalid_branch_strategy),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    invalid_branch_strategy_message,
+    "artifacts.repositories.github.docs.branch.strategy must be stable_per_work",
+  )
+
+  let invalid_branch_template =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          template: scherzo/{{ unknown.value }}/branch\n",
+    )
+  let assert Error(error.InvalidConfig(invalid_branch_template_message)) =
+    config.resolve_orchestrator_root(
+      root(invalid_branch_template),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    invalid_branch_template_message,
+    "artifacts.repositories.github.docs.branch.template references unsupported template variable unknown.value",
+  )
+
+  let invalid_pull_request_strategy =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        pull_request:\n          strategy: create_new\n",
+    )
+  let assert Error(error.InvalidConfig(invalid_pull_request_strategy_message)) =
+    config.resolve_orchestrator_root(
+      root(invalid_pull_request_strategy),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    invalid_pull_request_strategy_message,
+    "artifacts.repositories.github.docs.pull_request.strategy must be update_existing",
+  )
+
+  let unsafe_body_template =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        pull_request:\n          body_template: ../docs/pr-body.md\n",
+    )
+  let assert Error(error.InvalidConfig(unsafe_body_template_message)) =
+    config.resolve_orchestrator_root(
+      root(unsafe_body_template),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    unsafe_body_template_message,
+    "artifacts.repositories.github.docs.pull_request.body_template must not contain ..",
+  )
+}
+
+pub fn orchestrator_config_rejects_non_boolean_publication_draft_test() {
+  let source =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        pull_request:\n          draft: maybe\n",
+    )
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  assert string.contains(
+    message,
+    "artifacts.repositories.github.docs.pull_request.draft",
+  )
+  assert string.contains(message, "boolean")
+}
+
+pub fn orchestrator_config_rejects_malformed_publication_repository_blocks_test() {
+  let not_map = base_config("artifacts:\n  repositories: []\n")
+  let assert Error(error.InvalidConfig(not_map_message)) =
+    config.resolve_orchestrator_root(
+      root(not_map),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    not_map_message,
+    "artifacts.repositories must be a map",
+  )
+
+  let unknown_backend =
+    base_config(
+      "artifacts:\n  repositories:\n    gitlab:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n",
+    )
+  let assert Error(error.InvalidConfig(unknown_backend_message)) =
+    config.resolve_orchestrator_root(
+      root(unknown_backend),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    unknown_backend_message,
+    "artifacts.repositories.gitlab is not supported",
+  )
+}
+
+pub fn orchestrator_config_rejects_invalid_publication_pull_request_title_test() {
+  let non_string_title =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        pull_request:\n          title: 123\n",
+    )
+  let assert Error(error.InvalidConfig(non_string_title_message)) =
+    config.resolve_orchestrator_root(
+      root(non_string_title),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    non_string_title_message,
+    "artifacts.repositories.github.docs.pull_request.title must be a string",
+  )
+
+  let unknown_title_variable =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        pull_request:\n          title: \"Review {{ unknown.value }}\"\n",
+    )
+  let assert Error(error.InvalidConfig(unknown_title_message)) =
+    config.resolve_orchestrator_root(
+      root(unknown_title_variable),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert string.contains(
+    unknown_title_message,
+    "artifacts.repositories.github.docs.pull_request.title references unsupported template variable unknown.value",
+  )
+}
+
+pub fn orchestrator_config_rejects_publication_template_control_tags_test() {
+  let source =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          template: \"scherzo/{% if work.id %}..{% endif %}/branch\"\n",
+    )
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  assert string.contains(message, "control tags are not supported")
+}
+
+pub fn orchestrator_config_rejects_duplicate_publication_config_keys_test() {
+  let source =
+    base_config(
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        repo: other/repo\n        base: main\n",
+    )
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  assert string.contains(
+    message,
+    "artifacts.repositories.github.docs contains duplicate key: repo",
+  )
 }
 
 pub fn orchestrator_config_resolves_routing_and_driver_profile_test() {

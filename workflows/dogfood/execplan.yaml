@@ -50,6 +50,12 @@ workstream_phase:
       inputs: [exec_plan_bundle]
       requires_gate: human_review
       auto_enqueue: false
+    - action_id: revise_exec_plan
+      workflow_id: execplan-revision
+      state: suggested
+      priority: 1
+      inputs: [exec_plan_bundle]
+      auto_enqueue: false
 steps:
   - id: prepare_review_doc_target
     kind: command

@@ -1,5 +1,6 @@
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/structured_output_source
@@ -34,6 +35,7 @@ pub fn parses_minimal_workflow_dag_test() {
   assert dag.max_parallel_steps == 1
   assert dag.recover == None
   assert dag.contract == None
+  assert dag.publication_routes == []
   let assert [step] = dag.steps
   assert step.id == "main"
   assert step.depends_on == []
@@ -45,6 +47,161 @@ pub fn parses_minimal_workflow_dag_test() {
     workflow_dag.PromptFile("prompts/research.md"),
     None,
   ) = step.kind
+}
+
+pub fn parses_artifact_publications_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      required: false\n      pull_request:\n        title: \"Publish {{ publication.id }}\"\n        body_template: docs/pr-body.md\n      files:\n        - select:\n            output: exec_plan_bundle\n            entry: plan\n          path: docs/plans/{{ work.identifier }}.md\n",
+    )
+
+  let assert [route] = dag.publication_routes
+  assert route.id == "review_doc"
+  assert route.repository == "github.docs"
+  assert route.required == False
+  assert route.pull_request
+    == Some(artifact_publication_config.PublicationPullRequestOverride(
+      title: Some("Publish {{ publication.id }}"),
+      body_template: Some("docs/pr-body.md"),
+    ))
+  let assert [artifact_publication_config.PublicationFileRoute(selector, path)] =
+    route.files
+  assert selector
+    == artifact_publication_config.PublicationFileSelector(
+      output: "exec_plan_bundle",
+      entry: Some("plan"),
+    )
+  assert path == "docs/plans/{{ work.identifier }}.md"
+}
+
+pub fn rejects_invalid_publication_route_shapes_test() {
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review-2.md\n",
+    )
+    == "duplicate_publication_id"
+
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: ReviewDoc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+    == "invalid_publication_id"
+
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+    == "missing_publication_repository"
+
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: [github.docs]\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+    == "publication_repository_not_string"
+
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+    == "invalid_publication_repository_ref"
+
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs.extra\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+    == "invalid_publication_repository_ref"
+
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files: []\n",
+    )
+    == "publication_files_empty"
+
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select: {}\n          path: docs/review.md\n",
+    )
+    == "missing_output"
+
+  let unsupported_selector_message =
+    error_message(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n            field: stdout\n          path: docs/review.md\n",
+    )
+  assert string.contains(
+    unsupported_selector_message,
+    "artifacts.publications[].files[].select contains unsupported key: field",
+  )
+}
+
+pub fn rejects_invalid_publication_templates_and_paths_test() {
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/{{ unknown.value }}.md\n",
+    )
+    == "unknown_publication_template_variable"
+
+  let unsafe_path_message =
+    error_message(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: ../docs/review.md\n",
+    )
+  assert string.contains(
+    unsafe_path_message,
+    "artifacts.publications[].files[].path must not contain ..",
+  )
+
+  let unsafe_body_template_message =
+    error_message(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      pull_request:\n        body_template: ../docs/pr-body.md\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+  assert string.contains(
+    unsafe_body_template_message,
+    "artifacts.publications[].pull_request.body_template must not contain ..",
+  )
+
+  let control_tag_path_message =
+    error_message(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: \"docs/{% if work.id %}..{% endif %}/secrets.md\"\n",
+    )
+  assert string.contains(
+    control_tag_path_message,
+    "control tags are not supported",
+  )
+}
+
+pub fn rejects_invalid_publication_pull_request_titles_test() {
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      pull_request:\n        title: 123\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+    == "publication_pull_request_title_not_string"
+
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      pull_request:\n        title: \"Review {{ unknown.value }}\"\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+    == "unknown_publication_template_variable"
+}
+
+pub fn rejects_publication_with_duplicate_config_keys_test() {
+  let message =
+    error_message(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      repository: github.other\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+
+  assert string.contains(
+    message,
+    "artifacts.publications[] contains duplicate key: repository",
+  )
+}
+
+pub fn rejects_publication_routes_without_contract_test() {
+  assert error_code(
+      "version: 1\nid: execplan\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n",
+    )
+    == "missing_publication_contract"
+}
+
+pub fn rejects_publication_with_unknown_contract_output_test() {
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: missing_output\n          path: docs/plans/{{ work.identifier }}.md\n",
+    )
+    == "unknown_publication_output"
+}
+
+pub fn rejects_publication_entry_on_non_aggregate_output_test() {
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    plan:\n      type: exec_plan\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: plan\n            entry: body\n          path: docs/plans/{{ work.identifier }}.md\n",
+    )
+    == "publication_selector_entry_not_supported"
 }
 
 pub fn infers_step_kind_from_prompt_or_run_test() {

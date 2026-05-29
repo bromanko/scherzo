@@ -3,10 +3,11 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/control/file
+import scherzo/ctl/workstream_helpers.{
+  load_schedule_projection, try_workstream, workspace_root,
+}
+import scherzo/ctl/workstream_start
 import scherzo/state/artifact_store as state_artifact_store
-import scherzo/state/ledger
-import scherzo/state/projection as state_projection
 import scherzo/state/record
 import scherzo/terminal/sanitize as terminal_sanitize
 import scherzo/workflow_checkpoint
@@ -39,6 +40,26 @@ pub type Command {
     actor: String,
     rationale: String,
     inputs: List(decision.DecisionInput),
+  )
+  StartFromHandoff(
+    control_path: Option(String),
+    root: Option(String),
+    json_output: Bool,
+    workflow_id: String,
+    action_id: String,
+    handoff_ref: String,
+    handoff_sha256: String,
+    gate_decision_ids: List(String),
+  )
+  StartFromInputBundle(
+    control_path: Option(String),
+    root: Option(String),
+    json_output: Bool,
+    workflow_id: String,
+    action_id: String,
+    input_bundle_ref: String,
+    input_bundle_sha256: String,
+    gate_decision_ids: List(String),
   )
 }
 
@@ -79,6 +100,42 @@ pub fn parse(
         workstream_ref: workstream_ref,
       ))
     [
+      "start-from-handoff",
+      workflow_id,
+      action_id,
+      handoff_ref,
+      handoff_sha256,
+      ..gate_decision_ids
+    ] ->
+      Ok(StartFromHandoff(
+        control_path: control_path,
+        root: root,
+        json_output: json_output,
+        workflow_id: workflow_id,
+        action_id: action_id,
+        handoff_ref: handoff_ref,
+        handoff_sha256: handoff_sha256,
+        gate_decision_ids: gate_decision_ids,
+      ))
+    [
+      "start-from-input-bundle",
+      workflow_id,
+      action_id,
+      input_bundle_ref,
+      input_bundle_sha256,
+      ..gate_decision_ids
+    ] ->
+      Ok(StartFromInputBundle(
+        control_path: control_path,
+        root: root,
+        json_output: json_output,
+        workflow_id: workflow_id,
+        action_id: action_id,
+        input_bundle_ref: input_bundle_ref,
+        input_bundle_sha256: input_bundle_sha256,
+        gate_decision_ids: gate_decision_ids,
+      ))
+    [
       "decision",
       kind,
       workstream_id,
@@ -110,7 +167,7 @@ pub fn parse(
 }
 
 pub fn usage() -> String {
-  "workstream usage: workstream list [task-ref] | show <workstream-id-or-task-ref> | decision <approve|request-changes|reject|deviate> <workstream-id> <action-id> <gate-id> <actor> <rationale> <name>:<snapshot-ref>:<sha256>..."
+  "workstream usage: workstream list [task-ref] | show <workstream-id-or-task-ref> | start-from-handoff <workflow-id> <action-id> <handoff-ref> <handoff-sha256> [decision-id...] | start-from-input-bundle <workflow-id> <action-id> <bundle-ref> <bundle-sha256> [decision-id...] | decision <approve|request-changes|reject|deviate> <workstream-id> <action-id> <gate-id> <actor> <rationale> <name>:<snapshot-ref>:<sha256>..."
 }
 
 fn parse_decision_inputs(
@@ -186,6 +243,50 @@ pub fn run(
         rationale,
         inputs,
         output,
+      )
+    StartFromHandoff(
+      control_path,
+      root,
+      json_output,
+      workflow_id,
+      action_id,
+      handoff_ref,
+      handoff_sha256,
+      gate_decision_ids,
+    ) ->
+      workstream_start.run_from_handoff(
+        control_path,
+        root,
+        json_output,
+        workflow_id,
+        action_id,
+        handoff_ref,
+        handoff_sha256,
+        gate_decision_ids,
+        output.line,
+        output.inline,
+      )
+    StartFromInputBundle(
+      control_path,
+      root,
+      json_output,
+      workflow_id,
+      action_id,
+      input_bundle_ref,
+      input_bundle_sha256,
+      gate_decision_ids,
+    ) ->
+      workstream_start.run_from_input_bundle(
+        control_path,
+        root,
+        json_output,
+        workflow_id,
+        action_id,
+        input_bundle_ref,
+        input_bundle_sha256,
+        gate_decision_ids,
+        output.line,
+        output.inline,
       )
   }
 }
@@ -348,71 +449,6 @@ fn sanitized_text_output(output: Output) -> Output {
     line: fn(text) { output.line(terminal_sanitize.text(text)) },
     inline: fn(text) { output.inline(terminal_sanitize.text(text)) },
   )
-}
-
-fn workspace_root(
-  control_path: Option(String),
-  explicit_root: Option(String),
-) -> Result(String, #(String, String)) {
-  case explicit_root {
-    Some(root) -> Ok(file.resolve_cli_path(root, file.get_env))
-    None -> {
-      use control_file <- try_workstream(load_control_file(control_path))
-      Ok(control_file.workspace_root)
-    }
-  }
-}
-
-fn load_schedule_projection(
-  root: String,
-) -> Result(state_projection.Projection, #(String, String)) {
-  case ledger.path_for_workspace_root(root) {
-    Error(_) -> Error(#("ledger_path_failed", "could not resolve ledger path"))
-    Ok(ledger_path) ->
-      case ledger.load_projection(ledger_path) {
-        Ok(projected) -> Ok(projected)
-        Error(_) ->
-          Error(#("ledger_load_failed", "could not load local ledger"))
-      }
-  }
-}
-
-fn load_control_file(
-  explicit_path: Option(String),
-) -> Result(file.ControlFile, #(String, String)) {
-  file.discover(explicit_path, file.get_env) |> map_file_error
-}
-
-fn map_file_error(
-  result: Result(a, file.ControlFileError),
-) -> Result(a, #(String, String)) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(file_error(err))
-  }
-}
-
-fn file_error(error: file.ControlFileError) -> #(String, String) {
-  case error {
-    file.ControlFileNotFound(path) -> #(
-      "control_file_not_found",
-      "control file not found: " <> path,
-    )
-    file.ControlFileReadFailed(_, message) -> #(
-      "control_file_read_failed",
-      message,
-    )
-    file.ControlFileWriteFailed(_, message) -> #(
-      "control_file_write_failed",
-      message,
-    )
-    file.ControlFileInvalid(_, message) -> #("control_file_invalid", message)
-    file.ControlFilePermissionFailed(_, message) -> #(
-      "control_file_permission_failed",
-      message,
-    )
-    file.TokenGenerationFailed(message) -> #("token_generation_failed", message)
-  }
 }
 
 fn print_workstream_summaries(
@@ -845,16 +881,6 @@ fn optional_string(value: Option(String)) -> String {
   case value {
     Some(value) -> value
     None -> "-"
-  }
-}
-
-fn try_workstream(
-  result: Result(a, #(String, String)),
-  next: fn(a) -> Result(b, #(String, String)),
-) -> Result(b, #(String, String)) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
   }
 }
 

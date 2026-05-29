@@ -324,6 +324,39 @@ run fails. The only current dedupe mode is `open_task_per_schedule`.
 `artifacts.limits.command_output_chars`, `template_field_chars`, and
 `workflow_summary_chars` replace the old `artifact_limits` section.
 
+Artifact publication repository targets are configured under
+`artifacts.repositories.github.<name>`:
+
+```yaml
+artifacts:
+  repositories:
+    github:
+      docs:
+        repo: scherzo-systems/scherzo
+        base: main
+        checkout:
+          strategy: managed_git
+        branch:
+          strategy: stable_per_work
+          template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
+        pull_request:
+          enabled: true
+          strategy: update_existing
+          draft: false
+```
+
+`repo` is an `owner/repo` string. `base` is the target branch. Defaults are
+`checkout.strategy: managed_git`, `branch.strategy: stable_per_work`,
+`branch.template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}`,
+`pull_request.enabled: true`,
+`pull_request.strategy: update_existing`, and `pull_request.draft: false`.
+`pull_request.body_template`, when present, must be a repository-relative path.
+Publication templates support interpolation variables (`{{ ... }}`) only; control
+flow tags such as `{% if %}` are not accepted in this config surface.
+This schema slice only parses and validates configuration; runtime publication,
+GitHub mutation, durable publication state, retry commands, and migration away
+from `publish-change` are deferred.
+
 ## Workflow YAML schema
 
 Workflow files also keep `version: 1` while adopting simpler names.
@@ -395,6 +428,40 @@ Command step `timeout` replaces `timeout_ms` and uses a duration string.
 Structured-output command validator `timeout` also replaces `timeout_ms`.
 `structured_output.artifact_name`, validator `working_directory`, `depends_on`, and
 other structured output fields remain unchanged.
+
+Workflow artifact publication routes are configured under
+`artifacts.publications`:
+
+```yaml
+artifacts:
+  publications:
+    - id: execplan_review_doc
+      repository: github.docs
+      required: true
+      pull_request:
+        title: "{{ work.identifier }} ExecPlan"
+        body_template: prompts/execplan-pr-body.md
+      files:
+        - select:
+            output: exec_plan_bundle
+            entry: plan
+          path: docs/plans/{{ work.identifier }}.md
+```
+
+`repository` references a root repository target as `<backend>.<name>`.
+Non-empty `artifacts.publications` requires a workflow `contract.outputs` block so
+selectors can be validated before dispatch. `required` defaults to `true`. Each
+file route must declare `select.output`, may optionally declare `select.entry` for
+aggregate-capable outputs such as
+`artifact[]`, `exec_plan_bundle`, and `code_change_bundle`, and must write to a
+repository-relative `path`. Branch names, PR titles, and destination paths may
+use the publication template variables from the artifact publication PRD,
+including `work.*`, `workflow.id`, `publication.*`, and artifact-scoped
+variables such as `artifact.output` and `artifact.entry` in file paths.
+Templates support interpolation variables (`{{ ... }}`) only; control flow tags
+such as `{% if %}` are rejected. Unknown template variables, unsafe paths,
+unsupported selector keys, and unknown contract outputs are rejected during parsing
+or bundle load.
 
 ## Duration strings
 

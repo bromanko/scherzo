@@ -13,18 +13,27 @@ contract:
   inputs:
     exec_plan_bundle:
       type: exec_plan_bundle
-      required: true
-      source: issue_context
+      required: false
+      source: mapped_output
   outputs:
     code_change_bundle:
       type: code_change_bundle
       source:
         step: materialize_code_change_bundle
         path: tmp/execplan-code-change-bundle.json
+workstream_phase:
+  phase_id: implementation
+  display_name: ExecPlan implemented, reviewed, validated, and published
+  handoff:
+    output: code_change_bundle
+    artifact_type: scherzo.handoff.v1
+    snapshot: required
+  gates: [implementation_review, validation_proof, publish_pr]
+  final_phase: false
 steps:
   - id: prepare_bundle
     kind: command
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" implementation-prepare --from-issue-context'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" implementation-prepare --prefer-workstream-input'
     timeout: 5m
     run_in: main
 

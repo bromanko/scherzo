@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/agent/types as agent_types
+import scherzo/artifact_publication_config
 import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
@@ -166,6 +167,7 @@ fn local_orchestrator(run_root: String) -> config_types.OrchestratorConfig {
       template_field_max_chars: 20_000,
       workflow_summary_max_chars: 40_000,
     ),
+    artifact_repositories: artifact_publication_config.empty_repositories(),
     model_settings: model_config.default_settings(),
     scheduled_jobs: [],
   )

@@ -304,8 +304,10 @@ pub fn malformed_json_and_timeout_fail_test() {
 pub fn launch_retries_transient_handshake_read_timeouts_test() {
   let cwd = "test/tmp/pi-rpc-launch-timeout-retry"
   test_helpers.reset_dir(cwd)
-  let command = "FAKE_PI_DELAY_MS=35 " <> fake_pi()
-  let assert Ok(session) = client.launch(command, cwd, "name", False, 25)
+  // Keep the first handshake read shorter than the fake delay so launch retries,
+  // while giving retry attempts enough margin on loaded SelfCI runners.
+  let command = "FAKE_PI_DELAY_MS=120 " <> fake_pi()
+  let assert Ok(session) = client.launch(command, cwd, "name", False, 80)
   assert session.session_id == Some("fake-session")
   let _ = client.terminate(session)
 }

@@ -5,6 +5,7 @@ import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
 import gleam/uri
+import scherzo/artifact_publication_config
 import scherzo/config/duration_config
 import scherzo/config/tracker_config
 import scherzo/config/types as config_types
@@ -264,6 +265,7 @@ pub fn resolve_orchestrator_root(
   )
   let dag_hooks = config_types.empty_dag_hooks()
   use artifact_limits <- result.try(resolve_artifact_limits(root))
+  use artifact_repositories <- result.try(resolve_artifact_repositories(root))
   use model_settings <- result.try(resolve_workflow_model_settings(root))
   use scheduled_jobs <- result.try(resolve_scheduled_jobs(root, routing))
   use linear_contract <- result.try(
@@ -285,6 +287,7 @@ pub fn resolve_orchestrator_root(
     dag_hooks: dag_hooks,
     workspace_profiles: workspace_profiles,
     artifact_limits: artifact_limits,
+    artifact_repositories: artifact_repositories,
     model_settings: model_settings,
     scheduled_jobs: scheduled_jobs,
   ))
@@ -1419,6 +1422,15 @@ fn reject_removed_artifact_limit_keys(
           }
       }
   }
+}
+
+fn resolve_artifact_repositories(
+  root: yay.Node,
+) -> Result(artifact_publication_config.ArtifactRepositories, error.ConfigError) {
+  artifact_publication_config.parse_root_repositories(root)
+  |> result.map_error(fn(parse_error) {
+    error.InvalidConfig(artifact_publication_config.error_message(parse_error))
+  })
 }
 
 fn resolve_workflow_model_settings(

@@ -4,7 +4,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import scherzo/hash
 import scherzo/json_value
 import scherzo/state/artifact_store as state_artifact_store
 import scherzo/state/ledger as state_ledger
@@ -21,6 +20,7 @@ import scherzo/workstream/id as workstream_id
 import scherzo/workstream/ledger
 import scherzo/workstream/start_key
 import scherzo/workstream/start_manual
+import scherzo/workstream/start_requirements
 import scherzo/workstream/types
 
 pub type ManualArtifactInput {
@@ -78,10 +78,6 @@ fn manual_artifact_inputs(
       media_type: input.media_type,
     )
   })
-}
-
-type VerifiedPayload {
-  VerifiedPayload(contents: String, bytes: Int)
 }
 
 type ResolvedInput {
@@ -154,6 +150,13 @@ pub fn from_handoff(
     handoff_ref,
     handoff_sha256,
   ))
+  use Nil <- result.try(require_recommended_next_action(
+    projected,
+    checkpoint,
+    handoff,
+    workflow_id,
+    action_id,
+  ))
   use inputs <- result.try(inputs_from_handoff(handoff.outputs, contract))
   use gate_decision_ids <- result.try(authorize_gate(
     checkpoint,
@@ -202,6 +205,7 @@ pub fn from_input_bundle(
     input_bundle_ref,
     input_bundle_sha256,
   ))
+  use Nil <- result.try(require_input_bundle_workflow(bundle, workflow_id))
   use inputs <- result.try(inputs_from_bundle(bundle.inputs))
   use gate_decision_ids <- result.try(authorize_gate(
     checkpoint,
@@ -583,36 +587,9 @@ fn read_verified_snapshot(
   checkpoint: workflow_checkpoint.Writer,
   ref: String,
   expected_sha256: String,
-) -> Result(VerifiedPayload, StartError) {
-  use Nil <- result.try(validate_snapshot_ref(ref, expected_sha256))
-  use contents <- result.try(
-    checkpoint.read_artifact(ref)
-    |> result.map_error(checkpoint_error("snapshot_read_failed")),
-  )
-  let actual = hash.sha256_hex(contents)
-  case actual == expected_sha256 {
-    False ->
-      error("snapshot_hash_mismatch", "snapshot hash mismatch for " <> ref)
-    True ->
-      Ok(VerifiedPayload(
-        contents: contents,
-        bytes: bit_array.byte_size(bit_array.from_string(contents)),
-      ))
-  }
-}
-
-fn validate_snapshot_ref(
-  ref: String,
-  expected_sha256: String,
-) -> Result(Nil, StartError) {
-  case start_key.valid_snapshot_ref(ref, expected_sha256) {
-    True -> Ok(Nil)
-    False ->
-      error(
-        "snapshot_ref_invalid",
-        "snapshot ref must match a lowercase sha256",
-      )
-  }
+) -> Result(start_requirements.VerifiedPayload, StartError) {
+  start_requirements.read_verified_snapshot(checkpoint, ref, expected_sha256)
+  |> result.map_error(requirement_error)
 }
 
 fn require_recorded_handoff(
@@ -621,20 +598,13 @@ fn require_recorded_handoff(
   handoff_ref: String,
   handoff_sha256: String,
 ) -> Result(Nil, StartError) {
-  use workstream <- result.try(require_workstream(projected, workstream_id))
-  case dict.get(workstream.handoffs, handoff_ref) {
-    Error(Nil) ->
-      error("handoff_not_recorded", "handoff is not recorded in the ledger")
-    Ok(handoff) ->
-      case handoff.handoff_sha256 == handoff_sha256 {
-        True -> Ok(Nil)
-        False ->
-          error(
-            "handoff_hash_mismatch",
-            "recorded handoff hash does not match requested hash",
-          )
-      }
-  }
+  start_requirements.require_recorded_handoff(
+    projected,
+    workstream_id,
+    handoff_ref,
+    handoff_sha256,
+  )
+  |> result.map_error(requirement_error)
 }
 
 fn require_recorded_input_bundle(
@@ -643,37 +613,43 @@ fn require_recorded_input_bundle(
   bundle_ref: String,
   bundle_sha256: String,
 ) -> Result(Nil, StartError) {
-  use workstream <- result.try(require_workstream(projected, workstream_id))
-  case dict.get(workstream.artifacts, bundle_ref) {
-    Error(Nil) ->
-      error(
-        "input_bundle_not_recorded",
-        "input bundle is not recorded in the ledger",
-      )
-    Ok(artifact) ->
-      case
-        artifact.artifact_type == types.input_bundle_artifact_type
-        && artifact.snapshot_sha256 == bundle_sha256
-      {
-        True -> Ok(Nil)
-        False ->
-          error(
-            "input_bundle_record_mismatch",
-            "recorded input bundle metadata does not match requested snapshot",
-          )
-      }
-  }
+  start_requirements.require_recorded_input_bundle(
+    projected,
+    workstream_id,
+    bundle_ref,
+    bundle_sha256,
+  )
+  |> result.map_error(requirement_error)
 }
 
-fn require_workstream(
+fn require_input_bundle_workflow(
+  bundle: types.InputBundleArtifact,
+  workflow_id: String,
+) -> Result(Nil, StartError) {
+  start_requirements.require_input_bundle_workflow(bundle, workflow_id)
+  |> result.map_error(requirement_error)
+}
+
+fn require_recommended_next_action(
   projected: projection.Projection,
-  workstream_id: String,
-) -> Result(projection.WorkstreamStatus, StartError) {
-  case dict.get(projected.workstreams, workstream_id) {
-    Ok(workstream) -> Ok(workstream)
-    Error(Nil) ->
-      error("workstream_not_recorded", "workstream is not recorded in ledger")
-  }
+  checkpoint: workflow_checkpoint.Writer,
+  handoff: types.HandoffArtifact,
+  workflow_id: String,
+  action_id: String,
+) -> Result(Nil, StartError) {
+  start_requirements.require_recommended_next_action(
+    projected,
+    checkpoint,
+    handoff,
+    workflow_id,
+    action_id,
+  )
+  |> result.map_error(requirement_error)
+}
+
+fn requirement_error(error: start_requirements.RequirementError) -> StartError {
+  let start_requirements.RequirementError(code, message) = error
+  StartError(code, message)
 }
 
 fn inputs_from_handoff(

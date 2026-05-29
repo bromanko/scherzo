@@ -326,10 +326,7 @@ fn handoff_state_moves_enabled(handoff: config_types.HandoffConfig) -> Bool {
 }
 
 fn option_is_some(value: Option(a)) -> Bool {
-  case value {
-    Some(_) -> True
-    None -> False
-  }
+  value != None
 }
 
 fn workflow_label_paths(routing: config_types.RoutingConfig) -> List(String) {
