@@ -33,10 +33,11 @@ import scherzo/orchestrator/startup_recovery
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
+import scherzo/orchestrator/worker_lifecycle
 import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
 import scherzo/orchestrator/yaml_step_orphans
-import scherzo/orchestrator/yaml_step_session
+import scherzo/orchestrator/yaml_workflow_lifecycle
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
@@ -49,7 +50,6 @@ import scherzo/state/ledger
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
-import scherzo/step_artifact
 import scherzo/task
 import scherzo/tracker
 import scherzo/tracker/adapter
@@ -57,7 +57,6 @@ import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
-import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
@@ -1108,14 +1107,18 @@ fn handle_message(
         ]),
       )
     WorkerFinished(issue_id, run_id, result) ->
-      actor.continue(worker_finished_to_transition(
-        state,
+      actor.continue(worker_lifecycle.worker_finished_to_transition(
+        worker_finished_context(state, run_id, result),
         issue_id,
         run_id,
         result,
       ))
     ScheduledWorkerFinished(run_id, result) ->
-      actor.continue(handle_scheduled_worker_finished(state, run_id, result))
+      actor.continue(worker_lifecycle.handle_scheduled_worker_finished(
+        scheduled_worker_finished_context(state),
+        run_id,
+        result,
+      ))
     ScheduledRetryTick(run_id, generation) ->
       actor.continue(handle_scheduled_retry_tick(state, run_id, generation))
     ScheduledReportRetryTick(run_id, generation) ->
@@ -1125,10 +1128,14 @@ fn handle_message(
         generation,
       ))
     WorkerUpdate(issue_id, update) ->
-      actor.continue(handle_worker_update(state, issue_id, update))
+      actor.continue(worker_lifecycle.handle_worker_update(
+        worker_update_context(state),
+        issue_id,
+        update,
+      ))
     WorkerCommandReady(issue_id, run_id, command_subject) ->
-      actor.continue(handle_worker_command_ready(
-        state,
+      actor.continue(worker_lifecycle.handle_worker_command_ready(
+        worker_command_ready_context(state),
         issue_id,
         run_id,
         command_subject,
@@ -1159,7 +1166,11 @@ fn handle_message(
       process.send(reply, result)
       actor.continue(state)
     }
-    WorkerDown(down) -> actor.continue(worker_down_to_transition(state, down))
+    WorkerDown(down) ->
+      actor.continue(worker_lifecycle.worker_down_to_transition(
+        worker_down_context(state),
+        down,
+      ))
     EffectRunnerDown(down) -> {
       let _shutdown_state = handle_effect_runner_down(state, down)
       actor.stop_abnormal("effect_runner_down")
@@ -1269,87 +1280,100 @@ fn finish_yaml_step_sessions_for_run(
   )
 }
 
-fn handle_registry_down_resolution(
+fn registry_down_resolution_context(
   state: State,
-  resolution: worker_registry.DownResolution,
-) -> State {
-  case resolution {
-    worker_registry.UnknownDown(registry) ->
+) -> worker_lifecycle.RegistryDownResolutionContext(State) {
+  worker_lifecycle.RegistryDownResolutionContext(
+    state: state,
+    unknown_down: fn(state, registry) {
       run_transition_messages(State(..state, registry: registry), [
         transition_types.WorkerDown(
           transition_types.UnknownWorkerDown,
           transition_lifecycle_context(state),
         ),
       ])
-    worker_registry.StepCommandDown(registry, session_id) -> {
+    },
+    step_command_down: fn(state, registry, session_id) {
       log_state(state, "warn", "yaml_step_command_down", [
         #("session_id", session_id),
       ])
       State(..state, registry: registry)
-    }
-    worker_registry.WorkerDown(registry, issue_id, handle) -> {
-      let state = State(..state, registry: registry)
-      append_workflow_interrupted_terminal(state, handle, "worker_down")
-      event_publisher.lifecycle(
-        state.event_hub,
-        handle.session_id,
-        session_event.WorkerDown,
-        None,
-      )
-      run_transition_messages(state, [
-        transition_types.WorkerDown(
-          transition_types.KnownWorkerDown(
-            issue_id,
-            handle.run_id,
-            handle.session_id,
-          ),
-          transition_lifecycle_context(state),
-        ),
-      ])
-    }
-    worker_registry.WorkerDownStale(registry, issue_id) ->
+    },
+    worker_down: handle_known_worker_down,
+    worker_down_stale: fn(state, registry, issue_id) {
       run_transition_messages(State(..state, registry: registry), [
         transition_types.WorkerDown(
           transition_types.WorkerDownStale(issue_id),
           transition_lifecycle_context(state),
         ),
       ])
-    worker_registry.ScheduledWorkerDown(registry, run_id, handle) -> {
-      let state = State(..state, registry: registry)
+    },
+    scheduled_worker_down: fn(state, registry, run_id, handle) {
+      worker_lifecycle.scheduled_worker_down(
+        scheduled_worker_down_context(state),
+        registry,
+        run_id,
+        handle,
+      )
+    },
+    scheduled_worker_down_stale: fn(state, registry, _run_id) {
+      log_state(state, "warn", "scheduled_worker_down_stale", [])
+      State(..state, registry: registry)
+    },
+  )
+}
+
+fn handle_known_worker_down(
+  state: State,
+  registry: worker_registry.Registry,
+  issue_id: String,
+  handle: worker_registry.WorkerHandle,
+) -> State {
+  let state = State(..state, registry: registry)
+  append_workflow_interrupted_terminal(state, handle, "worker_down")
+  event_publisher.lifecycle(
+    state.event_hub,
+    handle.session_id,
+    session_event.WorkerDown,
+    None,
+  )
+  run_transition_messages(state, [
+    transition_types.WorkerDown(
+      transition_types.KnownWorkerDown(
+        issue_id,
+        handle.run_id,
+        handle.session_id,
+      ),
+      transition_lifecycle_context(state),
+    ),
+  ])
+}
+
+fn scheduled_worker_down_context(
+  state: State,
+) -> worker_lifecycle.ScheduledWorkerDownContext(State) {
+  worker_lifecycle.ScheduledWorkerDownContext(
+    state: state,
+    set_registry: fn(state, registry) { State(..state, registry: registry) },
+    log_worker_down: fn(state, job_id, run_id) {
       log_state(state, "warn", "scheduled_worker_down", [
-        #("job_id", handle.job_id),
+        #("job_id", job_id),
         #("run_id", run_id),
       ])
+    },
+    publish_worker_down: fn(session_id) {
       event_publisher.lifecycle(
         state.event_hub,
-        handle.session_id,
+        session_id,
         session_event.WorkerDown,
         None,
       )
-      hub.finish_session(
-        state.event_hub,
-        handle.session_id,
-        session_reason.Failed,
-      )
-      let #(runtime, follow_up) =
-        scheduled_runtime.worker_failure_follow_up(
-          state.scheduled_runtime,
-          handle.job_id,
-          handle.workflow_id,
-          handle.due_at_ms,
-          handle.run_id,
-          handle.attempt,
-          "worker_down",
-          Some(handle.run_root),
-          Some(handle.session_id),
-          state.workflow.effective.agent.max_retry_attempts,
-          state.workflow.effective.agent.max_retry_backoff_ms,
-        )
-      let retry_exhausted = case follow_up {
-        scheduled_runtime.WorkerFailureReport(_) -> True
-        scheduled_runtime.WorkerFailureRetry(_) -> False
-      }
-      let state = State(..state, scheduled_runtime: runtime)
+    },
+    finish_failed_session: fn(session_id) {
+      hub.finish_session(state.event_hub, session_id, session_reason.Failed)
+    },
+    worker_failure_follow_up: scheduled_worker_failure_follow_up,
+    append_failure_ledger: fn(state, handle, reason, retry_exhausted, run_root) {
       let _worker_down_failure_appended =
         append_ledger_bodies(
           state,
@@ -1361,30 +1385,21 @@ fn handle_registry_down_resolution(
               handle.run_id,
               handle.attempt,
               state.dependencies.now_ms(),
-              "worker_down",
+              reason,
               retry_exhausted,
-              Some(handle.run_root),
+              run_root,
             ),
           ],
           "scheduled_worker_down_append_failed",
         )
-      let state = case follow_up {
-        scheduled_runtime.WorkerFailureReport(request) ->
-          begin_scheduled_failure_report_request(state, request)
-        scheduled_runtime.WorkerFailureRetry(actions) ->
-          apply_scheduled_runtime_actions(
-            state,
-            actions,
-            append_retry_record: True,
-          )
-      }
-      start_pending_scheduled_runs(state)
-    }
-    worker_registry.ScheduledWorkerDownStale(registry, _run_id) -> {
-      log_state(state, "warn", "scheduled_worker_down_stale", [])
-      State(..state, registry: registry)
-    }
-  }
+      Nil
+    },
+    begin_failure_report_request: begin_scheduled_failure_report_request,
+    apply_scheduled_runtime_actions: fn(state, actions) {
+      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
+    },
+    start_pending_scheduled_runs: start_pending_scheduled_runs,
+  )
 }
 
 fn operator_command_reply(
@@ -3215,8 +3230,13 @@ fn transition_start_worker(
   request: transition_effects.WorkerStart,
 ) -> #(State, Result(Nil, String)) {
   #(
-    spawn_worker(
-      state,
+    worker_lifecycle.spawn_worker(
+      worker_spawn_context(
+        state,
+        request.issue,
+        request.run_id,
+        request.session_id,
+      ),
       request.task_ref,
       request.issue,
       request.workspace_path,
@@ -3985,7 +4005,79 @@ fn start_pending_scheduled_run(
       case scheduled_slot_available_for_start(state) {
         False ->
           block_pending_scheduled_run(state, pending, "waiting_for_global_slot")
-        True -> spawn_scheduled_worker_for_pending(state, pending)
+        True ->
+          case
+            runtime_bundle.workflow_by_id(
+              state.workflow.bundle,
+              pending.workflow_id,
+            )
+          {
+            Error(_) -> {
+              append_ledger_bodies_best_effort(
+                state,
+                [
+                  record.ScheduledRunPendingCancelled(
+                    pending.job_id,
+                    pending.workflow_id,
+                    pending.due_at_ms,
+                    pending.run_id,
+                    "workflow_missing",
+                    state.dependencies.now_ms(),
+                  ),
+                ],
+                "scheduled_pending_cancel_append_failed",
+              )
+              State(
+                ..state,
+                scheduled_runtime: scheduled_runtime.remove_pending_start(
+                  state.scheduled_runtime,
+                  pending.job_id,
+                ),
+              )
+            }
+            Ok(#(_, dag)) ->
+              case
+                workspace_run.scheduled_run_root_for(
+                  pending.job_id,
+                  pending.workflow_id,
+                  pending.run_id,
+                  state.workflow.bundle.orchestrator,
+                )
+              {
+                Error(err) -> {
+                  append_ledger_bodies_best_effort(
+                    state,
+                    [
+                      record.ScheduledRunFailed(
+                        pending.job_id,
+                        pending.workflow_id,
+                        pending.due_at_ms,
+                        pending.run_id,
+                        pending.attempt,
+                        state.dependencies.now_ms(),
+                        "workspace_failed:" <> error.workspace_code(err),
+                        True,
+                        None,
+                      ),
+                    ],
+                    "scheduled_start_failed_append_failed",
+                  )
+                  State(
+                    ..state,
+                    scheduled_runtime: scheduled_runtime.remove_pending_start(
+                      state.scheduled_runtime,
+                      pending.job_id,
+                    ),
+                  )
+                }
+                Ok(run_root) ->
+                  worker_lifecycle.spawn_scheduled_worker(
+                    scheduled_worker_spawn_context(state, pending, dag),
+                    pending,
+                    run_root,
+                  )
+              }
+          }
       }
   }
 }
@@ -4159,301 +4251,268 @@ fn lifecycle_name_for_recovery(
   }
 }
 
-fn spawn_worker(
+fn worker_spawn_context(
   state: State,
-  ref: task.TaskRef,
   issue: tracker_issue.Issue,
-  workspace_path: String,
   run_id: String,
   session_id: String,
-  recovery: Option(session_event.RecoveryInfo),
-) -> State {
-  let started_at_ms = state.dependencies.now_ms()
-  hub.register_session(
-    state.event_hub,
-    session_event.SessionSummary(
-      session_id: session_id,
-      display_name: session_name.generate(issue.identifier, session_id),
-      issue_id: issue.id,
-      issue_identifier: issue.identifier,
-      issue_title: issue.title,
-      workspace_path: workspace_path,
-      pi_session_id: None,
-      status: session_event.Preparing,
-      recovery: recovery,
-      current_turn: 0,
-      current_turn_status: None,
-      current_turn_started_at_ms: None,
-      last_turn_finished_at_ms: None,
-      last_turn_duration_ms: None,
-      last_turn_token_delta: session_tokens.zero_token_totals(),
-      last_turn_reason: None,
-      started_at_ms: started_at_ms,
-      last_event_at_ms: started_at_ms,
-      token_totals: session_tokens.zero_token_totals(),
-    ),
-  )
-  publish_recovery_lifecycle(state.event_hub, session_id, recovery)
-  event_publisher.lifecycle(
-    state.event_hub,
-    session_id,
-    session_event.DispatchStarted,
-    None,
-  )
-  log_state(state, "info", "dispatch_started", [
-    #("issue_id", issue.id),
-    #("issue_identifier", issue.identifier),
-    #("run_id", run_id),
-    #("workspace_path", workspace_path),
-  ])
-  let runtime =
-    core.apply_task_ref_start(state.runtime, ref, issue, workspace_path)
+) -> worker_lifecycle.WorkerSpawnContext(State) {
   let subject = state.subject
   let dependencies = state.dependencies
   let tracker_client = state.tracker_client
   let bundle = state.workflow.bundle
   let secrets = state.workflow.secrets
   let event_hub = state.event_hub
-  let pid =
-    process.spawn_unlinked(fn() {
-      let result =
-        run_workflow_worker(
+  worker_lifecycle.WorkerSpawnContext(
+    state: state,
+    now_ms: state.dependencies.now_ms,
+    register_session: fn(
+      session_id,
+      issue,
+      workspace_path,
+      recovery,
+      started_at_ms,
+    ) {
+      hub.register_session(
+        state.event_hub,
+        session_event.SessionSummary(
+          session_id: session_id,
+          display_name: session_name.generate(issue.identifier, session_id),
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          issue_title: issue.title,
+          workspace_path: workspace_path,
+          pi_session_id: None,
+          status: session_event.Preparing,
+          recovery: recovery,
+          current_turn: 0,
+          current_turn_status: None,
+          current_turn_started_at_ms: None,
+          last_turn_finished_at_ms: None,
+          last_turn_duration_ms: None,
+          last_turn_token_delta: session_tokens.zero_token_totals(),
+          last_turn_reason: None,
+          started_at_ms: started_at_ms,
+          last_event_at_ms: started_at_ms,
+          token_totals: session_tokens.zero_token_totals(),
+        ),
+      )
+    },
+    publish_recovery_lifecycle: fn(session_id, recovery) {
+      publish_recovery_lifecycle(state.event_hub, session_id, recovery)
+    },
+    publish_dispatch_started: fn(session_id) {
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.DispatchStarted,
+        None,
+      )
+    },
+    log_dispatch_started: fn(issue, run_id, workspace_path) {
+      log_state(state, "info", "dispatch_started", [
+        #("issue_id", issue.id),
+        #("issue_identifier", issue.identifier),
+        #("run_id", run_id),
+        #("workspace_path", workspace_path),
+      ])
+    },
+    apply_task_ref_start: fn(state, ref, issue, workspace_path) {
+      State(
+        ..state,
+        runtime: core.apply_task_ref_start(
+          state.runtime,
+          ref,
           issue,
-          run_id,
-          bundle,
-          tracker_client,
-          secrets,
-          dependencies.workflow_run_dependencies,
-          subject,
-          event_hub,
-          session_id,
-          dependencies.now_ms,
-        )
-      process.send(subject, WorkerFinished(issue.id, run_id, result))
-    })
-  let monitor = process.monitor(pid)
-  event_publisher.lifecycle(
-    state.event_hub,
-    session_id,
-    session_event.WorkerStarted,
-    None,
-  )
-  hub.update_status(state.event_hub, session_id, session_event.Running)
-  let handle =
-    worker_registry.WorkerHandle(
-      task_ref: ref,
-      issue_id: issue.id,
-      issue: issue,
-      run_id: run_id,
-      pid: pid,
-      monitor: monitor,
-      workspace_path: workspace_path,
-      session_id: session_id,
-      command_subject: None,
-    )
-  State(
-    ..state,
-    runtime: runtime,
-    registry: worker_registry.register_worker(state.registry, handle),
-    recovery_by_issue: dict.delete(state.recovery_by_issue, issue.id),
+          workspace_path,
+        ),
+      )
+    },
+    spawn: fn(_issue, _run_id, _session_id) {
+      process.spawn_unlinked(fn() {
+        let result =
+          run_workflow_worker(
+            issue,
+            run_id,
+            bundle,
+            tracker_client,
+            secrets,
+            dependencies.workflow_run_dependencies,
+            subject,
+            event_hub,
+            session_id,
+            dependencies.now_ms,
+          )
+        process.send(subject, WorkerFinished(issue.id, run_id, result))
+      })
+    },
+    publish_worker_started: fn(session_id) {
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.WorkerStarted,
+        None,
+      )
+    },
+    update_running_status: fn(session_id) {
+      hub.update_status(state.event_hub, session_id, session_event.Running)
+    },
+    register_worker: fn(state, handle) {
+      State(
+        ..state,
+        registry: worker_registry.register_worker(state.registry, handle),
+      )
+    },
+    clear_recovery: fn(state, issue_id) {
+      State(
+        ..state,
+        recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
+      )
+    },
   )
 }
 
-fn spawn_scheduled_worker_for_pending(
+fn scheduled_worker_spawn_context(
   state: State,
   pending: scheduled_runtime.PendingStart,
-) -> State {
-  case
-    runtime_bundle.workflow_by_id(state.workflow.bundle, pending.workflow_id)
-  {
-    Error(_) -> {
+  dag: workflow_dag.WorkflowDag,
+) -> worker_lifecycle.ScheduledWorkerSpawnContext(State) {
+  let subject = state.subject
+  let dependencies = state.dependencies
+  let tracker_client = state.tracker_client
+  let bundle = state.workflow.bundle
+  let secrets = state.workflow.secrets
+  let event_hub = state.event_hub
+  worker_lifecycle.ScheduledWorkerSpawnContext(
+    state: state,
+    now_ms: state.dependencies.now_ms,
+    reserve_session_sequence: fn(state) {
+      let #(registry, _session_sequence) =
+        worker_registry.reserve_session_sequence(state.registry)
+      State(..state, registry: registry)
+    },
+    register_session: fn(session_id, display_ref, run_root, started_at_ms) {
+      hub.register_session(
+        state.event_hub,
+        session_event.SessionSummary(
+          session_id: session_id,
+          display_name: session_name.generate(display_ref, session_id),
+          issue_id: "",
+          issue_identifier: display_ref,
+          issue_title: "Scheduled job " <> pending.job_id,
+          workspace_path: run_root,
+          pi_session_id: None,
+          status: session_event.Preparing,
+          recovery: None,
+          current_turn: 0,
+          current_turn_status: None,
+          current_turn_started_at_ms: None,
+          last_turn_finished_at_ms: None,
+          last_turn_duration_ms: None,
+          last_turn_token_delta: session_tokens.zero_token_totals(),
+          last_turn_reason: None,
+          started_at_ms: started_at_ms,
+          last_event_at_ms: started_at_ms,
+          token_totals: session_tokens.zero_token_totals(),
+        ),
+      )
+    },
+    publish_dispatch_started: fn(session_id) {
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.DispatchStarted,
+        Some("scheduled"),
+      )
+    },
+    append_started_ledger: fn(
+      state,
+      pending,
+      started_at_ms,
+      session_id,
+      run_root,
+    ) {
       append_ledger_bodies_best_effort(
         state,
         [
-          record.ScheduledRunPendingCancelled(
+          record.ScheduledRunStarted(
             pending.job_id,
             pending.workflow_id,
             pending.due_at_ms,
+            started_at_ms,
             pending.run_id,
-            "workflow_missing",
-            state.dependencies.now_ms(),
+            pending.attempt,
+            session_id,
+            run_root,
           ),
         ],
-        "scheduled_pending_cancel_append_failed",
+        "scheduled_started_append_failed",
       )
+    },
+    log_dispatch_started: fn(job_id, run_id, workflow_id) {
+      log_state(state, "info", "scheduled_dispatch_started", [
+        #("job_id", job_id),
+        #("run_id", run_id),
+        #("workflow_id", workflow_id),
+      ])
+    },
+    spawn: fn(started_at_ms, session_id) {
+      let scheduled =
+        schedule_core.ScheduledRunContext(
+          job_id: pending.job_id,
+          workflow_id: pending.workflow_id,
+          due_at_ms: pending.due_at_ms,
+          started_at_ms: started_at_ms,
+          run_id: pending.run_id,
+          attempt: pending.attempt,
+          trigger: pending.trigger,
+        )
+      process.spawn_unlinked(fn() {
+        let result =
+          run_scheduled_workflow_worker(
+            scheduled,
+            dag,
+            bundle,
+            tracker_client,
+            secrets,
+            dependencies.workflow_run_dependencies,
+            subject,
+            event_hub,
+            session_id,
+            dependencies.now_ms,
+          )
+        process.send(subject, ScheduledWorkerFinished(pending.run_id, result))
+      })
+    },
+    publish_worker_started: fn(session_id) {
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.WorkerStarted,
+        Some("scheduled"),
+      )
+    },
+    update_running_status: fn(session_id) {
+      hub.update_status(state.event_hub, session_id, session_event.Running)
+    },
+    register_scheduled_worker: fn(state, handle) {
+      State(
+        ..state,
+        registry: worker_registry.register_scheduled_worker(
+          state.registry,
+          handle,
+        ),
+      )
+    },
+    remove_pending_start: fn(state, job_id) {
       State(
         ..state,
         scheduled_runtime: scheduled_runtime.remove_pending_start(
           state.scheduled_runtime,
-          pending.job_id,
+          job_id,
         ),
       )
-    }
-    Ok(#(_, dag)) ->
-      case
-        workspace_run.scheduled_run_root_for(
-          pending.job_id,
-          pending.workflow_id,
-          pending.run_id,
-          state.workflow.bundle.orchestrator,
-        )
-      {
-        Error(err) -> {
-          append_ledger_bodies_best_effort(
-            state,
-            [
-              record.ScheduledRunFailed(
-                pending.job_id,
-                pending.workflow_id,
-                pending.due_at_ms,
-                pending.run_id,
-                pending.attempt,
-                state.dependencies.now_ms(),
-                "workspace_failed:" <> error.workspace_code(err),
-                True,
-                None,
-              ),
-            ],
-            "scheduled_start_failed_append_failed",
-          )
-          State(
-            ..state,
-            scheduled_runtime: scheduled_runtime.remove_pending_start(
-              state.scheduled_runtime,
-              pending.job_id,
-            ),
-          )
-        }
-        Ok(run_root) ->
-          spawn_scheduled_worker_with_run_root(state, pending, dag, run_root)
-      }
-  }
-}
-
-fn spawn_scheduled_worker_with_run_root(
-  state: State,
-  pending: scheduled_runtime.PendingStart,
-  dag: workflow_dag.WorkflowDag,
-  run_root: String,
-) -> State {
-  let #(registry, _session_sequence) =
-    worker_registry.reserve_session_sequence(state.registry)
-  let state = State(..state, registry: registry)
-  let session_id = scheduled_session_id(pending.run_id, pending.attempt)
-  let started_at_ms = state.dependencies.now_ms()
-  let display_ref = "scheduled-" <> pending.job_id
-  hub.register_session(
-    state.event_hub,
-    session_event.SessionSummary(
-      session_id: session_id,
-      display_name: session_name.generate(display_ref, session_id),
-      issue_id: "",
-      issue_identifier: display_ref,
-      issue_title: "Scheduled job " <> pending.job_id,
-      workspace_path: run_root,
-      pi_session_id: None,
-      status: session_event.Preparing,
-      recovery: None,
-      current_turn: 0,
-      current_turn_status: None,
-      current_turn_started_at_ms: None,
-      last_turn_finished_at_ms: None,
-      last_turn_duration_ms: None,
-      last_turn_token_delta: session_tokens.zero_token_totals(),
-      last_turn_reason: None,
-      started_at_ms: started_at_ms,
-      last_event_at_ms: started_at_ms,
-      token_totals: session_tokens.zero_token_totals(),
-    ),
-  )
-  event_publisher.lifecycle(
-    state.event_hub,
-    session_id,
-    session_event.DispatchStarted,
-    Some("scheduled"),
-  )
-  append_ledger_bodies_best_effort(
-    state,
-    [
-      record.ScheduledRunStarted(
-        pending.job_id,
-        pending.workflow_id,
-        pending.due_at_ms,
-        started_at_ms,
-        pending.run_id,
-        pending.attempt,
-        session_id,
-        run_root,
-      ),
-    ],
-    "scheduled_started_append_failed",
-  )
-  log_state(state, "info", "scheduled_dispatch_started", [
-    #("job_id", pending.job_id),
-    #("run_id", pending.run_id),
-    #("workflow_id", pending.workflow_id),
-  ])
-  let subject = state.subject
-  let dependencies = state.dependencies
-  let tracker_client = state.tracker_client
-  let bundle = state.workflow.bundle
-  let secrets = state.workflow.secrets
-  let event_hub = state.event_hub
-  let scheduled =
-    schedule_core.ScheduledRunContext(
-      job_id: pending.job_id,
-      workflow_id: pending.workflow_id,
-      due_at_ms: pending.due_at_ms,
-      started_at_ms: started_at_ms,
-      run_id: pending.run_id,
-      attempt: pending.attempt,
-      trigger: pending.trigger,
-    )
-  let pid =
-    process.spawn_unlinked(fn() {
-      let result =
-        run_scheduled_workflow_worker(
-          scheduled,
-          dag,
-          bundle,
-          tracker_client,
-          secrets,
-          dependencies.workflow_run_dependencies,
-          subject,
-          event_hub,
-          session_id,
-          dependencies.now_ms,
-        )
-      process.send(subject, ScheduledWorkerFinished(pending.run_id, result))
-    })
-  let monitor = process.monitor(pid)
-  event_publisher.lifecycle(
-    state.event_hub,
-    session_id,
-    session_event.WorkerStarted,
-    Some("scheduled"),
-  )
-  hub.update_status(state.event_hub, session_id, session_event.Running)
-  let handle =
-    worker_registry.ScheduledWorkerHandle(
-      job_id: pending.job_id,
-      workflow_id: pending.workflow_id,
-      due_at_ms: pending.due_at_ms,
-      run_id: pending.run_id,
-      pid: pid,
-      monitor: monitor,
-      run_root: run_root,
-      session_id: session_id,
-      attempt: pending.attempt,
-      command_subject: None,
-    )
-  State(
-    ..state,
-    registry: worker_registry.register_scheduled_worker(state.registry, handle),
-    scheduled_runtime: scheduled_runtime.remove_pending_start(
-      state.scheduled_runtime,
-      pending.job_id,
-    ),
+    },
   )
 }
 
@@ -4503,10 +4562,6 @@ fn run_scheduled_workflow_worker(
     }
     Error(failure) -> Error(failure)
   }
-}
-
-fn scheduled_session_id(run_id: String, attempt: Int) -> String {
-  run_id <> "-a" <> int.to_string(attempt)
 }
 
 fn run_workflow_worker(
@@ -4565,6 +4620,28 @@ fn run_workflow_worker(
   }
 }
 
+fn yaml_step_callbacks(
+  daemon_subject: process.Subject(Message),
+) -> yaml_workflow_lifecycle.LifecycleCallbacks {
+  yaml_workflow_lifecycle.LifecycleCallbacks(
+    step_started: fn(session_id, run_id) {
+      process.send(daemon_subject, YamlStepStarted(session_id, run_id))
+    },
+    step_update: fn(session_id, update) {
+      process.send(daemon_subject, YamlStepUpdate(session_id, update))
+    },
+    step_command_ready: fn(session_id, command_subject) {
+      process.send(
+        daemon_subject,
+        YamlStepCommandReady(session_id, command_subject),
+      )
+    },
+    step_finished: fn(session_id) {
+      process.send(daemon_subject, YamlStepFinished(session_id))
+    },
+  )
+}
+
 fn yaml_scheduled_workflow_dependencies(
   base: workflow_run.Dependencies,
   scheduled: schedule_core.ScheduledRunContext,
@@ -4572,33 +4649,12 @@ fn yaml_scheduled_workflow_dependencies(
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
 ) -> workflow_run.Dependencies {
-  yaml_workflow_dependencies(
+  yaml_workflow_lifecycle.scheduled_workflow_dependencies(
     base,
-    scheduled_session_issue(scheduled),
-    scheduled.run_id,
-    daemon_subject,
+    scheduled,
+    yaml_step_callbacks(daemon_subject),
     event_hub,
     now_ms,
-  )
-}
-
-fn scheduled_session_issue(
-  scheduled: schedule_core.ScheduledRunContext,
-) -> tracker_issue.Issue {
-  tracker_issue.Issue(
-    id: "",
-    identifier: "scheduled-" <> scheduled.job_id,
-    title: "Scheduled job " <> scheduled.job_id,
-    description: None,
-    priority: None,
-    state: issue_state.from_string_unchecked("scheduled"),
-    branch_name: None,
-    url: None,
-    labels: [],
-    blocked_by: [],
-    blocked_by_complete: True,
-    created_at: None,
-    updated_at: None,
   )
 }
 
@@ -4610,277 +4666,14 @@ fn yaml_workflow_dependencies(
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
 ) -> workflow_run.Dependencies {
-  workflow_run.Dependencies(
-    ..base,
-    command_step: fn(context, command, timeout_ms, secrets, limits) {
-      run_yaml_command_step(
-        base,
-        issue,
-        run_id,
-        context,
-        command,
-        timeout_ms,
-        secrets,
-        limits,
-        daemon_subject,
-        event_hub,
-        now_ms,
-      )
-    },
-    agent_step: fn(
-      issue,
-      context,
-      prompt_mode,
-      attempt_context,
-      effective,
-      tracker_client,
-      _emit_update,
-      _command_ready,
-      record_pi_session,
-    ) {
-      run_yaml_agent_step(
-        base,
-        issue,
-        run_id,
-        context,
-        prompt_mode,
-        attempt_context,
-        effective,
-        tracker_client,
-        daemon_subject,
-        event_hub,
-        now_ms,
-        record_pi_session,
-      )
-    },
-  )
-}
-
-fn register_yaml_step_session(
-  event_hub: process.Subject(hub.Message),
-  session_id: String,
-  issue: tracker_issue.Issue,
-  workspace_path: String,
-  run_id: String,
-  step_id: String,
-  attempt_index: Int,
-  now_ms: fn() -> Int,
-) -> Nil {
-  let started_at_ms = now_ms()
-  hub.register_session(
-    event_hub,
-    session_event.SessionSummary(
-      session_id: session_id,
-      display_name: session_name.generate(issue.identifier, session_id),
-      issue_id: issue.id,
-      issue_identifier: issue.identifier,
-      issue_title: issue.title,
-      workspace_path: workspace_path,
-      pi_session_id: None,
-      status: session_event.Preparing,
-      recovery: Some(yaml_child_recovery_info(
-        run_id,
-        step_id,
-        attempt_index,
-        Some(issue_state.to_string(issue.state)),
-        orphan_status: None,
-        recommended_action: Some("inspect_parent_run"),
-      )),
-      current_turn: 0,
-      current_turn_status: None,
-      current_turn_started_at_ms: None,
-      last_turn_finished_at_ms: None,
-      last_turn_duration_ms: None,
-      last_turn_token_delta: session_tokens.zero_token_totals(),
-      last_turn_reason: None,
-      started_at_ms: started_at_ms,
-      last_event_at_ms: started_at_ms,
-      token_totals: session_tokens.zero_token_totals(),
-    ),
-  )
-  hub.update_status(event_hub, session_id, session_event.Running)
-  hub.publish(
-    event_hub,
-    session_id,
-    session_event.EventPayload(
-      ..session_event.empty_payload(
-        session_event.Lifecycle,
-        session_event.LifecycleName(session_event.StepStarted),
-      ),
-      message: Some(step_id <> " attempt " <> int.to_string(attempt_index)),
-    ),
-  )
-}
-
-fn run_yaml_command_step(
-  base: workflow_run.Dependencies,
-  issue: tracker_issue.Issue,
-  run_id: String,
-  context: workflow_run.StepContext,
-  command: String,
-  timeout_ms: Int,
-  secrets: List(String),
-  limits: config_types.ArtifactLimits,
-  daemon_subject: process.Subject(Message),
-  event_hub: process.Subject(hub.Message),
-  now_ms: fn() -> Int,
-) -> step_artifact.StepArtifact {
-  let session_id =
-    yaml_step_session.id(run_id, context.step_id, context.attempt_index)
-  register_yaml_step_session(
-    event_hub,
-    session_id,
+  yaml_workflow_lifecycle.workflow_dependencies(
+    base,
     issue,
-    context.workspace_path,
     run_id,
-    context.step_id,
-    context.attempt_index,
+    yaml_step_callbacks(daemon_subject),
+    event_hub,
     now_ms,
   )
-  process.send(daemon_subject, YamlStepStarted(session_id, run_id))
-  let artifact =
-    base.command_step(context, command, timeout_ms, secrets, limits)
-  case step_artifact.succeeded(artifact.status) {
-    True -> Nil
-    False -> publish_yaml_command_failure(event_hub, session_id, artifact)
-  }
-  let reason = case step_artifact.succeeded(artifact.status) {
-    True -> session_reason.Normal
-    False -> session_reason.Failed
-  }
-  hub.finish_session(event_hub, session_id, reason)
-  process.send(daemon_subject, YamlStepFinished(session_id))
-  artifact
-}
-
-fn publish_yaml_command_failure(
-  event_hub: process.Subject(hub.Message),
-  session_id: String,
-  artifact: step_artifact.StepArtifact,
-) -> Nil {
-  let summary = case step_artifact.command_failure_summary(artifact) {
-    Some(summary) -> summary
-    None -> "command step failed: step=" <> artifact.step_id
-  }
-  hub.publish(
-    event_hub,
-    session_id,
-    session_event.EventPayload(
-      ..session_event.empty_payload(
-        session_event.Error,
-        session_event.PiName(pi_event.UnknownPiEvent("command_failed")),
-      ),
-      message: Some(summary),
-      tool_name: Some("workflow command " <> artifact.step_id),
-      tool_input: artifact.command,
-      tool_output: Some(step_artifact.command_failure_details(artifact)),
-      tool_status: Some("failed"),
-    ),
-  )
-}
-
-fn run_yaml_agent_step(
-  base: workflow_run.Dependencies,
-  issue: tracker_issue.Issue,
-  run_id: String,
-  context: workflow_run.StepContext,
-  prompt_mode: workflow_attempt.AgentPromptMode,
-  attempt_context: workflow_attempt.StepAttemptContext,
-  effective: config_types.EffectiveConfig,
-  tracker_client: tracker.Client,
-  daemon_subject: process.Subject(Message),
-  event_hub: process.Subject(hub.Message),
-  now_ms: fn() -> Int,
-  record_pi_session: fn(workflow_attempt.PiSessionObservation) -> Nil,
-) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  let session_step_id = case prompt_mode {
-    workflow_attempt.StructuredOutputRetryPrompt(_) ->
-      context.step_id <> "_structured_output_retry"
-    _ -> context.step_id
-  }
-  let session_id =
-    yaml_step_session.id(run_id, session_step_id, context.attempt_index)
-  let started_at_ms = now_ms()
-  hub.register_session(
-    event_hub,
-    session_event.SessionSummary(
-      session_id: session_id,
-      display_name: session_name.generate(issue.identifier, session_id),
-      issue_id: issue.id,
-      issue_identifier: issue.identifier,
-      issue_title: issue.title,
-      workspace_path: context.workspace_path,
-      pi_session_id: None,
-      status: session_event.Preparing,
-      recovery: Some(yaml_child_recovery_info(
-        run_id,
-        session_step_id,
-        context.attempt_index,
-        Some(issue_state.to_string(issue.state)),
-        orphan_status: None,
-        recommended_action: Some("inspect_parent_run"),
-      )),
-      current_turn: 0,
-      current_turn_status: None,
-      current_turn_started_at_ms: None,
-      last_turn_finished_at_ms: None,
-      last_turn_duration_ms: None,
-      last_turn_token_delta: session_tokens.zero_token_totals(),
-      last_turn_reason: None,
-      started_at_ms: started_at_ms,
-      last_event_at_ms: started_at_ms,
-      token_totals: session_tokens.zero_token_totals(),
-    ),
-  )
-  hub.update_status(event_hub, session_id, session_event.Running)
-  hub.publish(
-    event_hub,
-    session_id,
-    session_event.EventPayload(
-      ..session_event.empty_payload(
-        session_event.Lifecycle,
-        session_event.LifecycleName(session_event.StepStarted),
-      ),
-      message: Some(
-        context.step_id <> " attempt " <> int.to_string(context.attempt_index),
-      ),
-    ),
-  )
-  process.send(daemon_subject, YamlStepStarted(session_id, run_id))
-  let result =
-    base.agent_step(
-      issue,
-      context,
-      prompt_mode,
-      attempt_context,
-      effective,
-      tracker_client,
-      fn(update) {
-        process.send(daemon_subject, YamlStepUpdate(session_id, update))
-      },
-      fn(command_subject) {
-        process.send(
-          daemon_subject,
-          YamlStepCommandReady(session_id, command_subject),
-        )
-      },
-      record_pi_session,
-    )
-  case result {
-    Ok(success) -> {
-      hub.update_tokens(event_hub, session_id, success.tokens)
-      hub.finish_session(event_hub, session_id, session_reason.Normal)
-    }
-    Error(failure) -> {
-      case event_publisher.tokens_are_nonzero(failure.tokens) {
-        True -> hub.update_tokens(event_hub, session_id, failure.tokens)
-        False -> Nil
-      }
-      hub.finish_session(event_hub, session_id, session_reason.Failed)
-    }
-  }
-  process.send(daemon_subject, YamlStepFinished(session_id))
-  result
 }
 
 fn yaml_worker_failure(
@@ -4888,63 +4681,24 @@ fn yaml_worker_failure(
   workspace_path: Option(String),
   issue: tracker_issue.Issue,
 ) -> agent_types.WorkerFailure {
-  agent_types.WorkerFailure(
-    reason: error.PiFailed(error.PiProtocolError(reason)),
-    workspace_path: workspace_path,
-    tokens: session_tokens.zero_token_totals(),
-    final_issue: Some(issue),
-  )
+  yaml_workflow_lifecycle.worker_failure(reason, workspace_path, issue)
 }
 
 fn yaml_workflow_failure(
   failure: workflow_run.WorkflowRunFailure,
   issue: tracker_issue.Issue,
 ) -> agent_types.WorkerFailure {
-  let report = workflow_run.failure_report(failure)
-  case workflow_run.failed_command_failure(failure) {
-    Some(#(code, step_id)) ->
-      agent_types.WorkerFailure(
-        reason: error.WorkflowCommandFailed(
-          code: code,
-          step_id: step_id,
-          detail: report,
-        ),
-        workspace_path: failure.run_root,
-        tokens: session_tokens.zero_token_totals(),
-        final_issue: Some(issue),
-      )
-    None ->
-      case failure.agent_reason {
-        Some(reason) ->
-          agent_types.WorkerFailure(
-            reason: reason,
-            workspace_path: failure.run_root,
-            tokens: session_tokens.zero_token_totals(),
-            final_issue: Some(issue),
-          )
-        None -> yaml_worker_failure(report, failure.run_root, issue)
-      }
-  }
+  yaml_workflow_lifecycle.workflow_failure(failure, issue)
 }
 
-fn handle_worker_command_ready(
+fn worker_command_ready_context(
   state: State,
-  issue_id: String,
-  run_id: String,
-  command_subject: process.Subject(worker_command.Command),
-) -> State {
-  let state =
-    run_transition_messages(state, [
-      transition_types.WorkerCommandReady(issue_id, run_id),
-    ])
-  State(
-    ..state,
-    registry: worker_registry.register_worker_command_subject(
-      state.registry,
-      issue_id,
-      run_id,
-      command_subject,
-    ),
+) -> worker_lifecycle.WorkerCommandReadyContext(State) {
+  worker_lifecycle.WorkerCommandReadyContext(
+    state: state,
+    run_transition_messages: run_transition_messages,
+    registry: fn(state) { state.registry },
+    set_registry: fn(state, registry) { State(..state, registry: registry) },
   )
 }
 
@@ -5004,83 +4758,88 @@ fn log_pi_update(
   }
 }
 
-fn handle_worker_update(
+fn worker_update_context(
   state: State,
-  issue_id: String,
-  update: agent_types.RunnerUpdate,
-) -> State {
-  case worker_registry.worker_for_issue(state.registry, issue_id) {
-    Ok(handle) ->
-      event_publisher.worker_update(state.event_hub, handle.session_id, update)
-    Error(Nil) -> Nil
-  }
-  log_worker_update(state, issue_id, update)
+) -> worker_lifecycle.WorkerUpdateContext(State) {
+  worker_lifecycle.WorkerUpdateContext(
+    state: state,
+    registry: fn(state) { state.registry },
+    publish_worker_update: fn(session_id, update) {
+      event_publisher.worker_update(state.event_hub, session_id, update)
+    },
+    log_worker_update: log_worker_update,
+  )
 }
 
-fn handle_scheduled_worker_finished(
+fn scheduled_worker_finished_context(
   state: State,
-  run_id: String,
-  result: Result(
-    workflow_run.WorkflowRunSuccess,
-    workflow_run.WorkflowRunFailure,
-  ),
-) -> State {
-  let state = evaluate_scheduled_jobs(state)
-  case worker_registry.scheduled_worker_for_run(state.registry, run_id) {
-    Error(Nil) -> {
+) -> worker_lifecycle.ScheduledWorkerFinishedContext(State) {
+  worker_lifecycle.ScheduledWorkerFinishedContext(
+    state: state,
+    evaluate_scheduled_jobs: evaluate_scheduled_jobs,
+    scheduled_worker_for_run: fn(state, run_id) {
+      worker_registry.scheduled_worker_for_run(state.registry, run_id)
+    },
+    log_stale: fn(state, run_id) {
       log_state(state, "warn", "scheduled_worker_finished_stale", [
         #("run_id", run_id),
       ])
-      state
-    }
-    Ok(handle) -> {
-      process.demonitor_process(handle.monitor)
-      let state =
-        State(
-          ..state,
-          registry: worker_registry.remove_scheduled_worker_handle(
-            state.registry,
-            handle,
-          ),
-        )
-      case result {
-        Ok(success) -> finish_scheduled_worker_success(state, handle, success)
-        Error(failure) ->
-          finish_scheduled_worker_failure(state, handle, failure)
-      }
-      |> start_pending_scheduled_runs
-    }
-  }
+    },
+    demonitor: process.demonitor_process,
+    remove_scheduled_worker_handle: fn(state, handle) {
+      State(
+        ..state,
+        registry: worker_registry.remove_scheduled_worker_handle(
+          state.registry,
+          handle,
+        ),
+      )
+    },
+    finish_success: fn(state, handle, success) {
+      worker_lifecycle.finish_scheduled_worker_success(
+        scheduled_worker_success_context(state),
+        handle,
+        success,
+      )
+    },
+    finish_failure: fn(state, handle, failure) {
+      worker_lifecycle.finish_scheduled_worker_failure(
+        scheduled_worker_failure_context(state),
+        handle,
+        failure,
+      )
+    },
+    start_pending_scheduled_runs: start_pending_scheduled_runs,
+  )
 }
 
-fn finish_scheduled_worker_success(
+fn scheduled_worker_success_context(
   state: State,
-  handle: worker_registry.ScheduledWorkerHandle,
-  success: workflow_run.WorkflowRunSuccess,
-) -> State {
-  case success.worker_success.final_classification {
-    agent_types.FinalTerminal -> {
+) -> worker_lifecycle.ScheduledWorkerSuccessContext(State) {
+  worker_lifecycle.ScheduledWorkerSuccessContext(
+    state: state,
+    log_worker_exited: fn(state, job_id, run_id, reason) {
       log_state(state, "info", "scheduled_worker_exited", [
-        #("job_id", handle.job_id),
-        #("run_id", handle.run_id),
-        #("reason", "normal"),
+        #("job_id", job_id),
+        #("run_id", run_id),
+        #("reason", reason),
       ])
-      hub.update_tokens(
-        state.event_hub,
-        handle.session_id,
-        success.worker_success.tokens,
-      )
+    },
+    update_tokens: fn(session_id, tokens) {
+      hub.update_tokens(state.event_hub, session_id, tokens)
+    },
+    publish_worker_exited: fn(session_id, reason) {
       event_publisher.lifecycle(
         state.event_hub,
-        handle.session_id,
+        session_id,
         session_event.WorkerExited,
-        Some("normal"),
+        Some(log.truncate(reason, 200)),
       )
-      hub.finish_session(
-        state.event_hub,
-        handle.session_id,
-        session_reason.Normal,
-      )
+    },
+    finish_session: fn(session_id, reason) {
+      hub.finish_session(state.event_hub, session_id, reason)
+    },
+    append_success_ledger: fn(state, handle, success) {
       append_ledger_bodies_best_effort(
         state,
         [
@@ -5097,84 +4856,85 @@ fn finish_scheduled_worker_success(
         ],
         "scheduled_success_append_failed",
       )
-      state
-    }
-    agent_types.FinalActive | agent_types.FinalNonActive ->
-      finish_scheduled_worker_needs_human(state, handle, success)
-  }
-}
-
-fn finish_scheduled_worker_needs_human(
-  state: State,
-  handle: worker_registry.ScheduledWorkerHandle,
-  success: workflow_run.WorkflowRunSuccess,
-) -> State {
-  log_state(state, "warn", "scheduled_worker_needs_human", [
-    #("job_id", handle.job_id),
-    #("run_id", handle.run_id),
-  ])
-  hub.update_tokens(
-    state.event_hub,
-    handle.session_id,
-    success.worker_success.tokens,
-  )
-  event_publisher.lifecycle(
-    state.event_hub,
-    handle.session_id,
-    session_event.WorkerExited,
-    Some("needs_human"),
-  )
-  hub.finish_session(state.event_hub, handle.session_id, session_reason.Failed)
-  append_ledger_bodies_best_effort(
-    state,
-    [
-      record.ScheduledRunFailed(
-        handle.job_id,
-        handle.workflow_id,
-        handle.due_at_ms,
-        handle.run_id,
-        handle.attempt,
-        state.dependencies.now_ms(),
-        "needs_human",
-        True,
-        Some(handle.run_root),
-      ),
-    ],
-    "scheduled_failure_append_failed",
-  )
-  begin_scheduled_failure_report_request(
-    state,
-    scheduled_runtime.needs_human_follow_up(
-      handle.job_id,
-      handle.workflow_id,
-      handle.due_at_ms,
-      handle.run_id,
-      handle.attempt,
-      Some(handle.run_root),
-      Some(handle.session_id),
-    ),
+    },
+    needs_human: fn(state, handle, success) {
+      worker_lifecycle.finish_scheduled_worker_needs_human(
+        scheduled_worker_needs_human_context(state),
+        handle,
+        success,
+      )
+    },
   )
 }
 
-fn finish_scheduled_worker_failure(
+fn scheduled_worker_needs_human_context(
+  state: State,
+) -> worker_lifecycle.ScheduledWorkerNeedsHumanContext(State) {
+  worker_lifecycle.ScheduledWorkerNeedsHumanContext(
+    state: state,
+    log_needs_human: fn(state, job_id, run_id) {
+      log_state(state, "warn", "scheduled_worker_needs_human", [
+        #("job_id", job_id),
+        #("run_id", run_id),
+      ])
+    },
+    update_tokens: fn(session_id, tokens) {
+      hub.update_tokens(state.event_hub, session_id, tokens)
+    },
+    publish_worker_exited: fn(session_id, reason) {
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.WorkerExited,
+        Some(reason),
+      )
+    },
+    finish_failed_session: fn(session_id) {
+      hub.finish_session(state.event_hub, session_id, session_reason.Failed)
+    },
+    append_failure_ledger: scheduled_failure_ledger_append,
+    begin_failure_report_request: begin_scheduled_failure_report_request,
+  )
+}
+
+fn scheduled_worker_failure_context(
+  state: State,
+) -> worker_lifecycle.ScheduledWorkerFailureContext(State) {
+  worker_lifecycle.ScheduledWorkerFailureContext(
+    state: state,
+    log_worker_exited: fn(state, job_id, run_id, reason) {
+      log_state(state, "warn", "scheduled_worker_exited", [
+        #("job_id", job_id),
+        #("run_id", run_id),
+        #("reason", log.truncate(reason, 200)),
+      ])
+    },
+    publish_worker_exited: fn(session_id, reason) {
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.WorkerExited,
+        Some(log.truncate(reason, 200)),
+      )
+    },
+    finish_failed_session: fn(session_id) {
+      hub.finish_session(state.event_hub, session_id, session_reason.Failed)
+    },
+    worker_failure_follow_up: scheduled_worker_failure_follow_up,
+    append_failure_ledger: scheduled_failure_ledger_append,
+    begin_failure_report_request: begin_scheduled_failure_report_request,
+    apply_scheduled_runtime_actions: fn(state, actions) {
+      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
+    },
+  )
+}
+
+fn scheduled_worker_failure_follow_up(
   state: State,
   handle: worker_registry.ScheduledWorkerHandle,
-  failure: workflow_run.WorkflowRunFailure,
-) -> State {
-  let reason = workflow_run.failure_report(failure)
-  log_state(state, "warn", "scheduled_worker_exited", [
-    #("job_id", handle.job_id),
-    #("run_id", handle.run_id),
-    #("reason", log.truncate(reason, 200)),
-  ])
-  event_publisher.lifecycle(
-    state.event_hub,
-    handle.session_id,
-    session_event.WorkerExited,
-    Some(log.truncate(reason, 200)),
-  )
-  hub.finish_session(state.event_hub, handle.session_id, session_reason.Failed)
-  let run_root = option.or(failure.run_root, Some(handle.run_root))
+  reason: String,
+  run_root: Option(String),
+) -> #(State, scheduled_runtime.WorkerFailureFollowUp) {
   let #(runtime, follow_up) =
     scheduled_runtime.worker_failure_follow_up(
       state.scheduled_runtime,
@@ -5189,11 +4949,16 @@ fn finish_scheduled_worker_failure(
       state.workflow.effective.agent.max_retry_attempts,
       state.workflow.effective.agent.max_retry_backoff_ms,
     )
-  let retry_exhausted = case follow_up {
-    scheduled_runtime.WorkerFailureReport(_) -> True
-    scheduled_runtime.WorkerFailureRetry(_) -> False
-  }
-  let state = State(..state, scheduled_runtime: runtime)
+  #(State(..state, scheduled_runtime: runtime), follow_up)
+}
+
+fn scheduled_failure_ledger_append(
+  state: State,
+  handle: worker_registry.ScheduledWorkerHandle,
+  reason: String,
+  retry_exhausted: Bool,
+  run_root: Option(String),
+) -> Nil {
   append_ledger_bodies_best_effort(
     state,
     [
@@ -5211,12 +4976,6 @@ fn finish_scheduled_worker_failure(
     ],
     "scheduled_failure_append_failed",
   )
-  case follow_up {
-    scheduled_runtime.WorkerFailureReport(request) ->
-      begin_scheduled_failure_report_request(state, request)
-    scheduled_runtime.WorkerFailureRetry(actions) ->
-      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
-  }
 }
 
 fn begin_scheduled_failure_report_request(
@@ -5569,38 +5328,35 @@ fn tracker_error_message(err: error.TrackerError) -> String {
   }
 }
 
-fn worker_finished_to_transition(
+fn worker_finished_context(
   state: State,
-  issue_id: String,
   run_id: String,
   result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
-) -> State {
+) -> worker_lifecycle.WorkerFinishedContext(State) {
   let issue_state_name = worker_issue_state_name(state, run_id)
   let cleanup_reason = case result {
     Ok(_) -> None
     Error(failure) -> Some(error.agent_code(failure.reason))
   }
-  let state = evaluate_scheduled_jobs(state)
-  let state =
-    run_transition_messages(state, [
-      transition_types.WorkerFinished(
-        issue_id,
-        run_id,
-        result,
-        transition_lifecycle_context(state),
-      ),
-    ])
-  let state = case cleanup_reason {
-    Some(reason) ->
-      cleanup_orphaned_yaml_children_after_parent_stop(
-        state,
-        run_id,
-        reason,
-        issue_state_name,
-      )
-    None -> state
-  }
-  start_pending_scheduled_runs(state)
+  worker_lifecycle.WorkerFinishedContext(
+    state: state,
+    evaluate_scheduled_jobs: evaluate_scheduled_jobs,
+    run_transition_messages: run_transition_messages,
+    lifecycle_context: transition_lifecycle_context,
+    start_pending_scheduled_runs: fn(state) {
+      let state = case cleanup_reason {
+        Some(reason) ->
+          cleanup_orphaned_yaml_children_after_parent_stop(
+            state,
+            run_id,
+            reason,
+            issue_state_name,
+          )
+        None -> state
+      }
+      start_pending_scheduled_runs(state)
+    },
+  )
 }
 
 fn transition_lifecycle_context(
@@ -5686,38 +5442,45 @@ fn workflow_id_from_status(status: projection.WorkflowRunStatus) -> String {
   }
 }
 
-fn worker_down_to_transition(state: State, down: process.Down) -> State {
-  case down {
-    process.ProcessDown(monitor, _, _) ->
-      case state.remote_client_monitor {
-        Some(remote_client_monitor) if monitor == remote_client_monitor -> {
-          log_state(state, "warn", "remote_client_down", [
-            #("monitor", "remote_client"),
-          ])
-          restart_remote_client_if_enabled(
-            State(..state, remote_client: None, remote_client_monitor: None),
+fn worker_down_context(
+  state: State,
+) -> worker_lifecycle.WorkerDownContext(State) {
+  worker_lifecycle.WorkerDownContext(
+    state: state,
+    remote_client_monitor: state.remote_client_monitor,
+    log_remote_client_down: fn(state) {
+      log_state(state, "warn", "remote_client_down", [
+        #("monitor", "remote_client"),
+      ])
+    },
+    clear_remote_client: fn(state) {
+      State(..state, remote_client: None, remote_client_monitor: None)
+    },
+    restart_remote_client_if_enabled: restart_remote_client_if_enabled,
+    resolve_down: fn(state, monitor) {
+      worker_registry.resolve_down(state.registry, monitor)
+    },
+    handle_registry_down_resolution: fn(state, resolution) {
+      let issue_state_name =
+        worker_issue_state_name_from_resolution(state, resolution)
+      let cleanup_run_id = worker_run_id_from_resolution(resolution)
+      let state =
+        worker_lifecycle.handle_registry_down_resolution(
+          registry_down_resolution_context(state),
+          resolution,
+        )
+      case cleanup_run_id {
+        Some(run_id) ->
+          cleanup_orphaned_yaml_children_after_parent_stop(
+            state,
+            run_id,
+            "worker_down",
+            issue_state_name,
           )
-        }
-        _ -> {
-          let resolution = worker_registry.resolve_down(state.registry, monitor)
-          let issue_state_name =
-            worker_issue_state_name_from_resolution(state, resolution)
-          let cleanup_run_id = worker_run_id_from_resolution(resolution)
-          let state = handle_registry_down_resolution(state, resolution)
-          case cleanup_run_id {
-            Some(run_id) ->
-              cleanup_orphaned_yaml_children_after_parent_stop(
-                state,
-                run_id,
-                "worker_down",
-                issue_state_name,
-              )
-            None -> state
-          }
-        }
+        None -> state
       }
-    process.PortDown(_, _, _) -> state
-  }
+    },
+  )
 }
 
 fn handle_effect_runner_down(state: State, down: process.Down) -> State {
