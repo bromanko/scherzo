@@ -450,7 +450,16 @@ pub fn active_operator_guidance_uses_canonical_execplan_names_test() {
     assert_not_contains(docs, "execplan-implementation-v2")
   })
 
-  assert_contains(read_file("docs/GETTING_STARTED.md"), "      execplan:\n")
+  let getting_started_docs = read_file("docs/GETTING_STARTED.md")
+  assert_contains(getting_started_docs, "  execplan: workflows/execplan.yaml\n")
+  assert_contains(
+    getting_started_docs,
+    "  execplan-revision: workflows/execplan-revision.yaml\n",
+  )
+  assert_contains(
+    getting_started_docs,
+    "  execplan-implementation: workflows/execplan-implementation.yaml\n",
+  )
   assert_contains(
     read_file("docs/review-artifacts.md"),
     "--workflow .scherzo/workflows/execplan-implementation.yaml",

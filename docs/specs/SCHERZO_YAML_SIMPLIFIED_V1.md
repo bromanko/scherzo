@@ -1,10 +1,10 @@
 # Simplified Scherzo YAML v1 schema
 
-Status: draft reference for the planned breaking config cleanup. This schema is not
-implemented yet. The intent is to keep `version: 1` while replacing the current
-public YAML shape with a smaller, task-oriented schema. Existing users are expected
-to update their config files; Scherzo should reject old keys with targeted migration
-messages rather than support both schemas indefinitely.
+Status: reference for the simplified public config schema. This schema keeps
+`version: 1` while replacing the older public YAML shape with a smaller,
+task-oriented schema. Existing users are expected to update their config files;
+Scherzo should reject old keys with targeted migration messages rather than support
+both schemas indefinitely.
 
 ## Design goals
 
