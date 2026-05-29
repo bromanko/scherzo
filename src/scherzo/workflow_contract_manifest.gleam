@@ -170,6 +170,49 @@ pub fn type_matches(
   value.type_ == expected
 }
 
+pub fn artifact_type_matches(
+  value: ManifestValue,
+  expected: workflow_contract.ContractType,
+) -> Bool {
+  case source_artifact_type(value) {
+    None -> True
+    Some(artifact_type) -> artifact_type_string_matches(artifact_type, expected)
+  }
+}
+
+pub fn artifact_type_string_matches(
+  artifact_type: String,
+  expected: workflow_contract.ContractType,
+) -> Bool {
+  case descriptor_artifact_type(expected) {
+    Some(descriptor_type) ->
+      artifact_type == descriptor_type
+      || artifact_type == workflow_contract.type_to_string(expected)
+    None -> artifact_type == workflow_contract.type_to_string(expected)
+  }
+}
+
+pub fn semantic_type_matches(
+  value: ManifestValue,
+  expected: workflow_contract.ContractType,
+) -> Bool {
+  type_matches(value, expected) && artifact_type_matches(value, expected)
+}
+
+pub fn descriptor_artifact_type(
+  type_: workflow_contract.ContractType,
+) -> Option(String) {
+  legacy_descriptor_artifact_type(type_)
+}
+
+pub fn source_artifact_type(value: ManifestValue) -> Option(String) {
+  case value.source {
+    Some(json_value.JObject(entries)) ->
+      source_string_field(entries, "artifact_type")
+    _ -> None
+  }
+}
+
 pub fn validate_required_output_value(
   name: String,
   value: ManifestValue,
@@ -815,16 +858,32 @@ fn legacy_descriptor_artifact_type(
   type_: workflow_contract.ContractType,
 ) -> Option(String) {
   case type_ {
-    workflow_contract.ExecPlan -> Some("exec_plan")
-    workflow_contract.ExecPlanBundle -> Some("exec_plan_bundle")
-    workflow_contract.ImplementationPack -> Some("implementation_pack")
-    workflow_contract.CodeChangeBundle -> Some("code_change_bundle")
+    workflow_contract.ExecPlan -> Some("scherzo.exec_plan.v1")
+    workflow_contract.ExecPlanBundle -> Some("scherzo.exec_plan_bundle.v2")
+    workflow_contract.ImplementationPack ->
+      Some("scherzo.implementation_pack.v2")
+    workflow_contract.CodeChangeBundle -> Some("scherzo.code_change_bundle.v2")
     workflow_contract.CodeChange -> Some("code_change")
     workflow_contract.ArtifactList -> Some("artifact[]")
     workflow_contract.DocumentMarkdown -> Some("document.markdown")
     workflow_contract.Url -> Some("url")
     workflow_contract.GitRef -> Some("git_ref")
     workflow_contract.Text -> None
+  }
+}
+
+fn source_string_field(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Option(String) {
+  case entries {
+    [] -> None
+    [#(current, json_value.JString(value)), ..rest] ->
+      case current == key {
+        True -> Some(value)
+        False -> source_string_field(rest, key)
+      }
+    [_, ..rest] -> source_string_field(rest, key)
   }
 }
 

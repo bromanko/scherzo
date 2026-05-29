@@ -1,16 +1,14 @@
 {
-  "artifact_type": "scherzo.implementation_pack.v2",
+  "artifact_type": "implementation_pack",
   "conflict_policy": "If review doc intent and implementation pack mechanics conflict, stop and request workflow:execplan-revision.",
   "derived_from": {
     "review_doc_path": "test/fixtures/execplan_v2/review-doc.valid.md",
     "review_doc_sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
   },
-  "kind": "file",
-  "media_type": "application/json",
-  "pack_id": "fixture-pack-liv-314",
+  "pack_id": "fixture-pack-liv-314-legacy",
   "provenance": {
     "created_at": "2026-05-15T00:00:00Z",
-    "run_id": "run-1",
+    "run_id": "run-legacy",
     "step_id": "materialize_pack",
     "workflow_id": "execplan"
   },

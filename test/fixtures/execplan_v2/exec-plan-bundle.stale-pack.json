@@ -1,6 +1,26 @@
 {
-  "artifact_type": "exec_plan_bundle",
+  "artifact_type": "scherzo.exec_plan_bundle.v2",
   "bundle_id": "fixture-bundle-stale-pack",
+  "entries": [
+    {
+      "artifact_type": "scherzo.exec_plan.v1",
+      "bytes": 1767,
+      "kind": "file",
+      "media_type": "text/markdown",
+      "name": "plan",
+      "ref": "runs/run-1/outputs/plan.md",
+      "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+    },
+    {
+      "artifact_type": "scherzo.implementation_pack.v2",
+      "bytes": 2155,
+      "kind": "file",
+      "media_type": "application/json",
+      "name": "implementation_pack",
+      "ref": "runs/run-1/outputs/implementation_pack.json",
+      "sha256": "dbcb84d078e47839e8da760b1208e6b5606bce45ab3228a24a92e0b5afd21545"
+    }
+  ],
   "implementation_handoff": {
     "bundle_ref": "runs/run-1/outputs/exec_plan_bundle.json",
     "issue_identifier": "LIV-315",
@@ -13,6 +33,14 @@
     "ref": "runs/run-1/outputs/implementation_pack.json",
     "schema": ".scherzo/workflows/schemas/implementation-pack.v2.schema.json",
     "sha256": "dbcb84d078e47839e8da760b1208e6b5606bce45ab3228a24a92e0b5afd21545"
+  },
+  "kind": "artifact_set",
+  "media_type": "application/json",
+  "plan": {
+    "bytes": 1767,
+    "media_type": "text/markdown",
+    "ref": "runs/run-1/outputs/plan.md",
+    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
   },
   "review_doc": {
     "bytes": 1767,

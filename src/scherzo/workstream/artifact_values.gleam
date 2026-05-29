@@ -155,7 +155,7 @@ fn task_ref_to_value(value: types.TaskRef) -> json_value.JsonValue {
 }
 
 fn snapshot_to_value(value: types.ArtifactSnapshot) -> json_value.JsonValue {
-  json_value.JObject([
+  let base = [
     #("ref", json_value.JString(value.ref)),
     #("sha256", json_value.JString(value.sha256)),
     #("bytes", json_value.JInt(value.bytes)),
@@ -165,7 +165,9 @@ fn snapshot_to_value(value: types.ArtifactSnapshot) -> json_value.JsonValue {
     #("producer", producer_to_value(value.producer)),
     #("validation", validation_to_value(value.validation)),
     #("summary", json_value.JString(value.summary)),
-  ])
+  ]
+  let base = append_optional_string(base, "artifact_type", value.artifact_type)
+  json_value.JObject(base)
 }
 
 fn handoff_output_to_value(value: types.HandoffOutput) -> json_value.JsonValue {

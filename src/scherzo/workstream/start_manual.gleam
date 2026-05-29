@@ -3,6 +3,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/state/artifact_store as state_artifact_store
 import scherzo/workflow_contract
+import scherzo/workflow_contract_descriptor_compat
 import scherzo/workstream/artifact_store
 import scherzo/workstream/start_key
 
@@ -158,9 +159,9 @@ fn contract_type_for(
         Some(contract) ->
           case mapped_input_spec_named(contract.inputs, manual.name) {
             Ok(spec) -> Ok(spec.type_)
-            Error(Nil) -> contract_type_from_name(manual.name)
+            Error(Nil) -> contract_type_from_manual(manual)
           }
-        None -> contract_type_from_name(manual.name)
+        None -> contract_type_from_manual(manual)
       }
   }
 }
@@ -177,11 +178,19 @@ fn mapped_input_spec_named(
   |> list.first
 }
 
-fn contract_type_from_name(
-  name: String,
+fn contract_type_from_manual(
+  manual: ArtifactInput,
 ) -> Result(workflow_contract.ContractType, Error) {
-  workflow_contract.type_from_string(name)
-  |> result.map_error(contract_type_error(name))
+  case workflow_contract.type_from_string(manual.artifact_type) {
+    Ok(type_) -> Ok(type_)
+    Error(_) ->
+      workflow_contract.type_from_string(
+        workflow_contract_descriptor_compat.legacy_artifact_type_name(
+          manual.artifact_type,
+        ),
+      )
+      |> result.map_error(contract_type_error(manual.name))
+  }
 }
 
 fn contract_type_error(
