@@ -119,6 +119,49 @@ pub fn decision_fixture_round_trip_test() {
   )
 }
 
+pub fn decision_decoder_rejects_empty_inputs_test() {
+  assert_inline_error_code(
+    decision_with_inputs("[]"),
+    artifacts.decode_decision,
+    "workstream_inputs_empty",
+  )
+}
+
+pub fn decision_decoder_validation_branches_return_stable_error_codes_test() {
+  assert_inline_error_code(
+    fixture_text("test/fixtures/workstream/specs/decision_valid_approve.json")
+      |> string.replace(
+        each: "  \"action_id\": \"implement_exec_plan\",\n",
+        with: "",
+      ),
+    artifacts.decode_decision,
+    "workstream_action_id_missing",
+  )
+  assert_inline_error_code(
+    fixture_text("test/fixtures/workstream/specs/decision_valid_approve.json")
+      |> string.replace(
+        each: "\"decided_at_ms\": 1770000000000",
+        with: "\"decided_at_ms\": 0",
+      ),
+    artifacts.decode_decision,
+    "workstream_decided_at_ms_invalid",
+  )
+  assert_inline_error_code(
+    decision_with_inputs("[false]"),
+    artifacts.decode_decision,
+    "workstream_input_invalid",
+  )
+  assert_inline_error_code(
+    fixture_text("test/fixtures/workstream/specs/decision_valid_approve.json")
+      |> string.replace(
+        each: "\"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        with: "\"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"",
+      ),
+    artifacts.decode_decision,
+    "workstream_snapshot_hash_mismatch",
+  )
+}
+
 pub fn input_bundle_fixture_round_trip_test() {
   assert_round_trip(
     "test/fixtures/workstream/specs/input_bundle_valid.json",
@@ -310,6 +353,14 @@ pub fn input_bundle_metadata_fields_reject_invalid_values_test() {
   )
 }
 
+fn decision_with_inputs(inputs: String) -> String {
+  fixture_text("test/fixtures/workstream/specs/decision_valid_approve.json")
+  |> string.replace(
+    each: "  \"inputs\": [\n    {\n      \"name\": \"exec_plan_bundle\",\n      \"ref\": \"workstream-artifacts/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json\",\n      \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n    }\n  ]",
+    with: "  \"inputs\": " <> inputs,
+  )
+}
+
 fn input_bundle_with_binding_field(field: String) -> String {
   fixture_text("test/fixtures/workstream/specs/input_bundle_valid.json")
   |> string.replace(
@@ -394,6 +445,31 @@ pub fn validator_foundation_accepts_decision_fixture_test() {
       validator_context(),
       [],
     )
+}
+
+pub fn validator_foundation_rejects_empty_decision_inputs_test() {
+  let spec =
+    foundation.ArtifactValidationSpec(
+      artifact_type: types.decision_artifact_type,
+      artifact_name: "decision",
+      required_keys: ["schema_version", "artifact_type", "summary"],
+      validators: [
+        schema_validator(
+          "decision_shape",
+          ".scherzo/workflows/schemas/workstream/decision.v1.schema.json",
+        ),
+      ],
+    )
+
+  let assert Error(error) =
+    foundation.validate_json_artifact(
+      spec,
+      decision_with_inputs("[]"),
+      validator_context(),
+      [],
+    )
+  assert foundation.error_code(error)
+    == "structured_output_json_schema_rejected"
 }
 
 pub fn validator_foundation_rejects_invalid_handoff_fixture_test() {

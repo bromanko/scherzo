@@ -10,7 +10,9 @@ import scherzo/state/record
 import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
 import scherzo/workstream/artifacts
+import scherzo/workstream/decision
 import scherzo/workstream/ledger
+import scherzo/workstream/projection as workstream_projection
 import scherzo/workstream/start
 import scherzo/workstream/start_key
 import scherzo/workstream/types
@@ -93,6 +95,123 @@ pub fn start_from_recorded_input_bundle_queues_without_handoff_contents_test() {
   assert second.action_id == "rerun_from_bundle"
 }
 
+pub fn gated_start_from_input_bundle_requires_exact_approval_test() {
+  let root = "test/tmp/workstream-start/gated-input-bundle-approval"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(projected) = load_projection(root)
+  let assert Ok(start.Queued(bundle_source)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "prepare_bundle",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+  let assert Ok(Nil) =
+    write_recorded_next_action_for(checkpoint, "rerun_from_bundle")
+  let assert Ok(projected_with_gate) = load_projection(root)
+
+  let assert Error(missing_error) =
+    start.from_input_bundle(
+      "execplan-implementation",
+      "rerun_from_bundle",
+      bundle_source.input_bundle_ref,
+      bundle_source.input_bundle_sha256,
+      [],
+      projected_with_gate,
+      checkpoint,
+    )
+  let start.StartError(missing_code, _) = missing_error
+  assert missing_code == "gate_decision_missing"
+
+  let assert Ok(_) =
+    write_decision_for_input_bundle(
+      checkpoint,
+      projected_with_gate,
+      bundle_source.input_bundle_ref,
+      "rerun_from_bundle",
+      "approve",
+    )
+  let assert Ok(after_decision) = load_projection(root)
+  let assert Ok(start.Queued(approved)) =
+    start.from_input_bundle(
+      "execplan-implementation",
+      "rerun_from_bundle",
+      bundle_source.input_bundle_ref,
+      bundle_source.input_bundle_sha256,
+      [],
+      after_decision,
+      checkpoint,
+    )
+
+  assert approved.action_id == "rerun_from_bundle"
+  assert approved.input_bundle_ref == bundle_source.input_bundle_ref
+}
+
+pub fn stale_input_bundle_gate_decision_does_not_authorize_new_inputs_test() {
+  let root = "test/tmp/workstream-start/gated-input-bundle-stale"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(old_handoff) =
+    write_recorded_handoff_payload(checkpoint, "handoff-1", "{\"bundle\":1}")
+  let assert Ok(projected) = load_projection(root)
+  let assert Ok(start.Queued(old_bundle)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "prepare_bundle",
+      old_handoff.ref,
+      old_handoff.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+  let assert Ok(Nil) =
+    write_recorded_next_action_for(checkpoint, "rerun_from_bundle")
+  let assert Ok(projected_with_gate) = load_projection(root)
+  let assert Ok(_) =
+    write_decision_for_input_bundle(
+      checkpoint,
+      projected_with_gate,
+      old_bundle.input_bundle_ref,
+      "rerun_from_bundle",
+      "approve",
+    )
+  let assert Ok(new_handoff) =
+    write_recorded_handoff_payload(checkpoint, "handoff-2", "{\"bundle\":2}")
+  let assert Ok(after_new_handoff) = load_projection(root)
+  let assert Ok(start.Queued(new_bundle)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "prepare_bundle_new",
+      new_handoff.ref,
+      new_handoff.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      after_new_handoff,
+      checkpoint,
+    )
+  let assert Ok(after_new_bundle) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_input_bundle(
+      "execplan-implementation",
+      "rerun_from_bundle",
+      new_bundle.input_bundle_ref,
+      new_bundle.input_bundle_sha256,
+      [],
+      after_new_bundle,
+      checkpoint,
+    )
+  let start.StartError(code, _) = error
+  assert code == "gate_decision_stale"
+}
+
 pub fn duplicate_start_from_same_handoff_returns_duplicate_test() {
   let root = "test/tmp/workstream-start/duplicate-handoff"
   test_helpers.reset_dir(root)
@@ -126,6 +245,171 @@ pub fn duplicate_start_from_same_handoff_returns_duplicate_test() {
 
   assert second.phase_run_id == first.phase_run_id
   assert second.idempotency_key == first.idempotency_key
+}
+
+pub fn gated_start_requires_approve_decision_for_exact_snapshot_test() {
+  let root = "test/tmp/workstream-start/gated-approval"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(Nil) = write_recorded_next_action(checkpoint)
+  let assert Ok(projected_with_gate) = load_projection(root)
+
+  let assert Error(missing_error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected_with_gate,
+      checkpoint,
+    )
+  let start.StartError(missing_code, _) = missing_error
+  assert missing_code == "gate_decision_missing"
+
+  let assert Ok(_) =
+    write_decision_for_handoff(
+      checkpoint,
+      projected_with_gate,
+      handoff_snapshot,
+      "approve",
+    )
+  let assert Ok(after_decision) = load_projection(root)
+  let assert Ok(start.Queued(outcome)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      after_decision,
+      checkpoint,
+    )
+
+  assert outcome.workstream_id == "linear:LIV-461"
+  let assert Ok(reloaded) = load_projection(root)
+  let assert Ok(workstream) = dict.get(reloaded.workstreams, "linear:LIV-461")
+  let inspection =
+    workstream_projection.inspect(state_artifact_store.new(root), workstream)
+  let assert [recorded_decision] = inspection.decisions
+  assert recorded_decision.action_id == "implement_exec_plan"
+  assert recorded_decision.gate_id == "human_review"
+  assert recorded_decision.kind == "approve"
+  let assert [decision_input] = recorded_decision.inputs
+  assert decision_input.name == "exec_plan_bundle"
+}
+
+pub fn stale_gate_decision_does_not_authorize_new_snapshot_hash_test() {
+  let root = "test/tmp/workstream-start/gated-stale"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(old_handoff) =
+    write_recorded_handoff_payload(checkpoint, "handoff-1", "{\"bundle\":1}")
+  let assert Ok(Nil) = write_recorded_next_action(checkpoint)
+  let assert Ok(projected_with_gate) = load_projection(root)
+  let assert Ok(_) =
+    write_decision_for_handoff(
+      checkpoint,
+      projected_with_gate,
+      old_handoff,
+      "approve",
+    )
+  let assert Ok(new_handoff) =
+    write_recorded_handoff_payload(checkpoint, "handoff-2", "{\"bundle\":2}")
+  let assert Ok(after_new_handoff) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      new_handoff.ref,
+      new_handoff.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      after_new_handoff,
+      checkpoint,
+    )
+  let start.StartError(code, _) = error
+  assert code == "gate_decision_stale"
+}
+
+pub fn request_changes_decision_does_not_satisfy_gate_test() {
+  let root = "test/tmp/workstream-start/gated-request-changes"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(Nil) = write_recorded_next_action(checkpoint)
+  let assert Ok(projected_with_gate) = load_projection(root)
+  let assert Ok(_) =
+    write_decision_for_handoff(
+      checkpoint,
+      projected_with_gate,
+      handoff_snapshot,
+      "request_changes",
+    )
+  let assert Ok(after_decision) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      after_decision,
+      checkpoint,
+    )
+  let start.StartError(code, _) = error
+  assert code == "gate_decision_not_approved"
+}
+
+pub fn newer_nonapproval_vetoes_supplied_older_approval_test() {
+  let root = "test/tmp/workstream-start/gated-newer-nonapproval"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(Nil) = write_recorded_next_action(checkpoint)
+  let assert Ok(projected_with_gate) = load_projection(root)
+  let assert Ok(approved) =
+    write_decision_for_handoff_at(
+      checkpoint,
+      projected_with_gate,
+      handoff_snapshot,
+      "approve",
+      124,
+    )
+  let assert Ok(after_approval) = load_projection(root)
+  let assert Ok(_) =
+    write_decision_for_handoff_at(
+      checkpoint,
+      after_approval,
+      handoff_snapshot,
+      "request_changes",
+      125,
+    )
+  let assert Ok(after_nonapproval) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [approved.artifact_id],
+      Some(exec_plan_bundle_contract()),
+      after_nonapproval,
+      checkpoint,
+    )
+  let start.StartError(code, _) = error
+  assert code == "gate_decision_not_approved"
+
+  let assert Ok(workstream) =
+    dict.get(after_nonapproval.workstreams, "linear:LIV-461")
+  assert dict.size(workstream.queued_phase_runs) == 0
 }
 
 pub fn idempotency_key_distinguishes_delimiter_containing_inputs_test() {
@@ -247,6 +531,140 @@ pub fn manual_start_snapshots_artifacts_and_rejects_conflicting_retry_test() {
     simplifile.file_info(root <> "/.scherzo-state/artifacts/" <> rejected_ref)
 }
 
+pub fn gated_manual_start_requires_exact_approval_test() {
+  let root = "test/tmp/workstream-start/gated-manual-approval"
+  let repo = root <> "/repo"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let store = state_artifact_store.new(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/docs")
+  let assert Ok(Nil) =
+    simplifile.write(repo <> "/docs/plan.json", "{\"plan\":1}")
+  let manual =
+    start.ManualStartContext(
+      issue_id: "issue-461",
+      issue_identifier: "LIV-461",
+      issue_url: None,
+      reason: "operator supplied reviewed plan",
+    )
+  let artifact =
+    start.ManualArtifactInput(
+      name: "exec_plan_bundle",
+      artifact_type: "scherzo.exec_plan_bundle.v1",
+      original_path: "docs/plan.json",
+      contract_type: None,
+      media_type: None,
+    )
+  let assert Ok(Nil) = write_workstream_created(checkpoint)
+  let assert Ok(Nil) = write_recorded_next_action(checkpoint)
+  let assert Ok(projected_with_gate) = load_projection(root)
+
+  let assert Error(missing_error) =
+    start.from_manual(
+      "execplan-implementation",
+      "implement_exec_plan",
+      [],
+      manual,
+      [artifact],
+      Some(exec_plan_bundle_contract()),
+      repo,
+      store,
+      projected_with_gate,
+      checkpoint,
+    )
+  let start.StartError(missing_code, _) = missing_error
+  assert missing_code == "gate_decision_missing"
+
+  let assert Ok(manual_snapshot) =
+    write_manual_snapshot(checkpoint, "{\"plan\":1}")
+  let assert Ok(_) =
+    write_decision_for_manual_snapshot(
+      checkpoint,
+      projected_with_gate,
+      manual_snapshot,
+      "implement_exec_plan",
+      "approve",
+    )
+  let assert Ok(after_decision) = load_projection(root)
+  let assert Ok(start.Queued(outcome)) =
+    start.from_manual(
+      "execplan-implementation",
+      "implement_exec_plan",
+      [],
+      manual,
+      [artifact],
+      Some(exec_plan_bundle_contract()),
+      repo,
+      store,
+      after_decision,
+      checkpoint,
+    )
+
+  assert outcome.action_id == "implement_exec_plan"
+  assert outcome.workstream_id == "linear:LIV-461"
+}
+
+pub fn stale_manual_gate_decision_does_not_authorize_changed_file_test() {
+  let root = "test/tmp/workstream-start/gated-manual-stale"
+  let repo = root <> "/repo"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let store = state_artifact_store.new(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/docs")
+  let assert Ok(Nil) =
+    simplifile.write(repo <> "/docs/plan.json", "{\"plan\":1}")
+  let manual =
+    start.ManualStartContext(
+      issue_id: "issue-461",
+      issue_identifier: "LIV-461",
+      issue_url: None,
+      reason: "operator supplied reviewed plan",
+    )
+  let artifact =
+    start.ManualArtifactInput(
+      name: "exec_plan_bundle",
+      artifact_type: "scherzo.exec_plan_bundle.v1",
+      original_path: "docs/plan.json",
+      contract_type: None,
+      media_type: None,
+    )
+  let assert Ok(Nil) = write_workstream_created(checkpoint)
+  let assert Ok(Nil) = write_recorded_next_action(checkpoint)
+  let assert Ok(projected_with_gate) = load_projection(root)
+  let assert Ok(manual_snapshot) =
+    write_manual_snapshot(checkpoint, "{\"plan\":1}")
+  let assert Ok(_) =
+    write_decision_for_manual_snapshot(
+      checkpoint,
+      projected_with_gate,
+      manual_snapshot,
+      "implement_exec_plan",
+      "approve",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(repo <> "/docs/plan.json", "{\"plan\":2}")
+  let assert Ok(after_decision) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_manual(
+      "execplan-implementation",
+      "implement_exec_plan",
+      [],
+      manual,
+      [artifact],
+      Some(exec_plan_bundle_contract()),
+      repo,
+      store,
+      after_decision,
+      checkpoint,
+    )
+  let start.StartError(code, _) = error
+  assert code == "gate_decision_stale"
+  let rejected_ref = start_key.snapshot_ref(hash.sha256_hex("{\"plan\":2}"))
+  let assert Error(simplifile.Enoent) =
+    simplifile.file_info(root <> "/.scherzo-state/artifacts/" <> rejected_ref)
+}
+
 pub fn stale_projection_conflicting_manual_start_is_rejected_at_append_test() {
   let root = "test/tmp/workstream-start/stale-manual-conflict"
   let repo = root <> "/repo"
@@ -317,11 +735,22 @@ fn write_recorded_handoff(
   workflow_checkpoint.ArtifactWritten,
   workflow_checkpoint.CheckpointError,
 ) {
+  write_recorded_handoff_payload(checkpoint, "handoff-1", "{\"bundle\":true}")
+}
+
+fn write_recorded_handoff_payload(
+  checkpoint: workflow_checkpoint.Writer,
+  handoff_id: String,
+  output_json: String,
+) -> Result(
+  workflow_checkpoint.ArtifactWritten,
+  workflow_checkpoint.CheckpointError,
+) {
   let assert Ok(output_snapshot) =
     checkpoint.snapshot_workstream_bytes(
       "workstream/outputs/exec-plan-bundle.json",
       "application/json",
-      bit_array.from_string("{\"bundle\":true}"),
+      bit_array.from_string(output_json),
     )
   let artifact_snapshot =
     types.ArtifactSnapshot(
@@ -345,7 +774,7 @@ fn write_recorded_handoff(
     )
   let handoff =
     types.HandoffArtifact(
-      artifact_id: "handoff-1",
+      artifact_id: handoff_id,
       workstream_id: "linear:LIV-461",
       phase_id: "execplan",
       summary: "handoff",
@@ -361,7 +790,7 @@ fn write_recorded_handoff(
   let handoff_json = artifacts.handoff_to_string(handoff)
   let assert Ok(snapshot) =
     checkpoint.snapshot_workstream_bytes(
-      "workstream/handoffs/handoff-1.json",
+      "workstream/handoffs/" <> handoff_id <> ".json",
       "application/json",
       bit_array.from_string(handoff_json),
     )
@@ -376,13 +805,13 @@ fn write_recorded_handoff(
     ledger.workstream_handoff_recorded(
       123,
       "linear:LIV-461",
-      "handoff-1",
+      handoff_id,
       snapshot.ref,
       snapshot.sha256,
       snapshot.bytes,
       "execplan",
       "run-1",
-      "handoff-1",
+      handoff_id,
     )
   let assert Ok(_) = checkpoint.append_workstream_record_idempotent(created)
   let assert Ok(_) =
@@ -392,6 +821,203 @@ fn write_recorded_handoff(
     sha256: snapshot.sha256,
     bytes: snapshot.bytes,
   ))
+}
+
+fn write_recorded_next_action(
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(Nil, workflow_checkpoint.CheckpointError) {
+  write_recorded_next_action_for(checkpoint, "implement_exec_plan")
+}
+
+fn write_recorded_next_action_for(
+  checkpoint: workflow_checkpoint.Writer,
+  action_id: String,
+) -> Result(Nil, workflow_checkpoint.CheckpointError) {
+  let artifact_id = "next-action-" <> action_id
+  let next_action =
+    types.NextActionArtifact(
+      artifact_id: artifact_id,
+      workstream_id: "linear:LIV-461",
+      action_id: action_id,
+      workflow_id: "execplan-implementation",
+      state: "available",
+      priority: 1,
+      inputs: ["exec_plan_bundle"],
+      requires_gate: Some("human_review"),
+      auto_enqueue: False,
+    )
+  let contents = artifacts.next_action_to_string(next_action)
+  let assert Ok(snapshot) =
+    checkpoint.snapshot_workstream_bytes(
+      "workstream/next-actions/" <> action_id <> ".json",
+      "application/json",
+      bit_array.from_string(contents),
+    )
+  let record =
+    ledger.workstream_artifact_recorded(
+      123,
+      "linear:LIV-461",
+      artifact_id,
+      types.next_action_artifact_type,
+      snapshot.ref,
+      snapshot.sha256,
+      snapshot.bytes,
+      snapshot.original_path,
+      "artifact[]",
+      snapshot.media_type,
+      "execplan",
+      "run-1",
+      "next_action",
+      artifact_id,
+    )
+  let assert Ok(_) = checkpoint.append_workstream_record_idempotent(record)
+  Ok(Nil)
+}
+
+fn write_workstream_created(
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(Nil, workflow_checkpoint.CheckpointError) {
+  let created =
+    ledger.workstream_created(
+      123,
+      "linear:LIV-461",
+      record.linear_task_ref_fields("issue-461", Some("LIV-461"), None),
+      "workstream_manual_start:linear:LIV-461",
+    )
+  let assert Ok(_) = checkpoint.append_workstream_record_idempotent(created)
+  Ok(Nil)
+}
+
+fn write_manual_snapshot(
+  checkpoint: workflow_checkpoint.Writer,
+  contents: String,
+) -> Result(
+  workflow_checkpoint.ArtifactWritten,
+  workflow_checkpoint.CheckpointError,
+) {
+  let assert Ok(snapshot) =
+    checkpoint.snapshot_workstream_bytes(
+      "docs/plan.json",
+      "application/json",
+      bit_array.from_string(contents),
+    )
+  Ok(workflow_checkpoint.ArtifactWritten(
+    ref: snapshot.ref,
+    sha256: snapshot.sha256,
+    bytes: snapshot.bytes,
+  ))
+}
+
+fn write_decision_for_handoff(
+  checkpoint: workflow_checkpoint.Writer,
+  projected: projection.Projection,
+  handoff_snapshot: workflow_checkpoint.ArtifactWritten,
+  kind: String,
+) -> Result(decision.RecordedDecision, decision.DecisionError) {
+  write_decision_for_handoff_at(
+    checkpoint,
+    projected,
+    handoff_snapshot,
+    kind,
+    124,
+  )
+}
+
+fn write_decision_for_handoff_at(
+  checkpoint: workflow_checkpoint.Writer,
+  projected: projection.Projection,
+  handoff_snapshot: workflow_checkpoint.ArtifactWritten,
+  kind: String,
+  decided_at_ms: Int,
+) -> Result(decision.RecordedDecision, decision.DecisionError) {
+  let assert Ok(handoff_json) = checkpoint.read_artifact(handoff_snapshot.ref)
+  let assert Ok(handoff) = artifacts.decode_handoff(handoff_json)
+  let assert [output] = handoff.outputs
+  decision.record(
+    checkpoint,
+    projected,
+    decision.RecordRequest(
+      workstream_id: handoff.workstream_id,
+      action_id: "implement_exec_plan",
+      gate_id: "human_review",
+      kind: kind,
+      decided_at_ms: decided_at_ms,
+      decided_by: "reviewer@example.invalid",
+      rationale: "reviewed exact snapshot",
+      inputs: [
+        decision.DecisionInput(
+          name: output.name,
+          ref: output.snapshot.ref,
+          sha256: output.snapshot.sha256,
+        ),
+      ],
+      summary: kind <> " exact snapshot",
+    ),
+  )
+}
+
+fn write_decision_for_input_bundle(
+  checkpoint: workflow_checkpoint.Writer,
+  projected: projection.Projection,
+  input_bundle_ref: String,
+  action_id: String,
+  kind: String,
+) -> Result(decision.RecordedDecision, decision.DecisionError) {
+  let assert Ok(bundle_json) = checkpoint.read_artifact(input_bundle_ref)
+  let assert Ok(bundle) = artifacts.decode_input_bundle(bundle_json)
+  let assert [binding] = bundle.inputs
+  let assert Some(sha256) = binding.sha256
+  decision.record(
+    checkpoint,
+    projected,
+    decision.RecordRequest(
+      workstream_id: bundle.workstream_id,
+      action_id: action_id,
+      gate_id: "human_review",
+      kind: kind,
+      decided_at_ms: 124,
+      decided_by: "reviewer@example.invalid",
+      rationale: "reviewed exact input bundle snapshots",
+      inputs: [
+        decision.DecisionInput(
+          name: binding.name,
+          ref: binding.value_ref,
+          sha256: sha256,
+        ),
+      ],
+      summary: kind <> " exact input bundle snapshots",
+    ),
+  )
+}
+
+fn write_decision_for_manual_snapshot(
+  checkpoint: workflow_checkpoint.Writer,
+  projected: projection.Projection,
+  snapshot: workflow_checkpoint.ArtifactWritten,
+  action_id: String,
+  kind: String,
+) -> Result(decision.RecordedDecision, decision.DecisionError) {
+  decision.record(
+    checkpoint,
+    projected,
+    decision.RecordRequest(
+      workstream_id: "linear:LIV-461",
+      action_id: action_id,
+      gate_id: "human_review",
+      kind: kind,
+      decided_at_ms: 124,
+      decided_by: "reviewer@example.invalid",
+      rationale: "reviewed exact manual snapshot",
+      inputs: [
+        decision.DecisionInput(
+          name: "exec_plan_bundle",
+          ref: snapshot.ref,
+          sha256: snapshot.sha256,
+        ),
+      ],
+      summary: kind <> " exact manual snapshot",
+    ),
+  )
 }
 
 fn exec_plan_bundle_contract() -> workflow_contract.Contract {

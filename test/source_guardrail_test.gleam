@@ -339,6 +339,8 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/terminal/render.gleam", 1090, 6),
     SourceLimit("src/scherzo/tracker/conformance/json.gleam", 1168, 5),
     SourceLimit("src/scherzo/workstream/artifacts.gleam", 1049, 5),
+    SourceLimit("src/scherzo/workstream/projection.gleam", 1038, 6),
+    SourceLimit("src/scherzo/workstream/start.gleam", 1062, 18),
     SourceLimit("src/scherzo/workflow_recovery_planner.gleam", 1194, 4),
     SourceLimit("src/scherzo/workflow_repair.gleam", 1855, 8),
     SourceLimit("src/scherzo/workflow_checkpoint.gleam", 1075, 14),

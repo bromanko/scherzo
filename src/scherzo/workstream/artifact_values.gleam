@@ -59,10 +59,17 @@ pub fn decision_to_value(
     #("artifact_type", json_value.JString(types.decision_artifact_type)),
     #("artifact_id", json_value.JString(value.artifact_id)),
     #("workstream_id", json_value.JString(value.workstream_id)),
+    #("action_id", json_value.JString(value.action_id)),
+    #("gate_id", json_value.JString(value.gate_id)),
     #("kind", json_value.JString(value.kind)),
-    #("summary", json_value.JString(value.summary)),
+    #("decided_at_ms", json_value.JInt(value.decided_at_ms)),
     #("decided_by", json_value.JString(value.decided_by)),
     #("rationale", json_value.JString(value.rationale)),
+    #(
+      "inputs",
+      json_value.JArray(list.map(value.inputs, decision_input_to_value)),
+    ),
+    #("summary", json_value.JString(value.summary)),
   ])
 }
 
@@ -165,6 +172,16 @@ fn handoff_output_to_value(value: types.HandoffOutput) -> json_value.JsonValue {
   json_value.JObject([
     #("name", json_value.JString(value.name)),
     #("snapshot", snapshot_to_value(value.snapshot)),
+  ])
+}
+
+fn decision_input_to_value(
+  value: types.DecisionInputRef,
+) -> json_value.JsonValue {
+  json_value.JObject([
+    #("name", json_value.JString(value.name)),
+    #("ref", json_value.JString(value.ref)),
+    #("sha256", json_value.JString(value.sha256)),
   ])
 }
 

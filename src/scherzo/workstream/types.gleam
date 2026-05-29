@@ -91,14 +91,22 @@ pub type HandoffArtifact {
   )
 }
 
+pub type DecisionInputRef {
+  DecisionInputRef(name: String, ref: String, sha256: String)
+}
+
 pub type DecisionArtifact {
   DecisionArtifact(
     artifact_id: String,
     workstream_id: String,
+    action_id: String,
+    gate_id: String,
     kind: String,
-    summary: String,
+    decided_at_ms: Int,
     decided_by: String,
     rationale: String,
+    inputs: List(DecisionInputRef),
+    summary: String,
   )
 }
 

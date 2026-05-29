@@ -9,6 +9,8 @@ import scherzo/state/ledger
 import scherzo/state/projection as state_projection
 import scherzo/state/record
 import scherzo/terminal/sanitize as terminal_sanitize
+import scherzo/workflow_checkpoint
+import scherzo/workstream/decision
 import scherzo/workstream/projection as workstream_projection
 import scherzo/workstream/projection_json as workstream_projection_json
 import scherzo/workstream/projection_snapshot as workstream_projection_snapshot
@@ -26,10 +28,26 @@ pub type Command {
     json_output: Bool,
     workstream_ref: String,
   )
+  Decision(
+    control_path: Option(String),
+    root: Option(String),
+    json_output: Bool,
+    kind: String,
+    workstream_id: String,
+    action_id: String,
+    gate_id: String,
+    actor: String,
+    rationale: String,
+    inputs: List(decision.DecisionInput),
+  )
 }
 
 type Output {
   Output(line: fn(String) -> Nil, inline: fn(String) -> Nil)
+}
+
+type ParseDecisionError {
+  ParseDecisionError(message: String)
 }
 
 pub fn parse(
@@ -60,12 +78,77 @@ pub fn parse(
         json_output: json_output,
         workstream_ref: workstream_ref,
       ))
+    [
+      "decision",
+      kind,
+      workstream_id,
+      action_id,
+      gate_id,
+      actor,
+      rationale,
+      ..input_specs
+    ] ->
+      case decision.command_kind(kind), parse_decision_inputs(input_specs) {
+        Ok(kind), Ok(inputs) ->
+          Ok(Decision(
+            control_path: control_path,
+            root: root,
+            json_output: json_output,
+            kind: kind,
+            workstream_id: workstream_id,
+            action_id: action_id,
+            gate_id: gate_id,
+            actor: actor,
+            rationale: rationale,
+            inputs: inputs,
+          ))
+        Error(err), _ -> Error(decision.error_message(err))
+        _, Error(err) -> Error(parse_decision_error_message(err))
+      }
     _ -> Error(usage())
   }
 }
 
 pub fn usage() -> String {
-  "workstream usage: workstream list [task-ref] | show <workstream-id-or-task-ref>"
+  "workstream usage: workstream list [task-ref] | show <workstream-id-or-task-ref> | decision <approve|request-changes|reject|deviate> <workstream-id> <action-id> <gate-id> <actor> <rationale> <name>:<snapshot-ref>:<sha256>..."
+}
+
+fn parse_decision_inputs(
+  specs: List(String),
+) -> Result(List(decision.DecisionInput), ParseDecisionError) {
+  case specs {
+    [] ->
+      Error(ParseDecisionError(
+        "workstream decision requires at least one input snapshot",
+      ))
+    _ -> parse_decision_inputs_loop(specs, [])
+  }
+}
+
+fn parse_decision_inputs_loop(
+  specs: List(String),
+  acc: List(decision.DecisionInput),
+) -> Result(List(decision.DecisionInput), ParseDecisionError) {
+  case specs {
+    [] -> Ok(list.reverse(acc))
+    [spec, ..rest] ->
+      case string.split(spec, on: ":") {
+        [name, ref, sha256] ->
+          parse_decision_inputs_loop(rest, [
+            decision.DecisionInput(name: name, ref: ref, sha256: sha256),
+            ..acc
+          ])
+        _ ->
+          Error(ParseDecisionError(
+            "decision input must be <name>:<snapshot-ref>:<sha256>: " <> spec,
+          ))
+      }
+  }
+}
+
+fn parse_decision_error_message(error: ParseDecisionError) -> String {
+  let ParseDecisionError(message) = error
+  message
 }
 
 pub fn run(
@@ -79,6 +162,31 @@ pub fn run(
       run_list(control_path, root, json_output, task_ref, output)
     Show(control_path, root, json_output, workstream_ref) ->
       run_show(control_path, root, json_output, workstream_ref, output)
+    Decision(
+      control_path,
+      root,
+      json_output,
+      kind,
+      workstream_id,
+      action_id,
+      gate_id,
+      actor,
+      rationale,
+      inputs,
+    ) ->
+      run_decision(
+        control_path,
+        root,
+        json_output,
+        kind,
+        workstream_id,
+        action_id,
+        gate_id,
+        actor,
+        rationale,
+        inputs,
+        output,
+      )
   }
 }
 
@@ -154,6 +262,84 @@ fn run_show(
       }
       Ok(Nil)
     }
+  }
+}
+
+fn run_decision(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  json_output: Bool,
+  kind: String,
+  workstream_id: String,
+  action_id: String,
+  gate_id: String,
+  actor: String,
+  rationale: String,
+  inputs: List(decision.DecisionInput),
+  output: Output,
+) -> Result(Nil, #(String, String)) {
+  use root <- try_workstream(workspace_root(control_path, explicit_root))
+  use projected <- try_workstream(load_schedule_projection(root))
+  let checkpoint = workflow_checkpoint.ledger_writer(root, wall_clock_ms)
+  let summary = decision_summary(kind, action_id, gate_id)
+  use recorded <- try_workstream(
+    decision.record(
+      checkpoint,
+      projected,
+      decision.RecordRequest(
+        workstream_id: workstream_id,
+        action_id: action_id,
+        gate_id: gate_id,
+        kind: kind,
+        decided_at_ms: wall_clock_ms(),
+        decided_by: actor,
+        rationale: rationale,
+        inputs: inputs,
+        summary: summary,
+      ),
+    )
+    |> map_decision_error,
+  )
+  case json_output {
+    True ->
+      output.line(
+        json.object([
+          #("artifact_id", json.string(recorded.artifact_id)),
+          #("snapshot_ref", json.string(recorded.snapshot_ref)),
+          #("snapshot_sha256", json.string(recorded.snapshot_sha256)),
+          #("snapshot_bytes", json.int(recorded.snapshot_bytes)),
+          #("record_id", json.string(recorded.record_id)),
+        ])
+        |> json.to_string,
+      )
+    False ->
+      output.line(
+        "decision recorded: "
+        <> recorded.artifact_id
+        <> " ref="
+        <> recorded.snapshot_ref
+        <> " sha256="
+        <> recorded.snapshot_sha256,
+      )
+  }
+  Ok(Nil)
+}
+
+fn decision_summary(
+  kind: String,
+  action_id: String,
+  gate_id: String,
+) -> String {
+  kind <> " decision for " <> action_id <> " gate " <> gate_id
+}
+
+fn map_decision_error(
+  result: Result(a, decision.DecisionError),
+) -> Result(a, #(String, String)) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(err) ->
+      Error(#(decision.error_code(err), decision.error_message(err)))
   }
 }
 
@@ -441,6 +627,10 @@ fn print_workstream_decisions(
         output.line(
           "  "
           <> decision.artifact_id
+          <> " action="
+          <> decision.action_id
+          <> " gate="
+          <> decision.gate_id
           <> " kind="
           <> decision.kind
           <> " by="
@@ -448,6 +638,11 @@ fn print_workstream_decisions(
           <> " ref="
           <> decision.snapshot_ref,
         )
+        output.line(
+          "    decided_at_ms: " <> int.to_string(decision.decided_at_ms),
+        )
+        output.line("    rationale: " <> decision.rationale)
+        output.line("    inputs: " <> decision_inputs_label(decision.inputs))
         output.line("    summary: " <> decision.summary)
       })
   }
@@ -541,12 +736,31 @@ fn print_artifact_detail(
         <> " resolved_by="
         <> optional_string(resolved_by_phase_run_id),
       )
-    workstream_projection.DecisionDetail(kind, summary, decided_by) ->
+    workstream_projection.DecisionDetail(
+      action_id,
+      gate_id,
+      kind,
+      decided_at_ms,
+      decided_by,
+      rationale,
+      inputs,
+      summary,
+    ) ->
       output.line(
-        "    decision: kind="
+        "    decision: action="
+        <> action_id
+        <> " gate="
+        <> gate_id
+        <> " kind="
         <> kind
+        <> " decided_at_ms="
+        <> int.to_string(decided_at_ms)
         <> " by="
         <> decided_by
+        <> " inputs="
+        <> decision_inputs_label(inputs)
+        <> " rationale="
+        <> rationale
         <> " summary="
         <> summary,
       )
@@ -599,6 +813,20 @@ fn assignment_label(
   }
 }
 
+fn decision_inputs_label(
+  inputs: List(workstream_projection.DecisionInputInspection),
+) -> String {
+  case inputs {
+    [] -> "-"
+    _ ->
+      inputs
+      |> list.map(fn(input) {
+        input.name <> ":" <> input.ref <> ":" <> input.sha256
+      })
+      |> string.join(with: ",")
+  }
+}
+
 fn bool_label(value: Bool) -> String {
   case value {
     True -> "true"
@@ -629,3 +857,6 @@ fn try_workstream(
     Error(err) -> Error(err)
   }
 }
+
+@external(erlang, "scherzo_time_ffi", "wall_clock_ms")
+fn wall_clock_ms() -> Int

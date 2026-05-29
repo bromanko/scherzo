@@ -7,10 +7,14 @@
     "artifact_type",
     "artifact_id",
     "workstream_id",
+    "action_id",
+    "gate_id",
     "kind",
-    "summary",
+    "decided_at_ms",
     "decided_by",
-    "rationale"
+    "rationale",
+    "inputs",
+    "summary"
   ],
   "properties": {
     "schema_version": {
@@ -25,6 +29,12 @@
     "workstream_id": {
       "type": "string"
     },
+    "action_id": {
+      "type": "string"
+    },
+    "gate_id": {
+      "type": "string"
+    },
     "kind": {
       "enum": [
         "approve",
@@ -33,13 +43,39 @@
         "deviate"
       ]
     },
-    "summary": {
-      "type": "string"
+    "decided_at_ms": {
+      "type": "integer",
+      "minimum": 1
     },
     "decided_by": {
       "type": "string"
     },
     "rationale": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "ref", "sha256"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string",
+            "pattern": "^workstream-artifacts/sha256/[0-9a-f]{64}\\.json$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "summary": {
       "type": "string"
     }
   }
