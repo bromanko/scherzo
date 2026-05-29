@@ -19,8 +19,9 @@ import scherzo/error
 import scherzo/log
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
+import scherzo/orchestrator/daemon_transition_shell
+import scherzo/orchestrator/effect_completion_handler
 import scherzo/orchestrator/effect_runner
-import scherzo/orchestrator/effects/interpreter as transition_interpreter
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/operator_runtime
@@ -32,7 +33,6 @@ import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/startup_recovery
 import scherzo/orchestrator/state as orchestrator_state
-import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_lifecycle
 import scherzo/orchestrator/worker_registry
@@ -2941,34 +2941,29 @@ fn run_transition_messages(
   state: State,
   messages: List(transition_types.Message),
 ) -> State {
-  let transition_state = transition_state_from_daemon(state)
-  let shell = transition_shell(state)
-  let transition_runner.RunResult(
-    state: transition_state,
-    shell: shell,
-    exhausted: exhausted,
-  ) =
-    transition_runner.run(
-      state: transition_state,
-      shell: shell,
-      messages: messages,
-      max_messages: 128,
-    )
-  let state =
-    merge_transition_state(transition_interpreter.data(shell), transition_state)
-  case exhausted {
-    True ->
-      log_state(state, "warn", "transition_runner_exhausted", [
-        #("message_limit", "128"),
-      ])
-    False -> Nil
-  }
-  state
+  daemon_transition_shell.run(transition_shell_context(state), messages)
 }
 
-fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
-  transition_interpreter.new_production_shell_state(
-    data: state,
+fn transition_shell_context(
+  state: State,
+) -> daemon_transition_shell.Context(State) {
+  daemon_transition_shell.context(
+    state: state,
+    transition_state_from_state: transition_state_from_daemon,
+    merge_transition_state: merge_transition_state,
+    log_exhausted: fn(state, message_limit) {
+      log_state(state, "warn", "transition_runner_exhausted", [
+        #("message_limit", int.to_string(message_limit)),
+      ])
+      state
+    },
+    max_messages: daemon_transition_shell.default_message_limit(),
+    handlers: transition_shell_handlers(),
+  )
+}
+
+fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
+  daemon_transition_shell.shell_handlers(
     append_ledger: transition_append_ledger,
     now_ms: fn(state) { state.dependencies.now_ms() },
     log_effect: fn(state, level, event, fields) {
@@ -5431,151 +5426,38 @@ fn handle_side_effect_completed(
   state: State,
   completion: effect_runner.Completion,
 ) -> State {
-  case completion {
-    effect_runner.Finished(_, result) ->
-      handle_side_effect_result(state, result)
-    effect_runner.Crashed(_, effect, reason) -> {
+  effect_completion_handler.handle_completed(
+    effect_completion_context(state),
+    completion,
+  )
+}
+
+fn effect_completion_context(
+  state: State,
+) -> effect_completion_handler.Context(State) {
+  effect_completion_handler.context(
+    state: state,
+    log_side_effect_crashed: fn(state, effect, reason) {
       log_state(state, "warn", "side_effect_crashed", [
         #("effect", effect_runner.effect_kind(effect)),
         #("reason", reason),
       ])
-      handle_side_effect_result(state, crash_result_for_effect(effect, reason))
-    }
-  }
-}
-
-fn handle_side_effect_result(
-  state: State,
-  result: effect_runner.EffectResult,
-) -> State {
-  case result {
-    effect_runner.CandidateFetchFinished(generation, result) ->
-      handle_candidate_fetch_finished(state, generation, result)
-    effect_runner.RunningRefreshFinished(generation, result) ->
-      handle_running_refresh_finished(state, generation, result)
-    effect_runner.RetryRefreshFinished(issue_id, generation, result) ->
-      handle_retry_refresh_finished(state, issue_id, generation, result)
-    effect_runner.DispatchClaimValidationFinished(issue_id, generation, result) ->
-      handle_dispatch_claim_validation_finished(
-        state,
-        issue_id,
-        generation,
-        result,
-      )
-    effect_runner.HandoffClaimFinished(issue_id, run_id, result) ->
-      handle_handoff_claim_finished(state, issue_id, run_id, result)
-    effect_runner.HandoffSuccessFinished(issue_id, _run_id, result) ->
-      handle_handoff_success_finished(state, issue_id, result)
-    effect_runner.HandoffFailureFinished(issue_id, _run_id, result) ->
-      handle_handoff_failure_finished(state, issue_id, result)
-    effect_runner.HandoffParkFinished(issue_id, result) ->
-      handle_handoff_park_finished(state, issue_id, result)
-    effect_runner.InvalidWorkflowReportFinished(
-      issue_id,
-      violation_fingerprint,
-      reporting_policy_fingerprint,
-      result,
-    ) ->
-      handle_invalid_workflow_report_finished(
-        state,
-        issue_id,
-        violation_fingerprint,
-        reporting_policy_fingerprint,
-        result,
-      )
-    effect_runner.ScheduledFailureReportFinished(generation, request, result) ->
-      handle_scheduled_failure_report_finished(
-        state,
-        generation,
-        request,
-        result,
-      )
-    effect_runner.CleanupFinished(workspace_path, result) ->
-      handle_cleanup_finished(state, workspace_path, result)
-  }
-}
-
-fn crash_result_for_effect(
-  effect: effect_runner.Effect,
-  reason: String,
-) -> effect_runner.EffectResult {
-  case effect {
-    effect_runner.FetchCandidates(generation, _) ->
-      effect_runner.CandidateFetchFinished(
-        generation,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.RefreshRunning(generation, _, _) ->
-      effect_runner.RunningRefreshFinished(
-        generation,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.RefreshRetry(issue_id, generation, _) ->
-      effect_runner.RetryRefreshFinished(
-        issue_id,
-        generation,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.ValidateDispatchClaim(issue_id, generation, _) ->
-      effect_runner.DispatchClaimValidationFinished(
-        issue_id: issue_id,
-        generation: generation,
-        result: Error(
-          effect_runner.DispatchValidationTrackerError(error.LinearApiRequest(
-            reason,
-          )),
-        ),
-      )
-    effect_runner.ClaimIssue(issue, _, run_id, _) ->
-      effect_runner.HandoffClaimFinished(
-        issue.id,
-        run_id,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.ReportSuccess(issue_id, _, _, run_id, _, _) ->
-      effect_runner.HandoffSuccessFinished(
-        issue_id,
-        run_id,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.ReportFailure(issue_id, _, _, run_id, _, _) ->
-      effect_runner.HandoffFailureFinished(
-        issue_id,
-        run_id,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.ReportPark(report, _) ->
-      effect_runner.HandoffParkFinished(
-        report.task.remote_id,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.ReportInvalidWorkflow(
-      issue,
-      _,
-      violation_fingerprint,
-      reporting_policy_fingerprint,
-      _,
-      _,
-      _,
-    ) ->
-      effect_runner.InvalidWorkflowReportFinished(
-        issue.id,
-        violation_fingerprint,
-        reporting_policy_fingerprint,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.ReportScheduledFailure(generation, publication, _) ->
-      effect_runner.ScheduledFailureReportFinished(
-        generation,
-        publication,
-        Error(error.LinearApiRequest(reason)),
-      )
-    effect_runner.CleanupWorkspace(_, workspace_path, _, _) ->
-      effect_runner.CleanupFinished(
-        workspace_path,
-        Error(error.WorkspaceIo(reason)),
-      )
-  }
+      state
+    },
+    result_handlers: effect_completion_handler.result_handlers(
+      candidate_fetch_finished: handle_candidate_fetch_finished,
+      running_refresh_finished: handle_running_refresh_finished,
+      retry_refresh_finished: handle_retry_refresh_finished,
+      dispatch_claim_validation_finished: handle_dispatch_claim_validation_finished,
+      handoff_claim_finished: handle_handoff_claim_finished,
+      handoff_success_finished: handle_handoff_success_finished,
+      handoff_failure_finished: handle_handoff_failure_finished,
+      handoff_park_finished: handle_handoff_park_finished,
+      invalid_workflow_report_finished: handle_invalid_workflow_report_finished,
+      scheduled_failure_report_finished: handle_scheduled_failure_report_finished,
+      cleanup_finished: handle_cleanup_finished,
+    ),
+  )
 }
 
 fn handle_dispatch_claim_validation_finished(
