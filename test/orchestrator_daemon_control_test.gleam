@@ -504,6 +504,15 @@ pub fn daemon_control_server_routes_authenticated_command_to_actor_test() {
   assert result.command == "pause"
   assert command.status_to_string(result.status) == "applied"
 
+  let assert Ok(cleanup_result) =
+    client.apply_command(
+      control,
+      command.CleanupOrphanSteps("run-missing", True),
+    )
+  assert cleanup_result.command == "cleanup_orphan_steps"
+  assert command.status_to_string(cleanup_result.status) == "not_found"
+  assert cleanup_result.message == Some("workflow run not found: run-missing")
+
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 

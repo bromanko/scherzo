@@ -84,7 +84,16 @@ When `retry-step` rejects with `artifact_recovery_failed`, the result message na
 
 Interpret `reason=missing` as an artifact ref that is absent under `.scherzo-state/artifacts`, `reason=unreadable` as a local permission or I/O failure, `reason=invalid_json` as retained artifact bytes that match the ledger hash but are not a valid step artifact, and `reason=sha_mismatch` as retained bytes that no longer match the ledger `artifact_sha256`. Fix or restore the named artifact from backup or from the retained workspace evidence, then rerun `retry-step`. The same bounded detail is retained as a projection-neutral `workflow_run_diagnostic` ledger record so later operators can inspect the failed repair without recomputing hashes manually.
 
-If the issue is parked, unpark it first and then rerun `retry-step`. `retry-step` does not silently override operator park policy. Because this is an explicit repair command, the issue does not need to be in an active or dispatch state, but terminal states are still rejected.
+If the issue is parked, unpark it first and then rerun `retry-step`. `retry-step` does not silently override operator park policy. `retry-step` now also fails closed when the refreshed issue state is non-active, with a message naming the run and current state; move the issue back to a configured active state before retrying. Terminal states are still rejected.
+
+When a retained run already has orphaned YAML child step sessions, inspect `ps --json` or `session --json` for `workflow_run_id`, `workflow_step_id`, `workflow_attempt_index`, `orphan_status`, `issue_state`, and `recommended_action`, then run:
+
+```sh
+scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --dry-run
+scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --yes
+```
+
+Dry run is the default. `--yes` is the only mutating mode, and rerunning either form is expected to be idempotent.
 
 If drift or retained artifact recovery cannot be proven safe, fall back to manual salvage or a full task retry with `scripts/scherzoctl retry <task>`.
 
