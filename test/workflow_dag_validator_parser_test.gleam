@@ -282,6 +282,21 @@ pub fn legacy_review_validator_lowers_to_command_validator_test() {
     ]
 }
 
+pub fn parses_descriptor_first_contracts_in_workflow_yaml_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  inputs:\n    exec_plan_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.exec_plan_bundle.v2\n      required: true\n      source: mapped_output\n  outputs:\n    plan:\n      kind: file\n      media_type: text/markdown\n      artifact_type: scherzo.exec_plan.v1\n      source:\n        step: materialize_bundle\n        path: tmp/execplan-review-doc.md\n    implementation_pack:\n      kind: file\n      media_type: application/json\n      artifact_type: scherzo.implementation_pack.v2\n      source:\n        step: materialize_pack\n        path: tmp/execplan-implementation-pack.json\n    code_change_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.code_change_bundle.v2\n      source:\n        step: materialize_code_change_bundle\n        path: tmp/execplan-code-change-bundle.json\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: echo bundle\n  - id: materialize_pack\n    kind: command\n    depends_on: [materialize_bundle]\n    run: echo pack\n  - id: materialize_code_change_bundle\n    kind: command\n    depends_on: [materialize_pack]\n    run: echo change\n",
+    )
+
+  let assert Some(contract) = dag.contract
+  let assert [exec_plan_bundle] = contract.inputs
+  let assert [plan, implementation_pack, code_change_bundle] = contract.outputs
+  assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
+  assert plan.type_ == workflow_contract.ExecPlan
+  assert implementation_pack.type_ == workflow_contract.ImplementationPack
+  assert code_change_bundle.type_ == workflow_contract.CodeChangeBundle
+}
+
 pub fn canonical_execplan_workflows_parse_before_routing_test() {
   let workflow_paths = [
     #(".scherzo/workflows/execplan.yaml", "execplan"),

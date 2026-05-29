@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import scherzo/workflow_contract_descriptor_compat.{DescriptorCompatError}
 import yay
 
 pub type Contract {
@@ -662,8 +663,14 @@ fn validate_entry_keys(
     [] -> Ok(Nil)
     [#(key, _), ..rest] ->
       case key {
-        "type" | "description" | "required" | "source" ->
-          validate_entry_keys(rest, kind, name)
+        "type"
+        | "kind"
+        | "ref_type"
+        | "media_type"
+        | "artifact_type"
+        | "description"
+        | "required"
+        | "source" -> validate_entry_keys(rest, kind, name)
         "primary" ->
           error(
             "contract_primary_not_supported",
@@ -698,19 +705,64 @@ fn read_entry_type(
   kind: String,
   name: String,
 ) -> Result(ContractType, ContractError) {
-  case get_entry(entries, "type") {
-    Some(yay.NodeStr(raw)) -> type_from_string(raw)
-    Some(_) ->
+  case get_entry(entries, "type"), get_entry(entries, "kind") {
+    Some(yay.NodeStr(raw)), None -> type_from_string(raw)
+    Some(yay.NodeStr(raw)), Some(yay.NodeStr(_)) -> {
+      use explicit <- result.try(type_from_string(raw))
+      use inferred <- result.try(type_from_descriptor(entries, kind, name))
+      case explicit == inferred {
+        True -> Ok(explicit)
+        False ->
+          error(
+            "contract_descriptor_type_mismatch",
+            "contract "
+              <> kind
+              <> " "
+              <> name
+              <> " type and descriptor fields disagree",
+          )
+      }
+    }
+    Some(_), _ ->
       error(
         "contract_entry_type_not_string",
         "contract " <> kind <> " " <> name <> " type must be a string",
       )
-    None ->
+    None, Some(yay.NodeStr(_)) -> type_from_descriptor(entries, kind, name)
+    None, Some(_) ->
+      error(
+        "contract_descriptor_kind_not_string",
+        "contract " <> kind <> " " <> name <> " kind must be a string",
+      )
+    None, None ->
       error(
         "missing_contract_entry_type",
-        "contract " <> kind <> " " <> name <> " type is required",
+        "contract "
+          <> kind
+          <> " "
+          <> name
+          <> " type or descriptor kind is required",
       )
   }
+}
+
+fn type_from_descriptor(
+  entries: List(#(String, yay.Node)),
+  kind: String,
+  name: String,
+) -> Result(ContractType, ContractError) {
+  use type_name <- result.try(
+    workflow_contract_descriptor_compat.type_name_from_entries(
+      entries,
+      kind,
+      name,
+    )
+    |> result.map_error(fn(error_value) {
+      let DescriptorCompatError(code, message) = error_value
+      ContractError(code, message)
+    }),
+  )
+  type_from_string(type_name)
 }
 
 fn read_entry_required(

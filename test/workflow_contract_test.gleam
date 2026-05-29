@@ -103,6 +103,14 @@ pub fn rejects_invalid_contract_shapes_test() {
       "  outputs:\n    findings:\n      type: document.markdown\n      required: false\n    findings:\n      type: text\n      required: false\n",
     ))
     == "duplicate_contract_output"
+  assert error_code(minimal_contract(
+      "  outputs:\n    plan:\n      kind: file\n      media_type: application/xml\n      artifact_type: scherzo.exec_plan.v1\n      required: true\n      source:\n        step: draft\n        path: tmp/plan.md\n",
+    ))
+    == "unknown_contract_descriptor_type"
+  assert error_code(minimal_contract(
+      "  outputs:\n    plan:\n      type: exec_plan\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.exec_plan_bundle.v2\n      required: true\n      source:\n        step: draft\n        path: tmp/plan.md\n",
+    ))
+    == "contract_descriptor_type_mismatch"
 }
 
 pub fn parses_input_and_context_sources_test() {
@@ -131,6 +139,20 @@ pub fn rejects_invalid_input_context_sources_test() {
       "  context:\n    base_ref:\n      type: git_ref\n      required: true\n      source: issue_context\n",
     ))
     == "invalid_contract_context_source"
+}
+
+pub fn parses_descriptor_contract_entries_test() {
+  let contract =
+    parse_contract(minimal_contract(
+      "  inputs:\n    exec_plan_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.exec_plan_bundle.v2\n      required: true\n      source: mapped_output\n  outputs:\n    plan:\n      kind: file\n      media_type: text/markdown\n      artifact_type: scherzo.exec_plan.v1\n      required: true\n      source:\n        step: materialize_bundle\n        path: tmp/execplan-review-doc.md\n    implementation_pack:\n      kind: file\n      media_type: application/json\n      artifact_type: scherzo.implementation_pack.v2\n      required: true\n      source:\n        step: materialize_pack\n        path: tmp/execplan-implementation-pack.json\n    code_change_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.code_change_bundle.v2\n      required: true\n      source:\n        step: materialize_code_change_bundle\n        path: tmp/execplan-code-change-bundle.json\n",
+    ))
+
+  let assert [exec_plan_bundle] = contract.inputs
+  assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
+  let assert [plan, implementation_pack, code_change_bundle] = contract.outputs
+  assert plan.type_ == workflow_contract.ExecPlan
+  assert implementation_pack.type_ == workflow_contract.ImplementationPack
+  assert code_change_bundle.type_ == workflow_contract.CodeChangeBundle
 }
 
 pub fn parses_output_sources_test() {
