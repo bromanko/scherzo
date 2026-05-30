@@ -23,7 +23,12 @@ pub type Effect {
   FetchCandidates(generation: Int)
   BeginDispatchValidation(issue_id: String, generation: Int)
   ReserveSessionSequence(sequence: Int)
-  ClaimIssue(issue: tracker_issue.Issue, workspace_path: String, run_id: String)
+  ClaimIssue(
+    task_ref: task.TaskRef,
+    issue: tracker_issue.Issue,
+    workspace_path: String,
+    run_id: String,
+  )
   ReportInvalidWorkflow(
     issue: tracker_issue.Issue,
     violation: workflow_policy.IssueWorkflowViolation,

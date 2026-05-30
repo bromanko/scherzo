@@ -491,6 +491,74 @@ pub fn future_retry_keeps_remaining_delay_test() {
   assert retry.delay_ms == 3000
 }
 
+pub fn mixed_workflow_task_ref_history_restores_non_linear_retry_test() {
+  let non_linear_ref =
+    record.TaskRefFields(
+      task_backend_kind: "fake",
+      task_remote_id: "issue-1",
+      task_key: Some("ABC-1"),
+      task_url: Some("https://example.test/cards/issue-1"),
+    )
+  let projection =
+    projection.fold([
+      record.with_id(
+        "run-started",
+        900,
+        record.WorkflowRunStartedWithTask(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "workflow-fingerprint",
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          task_ref: non_linear_ref,
+          issue_fingerprint: "issue-fingerprint",
+          observed_updated_at_ms: 800,
+          run_root: "test/tmp/state-recovery/run-1",
+        ),
+      ),
+      record.with_id(
+        "run-finished-linear-fallback",
+        950,
+        record.WorkflowRunFinished(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          issue_id: "issue-1",
+          outcome: "failure",
+          token_total: 0,
+          turns: 1,
+        ),
+      ),
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+    ])
+  let assert Ok(preserved_ref) =
+    projection.workflow_task_ref(projection, "run-1")
+  assert preserved_ref == non_linear_ref
+  let refreshed = issue("issue-1", "ABC-1", "Todo")
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
+
+  let fake_identity =
+    orchestrator_state.issue_id_identity_for_backend("issue-1", "fake")
+  let linear_identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  let assert Ok(retry) = dict.get(plan.runtime.retry_attempts, fake_identity)
+  assert retry.task_ref.backend_kind == "fake"
+  assert retry.task_ref.remote_id == "issue-1"
+  assert retry.task_ref.key == Some("ABC-1")
+  assert !dict.has_key(plan.runtime.retry_attempts, linear_identity)
+  assert dict.has_key(plan.runtime.claimed, fake_identity)
+  assert !dict.has_key(plan.runtime.claimed, linear_identity)
+}
+
 pub fn retry_for_missing_issue_is_cancelled_during_recovery_test() {
   let projection =
     projection.fold([

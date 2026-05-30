@@ -2409,6 +2409,7 @@ fn restore_retries(
   issue_by_id: Dict(String, tracker_issue.Issue),
   now_ms: Int,
 ) -> Build {
+  let backend_kinds = recovered_backend_kinds(projection)
   projection.retries
   |> dict.to_list
   |> list.fold(build, fn(build, entry) {
@@ -2418,6 +2419,7 @@ fn restore_retries(
         restore_scheduled_retry(
           build,
           config,
+          backend_kinds,
           issue_by_id,
           issue_id,
           issue_identifier,
@@ -2434,6 +2436,7 @@ fn restore_retries(
 fn restore_scheduled_retry(
   build: Build,
   config: config_types.EffectiveConfig,
+  backend_kinds: Dict(String, String),
   issue_by_id: Dict(String, tracker_issue.Issue),
   issue_id: String,
   issue_identifier: String,
@@ -2442,29 +2445,35 @@ fn restore_scheduled_retry(
   status: projection.RetryStatus,
   now_ms: Int,
 ) -> Build {
+  let backend_kind = recovered_backend_kind_for_issue(backend_kinds, issue_id)
+  let recovered_identity =
+    orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
   case list.contains(build.auto_unparked_issue_ids, issue_id) {
     True ->
       cancel_recovered_retry(
         build,
         issue_id,
+        recovered_identity,
         generation,
         "recovery_auto_unparked",
       )
     False ->
-      case
-        dict.has_key(
-          build.runtime.parked,
-          orchestrator_state.linear_issue_id_identity(issue_id),
-        )
-      {
+      case dict.has_key(build.runtime.parked, recovered_identity) {
         True ->
-          cancel_recovered_retry(build, issue_id, generation, "recovery_parked")
+          cancel_recovered_retry(
+            build,
+            issue_id,
+            recovered_identity,
+            generation,
+            "recovery_parked",
+          )
         False ->
           case dict.get(issue_by_id, issue_id) {
             Error(Nil) ->
               cancel_recovered_retry(
                 build,
                 issue_id,
+                recovered_identity,
                 generation,
                 "recovery_missing_issue",
               )
@@ -2474,6 +2483,7 @@ fn restore_scheduled_retry(
                   cancel_recovered_retry(
                     build,
                     issue_id,
+                    recovered_identity,
                     generation,
                     "recovery_terminal_issue",
                   )
@@ -2483,6 +2493,7 @@ fn restore_scheduled_retry(
                       cancel_recovered_retry(
                         build,
                         issue_id,
+                        recovered_identity,
                         generation,
                         config_types.recovery_non_retryable_reason(issue.state),
                       )
@@ -2490,7 +2501,10 @@ fn restore_scheduled_retry(
                       let remaining =
                         workflow_attempt.remaining_retry_delay(status, now_ms)
                       let task_ref =
-                        orchestrator_state.linear_issue_id_ref(issue_id)
+                        orchestrator_state.issue_ref_for_backend(
+                          issue,
+                          backend_kind,
+                        )
                       let identity =
                         orchestrator_state.task_ref_identity(task_ref)
                       let retry =
@@ -2537,10 +2551,10 @@ fn restore_scheduled_retry(
 fn cancel_recovered_retry(
   build: Build,
   issue_id: String,
+  identity: String,
   generation: Int,
   reason: String,
 ) -> Build {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   Build(
     ..build,
     runtime: orchestrator_state.RuntimeState(
@@ -2553,6 +2567,28 @@ fn cancel_recovered_retry(
       ..build.record_bodies
     ],
   )
+}
+
+fn recovered_backend_kinds(
+  projection: projection.Projection,
+) -> Dict(String, String) {
+  projection.known_task_refs(projection)
+  |> list.fold(dict.new(), fn(kinds, ref) {
+    case ref.task_backend_kind == "linear" {
+      True -> kinds
+      False -> dict.insert(kinds, ref.task_remote_id, ref.task_backend_kind)
+    }
+  })
+}
+
+fn recovered_backend_kind_for_issue(
+  backend_kinds: Dict(String, String),
+  issue_id: String,
+) -> String {
+  case dict.get(backend_kinds, issue_id) {
+    Ok(kind) -> kind
+    Error(Nil) -> "linear"
+  }
 }
 
 fn recover_interrupted_runs(

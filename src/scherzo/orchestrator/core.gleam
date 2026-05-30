@@ -787,19 +787,33 @@ pub fn reconcile_issue(
   config: config_types.EffectiveConfig,
   refreshed: tracker_issue.Issue,
 ) -> Transition {
-  let identity = orchestrator_state.issue_identity(refreshed)
+  reconcile_task_issue(
+    state,
+    config,
+    task.from_legacy_issue(refreshed).ref,
+    refreshed,
+  )
+}
+
+pub fn reconcile_task_issue(
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  ref: task.TaskRef,
+  refreshed: tracker_issue.Issue,
+) -> Transition {
+  let identity = orchestrator_state.task_ref_identity(ref)
   case dict.get(state.running, identity) {
     Error(Nil) -> Transition(state: state, effects: [])
     Ok(entry) ->
       case is_terminal(config, refreshed.state) {
         True ->
           Transition(
-            state: release_claim(
+            state: release_task_claim(
               orchestrator_state.RuntimeState(
                 ..state,
                 running: dict.delete(state.running, identity),
               ),
-              refreshed.id,
+              ref,
             ),
             effects: [
               StopWorker(refreshed.id, reason.StopTerminal),
@@ -809,7 +823,8 @@ pub fn reconcile_issue(
         False ->
           case is_active(config, refreshed.state) {
             True -> {
-              let refreshed_task = task.from_legacy_issue(refreshed)
+              let refreshed_task =
+                task.Task(..task.from_legacy_issue(refreshed), ref: ref)
               Transition(
                 state: orchestrator_state.RuntimeState(
                   ..state,
@@ -828,12 +843,12 @@ pub fn reconcile_issue(
             }
             False ->
               Transition(
-                state: release_claim(
+                state: release_task_claim(
                   orchestrator_state.RuntimeState(
                     ..state,
                     running: dict.delete(state.running, identity),
                   ),
-                  refreshed.id,
+                  ref,
                 ),
                 effects: [StopWorker(refreshed.id, reason.StopNonActive)],
               )

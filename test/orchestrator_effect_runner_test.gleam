@@ -111,7 +111,13 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
 
   effect_runner.enqueue(
     runner,
-    effect_runner.ClaimIssue(issue, "workspace/main", "run-claim", capability),
+    effect_runner.ClaimIssue(
+      task_ref: expected_task.ref,
+      issue: issue,
+      workspace_path: "workspace/main",
+      run_id: "run-claim",
+      capability: capability,
+    ),
   )
   let assert Ok(adapter.HandoffClaim(claim_task, "workspace/main", "run-claim")) =
     process.receive(events, within: 1000)
@@ -125,6 +131,7 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
   effect_runner.enqueue(
     runner,
     effect_runner.ReportSuccess(
+      task_ref: expected_task.ref,
       issue_id: issue.id,
       issue: issue,
       success: success,
@@ -150,6 +157,7 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
   effect_runner.enqueue(
     runner,
     effect_runner.ReportFailure(
+      task_ref: expected_task.ref,
       issue_id: issue.id,
       issue: issue,
       failure: failure,

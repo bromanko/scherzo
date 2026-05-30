@@ -35,12 +35,14 @@ pub type Effect {
     tracker_adapter: adapter.TrackerAdapter,
   )
   ClaimIssue(
+    task_ref: task.TaskRef,
     issue: tracker_issue.Issue,
     workspace_path: String,
     run_id: String,
     capability: adapter.HandoffCapability,
   )
   ReportSuccess(
+    task_ref: task.TaskRef,
     issue_id: String,
     issue: tracker_issue.Issue,
     success: agent_types.WorkerSuccess,
@@ -49,6 +51,7 @@ pub type Effect {
     capability: adapter.HandoffCapability,
   )
   ReportFailure(
+    task_ref: task.TaskRef,
     issue_id: String,
     issue: tracker_issue.Issue,
     failure: agent_types.WorkerFailure,
@@ -167,7 +170,7 @@ pub fn reply_snapshot(
       fetch_candidates: fn(data, _) { data },
       begin_dispatch_validation: fn(data, _, _) { data },
       reserve_session_sequence: fn(data, _) { data },
-      claim_issue: fn(data, _, _, _) { data },
+      claim_issue: fn(data, _, _, _, _) { data },
       report_invalid_workflow: fn(data, _, _, _, _) { data },
       remove_retry_timer: fn(data, _) { data },
       finish_retry_refresh: fn(data, _) { data },
@@ -326,9 +329,9 @@ pub fn effect_kind(effect: Effect) -> String {
     RefreshRunning(_, _, _) -> "refresh_running"
     RefreshRetry(_, _, _) -> "refresh_retry"
     ValidateDispatchClaim(_, _, _) -> "validate_dispatch_claim"
-    ClaimIssue(_, _, _, _) -> "claim_issue"
-    ReportSuccess(_, _, _, _, _, _) -> "report_success"
-    ReportFailure(_, _, _, _, _, _) -> "report_failure"
+    ClaimIssue(_, _, _, _, _) -> "claim_issue"
+    ReportSuccess(_, _, _, _, _, _, _) -> "report_success"
+    ReportFailure(_, _, _, _, _, _, _) -> "report_failure"
     ReportPark(_, _) -> "report_park"
     ReportInvalidWorkflow(_, _, _, _, _, _, _) -> "report_invalid_workflow"
     ReportScheduledFailure(_, _, _) -> "report_scheduled_failure"
@@ -690,38 +693,54 @@ fn run_side_effect(effect: Effect) -> EffectResult {
           refresh_issue_states_by_ids(tracker_adapter, [issue_id]),
         ),
       )
-    ClaimIssue(issue, workspace_path, run_id, capability) ->
+    ClaimIssue(task_ref, issue, workspace_path, run_id, capability) ->
       HandoffClaimFinished(
         issue.id,
         run_id,
         adapter_result(
           capability.report(adapter.HandoffClaim(
-            task.from_legacy_issue(issue),
+            task.Task(..task.from_legacy_issue(issue), ref: task_ref),
             workspace_path,
             run_id,
           )),
         ),
       )
-    ReportSuccess(issue_id, issue, success, run_id, workflow_id, capability) ->
+    ReportSuccess(
+      task_ref,
+      issue_id,
+      issue,
+      success,
+      run_id,
+      workflow_id,
+      capability,
+    ) ->
       HandoffSuccessFinished(
         issue_id,
         run_id,
         adapter_result(
           capability.report(adapter.HandoffSuccess(
-            task.from_legacy_issue(issue),
+            task.Task(..task.from_legacy_issue(issue), ref: task_ref),
             success,
             run_id,
             workflow_id,
           )),
         ),
       )
-    ReportFailure(issue_id, issue, failure, run_id, workflow_id, capability) ->
+    ReportFailure(
+      task_ref,
+      issue_id,
+      issue,
+      failure,
+      run_id,
+      workflow_id,
+      capability,
+    ) ->
       HandoffFailureFinished(
         issue_id,
         run_id,
         adapter_result(
           capability.report(adapter.HandoffFailure(
-            task.from_legacy_issue(issue),
+            task.Task(..task.from_legacy_issue(issue), ref: task_ref),
             failure,
             run_id,
             workflow_id,
