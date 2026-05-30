@@ -23,10 +23,10 @@ Workflow contract:
 Research process:
 
 1. Restate the question you are answering.
-2. Inspect the relevant files, commands, docs, Linear context, or external resources with the smallest useful scope.
+2. Inspect the relevant files, commands, docs, tracker context, or external resources with the smallest useful scope. With the current production adapter, that tracker context is usually Linear.
 3. Capture concrete evidence: file paths, commands run, observed output, links, and uncertainty.
 4. Avoid implementation, broad refactors, speculative cleanup, or unrelated edits.
-5. Write a Markdown report to `research-findings.md` in the workspace root. This file is the workflow's terminal result artifact and will be used for the final Linear comment/attachment.
+5. Write a Markdown report to `research-findings.md` in the workspace root. This file is the workflow's terminal result artifact and will be used for the final tracker update; with the current production adapter that means a Linear comment or attachment.
 6. Finish with a concise status response that says the findings file was written.
 
 `research-findings.md` must include these sections:
@@ -45,7 +45,7 @@ Research process:
 ## Recommendation
 ```
 
-For `Issues encountered`, include `None` if the investigation had no tool, access, content, or validation problems. Keep the report concise enough for a Linear comment while preserving the evidence needed for follow-up.
+For `Issues encountered`, include `None` if the investigation had no tool, access, content, or validation problems. Keep the report concise enough for the final tracker update while preserving the evidence needed for follow-up.
 
 Research budget for dogfood runs:
 

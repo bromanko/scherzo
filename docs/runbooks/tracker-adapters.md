@@ -16,11 +16,11 @@ Prefer the backend-neutral names in new docs, prompts, and scripts:
 
 These Linear names remain compatibility aliases or Linear-only surfaces:
 
-- `linear-smoke` and `--linear-smoke` are compatibility aliases for tracker smoke checks.
-- `linear-contract` and `--linear-contract-check` are compatibility aliases for tracker contract checks.
-- `tracker.linear.check_setup` is the current Linear board validation switch. The old `linear_contract` section is replaced by fields derived from `tracker`, `workflows`, `task_routing`, and `task_updates`. `linear_commands` and `remote_commands` are removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead.
-- `issue.*` prompt variables, `SCHERZO_ISSUE_ID`, `SCHERZO_ISSUE_IDENTIFIER`, and issue-shaped ledger fields remain compatibility aliases until the runtime task context is fully migrated.
-- `--linear-attach-comment-file`, `.scherzo/workflows/scripts/scherzo-execplan`, and `.scherzo/workflows/scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today.
+- `linear-smoke` and `--linear-smoke` are compatibility aliases for tracker smoke checks. Retirement gate: remove them only after docs, help text, and parser tests all prove `tracker-smoke` is the sole documented operator path.
+- `linear-contract` and `--linear-contract-check` are compatibility aliases for tracker contract checks. Retirement gate: remove them only after docs, help text, and parser tests all prove `tracker-contract` / `--tracker-contract-check` are the sole documented operator paths.
+- `tracker.linear.check_setup` is the current Linear board validation switch. The old `linear_contract` section is replaced by fields derived from `tracker`, `workflows`, `task_routing`, and `task_updates`. `linear_commands` and `remote_commands` are removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead. Retirement gate: keep the removed-key diagnostics until supported configs no longer need migration guidance for those names.
+- `issue.*` prompt variables, `SCHERZO_ISSUE_*`, `issue_id`, `issue_identifier`, issue-shaped ledger fields, and `linear_command_*` ledger/event/outbox records remain legacy-reader compatibility surfaces until the runtime task context and command history are fully migrated. Retirement gate: do not remove them before dual-read prompt, helper, retained-ledger, and legacy command-record tests prove task-native replacements preserve old artifacts.
+- `--linear-attach-comment-file`, `.scherzo/workflows/scripts/scherzo-execplan`, and `.scherzo/workflows/scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today. Retirement gate: keep these names until adapter-backed task-context fetch/publish helpers exist and the old Linear-only flows have replacement tests.
 
 ## Preferred Linear tracker config
 
