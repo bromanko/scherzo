@@ -1,11 +1,13 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/path as scherzo_path
 import scherzo/task
 import scherzo/tracker/conformance
 import scherzo/tracker/conformance/driver
 import scherzo/tracker/conformance/profile
 import scherzo/tracker/conformance/types
 import simplifile
+import support/test_helpers
 
 pub fn cli_driver_invokes_fake_process_and_decodes_response_test() {
   let manifest =
@@ -135,6 +137,68 @@ pub fn cli_driver_truncates_large_diagnostics_test() {
   assert string.length(diagnostics) > types.max_external_diagnostics_chars
   assert string.length(diagnostics) < 5002
   assert string.contains(diagnostics, "[truncated")
+}
+
+pub fn cli_driver_preserves_parent_path_for_env_shebangs_test() {
+  let cwd = "test/tmp/tracker-conformance/path-env-driver"
+  let bin = cwd <> "/bin"
+  let runtime = bin <> "/fake-conformance-driver-runtime"
+  let script = cwd <> "/driver"
+  test_helpers.reset_dir(cwd)
+  let assert Ok(Nil) = simplifile.create_directory_all(bin)
+  let assert Ok(Nil) =
+    simplifile.write(runtime, fake_conformance_driver_runtime_script())
+  let assert Ok(Nil) = simplifile.write(script, fake_env_shebang_script())
+  test_helpers.chmod_executable(runtime)
+  test_helpers.chmod_executable(script)
+
+  let assert Ok(bin_path) = scherzo_path.absolute(bin)
+  let original_path = scherzo_path.env("PATH")
+  let _ = scherzo_path.set_env("PATH", prepend_path(bin_path, original_path))
+  let result =
+    driver.invoke(
+      fixture_manifest(executable: script, args: [], timeout_ms: 5000),
+      fetch_request("req-driver-path"),
+    )
+  restore_env_var("PATH", original_path)
+
+  let assert Ok(driver.DriverInvocation(response: response, ..)) = result
+  assert response
+    == types.DriverResponseSuccess(
+      schema_version: 1,
+      request_id: "req-driver-path",
+      result: types.TaskListResult(tasks: []),
+    )
+}
+
+fn fake_conformance_driver_runtime_script() -> String {
+  "#!/bin/sh\n"
+  <> "cat >/dev/null\n"
+  <> "printf '{\"schema_version\":1,\"request_id\":\"req-driver-path\",\"ok\":true,\"result\":{\"tasks\":[]}}\\n'\n"
+}
+
+fn fake_env_shebang_script() -> String {
+  "#!/usr/bin/env fake-conformance-driver-runtime\n"
+}
+
+fn prepend_path(path: String, original_path: Option(String)) -> String {
+  case original_path {
+    Some(original_path) -> path <> ":" <> original_path
+    None -> path
+  }
+}
+
+fn restore_env_var(name: String, original_value: Option(String)) -> Nil {
+  case original_value {
+    Some(value) -> {
+      let _ = scherzo_path.set_env(name, value)
+      Nil
+    }
+    None -> {
+      let _ = scherzo_path.unset_env(name)
+      Nil
+    }
+  }
 }
 
 fn fixture_manifest(

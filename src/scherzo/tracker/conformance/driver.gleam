@@ -1,5 +1,6 @@
 import gleam/int
 import gleam/option.{type Option, None, Some}
+import scherzo/path
 import scherzo/port
 import scherzo/tracker/conformance
 import scherzo/tracker/conformance/process_capture
@@ -296,11 +297,40 @@ fn terminate_note(process: port.Process) -> String {
 }
 
 fn env_pairs(env: List(types.EnvVar)) -> List(#(String, String)) {
+  env_pairs_loop(env)
+  |> env_with_parent_path
+}
+
+fn env_pairs_loop(env: List(types.EnvVar)) -> List(#(String, String)) {
   case env {
     [] -> []
     [types.EnvVar(name: name, value: value), ..rest] -> [
       #(name, value),
-      ..env_pairs(rest)
+      ..env_pairs_loop(rest)
     ]
+  }
+}
+
+fn env_with_parent_path(
+  env: List(#(String, String)),
+) -> List(#(String, String)) {
+  case env_value(env, "PATH") {
+    Some(_) -> env
+    None ->
+      case path.env("PATH") {
+        Some(value) -> [#("PATH", value), ..env]
+        None -> env
+      }
+  }
+}
+
+fn env_value(env: List(#(String, String)), key: String) -> Option(String) {
+  case env {
+    [] -> None
+    [#(current, value), ..rest] ->
+      case current == key {
+        True -> Some(value)
+        False -> env_value(rest, key)
+      }
   }
 }

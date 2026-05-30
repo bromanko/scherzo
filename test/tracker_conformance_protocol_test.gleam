@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{None, Some}
 import scherzo/task
 import scherzo/tracker/conformance
@@ -90,6 +91,112 @@ pub fn manifest_decoder_accepts_explicit_fixture_tasks_test() {
         purpose: "Stable identity fixture for refresh and lookup cases",
       ),
     ]
+}
+
+pub fn manifest_decoder_accepts_linear_task_source_template_test() {
+  let assert Ok(contents) =
+    simplifile.read(
+      "test/fixtures/tracker_conformance/linear-task-source.template.manifest.json",
+    )
+  let assert Ok(manifest) = conformance.decode_manifest(contents)
+  let types.Manifest(
+    adapter_kind: adapter_kind,
+    profile: manifest_profile,
+    fixtures: fixtures,
+    report: report,
+    ..,
+  ) = manifest
+  let types.ProfileConfig(requested_packs: requested_packs, ..) =
+    manifest_profile
+  let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
+  let types.ReportConfig(redact: redact) = report
+  let assert [fixture_task] = fixture_tasks
+  let types.FixtureTaskDeclaration(
+    name: name,
+    ref: ref,
+    operator_refs: operator_refs,
+    purpose: purpose,
+  ) = fixture_task
+
+  assert adapter_kind == "linear"
+  assert requested_packs == [profile.TaskSourcePack]
+  assert task_file
+    == "test/fixtures/tracker_conformance/linear-fixture-tasks.json"
+  assert name == "linear-task-source-primary"
+  assert ref
+    == task.TaskRef(
+      backend_kind: "linear",
+      remote_id: "<fixture-linear-issue-id>",
+      key: Some("SCONF-1"),
+      url: Some("https://linear.app/<workspace-or-team>/issue/SCONF-1"),
+    )
+  assert operator_refs == ["SCONF-1", "<fixture-linear-issue-id>"]
+  assert purpose
+    == "Synthetic read-only Linear fixture used for task_source refresh and lookup checks"
+  assert redact
+    == [
+      "<resolved-conformance-token>",
+      "Bearer <resolved-conformance-token>",
+      "<fixture-secret-marker>",
+    ]
+}
+
+pub fn manifest_decoder_accepts_linear_task_source_offline_template_test() {
+  let assert Ok(contents) =
+    simplifile.read(
+      "test/fixtures/tracker_conformance/linear-task-source-offline.manifest.json",
+    )
+  let assert Ok(manifest) = conformance.decode_manifest(contents)
+  let types.Manifest(
+    adapter_kind: adapter_kind,
+    profile: manifest_profile,
+    fixtures: fixtures,
+    report: report,
+    ..,
+  ) = manifest
+  let types.ProfileConfig(requested_packs: requested_packs, ..) =
+    manifest_profile
+  let types.FixtureConfig(task_file: task_file, tasks: fixture_tasks) = fixtures
+  let types.ReportConfig(redact: redact) = report
+  let assert [fixture_task] = fixture_tasks
+  let types.FixtureTaskDeclaration(ref: ref, operator_refs: operator_refs, ..) =
+    fixture_task
+
+  assert adapter_kind == "linear"
+  assert requested_packs == [profile.TaskSourcePack]
+  assert task_file
+    == "test/fixtures/tracker_conformance/linear-fixture-tasks.json"
+  assert ref
+    == task.TaskRef(
+      backend_kind: "linear",
+      remote_id: "lin-fixture-1",
+      key: Some("SCONF-1"),
+      url: Some("https://linear.example/scherzo-conformance/SCONF-1"),
+    )
+  assert operator_refs == ["SCONF-1", "lin-fixture-1"]
+  assert redact
+    == [
+      "fake-linear-token",
+      "Bearer fake-linear-token",
+      "linear-fixture-secret",
+    ]
+}
+
+pub fn manifest_decoder_accepts_linear_redaction_and_safety_manifests_test() {
+  let fixtures = [
+    "test/fixtures/tracker_conformance/linear-redaction.manifest.json",
+    "test/fixtures/tracker_conformance/linear-unsafe-production.manifest.json",
+    "test/fixtures/tracker_conformance/linear-side-effects-disabled.manifest.json",
+    "test/fixtures/tracker_conformance/linear-cleanup-idempotent.manifest.json",
+  ]
+
+  fixtures
+  |> list.each(fn(path) {
+    let assert Ok(contents) = simplifile.read(path)
+    let assert Ok(types.Manifest(adapter_kind: adapter_kind, ..)) =
+      conformance.decode_manifest(contents)
+    assert adapter_kind == "linear"
+  })
 }
 
 pub fn manifest_decoder_rejects_duplicate_fixture_task_names_test() {
