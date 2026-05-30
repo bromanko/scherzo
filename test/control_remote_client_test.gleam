@@ -335,12 +335,12 @@ pub fn remote_client_ignores_malformed_and_unexpected_inbound_lines_test() {
   let _ = test_async.drain_subject(fixture.logs)
 
   append_inbound_line(connection.inbound_path, "{not-json}")
+  assert eventually_has_log(fixture.logs, "remote_client_bad_inbound")
+
   append_inbound_line(
     connection.inbound_path,
     remote_envelope.RemoteHeartbeat(999) |> remote_envelope.to_string,
   )
-
-  assert eventually_has_log(fixture.logs, "remote_client_bad_inbound")
   assert eventually_has_log(fixture.logs, "remote_client_unexpected_inbound")
   test_async.assert_no_extra_message_within(fixture.apply_requests, 50)
   assert eventually_has_envelope_kind(fixture.outbound, "heartbeat")

@@ -54,6 +54,12 @@ The passing example keeps the smallest stable author surface:
 
 Optional packs currently covered by checked-in schemas, fixtures, and tests are `comments`, `remote_commands`, `state_transitions`, `routing_metadata`, `handoff`, and `scheduled_failures`. `remote_commands` remains a historical compatibility pack, not a production operator-control path.
 
+## Driver environment and PATH
+
+CLI driver commands run with the manifest `driver.command.env` entries plus the runner's current `PATH` when the manifest does not set `PATH` explicitly. This keeps local and CI runs on the same Nix/devenv toolchain and prevents portable shell wrappers from losing access to tools such as `dirname`, `pwd`, `sh`, or adapter-specific CLIs.
+
+If you need a hermetic adapter environment, set `PATH` explicitly in the manifest and include every directory the driver and its helper scripts need. Avoid assuming `/bin` or `/usr/bin` exist in CI; NixOS runners may not have those paths.
+
 ## Step 3: implement the driver envelope
 
 The driver must read one request from stdin and print exactly one response line to stdout.
