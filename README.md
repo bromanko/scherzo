@@ -1,6 +1,6 @@
 # Scherzo
 
-Scherzo turns tracker tasks into supervised, repeatable coding-agent workflows. The production tracker adapter is Linear today: Scherzo polls Linear issues, selects tasks by workflow labels, prepares per-run workspaces, executes YAML DAGs made of `pi` agent steps and shell command steps, retains artifacts, and hands results back to Linear for human review.
+Scherzo turns tracker tasks into supervised, repeatable coding-agent workflows. The production tracker adapter is Linear today: Scherzo polls tasks from Linear, selects them by workflow labels, prepares per-run workspaces, executes YAML DAGs made of `pi` agent steps and shell command steps, retains artifacts, and hands results back through the tracker.
 
 Scherzo is a Gleam/Erlang daemon and command-line tool. It is currently best suited for teams that are comfortable running their own local automation, reviewing agent output, and adapting repository-local YAML, prompts, schemas, and workspace policy.
 
@@ -9,7 +9,7 @@ Scherzo is a Gleam/Erlang daemon and command-line tool. It is currently best sui
 Use Scherzo when you want to:
 
 - run the same agent workflow for every eligible task instead of one-off chats;
-- route tasks by labels such as `workflow:implementation` or `workflow:research`; Linear issues are the supported production task source today;
+- route tasks by labels such as `workflow:implementation` or `workflow:research`; the current production task source is the Linear adapter;
 - isolate implementation attempts in workspace-driver-managed directories;
 - combine agent steps, command validation steps, review steps, and tracker task updates;
 - retain artifacts and operator-visible events for inspection and recovery; and
@@ -86,11 +86,11 @@ This repository dogfoods the same shape under `.scherzo/` and keeps reusable exa
 
 ## Core concepts
 
-- **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, top-level workflow routes, workspace drivers, agent runtime settings, task-update policy, artifact limits, and Linear setup checks.
+- **Orchestrator config** (`.scherzo/scherzo.yaml`) owns tracker settings, polling, top-level workflow routes, workspace drivers, agent runtime settings, task-update policy, artifact limits, and tracker readiness checks. In this repository those checks target Linear through `tracker.linear.check_setup`.
 - **Workspace drivers** decide where each step runs. Bundled packaged drivers include `scherzo-workspace-noop` for artifact-only workflows and `scherzo-workspace-jj` for jj-backed implementation workspaces. Custom drivers must follow the workspace driver spec.
-- **Workflow DAGs** are YAML files routed by task metadata, currently Linear workflow labels. Steps infer agent vs command behavior from `prompt` or `run`, run in lanes selected by `run_in`, and use `recovery` for bounded step remediation.
+- **Workflow DAGs** are YAML files routed by task metadata, currently workflow labels on Linear tasks. Steps infer agent vs command behavior from `prompt` or `run`, run in lanes selected by `run_in`, and use `recovery` for bounded step remediation.
 - **Structured output** lets an agent step return a required JSON artifact and validate it with baseline checks, JSON Schema validators, command validators, or both.
-- **Operator observability** includes daemon logs, retained artifacts, and outbound Linear comments. **Operator control** is local through `scherzoctl` commands such as `ps`, `session`, `events`, `attach`, `pause`, `resume`, `retry`, `park`, `abort`, and `prompt`.
+- **Operator observability** includes daemon logs, retained artifacts, and outbound tracker updates; with the current production adapter those updates are Linear comments. **Operator control** is local through `scherzoctl` commands such as `ps`, `session`, `events`, `attach`, `pause`, `resume`, `retry`, `park`, `abort`, and `prompt`.
 
 ## Workspace drivers
 
@@ -129,7 +129,7 @@ direnv exec . gleam run -- --version
 # Readiness validation before dispatching work
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml
 
-# Cautious one-task run; with the Linear adapter this dispatches one eligible Linear issue
+# Cautious one-task run; with the current production adapter this dispatches one eligible Linear task
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.yaml
 
 # Ctrl-C-friendly daemon mode and control UI
@@ -170,7 +170,7 @@ Scherzo is in active development and is dogfooded for real project work. Expect 
 - Runtime configuration and workflow definitions are YAML-only and may still change. Markdown is supported for prompt templates, not runtime workflow definitions.
 - Linear and `pi` are the first-class integrations today.
 - Workspaces, credentials, model/provider settings, schemas, tracker-adapter capabilities, and validators are intentionally explicit repository policy.
-- Operators should expect to inspect logs, retained artifacts, `scherzoctl` output, and Linear comments when something goes wrong.
+- Operators should expect to inspect logs, retained artifacts, `scherzoctl` output, and tracker comments when something goes wrong. In this repository those tracker comments are Linear comments.
 
 ## License
 

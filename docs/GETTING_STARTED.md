@@ -1,6 +1,6 @@
 # Getting started with Scherzo
 
-This guide is for humans and coding agents adapting Scherzo to another repository. It starts with the smallest useful `.scherzo/scherzo.yaml`, adds one workflow, and ends with a cautious `--once` run against one Linear task. Linear is the production tracker adapter today, so the task is a Linear issue in this guide.
+This guide is for humans and coding agents adapting Scherzo to another repository. It starts with the smallest useful `.scherzo/scherzo.yaml`, adds one workflow, and ends with a cautious `--once` run against one tracker task. Linear is the production tracker adapter today, so the concrete task examples in this guide are Linear issues.
 
 Keep this guide practical and use the normative specs when you need exact contracts:
 
@@ -237,7 +237,7 @@ workflows:
   implementation: workflows/implementation.yaml
 ```
 
-Scherzo derives these Linear issue labels by default:
+With the current production adapter, Scherzo derives these workflow labels on Linear tasks by default:
 
 - `workflow:getting-started`
 - `workflow:implementation`
@@ -290,7 +290,7 @@ task_updates:
   enabled: false
 ```
 
-Before daemon mode, decide whether Scherzo should post comments, move states, include result text inline, or attach the result as a Linear comment file:
+Before daemon mode, decide whether Scherzo should post tracker comments, move states, include result text inline, or attach the result as a Linear comment file:
 
 ```yaml
 task_updates:
@@ -654,7 +654,7 @@ Common doctor failures:
 
 ## 11. Run one task with `--once`
 
-After doctor passes, create or choose one low-risk task. With the Linear adapter this means a Linear issue:
+After doctor passes, create or choose one low-risk task. With the current production adapter this means a Linear issue:
 
 - State is in `tracker.states.ready`, for example `Todo`.
 - Project matches `tracker.linear.project`.
@@ -723,7 +723,7 @@ direnv exec . scripts/scherzoctl stop-after-turn <session-id> --yes
 direnv exec . scripts/scherzoctl abort <session-id> --yes
 ```
 
-Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. Recovery metadata for workflow child sessions now includes parent run/step/attempt details plus orphan cleanup hints. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. Linear comments are not an operator command transport; comments beginning with old command prefixes are ignored by Scherzo. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
+Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. Recovery metadata for workflow child sessions now includes parent run/step/attempt details plus orphan cleanup hints. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. Tracker comments are not an operator command transport; with the current production adapter that means old Linear command comments are ignored by Scherzo. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
 
 ## 14. Adaptation checklist and troubleshooting
 
