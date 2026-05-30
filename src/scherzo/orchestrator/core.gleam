@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
@@ -102,7 +103,7 @@ pub fn issues_by_id(
   |> dict.from_list
 }
 
-pub fn issue_identity(issue: tracker_issue.Issue) -> String {
+pub fn issue_identity(issue: tracker_issue.Issue) -> identity.TaskIdentity {
   orchestrator_state.issue_identity(issue)
 }
 
@@ -1120,8 +1121,11 @@ pub fn clear_blocked_dependency_report(
   )
 }
 
-fn blocked_dependency_report_key(identity: String, phase: String) -> String {
-  identity <> "|" <> phase
+fn blocked_dependency_report_key(
+  task_identity: identity.TaskIdentity,
+  phase: String,
+) -> String {
+  identity.to_string(task_identity) <> "|" <> phase
 }
 
 fn trim_blocked_dependency_reports(
@@ -1255,8 +1259,11 @@ pub fn clear_invalid_workflow_report(
 }
 
 fn trim_invalid_workflow_reports(
-  reports: dict.Dict(String, orchestrator_state.InvalidWorkflowReport),
-) -> dict.Dict(String, orchestrator_state.InvalidWorkflowReport) {
+  reports: dict.Dict(
+    identity.TaskIdentity,
+    orchestrator_state.InvalidWorkflowReport,
+  ),
+) -> dict.Dict(identity.TaskIdentity, orchestrator_state.InvalidWorkflowReport) {
   case dict.size(reports) <= invalid_workflow_report_cache_limit {
     True -> reports
     False ->
@@ -1269,13 +1276,13 @@ fn trim_invalid_workflow_reports(
 }
 
 fn compare_invalid_workflow_report_entries(
-  a: #(String, orchestrator_state.InvalidWorkflowReport),
-  b: #(String, orchestrator_state.InvalidWorkflowReport),
+  a: #(identity.TaskIdentity, orchestrator_state.InvalidWorkflowReport),
+  b: #(identity.TaskIdentity, orchestrator_state.InvalidWorkflowReport),
 ) -> Order {
   let #(a_id, a_report) = a
   let #(b_id, b_report) = b
   case int.compare(b_report.attempted_at_ms, a_report.attempted_at_ms) {
-    Eq -> string.compare(a_id, b_id)
+    Eq -> string.compare(identity.to_string(a_id), identity.to_string(b_id))
     order -> order
   }
 }

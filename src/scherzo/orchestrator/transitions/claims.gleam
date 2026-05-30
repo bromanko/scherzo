@@ -1,12 +1,11 @@
 import gleam/dict
 import gleam/int
-import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import scherzo/error
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
@@ -15,7 +14,7 @@ import scherzo/path as scherzo_path
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_gate
 import scherzo/state/ledger
-import scherzo/state/record
+import scherzo/state/ledger_batch
 import scherzo/structured_output
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
@@ -97,8 +96,12 @@ pub fn begin_for_issue(
                 transition_types.PendingClaim(
                   task_ref: task_ref,
                   issue_id: issue.id,
-                  run_id: run_id,
-                  session_id: session_id,
+                  run_id: identity.run_id_to_string(identity.run_id_from_string(
+                    run_id,
+                  )),
+                  session_id: identity.session_id_to_string(
+                    identity.session_id_from_string(session_id),
+                  ),
                   workspace_path: workspace_path,
                   workflow_id: workflow_id,
                   command_route_id: "worker:"
@@ -283,26 +286,30 @@ pub fn claim_correlation_id(issue_id: String, run_id: String) -> String {
 pub fn handle_requested(
   state: transition_types.State,
   correlation_id: String,
-  issue_id: String,
-  run_id: String,
-  session_id: String,
-  bodies: List(record.RecordBody),
+  task_identity: identity.TaskIdentity,
+  issue_id: identity.IssueId,
+  run_id: identity.RunId,
+  session_id: identity.SessionId,
+  batch: ledger_batch.LedgerBatch,
   failure_event: String,
 ) -> transition_types.Outcome {
-  case pending_claim_by_issue_id(state, issue_id) {
+  case dict.get(state.pending_claims, task_identity) {
     Error(Nil) -> stale_continuation(state, correlation_id, issue_id, run_id)
     Ok(pending) ->
-      case pending.run_id == run_id && pending.session_id == session_id {
+      case
+        pending.run_id == identity.run_id_to_string(run_id)
+        && pending.session_id == identity.session_id_to_string(session_id)
+      {
         False -> stale_continuation(state, correlation_id, issue_id, run_id)
         True ->
-          case bodies {
+          case ledger_batch.to_bodies(batch) {
             [] ->
               transition_types.Outcome(
-                state: clear_pending_claim(state, issue_id),
+                state: clear_pending_claim(state, task_identity),
                 effects: [
                   effects_types.Log("warn", "claim_ledger_append_empty", [
-                    #("issue_id", issue_id),
-                    #("run_id", run_id),
+                    #("issue_id", identity.issue_id_to_string(issue_id)),
+                    #("run_id", identity.run_id_to_string(run_id)),
                     #("correlation_id", correlation_id),
                   ]),
                 ],
@@ -311,10 +318,11 @@ pub fn handle_requested(
               transition_types.Outcome(state: state, effects: [
                 effects_types.AppendLedger(effects_types.LedgerAppend(
                   correlation_id: correlation_id,
-                  bodies: bodies,
+                  batch: batch,
                   failure_event: failure_event,
                   policy: effects_types.ContinueWith(
                     effects_types.SpawnClaimedWorker(
+                      task_identity,
                       issue_id,
                       run_id,
                       session_id,
@@ -330,26 +338,30 @@ pub fn handle_requested(
 pub fn handle_spawn(
   state: transition_types.State,
   correlation_id: String,
-  issue_id: String,
-  run_id: String,
-  session_id: String,
+  task_identity: identity.TaskIdentity,
+  issue_id: identity.IssueId,
+  run_id: identity.RunId,
+  session_id: identity.SessionId,
   result: Result(Nil, ledger.LedgerError),
   callbacks: Callbacks,
 ) -> transition_types.Outcome {
-  case pending_claim_by_issue_id(state, issue_id) {
+  case dict.get(state.pending_claims, task_identity) {
     Error(Nil) -> stale_continuation(state, correlation_id, issue_id, run_id)
     Ok(pending) ->
-      case pending.run_id == run_id && pending.session_id == session_id {
+      case
+        pending.run_id == identity.run_id_to_string(run_id)
+        && pending.session_id == identity.session_id_to_string(session_id)
+      {
         False -> stale_continuation(state, correlation_id, issue_id, run_id)
         True ->
           case result {
             Error(err) ->
               transition_types.Outcome(
-                state: clear_pending_claim(state, issue_id),
+                state: clear_pending_claim(state, task_identity),
                 effects: [
                   effects_types.Log("warn", "ledger_append_failed", [
-                    #("issue_id", issue_id),
-                    #("run_id", run_id),
+                    #("issue_id", identity.issue_id_to_string(issue_id)),
+                    #("run_id", identity.run_id_to_string(run_id)),
                     #("correlation_id", correlation_id),
                     #("error", ledger_error_code(err)),
                   ]),
@@ -411,9 +423,9 @@ fn start_worker(
   transition_types.Outcome(state: continued.state, effects: [
     effects_types.StartWorker(effects_types.WorkerStart(
       task_ref: pending.task_ref,
-      issue_id: pending.issue_id,
-      run_id: pending.run_id,
-      session_id: pending.session_id,
+      issue_id: identity.issue_id_from_string(pending.issue_id),
+      run_id: identity.run_id_from_string(pending.run_id),
+      session_id: identity.session_id_from_string(pending.session_id),
       command_route_id: pending.command_route_id,
       issue: pending.issue,
       workspace_path: pending.workspace_path,
@@ -428,13 +440,13 @@ fn start_worker(
 fn stale_continuation(
   state: transition_types.State,
   correlation_id: String,
-  issue_id: String,
-  run_id: String,
+  issue_id: identity.IssueId,
+  run_id: identity.RunId,
 ) -> transition_types.Outcome {
   transition_types.Outcome(state: state, effects: [
     effects_types.Log("warn", "claim_ledger_continuation_stale", [
-      #("issue_id", issue_id),
-      #("run_id", run_id),
+      #("issue_id", identity.issue_id_to_string(issue_id)),
+      #("run_id", identity.run_id_to_string(run_id)),
       #("correlation_id", correlation_id),
     ]),
   ])
@@ -442,46 +454,12 @@ fn stale_continuation(
 
 fn clear_pending_claim(
   state: transition_types.State,
-  issue_id: String,
+  task_identity: identity.TaskIdentity,
 ) -> transition_types.State {
-  case pending_claim_key_by_issue_id(state, issue_id) {
-    Ok(identity) ->
-      transition_types.State(
-        ..state,
-        pending_claims: dict.delete(state.pending_claims, identity),
-      )
-    Error(Nil) -> state
-  }
-}
-
-fn pending_claim_by_issue_id(
-  state: transition_types.State,
-  issue_id: String,
-) -> Result(transition_types.PendingClaim, Nil) {
-  use entry <- result.try(pending_claim_entry_by_issue_id(state, issue_id))
-  let #(_, pending) = entry
-  Ok(pending)
-}
-
-fn pending_claim_key_by_issue_id(
-  state: transition_types.State,
-  issue_id: String,
-) -> Result(String, Nil) {
-  use entry <- result.try(pending_claim_entry_by_issue_id(state, issue_id))
-  let #(identity, _) = entry
-  Ok(identity)
-}
-
-fn pending_claim_entry_by_issue_id(
-  state: transition_types.State,
-  issue_id: String,
-) -> Result(#(String, transition_types.PendingClaim), Nil) {
-  state.pending_claims
-  |> dict.to_list
-  |> list.find(fn(entry) {
-    let #(_, pending) = entry
-    pending.issue_id == issue_id
-  })
+  transition_types.State(
+    ..state,
+    pending_claims: dict.delete(state.pending_claims, task_identity),
+  )
 }
 
 fn ledger_error_code(err: ledger.LedgerError) -> String {

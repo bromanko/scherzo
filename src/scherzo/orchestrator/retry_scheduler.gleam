@@ -1,9 +1,13 @@
 import gleam/dict.{type Dict}
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/task
 
 pub opaque type State(timer) {
-  State(timers: Dict(String, timer), refreshes_in_flight: Dict(String, Int))
+  State(
+    timers: Dict(identity.TaskIdentity, timer),
+    refreshes_in_flight: Dict(identity.TaskIdentity, Int),
+  )
 }
 
 pub fn new() -> State(timer) {

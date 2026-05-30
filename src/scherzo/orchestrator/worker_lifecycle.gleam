@@ -3,6 +3,7 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_registry
@@ -167,7 +168,10 @@ pub fn handle_worker_command_ready(
 ) -> state {
   let state =
     context.run_transition_messages(context.state, [
-      transition_types.WorkerCommandReady(issue_id, run_id),
+      transition_types.WorkerCommandReady(
+        identity.issue_id_from_string(issue_id),
+        identity.run_id_from_string(run_id),
+      ),
     ])
   context.set_registry(
     state,
@@ -432,8 +436,8 @@ pub fn worker_finished_to_transition(
   let state =
     context.run_transition_messages(state, [
       transition_types.WorkerFinished(
-        issue_id,
-        run_id,
+        identity.issue_id_from_string(issue_id),
+        identity.run_id_from_string(run_id),
         result,
         context.lifecycle_context(state),
       ),

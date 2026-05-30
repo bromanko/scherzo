@@ -8,12 +8,14 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/orchestrator/effects/interpreter
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
+import scherzo/state/ledger_batch
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/task
@@ -74,9 +76,8 @@ pub fn transition_runner_applies_snapshot_reply_effect_test() {
   assert interpreter.data(shell) == ["snapshot"]
 }
 
-pub fn handoff_claim_empty_ledger_does_not_spawn_worker_test() {
+pub fn handoff_claim_stale_does_not_spawn_worker_test() {
   let issue = orchestrator_transition_test.fixture_issue()
-  let state = orchestrator_transition_test.state_with_pending_claim(issue)
 
   let transition_runner.RunResult(
     state: next,
@@ -84,22 +85,22 @@ pub fn handoff_claim_empty_ledger_does_not_spawn_worker_test() {
     exhausted: exhausted,
   ) =
     transition_runner.run(
-      state: state,
+      state: orchestrator_transition_test.fixture_state(),
       shell: event_shell(),
       messages: [
         transition_types.HandoffClaimCompleted(
-          issue.id,
-          "run-1",
-          transition_types.HandoffClaimSucceeded([]),
+          orchestrator_state.issue_identity(issue),
+          identity.issue_id_from_string(issue.id),
+          identity.run_id_from_string("run-1"),
+          transition_types.HandoffClaimFailed("stale"),
         ),
       ],
       max_messages: 8,
     )
 
   assert exhausted == False
-  assert interpreter.data(shell) == ["log:claim_ledger_append_empty"]
+  assert interpreter.data(shell) == ["log:handoff_claim_stale"]
   let identity = orchestrator_state.issue_identity(issue)
-  assert dict.get(next.pending_claims, identity) == Error(Nil)
   assert dict.get(next.runtime.running, identity) == Error(Nil)
   assert dict.get(next.workers.by_issue, identity) == Error(Nil)
 }
@@ -198,9 +199,10 @@ pub fn running_refresh_releases_stale_context_slot_before_candidate_fetch_test()
       max_messages: 8,
     )
 
+  let identity = orchestrator_state.issue_identity(issue)
   assert exhausted == False
-  assert dict.get(next.runtime.running, issue.id) == Error(Nil)
-  assert dict.get(next.workers.by_issue, issue.id) == Error(Nil)
+  assert dict.get(next.runtime.running, identity) == Error(Nil)
+  assert dict.get(next.workers.by_issue, identity) == Error(Nil)
   assert interpreter.data(shell)
     == [
       "stop_refresh:issue-1",
@@ -285,11 +287,12 @@ pub fn worker_start_failure_clears_runtime_and_route_test() {
       max_messages: 8,
     )
 
+  let identity = orchestrator_state.issue_identity(issue)
   assert exhausted == False
-  assert dict.get(next.pending_claims, issue.id) == Error(Nil)
-  assert dict.get(next.runtime.running, issue.id) == Error(Nil)
-  assert dict.get(next.runtime.claimed, issue.id) == Error(Nil)
-  assert dict.get(next.workers.by_issue, issue.id) == Error(Nil)
+  assert dict.get(next.pending_claims, identity) == Error(Nil)
+  assert dict.get(next.runtime.running, identity) == Error(Nil)
+  assert dict.get(next.runtime.claimed, identity) == Error(Nil)
+  assert dict.get(next.workers.by_issue, identity) == Error(Nil)
   assert dict.get(next.workers.route_to_session, "worker:run-1:1") == Error(Nil)
   assert interpreter.data(shell)
     == [
@@ -323,8 +326,8 @@ pub fn worker_finish_removes_running_and_reports_success_test() {
       shell: event_shell(),
       messages: [
         transition_types.WorkerFinished(
-          issue.id,
-          "run-1",
+          identity.issue_id_from_string(issue.id),
+          identity.run_id_from_string("run-1"),
           Ok(success),
           lifecycle_context(),
         ),
@@ -367,8 +370,8 @@ pub fn worker_finish_uses_task_ref_with_duplicate_remote_ids_test() {
       shell: event_shell(),
       messages: [
         transition_types.WorkerFinished(
-          memory_issue.id,
-          "run-memory",
+          identity.issue_id_from_string(memory_issue.id),
+          identity.run_id_from_string("run-memory"),
           Ok(success),
           lifecycle_context(),
         ),
@@ -398,9 +401,9 @@ pub fn worker_down_uses_task_ref_with_duplicate_remote_ids_test() {
       messages: [
         transition_types.WorkerDown(
           transition_types.KnownWorkerDown(
-            memory_issue.id,
-            "run-memory",
-            "session-memory",
+            identity.issue_id_from_string(memory_issue.id),
+            identity.run_id_from_string("run-memory"),
+            identity.session_id_from_string("session-memory"),
           ),
           lifecycle_context(),
         ),
@@ -439,7 +442,11 @@ pub fn worker_down_known_removes_worker_and_reports_failure_test() {
       shell: event_shell(),
       messages: [
         transition_types.WorkerDown(
-          transition_types.KnownWorkerDown(issue.id, "run-1", "session-1"),
+          transition_types.KnownWorkerDown(
+            identity.issue_id_from_string(issue.id),
+            identity.run_id_from_string("run-1"),
+            identity.session_id_from_string("session-1"),
+          ),
           lifecycle_context(),
         ),
       ],
@@ -485,7 +492,9 @@ pub fn worker_down_stale_is_safe_test() {
       shell: event_shell(),
       messages: [
         transition_types.WorkerDown(
-          transition_types.WorkerDownStale("issue-1"),
+          transition_types.WorkerDownStale(identity.issue_id_from_string(
+            "issue-1",
+          )),
           lifecycle_context(),
         ),
       ],
@@ -510,8 +519,13 @@ pub fn yaml_step_cleanup_removes_pure_route_test() {
       state: state,
       shell: event_shell(),
       messages: [
-        transition_types.YamlStepStarted("step-session", "run-1"),
-        transition_types.YamlStepFinished("step-session"),
+        transition_types.YamlStepStarted(
+          identity.session_id_from_string("step-session"),
+          identity.run_id_from_string("run-1"),
+        ),
+        transition_types.YamlStepFinished(identity.session_id_from_string(
+          "step-session",
+        )),
       ],
       max_messages: 4,
     )
@@ -802,7 +816,12 @@ fn shell_with_append_and_start_result(
       list.append(events, ["log:" <> event])
     },
     start_worker: fn(events, request) {
-      #(list.append(events, ["start:" <> request.run_id]), start_result)
+      #(
+        list.append(events, [
+          "start:" <> identity.run_id_to_string(request.run_id),
+        ]),
+        start_result,
+      )
     },
     reply_snapshot: fn(events, _) { list.append(events, ["snapshot"]) },
     mark_poll_in_flight: fn(events, generation) {
@@ -857,16 +876,24 @@ fn shell_with_append_and_start_result(
       list.append(events, ["start_failed:" <> reason])
     },
     remove_worker: fn(events, identity, _) {
-      list.append(events, ["remove:" <> identity.issue_id])
+      list.append(events, [
+        "remove:" <> identity.issue_id_to_string(identity.issue_id),
+      ])
     },
     publish_worker_exited: fn(events, request) {
-      list.append(events, ["publish:" <> request.identity.issue_id])
+      list.append(events, [
+        "publish:" <> identity.issue_id_to_string(request.identity.issue_id),
+      ])
     },
     report_worker_success: fn(events, identity, _) {
-      list.append(events, ["success:" <> identity.issue_id])
+      list.append(events, [
+        "success:" <> identity.issue_id_to_string(identity.issue_id),
+      ])
     },
     report_worker_failure: fn(events, identity, _) {
-      list.append(events, ["failure:" <> identity.issue_id])
+      list.append(events, [
+        "failure:" <> identity.issue_id_to_string(identity.issue_id),
+      ])
     },
     cleanup_workspace: fn(events, path) {
       list.append(events, ["cleanup:" <> path])
@@ -878,28 +905,40 @@ fn shell_with_append_and_start_result(
       list.append(events, ["report_park:" <> report.task.remote_id])
     },
     stop_worker: fn(events, identity, _) {
-      list.append(events, ["stop:" <> identity.issue_id])
+      list.append(events, [
+        "stop:" <> identity.issue_id_to_string(identity.issue_id),
+      ])
     },
     stop_worker_after_issue_refresh: fn(events, identity, _) {
-      list.append(events, ["stop_refresh:" <> identity.issue_id])
+      list.append(events, [
+        "stop_refresh:" <> identity.issue_id_to_string(identity.issue_id),
+      ])
     },
     register_yaml_step_started: fn(events, session_id, _) {
-      list.append(events, ["yaml_start:" <> session_id])
+      list.append(events, [
+        "yaml_start:" <> identity.session_id_to_string(session_id),
+      ])
     },
     finish_yaml_step_route: fn(events, session_id) {
-      list.append(events, ["yaml_finish:" <> session_id])
+      list.append(events, [
+        "yaml_finish:" <> identity.session_id_to_string(session_id),
+      ])
     },
     finish_yaml_step_session: fn(events, session_id, _) {
-      list.append(events, ["yaml_session_finish:" <> session_id])
+      list.append(events, [
+        "yaml_session_finish:" <> identity.session_id_to_string(session_id),
+      ])
     },
     finish_yaml_step_sessions_for_run: fn(events, run_id, _) {
-      list.append(events, ["yaml_run_finish:" <> run_id])
+      list.append(events, [
+        "yaml_run_finish:" <> identity.run_id_to_string(run_id),
+      ])
     },
     clear_yaml_step_routes_for_run: fn(events, run_id) {
-      list.append(events, ["yaml_clear:" <> run_id])
+      list.append(events, ["yaml_clear:" <> identity.run_id_to_string(run_id)])
     },
     mark_yaml_run_stopping: fn(events, run_id, _) {
-      list.append(events, ["yaml_stop:" <> run_id])
+      list.append(events, ["yaml_stop:" <> identity.run_id_to_string(run_id)])
     },
     shutdown_runtime: fn(events, stop_effect_runner) {
       list.append(events, ["shutdown:" <> bool.to_string(stop_effect_runner)])
@@ -932,17 +971,30 @@ fn bool_string(value: Bool) -> String {
 fn claim_ledger_append_requested() -> transition_types.Message {
   transition_types.ClaimLedgerAppendRequested(
     correlation_id: "claim:issue-1:run-1",
-    issue_id: "issue-1",
-    run_id: "run-1",
-    session_id: "session-1",
-    bodies: [
-      record.RunStarted(
+    task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
+    issue_id: identity.issue_id_from_string("issue-1"),
+    run_id: identity.run_id_from_string("run-1"),
+    session_id: identity.session_id_from_string("session-1"),
+    batch: ledger_batch.claim_started(
+      record.WorkflowRunStartedWithTask(
         "run-1",
+        "default",
+        "workflow-fingerprint",
         "issue-1",
         "ABC-1",
+        record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+        "issue-fingerprint",
+        123,
         "test/tmp/workspaces/ABC-1",
       ),
-    ],
+      "issue-1",
+      "ABC-1",
+      "test/tmp/workspaces/ABC-1",
+      "run-1",
+      0,
+      1,
+      456,
+    ),
     failure_event: "ledger_append_failed",
   )
 }

@@ -4,6 +4,7 @@ import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/log
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
@@ -79,18 +80,25 @@ pub opaque type ShellState(shell) {
       effects_types.WorkerIdentity,
       reason.StopReason,
     ) -> shell,
-    register_yaml_step_started: fn(shell, String, String) -> shell,
-    finish_yaml_step_route: fn(shell, String) -> shell,
-    finish_yaml_step_session: fn(shell, String, session_reason.WorkerExitReason) ->
+    register_yaml_step_started: fn(shell, identity.SessionId, identity.RunId) ->
       shell,
-    finish_yaml_step_sessions_for_run: fn(
+    finish_yaml_step_route: fn(shell, identity.SessionId) -> shell,
+    finish_yaml_step_session: fn(
       shell,
-      String,
+      identity.SessionId,
       session_reason.WorkerExitReason,
     ) -> shell,
-    clear_yaml_step_routes_for_run: fn(shell, String) -> shell,
-    mark_yaml_run_stopping: fn(shell, String, session_reason.WorkerExitReason) ->
+    finish_yaml_step_sessions_for_run: fn(
       shell,
+      identity.RunId,
+      session_reason.WorkerExitReason,
+    ) -> shell,
+    clear_yaml_step_routes_for_run: fn(shell, identity.RunId) -> shell,
+    mark_yaml_run_stopping: fn(
+      shell,
+      identity.RunId,
+      session_reason.WorkerExitReason,
+    ) -> shell,
     shutdown_runtime: fn(shell, Bool) -> shell,
     set_operator_paused: fn(shell, Bool) -> shell,
     apply_operator_command: fn(shell, effects_types.OperatorCommandRequest) ->
@@ -280,27 +288,28 @@ pub fn new_production_shell_state(
   ) -> shell,
   register_yaml_step_started register_yaml_step_started: fn(
     shell,
-    String,
-    String,
+    identity.SessionId,
+    identity.RunId,
   ) -> shell,
-  finish_yaml_step_route finish_yaml_step_route: fn(shell, String) -> shell,
+  finish_yaml_step_route finish_yaml_step_route: fn(shell, identity.SessionId) ->
+    shell,
   finish_yaml_step_session finish_yaml_step_session: fn(
     shell,
-    String,
+    identity.SessionId,
     session_reason.WorkerExitReason,
   ) -> shell,
   finish_yaml_step_sessions_for_run finish_yaml_step_sessions_for_run: fn(
     shell,
-    String,
+    identity.RunId,
     session_reason.WorkerExitReason,
   ) -> shell,
   clear_yaml_step_routes_for_run clear_yaml_step_routes_for_run: fn(
     shell,
-    String,
+    identity.RunId,
   ) -> shell,
   mark_yaml_run_stopping mark_yaml_run_stopping: fn(
     shell,
-    String,
+    identity.RunId,
     session_reason.WorkerExitReason,
   ) -> shell,
   shutdown_runtime shutdown_runtime: fn(shell, Bool) -> shell,

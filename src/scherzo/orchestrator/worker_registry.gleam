@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, Some}
 import scherzo/agent/worker_command
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/reason as session_reason
 import scherzo/task
@@ -57,9 +58,9 @@ pub type DownResolution {
 
 pub opaque type Registry {
   Registry(
-    workers: Dict(String, WorkerHandle),
-    worker_monitors: Dict(process.Monitor, String),
-    issue_sessions: Dict(String, String),
+    workers: Dict(identity.TaskIdentity, WorkerHandle),
+    worker_monitors: Dict(process.Monitor, identity.TaskIdentity),
+    issue_sessions: Dict(identity.TaskIdentity, String),
     scheduled_workers: Dict(String, ScheduledWorkerHandle),
     scheduled_worker_monitors: Dict(process.Monitor, String),
     scheduled_sessions: Dict(String, String),
@@ -72,7 +73,7 @@ pub opaque type Registry {
   )
 }
 
-fn worker_identity(handle: WorkerHandle) -> String {
+fn worker_identity(handle: WorkerHandle) -> identity.TaskIdentity {
   orchestrator_state.task_ref_identity(handle.task_ref)
 }
 
@@ -208,7 +209,7 @@ fn register_worker_command_subject_by_run(
 
 fn put_worker_command_subject(
   registry: Registry,
-  identity: String,
+  identity: identity.TaskIdentity,
   handle: WorkerHandle,
   command_subject: process.Subject(worker_command.Command),
 ) -> Registry {
@@ -331,7 +332,9 @@ pub fn has_active_task_ref(registry: Registry, ref: task.TaskRef) -> Bool {
   dict.has_key(registry.workers, orchestrator_state.task_ref_identity(ref))
 }
 
-pub fn issue_sessions(registry: Registry) -> Dict(String, String) {
+pub fn issue_sessions(
+  registry: Registry,
+) -> Dict(identity.TaskIdentity, String) {
   registry.issue_sessions
 }
 
@@ -628,8 +631,8 @@ pub fn resolve_down(
   monitor: process.Monitor,
 ) -> DownResolution {
   case dict.get(registry.worker_monitors, monitor) {
-    Ok(identity) ->
-      case dict.get(registry.workers, identity) {
+    Ok(task_identity) ->
+      case dict.get(registry.workers, task_identity) {
         Ok(handle) ->
           WorkerDown(
             remove_worker_handle(registry, handle),
@@ -641,9 +644,12 @@ pub fn resolve_down(
             Registry(
               ..registry,
               worker_monitors: dict.delete(registry.worker_monitors, monitor),
-              issue_sessions: dict.delete(registry.issue_sessions, identity),
+              issue_sessions: dict.delete(
+                registry.issue_sessions,
+                task_identity,
+              ),
             ),
-            identity,
+            identity.to_string(task_identity),
           )
       }
     Error(Nil) ->

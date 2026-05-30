@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_lifecycle
@@ -144,7 +145,13 @@ pub fn worker_lifecycle_handle_worker_command_ready_registers_subject_test() {
     worker_lifecycle.WorkerCommandReadyContext(
       state: state,
       run_transition_messages: fn(state, messages) {
-        assert messages == [transition_types.WorkerCommandReady("1", "run-1")]
+        assert messages
+          == [
+            transition_types.WorkerCommandReady(
+              identity.issue_id_from_string("1"),
+              identity.run_id_from_string("run-1"),
+            ),
+          ]
         append_event(state, "transition")
       },
       registry: fn(state) { state.registry },

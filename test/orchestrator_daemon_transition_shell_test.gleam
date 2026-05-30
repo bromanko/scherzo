@@ -8,6 +8,7 @@ import scherzo/control/command
 import scherzo/error
 import scherzo/orchestrator/daemon_transition_shell
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
@@ -15,6 +16,7 @@ import scherzo/result_artifact
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
+import scherzo/state/ledger_batch
 import scherzo/state/record
 import scherzo/task
 import scherzo/tracker/adapter
@@ -104,7 +106,7 @@ pub fn interpret_effects_covers_callback_surface_test() {
         effects_types.Log("info", "custom_event", []),
         effects_types.AppendLedger(effects_types.LedgerAppend(
           correlation_id: "direct",
-          bodies: [],
+          batch: ledger_batch.retry_cancelled("issue-1", 1, "test"),
           failure_event: "direct_failed",
           policy: effects_types.ContinueRegardless,
         )),
@@ -173,15 +175,28 @@ pub fn interpret_effects_covers_callback_surface_test() {
           worker_identity_value,
           orchestrator_reason.StopTerminal,
         ),
-        effects_types.RegisterYamlStepStarted("session-1", "run-1"),
-        effects_types.FinishYamlStepRoute("session-1"),
-        effects_types.FinishYamlStepSession("session-1", session_reason.Normal),
+        effects_types.RegisterYamlStepStarted(
+          identity.session_id_from_string("session-1"),
+          identity.run_id_from_string("run-1"),
+        ),
+        effects_types.FinishYamlStepRoute(identity.session_id_from_string(
+          "session-1",
+        )),
+        effects_types.FinishYamlStepSession(
+          identity.session_id_from_string("session-1"),
+          session_reason.Normal,
+        ),
         effects_types.FinishYamlStepSessionsForRun(
-          "run-1",
+          identity.run_id_from_string("run-1"),
           session_reason.Failed,
         ),
-        effects_types.ClearYamlStepRoutesForRun("run-1"),
-        effects_types.MarkYamlRunStopping("run-1", session_reason.Stopped),
+        effects_types.ClearYamlStepRoutesForRun(identity.run_id_from_string(
+          "run-1",
+        )),
+        effects_types.MarkYamlRunStopping(
+          identity.run_id_from_string("run-1"),
+          session_reason.Stopped,
+        ),
         effects_types.ShutdownRuntime(True),
         effects_types.SetOperatorPaused(True),
         effects_types.ApplyOperatorCommand(apply_request),
@@ -246,7 +261,11 @@ pub fn interpret_effects_covers_callback_surface_test() {
     ]
   assert follow_up_messages
     == [
-      transition_types.WorkerStartSucceeded("issue-1", "run-1", "session-1"),
+      transition_types.WorkerStartSucceeded(
+        identity.issue_id_from_string("issue-1"),
+        identity.run_id_from_string("run-1"),
+        identity.session_id_from_string("session-1"),
+      ),
       transition_types.SnapshotRequested,
       transition_types.SnapshotRequested,
     ]
@@ -256,12 +275,13 @@ pub fn interpret_effects_surfaces_ledger_append_failure_test() {
   let request =
     effects_types.LedgerAppend(
       correlation_id: "claim:issue-1:run-1",
-      bodies: [],
+      batch: ledger_batch.retry_cancelled("issue-1", 1, "test"),
       failure_event: "ledger_append_failed",
       policy: effects_types.ContinueWith(effects_types.SpawnClaimedWorker(
-        issue_id: "issue-1",
-        run_id: "run-1",
-        session_id: "session-1",
+        task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
+        issue_id: identity.issue_id_from_string("issue-1"),
+        run_id: identity.run_id_from_string("run-1"),
+        session_id: identity.session_id_from_string("session-1"),
       )),
     )
 
@@ -278,9 +298,10 @@ pub fn interpret_effects_surfaces_ledger_append_failure_test() {
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
         continuation: effects_types.SpawnClaimedWorker(
-          issue_id: "issue-1",
-          run_id: "run-1",
-          session_id: "session-1",
+          task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
+          issue_id: identity.issue_id_from_string("issue-1"),
+          run_id: identity.run_id_from_string("run-1"),
+          session_id: identity.session_id_from_string("session-1"),
         ),
         result: Error(ledger.Io("disk full")),
         now_ms: 456,
@@ -343,7 +364,13 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     now_ms: fn(_) { 456 },
     log_effect: fn(state, _, event, _) { append_event(state, "log:" <> event) },
     start_worker: fn(state, request) {
-      #(append_event(state, "start:" <> request.run_id), Ok(Nil))
+      #(
+        append_event(
+          state,
+          "start:" <> identity.run_id_to_string(request.run_id),
+        ),
+        Ok(Nil),
+      )
     },
     reply_snapshot: fn(state, _) { append_event(state, "snapshot") },
     mark_poll_in_flight: fn(state, generation) {
@@ -430,26 +457,41 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     worker_start_failed: fn(state, request, reason) {
       append_event(
         state,
-        "worker_start_failed:" <> request.run_id <> ":" <> reason,
+        "worker_start_failed:"
+          <> identity.run_id_to_string(request.run_id)
+          <> ":"
+          <> reason,
       )
     },
-    remove_worker: fn(state, identity, demonitor) {
+    remove_worker: fn(state, worker_identity, demonitor) {
       append_event(
         state,
-        "remove_worker:" <> identity.session_id <> ":" <> bool_string(demonitor),
+        "remove_worker:"
+          <> identity.session_id_to_string(worker_identity.session_id)
+          <> ":"
+          <> bool_string(demonitor),
       )
     },
     publish_worker_exited: fn(state, request) {
       append_event(
         state,
-        "publish_worker_exited:" <> request.identity.session_id,
+        "publish_worker_exited:"
+          <> identity.session_id_to_string(request.identity.session_id),
       )
     },
-    report_worker_success: fn(state, identity, _) {
-      append_event(state, "worker_success:" <> identity.session_id)
+    report_worker_success: fn(state, worker_identity, _) {
+      append_event(
+        state,
+        "worker_success:"
+          <> identity.session_id_to_string(worker_identity.session_id),
+      )
     },
-    report_worker_failure: fn(state, identity, _) {
-      append_event(state, "worker_failure:" <> identity.session_id)
+    report_worker_failure: fn(state, worker_identity, _) {
+      append_event(
+        state,
+        "worker_failure:"
+          <> identity.session_id_to_string(worker_identity.session_id),
+      )
     },
     cleanup_workspace: fn(state, workspace_path) {
       append_event(state, "cleanup:" <> workspace_path)
@@ -460,29 +502,49 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     report_park: fn(state, report) {
       append_event(state, "report_park:" <> report.task.remote_id)
     },
-    stop_worker: fn(state, identity, _) {
-      append_event(state, "stop_worker:" <> identity.session_id)
+    stop_worker: fn(state, worker_identity, _) {
+      append_event(
+        state,
+        "stop_worker:"
+          <> identity.session_id_to_string(worker_identity.session_id),
+      )
     },
-    stop_worker_after_issue_refresh: fn(state, identity, _) {
-      append_event(state, "stop_worker_after_refresh:" <> identity.session_id)
+    stop_worker_after_issue_refresh: fn(state, worker_identity, _) {
+      append_event(
+        state,
+        "stop_worker_after_refresh:"
+          <> identity.session_id_to_string(worker_identity.session_id),
+      )
     },
     register_yaml_step_started: fn(state, session_id, _) {
-      append_event(state, "yaml_start:" <> session_id)
+      append_event(
+        state,
+        "yaml_start:" <> identity.session_id_to_string(session_id),
+      )
     },
     finish_yaml_step_route: fn(state, session_id) {
-      append_event(state, "yaml_route:" <> session_id)
+      append_event(
+        state,
+        "yaml_route:" <> identity.session_id_to_string(session_id),
+      )
     },
     finish_yaml_step_session: fn(state, session_id, _) {
-      append_event(state, "yaml_session:" <> session_id)
+      append_event(
+        state,
+        "yaml_session:" <> identity.session_id_to_string(session_id),
+      )
     },
     finish_yaml_step_sessions_for_run: fn(state, run_id, _) {
-      append_event(state, "yaml_sessions_for_run:" <> run_id)
+      append_event(
+        state,
+        "yaml_sessions_for_run:" <> identity.run_id_to_string(run_id),
+      )
     },
     clear_yaml_step_routes_for_run: fn(state, run_id) {
-      append_event(state, "yaml_clear:" <> run_id)
+      append_event(state, "yaml_clear:" <> identity.run_id_to_string(run_id))
     },
     mark_yaml_run_stopping: fn(state, run_id, _) {
-      append_event(state, "yaml_stopping:" <> run_id)
+      append_event(state, "yaml_stopping:" <> identity.run_id_to_string(run_id))
     },
     shutdown_runtime: fn(state, stop_effect_runner) {
       append_event(state, "shutdown:" <> bool_string(stop_effect_runner))
@@ -528,7 +590,13 @@ fn failing_handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     now_ms: fn(_) { 456 },
     log_effect: fn(state, _, event, _) { append_event(state, "log:" <> event) },
     start_worker: fn(state, request) {
-      #(append_event(state, "start:" <> request.run_id), Ok(Nil))
+      #(
+        append_event(
+          state,
+          "start:" <> identity.run_id_to_string(request.run_id),
+        ),
+        Ok(Nil),
+      )
     },
     reply_snapshot: fn(state, _) { state },
     mark_poll_in_flight: fn(state, _) { state },
@@ -581,7 +649,10 @@ fn failing_handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     stop_worker: fn(state, _, _) { state },
     stop_worker_after_issue_refresh: fn(state, _, _) { state },
     register_yaml_step_started: fn(state, session_id, _) {
-      append_event(state, "yaml_start:" <> session_id)
+      append_event(
+        state,
+        "yaml_start:" <> identity.session_id_to_string(session_id),
+      )
     },
     finish_yaml_step_route: fn(state, _) { state },
     finish_yaml_step_session: fn(state, _, _) { state },
@@ -656,9 +727,9 @@ fn operator_request(
 fn worker_start(issue: tracker_issue.Issue) -> effects_types.WorkerStart {
   effects_types.WorkerStart(
     task_ref: task.from_legacy_issue(issue).ref,
-    issue_id: issue.id,
-    run_id: "run-1",
-    session_id: "session-1",
+    issue_id: identity.issue_id_from_string(issue.id),
+    run_id: identity.run_id_from_string("run-1"),
+    session_id: identity.session_id_from_string("session-1"),
     command_route_id: "route-1",
     issue: issue,
     workspace_path: "test/tmp/workspaces/ABC-1",
@@ -671,9 +742,9 @@ fn worker_start(issue: tracker_issue.Issue) -> effects_types.WorkerStart {
 fn worker_identity(issue: tracker_issue.Issue) -> effects_types.WorkerIdentity {
   effects_types.WorkerIdentity(
     task_ref: task.from_legacy_issue(issue).ref,
-    issue_id: issue.id,
-    run_id: "run-1",
-    session_id: "session-1",
+    issue_id: identity.issue_id_from_string(issue.id),
+    run_id: identity.run_id_from_string("run-1"),
+    session_id: identity.session_id_from_string("session-1"),
     issue: issue,
     workspace_path: "test/tmp/workspaces/ABC-1",
     workflow_id: "default",
@@ -720,17 +791,30 @@ fn append_event(state: ShellState, event: String) -> ShellState {
 fn claim_ledger_append_requested() -> transition_types.Message {
   transition_types.ClaimLedgerAppendRequested(
     correlation_id: "claim:issue-1:run-1",
-    issue_id: "issue-1",
-    run_id: "run-1",
-    session_id: "session-1",
-    bodies: [
-      record.RunStarted(
+    task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
+    issue_id: identity.issue_id_from_string("issue-1"),
+    run_id: identity.run_id_from_string("run-1"),
+    session_id: identity.session_id_from_string("session-1"),
+    batch: ledger_batch.claim_started(
+      record.WorkflowRunStartedWithTask(
         "run-1",
+        "default",
+        "workflow-fingerprint",
         "issue-1",
         "ABC-1",
+        record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+        "issue-fingerprint",
+        123,
         "test/tmp/workspaces/ABC-1",
       ),
-    ],
+      "issue-1",
+      "ABC-1",
+      "test/tmp/workspaces/ABC-1",
+      "run-1",
+      0,
+      1,
+      456,
+    ),
     failure_event: "ledger_append_failed",
   )
 }

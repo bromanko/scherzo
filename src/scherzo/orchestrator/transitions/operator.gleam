@@ -11,7 +11,7 @@ import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/claims
 import scherzo/state/ledger
-import scherzo/state/record
+import scherzo/state/ledger_batch
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 
@@ -324,16 +324,11 @@ fn operator_retry_effects(
   [
     effects_types.AppendLedger(effects_types.LedgerAppend(
       correlation_id: "operator_retry:" <> issue.id,
-      bodies: [
-        record.IssueCounterUpdated(
-          issue.id,
-          issue.identifier,
-          0,
-          0,
-          context.now_ms,
-          None,
-        ),
-      ],
+      batch: ledger_batch.operator_retry_counter_reset(
+        issue.id,
+        issue.identifier,
+        context.now_ms,
+      ),
       failure_event: "ledger_append_failed",
       policy: effects_types.ContinueRegardless,
     )),
@@ -408,16 +403,14 @@ fn park_issue(
   transition_types.Outcome(state: state, effects: [
     effects_types.AppendLedger(effects_types.LedgerAppend(
       correlation_id: "operator_park:" <> issue.id,
-      bodies: [
-        record.IssueParkedV2(
-          issue.id,
-          issue.identifier,
-          reason_text,
-          "explicit_unpark_only",
-          "",
-          context.now_ms,
-        ),
-      ],
+      batch: ledger_batch.issue_parked(
+        issue.id,
+        issue.identifier,
+        reason_text,
+        "explicit_unpark_only",
+        "",
+        context.now_ms,
+      ),
       failure_event: "ledger_append_failed",
       policy: effects_types.ContinueWith(effects_types.ReportParkAfterLedger(
         issue.id,
@@ -465,17 +458,12 @@ fn handle_unpark(
       transition_types.Outcome(state: state, effects: [
         effects_types.AppendLedger(effects_types.LedgerAppend(
           correlation_id: "operator_unpark:" <> issue_id,
-          bodies: [
-            record.IssueUnparked(issue_id, issue_identifier, "operator"),
-            record.IssueCounterUpdated(
-              issue_id,
-              issue_identifier,
-              0,
-              0,
-              context.now_ms,
-              None,
-            ),
-          ],
+          batch: ledger_batch.issue_unparked(
+            issue_id,
+            issue_identifier,
+            "operator",
+            context.now_ms,
+          ),
           failure_event: "ledger_append_failed",
           policy: effects_types.ContinueRegardless,
         )),

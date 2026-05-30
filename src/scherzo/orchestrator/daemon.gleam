@@ -24,6 +24,7 @@ import scherzo/orchestrator/effect_completion_handler
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/event_publisher
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/operator_runtime
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/reason as orchestrator_reason
@@ -48,6 +49,7 @@ import scherzo/session/recovery as session_recovery
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
+import scherzo/state/ledger_batch
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
@@ -168,9 +170,9 @@ type State {
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
-    pending_claims: Dict(String, transition_types.PendingClaim),
+    pending_claims: Dict(identity.TaskIdentity, transition_types.PendingClaim),
     pending_dispatch_validations: Dict(
-      String,
+      identity.TaskIdentity,
       transition_types.PendingDispatchValidation,
     ),
     next_dispatch_validation_generation: Int,
@@ -1237,12 +1239,19 @@ fn handle_yaml_step_started(
   run_id: String,
 ) -> State {
   run_transition_messages(state, [
-    transition_types.YamlStepStarted(session_id, run_id),
+    transition_types.YamlStepStarted(
+      identity.session_id_from_string(session_id),
+      identity.run_id_from_string(run_id),
+    ),
   ])
 }
 
 fn handle_yaml_step_finished(state: State, session_id: String) -> State {
-  run_transition_messages(state, [transition_types.YamlStepFinished(session_id)])
+  run_transition_messages(state, [
+    transition_types.YamlStepFinished(identity.session_id_from_string(
+      session_id,
+    )),
+  ])
 }
 
 fn finish_yaml_step_sessions_for_run(
@@ -1301,7 +1310,9 @@ fn registry_down_resolution_context(
     worker_down_stale: fn(state, registry, issue_id) {
       run_transition_messages(State(..state, registry: registry), [
         transition_types.WorkerDown(
-          transition_types.WorkerDownStale(issue_id),
+          transition_types.WorkerDownStale(identity.issue_id_from_string(
+            issue_id,
+          )),
           transition_lifecycle_context(state),
         ),
       ])
@@ -1338,9 +1349,9 @@ fn handle_known_worker_down(
   run_transition_messages(state, [
     transition_types.WorkerDown(
       transition_types.KnownWorkerDown(
-        issue_id,
-        handle.run_id,
-        handle.session_id,
+        identity.issue_id_from_string(issue_id),
+        identity.run_id_from_string(handle.run_id),
+        identity.session_id_from_string(handle.session_id),
       ),
       transition_lifecycle_context(state),
     ),
@@ -2530,7 +2541,7 @@ fn stop_session_for_operator(
       let state =
         run_transition_messages(state, [
           transition_types.WorkerStopRequested(
-            session_id,
+            identity.session_id_from_string(session_id),
             reason,
             transition_lifecycle_context(state),
           ),
@@ -3103,7 +3114,8 @@ fn transition_append_ledger(
   state: State,
   request: transition_effects.LedgerAppend,
 ) -> #(State, Result(Nil, ledger.LedgerError)) {
-  case request.bodies {
+  let bodies = ledger_batch.to_bodies(request.batch)
+  case bodies {
     [] -> #(state, Ok(Nil))
     _ ->
       case
@@ -3119,10 +3131,7 @@ fn transition_append_ledger(
           case
             ledger.append_many(
               ledger_path,
-              ledger_records_for_bodies(
-                state.dependencies.now_ms(),
-                request.bodies,
-              ),
+              ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
               True,
             )
           {
@@ -3142,19 +3151,16 @@ fn transition_start_worker(
   state: State,
   request: transition_effects.WorkerStart,
 ) -> #(State, Result(Nil, String)) {
+  let run_id = identity.run_id_to_string(request.run_id)
+  let session_id = identity.session_id_to_string(request.session_id)
   #(
     worker_lifecycle.spawn_worker(
-      worker_spawn_context(
-        state,
-        request.issue,
-        request.run_id,
-        request.session_id,
-      ),
+      worker_spawn_context(state, request.issue, run_id, session_id),
       request.task_ref,
       request.issue,
       request.workspace_path,
-      request.run_id,
-      request.session_id,
+      run_id,
+      session_id,
       request.recovery,
     ),
     Ok(Nil),
@@ -3166,9 +3172,11 @@ fn transition_worker_start_failed(
   request: transition_effects.WorkerStart,
   reason: String,
 ) -> State {
+  let issue_id = identity.issue_id_to_string(request.issue_id)
+  let run_id = identity.run_id_to_string(request.run_id)
   log_state(state, "warn", "worker_start_failed", [
-    #("issue_id", request.issue_id),
-    #("run_id", request.run_id),
+    #("issue_id", issue_id),
+    #("run_id", run_id),
     #("reason", reason),
   ])
   State(
@@ -3177,7 +3185,7 @@ fn transition_worker_start_failed(
       state.registry,
       request.task_ref,
     ),
-    recovery_by_issue: dict.delete(state.recovery_by_issue, request.issue_id),
+    recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
   )
 }
 
@@ -3186,6 +3194,7 @@ fn transition_remove_worker(
   identity: transition_effects.WorkerIdentity,
   demonitor: Bool,
 ) -> State {
+  let run_id = identity.run_id_to_string(identity.run_id)
   case worker_registry.worker_for_task_ref(state.registry, identity.task_ref) {
     Error(Nil) ->
       State(
@@ -3196,7 +3205,7 @@ fn transition_remove_worker(
         ),
       )
     Ok(handle) -> {
-      case handle.run_id == identity.run_id && demonitor {
+      case handle.run_id == run_id && demonitor {
         True -> process.demonitor_process(handle.monitor)
         False -> Nil
       }
@@ -3212,28 +3221,20 @@ fn transition_publish_worker_exited(
   state: State,
   request: transition_effects.WorkerExitPublication,
 ) -> State {
+  let session_id = identity.session_id_to_string(request.identity.session_id)
   case
     request.update_tokens && event_publisher.tokens_are_nonzero(request.tokens)
   {
-    True ->
-      hub.update_tokens(
-        state.event_hub,
-        request.identity.session_id,
-        request.tokens,
-      )
+    True -> hub.update_tokens(state.event_hub, session_id, request.tokens)
     False -> Nil
   }
   event_publisher.lifecycle(
     state.event_hub,
-    request.identity.session_id,
+    session_id,
     session_event.WorkerExited,
     Some(request.reason_text),
   )
-  hub.finish_session(
-    state.event_hub,
-    request.identity.session_id,
-    request.exit_reason,
-  )
+  hub.finish_session(state.event_hub, session_id, request.exit_reason)
   state
 }
 
@@ -3250,10 +3251,10 @@ fn transition_report_worker_success(
     state,
     effect_runner.ReportSuccess(
       task_ref: identity.task_ref,
-      issue_id: identity.issue_id,
+      issue_id: identity.issue_id_to_string(identity.issue_id),
       issue: final_issue,
       success: success,
-      run_id: identity.run_id,
+      run_id: identity.run_id_to_string(identity.run_id),
       workflow_id: identity.workflow_id,
       capability: require_handoff_capability(state),
     ),
@@ -3269,10 +3270,10 @@ fn transition_report_worker_failure(
     state,
     effect_runner.ReportFailure(
       task_ref: identity.task_ref,
-      issue_id: identity.issue_id,
+      issue_id: identity.issue_id_to_string(identity.issue_id),
       issue: identity.issue,
       failure: failure,
-      run_id: identity.run_id,
+      run_id: identity.run_id_to_string(identity.run_id),
       workflow_id: identity.workflow_id,
       capability: require_handoff_capability(state),
     ),
@@ -3441,7 +3442,7 @@ fn transition_stop_worker_after_issue_refresh(
         session_reason.Stopped,
       )
       log_state(state, "warn", "worker_stop_requested", [
-        #("issue_id", identity.issue_id),
+        #("issue_id", identity.issue_id_to_string(identity.issue_id)),
         #("reason", reason_text),
       ])
       State(
@@ -3454,77 +3455,88 @@ fn transition_stop_worker_after_issue_refresh(
 
 fn transition_register_yaml_step_started(
   state: State,
-  session_id: String,
-  run_id: String,
+  session_id: identity.SessionId,
+  run_id: identity.RunId,
 ) -> State {
   State(
     ..state,
     registry: worker_registry.register_yaml_step_started(
       state.registry,
-      session_id,
-      run_id,
+      identity.session_id_to_string(session_id),
+      identity.run_id_to_string(run_id),
     ),
   )
 }
 
 fn transition_finish_yaml_step_route(
   state: State,
-  session_id: String,
+  session_id: identity.SessionId,
 ) -> State {
   State(
     ..state,
-    registry: worker_registry.finish_yaml_step(state.registry, session_id),
+    registry: worker_registry.finish_yaml_step(
+      state.registry,
+      identity.session_id_to_string(session_id),
+    ),
   )
 }
 
 fn transition_finish_yaml_step_session(
   state: State,
-  session_id: String,
+  session_id: identity.SessionId,
   reason: session_reason.WorkerExitReason,
 ) -> State {
+  let session_id_text = identity.session_id_to_string(session_id)
   let reason_text = session_reason.to_string(reason)
-  hub.update_status(state.event_hub, session_id, session_event.Stopping)
+  hub.update_status(state.event_hub, session_id_text, session_event.Stopping)
   event_publisher.lifecycle(
     state.event_hub,
-    session_id,
+    session_id_text,
     session_event.OperatorCommand,
     Some(reason_text),
   )
   event_publisher.lifecycle(
     state.event_hub,
-    session_id,
+    session_id_text,
     session_event.WorkerExited,
     Some(reason_text),
   )
-  hub.finish_session(state.event_hub, session_id, reason)
+  hub.finish_session(state.event_hub, session_id_text, reason)
   state
 }
 
 fn transition_finish_yaml_step_sessions_for_run(
   state: State,
-  run_id: String,
+  run_id: identity.RunId,
   reason: session_reason.WorkerExitReason,
 ) -> State {
-  finish_yaml_step_sessions_for_run(state, run_id, reason)
+  finish_yaml_step_sessions_for_run(
+    state,
+    identity.run_id_to_string(run_id),
+    reason,
+  )
 }
 
 fn transition_clear_yaml_step_routes_for_run(
   state: State,
-  run_id: String,
+  run_id: identity.RunId,
 ) -> State {
-  clear_yaml_step_command_routes_for_run(state, run_id)
+  clear_yaml_step_command_routes_for_run(
+    state,
+    identity.run_id_to_string(run_id),
+  )
 }
 
 fn transition_mark_yaml_run_stopping(
   state: State,
-  run_id: String,
+  run_id: identity.RunId,
   reason: session_reason.WorkerExitReason,
 ) -> State {
   State(
     ..state,
     registry: worker_registry.mark_yaml_run_stopping(
       state.registry,
-      run_id,
+      identity.run_id_to_string(run_id),
       reason,
     ),
   )
@@ -5512,10 +5524,16 @@ fn handle_handoff_claim_finished(
   run_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  let task_identity =
+    orchestrator_state.issue_id_identity_for_backend(
+      issue_id,
+      state.tracker_adapter.kind,
+    )
   run_transition_messages(state, [
     transition_types.HandoffClaimCompleted(
-      issue_id,
-      run_id,
+      task_identity,
+      identity.issue_id_from_string(issue_id),
+      identity.run_id_from_string(run_id),
       handoff_claim_result_for_transition(state, issue_id, run_id, result),
     ),
   ])
@@ -5539,17 +5557,17 @@ fn handoff_claim_result_for_transition(
           ),
         )
       {
-        Error(Nil) -> transition_types.HandoffClaimSucceeded([])
+        Error(Nil) -> transition_types.HandoffClaimFailed("stale")
         Ok(pending) ->
           case pending.run_id == run_id {
-            False -> transition_types.HandoffClaimSucceeded([])
-            True -> claim_ledger_bodies_for_pending(state, pending)
+            False -> transition_types.HandoffClaimFailed("stale")
+            True -> claim_ledger_batch_for_pending(state, pending)
           }
       }
   }
 }
 
-fn claim_ledger_bodies_for_pending(
+fn claim_ledger_batch_for_pending(
   state: State,
   pending: transition_types.PendingClaim,
 ) -> transition_types.HandoffClaimResult {
@@ -5564,28 +5582,16 @@ fn claim_ledger_bodies_for_pending(
   case workflow_run_started_body_for_claim(state, pending) {
     Error(reason) -> transition_types.HandoffClaimStartRecordFailed(reason)
     Ok(workflow_started_body) ->
-      transition_types.HandoffClaimSucceeded([
+      transition_types.HandoffClaimSucceeded(ledger_batch.claim_started(
         workflow_started_body,
-        record.KnownWorkspace(
-          pending.issue.id,
-          pending.issue.identifier,
-          pending.workspace_path,
-        ),
-        record.RunStarted(
-          pending.run_id,
-          pending.issue.id,
-          pending.issue.identifier,
-          pending.workspace_path,
-        ),
-        record.IssueCounterUpdated(
-          pending.issue.id,
-          pending.issue.identifier,
-          counter.failure_attempts,
-          counter.worker_sessions,
-          state.dependencies.now_ms(),
-          None,
-        ),
-      ])
+        pending.issue.id,
+        pending.issue.identifier,
+        pending.workspace_path,
+        pending.run_id,
+        counter.failure_attempts,
+        counter.worker_sessions,
+        state.dependencies.now_ms(),
+      ))
   }
 }
 

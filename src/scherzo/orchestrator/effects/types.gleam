@@ -2,12 +2,13 @@ import gleam/option.{type Option}
 import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/log
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
-import scherzo/state/record
+import scherzo/state/ledger_batch
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
@@ -71,18 +72,24 @@ pub type Effect {
     identity: WorkerIdentity,
     reason: reason.StopReason,
   )
-  RegisterYamlStepStarted(session_id: String, run_id: String)
-  FinishYamlStepRoute(session_id: String)
+  RegisterYamlStepStarted(
+    session_id: identity.SessionId,
+    run_id: identity.RunId,
+  )
+  FinishYamlStepRoute(session_id: identity.SessionId)
   FinishYamlStepSession(
-    session_id: String,
+    session_id: identity.SessionId,
     reason: session_reason.WorkerExitReason,
   )
   FinishYamlStepSessionsForRun(
-    run_id: String,
+    run_id: identity.RunId,
     reason: session_reason.WorkerExitReason,
   )
-  ClearYamlStepRoutesForRun(run_id: String)
-  MarkYamlRunStopping(run_id: String, reason: session_reason.WorkerExitReason)
+  ClearYamlStepRoutesForRun(run_id: identity.RunId)
+  MarkYamlRunStopping(
+    run_id: identity.RunId,
+    reason: session_reason.WorkerExitReason,
+  )
   ShutdownRuntime(stop_effect_runner: Bool)
   SetOperatorPaused(paused: Bool)
   ApplyOperatorCommand(request: OperatorCommandRequest)
@@ -102,7 +109,7 @@ pub type Effect {
 pub type LedgerAppend {
   LedgerAppend(
     correlation_id: String,
-    bodies: List(record.RecordBody),
+    batch: ledger_batch.LedgerBatch,
     failure_event: String,
     policy: LedgerPolicy,
   )
@@ -116,7 +123,12 @@ pub type LedgerPolicy {
 
 pub type LedgerContinuation {
   NoLedgerContinuation
-  SpawnClaimedWorker(issue_id: String, run_id: String, session_id: String)
+  SpawnClaimedWorker(
+    task_identity: identity.TaskIdentity,
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
+    session_id: identity.SessionId,
+  )
   ReportParkAfterLedger(
     issue_id: String,
     issue_identifier: String,
@@ -141,9 +153,9 @@ pub type OperatorCommandRequest {
 pub type WorkerStart {
   WorkerStart(
     task_ref: task.TaskRef,
-    issue_id: String,
-    run_id: String,
-    session_id: String,
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
+    session_id: identity.SessionId,
     command_route_id: String,
     issue: tracker_issue.Issue,
     workspace_path: String,
@@ -156,9 +168,9 @@ pub type WorkerStart {
 pub type WorkerIdentity {
   WorkerIdentity(
     task_ref: task.TaskRef,
-    issue_id: String,
-    run_id: String,
-    session_id: String,
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
+    session_id: identity.SessionId,
     issue: tracker_issue.Issue,
     workspace_path: String,
     workflow_id: String,
