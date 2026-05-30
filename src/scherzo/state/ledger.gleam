@@ -35,6 +35,7 @@ pub type LedgerError {
   LedgerFfiFailed(LedgerFfiError)
   UnsupportedVersion(Int)
   CorruptRecord(line: Int, reason: String)
+  AggregateInvariantViolation(reason: String, run_id: String)
 }
 
 pub type ReadRecordsResult {
@@ -150,6 +151,10 @@ pub fn append_many(
     [] -> Ok(Nil)
     _ ->
       with_ledger_lock(ledger_path.ledger_dir, fn() {
+        use Nil <- result.try(validate_append_batch_unlocked(
+          ledger_path,
+          records,
+        ))
         append_prepared(ledger_path.current_path, records, fsync)
       })
   }
@@ -176,9 +181,13 @@ pub fn append_idempotent(
             True -> Ok(LockedAppendAlreadyRecorded(existing_record))
             False -> Ok(LockedAppendConflict(ledger_record.record_id))
           }
-        None ->
+        None -> {
+          use Nil <- result.try(
+            validate_append_batch_unlocked(ledger_path, [ledger_record]),
+          )
           append_prepared(ledger_path.current_path, [ledger_record], fsync)
           |> result.map(fn(_) { LockedAppendAppended })
+        }
       }
     })
   {
@@ -486,6 +495,86 @@ fn select_found_record(
   }
 }
 
+fn validate_append_batch_unlocked(
+  ledger_path: LedgerPath,
+  records: List(record.LedgerRecord),
+) -> Result(Nil, LedgerError) {
+  use projected <- result.try(load_projection_unlocked(ledger_path))
+  let known_runs =
+    dict.keys(projected.workflow_runs)
+    |> list.fold(dict.new(), fn(known, run_id) {
+      dict.insert(known, run_id, True)
+    })
+  validate_append_records(records, known_runs)
+}
+
+fn validate_append_records(
+  records: List(record.LedgerRecord),
+  known_runs: dict.Dict(String, Bool),
+) -> Result(Nil, LedgerError) {
+  case records {
+    [] -> Ok(Nil)
+    [ledger_record, ..rest] ->
+      case append_record_workflow_requirement(ledger_record.body) {
+        AddWorkflowRun(run_id) ->
+          validate_append_records(rest, dict.insert(known_runs, run_id, True))
+        RequireKnownWorkflowRun(reason, run_id) ->
+          case dict.has_key(known_runs, run_id) {
+            True -> validate_append_records(rest, known_runs)
+            False -> Error(AggregateInvariantViolation(reason, run_id))
+          }
+        NoWorkflowRunRequirement -> validate_append_records(rest, known_runs)
+      }
+  }
+}
+
+type AppendRecordWorkflowRequirement {
+  AddWorkflowRun(run_id: String)
+  RequireKnownWorkflowRun(reason: String, run_id: String)
+  NoWorkflowRunRequirement
+}
+
+fn append_record_workflow_requirement(
+  body: record.RecordBody,
+) -> AppendRecordWorkflowRequirement {
+  case body {
+    record.WorkflowRunStarted(run_id, _, _, _, _, _, _, _)
+    | record.WorkflowRunStartedWithTask(run_id, _, _, _, _, _, _, _, _) ->
+      AddWorkflowRun(run_id)
+    record.WorkflowRunFinished(run_id, _, _, _, _, _)
+    | record.WorkflowRunFinishedWithTask(run_id, _, _, _, _, _, _)
+    | record.WorkflowRunInterrupted(run_id, _, _, _)
+    | record.WorkflowRunSuperseded(run_id, _, _, _, _) ->
+      RequireKnownWorkflowRun("unknown_workflow_run", run_id)
+    record.StepAttemptPrepared(run_id, _, _, _, _, _, _, _, _)
+    | record.StepAttemptStarted(run_id, _, _, _, _, _, _)
+    | record.StepAttemptContinuationStarted(run_id, _, _, _, _)
+    | record.StepAttemptPiSessionRecorded(run_id, _, _, _, _, _, _, _, _, _, _)
+    | record.StepAttemptPiSessionRecordedWithTask(
+        run_id,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+      )
+    | record.StepAttemptFinished(run_id, _, _, _, _, _, _, _, _, _, _)
+    | record.StepAttemptInterrupted(run_id, _, _, _, _)
+    | record.StepAttemptSuperseded(run_id, _, _, _, _, _) ->
+      RequireKnownWorkflowRun(
+        "orphan_step_attempt_without_workflow_run",
+        run_id,
+      )
+    _ -> NoWorkflowRunRequirement
+  }
+}
+
 fn append_prepared(
   current_path: String,
   records: List(record.LedgerRecord),
@@ -742,6 +831,29 @@ fn fold_lines(
 ) -> Result(a, LedgerFfiError) {
   ffi_fold_lines(path, initial, step)
   |> result.map_error(fn(error) { raw_ledger_error("fold_lines", error) })
+}
+
+pub fn ledger_error_code(error: LedgerError) -> String {
+  case error {
+    Io(_) -> "io"
+    LedgerFfiFailed(_) -> "ledger_ffi_failed"
+    UnsupportedVersion(_) -> "unsupported_version"
+    CorruptRecord(_, _) -> "corrupt_record"
+    AggregateInvariantViolation(reason, _) -> reason
+  }
+}
+
+pub fn ledger_error_to_string(error: LedgerError) -> String {
+  case error {
+    Io(message) -> message
+    LedgerFfiFailed(error) -> ledger_ffi_error_to_string(error)
+    UnsupportedVersion(version) ->
+      "unsupported ledger schema version " <> int.to_string(version)
+    CorruptRecord(line, reason) ->
+      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
+    AggregateInvariantViolation(reason, run_id) ->
+      reason <> ": workflow run " <> run_id <> " is not present in local state"
+  }
 }
 
 pub fn ledger_ffi_error_to_string(error: LedgerFfiError) -> String {

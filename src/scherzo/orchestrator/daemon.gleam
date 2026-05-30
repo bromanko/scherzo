@@ -1070,14 +1070,7 @@ fn recovered_workspaces_to_prepared(
 }
 
 fn ledger_error_message(error: ledger.LedgerError) -> String {
-  case error {
-    ledger.Io(message) -> message
-    ledger.LedgerFfiFailed(error) -> ledger.ledger_ffi_error_to_string(error)
-    ledger.UnsupportedVersion(version) ->
-      "unsupported ledger schema version " <> int.to_string(version)
-    ledger.CorruptRecord(line, reason) ->
-      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
-  }
+  ledger.ledger_error_to_string(error)
 }
 
 fn map_startup_recovery_error(
@@ -4459,7 +4452,7 @@ fn run_scheduled_workflow_worker(
   let workflow_dependencies =
     workflow_run.Dependencies(
       ..workflow_dependencies,
-      checkpoint: workflow_checkpoint.ledger_writer(
+      checkpoint: checkpoint_writer_with_corrupt_ledger_fallback(
         bundle.effective.workspace.root,
         now_ms,
       ),
@@ -4489,6 +4482,21 @@ fn run_scheduled_workflow_worker(
       Ok(success)
     }
     Error(failure) -> Error(failure)
+  }
+}
+
+fn checkpoint_writer_with_corrupt_ledger_fallback(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+) -> workflow_checkpoint.Writer {
+  case ledger.path_for_workspace_root(workspace_root) {
+    Ok(ledger_path) ->
+      case ledger.load_projection(ledger_path) {
+        Ok(_) -> workflow_checkpoint.ledger_writer(workspace_root, now_ms)
+        Error(ledger.CorruptRecord(..)) -> workflow_checkpoint.noop_writer()
+        Error(_) -> workflow_checkpoint.ledger_writer(workspace_root, now_ms)
+      }
+    Error(_) -> workflow_checkpoint.ledger_writer(workspace_root, now_ms)
   }
 }
 

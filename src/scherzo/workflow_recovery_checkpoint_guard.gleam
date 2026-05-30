@@ -1,5 +1,4 @@
 import gleam/dict.{type Dict}
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -428,14 +427,7 @@ fn guard_error(message: String) -> GuardError {
 }
 
 fn describe_ledger_error(error: ledger.LedgerError) -> String {
-  case error {
-    ledger.Io(reason) -> reason
-    ledger.LedgerFfiFailed(_) -> "ledger ffi failed"
-    ledger.UnsupportedVersion(version) ->
-      "unsupported ledger version: " <> int.to_string(version)
-    ledger.CorruptRecord(line, reason) ->
-      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
-  }
+  ledger.ledger_error_to_string(error)
 }
 
 fn describe_artifact_error(error: artifact_store.ArtifactError) -> String {

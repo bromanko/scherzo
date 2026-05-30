@@ -109,6 +109,20 @@ pub type StepRecoveryFinished {
   )
 }
 
+pub type WorkflowStarted {
+  WorkflowStarted(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    issue_id: String,
+    issue_identifier: String,
+    task_ref: Option(record.TaskRefFields),
+    issue_fingerprint: String,
+    observed_updated_at_ms: Int,
+    run_root: String,
+  )
+}
+
 pub type WorkflowFinished {
   WorkflowFinished(
     run_id: String,
@@ -165,6 +179,7 @@ pub type StepFinished {
 pub type Writer {
   Writer(
     now_ms: fn() -> Int,
+    workflow_started: fn(WorkflowStarted) -> Result(Nil, CheckpointError),
     workflow_finished: fn(WorkflowFinished) -> Result(Nil, CheckpointError),
     workflow_diagnostic: fn(WorkflowDiagnostic) -> Result(Nil, CheckpointError),
     step_prepared: fn(
@@ -222,6 +237,7 @@ pub type Writer {
 pub fn noop_writer() -> Writer {
   Writer(
     now_ms: fn() { 0 },
+    workflow_started: fn(_) { Ok(Nil) },
     workflow_finished: fn(_) { Ok(Nil) },
     workflow_diagnostic: fn(_) { Ok(Nil) },
     step_prepared: fn(_, _, _, _) { Ok(Nil) },
@@ -365,6 +381,14 @@ pub fn ledger_writer_with_artifact_store(
 ) -> Writer {
   Writer(
     now_ms: now_ms,
+    workflow_started: fn(started) {
+      use projection_state <- result.try(load_projection(workspace_root))
+      case projection.has_workflow_run(projection_state, started.run_id) {
+        True -> Ok(Nil)
+        False ->
+          append_body(workspace_root, now_ms, workflow_started_body(started))
+      }
+    },
     workflow_finished: fn(finished) {
       append_body(workspace_root, now_ms, workflow_finished_body(finished))
     },
@@ -812,6 +836,34 @@ pub fn linear_task_ref_for_issue(
   }
 }
 
+fn workflow_started_body(started: WorkflowStarted) -> record.RecordBody {
+  case started.task_ref {
+    Some(task_ref) ->
+      record.WorkflowRunStartedWithTask(
+        started.run_id,
+        started.workflow_id,
+        started.workflow_fingerprint,
+        started.issue_id,
+        started.issue_identifier,
+        task_ref,
+        started.issue_fingerprint,
+        started.observed_updated_at_ms,
+        started.run_root,
+      )
+    None ->
+      record.WorkflowRunStarted(
+        started.run_id,
+        started.workflow_id,
+        started.workflow_fingerprint,
+        started.issue_id,
+        started.issue_identifier,
+        started.issue_fingerprint,
+        started.observed_updated_at_ms,
+        started.run_root,
+      )
+  }
+}
+
 fn workflow_finished_body(finished: WorkflowFinished) -> record.RecordBody {
   case finished.task_ref {
     Some(task_ref) ->
@@ -1055,14 +1107,7 @@ fn append_bodies(
 }
 
 fn describe_ledger_error(error: ledger.LedgerError) -> String {
-  case error {
-    ledger.Io(message) -> message
-    ledger.LedgerFfiFailed(error) -> ledger.ledger_ffi_error_to_string(error)
-    ledger.UnsupportedVersion(version) ->
-      "unsupported ledger schema version " <> int.to_string(version)
-    ledger.CorruptRecord(line, reason) ->
-      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
-  }
+  ledger.ledger_error_to_string(error)
 }
 
 fn describe_artifact_error(error: artifact_store.ArtifactError) -> String {

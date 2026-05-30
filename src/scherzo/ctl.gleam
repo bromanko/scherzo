@@ -1834,28 +1834,7 @@ fn state_repair_run_provenance_to_json(
 }
 
 fn ledger_error_message(error: ledger.LedgerError) -> String {
-  case error {
-    ledger.Io(message) -> message
-    ledger.UnsupportedVersion(version) ->
-      "unsupported ledger schema version " <> int.to_string(version)
-    ledger.CorruptRecord(line, reason) ->
-      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
-    ledger.LedgerFfiFailed(error) -> ledger_ffi_error_message(error)
-  }
-}
-
-fn ledger_ffi_error_message(error: ledger.LedgerFfiError) -> String {
-  case error {
-    ledger.OpenFailed(reason) -> "open failed: " <> reason
-    ledger.WriteFailed(reason) -> "write failed: " <> reason
-    ledger.SyncFailed(reason) -> "sync failed: " <> reason
-    ledger.CloseFailed(reason) -> "close failed: " <> reason
-    ledger.ReadFailed(reason) -> "read failed: " <> reason
-    ledger.StepFailed(reason) -> "step failed: " <> reason
-    ledger.LockFailed(reason) -> "lock failed: " <> reason
-    ledger.UnexpectedFfiFailure(function, detail) ->
-      "unexpected ffi failure in " <> function <> ": " <> detail
-  }
+  ledger.ledger_error_to_string(error)
 }
 
 fn append_idempotent_error_message(

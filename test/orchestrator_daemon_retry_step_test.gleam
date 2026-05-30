@@ -1393,118 +1393,122 @@ fn seed_interrupted_retry_step_run_missing_provenance(
       artifact,
     )
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let records = [
+    record.with_id(
+      "workflow-inputs",
+      1,
+      record.WorkflowRunInputsRecorded(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        workflow_fingerprint: "",
+        artifact_ref: "runs/run-1/inputs.json",
+        artifact_sha256: "sha-inputs",
+        artifact_bytes: 10,
+      ),
+    ),
+    record.with_id(
+      "seed-prepared",
+      2,
+      record.StepAttemptPrepared(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "seed",
+        attempt_index: 1,
+        workspace_name: "seed",
+        workspace_path: seed_workspace,
+        run_root: run_root,
+        source_workspace_name: None,
+        source_workspace_path: None,
+      ),
+    ),
+    record.with_id(
+      "seed-started",
+      3,
+      record.StepAttemptStarted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "seed",
+        attempt_index: 1,
+        operator_session_id: "session-seed-1",
+        external_session_ref: None,
+        continuation_capable: False,
+      ),
+    ),
+    record.with_id(
+      "seed-finished",
+      4,
+      record.StepAttemptFinished(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "seed",
+        attempt_index: 1,
+        outcome: "completed",
+        artifact_ref: written.ref,
+        artifact_sha256: written.sha256,
+        workspace_name: "seed",
+        workspace_path: seed_workspace,
+        token_total: 0,
+        turns: 0,
+      ),
+    ),
+    record.with_id(
+      "feedback-prepared",
+      5,
+      record.StepAttemptPrepared(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        workspace_name: "derived",
+        workspace_path: run_root <> "/workspaces/derived",
+        run_root: run_root,
+        source_workspace_name: Some("seed"),
+        source_workspace_path: Some(seed_workspace),
+      ),
+    ),
+    record.with_id(
+      "feedback-started",
+      6,
+      record.StepAttemptStarted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        operator_session_id: "session-feedback-1",
+        external_session_ref: None,
+        continuation_capable: False,
+      ),
+    ),
+    record.with_id(
+      "feedback-interrupted",
+      7,
+      record.StepAttemptInterrupted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "apply_feedback",
+        attempt_index: 1,
+        reason: "daemon_shutdown",
+      ),
+    ),
+    record.with_id(
+      "workflow-interrupted",
+      8,
+      record.WorkflowRunInterrupted(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        issue_id: issue.id,
+        reason: "daemon_shutdown",
+      ),
+    ),
+  ]
+  let assert Ok(Nil) = simplifile.create_directory_all(ledger_path.ledger_dir)
   let assert Ok(Nil) =
-    ledger.append_many(
-      ledger_path,
-      [
-        record.with_id(
-          "workflow-inputs",
-          1,
-          record.WorkflowRunInputsRecorded(
-            run_id: "run-1",
-            workflow_id: "implementation",
-            workflow_fingerprint: "",
-            artifact_ref: "runs/run-1/inputs.json",
-            artifact_sha256: "sha-inputs",
-            artifact_bytes: 10,
-          ),
-        ),
-        record.with_id(
-          "seed-prepared",
-          2,
-          record.StepAttemptPrepared(
-            run_id: "run-1",
-            workflow_id: "implementation",
-            step_id: "seed",
-            attempt_index: 1,
-            workspace_name: "seed",
-            workspace_path: seed_workspace,
-            run_root: run_root,
-            source_workspace_name: None,
-            source_workspace_path: None,
-          ),
-        ),
-        record.with_id(
-          "seed-started",
-          3,
-          record.StepAttemptStarted(
-            run_id: "run-1",
-            workflow_id: "implementation",
-            step_id: "seed",
-            attempt_index: 1,
-            operator_session_id: "session-seed-1",
-            external_session_ref: None,
-            continuation_capable: False,
-          ),
-        ),
-        record.with_id(
-          "seed-finished",
-          4,
-          record.StepAttemptFinished(
-            run_id: "run-1",
-            workflow_id: "implementation",
-            step_id: "seed",
-            attempt_index: 1,
-            outcome: "completed",
-            artifact_ref: written.ref,
-            artifact_sha256: written.sha256,
-            workspace_name: "seed",
-            workspace_path: seed_workspace,
-            token_total: 0,
-            turns: 0,
-          ),
-        ),
-        record.with_id(
-          "feedback-prepared",
-          5,
-          record.StepAttemptPrepared(
-            run_id: "run-1",
-            workflow_id: "implementation",
-            step_id: "apply_feedback",
-            attempt_index: 1,
-            workspace_name: "derived",
-            workspace_path: run_root <> "/workspaces/derived",
-            run_root: run_root,
-            source_workspace_name: Some("seed"),
-            source_workspace_path: Some(seed_workspace),
-          ),
-        ),
-        record.with_id(
-          "feedback-started",
-          6,
-          record.StepAttemptStarted(
-            run_id: "run-1",
-            workflow_id: "implementation",
-            step_id: "apply_feedback",
-            attempt_index: 1,
-            operator_session_id: "session-feedback-1",
-            external_session_ref: None,
-            continuation_capable: False,
-          ),
-        ),
-        record.with_id(
-          "feedback-interrupted",
-          7,
-          record.StepAttemptInterrupted(
-            run_id: "run-1",
-            workflow_id: "implementation",
-            step_id: "apply_feedback",
-            attempt_index: 1,
-            reason: "daemon_shutdown",
-          ),
-        ),
-        record.with_id(
-          "workflow-interrupted",
-          8,
-          record.WorkflowRunInterrupted(
-            run_id: "run-1",
-            workflow_id: "implementation",
-            issue_id: issue.id,
-            reason: "daemon_shutdown",
-          ),
-        ),
-      ],
-      True,
+    simplifile.write(
+      ledger_path.current_path,
+      records
+        |> list.map(record.to_string)
+        |> string.join(with: "\n")
+        |> fn(contents) { contents <> "\n" },
     )
   Nil
 }

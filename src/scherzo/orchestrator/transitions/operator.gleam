@@ -412,13 +412,13 @@ fn park_issue(
         context.now_ms,
       ),
       failure_event: "ledger_append_failed",
-      policy: effects_types.ContinueWith(effects_types.ReportParkAfterLedger(
+      policy: effects_types.ReportParkAfterAppend(
         issue.id,
         issue.identifier,
         reason_text,
         "explicit_unpark_only",
         None,
-      )),
+      ),
     )),
     effects_types.Log("warn", "issue_parked", [
       #("issue_id", issue.id),
@@ -537,10 +537,5 @@ fn identifier_for_runtime(
 }
 
 fn ledger_error_code(err: ledger.LedgerError) -> String {
-  case err {
-    ledger.Io(_) -> "io"
-    ledger.LedgerFfiFailed(_) -> "ledger_ffi_failed"
-    ledger.UnsupportedVersion(_) -> "unsupported_version"
-    ledger.CorruptRecord(_, _) -> "corrupt_record"
-  }
+  ledger.ledger_error_code(err)
 }

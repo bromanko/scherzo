@@ -95,7 +95,7 @@ pub type Message {
   )
   LedgerAppendCompleted(
     correlation_id: String,
-    continuation: effects_types.LedgerContinuation,
+    continuation: effects_types.LedgerPolicy,
     result: Result(Nil, ledger.LedgerError),
     now_ms: Int,
   )

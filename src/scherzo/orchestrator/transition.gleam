@@ -1612,11 +1612,11 @@ fn cancel_retry_effects(
 fn handle_ledger_append_completed(
   state: transition_types.State,
   correlation_id: String,
-  continuation: effects_types.LedgerContinuation,
+  continuation: effects_types.LedgerPolicy,
   result: Result(Nil, ledger.LedgerError),
 ) -> transition_types.Outcome {
   case continuation {
-    effects_types.SpawnClaimedWorker(
+    effects_types.SpawnClaimedWorkerAfterAppend(
       task_identity,
       issue_id,
       run_id,
@@ -1632,7 +1632,7 @@ fn handle_ledger_append_completed(
         result,
         claim_callbacks(),
       )
-    effects_types.ReportParkAfterLedger(
+    effects_types.ReportParkAfterAppend(
       issue_id,
       issue_identifier,
       reason,
@@ -1649,7 +1649,7 @@ fn handle_ledger_append_completed(
         source_run_id,
         result,
       )
-    effects_types.NoLedgerContinuation ->
+    effects_types.ContinueRegardless | effects_types.StopBatchOnFailure ->
       transition_types.Outcome(state: state, effects: [])
   }
 }
