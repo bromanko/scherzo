@@ -11,6 +11,7 @@ import scherzo/session/event
 import scherzo/session/recovery as session_recovery
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/state/state_status_warnings as status_warnings
 import simplifile
 
 pub const workflow_artifact_retention_ms = 2_592_000_000
@@ -722,13 +723,20 @@ fn state_status_warnings(
 ) -> List(String) {
   case status {
     StateCurrent ->
-      case scheduled_records_present(paths) {
-        True -> [
-          "scheduled ledger records are present; rollback to an older binary that does not understand scheduled records may be unsafe. Keep this binary, archive old state, or reinitialize only after accepting loss of local schedule history.",
-        ]
-        False -> []
-      }
+      list.append(
+        scheduled_state_status_warnings(paths),
+        status_warnings.orphan_step_attempt_warnings(paths),
+      )
     _ -> []
+  }
+}
+
+fn scheduled_state_status_warnings(paths: ledger.LedgerPath) -> List(String) {
+  case scheduled_records_present(paths) {
+    True -> [
+      "scheduled ledger records are present; rollback to an older binary that does not understand scheduled records may be unsafe. Keep this binary, archive old state, or reinitialize only after accepting loss of local schedule history.",
+    ]
+    False -> []
   }
 }
 
@@ -844,28 +852,7 @@ fn schema_version_error_message(error: SchemaVersionDecodeError) -> String {
 }
 
 fn ledger_error_message(error: ledger.LedgerError) -> String {
-  case error {
-    ledger.Io(message) -> message
-    ledger.LedgerFfiFailed(error) -> ledger_ffi_error_message(error)
-    ledger.UnsupportedVersion(version) ->
-      "unsupported schema version " <> int.to_string(version)
-    ledger.CorruptRecord(line, reason) ->
-      "corrupt record line " <> int.to_string(line) <> ": " <> reason
-  }
-}
-
-fn ledger_ffi_error_message(error: ledger.LedgerFfiError) -> String {
-  case error {
-    ledger.OpenFailed(reason) -> "open failed: " <> reason
-    ledger.WriteFailed(reason) -> "write failed: " <> reason
-    ledger.SyncFailed(reason) -> "sync failed: " <> reason
-    ledger.CloseFailed(reason) -> "close failed: " <> reason
-    ledger.ReadFailed(reason) -> "read failed: " <> reason
-    ledger.StepFailed(reason) -> "step failed: " <> reason
-    ledger.LockFailed(reason) -> "lock failed: " <> reason
-    ledger.UnexpectedFfiFailure(function, detail) ->
-      function <> " failed unexpectedly: " <> detail
-  }
+  ledger.ledger_error_to_string(error)
 }
 
 fn schema_version_decoder() -> decode.Decoder(Int) {

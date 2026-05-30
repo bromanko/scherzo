@@ -350,3 +350,40 @@ pub fn offline_state_status_warns_for_scheduled_records_test() {
   let encoded = status |> local_artifacts.state_status_to_json |> json.to_string
   assert string.contains(encoded, "scheduled ledger records are present")
 }
+
+pub fn offline_state_status_warns_for_historical_orphan_step_attempts_test() {
+  let root = "test/tmp/local-artifacts/orphan-step-attempt-warning"
+  let _ = simplifile.delete(root)
+  let assert Ok(paths) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(paths.ledger_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      paths.current_path,
+      record.to_string(record.with_id(
+        "historical-step-attempt",
+        1,
+        record.StepAttemptFinished(
+          "workflow-run-1",
+          "default",
+          "build",
+          1,
+          "completed",
+          "runs/workflow-run-1/build.json",
+          "sha256",
+          "default",
+          "test/tmp/workspaces/ABC-1",
+          10,
+          2,
+        ),
+      ))
+        <> "\n",
+    )
+
+  let status = local_artifacts.inspect_state(root)
+  assert status.status == local_artifacts.StateCurrent
+  let encoded = status |> local_artifacts.state_status_to_json |> json.to_string
+  assert string.contains(encoded, "orphan_step_attempts_without_workflow_run")
+  assert string.contains(encoded, "workflow-run-1")
+  assert string.contains(encoded, "attempt_count=1")
+  assert string.contains(encoded, "read-only inspection is still allowed")
+}

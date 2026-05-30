@@ -4142,9 +4142,10 @@ pub fn contracted_command_run_records_inputs_before_steps_and_outputs_test() {
 
   assert success.run_root != ""
   let records = ledger_records(root)
-  let assert [first, second, ..] = records
-  assert record.kind(first.body) == "workflow_run_inputs_recorded"
-  assert record.kind(second.body) == "step_attempt_prepared"
+  let assert [first, second, third, ..] = records
+  assert record.kind(first.body) == "workflow_run_started"
+  assert record.kind(second.body) == "workflow_run_inputs_recorded"
+  assert record.kind(third.body) == "step_attempt_prepared"
 
   let assert Ok(input_manifest_text) =
     simplifile.read(
@@ -5732,8 +5733,9 @@ pub fn contracted_recovery_with_started_attempt_records_recovery_input_manifest_
     )
 
   let records = ledger_records(root)
-  let assert [first, ..] = records
-  assert record.kind(first.body) == "workflow_run_inputs_recorded"
+  let assert [first, second, ..] = records
+  assert record.kind(first.body) == "workflow_run_started"
+  assert record.kind(second.body) == "workflow_run_inputs_recorded"
   let input_manifest = read_input_manifest(root, "run-1")
   assert input_manifest.diagnostics == ["recovered_after_steps_started"]
 }

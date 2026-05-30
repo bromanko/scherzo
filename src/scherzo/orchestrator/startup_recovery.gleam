@@ -1,5 +1,4 @@
 import gleam/dict.{type Dict}
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -916,14 +915,7 @@ fn map_ledger_error(
 }
 
 fn ledger_error_message(error: ledger.LedgerError) -> String {
-  case error {
-    ledger.Io(message) -> message
-    ledger.LedgerFfiFailed(error) -> ledger.ledger_ffi_error_to_string(error)
-    ledger.UnsupportedVersion(version) ->
-      "unsupported ledger schema version " <> int.to_string(version)
-    ledger.CorruptRecord(line, reason) ->
-      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
-  }
+  ledger.ledger_error_to_string(error)
 }
 
 fn map_recovery_error(

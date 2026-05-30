@@ -8,7 +8,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 
-pub fn append_ledger_continue_with_success_returns_follow_up_message_test() {
+pub fn append_ledger_claim_spawn_success_returns_follow_up_message_test() {
   let shell =
     interpreter.new_shell_state(append_ledger: fn(_) { Ok(Nil) }, now_ms: fn() {
       456
@@ -24,7 +24,7 @@ pub fn append_ledger_continue_with_success_returns_follow_up_message_test() {
     == [
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
-        continuation: effects_types.SpawnClaimedWorker(
+        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
           task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
           issue_id: identity.issue_id_from_string("issue-1"),
           run_id: identity.run_id_from_string("run-1"),
@@ -37,7 +37,7 @@ pub fn append_ledger_continue_with_success_returns_follow_up_message_test() {
   assert interpreter.started_workers(shell) == []
 }
 
-pub fn append_ledger_continue_with_failure_returns_follow_up_message_test() {
+pub fn append_ledger_claim_spawn_failure_returns_follow_up_message_test() {
   let shell =
     interpreter.new_shell_state(
       append_ledger: fn(_) { Error(ledger.Io("disk full")) },
@@ -54,7 +54,7 @@ pub fn append_ledger_continue_with_failure_returns_follow_up_message_test() {
     == [
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
-        continuation: effects_types.SpawnClaimedWorker(
+        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
           task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
           issue_id: identity.issue_id_from_string("issue-1"),
           run_id: identity.run_id_from_string("run-1"),
@@ -107,12 +107,12 @@ fn spawn_claim_ledger_append() -> effects_types.LedgerAppend {
     correlation_id: "claim:issue-1:run-1",
     batch: ledger_batch.retry_cancelled("issue-1", 1, "test"),
     failure_event: "ledger_append_failed",
-    policy: effects_types.ContinueWith(effects_types.SpawnClaimedWorker(
+    policy: effects_types.SpawnClaimedWorkerAfterAppend(
       task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
       issue_id: identity.issue_id_from_string("issue-1"),
       run_id: identity.run_id_from_string("run-1"),
       session_id: identity.session_id_from_string("session-1"),
-    )),
+    ),
   )
 }
 

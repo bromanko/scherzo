@@ -1624,7 +1624,15 @@ fn seed_missing_provenance_state_with(
         ),
       ]),
     )
-  let assert Ok(Nil) = ledger.append_many(ledger_path, records, True)
+  let assert Ok(Nil) = simplifile.create_directory_all(ledger_path.ledger_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      ledger_path.current_path,
+      records
+        |> list.map(record.to_string)
+        |> string.join(with: "\n")
+        |> fn(contents) { contents <> "\n" },
+    )
   Nil
 }
 

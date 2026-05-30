@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/error
@@ -15,6 +16,7 @@ import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_gate
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
+import scherzo/state/record
 import scherzo/structured_output
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
@@ -315,21 +317,37 @@ pub fn handle_requested(
                 ],
               )
             _ ->
-              transition_types.Outcome(state: state, effects: [
-                effects_types.AppendLedger(effects_types.LedgerAppend(
-                  correlation_id: correlation_id,
-                  batch: batch,
-                  failure_event: failure_event,
-                  policy: effects_types.ContinueWith(
-                    effects_types.SpawnClaimedWorker(
-                      task_identity,
-                      issue_id,
-                      run_id,
-                      session_id,
-                    ),
-                  ),
-                )),
-              ])
+              case claim_started_batch_is_valid(batch, pending.run_id) {
+                False ->
+                  transition_types.Outcome(
+                    state: clear_pending_claim(state, task_identity),
+                    effects: [
+                      effects_types.Log(
+                        "warn",
+                        "claim_ledger_append_invalid_claim_started",
+                        [
+                          #("issue_id", identity.issue_id_to_string(issue_id)),
+                          #("run_id", identity.run_id_to_string(run_id)),
+                          #("correlation_id", correlation_id),
+                        ],
+                      ),
+                    ],
+                  )
+                True ->
+                  transition_types.Outcome(state: state, effects: [
+                    effects_types.AppendLedger(effects_types.LedgerAppend(
+                      correlation_id: correlation_id,
+                      batch: batch,
+                      failure_event: failure_event,
+                      policy: effects_types.SpawnClaimedWorkerAfterAppend(
+                        task_identity,
+                        issue_id,
+                        run_id,
+                        session_id,
+                      ),
+                    )),
+                  ])
+              }
           }
       }
   }
@@ -462,11 +480,21 @@ fn clear_pending_claim(
   )
 }
 
+fn claim_started_batch_is_valid(
+  batch: ledger_batch.LedgerBatch,
+  pending_run_id: String,
+) -> Bool {
+  ledger_batch.to_bodies(batch)
+  |> list.any(fn(body) {
+    case body {
+      record.WorkflowRunStarted(run_id, _, _, _, _, _, _, _)
+      | record.WorkflowRunStartedWithTask(run_id, _, _, _, _, _, _, _, _) ->
+        run_id == pending_run_id
+      _ -> False
+    }
+  })
+}
+
 fn ledger_error_code(err: ledger.LedgerError) -> String {
-  case err {
-    ledger.Io(_) -> "io"
-    ledger.LedgerFfiFailed(_) -> "ledger_ffi_failed"
-    ledger.UnsupportedVersion(_) -> "unsupported_version"
-    ledger.CorruptRecord(_, _) -> "corrupt_record"
-  }
+  ledger.ledger_error_code(err)
 }

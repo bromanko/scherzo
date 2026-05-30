@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/state/ledger
 import scherzo/state/projection
@@ -222,6 +223,122 @@ pub fn read_records_rejects_malformed_middle_line_test() {
     ledger.read_records(path)
 }
 
+pub fn append_rejects_orphan_step_attempt_records_test() {
+  let root = "test/tmp/state-ledger/orphan-step-attempts"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+
+  [
+    step_attempt_prepared_record("prepared"),
+    step_attempt_started_record("started"),
+    step_attempt_continuation_started_record("continuation"),
+    step_attempt_pi_session_recorded_record("pi-session"),
+    step_attempt_pi_session_recorded_with_task_record("pi-session-task"),
+    step_attempt_finished_record("finished"),
+    step_attempt_interrupted_record("interrupted"),
+    step_attempt_superseded_record("superseded"),
+  ]
+  |> list.each(fn(ledger_record) {
+    let assert Error(ledger.AggregateInvariantViolation(
+      reason: "orphan_step_attempt_without_workflow_run",
+      run_id: "workflow-run-1",
+    )) = ledger.append(path, ledger_record, True)
+  })
+}
+
+pub fn append_rejects_workflow_terminal_records_without_parent_test() {
+  let root = "test/tmp/state-ledger/orphan-workflow-terminals"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+
+  [
+    workflow_run_finished_record("finished"),
+    workflow_run_finished_with_task_record("finished-task"),
+    workflow_run_interrupted_record("interrupted"),
+    workflow_run_superseded_record("superseded"),
+  ]
+  |> list.each(fn(ledger_record) {
+    let assert Error(ledger.AggregateInvariantViolation(
+      reason: "unknown_workflow_run",
+      run_id: "workflow-run-1",
+    )) = ledger.append(path, ledger_record, True)
+  })
+}
+
+pub fn append_accepts_same_batch_workflow_parent_and_step_attempt_test() {
+  let root = "test/tmp/state-ledger/same-batch-parent"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+
+  let assert Ok(Nil) =
+    ledger.append_many(
+      path,
+      [
+        workflow_run_started_with_task_record("parent"),
+        step_attempt_prepared_record("child"),
+      ],
+      True,
+    )
+  let assert Ok(projected) = ledger.load_projection(path)
+  let assert Ok(_) = dict.get(projected.workflow_runs, "workflow-run-1")
+  let assert Ok(_) =
+    dict.get(
+      projected.step_attempts,
+      projection.step_attempt_key("workflow-run-1", "build", 1),
+    )
+}
+
+pub fn append_accepts_step_attempt_after_earlier_workflow_parent_test() {
+  let root = "test/tmp/state-ledger/earlier-parent"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+
+  let assert Ok(Nil) =
+    ledger.append(path, workflow_run_started_with_task_record("parent"), True)
+  let assert Ok(Nil) =
+    ledger.append(path, step_attempt_started_record("child"), True)
+}
+
+pub fn append_rejects_step_attempt_after_non_start_run_scoped_record_test() {
+  let root = "test/tmp/state-ledger/non-start-does-not-create-parent"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+
+  let assert Error(ledger.AggregateInvariantViolation(
+    reason: "orphan_step_attempt_without_workflow_run",
+    run_id: "workflow-run-1",
+  )) =
+    ledger.append_many(
+      path,
+      [
+        workflow_run_inputs_recorded_record("inputs"),
+        step_attempt_prepared_record("after-inputs"),
+      ],
+      True,
+    )
+  let assert Ok(read) = ledger.read_records(path)
+  assert read.records == []
+}
+
+pub fn replay_preserves_historical_orphan_step_attempts_test() {
+  let root = "test/tmp/state-ledger/historical-orphan"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      path.current_path,
+      record.to_string(step_attempt_finished_record("historical")) <> "\n",
+    )
+
+  let assert Ok(replayed) = ledger.replay(path)
+  let assert Ok(_) =
+    dict.get(
+      replayed.projection.step_attempts,
+      projection.step_attempt_key("workflow-run-1", "build", 1),
+    )
+}
+
 fn run_started_record() -> record.LedgerRecord {
   record.with_id(
     "run-started-1",
@@ -271,6 +388,245 @@ fn command_completed_record() -> record.LedgerRecord {
       issue_id: "issue-1",
       status: "accepted",
       message_excerpt: "retry queued",
+    ),
+  )
+}
+
+fn workflow_run_started_with_task_record(
+  suffix: String,
+) -> record.LedgerRecord {
+  record.with_id(
+    "workflow-run-started-with-task-" <> suffix,
+    5000,
+    record.WorkflowRunStartedWithTask(
+      "workflow-run-1",
+      "default",
+      "workflow-fingerprint",
+      "issue-1",
+      "ABC-1",
+      record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      "issue-fingerprint",
+      4900,
+      "test/tmp/workspaces/ABC-1",
+    ),
+  )
+}
+
+fn workflow_run_inputs_recorded_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "workflow-run-inputs-recorded-" <> suffix,
+    5500,
+    record.WorkflowRunInputsRecorded(
+      "workflow-run-1",
+      "default",
+      "workflow-fingerprint",
+      "runs/workflow-run-1/input.json",
+      "sha256",
+      12,
+    ),
+  )
+}
+
+fn workflow_run_finished_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "workflow-run-finished-" <> suffix,
+    6000,
+    record.WorkflowRunFinished(
+      "workflow-run-1",
+      "default",
+      "issue-1",
+      "completed",
+      10,
+      2,
+    ),
+  )
+}
+
+fn workflow_run_finished_with_task_record(
+  suffix: String,
+) -> record.LedgerRecord {
+  record.with_id(
+    "workflow-run-finished-with-task-" <> suffix,
+    6001,
+    record.WorkflowRunFinishedWithTask(
+      "workflow-run-1",
+      "default",
+      "issue-1",
+      record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      "completed",
+      10,
+      2,
+    ),
+  )
+}
+
+fn workflow_run_interrupted_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "workflow-run-interrupted-" <> suffix,
+    6002,
+    record.WorkflowRunInterrupted(
+      "workflow-run-1",
+      "default",
+      "issue-1",
+      "operator_abort",
+    ),
+  )
+}
+
+fn workflow_run_superseded_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "workflow-run-superseded-" <> suffix,
+    6003,
+    record.WorkflowRunSuperseded(
+      "workflow-run-1",
+      "default",
+      "issue-1",
+      "workflow-run-2",
+      "replacement",
+    ),
+  )
+}
+
+fn step_attempt_prepared_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "step-attempt-prepared-" <> suffix,
+    7000,
+    record.StepAttemptPrepared(
+      "workflow-run-1",
+      "default",
+      "build",
+      1,
+      "default",
+      "test/tmp/workspaces/ABC-1",
+      "test/tmp/workspaces/ABC-1",
+      None,
+      None,
+    ),
+  )
+}
+
+fn step_attempt_started_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "step-attempt-started-" <> suffix,
+    7001,
+    record.StepAttemptStarted(
+      "workflow-run-1",
+      "default",
+      "build",
+      1,
+      "session-1",
+      None,
+      True,
+    ),
+  )
+}
+
+fn step_attempt_continuation_started_record(
+  suffix: String,
+) -> record.LedgerRecord {
+  record.with_id(
+    "step-attempt-continuation-started-" <> suffix,
+    7002,
+    record.StepAttemptContinuationStarted(
+      "workflow-run-1",
+      "default",
+      "build",
+      1,
+      "pi-session-1",
+    ),
+  )
+}
+
+fn step_attempt_pi_session_recorded_record(
+  suffix: String,
+) -> record.LedgerRecord {
+  record.with_id(
+    "step-attempt-pi-session-recorded-" <> suffix,
+    7003,
+    record.StepAttemptPiSessionRecorded(
+      "workflow-run-1",
+      "issue-1",
+      "ABC-1",
+      "default",
+      "workflow-fingerprint",
+      "build",
+      "default",
+      1,
+      "test/tmp/workspaces/ABC-1",
+      "pi-session-1",
+      "runs/workflow-run-1/pi.json",
+    ),
+  )
+}
+
+fn step_attempt_pi_session_recorded_with_task_record(
+  suffix: String,
+) -> record.LedgerRecord {
+  record.with_id(
+    "step-attempt-pi-session-recorded-with-task-" <> suffix,
+    7004,
+    record.StepAttemptPiSessionRecordedWithTask(
+      "workflow-run-1",
+      "issue-1",
+      "ABC-1",
+      record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      "default",
+      "workflow-fingerprint",
+      "build",
+      "default",
+      1,
+      "test/tmp/workspaces/ABC-1",
+      "pi-session-1",
+      "runs/workflow-run-1/pi.json",
+    ),
+  )
+}
+
+fn step_attempt_finished_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "step-attempt-finished-" <> suffix,
+    7005,
+    record.StepAttemptFinished(
+      "workflow-run-1",
+      "default",
+      "build",
+      1,
+      "completed",
+      "runs/workflow-run-1/build.json",
+      "sha256",
+      "default",
+      "test/tmp/workspaces/ABC-1",
+      12,
+      3,
+    ),
+  )
+}
+
+fn step_attempt_interrupted_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "step-attempt-interrupted-" <> suffix,
+    7006,
+    record.StepAttemptInterrupted(
+      "workflow-run-1",
+      "default",
+      "build",
+      1,
+      "operator_abort",
+    ),
+  )
+}
+
+fn step_attempt_superseded_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "step-attempt-superseded-" <> suffix,
+    7007,
+    record.StepAttemptSuperseded(
+      "workflow-run-1",
+      "default",
+      "build",
+      1,
+      2,
+      "retry",
     ),
   )
 }

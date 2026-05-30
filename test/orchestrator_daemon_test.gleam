@@ -2648,8 +2648,12 @@ pub fn daemon_scheduled_startup_uses_replayed_statuses_after_event_hub_start_tes
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
 
+  assert wait_for_event(log_subject, "scheduled_due_append_failed", 20)
+  assert wait_for_event(log_subject, "scheduled_pending_append_failed", 20)
+  assert wait_for_event(log_subject, "scheduled_started_append_failed", 20)
   assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
   assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  assert wait_for_event(log_subject, "scheduled_success_append_failed", 20)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
 }

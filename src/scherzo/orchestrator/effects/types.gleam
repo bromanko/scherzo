@@ -118,18 +118,13 @@ pub type LedgerAppend {
 pub type LedgerPolicy {
   ContinueRegardless
   StopBatchOnFailure
-  ContinueWith(continuation: LedgerContinuation)
-}
-
-pub type LedgerContinuation {
-  NoLedgerContinuation
-  SpawnClaimedWorker(
+  SpawnClaimedWorkerAfterAppend(
     task_identity: identity.TaskIdentity,
     issue_id: identity.IssueId,
     run_id: identity.RunId,
     session_id: identity.SessionId,
   )
-  ReportParkAfterLedger(
+  ReportParkAfterAppend(
     issue_id: String,
     issue_identifier: String,
     reason: String,

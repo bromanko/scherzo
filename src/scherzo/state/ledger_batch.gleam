@@ -10,6 +10,10 @@ pub fn to_bodies(batch: LedgerBatch) -> List(record.RecordBody) {
   bodies
 }
 
+pub fn empty() -> LedgerBatch {
+  LedgerBatch([])
+}
+
 pub fn claim_started(
   workflow_started: record.RecordBody,
   issue_id: String,

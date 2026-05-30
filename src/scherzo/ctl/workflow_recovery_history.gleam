@@ -175,6 +175,12 @@ pub fn describe_load_error(error: LoadError) -> String {
       <> int.to_string(line)
       <> ": "
       <> sanitize.text(reason)
+    LoadLedgerFailed(ledger.AggregateInvariantViolation(reason, run_id)) ->
+      reason
+      <> ": workflow run "
+      <> run_id
+      <> " is not present in local state"
+      |> sanitize.text
   }
 }
 

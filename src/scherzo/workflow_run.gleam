@@ -1,3 +1,4 @@
+import birl
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/int
@@ -689,31 +690,15 @@ pub fn execute_with_context(
       case context {
         FreshRun(invocation) ->
           case
-            record_inputs_if_contracted(
+            ensure_workflow_started(
               issue,
               dag,
               orchestrator,
               invocation,
               dependencies,
-              profile,
             )
           {
-            Error(reason) -> {
-              ignore_secondary_checkpoint_result(
-                dependencies.checkpoint.workflow_finished(
-                  workflow_checkpoint.WorkflowFinished(
-                    run_id: invocation.run_id,
-                    workflow_id: dag.id,
-                    issue_id: issue.id,
-                    task_ref: task_ref(issue),
-                    outcome: workflow_outcome.terminal_failed_fatal(
-                      workflow_outcome.NoStepRecovery,
-                    ),
-                    token_total: 0,
-                    turns: 0,
-                  ),
-                ),
-              )
+            Error(reason) ->
               Error(WorkflowRunFailure(
                 reason: reason,
                 agent_reason: None,
@@ -721,32 +706,67 @@ pub fn execute_with_context(
                 run_root: None,
                 failed_step_id: None,
               ))
-            }
             Ok(Nil) ->
-              loop(
-                issue,
-                dag,
-                orchestrator,
-                tracker_client,
-                secrets,
-                invocation.run_id,
-                invocation.workflow_fingerprint,
-                None,
-                workflow_outcome.NoStepRecovery,
-                False,
-                dependencies,
-                workflow_scheduler.init(dag),
-                dict.new(),
-                dict.new(),
-                None,
-                dict.new(),
-                session_tokens.zero_token_totals(),
-                None,
-                0,
-                True,
-                dict.new(),
-                profile,
-              )
+              case
+                record_inputs_if_contracted(
+                  issue,
+                  dag,
+                  orchestrator,
+                  invocation,
+                  dependencies,
+                  profile,
+                )
+              {
+                Error(reason) -> {
+                  ignore_secondary_checkpoint_result(
+                    dependencies.checkpoint.workflow_finished(
+                      workflow_checkpoint.WorkflowFinished(
+                        run_id: invocation.run_id,
+                        workflow_id: dag.id,
+                        issue_id: issue.id,
+                        task_ref: task_ref(issue),
+                        outcome: workflow_outcome.terminal_failed_fatal(
+                          workflow_outcome.NoStepRecovery,
+                        ),
+                        token_total: 0,
+                        turns: 0,
+                      ),
+                    ),
+                  )
+                  Error(WorkflowRunFailure(
+                    reason: reason,
+                    agent_reason: None,
+                    artifacts: dict.new(),
+                    run_root: None,
+                    failed_step_id: None,
+                  ))
+                }
+                Ok(Nil) ->
+                  loop(
+                    issue,
+                    dag,
+                    orchestrator,
+                    tracker_client,
+                    secrets,
+                    invocation.run_id,
+                    invocation.workflow_fingerprint,
+                    None,
+                    workflow_outcome.NoStepRecovery,
+                    False,
+                    dependencies,
+                    workflow_scheduler.init(dag),
+                    dict.new(),
+                    dict.new(),
+                    None,
+                    dict.new(),
+                    session_tokens.zero_token_totals(),
+                    None,
+                    0,
+                    True,
+                    dict.new(),
+                    profile,
+                  )
+              }
           }
         RecoveredRun(recovered) ->
           case recovered.workflow_id != dag.id {
@@ -760,31 +780,13 @@ pub fn execute_with_context(
               ))
             False ->
               case
-                record_recovered_inputs_if_contracted(
+                ensure_recovered_workflow_started(
                   issue,
-                  dag,
-                  orchestrator,
                   recovered,
                   dependencies,
-                  profile,
                 )
               {
-                Error(reason) -> {
-                  ignore_secondary_checkpoint_result(
-                    dependencies.checkpoint.workflow_finished(
-                      workflow_checkpoint.WorkflowFinished(
-                        run_id: recovered.run_id,
-                        workflow_id: dag.id,
-                        issue_id: issue.id,
-                        task_ref: task_ref(issue),
-                        outcome: workflow_outcome.terminal_failed_fatal(
-                          recovered.recovery_evidence,
-                        ),
-                        token_total: recovered.token_totals.total,
-                        turns: recovered.turns,
-                      ),
-                    ),
-                  )
+                Error(reason) ->
                   Error(WorkflowRunFailure(
                     reason: reason,
                     agent_reason: None,
@@ -792,51 +794,86 @@ pub fn execute_with_context(
                     run_root: Some(recovered.run_root),
                     failed_step_id: None,
                   ))
-                }
                 Ok(Nil) ->
                   case
-                    workflow_scheduler.init_with_statuses(
+                    record_recovered_inputs_if_contracted(
+                      issue,
                       dag,
-                      recovered.scheduler_statuses,
+                      orchestrator,
+                      recovered,
+                      dependencies,
+                      profile,
                     )
                   {
-                    Error(reason) ->
+                    Error(reason) -> {
+                      ignore_secondary_checkpoint_result(
+                        dependencies.checkpoint.workflow_finished(
+                          workflow_checkpoint.WorkflowFinished(
+                            run_id: recovered.run_id,
+                            workflow_id: dag.id,
+                            issue_id: issue.id,
+                            task_ref: task_ref(issue),
+                            outcome: workflow_outcome.terminal_failed_fatal(
+                              recovered.recovery_evidence,
+                            ),
+                            token_total: recovered.token_totals.total,
+                            turns: recovered.turns,
+                          ),
+                        ),
+                      )
                       Error(WorkflowRunFailure(
-                        reason: "workflow_recovery_invalid:" <> reason,
+                        reason: reason,
                         agent_reason: None,
                         artifacts: recovered.artifacts,
                         run_root: Some(recovered.run_root),
                         failed_step_id: None,
                       ))
-                    Ok(scheduler_state) -> {
-                      let cleanup_allowed =
-                        workflow_scheduler.outcome(dag, scheduler_state)
-                        != workflow_scheduler.WorkflowInProgress
-                      loop(
-                        issue,
-                        dag,
-                        orchestrator,
-                        tracker_client,
-                        secrets,
-                        recovered.run_id,
-                        recovered.workflow_fingerprint,
-                        recovered.contract_outputs_recorded,
-                        recovered.recovery_evidence,
-                        True,
-                        dependencies,
-                        scheduler_state,
-                        recovered.artifacts,
-                        recovered.prepared_workspaces,
-                        Some(recovered.run_root),
-                        recovered.step_attempts,
-                        recovered.token_totals,
-                        recovered.final_issue,
-                        recovered.turns,
-                        cleanup_allowed,
-                        recovered.pi_session_continuations,
-                        profile,
-                      )
                     }
+                    Ok(Nil) ->
+                      case
+                        workflow_scheduler.init_with_statuses(
+                          dag,
+                          recovered.scheduler_statuses,
+                        )
+                      {
+                        Error(reason) ->
+                          Error(WorkflowRunFailure(
+                            reason: "workflow_recovery_invalid:" <> reason,
+                            agent_reason: None,
+                            artifacts: recovered.artifacts,
+                            run_root: Some(recovered.run_root),
+                            failed_step_id: None,
+                          ))
+                        Ok(scheduler_state) -> {
+                          let cleanup_allowed =
+                            workflow_scheduler.outcome(dag, scheduler_state)
+                            != workflow_scheduler.WorkflowInProgress
+                          loop(
+                            issue,
+                            dag,
+                            orchestrator,
+                            tracker_client,
+                            secrets,
+                            recovered.run_id,
+                            recovered.workflow_fingerprint,
+                            recovered.contract_outputs_recorded,
+                            recovered.recovery_evidence,
+                            True,
+                            dependencies,
+                            scheduler_state,
+                            recovered.artifacts,
+                            recovered.prepared_workspaces,
+                            Some(recovered.run_root),
+                            recovered.step_attempts,
+                            recovered.token_totals,
+                            recovered.final_issue,
+                            recovered.turns,
+                            cleanup_allowed,
+                            recovered.pi_session_continuations,
+                            profile,
+                          )
+                        }
+                      }
                   }
               }
           }
@@ -859,6 +896,69 @@ fn run_context_run_root(context: RunContext) -> Option(String) {
     FreshRun(_) -> None
     RecoveredRun(recovered) -> Some(recovered.run_root)
   }
+}
+
+fn ensure_workflow_started(
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  invocation: RunInvocation,
+  dependencies: Dependencies,
+) -> Result(Nil, String) {
+  use run_root <- result.try(
+    case invocation.scheduled_context {
+      Some(scheduled) ->
+        workspace_run.scheduled_run_root_for(
+          scheduled.job_id,
+          scheduled.workflow_id,
+          scheduled.run_id,
+          orchestrator,
+        )
+      None ->
+        workspace_run.run_root_for(
+          issue,
+          dag.id,
+          invocation.run_id,
+          orchestrator,
+        )
+    }
+    |> result.map_error(error.workspace_code),
+  )
+  dependencies.checkpoint.workflow_started(workflow_checkpoint.WorkflowStarted(
+    run_id: invocation.run_id,
+    workflow_id: dag.id,
+    workflow_fingerprint: invocation.workflow_fingerprint,
+    issue_id: issue.id,
+    issue_identifier: issue.identifier,
+    task_ref: task_ref(issue),
+    issue_fingerprint: workflow_attempt.issue_fingerprint(issue),
+    observed_updated_at_ms: observed_updated_at_ms(issue),
+    run_root: run_root,
+  ))
+  |> result.map_error(fn(error) {
+    "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
+  })
+}
+
+fn ensure_recovered_workflow_started(
+  issue: tracker_issue.Issue,
+  recovered: RecoveredRunContext,
+  dependencies: Dependencies,
+) -> Result(Nil, String) {
+  dependencies.checkpoint.workflow_started(workflow_checkpoint.WorkflowStarted(
+    run_id: recovered.run_id,
+    workflow_id: recovered.workflow_id,
+    workflow_fingerprint: recovered.workflow_fingerprint,
+    issue_id: issue.id,
+    issue_identifier: issue.identifier,
+    task_ref: task_ref(issue),
+    issue_fingerprint: workflow_attempt.issue_fingerprint(issue),
+    observed_updated_at_ms: observed_updated_at_ms(issue),
+    run_root: recovered.run_root,
+  ))
+  |> result.map_error(fn(error) {
+    "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
+  })
 }
 
 fn record_recovered_inputs_if_contracted(
@@ -4590,6 +4690,13 @@ fn cleanup_if_needed(
   case run_root {
     None -> Ok(Nil)
     Some(path) -> dependencies.cleanup_run(path, orchestrator, profile)
+  }
+}
+
+fn observed_updated_at_ms(issue: tracker_issue.Issue) -> Int {
+  case issue.updated_at {
+    Some(time) -> birl.to_unix_milli(time)
+    None -> 0
   }
 }
 
