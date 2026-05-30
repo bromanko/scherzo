@@ -13,12 +13,12 @@
     },
     {
       "artifact_type": "scherzo.implementation_pack.v2",
-      "bytes": 2155,
+      "bytes": 2220,
       "kind": "file",
       "media_type": "application/json",
       "name": "implementation_pack",
       "ref": "runs/run-1/outputs/implementation_pack.json",
-      "sha256": "dbcb84d078e47839e8da760b1208e6b5606bce45ab3228a24a92e0b5afd21545"
+      "sha256": "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201"
     }
   ],
   "implementation_handoff": {
@@ -28,11 +28,11 @@
     "workflow_label": "workflow:execplan-implementation"
   },
   "implementation_pack": {
-    "bytes": 2155,
+    "bytes": 2220,
     "derived_from_review_doc_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "ref": "runs/run-1/outputs/implementation_pack.json",
     "schema": ".scherzo/workflows/schemas/implementation-pack.v2.schema.json",
-    "sha256": "dbcb84d078e47839e8da760b1208e6b5606bce45ab3228a24a92e0b5afd21545"
+    "sha256": "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201"
   },
   "kind": "artifact_set",
   "media_type": "application/json",
