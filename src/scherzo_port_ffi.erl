@@ -16,6 +16,7 @@
 ]).
 
 -define(MAX_LINE, 10000000).
+-define(RESIDUAL_DRAIN_GRACE_MS, 100).
 -define(TERM_GRACE_MS, 300).
 -define(KILL_GRACE_MS, 700).
 -define(CHILD_PID_WAIT_MS, 200).
@@ -106,7 +107,7 @@ start_shell(Cmd, Dir, Env, BashPath) ->
                     binary,
                     exit_status,
                     use_stdio,
-                    {args, ["-c", shell_launch_wrapper(), "scherzo-shell", ErrPath, ChildPidPath, BashPath, Cmd]},
+                    {args, ["-c", shell_launch_wrapper(), "scherzo-shell", ErrPath, ChildPidPath, status_path_for_tmp_dir(TmpDir), BashPath, Cmd]},
                     {cd, Dir},
                     {env, Env}
                 ]),
@@ -135,7 +136,7 @@ start_argv_checked(Exe, ArgList, Dir, Env, BashPath) ->
                     binary,
                     exit_status,
                     use_stdio,
-                    {args, ["-c", argv_launch_wrapper(), "scherzo-argv", ErrPath, ChildPidPath, Exe | ArgList]},
+                    {args, ["-c", argv_launch_wrapper(), "scherzo-argv", ErrPath, ChildPidPath, status_path_for_tmp_dir(TmpDir), Exe | ArgList]},
                     {cd, Dir},
                     {env, Env}
                 ]),
@@ -169,7 +170,7 @@ start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes, BashPath) ->
                             binary,
                             exit_status,
                             use_stdio,
-                            {args, ["-c", argv_launch_wrapper_with_input(), "scherzo-argv-input", ErrPath, ChildPidPath, InputPath, EnvCount | EnvAssignments ++ [Exe | ArgList]]},
+                            {args, ["-c", argv_launch_wrapper_with_input(), "scherzo-argv-input", ErrPath, ChildPidPath, status_path_for_tmp_dir(TmpDir), InputPath, EnvCount | EnvAssignments ++ [Exe | ArgList]]},
                             {cd, Dir},
                             {env, Env}
                         ]),
@@ -191,8 +192,9 @@ start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes, BashPath) ->
 shell_launch_wrapper() ->
     "exec 2> \"$1\"\n"
     "child_pid_path=\"$2\"\n"
-    "bash_path=\"$3\"\n"
-    "shift 3\n"
+    "status_path=\"$3\"\n"
+    "bash_path=\"$4\"\n"
+    "shift 4\n"
     "if set -m 2>/dev/null; then :; fi\n"
     "\"$bash_path\" -lc \"$1\" <&0 &\n"
     "child_pid=$!\n"
@@ -200,12 +202,15 @@ shell_launch_wrapper() ->
     "printf '%s\\n' \"$child_pid\" > \"$child_pid_path\"\n"
     "wait \"$child_pid\"\n"
     "status=$?\n"
+    "printf '%s\\n' \"$status\" > \"$status_path\"\n" ++
+    residual_group_cleanup_script() ++
     "exit \"$status\"\n".
 
 argv_launch_wrapper() ->
     "exec 2> \"$1\"\n"
     "child_pid_path=\"$2\"\n"
-    "shift 2\n"
+    "status_path=\"$3\"\n"
+    "shift 3\n"
     "if set -m 2>/dev/null; then :; fi\n"
     "\"$@\" <&0 &\n"
     "child_pid=$!\n"
@@ -213,14 +218,17 @@ argv_launch_wrapper() ->
     "printf '%s\\n' \"$child_pid\" > \"$child_pid_path\"\n"
     "wait \"$child_pid\"\n"
     "status=$?\n"
+    "printf '%s\\n' \"$status\" > \"$status_path\"\n" ++
+    residual_group_cleanup_script() ++
     "exit \"$status\"\n".
 
 argv_launch_wrapper_with_input() ->
     "exec 2> \"$1\"\n"
     "child_pid_path=\"$2\"\n"
-    "stdin_path=\"$3\"\n"
-    "env_count=\"$4\"\n"
-    "shift 4\n"
+    "status_path=\"$3\"\n"
+    "stdin_path=\"$4\"\n"
+    "env_count=\"$5\"\n"
+    "shift 5\n"
     "env_args=()\n"
     "while [ \"$env_count\" -gt 0 ]; do\n"
     "  env_args+=(\"$1\")\n"
@@ -234,7 +242,36 @@ argv_launch_wrapper_with_input() ->
     "printf '%s\\n' \"$child_pid\" > \"$child_pid_path\"\n"
     "wait \"$child_pid\"\n"
     "status=$?\n"
+    "printf '%s\\n' \"$status\" > \"$status_path\"\n" ++
+    residual_group_cleanup_script() ++
     "exit \"$status\"\n".
+
+residual_group_cleanup_script() ->
+    "if [ -n \"$child_pid\" ] && [ \"$child_pid\" -gt 1 ] 2>/dev/null; then\n"
+    "  if kill -0 -- \"-$child_pid\" >/dev/null 2>&1; then\n"
+    "    i=0\n"
+    "    while kill -0 -- \"-$child_pid\" >/dev/null 2>&1 && [ \"$i\" -lt 5 ]; do\n"
+    "      sleep 0.02 2>/dev/null || true\n"
+    "      i=$((i + 1))\n"
+    "    done\n"
+    "    if kill -0 -- \"-$child_pid\" >/dev/null 2>&1; then\n"
+    "      kill -TERM -- \"-$child_pid\" >/dev/null 2>&1 || true\n"
+    "      i=0\n"
+    "      while kill -0 -- \"-$child_pid\" >/dev/null 2>&1 && [ \"$i\" -lt 15 ]; do\n"
+    "        sleep 0.02 2>/dev/null || true\n"
+    "        i=$((i + 1))\n"
+    "      done\n"
+    "      if kill -0 -- \"-$child_pid\" >/dev/null 2>&1; then\n"
+    "        kill -KILL -- \"-$child_pid\" >/dev/null 2>&1 || true\n"
+    "        i=0\n"
+    "        while kill -0 -- \"-$child_pid\" >/dev/null 2>&1 && [ \"$i\" -lt 35 ]; do\n"
+    "          sleep 0.02 2>/dev/null || true\n"
+    "          i=$((i + 1))\n"
+    "        done\n"
+    "      fi\n"
+    "    fi\n"
+    "  fi\n"
+    "fi\n".
 
 send_line(Process, Line) ->
     case process_port_result(Process) of
@@ -442,23 +479,55 @@ await_exit(Process, TimeoutMs) ->
             try
                 OsPid = process_os_pid(Process),
                 ChildPidPath = process_child_pid_path(Process),
+                StatusPath = process_status_path(Process),
                 Timeout = normalize_timeout(TimeoutMs),
                 Deadline = now_ms() + Timeout,
-                receive
-                    {Port, {exit_status, Status}} ->
-                        await_os_exit(Process, Status, OsPid, ChildPidPath, remaining_ms(Deadline));
-                    {'EXIT', Port, _Reason} ->
-                        await_os_exit(Process, 0, OsPid, ChildPidPath, remaining_ms(Deadline))
-                after Timeout ->
-                    case erlang:port_info(Port) of
-                        undefined -> await_os_exit(Process, 0, OsPid, ChildPidPath, 0);
-                        _ -> {error, <<"timeout">>}
-                    end
-                end
+                await_exit_loop(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline)
             catch
                 Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
             end;
         error -> {error, <<"closed">>}
+    end.
+
+await_exit_loop(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline) ->
+    case read_exit_status(StatusPath) of
+        {ok, Status} -> await_status_file_exit(Process, Port, Status, OsPid, ChildPidPath, Deadline);
+        none ->
+            Timeout = min_int(?POLL_MS, remaining_ms(Deadline)),
+            case Timeout =< 0 of
+                true -> await_exit_deadline(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline);
+                false ->
+                    receive
+                        {Port, {exit_status, Status}} ->
+                            await_os_exit(Process, Status, OsPid, ChildPidPath, remaining_ms(Deadline));
+                        {'EXIT', Port, _Reason} ->
+                            await_os_exit(Process, exit_status_or_default(StatusPath, 0), OsPid, ChildPidPath, remaining_ms(Deadline))
+                    after Timeout ->
+                        await_exit_loop(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline)
+                    end
+            end
+    end.
+
+await_exit_deadline(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline) ->
+    case read_exit_status(StatusPath) of
+        {ok, Status} -> await_status_file_exit(Process, Port, Status, OsPid, ChildPidPath, Deadline);
+        none ->
+            case erlang:port_info(Port) of
+                undefined -> await_os_exit(Process, 0, OsPid, ChildPidPath, 0);
+                _ -> {error, <<"timeout">>}
+            end
+    end.
+
+await_status_file_exit(Process, Port, Status, OsPid, ChildPidPath, Deadline) ->
+    case terminate_residual_launched_process_until(ChildPidPath, Deadline) of
+        ok ->
+            case wait_for_launched_process_gone(OsPid, ChildPidPath, remaining_ms(Deadline)) of
+                ok ->
+                    _ = drain_port_exit(Port),
+                    finish_process_exit(Process, Status);
+                timeout -> {error, <<"timeout">>}
+            end;
+        timeout -> {error, <<"timeout">>}
     end.
 
 await_os_exit(Process, Status, OsPid, ChildPidPath, Timeout) ->
@@ -492,6 +561,48 @@ terminate_launched_process(OsPid, ChildPidPath) ->
     terminate_child_targets(ChildPidResult, NonRootTargets),
     safe_kill_pid("TERM", OsPid),
     ok.
+
+terminate_residual_launched_process_until(ChildPidPath, Deadline) ->
+    case read_child_pid(ChildPidPath) of
+        {ok, ChildPid} ->
+            Targets = process_tree_pids(ChildPid),
+            terminate_child_targets_until({ok, ChildPid}, Targets, Deadline);
+        none -> ok
+    end.
+
+terminate_child_targets_until(ChildPidResult, Targets, Deadline) ->
+    SafeTargets = safe_pids(Targets),
+    case targets_alive(ChildPidResult, SafeTargets) of
+        false -> ok;
+        true ->
+            DrainDeadline = min_int(Deadline, now_ms() + ?RESIDUAL_DRAIN_GRACE_MS),
+            case wait_for_targets_gone_until(ChildPidResult, SafeTargets, DrainDeadline) of
+                ok -> ok;
+                timeout -> terminate_live_child_targets_until(ChildPidResult, SafeTargets, Deadline)
+            end
+    end.
+
+terminate_live_child_targets_until(ChildPidResult, Targets, Deadline) ->
+    case ChildPidResult of
+        {ok, TermChildPid} -> safe_kill_group("TERM", TermChildPid);
+        none -> ok
+    end,
+    signal_pids("TERM", lists:reverse(Targets)),
+    TermDeadline = min_int(Deadline, now_ms() + ?TERM_GRACE_MS),
+    case wait_for_targets_gone_until(ChildPidResult, Targets, TermDeadline) of
+        ok -> ok;
+        timeout ->
+            case now_ms() >= Deadline of
+                true -> timeout;
+                false ->
+                    case ChildPidResult of
+                        {ok, KillChildPid} -> safe_kill_group("KILL", KillChildPid);
+                        none -> ok
+                    end,
+                    signal_pids("KILL", lists:reverse(Targets)),
+                    wait_for_targets_gone_until(ChildPidResult, Targets, min_int(Deadline, now_ms() + ?KILL_GRACE_MS))
+            end
+    end.
 
 terminate_child_targets(ChildPidResult, Targets) ->
     case ChildPidResult of
@@ -682,6 +793,31 @@ read_child_pid(Path) ->
         _ -> none
     end.
 
+read_exit_status(undefined) -> none;
+read_exit_status(Path) ->
+    case file:read_file(Path) of
+        {ok, Bytes} ->
+            Text = string:trim(binary_to_list(Bytes)),
+            case parse_int(Text) of
+                {ok, Status} -> {ok, Status};
+                _ -> none
+            end;
+        _ -> none
+    end.
+
+exit_status_or_default(StatusPath, Default) ->
+    case read_exit_status(StatusPath) of
+        {ok, Status} -> Status;
+        none -> Default
+    end.
+
+drain_port_exit(Port) ->
+    receive
+        {Port, {exit_status, _Status}} -> ok;
+        {'EXIT', Port, _Reason} -> ok
+    after 0 -> ok
+    end.
+
 sleep_until_next_poll(Deadline) ->
     Remaining = remaining_ms(Deadline),
     case Remaining > 0 of
@@ -729,6 +865,12 @@ process_tmp_dir({scherzo_process, _Port, _ErrPath}) -> undefined;
 process_tmp_dir({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath}) -> undefined;
 process_tmp_dir({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath, TmpDir}) -> TmpDir.
 
+process_status_path(Process) ->
+    case process_tmp_dir(Process) of
+        undefined -> undefined;
+        TmpDir -> status_path_for_tmp_dir(TmpDir)
+    end.
+
 port_os_pid(Port) ->
     case catch erlang:port_info(Port, os_pid) of
         {os_pid, Pid} when is_integer(Pid), Pid > 1 -> Pid;
@@ -737,6 +879,9 @@ port_os_pid(Port) ->
 
 normalize_timeout(TimeoutMs) when is_integer(TimeoutMs), TimeoutMs >= 0 -> TimeoutMs;
 normalize_timeout(_) -> 0.
+
+status_path_for_tmp_dir(TmpDir) ->
+    filename:join(TmpDir, "exit.status").
 
 new_temp_storage() ->
     Base = tmp_base(),
