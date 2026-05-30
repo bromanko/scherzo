@@ -1,6 +1,6 @@
 import gleam/bit_array
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option, None, Some, flatten, map}
 import gleam/result
 import gleam/string
 import scherzo/json_value
@@ -52,6 +52,7 @@ type ResolvedOutput {
   ResolvedOutput(
     name: String,
     contract_type: workflow_contract.ContractType,
+    artifact_type: Option(String),
     artifact_ref: String,
     sha256: String,
     bytes: Int,
@@ -362,6 +363,12 @@ fn resolve_output_value(
           Ok(ResolvedOutput(
             name: output_name,
             contract_type: value.type_,
+            artifact_type: workflow_contract_manifest.descriptor_for_named_value(
+              output_name,
+              value,
+            )
+              |> map(fn(descriptor) { descriptor.artifact_type })
+              |> flatten,
             artifact_ref: artifact_ref,
             sha256: sha256,
             bytes: bytes,
@@ -426,6 +433,7 @@ fn snapshot_output(
     media_type: snapshot.media_type,
     original_path: snapshot.original_path,
     contract_type: workflow_contract.type_to_string(output.contract_type),
+    artifact_type: output.artifact_type,
     producer: types.ProducerRef(
       workflow_id: workflow_id,
       run_id: run_id,

@@ -12,7 +12,7 @@ ExecPlan identity model:
 
 Use these prepared files as the complete handoff:
 
-- `tmp/execplan-review-doc.md`: canonical executable plan artifact resolved from `exec_plan_bundle.plan.ref` (or legacy `review_doc.path` fallback), including human-reviewable intent, scope, risks, milestones, and acceptance.
+- `tmp/execplan-review-doc.md`: canonical executable plan artifact resolved from descriptor-first `plan` entry in `exec_plan_bundle.entries` (or legacy `exec_plan_bundle.plan.ref` / `review_doc.path` fallback), including human-reviewable intent, scope, risks, milestones, and acceptance.
 - `tmp/execplan-implementation-pack.json`: mechanical implementation steps, verified facts, tests, interfaces, dependencies, and artifact notes.
 - `tmp/execplan-bundle.json`: retained bundle provenance and hashes.
 

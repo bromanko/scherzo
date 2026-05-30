@@ -188,9 +188,15 @@ pub fn descriptor_is_emitted_additively_with_legacy_fields_test() {
   assert json_text_contains(text, "\"type\":\"exec_plan_bundle\"")
   assert json_text_contains(text, "\"ref_kind\":\"run_artifact\"")
   assert json_text_contains(text, "\"kind\":\"artifact_set\"")
-  assert json_text_contains(text, "\"artifact_type\":\"exec_plan_bundle\"")
+  assert json_text_contains(
+    text,
+    "\"artifact_type\":\"scherzo.exec_plan_bundle.v2\"",
+  )
   assert json_text_contains(text, "\"kind\":\"file\"")
-  assert json_text_contains(text, "\"artifact_type\":\"implementation_pack\"")
+  assert json_text_contains(
+    text,
+    "\"artifact_type\":\"scherzo.implementation_pack.v2\"",
+  )
   assert json_text_contains(text, "\"kind\":\"value\"")
   assert json_text_contains(text, "\"kind\":\"ref\"")
   assert json_text_contains(text, "\"ref_type\":\"url\"")
@@ -214,7 +220,7 @@ pub fn descriptor_helper_maps_legacy_contract_types_test() {
     )
   let assert Some(exec_plan_bundle) = exec_plan_bundle
   assert exec_plan_bundle.kind == artifact_descriptor.ArtifactSetKind
-  assert exec_plan_bundle.artifact_type == Some("exec_plan_bundle")
+  assert exec_plan_bundle.artifact_type == Some("scherzo.exec_plan_bundle.v2")
 
   let implementation_pack =
     manifest.descriptor_for_named_value(
@@ -232,7 +238,8 @@ pub fn descriptor_helper_maps_legacy_contract_types_test() {
     )
   let assert Some(implementation_pack) = implementation_pack
   assert implementation_pack.kind == artifact_descriptor.FileKind
-  assert implementation_pack.artifact_type == Some("implementation_pack")
+  assert implementation_pack.artifact_type
+    == Some("scherzo.implementation_pack.v2")
 
   let code_change_bundle =
     manifest.descriptor_for_named_value(
@@ -250,6 +257,8 @@ pub fn descriptor_helper_maps_legacy_contract_types_test() {
     )
   let assert Some(code_change_bundle) = code_change_bundle
   assert code_change_bundle.kind == artifact_descriptor.ArtifactSetKind
+  assert code_change_bundle.artifact_type
+    == Some("scherzo.code_change_bundle.v2")
 
   let code_change =
     manifest.descriptor_for_named_value(

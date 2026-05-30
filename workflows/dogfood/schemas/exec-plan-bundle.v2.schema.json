@@ -17,79 +17,213 @@
     "validation"
   ],
   "properties": {
-    "schema_version": { "const": 2 },
-    "artifact_type": { "const": "exec_plan_bundle" },
-    "bundle_id": { "$ref": "#/$defs/non_empty_string" },
-    "source_issue": { "$ref": "#/$defs/source_issue" },
+    "schema_version": {
+      "const": 2
+    },
+    "artifact_type": {
+      "enum": [
+        "scherzo.exec_plan_bundle.v2",
+        "exec_plan_bundle"
+      ]
+    },
+    "bundle_id": {
+      "$ref": "#/$defs/non_empty_string"
+    },
+    "source_issue": {
+      "$ref": "#/$defs/source_issue"
+    },
     "workflow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["workflow_id", "run_id", "workflow_fingerprint"],
+      "required": [
+        "workflow_id",
+        "run_id",
+        "workflow_fingerprint"
+      ],
       "properties": {
-        "workflow_id": { "$ref": "#/$defs/non_empty_string" },
-        "run_id": { "$ref": "#/$defs/non_empty_string" },
-        "workflow_fingerprint": { "$ref": "#/$defs/non_empty_string" }
+        "workflow_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "run_id": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "workflow_fingerprint": {
+          "$ref": "#/$defs/non_empty_string"
+        }
       }
     },
     "revision": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "number", "supersedes"],
+      "required": [
+        "status",
+        "number",
+        "supersedes"
+      ],
       "properties": {
-        "status": { "enum": ["created", "changed", "unchanged"] },
-        "number": { "type": "integer", "minimum": 1 },
+        "status": {
+          "enum": [
+            "created",
+            "changed",
+            "unchanged"
+          ]
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
         "supersedes": {
           "oneOf": [
-            { "type": "null" },
+            {
+              "type": "null"
+            },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["ref", "sha256"],
+              "required": [
+                "ref",
+                "sha256"
+              ],
               "properties": {
-                "ref": { "$ref": "#/$defs/artifact_ref" },
-                "sha256": { "$ref": "#/$defs/sha256" }
+                "ref": {
+                  "$ref": "#/$defs/artifact_ref"
+                },
+                "sha256": {
+                  "$ref": "#/$defs/sha256"
+                }
               }
             }
           ]
         }
       }
     },
-    "plan": { "$ref": "#/$defs/plan" },
-    "review_doc": { "$ref": "#/$defs/review_doc" },
+    "plan": {
+      "$ref": "#/$defs/plan"
+    },
+    "review_doc": {
+      "$ref": "#/$defs/review_doc"
+    },
     "implementation_pack": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ref", "sha256", "bytes", "schema", "derived_from_review_doc_sha256"],
+      "required": [
+        "ref",
+        "sha256",
+        "bytes",
+        "schema",
+        "derived_from_review_doc_sha256"
+      ],
       "properties": {
-        "ref": { "$ref": "#/$defs/artifact_ref" },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "bytes": { "$ref": "#/$defs/bytes" },
-        "schema": { "const": ".scherzo/workflows/schemas/implementation-pack.v2.schema.json" },
-        "derived_from_review_doc_sha256": { "$ref": "#/$defs/sha256" }
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "schema": {
+          "const": ".scherzo/workflows/schemas/implementation-pack.v2.schema.json"
+        },
+        "derived_from_review_doc_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     },
     "review_surface": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "pr_url", "branch", "source_bundle_ref"],
+      "required": [
+        "status",
+        "pr_url",
+        "branch",
+        "source_bundle_ref"
+      ],
       "properties": {
-        "status": { "enum": ["published", "reused", "not_applicable"] },
-        "pr_url": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
-        "branch": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/non_empty_string" }] },
-        "source_bundle_ref": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/artifact_ref" }] },
-        "head_revision": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/non_empty_string" }] },
-        "review_doc_path": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/repo_path" }] }
+        "status": {
+          "enum": [
+            "published",
+            "reused",
+            "not_applicable"
+          ]
+        },
+        "pr_url": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "uri"
+            }
+          ]
+        },
+        "branch": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/non_empty_string"
+            }
+          ]
+        },
+        "source_bundle_ref": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/artifact_ref"
+            }
+          ]
+        },
+        "head_revision": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/non_empty_string"
+            }
+          ]
+        },
+        "review_doc_path": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/repo_path"
+            }
+          ]
+        }
       }
     },
     "implementation_handoff": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issue_identifier", "issue_url", "workflow_label", "bundle_ref"],
+      "required": [
+        "issue_identifier",
+        "issue_url",
+        "workflow_label",
+        "bundle_ref"
+      ],
       "properties": {
-        "issue_identifier": { "$ref": "#/$defs/non_empty_string" },
-        "issue_url": { "type": "string", "format": "uri" },
-        "workflow_label": { "const": "workflow:execplan-implementation" },
-        "bundle_ref": { "$ref": "#/$defs/artifact_ref" }
+        "issue_identifier": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "issue_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "workflow_label": {
+          "const": "workflow:execplan-implementation"
+        },
+        "bundle_ref": {
+          "$ref": "#/$defs/artifact_ref"
+        }
       }
     },
     "validation": {
@@ -97,53 +231,147 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "status"],
+        "required": [
+          "name",
+          "status"
+        ],
         "properties": {
-          "name": { "$ref": "#/$defs/non_empty_string" },
-          "status": { "enum": ["passed", "failed", "warning", "skipped"] },
-          "diagnostic": { "$ref": "#/$defs/non_empty_string" }
+          "name": {
+            "$ref": "#/$defs/non_empty_string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "warning",
+              "skipped"
+            ]
+          },
+          "diagnostic": {
+            "$ref": "#/$defs/non_empty_string"
+          }
         }
+      }
+    },
+    "kind": {
+      "const": "artifact_set"
+    },
+    "media_type": {
+      "const": "application/json"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/descriptor_entry"
       }
     }
   },
   "anyOf": [
-    { "required": ["plan"] },
-    { "required": ["review_doc"] }
+    {
+      "required": [
+        "plan"
+      ]
+    },
+    {
+      "required": [
+        "review_doc"
+      ]
+    }
   ],
   "allOf": [
     {
-      "if": { "properties": { "revision": { "properties": { "status": { "enum": ["created", "changed"] } } } } },
+      "if": {
+        "properties": {
+          "revision": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "created",
+                  "changed"
+                ]
+              }
+            }
+          }
+        }
+      },
       "then": {
         "properties": {
           "review_surface": {
             "properties": {
-              "status": { "const": "published" },
-              "pr_url": { "type": "string", "format": "uri" },
-              "branch": { "$ref": "#/$defs/non_empty_string" },
-              "source_bundle_ref": { "type": "null" }
+              "status": {
+                "const": "published"
+              },
+              "pr_url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "branch": {
+                "$ref": "#/$defs/non_empty_string"
+              },
+              "source_bundle_ref": {
+                "type": "null"
+              }
             }
           }
         }
       }
     },
     {
-      "if": { "properties": { "revision": { "properties": { "status": { "const": "unchanged" } } } } },
+      "if": {
+        "properties": {
+          "revision": {
+            "properties": {
+              "status": {
+                "const": "unchanged"
+              }
+            }
+          }
+        }
+      },
       "then": {
         "properties": {
           "revision": {
             "properties": {
-              "supersedes": { "type": "object" }
+              "supersedes": {
+                "type": "object"
+              }
             }
           },
           "review_surface": {
             "properties": {
-              "status": { "const": "reused" },
-              "pr_url": { "type": "string", "format": "uri" },
-              "branch": { "$ref": "#/$defs/non_empty_string" },
-              "source_bundle_ref": { "$ref": "#/$defs/artifact_ref" }
+              "status": {
+                "const": "reused"
+              },
+              "pr_url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "branch": {
+                "$ref": "#/$defs/non_empty_string"
+              },
+              "source_bundle_ref": {
+                "$ref": "#/$defs/artifact_ref"
+              }
             }
           }
         }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "artifact_type": {
+            "const": "scherzo.exec_plan_bundle.v2"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "kind",
+          "media_type",
+          "entries"
+        ]
       }
     }
   ],
@@ -168,22 +396,45 @@
     "plan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ref", "sha256", "bytes", "media_type"],
+      "required": [
+        "ref",
+        "sha256",
+        "bytes",
+        "media_type"
+      ],
       "properties": {
-        "ref": { "$ref": "#/$defs/artifact_ref" },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "bytes": { "$ref": "#/$defs/bytes" },
-        "media_type": { "const": "text/markdown" }
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "media_type": {
+          "const": "text/markdown"
+        }
       }
     },
     "review_doc": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "bytes"],
+      "required": [
+        "path",
+        "sha256",
+        "bytes"
+      ],
       "properties": {
-        "path": { "$ref": "#/$defs/repo_path" },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "bytes": { "$ref": "#/$defs/bytes" }
+        "path": {
+          "$ref": "#/$defs/repo_path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        }
       }
     },
     "sha256": {
@@ -193,11 +444,58 @@
     "source_issue": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["identifier", "title", "url"],
+      "required": [
+        "identifier",
+        "title",
+        "url"
+      ],
       "properties": {
-        "identifier": { "$ref": "#/$defs/non_empty_string" },
-        "title": { "$ref": "#/$defs/non_empty_string" },
-        "url": { "type": "string", "format": "uri" }
+        "identifier": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "title": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "descriptor_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "artifact_type",
+        "ref",
+        "sha256",
+        "bytes",
+        "media_type"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "kind": {
+          "const": "file"
+        },
+        "artifact_type": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "media_type": {
+          "$ref": "#/$defs/non_empty_string"
+        }
       }
     }
   }

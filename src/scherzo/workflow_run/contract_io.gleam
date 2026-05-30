@@ -366,8 +366,12 @@ fn mapped_contract_value(
   case dict.get(values, name) {
     Ok(value) ->
       case contract_manifest.type_matches(value, expected_type) {
-        True -> Ok(value)
         False -> Error("workflow_contract_type_mismatch:" <> name)
+        True ->
+          case contract_manifest.artifact_type_matches(value, expected_type) {
+            True -> Ok(value)
+            False -> Error("workflow_contract_artifact_type_mismatch:" <> name)
+          }
       }
     Error(Nil) ->
       case required {

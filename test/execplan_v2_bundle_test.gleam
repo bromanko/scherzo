@@ -106,6 +106,22 @@ fn mutated_bundle(dir: String, each old: String, with new: String) -> String {
   path
 }
 
+fn mutated_legacy_bundle(
+  dir: String,
+  each old: String,
+  with new: String,
+) -> String {
+  test_helpers.reset_dir(dir)
+  let assert Ok(source) =
+    simplifile.read(
+      "test/fixtures/execplan_v2/legacy/exec-plan-bundle.legacy.json",
+    )
+  let path = dir <> "/bundle.json"
+  let assert Ok(Nil) =
+    simplifile.write(path, string.replace(source, each: old, with: new))
+  path
+}
+
 fn mutated_pack(dir: String, each old: String, with new: String) -> String {
   test_helpers.reset_dir(dir)
   let assert Ok(source) =
@@ -236,6 +252,7 @@ fn write_source_handoff_split_bundle(dir: String) -> #(String, String) {
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
   let assert Ok(Nil) =
     simplifile.write(review_dir <> "/review-doc.valid.md", review_doc)
+  let assert Ok(Nil) = simplifile.write(output_dir <> "/plan.md", review_doc)
 
   let assert Ok(pack_source) =
     simplifile.read("test/fixtures/execplan_v2/implementation-pack.valid.json")
@@ -273,13 +290,13 @@ fn write_source_handoff_split_bundle(dir: String) -> #(String, String) {
   let bundle_with_pack_sha =
     string.replace(
       bundle_with_title,
-      each: "dbcb84d078e47839e8da760b1208e6b5606bce45ab3228a24a92e0b5afd21545",
+      each: "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201",
       with: pack_sha,
     )
   let bundle_text =
     string.replace(
       bundle_with_pack_sha,
-      each: "\"bytes\": 2155,",
+      each: "\"bytes\": 2220,",
       with: "\"bytes\": " <> pack_bytes <> ",",
     )
   let bundle_path = output_dir <> "/exec_plan_bundle.json"
@@ -328,7 +345,25 @@ fn write_artifact_backed_plan_bundle(
   let bundle_ref = "runs/" <> run_id <> "/outputs/exec_plan_bundle.json"
   let bundle_text =
     "{\n"
-    <> "  \"artifact_type\": \"exec_plan_bundle\",\n"
+    <> "  \"artifact_type\": \"scherzo.exec_plan_bundle.v2\",\n"
+    <> "  \"entries\": [\n"
+    <> "    {\"name\": \"plan\", \"kind\": \"file\", \"artifact_type\": \"scherzo.exec_plan.v1\", \"ref\": \""
+    <> plan_ref
+    <> "\", \"sha256\": \""
+    <> plan_sha
+    <> "\", \"bytes\": "
+    <> plan_bytes
+    <> ", \"media_type\": \"text/markdown\"},\n"
+    <> "    {\"name\": \"implementation_pack\", \"kind\": \"file\", \"artifact_type\": \"scherzo.implementation_pack.v2\", \"ref\": \"runs/"
+    <> run_id
+    <> "/outputs/implementation_pack.json\", \"sha256\": \""
+    <> pack_sha
+    <> "\", \"bytes\": "
+    <> pack_bytes
+    <> ", \"media_type\": \"application/json\"}\n"
+    <> "  ],\n"
+    <> "  \"kind\": \"artifact_set\",\n"
+    <> "  \"media_type\": \"application/json\",\n"
     <> "  \"bundle_id\": \"fixture-bundle-artifact-plan\",\n"
     <> "  \"implementation_handoff\": {\n"
     <> "    \"bundle_ref\": \""
@@ -453,6 +488,33 @@ pub fn validate_bundle_accepts_valid_fixture_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "BUNDLE_VALID=ok")
+}
+
+pub fn validate_bundle_accepts_legacy_retained_shape_fixture_test() {
+  let artifact =
+    run_helper(
+      "validate-bundle --bundle test/fixtures/execplan_v2/legacy/exec-plan-bundle.legacy.json --repo-root .",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "BUNDLE_VALID=ok")
+}
+
+pub fn schema_validator_accepts_legacy_pack_and_code_change_fixtures_test() {
+  let pack =
+    run_shell(
+      "scripts/scherzo-json-schema-validate --schema .scherzo/workflows/schemas/implementation-pack.v2.schema.json < test/fixtures/execplan_v2/legacy/implementation-pack.legacy.json",
+    )
+  assert pack.status == step_artifact.StepSucceeded
+  assert pack.exit_code == Some(0)
+
+  let code_change =
+    run_shell(
+      "scripts/scherzo-json-schema-validate --schema .scherzo/workflows/schemas/code-change-bundle.v2.schema.json < test/fixtures/execplan_v2/legacy/code-change-bundle.legacy.json",
+    )
+  assert code_change.status == step_artifact.StepSucceeded
+  assert code_change.exit_code == Some(0)
 }
 
 pub fn validate_bundle_accepts_artifact_backed_plan_without_repo_path_test() {
@@ -877,9 +939,66 @@ pub fn validate_bundle_rejects_stale_pack_fixture_test() {
   )
 }
 
-pub fn validate_bundle_rejects_missing_review_doc_test() {
+pub fn validate_bundle_rejects_descriptor_plan_ref_mismatch_test() {
   let path =
     mutated_bundle(
+      "test/tmp/execplan-descriptor-plan-ref-mismatch",
+      each: "      \"name\": \"plan\",\n      \"ref\": \"runs/run-1/outputs/plan.md\",",
+      with: "      \"name\": \"plan\",\n      \"ref\": \"runs/run-1/outputs/other-plan.md\",",
+    )
+
+  let artifact =
+    run_helper("validate-bundle --bundle " <> path <> " --repo-root .")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_descriptor_entry_mismatch",
+  )
+}
+
+pub fn validate_bundle_rejects_descriptor_plan_hash_mismatch_test() {
+  let path =
+    mutated_bundle(
+      "test/tmp/execplan-descriptor-plan-hash-mismatch",
+      each: "      \"name\": \"plan\",\n      \"ref\": \"runs/run-1/outputs/plan.md\",\n      \"sha256\": \"64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4\"",
+      with: "      \"name\": \"plan\",\n      \"ref\": \"runs/run-1/outputs/plan.md\",\n      \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"",
+    )
+
+  let artifact =
+    run_helper("validate-bundle --bundle " <> path <> " --repo-root .")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_descriptor_entry_mismatch",
+  )
+}
+
+pub fn validate_bundle_rejects_descriptor_pack_bytes_mismatch_test() {
+  let path =
+    mutated_bundle(
+      "test/tmp/execplan-descriptor-pack-bytes-mismatch",
+      each: "      \"bytes\": 2220,\n      \"kind\": \"file\",\n      \"media_type\": \"application/json\",\n      \"name\": \"implementation_pack\"",
+      with: "      \"bytes\": 2221,\n      \"kind\": \"file\",\n      \"media_type\": \"application/json\",\n      \"name\": \"implementation_pack\"",
+    )
+
+  let artifact =
+    run_helper("validate-bundle --bundle " <> path <> " --repo-root .")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_descriptor_entry_mismatch",
+  )
+}
+
+pub fn validate_bundle_rejects_missing_review_doc_test() {
+  let path =
+    mutated_legacy_bundle(
       "test/tmp/execplan-missing-review-doc",
       each: "test/fixtures/execplan_v2/review-doc.valid.md",
       with: "test/tmp/execplan-missing-review-doc/missing.md",
@@ -1112,7 +1231,7 @@ pub fn prepare_revision_rejects_unsafe_review_surface_targets_before_refresh_tes
 
 pub fn validate_bundle_rejects_review_doc_hash_mismatch_test() {
   let path =
-    mutated_bundle(
+    mutated_legacy_bundle(
       "test/tmp/execplan-review-hash-mismatch",
       each: "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4",
       with: "0000000000000000000000000000000000000000000000000000000000000000",
@@ -1152,7 +1271,7 @@ pub fn validate_bundle_rejects_implementation_pack_hash_mismatch_test() {
   let path =
     mutated_bundle(
       "test/tmp/execplan-pack-hash-mismatch",
-      each: "dbcb84d078e47839e8da760b1208e6b5606bce45ab3228a24a92e0b5afd21545",
+      each: "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201",
       with: "0000000000000000000000000000000000000000000000000000000000000000",
     )
 
@@ -1186,8 +1305,8 @@ pub fn validate_bundle_rejects_bundle_self_hash_test() {
   let mutated =
     string.replace(
       source,
-      each: "  \"artifact_type\": \"exec_plan_bundle\",\n",
-      with: "  \"artifact_type\": \"exec_plan_bundle\",\n  \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\",\n",
+      each: "  \"artifact_type\": \"scherzo.exec_plan_bundle.v2\",\n",
+      with: "  \"artifact_type\": \"scherzo.exec_plan_bundle.v2\",\n  \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\",\n",
     )
   let path = dir <> "/bundle.json"
   let assert Ok(Nil) = simplifile.write(path, mutated)
@@ -2418,7 +2537,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
   )
   assert string.contains(
     bundle,
-    "\"sha256\": \"e4117164704e943de716797a83f98cd4927833dc0f3b4a179c78c657b25334ec\"",
+    "\"sha256\": \"ee4fbc4fa35c13874ec5626e07929cdcf1e9c25198af3a81edb7cd5740c6e168\"",
   )
   assert string.contains(bundle, "\"head_revision\": \"reused\"")
 }
@@ -2638,7 +2757,10 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   let assert Ok(bundle) = simplifile.read(output)
-  assert string.contains(bundle, "\"artifact_type\": \"code_change_bundle\"")
+  assert string.contains(
+    bundle,
+    "\"artifact_type\": \"scherzo.code_change_bundle.v2\"",
+  )
   assert string.contains(bundle, "runs/run-2/execplan/code-change/diff.patch")
   assert string.contains(bundle, "\"verdict\": \"complete\"")
   assert string.contains(bundle, "\"name\": \"final-review\"")

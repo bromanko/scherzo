@@ -777,6 +777,7 @@ fn handoff_json_for(
             media_type: "application/json",
             original_path: "tmp/" <> output_name <> ".json",
             contract_type: contract_type,
+            artifact_type: Some("scherzo.exec_plan_bundle.v2"),
             producer: types.ProducerRef(
               workflow_id: producer_workflow_id,
               run_id: "run-1",

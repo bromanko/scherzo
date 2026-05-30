@@ -43,6 +43,7 @@ pub type ArtifactSnapshot {
     media_type: String,
     original_path: String,
     contract_type: String,
+    artifact_type: Option(String),
     producer: ProducerRef,
     validation: ValidationSummary,
     summary: String,

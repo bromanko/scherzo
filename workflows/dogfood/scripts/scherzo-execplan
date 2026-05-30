@@ -35,6 +35,13 @@ DEFAULT_REVIEW_DOC_DIRECTORY = "docs/plans"
 CANONICAL_PLAN_OUTPUT_NAME = "plan"
 CANONICAL_PLAN_OUTPUT_PATH = Path("tmp/execplan-review-doc.md")
 CANONICAL_PLAN_MEDIA_TYPE = "text/markdown"
+EXEC_PLAN_ARTIFACT_TYPE = "scherzo.exec_plan.v1"
+EXEC_PLAN_BUNDLE_ARTIFACT_TYPE = "scherzo.exec_plan_bundle.v2"
+IMPLEMENTATION_PACK_ARTIFACT_TYPE = "scherzo.implementation_pack.v2"
+CODE_CHANGE_BUNDLE_ARTIFACT_TYPE = "scherzo.code_change_bundle.v2"
+LEGACY_EXEC_PLAN_BUNDLE_ARTIFACT_TYPE = "exec_plan_bundle"
+LEGACY_IMPLEMENTATION_PACK_ARTIFACT_TYPE = "implementation_pack"
+LEGACY_CODE_CHANGE_BUNDLE_ARTIFACT_TYPE = "code_change_bundle"
 IMPLEMENTATION_STATE_RELATIVE_DIR = Path("state") / "implementation"
 CANONICAL_IMPLEMENTATION_PLAN_STATE_NAME = "execplan-review-doc.md"
 CANONICAL_IMPLEMENTATION_PACK_STATE_NAME = "execplan-implementation-pack.json"
@@ -255,6 +262,39 @@ def canonical_json(value: Any) -> str:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(canonical_json(value), encoding="utf-8")
+
+
+def descriptor_file_entry(name: str, ref: str, sha256: str, bytes_: int, media_type: str, artifact_type: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "kind": "file",
+        "artifact_type": artifact_type,
+        "ref": ref,
+        "sha256": sha256,
+        "bytes": bytes_,
+        "media_type": media_type,
+    }
+
+
+def named_retained_artifact_entry(artifact: dict[str, Any], *, media_type: str = "application/json") -> dict[str, Any]:
+    return descriptor_file_entry(
+        str(artifact["name"]),
+        str(artifact["ref"]),
+        str(artifact["sha256"]),
+        int(artifact["bytes"]),
+        media_type,
+        str(artifact["name"]),
+    )
+
+
+def implementation_pack_descriptor(pack: dict[str, Any]) -> dict[str, Any]:
+    review_doc = pack["review_doc"]
+    return {
+        "kind": "file",
+        "media_type": "application/json",
+        "artifact_type": IMPLEMENTATION_PACK_ARTIFACT_TYPE,
+        **review_doc,
+    }
 
 
 def implementation_state_dir() -> Path | None:
@@ -1262,7 +1302,9 @@ def materialize_pack(review_doc: Path, submission: Path, output: Path) -> dict[s
     pack_id = str(payload.get("pack_id") or f"pack-{source_issue['identifier'].lower()}-{os.environ.get('SCHERZO_RUN_ID', 'local')}")
     pack = {
         "schema_version": 2,
-        "artifact_type": "implementation_pack",
+        "kind": "file",
+        "media_type": "application/json",
+        "artifact_type": IMPLEMENTATION_PACK_ARTIFACT_TYPE,
         "pack_id": pack_id,
         "source_issue": source_issue,
         "review_doc": review_meta,
@@ -1407,6 +1449,77 @@ def validate_bundle_implementation_pack(
     return pack, pack_path
 
 
+def descriptor_entries_by_name(bundle: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    if bundle.get("artifact_type") != EXEC_PLAN_BUNDLE_ARTIFACT_TYPE:
+        return {}
+    entries = bundle.get("entries")
+    if not isinstance(entries, list):
+        fail("descriptor-first exec_plan_bundle requires entries", code="execplan_v2_descriptor_entry_mismatch")
+    by_name: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            fail("exec_plan_bundle entries must be objects", code="execplan_v2_descriptor_entry_mismatch")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            fail("exec_plan_bundle entries require names", code="execplan_v2_descriptor_entry_mismatch")
+        if name in by_name:
+            fail(f"duplicate exec_plan_bundle descriptor entry: {name}", code="execplan_v2_descriptor_entry_mismatch")
+        by_name[name] = entry
+    return by_name
+
+
+def require_descriptor_entry(entries: dict[str, dict[str, Any]], name: str) -> dict[str, Any]:
+    entry = entries.get(name)
+    if entry is None:
+        fail(f"exec_plan_bundle missing descriptor entry: {name}", code="execplan_v2_descriptor_entry_mismatch")
+    return entry
+
+
+def require_descriptor_entry_field(entry: dict[str, Any], name: str, field: str, expected: Any) -> None:
+    if entry.get(field) != expected:
+        fail(
+            f"exec_plan_bundle descriptor entry {name}.{field} does not match canonical metadata",
+            code="execplan_v2_descriptor_entry_mismatch",
+        )
+
+
+def validate_descriptor_file_entry(
+    entry: dict[str, Any], name: str, expected: dict[str, Any], *, artifact_type: str, media_type: str
+) -> None:
+    require_descriptor_entry_field(entry, name, "kind", "file")
+    require_descriptor_entry_field(entry, name, "artifact_type", artifact_type)
+    require_descriptor_entry_field(entry, name, "ref", expected.get("ref"))
+    require_descriptor_entry_field(entry, name, "sha256", expected.get("sha256"))
+    require_descriptor_entry_field(entry, name, "bytes", expected.get("bytes"))
+    require_descriptor_entry_field(entry, name, "media_type", media_type)
+
+
+def validate_execplan_bundle_descriptor_entries(bundle: dict[str, Any]) -> None:
+    if bundle.get("artifact_type") != EXEC_PLAN_BUNDLE_ARTIFACT_TYPE:
+        return
+    plan = bundle.get("plan")
+    if not isinstance(plan, dict):
+        fail("descriptor-first exec_plan_bundle requires plan metadata", code="execplan_v2_descriptor_entry_mismatch")
+    implementation_pack = bundle.get("implementation_pack")
+    if not isinstance(implementation_pack, dict):
+        fail("exec_plan_bundle requires implementation_pack metadata", code="execplan_v2_descriptor_entry_mismatch")
+    entries = descriptor_entries_by_name(bundle)
+    validate_descriptor_file_entry(
+        require_descriptor_entry(entries, "plan"),
+        "plan",
+        plan,
+        artifact_type=EXEC_PLAN_ARTIFACT_TYPE,
+        media_type=CANONICAL_PLAN_MEDIA_TYPE,
+    )
+    validate_descriptor_file_entry(
+        require_descriptor_entry(entries, "implementation_pack"),
+        "implementation_pack",
+        implementation_pack,
+        artifact_type=IMPLEMENTATION_PACK_ARTIFACT_TYPE,
+        media_type="application/json",
+    )
+
+
 def load_bundle_pack(
     bundle: dict[str, Any], *, artifact_root: str | None = None, repo_root_arg: str | None = None
 ) -> tuple[dict[str, Any], Path]:
@@ -1427,6 +1540,7 @@ def load_and_validate_bundle(
         artifact_root=artifact_root,
         repo_root_arg=repo_root_arg,
     )
+    validate_execplan_bundle_descriptor_entries(bundle)
     return bundle, pack, pack_path
 
 
@@ -1444,6 +1558,7 @@ def load_and_validate_retained_bundle(
         artifact_root=artifact_root,
         repo_root_arg=repo_root_arg,
     )
+    validate_execplan_bundle_descriptor_entries(bundle)
     return bundle, pack, pack_path, actual_bundle_sha
 
 
@@ -1957,7 +2072,9 @@ def materialize_bundle(args: list[str]) -> None:
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
     bundle = {
         "schema_version": 2,
-        "artifact_type": "exec_plan_bundle",
+        "kind": "artifact_set",
+        "media_type": "application/json",
+        "artifact_type": EXEC_PLAN_BUNDLE_ARTIFACT_TYPE,
         "bundle_id": f"bundle-{source_issue['identifier'].lower()}-{run_id}",
         "source_issue": source_issue,
         "workflow": {
@@ -1975,6 +2092,24 @@ def materialize_bundle(args: list[str]) -> None:
             "schema": str(IMPLEMENTATION_PACK_SCHEMA),
             "derived_from_review_doc_sha256": review_meta["sha256"],
         },
+        "entries": [
+            descriptor_file_entry(
+                "plan",
+                plan_meta["ref"],
+                plan_meta["sha256"],
+                plan_meta["bytes"],
+                plan_meta["media_type"],
+                EXEC_PLAN_ARTIFACT_TYPE,
+            ),
+            descriptor_file_entry(
+                "implementation_pack",
+                pack_ref,
+                pack_meta["sha256"],
+                pack_meta["bytes"],
+                "application/json",
+                IMPLEMENTATION_PACK_ARTIFACT_TYPE,
+            ),
+        ],
         "review_surface": {
             "status": publish_context["review_surface"]["status"],
             "pr_url": publish_context["pr"]["url"],
@@ -2723,6 +2858,9 @@ def materialize_revision(args: list[str]) -> None:
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
     bundle = {
         **previous,
+        "kind": "artifact_set",
+        "media_type": "application/json",
+        "artifact_type": EXEC_PLAN_BUNDLE_ARTIFACT_TYPE,
         "bundle_id": f"bundle-{source_issue['identifier'].lower()}-{run_id}",
         "source_issue": source_issue,
         "workflow": {
@@ -2744,6 +2882,24 @@ def materialize_revision(args: list[str]) -> None:
             "schema": str(IMPLEMENTATION_PACK_SCHEMA),
             "derived_from_review_doc_sha256": review_meta["sha256"],
         },
+        "entries": [
+            descriptor_file_entry(
+                "plan",
+                plan_meta["ref"],
+                plan_meta["sha256"],
+                plan_meta["bytes"],
+                plan_meta["media_type"],
+                EXEC_PLAN_ARTIFACT_TYPE,
+            ),
+            descriptor_file_entry(
+                "implementation_pack",
+                f"runs/{run_id}/outputs/implementation_pack.json",
+                pack_meta["sha256"],
+                pack_meta["bytes"],
+                "application/json",
+                IMPLEMENTATION_PACK_ARTIFACT_TYPE,
+            ),
+        ],
         "review_surface": {
             "status": publish_context["review_surface"]["status"],
             "pr_url": publish_context["pr"]["url"],
@@ -3076,9 +3232,32 @@ def materialize_code_change_bundle(args: list[str]) -> None:
     pack = bundle["implementation_pack"]
     source_plan_sha = bundle_expected_plan_sha(bundle)
     source_plan_path = legacy_review_doc_path(bundle) or str(CANONICAL_PLAN_OUTPUT_PATH)
+    descriptor_entries = [
+        descriptor_file_entry(
+            "diff",
+            diff_meta["ref"],
+            diff_meta["sha256"],
+            diff_meta["bytes"],
+            "text/x-diff",
+            "diff",
+        ),
+        descriptor_file_entry(
+            "plan_completion",
+            pc_meta["ref"],
+            pc_meta["sha256"],
+            pc_meta["bytes"],
+            "application/json",
+            "plan_completion",
+        ),
+        *[named_retained_artifact_entry(artifact) for artifact in validation_artifacts],
+        *[named_retained_artifact_entry(artifact) for artifact in review_artifacts],
+    ]
     code_bundle = {
         "schema_version": 2,
-        "artifact_type": "code_change_bundle",
+        "kind": "artifact_set",
+        "media_type": "application/json",
+        "artifact_type": CODE_CHANGE_BUNDLE_ARTIFACT_TYPE,
+        "entries": descriptor_entries,
         "source_bundle": {
             "ref": bundle["implementation_handoff"]["bundle_ref"],
             "sha256": bundle_meta["sha256"],

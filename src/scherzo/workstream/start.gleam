@@ -83,7 +83,7 @@ fn manual_artifact_inputs(
 type ResolvedInput {
   ResolvedInput(
     name: String,
-    artifact_type: String,
+    artifact_type: Option(String),
     contract_type: workflow_contract.ContractType,
     ref: String,
     sha256: String,
@@ -100,7 +100,7 @@ fn resolved_manual_inputs(
   list.map(inputs, fn(input) {
     ResolvedInput(
       name: input.name,
-      artifact_type: input.artifact_type,
+      artifact_type: Some(input.artifact_type),
       contract_type: input.contract_type,
       ref: input.ref,
       sha256: input.sha256,
@@ -374,7 +374,7 @@ pub fn from_manual(
                 at_ms,
                 workstream_id,
                 start_key.manual_artifact_id(input.name, input.sha256),
-                input.artifact_type,
+                ledger_artifact_type(input),
                 input.ref,
                 input.sha256,
                 input.bytes,
@@ -731,7 +731,7 @@ fn input_from_handoff_output(
   )
   Ok(ResolvedInput(
     name: output.name,
-    artifact_type: output.snapshot.contract_type,
+    artifact_type: output.snapshot.artifact_type,
     contract_type: contract_type,
     ref: output.snapshot.ref,
     sha256: output.snapshot.sha256,
@@ -779,10 +779,7 @@ fn inputs_from_bundle_loop(
         "input_binding_original_path_missing",
         "input bundle binding is missing original_path: " <> binding.name,
       ))
-      let artifact_type = case binding.artifact_type {
-        Some(value) -> value
-        None -> binding.contract_type
-      }
+      let artifact_type = binding.artifact_type
       let source_kind = case binding.source_kind {
         Some(value) -> value
         None -> "input_bundle"
@@ -810,12 +807,36 @@ fn require_contract_type(
   name: String,
 ) -> Result(Nil, StartError) {
   case input.contract_type == expected {
-    True -> Ok(Nil)
+    True -> require_artifact_type(input, expected, name)
     False ->
       error(
         "contract_input_type_mismatch",
         "input " <> name <> " does not match target contract type",
       )
+  }
+}
+
+fn require_artifact_type(
+  input: ResolvedInput,
+  expected: workflow_contract.ContractType,
+  name: String,
+) -> Result(Nil, StartError) {
+  case input.artifact_type {
+    None -> Ok(Nil)
+    Some(artifact_type) ->
+      case
+        workflow_contract_manifest.artifact_type_string_matches(
+          artifact_type,
+          expected,
+        )
+      {
+        True -> Ok(Nil)
+        False ->
+          error(
+            "contract_input_artifact_type_mismatch",
+            "input " <> name <> " does not match target artifact_type",
+          )
+      }
   }
 }
 
@@ -846,6 +867,7 @@ fn manifest_value_for(
         #("source", json_value.JString("workstream_input_bundle")),
         #("source_kind", json_value.JString(input.source_kind)),
         #("original_path", json_value.JString(input.original_path)),
+        ..artifact_type_source_fields(input.artifact_type)
       ]),
     ),
   )
@@ -860,9 +882,25 @@ fn input_binding(input: ResolvedInput) -> types.InputBinding {
     bytes: Some(input.bytes),
     media_type: Some(input.media_type),
     original_path: Some(input.original_path),
-    artifact_type: Some(input.artifact_type),
+    artifact_type: input.artifact_type,
     source_kind: Some(input.source_kind),
   )
+}
+
+fn artifact_type_source_fields(
+  artifact_type: Option(String),
+) -> List(#(String, json_value.JsonValue)) {
+  case artifact_type {
+    Some(value) -> [#("artifact_type", json_value.JString(value))]
+    None -> []
+  }
+}
+
+fn ledger_artifact_type(input: ResolvedInput) -> String {
+  case input.artifact_type {
+    Some(value) -> value
+    None -> workflow_contract.type_to_string(input.contract_type)
+  }
 }
 
 fn authorize_gate(

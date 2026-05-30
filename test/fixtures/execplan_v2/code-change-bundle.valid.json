@@ -1,5 +1,5 @@
 {
-  "artifact_type": "code_change_bundle",
+  "artifact_type": "scherzo.code_change_bundle.v2",
   "change": {
     "changed_files": [
       {
@@ -13,10 +13,50 @@
       "sha256": "03d60b35e28eedda292f897cf3df901b767016d1d4b5ecbc934ebf2bd8ad78cb"
     }
   },
+  "entries": [
+    {
+      "artifact_type": "diff",
+      "bytes": 47,
+      "kind": "file",
+      "media_type": "text/x-diff",
+      "name": "diff",
+      "ref": "runs/run-2/execplan/code-change/diff.patch",
+      "sha256": "03d60b35e28eedda292f897cf3df901b767016d1d4b5ecbc934ebf2bd8ad78cb"
+    },
+    {
+      "artifact_type": "plan_completion",
+      "bytes": 62,
+      "kind": "file",
+      "media_type": "application/json",
+      "name": "plan_completion",
+      "ref": "runs/run-2/execplan/code-change/plan-completion.json",
+      "sha256": "4cd32a5c9e69d8e96d2fc76382fe3dc73c1cb34f92bb43509efa7d9bfc27f0bb"
+    },
+    {
+      "artifact_type": "selfci",
+      "bytes": 45,
+      "kind": "file",
+      "media_type": "application/json",
+      "name": "selfci",
+      "ref": "runs/run-2/execplan/code-change/validation/selfci.json",
+      "sha256": "b81b7f38f5afb508039afea118728dee0b5a846e1cd28fa26a67ed13e483071a"
+    },
+    {
+      "artifact_type": "final-review",
+      "bytes": 43,
+      "kind": "file",
+      "media_type": "application/json",
+      "name": "final-review",
+      "ref": "runs/run-2/execplan/code-change/review/final-review.json",
+      "sha256": "901c63d7d00aa05be77f85b488662475ee888b1ce79414f4d60f515898faa0df"
+    }
+  ],
   "implementation_pack": {
     "ref": "runs/run-1/outputs/implementation_pack.json",
-    "sha256": "5e3a24e5f6f33f1c79919c31e16ddc5601dcfe4a8b842f118b9d15ca87c4f173"
+    "sha256": "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201"
   },
+  "kind": "artifact_set",
+  "media_type": "application/json",
   "plan_completion": {
     "bytes": 62,
     "ref": "runs/run-2/execplan/code-change/plan-completion.json",
@@ -39,14 +79,14 @@
   ],
   "review_doc": {
     "path": "test/fixtures/execplan_v2/review-doc.valid.md",
-    "sha256": "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26"
+    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
   },
   "schema_version": 2,
   "source_bundle": {
-    "implementation_pack_sha256": "5e3a24e5f6f33f1c79919c31e16ddc5601dcfe4a8b842f118b9d15ca87c4f173",
+    "implementation_pack_sha256": "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201",
     "ref": "runs/run-1/outputs/exec_plan_bundle.json",
-    "review_doc_sha256": "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26",
-    "sha256": "855538539e74d07e6c269c2637389a4d104d35db22f7f56ae56db3281a633cac"
+    "review_doc_sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4",
+    "sha256": "ee4fbc4fa35c13874ec5626e07929cdcf1e9c25198af3a81edb7cd5740c6e168"
   },
   "validation_artifacts": [
     {

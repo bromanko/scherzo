@@ -1,0 +1,59 @@
+{
+  "artifact_type": "code_change_bundle",
+  "change": {
+    "changed_files": [
+      {
+        "path": "docs/example.md",
+        "status": "modified"
+      }
+    ],
+    "diff": {
+      "bytes": 47,
+      "ref": "runs/run-2/execplan/code-change/diff.patch",
+      "sha256": "03d60b35e28eedda292f897cf3df901b767016d1d4b5ecbc934ebf2bd8ad78cb"
+    }
+  },
+  "implementation_pack": {
+    "ref": "runs/run-legacy/outputs/implementation_pack.json",
+    "sha256": "f2686ee19d2f69f494f90597d3c4d2f06d65c8c22ddc4a10bd6379e08d269448"
+  },
+  "plan_completion": {
+    "bytes": 62,
+    "ref": "runs/run-2/execplan/code-change/plan-completion.json",
+    "sha256": "4cd32a5c9e69d8e96d2fc76382fe3dc73c1cb34f92bb43509efa7d9bfc27f0bb",
+    "verdict": "complete"
+  },
+  "pr": {
+    "base_revision": "base-fixture",
+    "branch": "impl/liv-315",
+    "head_revision": "head-fixture",
+    "url": "https://github.com/living-systems/scherzo/pull/315"
+  },
+  "review_artifacts": [
+    {
+      "bytes": 43,
+      "name": "final-review",
+      "ref": "runs/run-2/execplan/code-change/review/final-review.json",
+      "sha256": "901c63d7d00aa05be77f85b488662475ee888b1ce79414f4d60f515898faa0df"
+    }
+  ],
+  "review_doc": {
+    "path": "test/fixtures/execplan_v2/review-doc.valid.md",
+    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+  },
+  "schema_version": 2,
+  "source_bundle": {
+    "implementation_pack_sha256": "f2686ee19d2f69f494f90597d3c4d2f06d65c8c22ddc4a10bd6379e08d269448",
+    "ref": "runs/run-legacy/outputs/exec_plan_bundle.json",
+    "review_doc_sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4",
+    "sha256": "e503af131a692313d2baf4e0ff639426518fdf9aa83e98663fa003e3fdc1fd6d"
+  },
+  "validation_artifacts": [
+    {
+      "bytes": 45,
+      "name": "selfci",
+      "ref": "runs/run-2/execplan/code-change/validation/selfci.json",
+      "sha256": "b81b7f38f5afb508039afea118728dee0b5a846e1cd28fa26a67ed13e483071a"
+    }
+  ]
+}

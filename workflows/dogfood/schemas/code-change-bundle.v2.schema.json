@@ -17,86 +17,179 @@
     "review_artifacts"
   ],
   "properties": {
-    "schema_version": { "const": 2 },
-    "artifact_type": { "const": "code_change_bundle" },
+    "schema_version": {
+      "const": 2
+    },
+    "artifact_type": {
+      "enum": [
+        "scherzo.code_change_bundle.v2",
+        "code_change_bundle"
+      ]
+    },
     "source_bundle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ref", "sha256", "review_doc_sha256", "implementation_pack_sha256"],
+      "required": [
+        "ref",
+        "sha256",
+        "review_doc_sha256",
+        "implementation_pack_sha256"
+      ],
       "properties": {
-        "ref": { "$ref": "#/$defs/artifact_ref" },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "review_doc_sha256": { "$ref": "#/$defs/sha256" },
-        "implementation_pack_sha256": { "$ref": "#/$defs/sha256" }
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "review_doc_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "implementation_pack_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     },
     "review_doc": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256"],
+      "required": [
+        "path",
+        "sha256"
+      ],
       "properties": {
-        "path": { "$ref": "#/$defs/repo_path" },
-        "sha256": { "$ref": "#/$defs/sha256" }
+        "path": {
+          "$ref": "#/$defs/repo_path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     },
     "implementation_pack": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ref", "sha256"],
+      "required": [
+        "ref",
+        "sha256"
+      ],
       "properties": {
-        "ref": { "$ref": "#/$defs/artifact_ref" },
-        "sha256": { "$ref": "#/$defs/sha256" }
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     },
     "pr": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "branch", "base_revision", "head_revision"],
+      "required": [
+        "url",
+        "branch",
+        "base_revision",
+        "head_revision"
+      ],
       "properties": {
-        "url": { "type": "string", "format": "uri" },
-        "branch": { "$ref": "#/$defs/non_empty_string" },
-        "base_revision": { "$ref": "#/$defs/non_empty_string" },
-        "head_revision": { "$ref": "#/$defs/non_empty_string" }
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "branch": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "base_revision": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "head_revision": {
+          "$ref": "#/$defs/non_empty_string"
+        }
       }
     },
     "change": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["changed_files", "diff"],
+      "required": [
+        "changed_files",
+        "diff"
+      ],
       "properties": {
         "changed_files": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["path", "status"],
+            "required": [
+              "path",
+              "status"
+            ],
             "properties": {
-              "path": { "$ref": "#/$defs/repo_path" },
-              "status": { "$ref": "#/$defs/non_empty_string" }
+              "path": {
+                "$ref": "#/$defs/repo_path"
+              },
+              "status": {
+                "$ref": "#/$defs/non_empty_string"
+              }
             }
           }
         },
-        "diff": { "$ref": "#/$defs/retained_artifact" }
+        "diff": {
+          "$ref": "#/$defs/retained_artifact"
+        }
       }
     },
     "validation_artifacts": {
       "type": "array",
-      "items": { "$ref": "#/$defs/named_retained_artifact" }
+      "items": {
+        "$ref": "#/$defs/named_retained_artifact"
+      }
     },
     "plan_completion": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["verdict", "ref", "sha256"],
+      "required": [
+        "verdict",
+        "ref",
+        "sha256"
+      ],
       "properties": {
-        "verdict": { "enum": ["complete", "incomplete", "blocked"] },
-        "ref": { "$ref": "#/$defs/artifact_ref" },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "bytes": { "$ref": "#/$defs/bytes" }
+        "verdict": {
+          "enum": [
+            "complete",
+            "incomplete",
+            "blocked"
+          ]
+        },
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        }
       }
     },
     "review_artifacts": {
       "type": "array",
-      "items": { "$ref": "#/$defs/named_retained_artifact" }
+      "items": {
+        "$ref": "#/$defs/named_retained_artifact"
+      }
+    },
+    "kind": {
+      "const": "artifact_set"
+    },
+    "media_type": {
+      "const": "application/json"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/named_descriptor_entry"
+      }
     }
   },
   "$defs": {
@@ -104,19 +197,38 @@
       "type": "string",
       "pattern": "^runs/[^/]+/.+"
     },
-    "bytes": { "type": "integer", "minimum": 0 },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
     "named_retained_artifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "ref", "sha256", "bytes"],
+      "required": [
+        "name",
+        "ref",
+        "sha256",
+        "bytes"
+      ],
       "properties": {
-        "name": { "$ref": "#/$defs/non_empty_string" },
-        "ref": { "$ref": "#/$defs/artifact_ref" },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "bytes": { "$ref": "#/$defs/bytes" }
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        }
       }
     },
-    "non_empty_string": { "type": "string", "minLength": 1 },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
     "repo_path": {
       "type": "string",
       "minLength": 1,
@@ -125,13 +237,80 @@
     "retained_artifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ref", "sha256", "bytes"],
+      "required": [
+        "ref",
+        "sha256",
+        "bytes"
+      ],
       "properties": {
-        "ref": { "$ref": "#/$defs/artifact_ref" },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "bytes": { "$ref": "#/$defs/bytes" }
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        }
       }
     },
-    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
-  }
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "named_descriptor_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "artifact_type",
+        "ref",
+        "sha256",
+        "bytes",
+        "media_type"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "kind": {
+          "const": "file"
+        },
+        "artifact_type": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "ref": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "media_type": {
+          "$ref": "#/$defs/non_empty_string"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "artifact_type": {
+            "const": "scherzo.code_change_bundle.v2"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "kind",
+          "media_type",
+          "entries"
+        ]
+      }
+    }
+  ]
 }

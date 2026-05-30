@@ -12,26 +12,34 @@ contract:
   version: 1
   inputs:
     brief:
-      type: text
+      kind: file
+      media_type: text/plain
       required: true
       source: issue_context
     supporting_context:
-      type: artifact[]
+      kind: artifact_set
+      artifact_type: artifact[]
       required: false
       source: mapped_output
   outputs:
     plan:
-      type: exec_plan
+      kind: file
+      media_type: text/markdown
+      artifact_type: scherzo.exec_plan.v1
       source:
         step: materialize_bundle
         path: tmp/execplan-review-doc.md
     implementation_pack:
-      type: implementation_pack
+      kind: file
+      media_type: application/json
+      artifact_type: scherzo.implementation_pack.v2
       source:
         step: materialize_pack
         path: tmp/execplan-implementation-pack.json
     exec_plan_bundle:
-      type: exec_plan_bundle
+      kind: artifact_set
+      media_type: application/json
+      artifact_type: scherzo.exec_plan_bundle.v2
       source:
         step: materialize_bundle
         path: tmp/execplan-bundle.json

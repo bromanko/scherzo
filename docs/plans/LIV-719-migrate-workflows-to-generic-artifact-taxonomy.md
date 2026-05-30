@@ -40,6 +40,18 @@ Milestone 5 updates fixtures, examples, and validation gates. At the end, descri
 
 2026-05-28: Reviewed the taxonomy spec, the phase-1 ExecPlan, current dogfood workflow YAML, current ExecPlan bundle and code-change bundle schemas, `workflows/dogfood/scripts/scherzo-execplan`, representative contract and workflow-run code, and existing tests. Drafted this review document only; no production implementation files were changed.
 
+2026-05-29: Verified that additive descriptor-manifest support is present in `src/scherzo/workflow_artifact_descriptor.gleam` and `src/scherzo/workflow_contract_manifest.gleam`, but the workflow contract parser still only accepts legacy `type` declarations in `src/scherzo/workflow_contract.gleam`. Stopped this migration without changing production code because the prerequisite generic YAML descriptor syntax from LIV-718 is not landed in the current tree.
+
+2026-05-30: Rebased the retained LIV-728 implementation workspace onto `main@origin`, resolved the workflow YAML conflict by keeping descriptor-first `exec_plan_bundle` metadata while preserving the newer optional `mapped_output` workstream start path, and completed the remaining plan-completion blockers. Added descriptor artifact-type mismatch checks for mapped workstream starts and workflow contract values, descriptor-entry cross-checking in `scherzo-execplan validate-bundle`, a retained `plan.md` fixture artifact, and explicit legacy retained-shape fixtures for ExecPlan bundle, implementation pack, and code-change bundle payloads.
+
+## Surprises & Discoveries
+
+2026-05-29: The repository already has the manifest-side descriptor model and tests, but not the contract-YAML descriptor syntax this migration needs.
+Evidence: `src/scherzo/workflow_contract.gleam` still limits contract entry keys to `type`, `description`, `required`, and `source`, while `test/workflow_artifact_descriptor_test.gleam` and `src/scherzo/workflow_contract_manifest.gleam` show descriptor support only after contract parsing.
+
+2026-05-30: The retained workspace predated the current workstream input contract shape. Rebasing showed `execplan-implementation.yaml` now uses `--prefer-workstream-input` and an optional mapped input, so the descriptor migration must preserve that source shape instead of reverting to required `issue_context`.
+Evidence: the rebase conflict had `required: false` and `source: mapped_output` on the current `main@origin` side; the resolved YAML keeps those fields and adds the descriptor `kind`, `media_type`, and `artifact_type` fields.
+
 ## Decision Log
 
 2026-05-28: This migration must be descriptor-first for new checked-in dogfood declarations, because leaving YAML on workflow-specific carrier names would not prove the taxonomy boundary.
@@ -49,6 +61,18 @@ Milestone 5 updates fixtures, examples, and validation gates. At the end, descri
 2026-05-28: Domain artifact strings should be namespaced workflow-owned values such as `scherzo.exec_plan_bundle.v2`, `scherzo.implementation_pack.v2`, and `scherzo.code_change_bundle.v2`; core may store and display them but must not branch on their meaning for new descriptor declarations.
 
 2026-05-28: Manual browser and live Linear/GitHub dogfood runs are deferred operator evidence, not pre-publish gates, because automated parser, schema, helper, retained-surface, idempotency, and repository validation gates can prove this migration without live-provider dependencies.
+
+2026-05-29: Do not start Milestone 2 on this branch because the prerequisite generic contract-descriptor YAML syntax is absent; landing it remains separate prerequisite work rather than scope to absorb here.
+
+2026-05-30: When preserving legacy retained-shape compatibility, absence of `artifact_type` on an old workstream handoff or input bundle remains acceptable if the legacy `contract_type` matches. A present descriptor `artifact_type` is now semantic evidence and must match the expected descriptor or legacy alias.
+
+2026-05-30: Descriptor-first ExecPlan bundle validation belongs in the workflow helper, not JSON Schema alone, because JSON Schema can require `entries` fields but cannot compare the `plan` and `implementation_pack` entry refs, hashes, byte counts, media types, and artifact types against sibling metadata with the needed diagnostics.
+
+## Outcomes & Retrospective
+
+2026-05-29: This implementation handoff stopped at Milestone 1 verification. The branch is green under `direnv exec . gleam test`, but the prerequisite from LIV-718 is only partially landed: descriptor data exists for manifests and fixtures, not for workflow contract YAML parsing. No production migration files were changed, which keeps the stop safe and reversible.
+
+2026-05-30: The migration now covers all five milestones after manual completion from the retained workspace. The remaining plan-completion blockers were closed with mapped-output artifact-type mismatch rejection, helper-level descriptor entry cross-checks, a passing descriptor-first retained plan fixture, and legacy retained-shape fixtures plus tests for `exec_plan_bundle`, `implementation_pack`, and `code_change_bundle`. A full `direnv exec . gleam test` run reached 1530 passing tests with one expected source-guardrail baseline failure before updating `src/scherzo/workstream/start.gleam`'s line-count baseline from 1065 to 1076.
 
 ## Validation and Acceptance
 

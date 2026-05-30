@@ -1,46 +1,18 @@
 {
-  "artifact_type": "scherzo.exec_plan_bundle.v2",
-  "bundle_id": "fixture-bundle-liv-314",
-  "entries": [
-    {
-      "artifact_type": "scherzo.exec_plan.v1",
-      "bytes": 1767,
-      "kind": "file",
-      "media_type": "text/markdown",
-      "name": "plan",
-      "ref": "runs/run-1/outputs/plan.md",
-      "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
-    },
-    {
-      "artifact_type": "scherzo.implementation_pack.v2",
-      "bytes": 2220,
-      "kind": "file",
-      "media_type": "application/json",
-      "name": "implementation_pack",
-      "ref": "runs/run-1/outputs/implementation_pack.json",
-      "sha256": "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201"
-    }
-  ],
+  "artifact_type": "exec_plan_bundle",
+  "bundle_id": "fixture-bundle-liv-314-legacy",
   "implementation_handoff": {
-    "bundle_ref": "runs/run-1/outputs/exec_plan_bundle.json",
+    "bundle_ref": "runs/run-legacy/outputs/exec_plan_bundle.json",
     "issue_identifier": "LIV-315",
     "issue_url": "https://linear.app/living-systems/issue/LIV-315/implement-fixture-v2-execplan-bundle",
     "workflow_label": "workflow:execplan-implementation"
   },
   "implementation_pack": {
-    "bytes": 2220,
+    "bytes": 2167,
     "derived_from_review_doc_sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4",
-    "ref": "runs/run-1/outputs/implementation_pack.json",
+    "ref": "runs/run-legacy/outputs/implementation_pack.json",
     "schema": ".scherzo/workflows/schemas/implementation-pack.v2.schema.json",
-    "sha256": "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201"
-  },
-  "kind": "artifact_set",
-  "media_type": "application/json",
-  "plan": {
-    "bytes": 1767,
-    "media_type": "text/markdown",
-    "ref": "runs/run-1/outputs/plan.md",
-    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+    "sha256": "f2686ee19d2f69f494f90597d3c4d2f06d65c8c22ddc4a10bd6379e08d269448"
   },
   "review_doc": {
     "bytes": 1767,
@@ -71,7 +43,7 @@
     }
   ],
   "workflow": {
-    "run_id": "run-1",
+    "run_id": "run-legacy",
     "workflow_fingerprint": "fixture-fingerprint",
     "workflow_id": "execplan"
   }

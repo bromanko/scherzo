@@ -1,7 +1,7 @@
 import gleam/bit_array
 import gleam/dict
 import gleam/erlang/process
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/ctl/workstream as ctl_workstream
@@ -230,6 +230,67 @@ pub fn start_from_handoff_queues_input_bundle_from_snapshot_refs_test() {
   let assert Ok(workstream) =
     dict.get(after_start.workstreams, "linear:LIV-461")
   assert dict.size(workstream.queued_phase_runs) == 1
+}
+
+pub fn start_from_handoff_accepts_legacy_snapshot_without_artifact_type_test() {
+  let root = "test/tmp/workstream-start/from-handoff-legacy-artifact-type"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) =
+    write_recorded_handoff_payload_with_artifact_type(
+      checkpoint,
+      "handoff-legacy",
+      "{\"bundle\":true}",
+      None,
+    )
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Ok(start.Queued(outcome)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+
+  let assert Ok(input_bundle_json) =
+    checkpoint.read_artifact(outcome.input_bundle_ref)
+  let assert Ok(input_bundle) = artifacts.decode_input_bundle(input_bundle_json)
+  let assert [binding] = input_bundle.inputs
+  assert binding.contract_type == "exec_plan_bundle"
+  assert binding.artifact_type == None
+}
+
+pub fn start_from_handoff_rejects_descriptor_artifact_type_mismatch_test() {
+  let root = "test/tmp/workstream-start/from-handoff-artifact-type-mismatch"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) =
+    write_recorded_handoff_payload_with_artifact_type(
+      checkpoint,
+      "handoff-mismatch",
+      "{\"bundle\":true}",
+      Some("scherzo.implementation_pack.v2"),
+    )
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(exec_plan_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+  let start.StartError(code, _) = error
+  assert code == "contract_input_artifact_type_mismatch"
 }
 
 pub fn start_from_recorded_input_bundle_queues_without_handoff_contents_test() {
@@ -845,7 +906,7 @@ pub fn manual_start_snapshots_artifacts_and_rejects_conflicting_retry_test() {
   let artifact =
     start.ManualArtifactInput(
       name: "exec_plan_bundle",
-      artifact_type: "scherzo.exec_plan_bundle.v1",
+      artifact_type: "scherzo.exec_plan_bundle.v2",
       original_path: "docs/plan.json",
       contract_type: None,
       media_type: None,
@@ -930,7 +991,7 @@ pub fn gated_manual_start_requires_exact_approval_test() {
   let artifact =
     start.ManualArtifactInput(
       name: "exec_plan_bundle",
-      artifact_type: "scherzo.exec_plan_bundle.v1",
+      artifact_type: "scherzo.exec_plan_bundle.v2",
       original_path: "docs/plan.json",
       contract_type: None,
       media_type: None,
@@ -1003,7 +1064,7 @@ pub fn stale_manual_gate_decision_does_not_authorize_changed_file_test() {
   let artifact =
     start.ManualArtifactInput(
       name: "exec_plan_bundle",
-      artifact_type: "scherzo.exec_plan_bundle.v1",
+      artifact_type: "scherzo.exec_plan_bundle.v2",
       original_path: "docs/plan.json",
       contract_type: None,
       media_type: None,
@@ -1064,7 +1125,7 @@ pub fn stale_projection_conflicting_manual_start_is_rejected_at_append_test() {
   let artifact =
     start.ManualArtifactInput(
       name: "exec_plan_bundle",
-      artifact_type: "scherzo.exec_plan_bundle.v1",
+      artifact_type: "scherzo.exec_plan_bundle.v2",
       original_path: "docs/plan.json",
       contract_type: None,
       media_type: None,
@@ -1126,11 +1187,29 @@ fn write_recorded_handoff_payload(
   workflow_checkpoint.ArtifactWritten,
   workflow_checkpoint.CheckpointError,
 ) {
-  write_recorded_handoff_payload_with_next_actions(
+  write_recorded_handoff_payload_with_artifact_type(
+    checkpoint,
+    handoff_id,
+    output_json,
+    Some("scherzo.exec_plan_bundle.v2"),
+  )
+}
+
+fn write_recorded_handoff_payload_with_artifact_type(
+  checkpoint: workflow_checkpoint.Writer,
+  handoff_id: String,
+  output_json: String,
+  artifact_type: Option(String),
+) -> Result(
+  workflow_checkpoint.ArtifactWritten,
+  workflow_checkpoint.CheckpointError,
+) {
+  write_recorded_handoff_payload_with_next_actions_and_artifact_type(
     checkpoint,
     handoff_id,
     output_json,
     [],
+    artifact_type,
   )
 }
 
@@ -1139,6 +1218,25 @@ fn write_recorded_handoff_payload_with_next_actions(
   handoff_id: String,
   output_json: String,
   next_actions: List(String),
+) -> Result(
+  workflow_checkpoint.ArtifactWritten,
+  workflow_checkpoint.CheckpointError,
+) {
+  write_recorded_handoff_payload_with_next_actions_and_artifact_type(
+    checkpoint,
+    handoff_id,
+    output_json,
+    next_actions,
+    Some("scherzo.exec_plan_bundle.v2"),
+  )
+}
+
+fn write_recorded_handoff_payload_with_next_actions_and_artifact_type(
+  checkpoint: workflow_checkpoint.Writer,
+  handoff_id: String,
+  output_json: String,
+  next_actions: List(String),
+  artifact_type: Option(String),
 ) -> Result(
   workflow_checkpoint.ArtifactWritten,
   workflow_checkpoint.CheckpointError,
@@ -1157,6 +1255,7 @@ fn write_recorded_handoff_payload_with_next_actions(
       media_type: output_snapshot.media_type,
       original_path: output_snapshot.original_path,
       contract_type: "exec_plan_bundle",
+      artifact_type: artifact_type,
       producer: types.ProducerRef(
         workflow_id: "execplan",
         run_id: "run-1",

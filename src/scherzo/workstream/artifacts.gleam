@@ -547,6 +547,11 @@ fn decode_snapshot(
         "workstream_contract_type_missing",
       ))
       use Nil <- result.try(validate_contract_type(contract_type))
+      use artifact_type <- result.try(optional_string_field(
+        entries,
+        "artifact_type",
+        "workstream_artifact_type_invalid",
+      ))
       use producer <- result.try(decode_producer(entries))
       use validation <- result.try(decode_validation(entries))
       use summary <- result.try(required_string(
@@ -561,6 +566,7 @@ fn decode_snapshot(
         media_type: media_type,
         original_path: original_path,
         contract_type: contract_type,
+        artifact_type: artifact_type,
         producer: producer,
         validation: validation,
         summary: summary,
