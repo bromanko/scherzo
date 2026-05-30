@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "request_id": "linear-fixture-tasks",
+  "ok": true,
+  "result": {
+    "tasks": [
+      {
+        "ref": {
+          "backend_kind": "linear",
+          "remote_id": "lin-fixture-1",
+          "key": "SCONF-1",
+          "url": "https://linear.example/scherzo-conformance/SCONF-1"
+        },
+        "title": "[Scherzo conformance fixture] task_source primary",
+        "description": "Synthetic Linear conformance fixture task. Contains linear-fixture-secret for redaction tests only.",
+        "priority": 2,
+        "state": {
+          "id": "todo",
+          "name": "Todo",
+          "category": "ready"
+        },
+        "branch_hint": "sconf-1-fixture",
+        "labels": [
+          { "id": null, "name": "workflow:execplan" },
+          { "id": null, "name": "scherzo-conformance-fixture" }
+        ],
+        "blockers": [],
+        "blockers_complete": true,
+        "created_at": null,
+        "updated_at": null
+      }
+    ]
+  }
+}

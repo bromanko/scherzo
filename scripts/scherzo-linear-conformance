@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REPORT_BASE = REPO_ROOT / "tmp" / "tracker-conformance" / "linear"
+RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+UNSAFE_PROJECT_FRAGMENTS = ("scherzo", "living-systems", "production")
+GLEAM_CANDIDATES = [
+    shutil.which("gleam"),
+    str(Path.home() / ".nix-profile" / "bin" / "gleam"),
+    "/run/current-system/sw/bin/gleam",
+    "/usr/local/bin/gleam",
+    "/opt/homebrew/bin/gleam",
+]
+LIVE_DISABLED_PACKS = {
+    "comments",
+    "remote_commands",
+    "state_transitions",
+    "handoff",
+    "scheduled_failures",
+}
+ALLOWED_LIVE_DRIVER_ENV = {"SCHERZO_LINEAR_CONFORMANCE_API_KEY"}
+ALLOWED_OFFLINE_DRIVER_ENV = {
+    "SCHERZO_LINEAR_CONFORMANCE_API_KEY",
+    "SCHERZO_LINEAR_CONFORMANCE_FAKE_DIAGNOSTIC",
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        print(usage(), file=sys.stderr)
+        return 2
+    command, *rest = argv
+    if command == "driver":
+        return command_driver(rest)
+    if command == "run":
+        return command_run(rest)
+    print(usage(), file=sys.stderr)
+    return 2
+
+
+def usage() -> str:
+    return (
+        "Usage: scherzo-linear-conformance driver --mode offline --fixture-file <path>\n"
+        "       scherzo-linear-conformance driver --mode live --project <slug>\n"
+        "       scherzo-linear-conformance run --manifest <path> --run-id <id>"
+    )
+
+
+def command_driver(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="scherzo-linear-conformance driver")
+    parser.add_argument("--mode", choices=["offline", "live"], required=True)
+    parser.add_argument("--fixture-file")
+    parser.add_argument("--project")
+    ns = parser.parse_args(argv)
+    request_text = sys.stdin.read()
+
+    if ns.mode == "offline":
+        if not ns.fixture_file:
+            print("missing --fixture-file for offline mode", file=sys.stderr)
+            return 2
+        response = offline_driver_response(request_text, REPO_ROOT / ns.fixture_file)
+        sys.stdout.write(json.dumps(response))
+        return 0
+
+    if not ns.project or is_placeholder(ns.project):
+        response = error_response_from_request_text(
+            request_text,
+            "permanent",
+            "missing explicit live Linear fixture project",
+        )
+        sys.stdout.write(json.dumps(response))
+        return 0
+    if unsafe_project_slug(ns.project):
+        response = error_response_from_request_text(
+            request_text,
+            "permanent",
+            f"refusing unsafe Linear project slug: {ns.project}",
+        )
+        sys.stdout.write(json.dumps(response))
+        return 0
+
+    token = require_env("SCHERZO_LINEAR_CONFORMANCE_API_KEY")
+    if not token:
+        response = error_response_from_request_text(
+            request_text,
+            "permanent",
+            "missing SCHERZO_LINEAR_CONFORMANCE_API_KEY for live Linear conformance",
+        )
+        sys.stdout.write(json.dumps(response))
+        return 0
+
+    gleam = resolve_binary(GLEAM_CANDIDATES, "gleam")
+    if Path(gleam).exists():
+        completed = subprocess.run(
+            [gleam, "run", "-m", "scherzo_tracker_conformance_linear_driver", "--", *argv],
+            cwd=REPO_ROOT,
+            input=request_text,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+        )
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        return completed.returncode
+
+    response = error_response_from_request_text(
+        request_text,
+        "transient",
+        "live Linear conformance driver requires a local gleam executable",
+    )
+    sys.stdout.write(json.dumps(response))
+    return 0
+
+
+def command_run(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="scherzo-linear-conformance run")
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--run-id", required=True)
+    ns = parser.parse_args(argv)
+
+    token = require_env("SCHERZO_LINEAR_CONFORMANCE_API_KEY")
+    if not token:
+        return fail("missing SCHERZO_LINEAR_CONFORMANCE_API_KEY")
+    if os.environ.get("LINEAR_API_KEY", "").strip():
+        return fail("LINEAR_API_KEY must be unset for Linear conformance dogfood")
+    run_id_error = validate_run_id(ns.run_id)
+    if run_id_error:
+        return fail(run_id_error)
+
+    manifest_path = (REPO_ROOT / ns.manifest).resolve()
+    if not path_is_under(manifest_path, REPO_ROOT):
+        return fail("manifest path must be inside the repository checkout")
+    manifest = load_json(manifest_path)
+    error = validate_run_manifest(manifest)
+    if error:
+        return fail(error)
+
+    project = extract_project_slug(manifest)
+    if project and unsafe_project_slug(project):
+        return fail(f"refusing unsafe Linear project slug: {project}")
+
+    try:
+        report_path = default_report_path(ns.run_id, manifest_path)
+    except ValueError as error:
+        return fail(str(error))
+    gleam = resolve_binary(GLEAM_CANDIDATES, "gleam")
+    if not Path(gleam).exists():
+        return fail("tracker-conformance run requires a local gleam executable")
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    fixture_secret = os.environ.get("SCHERZO_LINEAR_CONFORMANCE_FIXTURE_SECRET", "linear-fixture-secret")
+    temp_manifest = prepare_runtime_manifest(manifest, token, fixture_secret)
+
+    with tempfile.TemporaryDirectory(prefix="scherzo-linear-conformance-") as tmp:
+        tmp_manifest_path = Path(tmp) / manifest_path.name
+        tmp_manifest_path.write_text(json.dumps(temp_manifest, indent=2) + "\n", encoding="utf-8")
+        completed = subprocess.run(
+            [
+                gleam,
+                "run",
+                "--",
+                "tracker-conformance",
+                "run",
+                os.path.relpath(tmp_manifest_path, REPO_ROOT),
+                "--report",
+                os.path.relpath(report_path, REPO_ROOT),
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+        )
+
+    summary = completed.stdout.strip()
+    diagnostics = completed.stderr.strip()
+    if not report_path.is_file():
+        return fail("tracker-conformance did not write a report")
+    report_text = report_path.read_text(encoding="utf-8")
+    leak = first_secret_leak([report_text, summary, diagnostics], [token, f"Bearer {token}", fixture_secret])
+    if leak:
+        return fail("redaction check failed")
+
+    if summary:
+        print(summary)
+    if diagnostics:
+        print(diagnostics, file=sys.stderr)
+    return completed.returncode
+
+
+def resolve_binary(candidates: list[str | None], name: str) -> str:
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return name
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def require_env(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def validate_run_manifest(manifest: dict) -> str | None:
+    if manifest.get("adapter_kind") != "linear":
+        return "manifest.adapter_kind must be linear"
+    profile = manifest.get("profile") or {}
+    requested_packs = profile.get("requested_packs") or ["task_source"]
+    for pack in requested_packs:
+        if pack in LIVE_DISABLED_PACKS:
+            return f"live Linear conformance forbids requested pack: {pack}"
+    if "remote_commands" in requested_packs:
+        return "remote_commands is disabled for Linear conformance"
+    fixture_tasks = ((manifest.get("fixtures") or {}).get("tasks") or [])
+    if not fixture_tasks:
+        return "manifest.fixtures.tasks must declare explicit Linear fixture tasks"
+    for task in fixture_tasks:
+        ref = task.get("ref") or {}
+        remote_id = str(ref.get("remote_id") or "").strip()
+        if not remote_id or is_placeholder(remote_id):
+            return "manifest.fixtures.tasks must use explicit non-placeholder Linear fixture ids"
+        operator_refs = task.get("operator_refs") or []
+        if not operator_refs or any(is_placeholder(str(value)) for value in operator_refs):
+            return "manifest.fixtures.tasks must use explicit non-placeholder operator refs"
+    driver_error = validate_driver_command(manifest)
+    if driver_error:
+        return driver_error
+    return None
+
+
+def extract_project_slug(manifest: dict) -> str | None:
+    command = ((manifest.get("driver") or {}).get("command") or {})
+    args = list(command.get("args") or [])
+    for index, arg in enumerate(args[:-1]):
+        if arg == "--project":
+            return str(args[index + 1])
+    return None
+
+
+def unsafe_project_slug(project: str) -> bool:
+    lowered = project.lower()
+    if "conformance" in lowered or "fixture" in lowered:
+        return False
+    return any(fragment in lowered for fragment in UNSAFE_PROJECT_FRAGMENTS)
+
+
+def is_placeholder(value: str) -> bool:
+    trimmed = value.strip()
+    return not trimmed or (trimmed.startswith("<") and trimmed.endswith(">"))
+
+
+def validate_driver_command(manifest: dict) -> str | None:
+    command = ((manifest.get("driver") or {}).get("command") or {})
+    if command.get("executable") != "scripts/scherzo-linear-conformance":
+        return "manifest.driver.command must use scripts/scherzo-linear-conformance"
+    args = command.get("args") or []
+    if not all(isinstance(arg, str) for arg in args):
+        return "manifest.driver.command args must be strings"
+    mode = driver_mode(args)
+    if mode == "live":
+        project = extract_project_slug(manifest)
+        if not project or is_placeholder(project):
+            return "manifest.driver.command must use an explicit live Linear fixture project"
+    elif mode == "offline":
+        fixture_file = offline_fixture_file(args)
+        if not fixture_file:
+            return "manifest.driver.command must name an offline fixture file"
+        fixture_path = (REPO_ROOT / fixture_file).resolve()
+        if not path_is_under(fixture_path, REPO_ROOT):
+            return "offline Linear fixture file must be inside the repository checkout"
+    else:
+        return "manifest.driver.command must invoke driver --mode offline or driver --mode live"
+
+    allowed_env = ALLOWED_LIVE_DRIVER_ENV if mode == "live" else ALLOWED_OFFLINE_DRIVER_ENV
+    for item in command.get("env") or []:
+        if not isinstance(item, dict):
+            return "manifest.driver.command.env entries must be objects"
+        name = str(item.get("name") or "")
+        if name not in allowed_env:
+            return f"manifest.driver.command.env contains unsupported variable: {name}"
+    return None
+
+
+def driver_mode(args: list[str]) -> str | None:
+    if len(args) == 5 and args[0:3] == ["driver", "--mode", "live"] and args[3] == "--project":
+        return "live"
+    if len(args) == 5 and args[0:3] == ["driver", "--mode", "offline"] and args[3] == "--fixture-file":
+        return "offline"
+    return None
+
+
+def offline_fixture_file(args: list[str]) -> str | None:
+    if driver_mode(args) == "offline":
+        return args[4]
+    return None
+
+
+def validate_run_id(run_id: str) -> str | None:
+    if run_id in {".", ".."} or not RUN_ID_PATTERN.fullmatch(run_id):
+        return "run-id must contain only letters, digits, '.', '_' or '-'"
+    return None
+
+
+def default_report_path(run_id: str, manifest_path: Path) -> Path:
+    run_id_error = validate_run_id(run_id)
+    if run_id_error:
+        raise ValueError(run_id_error)
+    stem = manifest_path.name.removesuffix(".manifest.json")
+    report_path = (REPORT_BASE / run_id / f"{stem}.report.json").resolve()
+    if not path_is_under(report_path, REPORT_BASE.resolve()):
+        raise ValueError("report path must stay under tmp/tracker-conformance/linear")
+    return report_path
+
+
+def path_is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def offline_driver_response(request_text: str, fixture_path: Path) -> dict:
+    request = json.loads(request_text)
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    tasks = list(((fixture.get("result") or {}).get("tasks") or []))
+    request_id = str(request.get("request_id") or "offline-linear-request")
+    operation = request.get("operation")
+    payload = request.get("payload") or {}
+
+    if request.get("schema_version") != 1:
+        return error_response(request_id, "permanent", "unsupported schema_version")
+    if operation == "task_source.fetch_candidates":
+        return success_response(request_id, {"tasks": tasks})
+    if operation == "task_source.refresh_by_refs":
+        refs = payload.get("refs") or []
+        if any((ref.get("backend_kind") or "") != "linear" for ref in refs):
+            first = next(ref for ref in refs if (ref.get("backend_kind") or "") != "linear")
+            return error_response(request_id, "not_found", "task not found", ref=first)
+        allowed = {str(ref.get("remote_id") or "") for ref in refs}
+        return success_response(request_id, {"tasks": [task for task in tasks if ((task.get("ref") or {}).get("remote_id") or "") in allowed]})
+    if operation == "task_source.lookup_by_operator_ref":
+        operator_ref = str(payload.get("operator_ref") or "").strip()
+        if not operator_ref:
+            return success_response(request_id, {"task": None})
+        for task in tasks:
+            ref = task.get("ref") or {}
+            if operator_ref in {str(ref.get("remote_id") or ""), str(ref.get("key") or "")}:
+                return success_response(request_id, {"task": task})
+        return success_response(request_id, {"task": None})
+    return error_response(request_id, "permanent", "Linear conformance driver supports task_source operations only")
+
+
+def success_response(request_id: str, result: dict) -> dict:
+    return {"schema_version": 1, "request_id": request_id, "ok": True, "result": result}
+
+
+def error_response(request_id: str, kind: str, message: str, ref: dict | None = None) -> dict:
+    return {
+        "schema_version": 1,
+        "request_id": request_id,
+        "ok": False,
+        "error": {
+            "kind": kind,
+            "message": message,
+            "ref": ref,
+            "capability": None,
+        },
+    }
+
+
+def error_response_from_request_text(request_text: str, kind: str, message: str) -> dict:
+    try:
+        request = json.loads(request_text)
+    except json.JSONDecodeError:
+        request = {}
+    return error_response(str(request.get("request_id") or "invalid-request"), kind, message)
+
+
+def prepare_runtime_manifest(manifest: dict, token: str, fixture_secret: str) -> dict:
+    runtime_manifest = json.loads(json.dumps(manifest))
+    report = runtime_manifest.setdefault("report", {})
+    redact = list(report.get("redact") or [])
+    for marker in (token, f"Bearer {token}", fixture_secret):
+        if marker not in redact:
+            redact.append(marker)
+    report["redact"] = redact
+    command = runtime_manifest.setdefault("driver", {}).setdefault("command", {})
+    mode = driver_mode(list(command.get("args") or []))
+    allowed_env = ALLOWED_LIVE_DRIVER_ENV if mode == "live" else ALLOWED_OFFLINE_DRIVER_ENV
+    env = [
+        item
+        for item in command.get("env") or []
+        if item.get("name") in allowed_env
+        and item.get("name") != "SCHERZO_LINEAR_CONFORMANCE_API_KEY"
+    ]
+    env.append({"name": "SCHERZO_LINEAR_CONFORMANCE_API_KEY", "value": token})
+    command["env"] = env
+    return runtime_manifest
+
+
+def first_secret_leak(texts: list[str], markers: list[str]) -> str | None:
+    for text in texts:
+        for marker in markers:
+            if marker and marker in text:
+                return marker
+    return None
+
+
+def fail(message: str) -> int:
+    print(f"scherzo-linear-conformance: {message}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

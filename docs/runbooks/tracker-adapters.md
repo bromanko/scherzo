@@ -139,4 +139,31 @@ Optional live-backend checklist for operators who already have trusted manifests
 4. Inspect only redacted report excerpts before sharing them outside the trusted operator context.
 5. Treat provider-live cache behavior as not applicable here unless a future conformance change introduces a cache layer.
 
+## Linear conformance dogfood preparation
+
+The first Linear dogfood profile stays read-only and manual-first. Do not point tracker conformance at the normal Scherzo production project, do not use real operator issue text as fixtures, and do not use `LINEAR_API_KEY` for dogfood runs. Live Linear dogfood must use a dedicated fixture workspace or a restricted fixture-only project, synthetic fixture issues labeled and titled for conformance, and a dedicated `SCHERZO_LINEAR_CONFORMANCE_API_KEY` credential that is kept out of the repository and out of retained reports.
+
+Use explicit `fixtures.tasks` declarations for Linear dogfood manifests so the operator-reviewed fixture issues are pinned by durable Linear id and identifier before any run starts. The repository now carries two preparation manifests:
+
+- `test/fixtures/tracker_conformance/linear-task-source.template.manifest.json` documents the live `task_source` manifest shape an operator will fill with approved fixture ids, project slugs, and redaction markers.
+- `test/fixtures/tracker_conformance/linear-task-source-offline.manifest.json` documents the deterministic offline manifest shape that later fake-transport tests and pre-publish dogfood evidence will use.
+
+The offline manifest is now runnable without a live Linear credential through the dedicated wrapper and fake transport:
+
+```sh
+env -u LINEAR_API_KEY SCHERZO_LINEAR_CONFORMANCE_API_KEY=fake-linear-token direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/linear-task-source-offline.manifest.json --report test/tmp/tracker-conformance/linear-task-source-offline.report.json
+```
+
+The operator-facing wrapper keeps live execution behind explicit approval and preflight:
+
+```sh
+env -u LINEAR_API_KEY SCHERZO_LINEAR_CONFORMANCE_API_KEY=<fixture-bot-token> scripts/scherzo-linear-conformance run --manifest test/fixtures/tracker_conformance/linear-task-source.template.manifest.json --run-id <operator-approved-run-id>
+```
+
+Before sharing any Linear dogfood evidence, keep the report under `tmp/tracker-conformance/linear/<run-id>/`, run a redaction check for the configured token and fixture-secret markers, and confirm the summary names only synthetic fixture tasks. Live `task_source` evidence must record the manifest path, run id, driver command, report path, redaction-check output, fixture project identifier, and explicit confirmation that no non-fixture Linear issue was read or mutated.
+
+Comments, state transitions, handoff, scheduled failures, and any other write-capable pack stay disabled for live Linear dogfood until fake cleanup and recovery tests exist and a human reviews the fixture project again. `remote_commands` remains disabled for Linear.
+
+Helper/cache inventory for LIV-756: this dogfood path changes operator docs, tracker-conformance fixture manifests, the dedicated wrapper script, and offline/live Linear driver wiring only. `.scherzo/workflows/scripts/*`, workflow schemas, provider-facing structured-output helpers, review-lane contract files, and provider-live/cache behavior remain unchanged, so no helper migration or provider-live/cache validation was applicable.
+
 Helper/cache inventory for LIV-565: this scheduled-failure conformance pack changes only tracker-conformance modules, fake-driver fixtures, and operator docs. `.scherzo/workflows/scripts/*`, workflow schemas, provider-facing structured-output helpers, review-lane contract files, and provider-live/cache behavior remain unchanged for this ticket, so no helper migration or provider-live/cache validation was applicable.
