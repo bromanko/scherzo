@@ -588,6 +588,12 @@ fn boundary_allowlist() -> List(AllowlistEntry) {
       reason: "Recovery planning consumes projected orchestrator state while durable recovery DTOs are still shared with the daemon.",
     ),
     AllowlistEntry(
+      path: "src/scherzo/state/recovery.gleam",
+      imported_module: "scherzo/orchestrator/identity",
+      rule_id: "state_must_not_import_orchestrator",
+      reason: "Recovery rebuilds task-keyed retry state with the same opaque task identity wrapper the orchestrator now uses internally.",
+    ),
+    AllowlistEntry(
       path: "src/scherzo/tracker/linear_adapter.gleam",
       imported_module: "scherzo/linear",
       rule_id: "tracker_must_not_import_linear",

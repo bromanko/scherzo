@@ -8,6 +8,7 @@ import gleam/string
 import scherzo/config/types as config_types
 import scherzo/hash
 import scherzo/orchestrator/core
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/path
@@ -2551,7 +2552,7 @@ fn restore_scheduled_retry(
 fn cancel_recovered_retry(
   build: Build,
   issue_id: String,
-  identity: String,
+  identity: identity.TaskIdentity,
   generation: Int,
   reason: String,
 ) -> Build {

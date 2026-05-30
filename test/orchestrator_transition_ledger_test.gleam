@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/option.{None}
 import orchestrator_transition_test
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
@@ -17,9 +18,10 @@ pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
         continuation: effects_types.SpawnClaimedWorker(
-          issue_id: "issue-1",
-          run_id: "run-1",
-          session_id: "session-1",
+          task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
+          issue_id: identity.issue_id_from_string("issue-1"),
+          run_id: identity.run_id_from_string("run-1"),
+          session_id: identity.session_id_from_string("session-1"),
         ),
         result: Ok(Nil),
         now_ms: 123,
@@ -42,9 +44,9 @@ pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
     == [
       effects_types.StartWorker(effects_types.WorkerStart(
         task_ref: task.from_legacy_issue(issue).ref,
-        issue_id: "issue-1",
-        run_id: "run-1",
-        session_id: "session-1",
+        issue_id: identity.issue_id_from_string("issue-1"),
+        run_id: identity.run_id_from_string("run-1"),
+        session_id: identity.session_id_from_string("session-1"),
         command_route_id: "worker:run-1:1",
         issue: issue,
         workspace_path: "test/tmp/workspaces/ABC-1",
@@ -64,9 +66,10 @@ pub fn ledger_spawn_continuation_failure_clears_pending_without_starting_test() 
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
         continuation: effects_types.SpawnClaimedWorker(
-          issue_id: "issue-1",
-          run_id: "run-1",
-          session_id: "session-1",
+          task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
+          issue_id: identity.issue_id_from_string("issue-1"),
+          run_id: identity.run_id_from_string("run-1"),
+          session_id: identity.session_id_from_string("session-1"),
         ),
         result: Error(ledger.Io("disk full")),
         now_ms: 123,

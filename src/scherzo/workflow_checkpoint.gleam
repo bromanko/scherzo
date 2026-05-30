@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -7,6 +8,7 @@ import scherzo/hash
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
+import scherzo/state/ledger_batch
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/step_artifact
@@ -379,10 +381,10 @@ pub fn ledger_writer_with_artifact_store(
       )
     },
     step_prepared: fn(run_id, workflow_id, step_id, workspace) {
-      append_body(
+      append_batch(
         workspace_root,
         now_ms,
-        record.StepAttemptPrepared(
+        ledger_batch.step_attempt_prepared(
           run_id,
           workflow_id,
           step_id,
@@ -404,10 +406,10 @@ pub fn ledger_writer_with_artifact_store(
       external_session_ref,
       continuation_capable,
     ) {
-      append_body(
+      append_batch(
         workspace_root,
         now_ms,
-        record.StepAttemptStarted(
+        ledger_batch.step_attempt_started(
           run_id,
           workflow_id,
           step_id,
@@ -425,10 +427,10 @@ pub fn ledger_writer_with_artifact_store(
       attempt_index,
       session_id,
     ) {
-      append_body(
+      append_batch(
         workspace_root,
         now_ms,
-        record.StepAttemptContinuationStarted(
+        ledger_batch.step_attempt_continuation_started(
           run_id,
           workflow_id,
           step_id,
@@ -438,10 +440,10 @@ pub fn ledger_writer_with_artifact_store(
       )
     },
     step_pi_session_recorded: fn(observation) {
-      append_body(
+      append_batch(
         workspace_root,
         now_ms,
-        record.StepAttemptPiSessionRecordedWithTask(
+        ledger_batch.step_attempt_pi_session_recorded_with_task(
           observation.run_id,
           observation.issue_id,
           observation.issue_identifier,
@@ -726,10 +728,10 @@ pub fn ledger_writer_with_artifact_store(
       })
     },
     step_finished: fn(finished, artifact_ref) {
-      append_body(
+      append_batch(
         workspace_root,
         now_ms,
-        record.StepAttemptFinished(
+        ledger_batch.step_attempt_finished(
           finished.run_id,
           finished.workflow_id,
           finished.step_id,
@@ -745,10 +747,10 @@ pub fn ledger_writer_with_artifact_store(
       )
     },
     step_recovery_started: fn(started) {
-      append_body(
+      append_batch(
         workspace_root,
         now_ms,
-        record.WorkflowStepRecoveryStarted(
+        ledger_batch.workflow_step_recovery_started(
           started.run_id,
           started.workflow_id,
           started.step_id,
@@ -761,10 +763,10 @@ pub fn ledger_writer_with_artifact_store(
       )
     },
     step_recovery_finished: fn(finished) {
-      append_body(
+      append_batch(
         workspace_root,
         now_ms,
-        record.WorkflowStepRecoveryFinished(
+        ledger_batch.workflow_step_recovery_finished(
           finished.run_id,
           finished.workflow_id,
           finished.step_id,
@@ -779,10 +781,10 @@ pub fn ledger_writer_with_artifact_store(
       )
     },
     step_interrupted: fn(run_id, workflow_id, step_id, attempt_index, reason) {
-      append_body(
+      append_batch(
         workspace_root,
         now_ms,
-        record.StepAttemptInterrupted(
+        ledger_batch.step_attempt_interrupted(
           run_id,
           workflow_id,
           step_id,
@@ -1006,6 +1008,17 @@ pub fn describe_error(error: CheckpointError) -> String {
   }
 }
 
+fn append_batch(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+  batch: ledger_batch.LedgerBatch,
+) -> Result(Nil, CheckpointError) {
+  case ledger_batch.to_bodies(batch) {
+    [body] -> append_body(workspace_root, now_ms, body)
+    bodies -> append_bodies(workspace_root, now_ms, bodies)
+  }
+}
+
 fn append_body(
   workspace_root: String,
   now_ms: fn() -> Int,
@@ -1018,6 +1031,24 @@ fn append_body(
     }),
   )
   ledger.append(ledger_path, record.new(now_ms(), 1, body), True)
+  |> result.map_error(fn(error) {
+    CheckpointAppendFailed(describe_ledger_error(error))
+  })
+}
+
+fn append_bodies(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+  bodies: List(record.RecordBody),
+) -> Result(Nil, CheckpointError) {
+  use ledger_path <- result.try(
+    ledger.path_for_workspace_root(workspace_root)
+    |> result.map_error(fn(error) {
+      CheckpointAppendFailed(describe_ledger_error(error))
+    }),
+  )
+  let recs = list.index_map(bodies, fn(b, i) { record.new(now_ms(), i + 1, b) })
+  ledger.append_many(ledger_path, recs, True)
   |> result.map_error(fn(error) {
     CheckpointAppendFailed(describe_ledger_error(error))
   })

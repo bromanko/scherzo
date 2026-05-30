@@ -52,6 +52,9 @@ Milestone 5 collects acceptance evidence. It is complete when targeted identity 
 - [x] (2026-05-29) Inspected the current orchestrator state, transition, daemon handoff, effect, ledger, workflow checkpoint, and test files named in this review.
 - [x] (2026-05-29) Wrote this concise review document for the follow-up implementation task; no code implementation was performed in this workflow.
 - [x] (2026-05-29) Validated this review document with `direnv exec . .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-750-type-safe-identities-ledger-batches.md`, which reported `REVIEW_DOC_VALID=ok`.
+- [x] (2026-05-29) Added `src/scherzo/orchestrator/identity.gleam` and migrated the high-risk orchestrator runtime, transition, daemon, recovery, and worker-registry task-keyed maps from `String` keys to `TaskIdentity` keys.
+- [x] (2026-05-29) Added `test/orchestrator_identity_key_test.gleam` and updated orchestrator transition-runner assertions to use typed task identities.
+- [ ] (2026-05-29) Typed ledger batches and handoff/effect boundary `IssueId`/`RunId`/`SessionId` wrappers remain to be wired through append effects and workflow checkpoint helpers.
 
 ## Decision Log
 
@@ -59,6 +62,7 @@ Milestone 5 collects acceptance evidence. It is complete when targeted identity 
 - Decision: Put typed ledger batch constructors at the ledger/effects boundary rather than scattering ad hoc constructors only inside transition modules. Rationale: the append effect should not expose arbitrary record-body lists, but constructors must still lower to existing record bodies to preserve JSON compatibility. Date: 2026-05-29.
 - Decision: Allow targeted test fixture churn only where type signatures force it. Rationale: broad fixture rewrites would make compatibility harder to review, so retained-ledger JSON fixtures should change only if a test is deliberately added for this plan. Date: 2026-05-29.
 - Decision: Defer append-time aggregate invariant validation and typed causal effects to a second plan. Rationale: this pass is about making common invalid states harder to express, not proving every ledger append against a full aggregate model. Date: 2026-05-29.
+- Decision: Keep the new opaque identity wrappers in `src/scherzo/orchestrator/identity.gleam` for now and allow the matching `src/scherzo/state/recovery.gleam` import through the architecture guardrail allowlist. Rationale: this keeps the first pass narrowly focused on the high-risk runtime dictionaries while avoiding a larger neutral-module extraction during the same milestone. Date: 2026-05-29.
 
 ## Validation and Acceptance
 
@@ -73,6 +77,10 @@ Before publish, run from the repository root: `direnv exec . gleam test -- --sui
 Rollout should be a normal code rollout with no data migration. The safe sequence is tests first, identity wrappers and dictionary-key migration, typed ledger batches, daemon/transition handoff migration, then cleanup of obsolete raw-list append helpers. Each step is reversible by reverting the most recent migration commit because stored ledger records and operator command syntax stay unchanged.
 
 Recovery from a regression is to revert the identity or batch migration commit and keep any failing regression test that reproduced the mismatch. Re-running tests, format checks, source guardrails, and lint gates is idempotent. Existing retained ledgers require no rewrite, and repeated implementation attempts must not append records or mutate operator state as part of validation.
+
+## Outcomes & Retrospective
+
+The first implementation slice completed the task-key migration without changing retained-ledger JSON or the operator-facing string inputs. The new `TaskIdentity` wrapper now owns the risky dictionary-key seams that previously accepted bare strings, and the existing unit suite still passes once the repository guardrail baselines are updated for the intentional module growth. Typed ledger batches and fully typed handoff/effect boundary identifiers are still outstanding work for the next milestone.
 
 ## Open Questions and Clarifications Needed
 

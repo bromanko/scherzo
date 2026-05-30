@@ -1,88 +1,69 @@
 import birl.{type Time}
 import gleam/dict.{type Dict}
-import gleam/int
-import gleam/option.{type Option, None, Some}
-import gleam/string
+import gleam/option.{type Option}
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/reason
 import scherzo/session/live as session_live
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 
-pub fn task_ref_identity(ref: task.TaskRef) -> String {
-  let #(backend_kind, remote_id) = task.identity(ref)
-  encode_identity_component(backend_kind)
-  <> "|"
-  <> encode_identity_component(remote_id)
+pub fn task_ref_identity(ref: task.TaskRef) -> identity.TaskIdentity {
+  identity.task_ref(ref)
 }
 
-pub fn task_identity(item: task.Task) -> String {
-  let task.Task(ref: ref, ..) = item
-  task_ref_identity(ref)
+pub fn task_identity(item: task.Task) -> identity.TaskIdentity {
+  identity.task(item)
 }
 
 pub fn issue_ref(issue: tracker_issue.Issue) -> task.TaskRef {
-  issue_ref_for_backend(issue, "linear")
+  identity.issue_ref(issue)
 }
 
 pub fn issue_ref_for_backend(
   issue: tracker_issue.Issue,
   backend_kind: String,
 ) -> task.TaskRef {
-  task.TaskRef(
-    backend_kind: backend_kind,
-    remote_id: issue.id,
-    key: Some(issue.identifier),
-    url: issue.url,
-  )
+  identity.issue_ref_for_backend(issue, backend_kind)
 }
 
 // Linear compatibility boundary: legacy orchestrator paths still receive a
 // tracker_issue.Issue, so derive the TaskRef identity from the Linear-shaped
 // issue at the edge instead of using the bare issue id as a runtime key.
-pub fn issue_identity(issue: tracker_issue.Issue) -> String {
-  issue_ref(issue) |> task_ref_identity
+pub fn issue_identity(issue: tracker_issue.Issue) -> identity.TaskIdentity {
+  identity.issue(issue)
 }
 
 pub fn issue_identity_for_backend(
   issue: tracker_issue.Issue,
   backend_kind: String,
-) -> String {
-  issue_ref_for_backend(issue, backend_kind) |> task_ref_identity
+) -> identity.TaskIdentity {
+  identity.issue_for_backend(issue, backend_kind)
 }
 
 // Linear compatibility boundary: timer, ledger, and operator continuations are
 // still serialized with bare issue ids. Convert them before touching runtime
 // dictionaries.
-pub fn linear_issue_id_identity(issue_id: String) -> String {
-  issue_id_identity_for_backend(issue_id, "linear")
+pub fn linear_issue_id_identity(issue_id: String) -> identity.TaskIdentity {
+  identity.linear_issue_id(issue_id)
 }
 
 pub fn issue_id_identity_for_backend(
   issue_id: String,
   backend_kind: String,
-) -> String {
-  issue_id_ref_for_backend(issue_id, backend_kind) |> task_ref_identity
+) -> identity.TaskIdentity {
+  identity.issue_id_for_backend(issue_id, backend_kind)
 }
 
 pub fn linear_issue_id_ref(issue_id: String) -> task.TaskRef {
-  issue_id_ref_for_backend(issue_id, "linear")
+  identity.linear_issue_id_ref(issue_id)
 }
 
 pub fn issue_id_ref_for_backend(
   issue_id: String,
   backend_kind: String,
 ) -> task.TaskRef {
-  task.TaskRef(
-    backend_kind: backend_kind,
-    remote_id: issue_id,
-    key: None,
-    url: None,
-  )
-}
-
-fn encode_identity_component(value: String) -> String {
-  int.to_string(string.length(value)) <> ":" <> value
+  identity.issue_id_ref_for_backend(issue_id, backend_kind)
 }
 
 pub type RetryEntry {
@@ -168,14 +149,14 @@ pub type RuntimeState {
   RuntimeState(
     poll_interval_ms: Int,
     max_concurrent_agents: Int,
-    running: Dict(String, RunningEntry),
-    claimed: Dict(String, String),
-    retry_attempts: Dict(String, RetryEntry),
-    issue_counters: Dict(String, IssueCounter),
-    parked: Dict(String, ParkedEntry),
-    invalid_workflow_reports: Dict(String, InvalidWorkflowReport),
+    running: Dict(identity.TaskIdentity, RunningEntry),
+    claimed: Dict(identity.TaskIdentity, String),
+    retry_attempts: Dict(identity.TaskIdentity, RetryEntry),
+    issue_counters: Dict(identity.TaskIdentity, IssueCounter),
+    parked: Dict(identity.TaskIdentity, ParkedEntry),
+    invalid_workflow_reports: Dict(identity.TaskIdentity, InvalidWorkflowReport),
     blocked_dependency_reports: Dict(String, BlockedDependencyReport),
-    completed: Dict(String, tracker_issue.Issue),
+    completed: Dict(identity.TaskIdentity, tracker_issue.Issue),
     aggregate_pi_totals: session_tokens.TokenTotals,
     latest_rate_limit_payload: Option(String),
   )

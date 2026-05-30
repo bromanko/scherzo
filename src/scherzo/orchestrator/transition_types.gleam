@@ -3,13 +3,14 @@ import gleam/option.{type Option, None}
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/identity
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
 import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
-import scherzo/state/record
+import scherzo/state/ledger_batch
 import scherzo/state/recovery
 import scherzo/task
 import scherzo/tracker/adapter
@@ -20,8 +21,11 @@ pub type State {
   State(
     runtime: orchestrator_state.RuntimeState,
     workers: WorkerDirectory,
-    pending_claims: dict.Dict(String, PendingClaim),
-    pending_dispatch_validations: dict.Dict(String, PendingDispatchValidation),
+    pending_claims: dict.Dict(identity.TaskIdentity, PendingClaim),
+    pending_dispatch_validations: dict.Dict(
+      identity.TaskIdentity,
+      PendingDispatchValidation,
+    ),
     next_dispatch_validation_generation: Int,
     next_session_sequence: Int,
   )
@@ -68,8 +72,9 @@ pub type Message {
     context: DispatchContext,
   )
   HandoffClaimCompleted(
-    issue_id: String,
-    run_id: String,
+    task_identity: identity.TaskIdentity,
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
     result: HandoffClaimResult,
   )
   RetryTick(issue_id: String, generation: Int, context: DispatchContext)
@@ -81,10 +86,11 @@ pub type Message {
   )
   ClaimLedgerAppendRequested(
     correlation_id: String,
-    issue_id: String,
-    run_id: String,
-    session_id: String,
-    bodies: List(record.RecordBody),
+    task_identity: identity.TaskIdentity,
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
+    session_id: identity.SessionId,
+    batch: ledger_batch.LedgerBatch,
     failure_event: String,
   )
   LedgerAppendCompleted(
@@ -93,28 +99,32 @@ pub type Message {
     result: Result(Nil, ledger.LedgerError),
     now_ms: Int,
   )
-  WorkerStartSucceeded(issue_id: String, run_id: String, session_id: String)
+  WorkerStartSucceeded(
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
+    session_id: identity.SessionId,
+  )
   WorkerStartFailed(
-    issue_id: String,
-    run_id: String,
-    session_id: String,
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
+    session_id: identity.SessionId,
     reason: String,
   )
-  WorkerCommandReady(issue_id: String, run_id: String)
+  WorkerCommandReady(issue_id: identity.IssueId, run_id: identity.RunId)
   WorkerFinished(
-    issue_id: String,
-    run_id: String,
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
     result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
     context: WorkerLifecycleContext,
   )
   WorkerDown(resolution: WorkerDownResolution, context: WorkerLifecycleContext)
   WorkerStopRequested(
-    session_id: String,
+    session_id: identity.SessionId,
     reason: session_reason.WorkerExitReason,
     context: WorkerLifecycleContext,
   )
-  YamlStepStarted(session_id: String, run_id: String)
-  YamlStepFinished(session_id: String)
+  YamlStepStarted(session_id: identity.SessionId, run_id: identity.RunId)
+  YamlStepFinished(session_id: identity.SessionId)
   ShutdownRequested(stop_effect_runner: Bool)
 }
 
@@ -124,8 +134,8 @@ pub type Outcome {
 
 pub type WorkerDirectory {
   WorkerDirectory(
-    by_issue: dict.Dict(String, WorkerEntry),
-    by_session: dict.Dict(String, String),
+    by_issue: dict.Dict(identity.TaskIdentity, WorkerEntry),
+    by_session: dict.Dict(String, identity.TaskIdentity),
     route_to_session: dict.Dict(String, String),
     yaml_step_runs: dict.Dict(String, String),
     stopped_yaml_runs: dict.Dict(String, session_reason.WorkerExitReason),
@@ -175,8 +185,12 @@ pub type WorkerFailureKind {
 }
 
 pub type WorkerDownResolution {
-  KnownWorkerDown(issue_id: String, run_id: String, session_id: String)
-  WorkerDownStale(issue_id: String)
+  KnownWorkerDown(
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
+    session_id: identity.SessionId,
+  )
+  WorkerDownStale(issue_id: identity.IssueId)
   UnknownWorkerDown
 }
 
@@ -311,7 +325,7 @@ pub type DispatchValidationError {
 }
 
 pub type HandoffClaimResult {
-  HandoffClaimSucceeded(bodies: List(record.RecordBody))
+  HandoffClaimSucceeded(batch: ledger_batch.LedgerBatch)
   HandoffClaimFailed(error: String)
   HandoffClaimStartRecordFailed(reason: String)
 }
