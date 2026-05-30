@@ -283,7 +283,7 @@ pub fn port_terminate_exits_child_test() {
   assert child_dead
 }
 
-pub fn port_await_exit_times_out_while_descendant_survives_test() {
+pub fn port_await_exit_cleans_residual_descendant_test() {
   let cwd = "test/tmp/port-await-descendant"
   test_helpers.reset_dir(cwd)
 
@@ -292,14 +292,30 @@ pub fn port_await_exit_times_out_while_descendant_survives_test() {
     port.start("sleep 60 & echo $! > orphan.pid; exit 0", cwd)
   let assert Ok(child_pid) = read_pid_file(child_pid_file)
   assert pid_alive(child_pid)
-  let await_result = port.await_exit(process, 100)
-  let survived_before_terminate = pid_alive(child_pid)
-  let terminate_result = port.terminate(process)
+  let await_result = port.await_exit(process, 1000)
   let child_dead = wait_until_dead(child_pid, 50)
 
-  let assert Error(port.ReadTimeout) = await_result
-  assert survived_before_terminate
-  let assert Ok(Nil) = terminate_result
+  let assert Ok(0) = await_result
+  assert child_dead
+}
+
+pub fn port_await_exit_succeeds_after_stdout_when_residual_group_exists_test() {
+  let cwd = "test/tmp/port-await-stdout-residual"
+  test_helpers.reset_dir(cwd)
+
+  let child_pid_file = cwd <> "/orphan.pid"
+  let assert Ok(process) =
+    port.start(
+      "sleep 60 & echo $! > orphan.pid; printf 'ready\\n'; exit 0",
+      cwd,
+    )
+  let assert Ok(stdout) = port.read_stdout_line(process, 1000)
+  let assert Ok(child_pid) = read_pid_file(child_pid_file)
+  let await_result = port.await_exit(process, 1000)
+  let child_dead = wait_until_dead(child_pid, 50)
+
+  assert stdout == "ready"
+  let assert Ok(0) = await_result
   assert child_dead
 }
 

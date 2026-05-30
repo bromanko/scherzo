@@ -462,9 +462,20 @@ await_exit(Process, TimeoutMs) ->
     end.
 
 await_os_exit(Process, Status, OsPid, ChildPidPath, Timeout) ->
+    %% Once the wrapper has produced an exit status, the command it waited for is
+    %% done. Clean up any leftover process-group members immediately rather than
+    %% treating their liveness as command liveness; otherwise short-lived helpers
+    %% that leave descendants behind can falsely consume the full await timeout.
+    terminate_residual_child_targets(ChildPidPath),
     case wait_for_launched_process_gone(OsPid, ChildPidPath, Timeout) of
         ok -> finish_process_exit(Process, Status);
         timeout -> {error, <<"timeout">>}
+    end.
+
+terminate_residual_child_targets(ChildPidPath) ->
+    case read_child_pid(ChildPidPath) of
+        {ok, ChildPid} -> terminate_child_targets({ok, ChildPid}, process_tree_pids(ChildPid));
+        none -> ok
     end.
 
 finish_process_exit(Process, Status) ->
@@ -528,10 +539,13 @@ wait_for_launched_process_gone_until(OsPid, ChildPidPath, Deadline) ->
     end.
 
 launched_process_alive(OsPid, ChildPidPath) ->
-    root_alive(OsPid) orelse child_target_alive(read_child_pid(ChildPidPath)).
+    root_alive(OsPid) orelse child_pid_alive(read_child_pid(ChildPidPath)).
 
 root_alive(undefined) -> false;
 root_alive(Pid) -> pid_alive(Pid).
+
+child_pid_alive({ok, ChildPid}) -> pid_alive(ChildPid);
+child_pid_alive(none) -> false.
 
 child_target_alive({ok, ChildPid}) ->
     pid_alive(ChildPid) orelse process_group_alive(ChildPid);
