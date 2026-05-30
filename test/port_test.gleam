@@ -283,7 +283,7 @@ pub fn port_terminate_exits_child_test() {
   assert child_dead
 }
 
-pub fn port_await_exit_times_out_while_descendant_survives_test() {
+pub fn port_await_exit_cleans_residual_descendant_test() {
   let cwd = "test/tmp/port-await-descendant"
   test_helpers.reset_dir(cwd)
 
@@ -291,16 +291,91 @@ pub fn port_await_exit_times_out_while_descendant_survives_test() {
   let assert Ok(process) =
     port.start("sleep 60 & echo $! > orphan.pid; exit 0", cwd)
   let assert Ok(child_pid) = read_pid_file(child_pid_file)
-  assert pid_alive(child_pid)
-  let await_result = port.await_exit(process, 100)
-  let survived_before_terminate = pid_alive(child_pid)
-  let terminate_result = port.terminate(process)
-  let child_dead = wait_until_dead(child_pid, 50)
+  let assert Ok(0) = port.await_exit(process, 1000)
+  assert wait_until_dead(child_pid, 50)
+}
 
-  let assert Error(port.ReadTimeout) = await_result
-  assert survived_before_terminate
-  let assert Ok(Nil) = terminate_result
-  assert child_dead
+pub fn port_await_exit_succeeds_after_stdout_when_residual_group_exists_test() {
+  let cwd = "test/tmp/port-await-stdout-descendant"
+  test_helpers.reset_dir(cwd)
+
+  let child_pid_file = cwd <> "/orphan.pid"
+  let assert Ok(process) =
+    port.start(
+      "sleep 60 & echo $! > orphan.pid; printf 'ready\\n'; exit 0",
+      cwd,
+    )
+  let assert Ok(child_pid) = read_pid_file(child_pid_file)
+  let assert Ok(stdout) = port.read_stdout_line(process, 1000)
+  assert stdout == "ready"
+  let assert Ok(0) = port.await_exit(process, 1000)
+  assert wait_until_dead(child_pid, 50)
+}
+
+pub fn port_await_exit_times_out_when_residual_cleanup_exceeds_deadline_test() {
+  let cwd = "test/tmp/port-await-residual-cleanup-timeout"
+  test_helpers.reset_dir(cwd)
+
+  let child_pid_file = cwd <> "/orphan.pid"
+  let assert Ok(process) =
+    port.start(
+      "sh -c 'trap \"\" TERM; while :; do sleep 1; done' & echo $! > orphan.pid; exit 0",
+      cwd,
+    )
+  let assert Ok(temp_dir) = port.temp_dir_for_test(process)
+  let assert Ok(child_pid) = read_pid_file(child_pid_file)
+  assert wait_until_file(temp_dir <> "/exit.status", 50)
+  assert pid_alive(child_pid)
+  let assert Error(port.ReadTimeout) = port.await_exit(process, 10)
+  let assert Ok(Nil) = port.terminate(process)
+  assert wait_until_dead(child_pid, 50)
+}
+
+pub fn port_await_exit_preserves_nonzero_status_with_residual_descendant_test() {
+  let cwd = "test/tmp/port-await-nonzero-descendant"
+  test_helpers.reset_dir(cwd)
+
+  let child_pid_file = cwd <> "/orphan.pid"
+  let assert Ok(process) =
+    port.start("sleep 60 & echo $! > orphan.pid; exit 7", cwd)
+  let assert Ok(child_pid) = read_pid_file(child_pid_file)
+  let assert Ok(7) = port.await_exit(process, 1000)
+  assert wait_until_dead(child_pid, 50)
+}
+
+pub fn port_start_argv_await_exit_preserves_nonzero_status_with_residual_descendant_test() {
+  let cwd = "test/tmp/port-await-argv-nonzero-descendant"
+  test_helpers.reset_dir(cwd)
+
+  let child_pid_file = cwd <> "/orphan.pid"
+  let assert Ok(process) =
+    port.start_argv(
+      "sh",
+      ["-c", "sleep 60 & echo $! > orphan.pid; exit 9"],
+      cwd,
+      [],
+    )
+  let assert Ok(child_pid) = read_pid_file(child_pid_file)
+  let assert Ok(9) = port.await_exit(process, 1000)
+  assert wait_until_dead(child_pid, 50)
+}
+
+pub fn port_start_argv_with_input_await_exit_preserves_nonzero_status_with_residual_descendant_test() {
+  let cwd = "test/tmp/port-await-argv-input-nonzero-descendant"
+  test_helpers.reset_dir(cwd)
+
+  let child_pid_file = cwd <> "/orphan.pid"
+  let assert Ok(process) =
+    port.start_argv_with_input(
+      "sh",
+      ["-c", "cat >/dev/null; sleep 60 & echo $! > orphan.pid; exit 11"],
+      cwd,
+      [],
+      "ignored\n",
+    )
+  let assert Ok(child_pid) = read_pid_file(child_pid_file)
+  let assert Ok(11) = port.await_exit(process, 1000)
+  assert wait_until_dead(child_pid, 50)
 }
 
 pub fn port_max_line_handling_test() {
@@ -414,6 +489,20 @@ fn result_nil_error(result: Result(Int, a)) -> Result(Int, Nil) {
   case result {
     Ok(value) -> Ok(value)
     Error(_) -> Error(Nil)
+  }
+}
+
+fn wait_until_file(path: String, attempts: Int) -> Bool {
+  case simplifile.is_file(path) {
+    Ok(True) -> True
+    _ ->
+      case attempts <= 0 {
+        True -> False
+        False -> {
+          process.sleep(5)
+          wait_until_file(path, attempts - 1)
+        }
+      }
   }
 }
 
