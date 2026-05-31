@@ -1,0 +1,960 @@
+import gleam/bit_array
+import gleam/dict
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import scherzo/artifact_publication_config
+import scherzo/artifact_publication_planner
+import scherzo/hash
+import scherzo/json_value
+import scherzo/state/artifact_store
+import scherzo/workflow_artifact_descriptor as artifact_descriptor
+import scherzo/workflow_contract
+import scherzo/workflow_contract_manifest
+
+pub fn plans_leaf_output_publication_manifest_test() {
+  let store =
+    store_with_contents([
+      #(plan_ref(), plan_contents()),
+    ])
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  assert manifest.dry_run == True
+  assert manifest.series_id
+    == "work/task-1/workflow/workflow.execplan/publication/review_doc"
+  assert manifest.repository_id == "github.docs"
+  assert manifest.github_repo == Some("scherzo-systems/scherzo")
+  assert manifest.branch == "scherzo/workflow.execplan/LIV-761/review_doc"
+  let assert [planned] = manifest.files
+  assert planned.destination_path == "docs/plans/LIV-761.md"
+  assert planned.source.ref == plan_ref()
+  assert planned.source.sha256 == plan_sha()
+  assert manifest.pull_request.enabled == True
+  assert manifest.pull_request.title == Some("LIV-761 publication")
+  let assert Some(body) = manifest.pull_request.body
+  assert string.contains(body, "docs/plans/LIV-761.md")
+  assert string.contains(body, manifest.version_id)
+
+  let json = artifact_publication_planner.manifest_to_string(manifest)
+  assert string.contains(json, "\"dry_run\":true")
+  assert string.contains(json, "\"destination_path\":\"docs/plans/LIV-761.md\"")
+  assert !string.contains(json, "\"pr_url\"")
+  assert !string.contains(json, "\"commit_sha\"")
+  assert !string.contains(json, "\"push_result\"")
+  assert !string.contains(json, "\"mutation_status\"")
+}
+
+pub fn plans_artifact_set_entry_publication_test() {
+  let bundle_descriptor = execplan_bundle_descriptor(plan_sha(), plan_bytes())
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  let assert [planned] = manifest.files
+  assert planned.destination_path == "docs/review/LIV-761.md"
+  assert planned.source.output == "exec_plan_bundle"
+  assert planned.source.entry == Some("plan")
+  assert planned.source.ref == plan_ref()
+}
+
+pub fn identical_inputs_keep_same_version_id_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let body_templates =
+    dict.from_list([#("templates/publication.md", body_template())])
+  let assert Ok(first) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+  let assert Ok(second) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+
+  assert first.version_id == second.version_id
+}
+
+pub fn unchanged_bytes_and_mapping_keep_version_id_across_run_refs_test() {
+  let run_1_ref = plan_ref_for_run("run-1")
+  let run_2_ref = plan_ref_for_run("run-2")
+  let store =
+    store_with_contents([
+      #(run_1_ref, plan_contents()),
+      #(run_2_ref, plan_contents()),
+    ])
+  let body_templates =
+    dict.from_list([#("templates/publication.md", body_template())])
+  let assert Ok(first) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest_with_ref("run-1", run_1_ref, plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+  let assert Ok(second) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest_with_ref("run-2", run_2_ref, plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-2",
+      body_templates,
+    )
+
+  assert first.version_id == second.version_id
+}
+
+pub fn changed_body_template_contents_change_version_id_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Ok(first) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  let assert Ok(second) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([
+        #("templates/publication.md", body_template() <> "\nExtra detail"),
+      ]),
+    )
+
+  assert first.version_id != second.version_id
+}
+
+pub fn changed_bytes_change_version_id_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let changed_store =
+    store_with_contents([#(plan_ref(), plan_contents() <> " updated")])
+  let body_templates =
+    dict.from_list([#("templates/publication.md", body_template())])
+  let assert Ok(first) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+  let changed_contents = plan_contents() <> " updated"
+  let assert Ok(second) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(
+        hash.sha256_hex(changed_contents),
+        bytes_of(changed_contents),
+      ),
+      repositories(),
+      leaf_route(),
+      changed_store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  assert first.version_id != second.version_id
+}
+
+pub fn changed_target_mapping_changes_version_id_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let body_templates =
+    dict.from_list([#("templates/publication.md", body_template())])
+  let assert Ok(first) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+  let assert Ok(second) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route_with_path("docs/alt/{{ work.identifier }}.md"),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  assert first.version_id != second.version_id
+}
+
+pub fn unknown_output_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route_with_selector("missing", None),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "unknown_output"
+}
+
+pub fn absent_output_returns_error_test() {
+  let store = store_with_contents([])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      absent_manifest(),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "absent_output"
+}
+
+pub fn invalid_selector_entry_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route_with_selector("review_doc", Some("plan")),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "invalid_selector_entry"
+}
+
+pub fn non_file_root_selection_returns_error_test() {
+  let bundle_descriptor = execplan_bundle_descriptor(plan_sha(), plan_bytes())
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store = store_with_contents([#(bundle_ref(), bundle_contents)])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      leaf_route_with_selector("exec_plan_bundle", None),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "non_file_descriptor"
+}
+
+pub fn missing_artifact_set_entry_returns_error_test() {
+  let bundle_descriptor = execplan_bundle_descriptor(plan_sha(), plan_bytes())
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+    ])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      leaf_route_with_selector("exec_plan_bundle", Some("missing")),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error)
+    == "missing_artifact_set_entry"
+}
+
+pub fn missing_ref_returns_error_test() {
+  let store = store_with_contents([])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      missing_ref_manifest(),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "missing_ref"
+}
+
+pub fn missing_artifact_bytes_returns_error_test() {
+  let store = store_with_contents([])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "missing_artifact_bytes"
+}
+
+pub fn hash_mismatch_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        plan_bytes(),
+      ),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "hash_mismatch"
+}
+
+pub fn byte_count_mismatch_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes() + 1),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "byte_count_mismatch"
+}
+
+pub fn unsafe_rendered_path_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route_with_path("../outside.md"),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "unsafe_rendered_path"
+}
+
+pub fn trailing_control_char_destination_path_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route_with_path("docs/plans/{{ work.identifier }}.md\n"),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "unsafe_rendered_path"
+}
+
+pub fn unsafe_branch_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories_with_branch("../bad-branch"),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "unsafe_branch"
+}
+
+pub fn trailing_control_or_invalid_git_ref_branch_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let body_templates =
+    dict.from_list([#("templates/publication.md", body_template())])
+
+  let assert Error(control_error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories_with_branch("scherzo/topic\n"),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+  assert artifact_publication_planner.code(control_error) == "unsafe_branch"
+
+  let assert Error(space_error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories_with_branch("scherzo/topic with space"),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+  assert artifact_publication_planner.code(space_error) == "unsafe_branch"
+
+  let assert Error(dotdot_error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories_with_branch("scherzo/foo..bar"),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+  assert artifact_publication_planner.code(dotdot_error) == "unsafe_branch"
+}
+
+pub fn duplicate_destination_paths_return_error_test() {
+  let store =
+    store_with_contents([
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      manifest_with_two_leaf_outputs(),
+      repositories(),
+      duplicate_path_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error)
+    == "duplicate_destination_path"
+}
+
+pub fn missing_body_template_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+  assert artifact_publication_planner.code(error) == "missing_body_template"
+}
+
+pub fn unavailable_template_variable_returns_error_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", "{{ unknown.variable }}")]),
+    )
+  assert artifact_publication_planner.code(error) == "template_render_failure"
+}
+
+fn repositories() -> artifact_publication_config.ArtifactRepositories {
+  repositories_with_branch(
+    "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}",
+  )
+}
+
+fn repositories_with_branch(
+  branch_template: String,
+) -> artifact_publication_config.ArtifactRepositories {
+  artifact_publication_config.ArtifactRepositories(
+    github: dict.from_list([
+      #(
+        "docs",
+        artifact_publication_config.GithubRepositoryTarget(
+          name: "docs",
+          repo: "scherzo-systems/scherzo",
+          base: "main",
+          checkout: artifact_publication_config.GithubCheckoutConfig(
+            strategy: artifact_publication_config.ManagedGit,
+          ),
+          branch: artifact_publication_config.GithubBranchConfig(
+            strategy: artifact_publication_config.StablePerWork,
+            template: branch_template,
+          ),
+          pull_request: artifact_publication_config.GithubPullRequestConfig(
+            enabled: True,
+            strategy: artifact_publication_config.UpdateExisting,
+            draft: True,
+            title: Some("{{ work.identifier }} publication"),
+            body_template: Some("templates/publication.md"),
+          ),
+        ),
+      ),
+    ]),
+  )
+}
+
+fn work() -> artifact_publication_planner.PublicationWork {
+  artifact_publication_planner.PublicationWork(
+    kind: artifact_publication_planner.TaskWork,
+    id: "task-1",
+    identifier: "LIV-761",
+    slug: "LIV-761",
+  )
+}
+
+fn leaf_route() -> artifact_publication_config.PublicationRoute {
+  leaf_route_with_selector("review_doc", None)
+}
+
+fn bundle_entry_route() -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    id: "review_doc",
+    repository: "github.docs",
+    required: True,
+    pull_request: Some(
+      artifact_publication_config.PublicationPullRequestOverride(
+        title: Some("{{ work.identifier }} publication"),
+        body_template: Some("templates/publication.md"),
+      ),
+    ),
+    files: [
+      artifact_publication_config.PublicationFileRoute(
+        selector: artifact_publication_config.PublicationFileSelector(
+          output: "exec_plan_bundle",
+          entry: Some("plan"),
+        ),
+        path: "docs/review/{{ work.identifier }}{{ artifact.default_extension }}",
+      ),
+    ],
+  )
+}
+
+fn leaf_route_with_path(
+  path: String,
+) -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    id: "review_doc",
+    repository: "github.docs",
+    required: True,
+    pull_request: Some(
+      artifact_publication_config.PublicationPullRequestOverride(
+        title: Some("{{ work.identifier }} publication"),
+        body_template: Some("templates/publication.md"),
+      ),
+    ),
+    files: [
+      artifact_publication_config.PublicationFileRoute(
+        selector: artifact_publication_config.PublicationFileSelector(
+          output: "review_doc",
+          entry: None,
+        ),
+        path: path,
+      ),
+    ],
+  )
+}
+
+fn leaf_route_with_selector(
+  output: String,
+  entry: Option(String),
+) -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    id: "review_doc",
+    repository: "github.docs",
+    required: True,
+    pull_request: Some(
+      artifact_publication_config.PublicationPullRequestOverride(
+        title: Some("{{ work.identifier }} publication"),
+        body_template: Some("templates/publication.md"),
+      ),
+    ),
+    files: [
+      artifact_publication_config.PublicationFileRoute(
+        selector: artifact_publication_config.PublicationFileSelector(
+          output: output,
+          entry: entry,
+        ),
+        path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
+      ),
+    ],
+  )
+}
+
+fn duplicate_path_route() -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    id: "review_doc",
+    repository: "github.docs",
+    required: True,
+    pull_request: Some(
+      artifact_publication_config.PublicationPullRequestOverride(
+        title: Some("{{ work.identifier }} publication"),
+        body_template: Some("templates/publication.md"),
+      ),
+    ),
+    files: [
+      artifact_publication_config.PublicationFileRoute(
+        selector: artifact_publication_config.PublicationFileSelector(
+          output: "review_doc",
+          entry: None,
+        ),
+        path: "docs/dup.md",
+      ),
+      artifact_publication_config.PublicationFileRoute(
+        selector: artifact_publication_config.PublicationFileSelector(
+          output: "implementation_pack",
+          entry: None,
+        ),
+        path: "docs/dup.md",
+      ),
+    ],
+  )
+}
+
+fn leaf_manifest(
+  sha256: String,
+  bytes: Int,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  leaf_manifest_with_ref("run-1", plan_ref(), sha256, bytes)
+}
+
+fn leaf_manifest_with_ref(
+  run_id: String,
+  ref: String,
+  sha256: String,
+  bytes: Int,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: run_id,
+    workflow_id: "workflow.execplan",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "review_doc",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.DocumentMarkdown,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: ref,
+            sha256: sha256,
+            bytes: bytes,
+          ),
+          "text/markdown",
+          Some(source_metadata()),
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn absent_manifest() -> workflow_contract_manifest.ContractOutputManifest {
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "workflow.execplan",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "review_doc",
+        value: workflow_contract_manifest.absent(
+          workflow_contract.DocumentMarkdown,
+          Some("not produced"),
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn manifest_with_two_leaf_outputs() -> workflow_contract_manifest.ContractOutputManifest {
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "workflow.execplan",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "review_doc",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.DocumentMarkdown,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: plan_ref(),
+            sha256: plan_sha(),
+            bytes: plan_bytes(),
+          ),
+          "text/markdown",
+          Some(source_metadata()),
+        ),
+      ),
+      workflow_contract_manifest.NamedManifestValue(
+        name: "implementation_pack",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.ImplementationPack,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: pack_ref(),
+            sha256: pack_sha(),
+            bytes: pack_bytes(),
+          ),
+          "application/json",
+          Some(source_metadata()),
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn missing_ref_manifest() -> workflow_contract_manifest.ContractOutputManifest {
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "workflow.execplan",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "review_doc",
+        value: workflow_contract_manifest.ManifestValue(
+          type_: workflow_contract.DocumentMarkdown,
+          status: workflow_contract_manifest.Present,
+          ref_kind: Some(workflow_contract_manifest.RunArtifact),
+          ref: None,
+          sha256: Some(plan_sha()),
+          bytes: Some(plan_bytes()),
+          media_type: Some("text/markdown"),
+          value: None,
+          source: Some(source_metadata()),
+          diagnostic: None,
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn bundle_manifest(
+  sha256: String,
+  bytes: Int,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "workflow.execplan",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "exec_plan_bundle",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.ExecPlanBundle,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: bundle_ref(),
+            sha256: sha256,
+            bytes: bytes,
+          ),
+          "application/json",
+          Some(source_metadata()),
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn execplan_bundle_descriptor(
+  plan_sha256: String,
+  plan_size: Int,
+) -> artifact_descriptor.ArtifactDescriptor {
+  artifact_descriptor.ArtifactDescriptor(
+    name: "exec_plan_bundle",
+    kind: artifact_descriptor.ArtifactSetKind,
+    artifact_type: Some("scherzo.exec_plan_bundle.v2"),
+    description: None,
+    source: None,
+    validation: None,
+    metadata: None,
+    ref_type: None,
+    ref: None,
+    sha256: None,
+    bytes: None,
+    media_type: None,
+    value: None,
+    entries: [
+      artifact_descriptor.ArtifactDescriptor(
+        name: "plan",
+        kind: artifact_descriptor.FileKind,
+        artifact_type: Some("scherzo.exec_plan.v1"),
+        description: None,
+        source: None,
+        validation: None,
+        metadata: None,
+        ref_type: None,
+        ref: Some(plan_ref()),
+        sha256: Some(plan_sha256),
+        bytes: Some(plan_size),
+        media_type: Some("text/markdown"),
+        value: None,
+        entries: [],
+      ),
+      artifact_descriptor.ArtifactDescriptor(
+        name: "implementation_pack",
+        kind: artifact_descriptor.FileKind,
+        artifact_type: Some("scherzo.implementation_pack.v2"),
+        description: None,
+        source: None,
+        validation: None,
+        metadata: None,
+        ref_type: None,
+        ref: Some(pack_ref()),
+        sha256: Some(pack_sha()),
+        bytes: Some(pack_bytes()),
+        media_type: Some("application/json"),
+        value: None,
+        entries: [],
+      ),
+    ],
+  )
+}
+
+fn source_metadata() -> json_value.JsonValue {
+  json_value.JObject([#("step_id", json_value.JString("publish_review_doc"))])
+}
+
+fn plan_contents() -> String {
+  "# Review\n\nThis is the dry-run review doc.\n"
+}
+
+fn pack_contents() -> String {
+  "{\"artifact_type\":\"implementation_pack\"}"
+}
+
+fn plan_ref() -> String {
+  plan_ref_for_run("run-1")
+}
+
+fn plan_ref_for_run(run_id: String) -> String {
+  "runs/" <> run_id <> "/outputs/review_doc.md"
+}
+
+fn pack_ref() -> String {
+  "runs/run-1/outputs/implementation_pack.json"
+}
+
+fn bundle_ref() -> String {
+  "runs/run-1/outputs/exec_plan_bundle.json"
+}
+
+fn plan_sha() -> String {
+  hash.sha256_hex(plan_contents())
+}
+
+fn pack_sha() -> String {
+  hash.sha256_hex(pack_contents())
+}
+
+fn plan_bytes() -> Int {
+  bytes_of(plan_contents())
+}
+
+fn pack_bytes() -> Int {
+  bytes_of(pack_contents())
+}
+
+fn bytes_of(contents: String) -> Int {
+  bit_array.byte_size(bit_array.from_string(contents))
+}
+
+fn body_template() -> String {
+  "Version {{ publication.version_id }}\n{{ publication.files_markdown }}"
+}
+
+fn store_with_contents(
+  contents: List(#(String, String)),
+) -> artifact_store.Store {
+  let refs = dict.from_list(contents)
+  artifact_store.custom(
+    "publication-planner-test",
+    artifact_store.StoreCallbacks(
+      write: fn(_, _) { Ok(Nil) },
+      read: fn(ref) {
+        case dict.get(refs, ref) {
+          Ok(contents) -> Ok(contents)
+          Error(Nil) -> Error(artifact_store.MissingStepArtifact(ref))
+        }
+      },
+      write_immutable_bytes: fn(_, _) { Ok(artifact_store.ImmutableWritten) },
+      read_bytes: fn(ref) {
+        case dict.get(refs, ref) {
+          Ok(contents) -> Ok(bit_array.from_string(contents))
+          Error(Nil) -> Error(artifact_store.MissingStepArtifact(ref))
+        }
+      },
+      locate: fn(ref) {
+        Ok(artifact_store.ArtifactLocation(
+          ref: ref,
+          uri: "artifact://test/" <> ref,
+          display_path: ref,
+          local_path: None,
+        ))
+      },
+    ),
+  )
+}

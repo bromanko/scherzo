@@ -298,6 +298,8 @@ The publication manifest should include:
 - backend result fields such as branch, PR URL, commit SHA, and changed-file list;
 - final publication status and bounded diagnostics.
 
+The first implementation slice should emit a dry-run publication manifest only. That manifest should set `dry_run: true`, include repository metadata, branch, rendered pull-request title/body text, and selected file destinations, and deliberately omit remote mutation results such as PR URL, commit SHA, push status, durable ledger ids, or retry metadata until the GitHub publisher lands.
+
 Ledger records should append attempt-level events with deterministic idempotency keys, including attempt start and attempt finish/failure. The projection can compute the latest status per run, publication id, and publication series. If publication volume later warrants a side ledger, the main ledger should still keep summary records and manifest refs.
 
 ### 11.4 Optional publication failures
@@ -328,3 +330,5 @@ Successful task/result comments should include a compact publication table for e
 The GitHub artifact publisher may reuse or extract implementation techniques from the current `publish-change` path, especially branch naming, push, and PR creation behavior. It should not invoke `workspace-driver publish-change` as the artifact-publication API.
 
 The target seam is a Scherzo-owned artifact repository adapter. During migration, `publish-change` can remain for legacy workspace-change workflows while artifact-producing workflows move to `artifacts.publications`. After those workflows migrate, `WorkspacePublishChange` can be deprecated for artifact publication use cases.
+
+For the dry-run planner slice, workflow helper scripts under `workflows/dogfood/scripts`, workflow schemas under `workflows/dogfood/schemas`, provider-live/cache behavior, and installed `.scherzo/workflows` workflow migrations remain explicitly out of scope. If those surfaces are untouched, the implementation should record that no helper migration or provider/cache validation was applicable.
