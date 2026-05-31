@@ -439,6 +439,34 @@ pub fn doctor_unknown_check_name_fails_before_loading_workflow_test() {
       deps,
     )
   assert err.code == "unknown_doctor_check"
+
+  let assert Error(retired_alias_err) =
+    service.build_doctor_report_with_dependencies(
+      doctor.Options(
+        path: Some("test/tmp/no-such-scherzo.yaml"),
+        checks: ["linear-smoke"],
+        list_checks: False,
+        output: doctor.Human,
+      ),
+      deps,
+    )
+  assert retired_alias_err.code == "unknown_doctor_check"
+  assert string.contains(retired_alias_err.message, "linear-smoke")
+  assert string.contains(retired_alias_err.message, "tracker-smoke")
+
+  let assert Error(retired_contract_err) =
+    service.build_doctor_report_with_dependencies(
+      doctor.Options(
+        path: Some("test/tmp/no-such-scherzo.yaml"),
+        checks: ["linear-contract"],
+        list_checks: False,
+        output: doctor.Human,
+      ),
+      deps,
+    )
+  assert retired_contract_err.code == "unknown_doctor_check"
+  assert string.contains(retired_contract_err.message, "linear-contract")
+  assert string.contains(retired_contract_err.message, "tracker-contract")
 }
 
 pub fn doctor_linear_smoke_success_reports_counts_test() {
@@ -481,7 +509,7 @@ pub fn doctor_linear_smoke_failure_does_not_skip_workspace_probe_test() {
   let options =
     doctor.Options(
       path: Some(config_path),
-      checks: ["linear-smoke", "workspace-hooks", "pi-probe"],
+      checks: ["tracker-smoke", "workspace-hooks", "pi-probe"],
       list_checks: False,
       output: doctor.Logfmt,
     )

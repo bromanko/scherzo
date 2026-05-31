@@ -179,7 +179,7 @@ Run the contract check after changing workflow labels, states, or team membershi
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check tracker-contract .scherzo/scherzo.yaml
 ```
 
-`linear-contract` remains a compatibility alias for the Linear adapter.
+Use `tracker-contract`; the old Linear-named doctor check alias is retired.
 
 ## Dogfood workflows
 

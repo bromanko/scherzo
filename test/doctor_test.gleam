@@ -30,9 +30,7 @@ pub fn parse_check_name_accepts_known_names_test() {
   assert doctor.parse_check_name("scheduled-jobs") == Ok(doctor.ScheduledJobs)
   assert doctor.parse_check_name("tracker-contract")
     == Ok(doctor.LinearContract)
-  assert doctor.parse_check_name("linear-contract") == Ok(doctor.LinearContract)
   assert doctor.parse_check_name("tracker-smoke") == Ok(doctor.LinearSmoke)
-  assert doctor.parse_check_name("linear-smoke") == Ok(doctor.LinearSmoke)
   assert doctor.parse_check_name("instance-lock") == Ok(doctor.InstanceLock)
   assert doctor.parse_check_name("workspace-hooks") == Ok(doctor.WorkspaceHooks)
   assert doctor.parse_check_name("pi-probe") == Ok(doctor.PiProbe)
@@ -40,6 +38,8 @@ pub fn parse_check_name_accepts_known_names_test() {
 
 pub fn parse_check_name_rejects_unknown_names_test() {
   assert doctor.parse_check_name("workflow_config") == Error("workflow_config")
+  assert doctor.parse_check_name("linear-contract") == Error("linear-contract")
+  assert doctor.parse_check_name("linear-smoke") == Error("linear-smoke")
   assert doctor.parse_check_name("no-such-check") == Error("no-such-check")
 }
 
@@ -61,7 +61,7 @@ pub fn selected_checks_deduplicates_in_first_seen_order_test() {
       doctor.WorkflowConfig,
     ])
     == [doctor.WorkflowConfig, doctor.LinearSmoke, doctor.PiProbe]
-  assert doctor.selected_checks(["tracker-smoke", "linear-smoke"])
+  assert doctor.selected_checks(["tracker-smoke", "tracker-smoke"])
     == Ok([doctor.LinearSmoke])
 }
 

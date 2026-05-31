@@ -14,11 +14,10 @@ Prefer the backend-neutral names in new docs, prompts, and scripts:
 - Use **tracker adapter** for the integration with Linear or a future task system.
 - Use `tracker-smoke`, `tracker-contract`, `--tracker-smoke`, and `--tracker-contract-check` in operator instructions.
 
-These Linear names remain compatibility aliases or Linear-only surfaces:
+The old Linear-named smoke and contract operator aliases are retired:
 
-- `linear-smoke` and `--linear-smoke` are compatibility aliases for tracker smoke checks. Retirement gate: remove them only after docs, help text, and parser tests all prove `tracker-smoke` is the sole documented operator path.
-- `linear-contract` and `--linear-contract-check` are compatibility aliases for tracker contract checks. Retirement gate: remove them only after docs, help text, and parser tests all prove `tracker-contract` / `--tracker-contract-check` are the sole documented operator paths.
-- `tracker.linear.check_setup` is the current Linear board validation switch. The old `linear_contract` section is replaced by fields derived from `tracker`, `workflows`, `task_routing`, and `task_updates`. `linear_commands` and `remote_commands` are removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead. Retirement gate: keep the removed-key diagnostics until supported configs no longer need migration guidance for those names.
+- `linear-smoke`, `--linear-smoke`, `linear-contract`, and `--linear-contract-check` are no longer accepted operator paths. Use `tracker-smoke`, `--tracker-smoke`, `tracker-contract`, and `--tracker-contract-check` instead.
+- `tracker.linear.check_setup` is the current Linear board validation switch. The old `linear_contract` section is replaced by fields derived from `tracker`, `workflows`, `task_routing`, and `task_updates`; leaving it in config is a startup validation error with migration guidance. `linear_commands` and `remote_commands` are also removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead. Keep the removed-key diagnostics until supported configs no longer need migration guidance for those names.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_*`, `issue_id`, `issue_identifier`, issue-shaped ledger fields, and `linear_command_*` ledger/event/outbox records remain legacy-reader compatibility surfaces until the runtime task context and command history are fully migrated. Retirement gate: do not remove them before dual-read prompt, helper, retained-ledger, and legacy command-record tests prove task-native replacements preserve old artifacts.
 - `--linear-attach-comment-file`, `.scherzo/workflows/scripts/scherzo-execplan`, and `.scherzo/workflows/scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today. Retirement gate: keep these names until adapter-backed task-context fetch/publish helpers exist and the old Linear-only flows have replacement tests.
 
@@ -48,7 +47,7 @@ workflows:
 
 Older tracker fields such as `tracker.kind`, `tracker.credentials.api_key_env`, `tracker.linear.project_slug`, `tracker.dispatch_states`, and `polling.interval_ms` belong to the pre-simplified config shape. Migrate them with [simplified YAML migration](simplified-yaml-migration.md).
 
-Use the backend-neutral doctor aliases first:
+Use the backend-neutral doctor check names:
 
 ```sh
 LINEAR_API_KEY=lin_api_... scherzo doctor \
@@ -75,7 +74,7 @@ Capability names used in code and config diagnostics include `task_source`, `com
 
 Linear-specific modules are expected inside Linear adapter internals, Linear compatibility tests, and Linear setup docs. The current tree also keeps a few generic-looking entrypoints on Linear compatibility paths:
 
-- `src/scherzo/orchestrator/service.gleam` still imports Linear contract, smoke, attachment, and transport modules for doctor and CLI compatibility checks.
+- `src/scherzo/orchestrator/service.gleam` still imports Linear contract, smoke, attachment, and transport modules for the current Linear-backed doctor and CLI checks.
 - `src/scherzo/template.gleam` still exposes `issue.*` variables only; prompts can describe the source as a task while rendering through the compatibility variables.
 - `.scherzo/workflows/scripts/scherzo-implementation` currently fetches workflow source context from Linear, so its fetch errors and fixture helper remain Linear-specific even when its operator summaries say task.
 
@@ -88,7 +87,7 @@ Before enabling a new production adapter, verify these facts with tests and oper
 1. Candidate task reads, task refresh, and operator lookup are implemented through `task_source`.
 2. Every enabled feature has a startup capability validation error when the adapter does not support it.
 3. Task updates and scheduled failure publication are either implemented through capabilities or disabled in config; remote command ingestion remains disabled and must not be advertised as an operator control path.
-4. Readiness and smoke checks have backend-neutral operator names and Linear aliases only where they are truly compatibility aliases.
+4. Readiness and smoke checks use backend-neutral operator names; do not add backend-specific aliases unless a separate compatibility plan accepts them.
 5. Prompt examples use task language while explicitly documenting any remaining `issue.*` compatibility variables.
 
 ## Black-box conformance MVP

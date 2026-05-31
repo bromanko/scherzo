@@ -628,7 +628,7 @@ LINEAR_API_KEY=lin_api_... direnv exec . scherzo doctor \
   .scherzo/scherzo.yaml
 ```
 
-`linear-contract` and `linear-smoke` remain compatibility aliases for the Linear adapter.
+Use `tracker-contract` and `tracker-smoke`; the old Linear-named check aliases are retired.
 
 List available checks:
 

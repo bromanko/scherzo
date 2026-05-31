@@ -285,13 +285,13 @@ Startup validation requires `scheduled_failures` for enabled scheduled failure p
 
 `ReadinessCapability.check_contract` returns `List(ReadinessFinding)`, where each finding has `severity`, `code`, `message`, and optional `config_path`.
 
-Readiness checks SHOULD validate adapter/backend configuration without mutating tasks. Findings MUST be actionable and MUST NOT include secrets. The capability is required only when the caller enables `readiness_checks_enabled`; current Linear contract checks still run through the Linear compatibility path.
+Readiness checks SHOULD validate adapter/backend configuration without mutating tasks. Findings MUST be actionable and MUST NOT include secrets. The capability is required only when the caller enables `readiness_checks_enabled`; current Linear contract checks still run through the Linear-specific doctor implementation.
 
 ### 6.10 `smoke`
 
 `SmokeCapability.run_smoke_check` returns `SmokeReport(candidate_count, refreshed_count, terminal_sample_count, messages)`.
 
-Smoke checks SHOULD perform low-risk read operations that prove candidate fetch and refresh behavior. They MUST NOT mutate task state. The capability is required only when the caller enables `smoke_checks_enabled`. Linear exposes `smoke`; `tracker-smoke` is the preferred operator name and `linear-smoke` remains a compatibility alias.
+Smoke checks SHOULD perform low-risk read operations that prove candidate fetch and refresh behavior. They MUST NOT mutate task state. The capability is required only when the caller enables `smoke_checks_enabled`. Linear exposes `smoke`; `tracker-smoke` is the operator check name.
 
 ### 6.11 `attachments`
 
@@ -366,7 +366,7 @@ Linear compatibility surfaces are intentionally preserved and are not generic ad
 - `backend_kind = "linear"` and Linear `remote_id` values are Linear-specific.
 - `tracker/issue.gleam` and `task.from_legacy_issue`/`task.to_legacy_issue` preserve existing Linear issue behavior.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_*`, `issue_id`, and `issue_identifier` remain compatibility names.
-- `linear_contract`, `linear-smoke`, `linear-contract`, `--linear-smoke`, and `--linear-contract-check` remain compatibility aliases or Linear-specific config/CLI surfaces. `linear_commands` is a removed config surface; leaving the section in config is rejected.
+- The old `linear_contract` config section and Linear-named smoke/contract CLI/check aliases are retired; use `tracker.linear.check_setup`, `tracker-smoke`, `tracker-contract`, `--tracker-smoke`, and `--tracker-contract-check`. `linear_commands` is also a removed config surface; leaving either removed config section in config is rejected.
 - Linear-only helper scripts and options that create, update, or inspect Linear tasks directly remain Linear-specific until replaced by generic adapter capabilities.
 
 Future Jira/Trello work MUST add production adapters and tests before docs or examples claim support. A fake or historical plan is not evidence of production conformance.
@@ -415,13 +415,13 @@ A Linear-equivalent adapter for today's production behavior provides:
 - `scheduled_failures`
 - `smoke`
 
-The current Linear adapter does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Linear readiness/contract checks still run through the `linear_contract` compatibility path, and attachment upload still uses Linear-only comment-file helpers.
+The current Linear adapter does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Linear readiness/contract checks still use the Linear-specific doctor implementation configured by `tracker.linear.check_setup`, and attachment upload still uses Linear-only comment-file helpers.
 
 ## 13. Current adapter conformance status
 
 | Adapter | Status | Conformance summary |
 | --- | --- | --- |
-| Linear | Production | Provides `task_source`, `comments`, `state_transitions`, `routing_metadata`, `handoff`, `scheduled_failures`, and `smoke`. Does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Contract/readiness and attachments remain Linear compatibility surfaces. |
+| Linear | Production | Provides `task_source`, `comments`, `state_transitions`, `routing_metadata`, `handoff`, `scheduled_failures`, and `smoke`. Does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Contract/readiness still use Linear-specific doctor code, and attachment upload remains a Linear-only helper. |
 | `test-memory` | Test fixture | Provides the fake non-Linear seam used by tests. It is not a production backend. |
 | Jira | Future work | No production adapter is supported today. |
 | Trello | Future work | No production adapter is supported today. |
