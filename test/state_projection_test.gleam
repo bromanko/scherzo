@@ -223,6 +223,84 @@ pub fn legacy_projection_snapshot_without_workstreams_decodes_test() {
   assert decoded.workstreams == dict.new()
   assert decoded.step_recoveries == dict.new()
   assert decoded.scheduled_jobs == dict.new()
+  assert decoded.publication_attempts == dict.new()
+}
+
+pub fn projection_tracks_publication_attempt_history_and_latest_status_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "workflow-started",
+        1000,
+        record.WorkflowRunStarted(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          workflow_fingerprint: "wf-1",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-739",
+          issue_fingerprint: "issue-fingerprint",
+          observed_updated_at_ms: 999,
+          run_root: "root/run-1",
+        ),
+      ),
+      record.with_id(
+        "publication-planned",
+        1010,
+        record.PublicationAttemptRecorded(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          publication_id: "review_doc",
+          series_id: "task-1:execplan:review_doc",
+          attempt_id: "version-1",
+          status: "planned",
+          required: True,
+          retryable: False,
+          retry_execution_available: False,
+          version_id: Some("version-1"),
+          manifest_ref: Some(
+            "runs/run-1/publications/review_doc/version-1.json",
+          ),
+          manifest_sha256: Some("sha-1"),
+          manifest_bytes: Some(10),
+          error_code: None,
+          error_message: None,
+        ),
+      ),
+      record.with_id(
+        "publication-failed",
+        1020,
+        record.PublicationAttemptRecorded(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          publication_id: "review_doc",
+          series_id: "task-1:execplan:review_doc",
+          attempt_id: "failed-1",
+          status: "failed",
+          required: True,
+          retryable: True,
+          retry_execution_available: False,
+          version_id: None,
+          manifest_ref: Some("runs/run-1/publications/review_doc/failed-1.json"),
+          manifest_sha256: Some("sha-2"),
+          manifest_bytes: Some(11),
+          error_code: Some("unknown_output"),
+          error_message: Some("missing"),
+        ),
+      ),
+    ])
+
+  let attempts =
+    projection.publication_attempts_for_run(folded, "run-1", "review_doc")
+  assert list.length(attempts) == 2
+  let assert Ok(latest) =
+    projection.latest_publication_for_run(folded, "run-1", "review_doc")
+  assert latest.status == "failed"
+  let assert Ok(series_latest) =
+    projection.latest_publication_for_series(
+      folded,
+      "task-1:execplan:review_doc",
+    )
+  assert series_latest.attempt_id == "failed-1"
 }
 
 pub fn projection_records_step_recoveries_test() {

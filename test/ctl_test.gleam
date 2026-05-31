@@ -283,6 +283,27 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     ))
   assert ctl.parse(["schedules", "doctor", "nightly", "--root", "work"])
     == Ok(ctl.SchedulesDoctor(None, Some("work"), False, "nightly"))
+  assert ctl.parse(["artifact", "publication", "list", "--run", "run-1"])
+    == Ok(ctl.ArtifactPublicationList(None, None, False, "run-1"))
+  assert ctl.parse([
+      "artifact",
+      "publication",
+      "show",
+      "--run",
+      "run-1",
+      "--publication",
+      "review_doc",
+      "--json",
+      "--root",
+      "work",
+    ])
+    == Ok(ctl.ArtifactPublicationShow(
+      None,
+      Some("work"),
+      True,
+      "run-1",
+      "review_doc",
+    ))
   assert ctl.parse(["state", "status", "--root", "work", "--json"])
     == Ok(ctl.StateStatus("work", True))
   assert ctl.parse(["state", "archive-old", "--root", "work", "--yes"])
@@ -399,6 +420,10 @@ pub fn parse_rejects_usage_errors_test() {
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["attach", "--color=bad", "ABC-1"])
   let assert Error(ctl.UsageError(_)) = ctl.parse(["ps", "--control-file"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["artifact", "publication", "list"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["artifact", "publication", "show", "--run", "run-1"])
   let assert Error(ctl.UsageError(_)) = ctl.parse(["unknown"])
 }
 
@@ -428,12 +453,19 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "schedules logs <job> --last")
   assert string.contains(usage, "schedules doctor <job>")
   assert string.contains(usage, "schedules run <job> --now")
+  assert string.contains(usage, "artifact publication list --run <run-id>")
+  assert string.contains(
+    usage,
+    "artifact publication show --run <run-id> --publication <publication-id>",
+  )
   assert string.contains(usage, "state status")
   assert string.contains(usage, "--control-file <path>")
   assert string.contains(usage, "--root <workspace-root>")
   assert string.contains(usage, "--json")
   assert string.contains(usage, "--verbose")
   assert string.contains(usage, "--since-cursor <n>")
+  assert string.contains(usage, "--run <run-id>")
+  assert string.contains(usage, "--publication <publication>")
   assert string.contains(usage, "--dry-run")
   assert string.contains(usage, "--step <step-id>")
 }
@@ -1058,6 +1090,78 @@ pub fn root_option_resolves_relative_to_caller_cwd_test() {
   )
 }
 
+pub fn artifact_publication_list_and_show_offline_state_test() {
+  let root = "test/tmp/ctl-artifact-publication/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-artifact-publication")
+  seed_publication_state(root)
+  let subject = process.new_subject()
+
+  assert ctl.run_with_deps(
+      ctl.ArtifactPublicationList(None, Some(root), False, "run-1"),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "run_id: run-1")
+  assert string.contains(transcript, "review_doc")
+  assert string.contains(transcript, "failed")
+  assert string.contains(transcript, "RETRY EXEC")
+
+  let json_subject = process.new_subject()
+  assert ctl.run_with_deps(
+      ctl.ArtifactPublicationShow(None, Some(root), True, "run-1", "review_doc"),
+      ps_deps([], ps_now_ms, ""),
+      output(json_subject),
+    )
+    == Ok(Nil)
+  let json_transcript = drain_output(json_subject)
+  assert string.contains(json_transcript, "\"publication_id\":\"review_doc\"")
+  assert string.contains(json_transcript, "\"attempt_count\":2")
+  assert string.contains(json_transcript, "\"retry_execution_available\":false")
+}
+
+pub fn artifact_publication_uses_control_file_root_and_reports_not_found_test() {
+  let base = "test/tmp/ctl-artifact-publication-control"
+  let root = base <> "/workspaces"
+  let control_path = base <> "/control.json"
+  test_helpers.reset_dir(base)
+  write_control_file_for_root(control_path, root)
+  seed_publication_state(root)
+  let subject = process.new_subject()
+
+  assert ctl.run_with_deps(
+      ctl.ArtifactPublicationList(Some(control_path), None, True, "run-1"),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"workspace_root\":\"" <> root <> "\"")
+
+  let assert Error(missing_run) =
+    ctl.run_with_deps(
+      ctl.ArtifactPublicationList(None, Some(root), False, "missing-run"),
+      ps_deps([], ps_now_ms, ""),
+      output(process.new_subject()),
+    )
+  assert ctl.error_code(missing_run) == "publication_run_not_found"
+
+  let assert Error(missing_publication) =
+    ctl.run_with_deps(
+      ctl.ArtifactPublicationShow(
+        None,
+        Some(root),
+        False,
+        "run-1",
+        "missing_publication",
+      ),
+      ps_deps([], ps_now_ms, ""),
+      output(process.new_subject()),
+    )
+  assert ctl.error_code(missing_publication) == "publication_not_found"
+}
+
 pub fn state_repair_run_provenance_dry_run_yes_and_idempotent_test() {
   let root = "test/tmp/ctl-state-repair-provenance/workspaces"
   test_helpers.reset_dir("test/tmp/ctl-state-repair-provenance")
@@ -1439,6 +1543,78 @@ pub fn ambiguous_display_ref_returns_clear_error_test() {
   assert ctl.error_code(err) == "ambiguous_session_ref"
   assert string.contains(ctl.error_message(err), "ambiguous")
   assert string.contains(ctl.error_message(err), "canonical session_id")
+}
+
+fn seed_publication_state(root: String) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started",
+          1000,
+          record.WorkflowRunStarted(
+            run_id: "run-1",
+            workflow_id: "execplan",
+            workflow_fingerprint: "wf-1",
+            issue_id: "issue-1",
+            issue_identifier: "LIV-739",
+            issue_fingerprint: "issue-fingerprint",
+            observed_updated_at_ms: 999,
+            run_root: root <> "/runs/run-1",
+          ),
+        ),
+        record.with_id(
+          "publication-planned",
+          1010,
+          record.PublicationAttemptRecorded(
+            run_id: "run-1",
+            workflow_id: "execplan",
+            publication_id: "review_doc",
+            series_id: "task-1:execplan:review_doc",
+            attempt_id: "version-1",
+            status: "planned",
+            required: True,
+            retryable: False,
+            retry_execution_available: False,
+            version_id: Some("version-1"),
+            manifest_ref: Some(
+              "runs/run-1/publications/review_doc/version-1.json",
+            ),
+            manifest_sha256: Some("sha-1"),
+            manifest_bytes: Some(10),
+            error_code: None,
+            error_message: None,
+          ),
+        ),
+        record.with_id(
+          "publication-failed",
+          1020,
+          record.PublicationAttemptRecorded(
+            run_id: "run-1",
+            workflow_id: "execplan",
+            publication_id: "review_doc",
+            series_id: "task-1:execplan:review_doc",
+            attempt_id: "failed-1",
+            status: "failed",
+            required: True,
+            retryable: True,
+            retry_execution_available: False,
+            version_id: None,
+            manifest_ref: Some(
+              "runs/run-1/publications/review_doc/failed-1.json",
+            ),
+            manifest_sha256: Some("sha-2"),
+            manifest_bytes: Some(11),
+            error_code: Some("unknown_output"),
+            error_message: Some("missing output"),
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
 }
 
 fn turn_deps(summary: event.SessionSummary) -> ctl.ControlClient {

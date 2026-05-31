@@ -1,3 +1,4 @@
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -287,4 +288,133 @@ pub fn repaired_output_manifest_mismatch_reports_repaired_generation_test() {
     reason,
     "existing_repaired_output_manifest_mismatch:runs/run-1/repairs/1/outputs.v1.json",
   )
+}
+
+pub fn publication_manifest_write_is_idempotent_and_detects_conflicts_test() {
+  let root = "test/tmp/workflow-checkpoint/publication-manifest-conflict"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 10 })
+  let write =
+    workflow_checkpoint.WorkflowPublicationManifestWrite(
+      run_id: "run-1",
+      publication_id: "review_doc",
+      attempt_key: "version-1",
+      payload_json: "{\"status\":\"planned\"}",
+    )
+
+  let assert Ok(first) = checkpoint.write_publication_manifest(write)
+  let assert Ok(second) = checkpoint.write_publication_manifest(write)
+  assert first == second
+
+  let assert Error(workflow_checkpoint.CheckpointArtifactFailed(reason)) =
+    checkpoint.write_publication_manifest(
+      workflow_checkpoint.WorkflowPublicationManifestWrite(
+        ..write,
+        payload_json: "{\"status\":\"failed\"}",
+      ),
+    )
+  assert reason
+    == "publication_manifest_conflict:runs/run-1/publications/review_doc/version-1.json"
+}
+
+pub fn publication_manifest_write_reuses_existing_manifest_across_replay_timestamps_test() {
+  let root = "test/tmp/workflow-checkpoint/publication-manifest-replay-time"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 10 })
+  let write =
+    workflow_checkpoint.WorkflowPublicationManifestWrite(
+      run_id: "run-1",
+      publication_id: "review_doc",
+      attempt_key: "version-1",
+      payload_json: publication_manifest_payload(123),
+    )
+
+  let assert Ok(first) = checkpoint.write_publication_manifest(write)
+  let assert Ok(second) =
+    checkpoint.write_publication_manifest(
+      workflow_checkpoint.WorkflowPublicationManifestWrite(
+        ..write,
+        payload_json: publication_manifest_payload(456),
+      ),
+    )
+
+  assert first == second
+}
+
+pub fn publication_attempt_recorded_is_idempotent_and_detects_conflicts_test() {
+  let root = "test/tmp/workflow-checkpoint/publication-record-conflict"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 10 })
+  let assert Ok(Nil) =
+    checkpoint.workflow_started(workflow_checkpoint.WorkflowStarted(
+      run_id: "run-1",
+      workflow_id: "execplan",
+      workflow_fingerprint: "wf-1",
+      issue_id: "issue-1",
+      issue_identifier: "LIV-739",
+      task_ref: None,
+      issue_fingerprint: "issue-fingerprint",
+      observed_updated_at_ms: 9,
+      run_root: "root/run-1",
+    ))
+
+  let planned =
+    record.with_id(
+      "publication-attempt:run-1:review_doc:version-1",
+      10,
+      record.PublicationAttemptRecorded(
+        run_id: "run-1",
+        workflow_id: "execplan",
+        publication_id: "review_doc",
+        series_id: "task-1:execplan:review_doc",
+        attempt_id: "version-1",
+        status: "planned",
+        required: True,
+        retryable: False,
+        retry_execution_available: False,
+        version_id: Some("version-1"),
+        manifest_ref: Some("runs/run-1/publications/review_doc/version-1.json"),
+        manifest_sha256: Some("sha-1"),
+        manifest_bytes: Some(10),
+        error_code: None,
+        error_message: None,
+      ),
+    )
+  let failed =
+    record.with_id(
+      "publication-attempt:run-1:review_doc:version-1",
+      10,
+      record.PublicationAttemptRecorded(
+        run_id: "run-1",
+        workflow_id: "execplan",
+        publication_id: "review_doc",
+        series_id: "task-1:execplan:review_doc",
+        attempt_id: "version-1",
+        status: "failed",
+        required: True,
+        retryable: True,
+        retry_execution_available: False,
+        version_id: Some("version-1"),
+        manifest_ref: Some("runs/run-1/publications/review_doc/version-1.json"),
+        manifest_sha256: Some("sha-2"),
+        manifest_bytes: Some(11),
+        error_code: Some("hash_mismatch"),
+        error_message: Some("different body"),
+      ),
+    )
+
+  let assert Ok(ledger.Appended) =
+    checkpoint.publication_attempt_recorded(planned)
+  let assert Ok(ledger.AlreadyRecorded(_)) =
+    checkpoint.publication_attempt_recorded(planned)
+  let assert Error(workflow_checkpoint.CheckpointAppendFailed(reason)) =
+    checkpoint.publication_attempt_recorded(failed)
+  assert reason
+    == "record_id_conflict:publication-attempt:run-1:review_doc:version-1"
+}
+
+fn publication_manifest_payload(generated_at_ms: Int) -> String {
+  "{\"artifact_type\":\"scherzo.artifact_publication_manifest.v1\",\"generated_at_ms\":"
+  <> int.to_string(generated_at_ms)
+  <> ",\"dry_run_manifest\":null,\"status\":\"planned\"}"
 }

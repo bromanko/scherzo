@@ -13,6 +13,7 @@ import scherzo/state/projection/commands as commands_projection
 import scherzo/state/projection/issue_recovery as issue_recovery_projection
 import scherzo/state/projection/legacy_runs as legacy_runs_projection
 import scherzo/state/projection/outbox as outbox_projection
+import scherzo/state/projection/publications as publication_projection
 import scherzo/state/projection/scheduled as scheduled_projection
 import scherzo/state/projection/steps as steps_projection
 import scherzo/state/projection/workflow_runs as workflow_runs_projection
@@ -27,6 +28,8 @@ pub type Projection {
     workflow_task_refs: Dict(String, record.TaskRefFields),
     workflow_input_manifests: Dict(String, WorkflowContractManifestRef),
     workflow_output_manifests: Dict(String, WorkflowContractManifestRef),
+    publication_attempts: Dict(String, List(PublicationAttempt)),
+    publication_latest_by_series: Dict(String, PublicationAttempt),
     workflow_repairs: Dict(String, WorkflowRepairStatus),
     step_attempts: Dict(String, StepAttemptStatus),
     step_recoveries: Dict(String, StepRecoveryStatus),
@@ -103,6 +106,27 @@ pub type WorkflowContractManifestRef {
     artifact_ref: String,
     artifact_sha256: String,
     artifact_bytes: Int,
+    recorded_at_ms: Int,
+  )
+}
+
+pub type PublicationAttempt {
+  PublicationAttempt(
+    run_id: String,
+    workflow_id: String,
+    publication_id: String,
+    series_id: String,
+    attempt_id: String,
+    status: String,
+    required: Bool,
+    retryable: Bool,
+    retry_execution_available: Bool,
+    version_id: Option(String),
+    manifest_ref: Option(String),
+    manifest_sha256: Option(String),
+    manifest_bytes: Option(Int),
+    error_code: Option(String),
+    error_message: Option(String),
     recorded_at_ms: Int,
   )
 }
@@ -597,6 +621,10 @@ type WorkflowContractManifestSnapshot {
   )
 }
 
+type PublicationAttemptSnapshot {
+  PublicationAttemptSnapshot(key: String, attempts: List(PublicationAttempt))
+}
+
 type WorkflowRepairSnapshot {
   WorkflowRepairSnapshot(run_id: String, status: WorkflowRepairStatus)
 }
@@ -609,6 +637,8 @@ type SnapshotFields {
     workflow_task_refs: List(WorkflowTaskRefSnapshot),
     workflow_input_manifests: List(WorkflowContractManifestSnapshot),
     workflow_output_manifests: List(WorkflowContractManifestSnapshot),
+    publication_attempts: List(PublicationAttemptSnapshot),
+    publication_latest_by_series: List(#(String, PublicationAttempt)),
     workflow_repairs: List(WorkflowRepairSnapshot),
     step_attempts: List(StepAttemptSnapshot),
     step_recoveries: List(StepRecoverySnapshot),
@@ -636,6 +666,8 @@ pub fn new() -> Projection {
     workflow_task_refs: dict.new(),
     workflow_input_manifests: dict.new(),
     workflow_output_manifests: dict.new(),
+    publication_attempts: dict.new(),
+    publication_latest_by_series: dict.new(),
     workflow_repairs: dict.new(),
     step_attempts: dict.new(),
     step_recoveries: dict.new(),
@@ -937,6 +969,57 @@ pub fn apply(
           ),
         ),
       )
+    record.PublicationAttemptRecorded(
+      run_id,
+      workflow_id,
+      publication_id,
+      series_id,
+      attempt_id,
+      status,
+      required,
+      retryable,
+      retry_execution_available,
+      version_id,
+      manifest_ref,
+      manifest_sha256,
+      manifest_bytes,
+      error_code,
+      error_message,
+    ) -> {
+      let attempt =
+        PublicationAttempt(
+          run_id: run_id,
+          workflow_id: workflow_id,
+          publication_id: publication_id,
+          series_id: series_id,
+          attempt_id: attempt_id,
+          status: status,
+          required: required,
+          retryable: retryable,
+          retry_execution_available: retry_execution_available,
+          version_id: version_id,
+          manifest_ref: manifest_ref,
+          manifest_sha256: manifest_sha256,
+          manifest_bytes: manifest_bytes,
+          error_code: error_code,
+          error_message: error_message,
+          recorded_at_ms: at_ms,
+        )
+      Projection(
+        ..projection,
+        publication_attempts: publication_projection.append_attempt(
+          projection.publication_attempts,
+          run_id,
+          publication_id,
+          attempt,
+        ),
+        publication_latest_by_series: dict.insert(
+          projection.publication_latest_by_series,
+          publication_projection.series_key(series_id),
+          attempt,
+        ),
+      )
+    }
     record.WorkflowRunDiagnostic(..) -> projection
     record.WorkflowRepairRequested(
       run_id,
@@ -3022,6 +3105,51 @@ pub fn latest_workflow_repair(
   )
 }
 
+pub fn publication_attempts_for_run(
+  projection: Projection,
+  run_id: String,
+  publication_id: String,
+) -> List(PublicationAttempt) {
+  publication_projection.attempts_for(
+    projection.publication_attempts,
+    run_id,
+    publication_id,
+  )
+}
+
+pub fn latest_publication_for_run(
+  projection: Projection,
+  run_id: String,
+  publication_id: String,
+) -> Result(PublicationAttempt, Nil) {
+  publication_projection.latest_for(
+    projection.publication_attempts,
+    run_id,
+    publication_id,
+  )
+}
+
+pub fn latest_publication_for_series(
+  projection: Projection,
+  series_id: String,
+) -> Result(PublicationAttempt, Nil) {
+  publication_projection.latest_for_series(
+    projection.publication_latest_by_series,
+    series_id,
+  )
+}
+
+pub fn publication_ids_for_run(
+  projection: Projection,
+  run_id: String,
+) -> List(String) {
+  publication_projection.publication_ids_for_run(
+    projection.publication_attempts,
+    run_id,
+    fn(attempt) { attempt.publication_id },
+  )
+}
+
 fn latest_finished_workspace(
   statuses: List(StepAttemptStatus),
   best: Option(StepAttemptStatus),
@@ -3320,6 +3448,20 @@ pub fn to_json(projection: Projection) -> json.Json {
       ),
     ),
     #(
+      "publication_attempts",
+      json.array(
+        dict.to_list(projection.publication_attempts),
+        of: publication_attempts_entry_to_json,
+      ),
+    ),
+    #(
+      "publication_latest_by_series",
+      json.array(
+        dict.to_list(projection.publication_latest_by_series),
+        of: publication_latest_series_entry_to_json,
+      ),
+    ),
+    #(
       "workflow_repairs",
       json.array(
         dict.to_list(projection.workflow_repairs),
@@ -3468,6 +3610,14 @@ fn decode_current_snapshot(
             let WorkflowContractManifestSnapshot(run_id, manifest) = entry
             #(run_id, manifest)
           })
+          |> dict.from_list,
+        publication_attempts: fields.publication_attempts
+          |> list.map(fn(entry) {
+            let PublicationAttemptSnapshot(key, attempts) = entry
+            #(key, attempts)
+          })
+          |> dict.from_list,
+        publication_latest_by_series: fields.publication_latest_by_series
           |> dict.from_list,
         workflow_repairs: fields.workflow_repairs
           |> list.map(fn(entry) {
@@ -3756,6 +3906,47 @@ fn workflow_contract_manifest_entry_to_json(
     #("artifact_sha256", json.string(manifest.artifact_sha256)),
     #("artifact_bytes", json.int(manifest.artifact_bytes)),
     #("recorded_at_ms", json.int(manifest.recorded_at_ms)),
+  ])
+}
+
+fn publication_attempt_to_json(attempt: PublicationAttempt) -> json.Json {
+  json.object([
+    #("run_id", json.string(attempt.run_id)),
+    #("workflow_id", json.string(attempt.workflow_id)),
+    #("publication_id", json.string(attempt.publication_id)),
+    #("series_id", json.string(attempt.series_id)),
+    #("attempt_id", json.string(attempt.attempt_id)),
+    #("status", json.string(attempt.status)),
+    #("required", json.bool(attempt.required)),
+    #("retryable", json.bool(attempt.retryable)),
+    #("retry_execution_available", json.bool(attempt.retry_execution_available)),
+    #("version_id", option_string_to_json(attempt.version_id)),
+    #("manifest_ref", option_string_to_json(attempt.manifest_ref)),
+    #("manifest_sha256", option_string_to_json(attempt.manifest_sha256)),
+    #("manifest_bytes", option_int_to_json(attempt.manifest_bytes)),
+    #("error_code", option_string_to_json(attempt.error_code)),
+    #("error_message", option_string_to_json(attempt.error_message)),
+    #("recorded_at_ms", json.int(attempt.recorded_at_ms)),
+  ])
+}
+
+fn publication_attempts_entry_to_json(
+  entry: #(String, List(PublicationAttempt)),
+) -> json.Json {
+  let #(key, attempts) = entry
+  json.object([
+    #("key", json.string(key)),
+    #("attempts", json.array(attempts, of: publication_attempt_to_json)),
+  ])
+}
+
+fn publication_latest_series_entry_to_json(
+  entry: #(String, PublicationAttempt),
+) -> json.Json {
+  let #(series_id, attempt) = entry
+  json.object([
+    #("series_id", json.string(series_id)),
+    #("attempt", publication_attempt_to_json(attempt)),
   ])
 }
 
@@ -4468,6 +4659,16 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: workflow_contract_manifest_snapshot_decoder()),
   )
+  use publication_attempts <- decode.optional_field(
+    "publication_attempts",
+    [],
+    decode.list(of: publication_attempt_snapshot_decoder()),
+  )
+  use publication_latest_by_series <- decode.optional_field(
+    "publication_latest_by_series",
+    [],
+    decode.list(of: publication_latest_series_snapshot_decoder()),
+  )
   use workflow_repairs <- decode.optional_field(
     "workflow_repairs",
     [],
@@ -4535,6 +4736,8 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         workflow_task_refs,
         workflow_input_manifests,
         workflow_output_manifests,
+        publication_attempts,
+        publication_latest_by_series,
         workflow_repairs,
         step_attempts,
         step_recoveries,
@@ -4551,6 +4754,8 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     False ->
       decode.failure(
         SnapshotFields(
+          [],
+          [],
           [],
           [],
           [],
@@ -4815,6 +5020,89 @@ fn workflow_contract_manifest_snapshot_decoder() -> decode.Decoder(
       recorded_at_ms,
     ),
   ))
+}
+
+fn publication_attempt_decoder() -> decode.Decoder(PublicationAttempt) {
+  use run_id <- decode.field("run_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use publication_id <- decode.field("publication_id", decode.string)
+  use series_id <- decode.field("series_id", decode.string)
+  use attempt_id <- decode.field("attempt_id", decode.string)
+  use status <- decode.field("status", decode.string)
+  use required <- decode.field("required", decode.bool)
+  use retryable <- decode.field("retryable", decode.bool)
+  use retry_execution_available <- decode.field(
+    "retry_execution_available",
+    decode.bool,
+  )
+  use version_id <- decode.optional_field(
+    "version_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use manifest_ref <- decode.optional_field(
+    "manifest_ref",
+    None,
+    decode.optional(decode.string),
+  )
+  use manifest_sha256 <- decode.optional_field(
+    "manifest_sha256",
+    None,
+    decode.optional(decode.string),
+  )
+  use manifest_bytes <- decode.optional_field(
+    "manifest_bytes",
+    None,
+    decode.optional(decode.int),
+  )
+  use error_code <- decode.optional_field(
+    "error_code",
+    None,
+    decode.optional(decode.string),
+  )
+  use error_message <- decode.optional_field(
+    "error_message",
+    None,
+    decode.optional(decode.string),
+  )
+  use recorded_at_ms <- decode.field("recorded_at_ms", decode.int)
+  decode.success(PublicationAttempt(
+    run_id: run_id,
+    workflow_id: workflow_id,
+    publication_id: publication_id,
+    series_id: series_id,
+    attempt_id: attempt_id,
+    status: status,
+    required: required,
+    retryable: retryable,
+    retry_execution_available: retry_execution_available,
+    version_id: version_id,
+    manifest_ref: manifest_ref,
+    manifest_sha256: manifest_sha256,
+    manifest_bytes: manifest_bytes,
+    error_code: error_code,
+    error_message: error_message,
+    recorded_at_ms: recorded_at_ms,
+  ))
+}
+
+fn publication_attempt_snapshot_decoder() -> decode.Decoder(
+  PublicationAttemptSnapshot,
+) {
+  use key <- decode.field("key", decode.string)
+  use attempts <- decode.field(
+    "attempts",
+    decode.list(of: publication_attempt_decoder()),
+  )
+  decode.success(PublicationAttemptSnapshot(key, attempts))
+}
+
+fn publication_latest_series_snapshot_decoder() -> decode.Decoder(
+  #(String, PublicationAttempt),
+) {
+  use series_id <- decode.field("series_id", decode.string)
+  use attempt <- decode.field("attempt", publication_attempt_decoder())
+  decode.success(#(series_id, attempt))
 }
 
 fn workflow_repair_snapshot_decoder() -> decode.Decoder(WorkflowRepairSnapshot) {
