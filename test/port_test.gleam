@@ -154,6 +154,36 @@ pub fn port_launchers_resolve_bash_from_path_test() {
   assert fake_bash_call_count(log) >= 4
 }
 
+pub fn port_start_argv_with_input_preserves_current_path_for_child_test() {
+  let cwd = "test/tmp/port-argv-input-path-preserved"
+  let tool_bin = cwd <> "/tool-bin"
+  let fake_tool = tool_bin <> "/path-sensitive-tool"
+  test_helpers.reset_dir(cwd)
+  let assert Ok(Nil) = simplifile.create_directory_all(tool_bin)
+  let assert Ok(Nil) =
+    simplifile.write(fake_tool, path_sensitive_stdin_tool_script())
+  chmod_executable(fake_tool)
+  let assert Ok(tool_bin_path) = scherzo_path.absolute(tool_bin)
+
+  let original_path = scherzo_path.env("PATH")
+  let _ =
+    scherzo_path.set_env("PATH", prepend_path(tool_bin_path, original_path))
+
+  let start_result =
+    port.start_argv_with_input(
+      "path-sensitive-tool",
+      [],
+      cwd,
+      [#("SCHERZO_TEST_ENV", "kept")],
+      "payload\n",
+    )
+
+  restore_env_var("PATH", original_path)
+
+  let assert Ok(process) = start_result
+  assert_process_output(process, "tool-ok payload kept")
+}
+
 fn fake_bash_script() -> String {
   "#!/bin/sh\n"
   <> "printf 'called\\n' >> \"$SCHERZO_TEST_FAKE_BASH_LOG\"\n"
@@ -174,6 +204,12 @@ fn fake_bash_that_resets_path_script(real_bash: String) -> String {
 
 fn path_sensitive_tool_script(real_bash: String) -> String {
   "#!" <> real_bash <> "\n" <> "printf 'tool-ok\\n'\n"
+}
+
+fn path_sensitive_stdin_tool_script() -> String {
+  "#!/bin/sh\n"
+  <> "IFS= read -r line\n"
+  <> "printf 'tool-ok %s %s\\n' \"$line\" \"$SCHERZO_TEST_ENV\"\n"
 }
 
 fn real_bash_path() -> String {

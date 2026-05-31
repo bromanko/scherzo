@@ -93,7 +93,7 @@ Before enabling a new production adapter, verify these facts with tests and oper
 
 ## Black-box conformance MVP
 
-The repository now includes a black-box tracker adapter conformance runner for external adapters that expose the MVP CLI driver protocol described in `docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md`.
+The repository now includes a black-box tracker adapter conformance runner for external adapters that expose the MVP CLI driver protocol described in `docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md`. Adapter authors who need a task-oriented walkthrough should start with `docs/runbooks/tracker-adapter-author-guide.md` and then return here for operator context.
 
 LIV-410 baseline note: the existing MVP already covers the CLI `task_source` path, `fixtures.task_file`, optional setup and cleanup hooks, optional probes, support-failure counters, fixture/probe/hook namespace rejection inside `profile.adapter_operations`, configured redaction, and truncated external diagnostics.
 

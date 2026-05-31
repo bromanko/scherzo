@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "req-fetch-1",
+  "operation": "task_source.fetch_candidates",
+  "payload": {
+    "active_states": ["Todo", "Doing"],
+    "dispatch_states": ["Todo"],
+    "terminal_states": ["Done"],
+    "workflow_labels": ["workflow:execplan"],
+    "limit": 25
+  }
+}

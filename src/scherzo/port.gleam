@@ -4,9 +4,10 @@
 //// The wrapper keeps child stderr out of the stdout JSONL stream by redirecting
 //// stderr to private per-process diagnostics storage. `read_diagnostics` reads
 //// the current file before cleanup and cached diagnostics after `await_exit` or
-//// `terminate` removes the private temp directory. Shell commands re-export the
-//// caller's PATH after Bash startup files run so Nix/devenv tools remain
-//// available even when a login shell rewrites PATH.
+//// `terminate` removes the private temp directory. Launchers preserve the
+//// caller's PATH for children unless the caller supplies an explicit PATH, and
+//// shell commands re-export that PATH after Bash startup files run so
+//// Nix/devenv tools remain available even when a login shell rewrites PATH.
 
 import gleam/int
 import gleam/option.{type Option, None, Some}
@@ -59,6 +60,7 @@ pub fn start_argv(
   cwd: String,
   env: List(#(String, String)),
 ) -> Result(Process, PortError) {
+  let env = env_with_current_path(env)
   ffi_start_argv(executable, args, cwd, env)
   |> result.map_error(fn(error) { raw_error("start_argv", error) })
 }
@@ -70,6 +72,7 @@ pub fn start_argv_with_input(
   env: List(#(String, String)),
   stdin: String,
 ) -> Result(Process, PortError) {
+  let env = env_with_current_path(env)
   ffi_start_argv_with_input(executable, args, cwd, env, stdin)
   |> result.map_error(fn(error) { raw_error("start_argv_with_input", error) })
 }
