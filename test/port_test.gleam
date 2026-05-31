@@ -512,20 +512,19 @@ fn read_pid_file_attempts(path: String, attempts: Int) -> Result(Int, Nil) {
     True -> Error(Nil)
     False ->
       case simplifile.read(path) {
-        Ok(contents) -> int.parse(string.trim(contents)) |> result_nil_error
-        Error(_) -> {
-          process.sleep(20)
-          read_pid_file_attempts(path, attempts - 1)
-        }
+        Ok(contents) ->
+          case int.parse(string.trim(contents)) {
+            Ok(pid) -> Ok(pid)
+            Error(_) -> retry_read_pid_file(path, attempts)
+          }
+        Error(_) -> retry_read_pid_file(path, attempts)
       }
   }
 }
 
-fn result_nil_error(result: Result(Int, a)) -> Result(Int, Nil) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(_) -> Error(Nil)
-  }
+fn retry_read_pid_file(path: String, attempts: Int) -> Result(Int, Nil) {
+  process.sleep(20)
+  read_pid_file_attempts(path, attempts - 1)
 }
 
 fn wait_until_file(path: String, attempts: Int) -> Bool {
