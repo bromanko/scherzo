@@ -348,6 +348,29 @@ pub fn port_await_exit_succeeds_after_stdout_when_residual_group_exists_test() {
   assert wait_until_dead(child_pid, 50)
 }
 
+pub fn port_await_exit_discards_queued_stdout_messages_test() {
+  let cwd = "test/tmp/port-await-discard-stdout"
+  test_helpers.reset_dir(cwd)
+
+  let assert Ok(process) =
+    port.start("printf 'hook stdout one\\nhook stdout two\\n'", cwd)
+  assert wait_for_port_data_and_requeue(process, 1000)
+  let assert Ok(0) = port.await_exit(process, 1000)
+  assert drain_port_data_messages(process) == 0
+}
+
+pub fn port_await_exit_discards_buffered_stdout_state_test() {
+  let cwd = "test/tmp/port-await-discard-buffered-stdout"
+  test_helpers.reset_dir(cwd)
+
+  let assert Ok(process) =
+    port.start("printf 'hook stdout one\\nhook stdout two\\n'", cwd)
+  let assert Ok(stdout) = port.read_stdout_line(process, 1000)
+  assert stdout == "hook stdout one"
+  let assert Ok(0) = port.await_exit(process, 1000)
+  let assert Error(_) = port.read_stdout_line(process, 20)
+}
+
 pub fn port_await_exit_times_out_when_residual_cleanup_exceeds_deadline_test() {
   let cwd = "test/tmp/port-await-residual-cleanup-timeout"
   test_helpers.reset_dir(cwd)
@@ -557,6 +580,15 @@ fn wait_until_dead(pid: Int, attempts: Int) -> Bool {
 
 @external(erlang, "scherzo_test_ffi", "pid_alive")
 fn pid_alive(pid: Int) -> Bool
+
+@external(erlang, "scherzo_test_ffi", "wait_for_port_data_and_requeue")
+fn wait_for_port_data_and_requeue(
+  port_process: port.Process,
+  timeout_ms: Int,
+) -> Bool
+
+@external(erlang, "scherzo_test_ffi", "drain_port_data_messages")
+fn drain_port_data_messages(port_process: port.Process) -> Int
 
 @external(erlang, "scherzo_time_ffi", "monotonic_ms")
 fn monotonic_ms() -> Int

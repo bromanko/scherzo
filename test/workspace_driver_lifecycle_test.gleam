@@ -209,6 +209,28 @@ pub fn lifecycle_invokes_path_installed_packaged_jj_command_name_test() {
   assert string.contains(log, "scherzo-workspace-jj lifecycle remove")
 }
 
+pub fn lifecycle_run_discards_driver_stdout_test() {
+  let dir = "test/tmp/workspace-driver-lifecycle-stdout"
+  write_driver(
+    dir,
+    "#!/bin/sh\nprintf 'driver stdout before exit\\n'\nsleep 0.1\n",
+  )
+  let orchestrator = orchestrator(dir)
+  let driver = driver([])
+  let _ = drain_any_port_data_messages()
+
+  let assert Ok(Nil) =
+    workspace_driver_lifecycle.run(
+      "driver_lifecycle_create",
+      config_types.LifecycleCreate,
+      driver,
+      orchestrator,
+      env(dir),
+    )
+
+  assert drain_any_port_data_messages() == 0
+}
+
 pub fn lifecycle_failures_redact_sensitive_profile_env_test() {
   let dir = "test/tmp/workspace-driver-lifecycle-redaction"
   write_driver(dir, "#!/bin/sh\necho token=$DRIVER_SECRET_TOKEN >&2\nexit 9\n")
@@ -243,3 +265,6 @@ pub fn lifecycle_best_effort_logs_redact_sensitive_profile_env_test() {
   assert string.contains(message, "[REDACTED]")
   assert !string.contains(message, "driver-env-redaction-token")
 }
+
+@external(erlang, "scherzo_test_ffi", "drain_any_port_data_messages")
+fn drain_any_port_data_messages() -> Int
