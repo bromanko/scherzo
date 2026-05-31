@@ -5,6 +5,7 @@ import gleam/result
 import gleam/uri
 import scherzo/config/types as config_types
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/client
 import scherzo/control/remote_envelope
 import scherzo/daemon_identity
@@ -38,6 +39,12 @@ pub fn start(
         Some("remote control callbacks unavailable"),
       ))
     },
+    fn(_, _) {
+      Error(query_types.QueryError(
+        query_types.QueryShutdown,
+        "remote query callbacks unavailable",
+      ))
+    },
     fn(_) { Ok(False) },
     secrets,
     logger,
@@ -49,6 +56,8 @@ pub fn start_with_control(
   event_hub: process.Subject(hub.Message),
   apply_command: fn(command.OperatorCommand, Int) ->
     Result(command.CommandResult, Nil),
+  execute_query: fn(query_types.QueryRequest, Int) ->
+    Result(query_types.QueryResponse, query_types.QueryError),
   dispatch_paused: fn(Int) -> Result(Bool, Nil),
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
@@ -65,7 +74,7 @@ pub fn start_with_control(
       daemon_id: identity.daemon_id,
       boot_id: identity.boot_id,
       enrollment_token: enrollment_token,
-      capabilities: ["control_commands", "session_snapshots"],
+      capabilities: ["control_commands", "session_snapshots", "read_queries"],
       heartbeat_interval_ms: 5000,
       state_interval_ms: 5000,
       retry_initial_ms: 500,
@@ -88,6 +97,7 @@ pub fn start_with_control(
       },
       list_sessions: fn() { list_sessions_for_remote_snapshot(event_hub, 1000) },
       apply_command: apply_command,
+      execute_query: fn(query) { execute_query(query, 1000) },
       dispatch_paused: fn(timeout_ms) {
         case dispatch_paused(timeout_ms) {
           Ok(paused) -> Ok(paused)

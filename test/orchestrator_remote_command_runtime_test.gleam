@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/orchestrator/remote_command_runtime
 
 pub fn apply_remote_command_delegates_to_daemon_callback_test() {
@@ -11,6 +12,19 @@ pub fn apply_remote_command_delegates_to_daemon_callback_test() {
       apply_operator_command: fn(subject, operator_command, timeout_ms) {
         process.send(calls, #(subject, operator_command, timeout_ms))
         Ok(command.applied(operator_command, Some("applied remotely")))
+      },
+      execute_query: fn(_, _, _) {
+        Ok(
+          query_types.StatusResponse(
+            query_types.StatusDto(
+              daemon_id: "daemon-1",
+              boot_id: "boot-1",
+              dispatch_paused: False,
+              ui_server_enabled: False,
+              supported_queries: ["status"],
+            ),
+          ),
+        )
       },
       get_remote_dispatch_paused: fn(_, _) { Ok(False) },
     )
@@ -31,6 +45,47 @@ pub fn apply_remote_command_delegates_to_daemon_callback_test() {
   assert result.status == command.Applied
 }
 
+pub fn execute_remote_query_delegates_to_daemon_callback_test() {
+  let daemon_subject = process.new_subject()
+  let calls = process.new_subject()
+  let expected_response =
+    query_types.StatusResponse(
+      query_types.StatusDto(
+        daemon_id: "daemon-1",
+        boot_id: "boot-1",
+        dispatch_paused: False,
+        ui_server_enabled: False,
+        supported_queries: ["status"],
+      ),
+    )
+  let dependencies =
+    remote_command_runtime.control_dependencies(
+      apply_operator_command: fn(_, operator_command, _) {
+        Ok(command.applied(operator_command, None))
+      },
+      execute_query: fn(subject, query, timeout_ms) {
+        process.send(calls, #(subject, query, timeout_ms))
+        Ok(expected_response)
+      },
+      get_remote_dispatch_paused: fn(_, _) { Ok(False) },
+    )
+
+  let assert Ok(result) =
+    remote_command_runtime.execute_remote_query(
+      daemon_subject,
+      query_types.Status,
+      750,
+      dependencies,
+    )
+
+  let assert Ok(#(called_subject, called_query, called_timeout)) =
+    process.receive(calls, within: 1000)
+  assert called_subject == daemon_subject
+  assert called_query == query_types.Status
+  assert called_timeout == 750
+  assert result == expected_response
+}
+
 pub fn read_remote_dispatch_paused_delegates_to_daemon_callback_test() {
   let daemon_subject = process.new_subject()
   let calls = process.new_subject()
@@ -38,6 +93,19 @@ pub fn read_remote_dispatch_paused_delegates_to_daemon_callback_test() {
     remote_command_runtime.control_dependencies(
       apply_operator_command: fn(_, operator_command, _) {
         Ok(command.applied(operator_command, None))
+      },
+      execute_query: fn(_, _, _) {
+        Ok(
+          query_types.StatusResponse(
+            query_types.StatusDto(
+              daemon_id: "daemon-1",
+              boot_id: "boot-1",
+              dispatch_paused: False,
+              ui_server_enabled: False,
+              supported_queries: ["status"],
+            ),
+          ),
+        )
       },
       get_remote_dispatch_paused: fn(subject, timeout_ms) {
         process.send(calls, #(subject, timeout_ms))

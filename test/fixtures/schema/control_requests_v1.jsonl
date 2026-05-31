@@ -3,6 +3,7 @@
 {"session_id":"session-1","version":1,"id":"req-get-session","token":"secret","type":"get_session"}
 {"session_id":"session-1","after":7,"limit":50,"version":1,"id":"req-get-events","token":"secret","type":"get_events"}
 {"session_id":"session-1","after":7,"version":1,"id":"req-stream-events","token":"secret","type":"stream_events"}
+{"query":{"version":1,"type":"status"},"version":1,"id":"req-query","token":"secret","type":"query"}
 {"version":1,"id":"req-pause","token":"secret","type":"pause"}
 {"version":1,"id":"req-resume","token":"secret","type":"resume"}
 {"version":1,"id":"req-reload","token":"secret","type":"reload"}

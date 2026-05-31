@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
+import scherzo/control/query/types as query_types
 import scherzo/ctl
 import scherzo/session/event
 import scherzo/session/tokens as session_tokens
@@ -141,6 +142,19 @@ fn deps(
         Nil
       })
       Ok(Nil)
+    },
+    query: fn(_, _) {
+      Ok(
+        query_types.StatusResponse(
+          query_types.StatusDto(
+            daemon_id: "daemon-1",
+            boot_id: "boot-1",
+            dispatch_paused: False,
+            ui_server_enabled: False,
+            supported_queries: ["status"],
+          ),
+        ),
+      )
     },
     apply_command: fn(_, operator_command) {
       Ok(command.applied(operator_command, None))
@@ -322,6 +336,19 @@ pub fn events_pretty_uses_paginated_replay_helper_test() {
         }
       },
       stream_events: fn(_, _, _, _) { Ok(Nil) },
+      query: fn(_, _) {
+        Ok(
+          query_types.StatusResponse(
+            query_types.StatusDto(
+              daemon_id: "daemon-1",
+              boot_id: "boot-1",
+              dispatch_paused: False,
+              ui_server_enabled: False,
+              supported_queries: ["status"],
+            ),
+          ),
+        )
+      },
       apply_command: fn(_, operator_command) {
         Ok(command.applied(operator_command, None))
       },

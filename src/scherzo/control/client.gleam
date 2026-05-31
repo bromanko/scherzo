@@ -6,6 +6,8 @@ import gleam/string
 import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
+import scherzo/control/query/codec as query_codec
+import scherzo/control/query/types as query_types
 import scherzo/session/event
 import scherzo/turn_telemetry
 
@@ -158,6 +160,33 @@ pub fn get_events(
   protocol.decode_get_events_response(line) |> map_error_body
 }
 
+pub fn query(
+  control_file: file.ControlFile,
+  query: query_types.QueryRequest,
+) -> Result(query_types.QueryResponse, ControlError) {
+  use line <- try_control(raw_request(
+    control_file,
+    protocol.query_request("1", "", query),
+  ))
+  case protocol.decode_response(line) {
+    Error(error) -> Error(RequestFailed(error.code, error.message))
+    Ok(response) ->
+      case response.ok, response.data {
+        False, _ -> Error(response_error(response))
+        True, Some(data) ->
+          case query_codec.decode_response(json.to_string(data)) {
+            Ok(query_response) -> Ok(query_response)
+            Error(query_types.QueryError(code: code, message: message)) ->
+              Error(RequestFailed(
+                query_types.error_code_to_string(code),
+                message,
+              ))
+          }
+        True, None -> Error(ProtocolFailed("missing query response payload"))
+      }
+  }
+}
+
 pub fn apply_command(
   control_file: file.ControlFile,
   operator_command: command.OperatorCommand,
@@ -278,6 +307,8 @@ fn authenticate(
       protocol.GetEvents(id, control_file.token, session_id, after, limit)
     protocol.StreamEvents(id, _, session_id, after) ->
       protocol.StreamEvents(id, control_file.token, session_id, after)
+    protocol.Query(id, _, query) ->
+      protocol.Query(id, control_file.token, query)
     protocol.Pause(id, _) -> protocol.Pause(id, control_file.token)
     protocol.Resume(id, _) -> protocol.Resume(id, control_file.token)
     protocol.ReloadWorkflow(id, _) ->

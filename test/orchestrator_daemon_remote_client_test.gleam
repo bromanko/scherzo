@@ -9,6 +9,7 @@ import scherzo/config/types as config_types
 import scherzo/control/client as control_client
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/client as remote_client
 import scherzo/control/remote_envelope
 import scherzo/daemon_identity
@@ -335,6 +336,52 @@ pub fn daemon_remote_client_state_snapshot_uses_event_hub_sessions_test() {
   assert test_async.expect_message(stops) == "stop"
 }
 
+pub fn daemon_remote_query_returns_status_response_test() {
+  let workflow_path =
+    write_workflow("test/tmp/daemon-remote-client-query", True)
+  let starts = process.new_subject()
+  let stops = process.new_subject()
+  let wire = new_wire()
+  let deps =
+    remote_dependencies(
+      starts,
+      stops,
+      None,
+      RemoteConnectOk(wire),
+      [session_summary()],
+      UseNoControlServer,
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let settings = test_async.expect_message(starts)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+
+  append_inbound_line(
+    wire.inbound_path,
+    remote_envelope.RemoteQueryRequest("query-1", query_types.Status)
+      |> remote_envelope.to_string,
+  )
+  let assert Ok(remote_envelope.RemoteQueryResponse("query-1", Ok(response))) =
+    receive_envelope_of_kind(wire.outbound, "query_response")
+  let query_types.StatusResponse(query_types.StatusDto(
+    daemon_id: daemon_id,
+    boot_id: boot_id,
+    dispatch_paused: dispatch_paused,
+    ui_server_enabled: ui_server_enabled,
+    supported_queries: supported_queries,
+  )) = response
+  assert daemon_id == settings.daemon_id
+  assert boot_id != ""
+  assert dispatch_paused == False
+  assert ui_server_enabled == True
+  assert supported_queries == ["status"]
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert test_async.expect_message(stops) == "stop"
+}
+
 pub fn daemon_remote_pause_resume_uses_apply_operator_command_and_updates_state_test() {
   let workflow_path =
     write_workflow("test/tmp/daemon-remote-client-command", True)
@@ -533,7 +580,11 @@ fn remote_dependencies(
           daemon_id: identity.daemon_id,
           boot_id: identity.boot_id,
           enrollment_token: enrollment_token,
-          capabilities: ["control_commands", "session_snapshots"],
+          capabilities: [
+            "control_commands",
+            "session_snapshots",
+            "read_queries",
+          ],
           heartbeat_interval_ms: 1000,
           state_interval_ms: 1000,
           retry_initial_ms: 50,
@@ -599,6 +650,9 @@ fn client_dependencies(
         operator_command,
         timeout_ms,
       )
+    },
+    execute_query: fn(query) {
+      daemon.execute_query(daemon_subject, query, 1000)
     },
     dispatch_paused: fn(timeout_ms) {
       case daemon.get_remote_dispatch_paused(daemon_subject, timeout_ms) {
@@ -691,8 +745,10 @@ fn envelope_kind(envelope: remote_envelope.Envelope) -> String {
     remote_envelope.RemoteHello(_) -> "hello"
     remote_envelope.RemoteHeartbeat(_) -> "heartbeat"
     remote_envelope.RemoteServerCommand(_, _) -> "server_command"
+    remote_envelope.RemoteQueryRequest(_, _) -> "query_request"
     remote_envelope.RemoteCommandReceipt(_, _, _) -> "command_receipt"
     remote_envelope.RemoteCommandResult(_, _) -> "command_result"
+    remote_envelope.RemoteQueryResponse(_, _) -> "query_response"
     remote_envelope.RemoteStateSnapshot(_, _, _) -> "state_snapshot"
   }
 }

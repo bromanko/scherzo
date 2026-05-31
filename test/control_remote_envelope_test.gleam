@@ -1,6 +1,7 @@
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/control/remote_envelope
 
 pub fn remote_envelope_roundtrips_all_message_shapes_test() {
@@ -11,6 +12,10 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
   assert_roundtrip(remote_envelope.RemoteServerCommand(
     "cmd-1",
     command.PromptSession("session-1", "  continue please  "),
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryRequest(
+    "query-1",
+    query_types.Status,
   ))
   assert_roundtrip(remote_envelope.RemoteCommandReceipt(
     "cmd-2",
@@ -26,6 +31,24 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
       target: Some("session-1"),
       message: Some("policy denied"),
     ),
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryResponse(
+    "query-2",
+    Ok(
+      query_types.StatusResponse(
+        query_types.StatusDto(
+          daemon_id: "daemon-1",
+          boot_id: "boot-1",
+          dispatch_paused: False,
+          ui_server_enabled: True,
+          supported_queries: ["status"],
+        ),
+      ),
+    ),
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryResponse(
+    "query-3",
+    Error(query_types.QueryError(query_types.QueryTimeout, "query timed out")),
   ))
   assert_roundtrip(
     remote_envelope.RemoteStateSnapshot(999, False, [
@@ -79,6 +102,10 @@ pub fn remote_envelope_rejects_bad_versions_types_and_shapes_test() {
     "invalid_envelope",
   )
   assert_invalid_envelope(
+    "{\"version\":1,\"type\":\"query_request\",\"query_id\":\"q-1\"}",
+    "invalid_envelope",
+  )
+  assert_invalid_envelope(
     "{\"version\":1,\"type\":\"command_result\",\"command_id\":\"cmd-1\"}",
     "invalid_envelope",
   )
@@ -104,6 +131,13 @@ pub fn remote_envelope_rejects_invalid_nested_command_payloads_test() {
   assert_invalid_envelope(
     "{\"version\":1,\"type\":\"server_command\",\"command_id\":\"cmd-1\",\"command\":{\"type\":\"retry_step\",\"target\":\"ABC-1\",\"run_id\":\"run-1\"}}",
     "invalid_command",
+  )
+}
+
+pub fn remote_envelope_rejects_invalid_nested_query_payloads_test() {
+  assert_invalid_envelope(
+    "{\"version\":1,\"type\":\"query_request\",\"query_id\":\"q-1\",\"query\":{\"version\":1,\"type\":\"mystery\"}}",
+    "unsupported_query",
   )
 }
 

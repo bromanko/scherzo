@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
+import scherzo/control/query/types as query_types
 import scherzo/ctl
 import scherzo/path
 import scherzo/session/event
@@ -120,6 +121,7 @@ fn ps_deps(
       Ok(event.EventPage(events: [], next_cursor: 0, truncated: False))
     },
     stream_events: fn(_, _, _, _) { Ok(Nil) },
+    query: fn(_, _) { Ok(query_status_response()) },
     apply_command: fn(_, operator_command) {
       Ok(command.applied(operator_command, None))
     },
@@ -129,6 +131,18 @@ fn ps_deps(
         False -> Ok(raw_response)
       }
     },
+  )
+}
+
+fn query_status_response() -> query_types.QueryResponse {
+  query_types.StatusResponse(
+    query_types.StatusDto(
+      daemon_id: "daemon-query",
+      boot_id: "boot-query",
+      dispatch_paused: True,
+      ui_server_enabled: False,
+      supported_queries: ["status"],
+    ),
   )
 }
 
@@ -167,9 +181,86 @@ fn table_columns(row: String) -> List(String) {
   |> list.filter(fn(value) { value != "" })
 }
 
+pub fn query_status_human_executes_query_and_formats_status_test() {
+  let path = "test/tmp/ctl-query/human-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let query_calls = process.new_subject()
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, ""),
+      query: fn(control_file, query) {
+        process.send(query_calls, #(control_file, query))
+        Ok(query_status_response())
+      },
+    )
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Query(Some(path), False, query_types.Status),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(#(called_control_file, called_query)) =
+    process.receive(query_calls, within: 1000)
+  assert called_control_file.token == "token"
+  assert called_query == query_types.Status
+  assert output_lines(drain_output(output_subject))
+    == [
+      "daemon_id: daemon-query",
+      "boot_id: boot-query",
+      "dispatch_paused: true",
+      "ui_server_enabled: false",
+      "supported_queries: status",
+    ]
+}
+
+pub fn query_status_json_uses_raw_request_with_query_payload_test() {
+  let path = "test/tmp/ctl-query/json-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let raw_calls = process.new_subject()
+  let raw_response =
+    protocol.success_response(
+      "1",
+      protocol.query_data(Ok(query_status_response())),
+    )
+    |> protocol.response_to_string
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, raw_response),
+      raw_request: fn(control_file, request) {
+        process.send(raw_calls, #(control_file, request))
+        Ok(raw_response)
+      },
+    )
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Query(Some(path), True, query_types.Status),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(#(called_control_file, called_request)) =
+    process.receive(raw_calls, within: 1000)
+  assert called_control_file.token == "token"
+  assert called_request == protocol.Query("1", "", query_types.Status)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"target\"")
+  assert string.contains(transcript, "\"type\":\"status\"")
+  assert string.contains(transcript, "\"daemon_id\":\"daemon-query\"")
+  assert !string.contains(transcript, "token")
+}
+
 pub fn parse_ping_ps_session_events_and_attach_test() {
   assert ctl.parse(["ping"]) == Ok(ctl.Ping(None, False))
   assert ctl.parse(["ps", "--json"]) == Ok(ctl.Ps(None, True))
+  assert ctl.parse(["query", "status", "--json"])
+    == Ok(ctl.Query(None, True, query_types.Status))
   assert ctl.parse(["session", "ABC-1", "--control-file", "state/control.json"])
     == Ok(ctl.Session(Some("state/control.json"), False, "ABC-1"))
   assert ctl.parse(["events", "ABC-1"])
@@ -1641,6 +1732,19 @@ fn turn_deps(summary: event.SessionSummary) -> ctl.ControlClient {
       }
     },
     stream_events: fn(_, _, _, _) { Ok(Nil) },
+    query: fn(_, _) {
+      Ok(
+        query_types.StatusResponse(
+          query_types.StatusDto(
+            daemon_id: "daemon-1",
+            boot_id: "boot-1",
+            dispatch_paused: False,
+            ui_server_enabled: False,
+            supported_queries: ["status"],
+          ),
+        ),
+      )
+    },
     apply_command: fn(_, operator_command) {
       Ok(command.applied(operator_command, None))
     },
@@ -1694,6 +1798,19 @@ fn session_ref_deps(sessions: List(event.SessionSummary)) -> ctl.ControlClient {
       }
     },
     stream_events: fn(_, _, _, _) { Ok(Nil) },
+    query: fn(_, _) {
+      Ok(
+        query_types.StatusResponse(
+          query_types.StatusDto(
+            daemon_id: "daemon-1",
+            boot_id: "boot-1",
+            dispatch_paused: False,
+            ui_server_enabled: False,
+            supported_queries: ["status"],
+          ),
+        ),
+      )
+    },
     apply_command: fn(_, operator_command) {
       Ok(command.applied(operator_command, None))
     },

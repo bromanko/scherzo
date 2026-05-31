@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/agent/pi_event
 import scherzo/control/command
 import scherzo/control/protocol
+import scherzo/control/query/types as query_types
 import scherzo/session/event
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
@@ -67,6 +68,14 @@ pub fn decode_request_rejects_negative_after_test() {
       "{\"version\":1,\"type\":\"stream_events\",\"id\":\"5\",\"token\":\"secret\",\"session_id\":\"session-1\",\"after\":-1}",
     )
   assert code == "invalid_request"
+}
+
+pub fn query_request_roundtrip_test() {
+  let request = protocol.query_request("query-1", "secret", query_types.Status)
+  let assert Ok(protocol.Query(id, token, query_types.Status)) =
+    protocol.decode_request(protocol.request_to_string(request))
+  assert id == "query-1"
+  assert token == "secret"
 }
 
 pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
