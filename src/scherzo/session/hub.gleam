@@ -343,12 +343,21 @@ fn update_summary_status(
   let now = state.now_ms()
   let updated =
     update_summary(state, session_id, fn(summary) {
-      let summary =
-        event.SessionSummary(..summary, status: status, last_event_at_ms: now)
-      case status {
-        event.Exited(exit_reason) ->
-          finalize_running_turn_on_exit(summary, exit_reason, now)
-        _ -> summary
+      case summary.status {
+        event.Exited(_) -> summary
+        _ -> {
+          let summary =
+            event.SessionSummary(
+              ..summary,
+              status: status,
+              last_event_at_ms: now,
+            )
+          case status {
+            event.Exited(exit_reason) ->
+              finalize_running_turn_on_exit(summary, exit_reason, now)
+            _ -> summary
+          }
+        }
       }
     })
 

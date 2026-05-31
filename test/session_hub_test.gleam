@@ -158,6 +158,30 @@ pub fn hub_finish_session_preserves_stopped_turn_reason_test() {
   hub.stop(subject)
 }
 
+pub fn hub_exit_status_is_sticky_after_late_status_updates_test() {
+  let assert Ok(subject) = hub.start(10, fn() { 2500 })
+  hub.register_session(
+    subject,
+    event.SessionSummary(
+      ..summary("session-late-status"),
+      current_turn: 2,
+      current_turn_status: Some(turn_telemetry.StatusRunning),
+      current_turn_started_at_ms: Some(1000),
+    ),
+  )
+
+  hub.finish_session(subject, "session-late-status", reason.OperatorAbort)
+  hub.update_status(subject, "session-late-status", event.Running)
+  hub.finish_session(subject, "session-late-status", reason.Failed)
+
+  let assert Ok(Some(finished)) =
+    hub.get_session(subject, "session-late-status", 1000)
+  assert finished.status == event.Exited(reason.OperatorAbort)
+  assert finished.current_turn_status == Some(turn_telemetry.StatusStopped)
+  assert finished.last_turn_reason == Some(turn_telemetry.ReasonOperatorAbort)
+  hub.stop(subject)
+}
+
 pub fn hub_assigns_monotonic_cursors_and_timestamps_test() {
   let assert Ok(subject) = hub.start(10, fn() { 456 })
   hub.register_session(subject, summary("session-1"))
