@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/client
 import scherzo/control/remote_envelope
 import scherzo/control/remote_harness_hello
@@ -32,6 +33,7 @@ type Fixture {
     cancelled_timers: process.Subject(Int),
     logs: process.Subject(String),
     apply_requests: process.Subject(ApplyRequest),
+    query_requests: process.Subject(QueryRequest),
   )
 }
 
@@ -60,6 +62,16 @@ type SessionMode {
 
 type ApplyRequest {
   ApplyRequest(command.OperatorCommand, Int)
+}
+
+type QueryBehavior {
+  QueryImmediately
+  QueryDelay(Int)
+  QueryFailure(query_types.QueryError)
+}
+
+type QueryRequest {
+  QueryRequest(query_types.QueryRequest)
 }
 
 pub fn remote_client_sends_hello_heartbeat_and_state_snapshot_test() {
@@ -312,6 +324,158 @@ pub fn remote_client_inbound_reader_does_not_block_heartbeat_or_state_test() {
   let assert Ok(Nil) = client.stop(handle, 1000)
 }
 
+pub fn remote_client_handles_query_requests_test() {
+  let fixture =
+    new_fixture_with_query_behavior(
+      SessionList([session_fixture()]),
+      NoSendFailure,
+      ApplyImmediately,
+      QueryImmediately,
+    )
+
+  let assert Ok(handle) = client.start(fixture.settings, fixture.dependencies)
+  let connection = connect_ok(fixture)
+  let _ = assert_hello(fixture)
+  let _ = assert_heartbeat(fixture)
+  let _ = receive_envelope(fixture.outbound)
+
+  append_inbound_line(
+    connection.inbound_path,
+    remote_envelope.RemoteQueryRequest("query-1", query_types.Status)
+      |> remote_envelope.to_string,
+  )
+
+  let QueryRequest(query) = test_async.expect_message(fixture.query_requests)
+  assert query == query_types.Status
+  let assert remote_envelope.RemoteQueryResponse("query-1", Ok(response)) =
+    receive_envelope_of_kind(fixture.outbound, "query_response")
+  assert response
+    == query_types.StatusResponse(
+      query_types.StatusDto(
+        daemon_id: fixture.settings.daemon_id,
+        boot_id: fixture.settings.boot_id,
+        dispatch_paused: False,
+        ui_server_enabled: False,
+        supported_queries: ["status"],
+      ),
+    )
+
+  let assert Ok(Nil) = client.stop(handle, 1000)
+}
+
+pub fn remote_client_propagates_query_errors_test() {
+  let query_error =
+    query_types.QueryError(query_types.QueryTimeout, "query timed out")
+  let fixture =
+    new_fixture_with_query_behavior(
+      SessionList([session_fixture()]),
+      NoSendFailure,
+      ApplyImmediately,
+      QueryFailure(query_error),
+    )
+
+  let assert Ok(handle) = client.start(fixture.settings, fixture.dependencies)
+  let connection = connect_ok(fixture)
+  let _ = assert_hello(fixture)
+  let _ = assert_heartbeat(fixture)
+  let _ = receive_envelope(fixture.outbound)
+
+  append_inbound_line(
+    connection.inbound_path,
+    remote_envelope.RemoteQueryRequest("query-error", query_types.Status)
+      |> remote_envelope.to_string,
+  )
+
+  let QueryRequest(query) = test_async.expect_message(fixture.query_requests)
+  assert query == query_types.Status
+  let assert remote_envelope.RemoteQueryResponse(
+    "query-error",
+    Error(returned_error),
+  ) = receive_envelope_of_kind(fixture.outbound, "query_response")
+  assert returned_error == query_error
+
+  let assert Ok(Nil) = client.stop(handle, 1000)
+}
+
+pub fn remote_client_rejects_excess_in_flight_query_requests_test() {
+  let fixture =
+    new_fixture_with_query_behavior(
+      SessionList([session_fixture()]),
+      NoSendFailure,
+      ApplyImmediately,
+      QueryDelay(1000),
+    )
+
+  let assert Ok(handle) = client.start(fixture.settings, fixture.dependencies)
+  let connection = connect_ok(fixture)
+  let _ = assert_hello(fixture)
+  let _ = assert_heartbeat(fixture)
+  let _ = receive_envelope(fixture.outbound)
+
+  let inbound_lines =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    |> list.map(fn(index) {
+      remote_envelope.RemoteQueryRequest(
+        "query-" <> int.to_string(index),
+        query_types.Status,
+      )
+      |> remote_envelope.to_string
+    })
+    |> string.join(with: "\n")
+  let assert Ok(Nil) =
+    simplifile.write(connection.inbound_path, inbound_lines <> "\n")
+
+  [1, 2, 3, 4, 5, 6, 7, 8]
+  |> list.each(fn(_) {
+    let QueryRequest(query) = test_async.expect_message(fixture.query_requests)
+    assert query == query_types.Status
+  })
+  let assert remote_envelope.RemoteQueryResponse("query-9", Error(error)) =
+    receive_envelope_of_kind(fixture.outbound, "query_response")
+  let query_types.QueryError(code: code, message: message) = error
+  assert code == query_types.QueryOverloaded
+  assert message == "query service overloaded"
+
+  let assert Ok(Nil) = client.stop(handle, 1000)
+}
+
+pub fn remote_client_query_does_not_block_heartbeat_or_state_test() {
+  let settings =
+    client.Settings(
+      ..base_settings(),
+      heartbeat_interval_ms: 20,
+      state_interval_ms: 30,
+    )
+  let fixture =
+    new_fixture_with_settings_and_query(
+      settings,
+      SessionList([session_fixture()]),
+      NoSendFailure,
+      ApplyImmediately,
+      QueryDelay(100),
+    )
+
+  let assert Ok(handle) = client.start(fixture.settings, fixture.dependencies)
+  let connection = connect_ok(fixture)
+  let _ = assert_hello(fixture)
+  let _ = assert_heartbeat(fixture)
+  let _ = receive_envelope(fixture.outbound)
+
+  append_inbound_line(
+    connection.inbound_path,
+    remote_envelope.RemoteQueryRequest("query-1", query_types.Status)
+      |> remote_envelope.to_string,
+  )
+  let _ = test_async.expect_message(fixture.query_requests)
+
+  assert eventually_has_envelope_kind(fixture.outbound, "heartbeat")
+  assert eventually_has_envelope_kind(fixture.outbound, "state_snapshot")
+  let assert remote_envelope.RemoteQueryResponse("query-1", Ok(_)) =
+    receive_envelope_of_kind(fixture.outbound, "query_response")
+
+  let assert Ok(Nil) = client.stop(handle, 1000)
+}
+
 pub fn remote_client_ignores_malformed_and_unexpected_inbound_lines_test() {
   let settings =
     client.Settings(
@@ -520,11 +684,27 @@ fn new_fixture(
   send_failure: SendFailure,
   apply_behavior: ApplyBehavior,
 ) -> Fixture {
-  new_fixture_with_settings(
+  new_fixture_with_settings_and_query(
     base_settings(),
     session_mode,
     send_failure,
     apply_behavior,
+    QueryImmediately,
+  )
+}
+
+fn new_fixture_with_query_behavior(
+  session_mode: SessionMode,
+  send_failure: SendFailure,
+  apply_behavior: ApplyBehavior,
+  query_behavior: QueryBehavior,
+) -> Fixture {
+  new_fixture_with_settings_and_query(
+    base_settings(),
+    session_mode,
+    send_failure,
+    apply_behavior,
+    query_behavior,
   )
 }
 
@@ -533,6 +713,22 @@ fn new_fixture_with_settings(
   session_mode: SessionMode,
   send_failure: SendFailure,
   apply_behavior: ApplyBehavior,
+) -> Fixture {
+  new_fixture_with_settings_and_query(
+    settings,
+    session_mode,
+    send_failure,
+    apply_behavior,
+    QueryImmediately,
+  )
+}
+
+fn new_fixture_with_settings_and_query(
+  settings: client.Settings,
+  session_mode: SessionMode,
+  send_failure: SendFailure,
+  apply_behavior: ApplyBehavior,
+  query_behavior: QueryBehavior,
 ) -> Fixture {
   let root =
     "test/tmp/control-remote-client/" <> int.to_string(unique_integer())
@@ -544,6 +740,7 @@ fn new_fixture_with_settings(
   let cancelled_timers = process.new_subject()
   let logs = process.new_subject()
   let apply_requests = process.new_subject()
+  let query_requests = process.new_subject()
   let dependencies =
     client.Dependencies(
       now_ms: fn() { 101 },
@@ -605,6 +802,17 @@ fn new_fixture_with_settings(
           ApplyTimeout -> Error(Nil)
         }
       },
+      execute_query: fn(query) {
+        process.send(query_requests, QueryRequest(query))
+        case query_behavior {
+          QueryImmediately -> status_query_result(settings)
+          QueryDelay(delay_ms) -> {
+            process.sleep(delay_ms)
+            status_query_result(settings)
+          }
+          QueryFailure(error) -> Error(error)
+        }
+      },
       dispatch_paused: fn(_timeout_ms) { Error("dispatch_state_unavailable") },
       logger: fn(level, event, fields, secrets) {
         process.send(logs, log.format(level, event, fields, secrets))
@@ -622,6 +830,7 @@ fn new_fixture_with_settings(
     cancelled_timers,
     logs,
     apply_requests,
+    query_requests,
   )
 }
 
@@ -631,7 +840,7 @@ fn base_settings() -> client.Settings {
     daemon_id: "daemon_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     boot_id: "boot_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     enrollment_token: "test-token",
-    capabilities: ["control_commands", "session_snapshots"],
+    capabilities: ["control_commands", "session_snapshots", "read_queries"],
     heartbeat_interval_ms: 250,
     state_interval_ms: 500,
     retry_initial_ms: 25,
@@ -639,6 +848,22 @@ fn base_settings() -> client.Settings {
     connect_timeout_ms: 50,
     command_timeout_ms: 75,
     redaction_secrets: ["test-token"],
+  )
+}
+
+fn status_query_result(
+  settings: client.Settings,
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  Ok(
+    query_types.StatusResponse(
+      query_types.StatusDto(
+        daemon_id: settings.daemon_id,
+        boot_id: settings.boot_id,
+        dispatch_paused: False,
+        ui_server_enabled: False,
+        supported_queries: ["status"],
+      ),
+    ),
   )
 }
 
@@ -750,8 +975,10 @@ fn envelope_kind(envelope: remote_envelope.Envelope) -> String {
     remote_envelope.RemoteHello(_) -> "hello"
     remote_envelope.RemoteHeartbeat(_) -> "heartbeat"
     remote_envelope.RemoteServerCommand(_, _) -> "server_command"
+    remote_envelope.RemoteQueryRequest(_, _) -> "query_request"
     remote_envelope.RemoteCommandReceipt(_, _, _) -> "command_receipt"
     remote_envelope.RemoteCommandResult(_, _) -> "command_result"
+    remote_envelope.RemoteQueryResponse(_, _) -> "query_response"
     remote_envelope.RemoteStateSnapshot(_, _, _) -> "state_snapshot"
   }
 }

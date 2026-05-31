@@ -39,6 +39,7 @@ pub fn remote_harness_runs_live_loopback_and_updates_liveness_test() {
       run_nonce: "run_nonce_aaaaaaaaaaaaaaaaaaaaaaaa",
       use_real_client: True,
       command_demo: False,
+      query_demo: False,
     )
   let assert Ok(report) = remote_harness.run_scenario(scenario)
 
@@ -53,6 +54,36 @@ pub fn remote_harness_runs_live_loopback_and_updates_liveness_test() {
   assert matching_digest(report.events, "state_snapshot")
   assert !string.contains(report.transcript_json, "test-token")
   assert string.contains(report.transcript_json, "[REDACTED]")
+}
+
+pub fn remote_harness_query_demo_records_live_query_evidence_test() {
+  let root = "test/tmp/remote-harness-query-demo"
+  test_helpers.reset_dir(root)
+  let transcript_path = root <> "/query-transcript.json"
+
+  let assert Ok(report) =
+    remote_harness.run_query_demo("test-token", transcript_path)
+
+  assert report.bound_port > 0
+  assert event_exists(
+    report.events,
+    "server_send",
+    "query_request",
+    Some("query-1"),
+  )
+  assert event_exists(
+    report.events,
+    "server_recv",
+    "query_response",
+    Some("query-1"),
+  )
+  assert state_value_exists(report.events, False)
+  assert !string.contains(report.transcript_json, "test-token")
+  assert string.contains(report.transcript_json, "[REDACTED]")
+
+  let assert Ok(contents) = simplifile.read(transcript_path)
+  assert string.contains(contents, "query-1")
+  assert string.contains(contents, "query_response")
 }
 
 pub fn remote_harness_command_demo_records_live_pause_resume_evidence_test() {
@@ -123,6 +154,7 @@ pub fn remote_harness_rejects_wrong_auth_without_online_entry_test() {
       run_nonce: "run_nonce_wrong_auth_aaaaaaaaaaaa",
       use_real_client: False,
       command_demo: False,
+      query_demo: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -148,6 +180,7 @@ pub fn remote_harness_rejects_malformed_hello_without_online_entry_test() {
       run_nonce: "run_nonce_bad_hello_aaaaaaaaaaaaa",
       use_real_client: False,
       command_demo: False,
+      query_demo: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -173,6 +206,7 @@ pub fn remote_harness_rejects_non_heartbeat_after_valid_hello_test() {
       run_nonce: "run_nonce_bad_heartbeat_aaaaaaaa",
       use_real_client: False,
       command_demo: False,
+      query_demo: False,
     )
   let assert Error(remote_harness.HarnessError(code: code, message: message)) =
     remote_harness.run_scenario(scenario)
@@ -198,6 +232,7 @@ pub fn remote_harness_uses_server_receipt_time_for_liveness_test() {
       run_nonce: "run_nonce_future_heartbeat_aaaaa",
       use_real_client: False,
       command_demo: False,
+      query_demo: False,
     )
   let assert Ok(report) = remote_harness.run_scenario(scenario)
 

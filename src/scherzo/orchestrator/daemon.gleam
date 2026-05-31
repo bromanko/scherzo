@@ -14,7 +14,11 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/query/dto as query_dto
+import scherzo/control/query/service as query_service
+import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
+import scherzo/daemon_identity
 import scherzo/error
 import scherzo/log
 import scherzo/orchestrator/control_command_handler
@@ -110,6 +114,11 @@ pub type Message {
     Int,
     process.Subject(command.CommandResult),
   )
+  ExecuteQuery(
+    query_types.QueryRequest,
+    Int,
+    process.Subject(Result(query_types.QueryResponse, query_types.QueryError)),
+  )
 }
 
 pub type TimerHandle {
@@ -182,6 +191,7 @@ type State {
     event_hub: process.Subject(hub.Message),
     control_server: ControlServerHandle,
     control_file_path: Option(String),
+    query_service: query_service.Handle,
     remote_client: Option(remote_command_runtime.Handle),
     remote_client_monitor: Option(process.Monitor),
     operator_paused: Bool,
@@ -244,6 +254,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
         logger,
         remote_command_runtime.control_dependencies(
           apply_operator_command: apply_operator_command,
+          execute_query: execute_query,
           get_remote_dispatch_paused: get_remote_dispatch_paused,
         ),
       )
@@ -353,18 +364,71 @@ fn scheduled_failure_paths(
   })
 }
 
+fn start_query_service(
+  effective: config_types.EffectiveConfig,
+  daemon_subject: process.Subject(Message),
+  identity: daemon_identity.DaemonIdentity,
+) -> Result(query_service.Handle, StartupError) {
+  query_service.start(
+    query_service.default_settings(),
+    query_service.Backend(run: fn(query) {
+      case query {
+        query_types.Status ->
+          execute_status_query(effective, daemon_subject, identity)
+      }
+    }),
+  )
+  |> result.map_error(fn(error) {
+    let query_service.StartError(code, message) = error
+    StartupError(code, message)
+  })
+}
+
+fn execute_status_query(
+  effective: config_types.EffectiveConfig,
+  daemon_subject: process.Subject(Message),
+  identity: daemon_identity.DaemonIdentity,
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  case get_remote_dispatch_paused(daemon_subject, 100) {
+    Ok(dispatch_paused) ->
+      Ok(
+        query_types.StatusResponse(
+          query_dto.status_from_source(
+            query_types.StatusSource(
+              daemon_id: identity.daemon_id,
+              boot_id: identity.boot_id,
+              dispatch_paused: dispatch_paused,
+              ui_server_enabled: effective.ui_server.enabled,
+              supported_queries: query_types.supported_queries(),
+              local_control_token: "",
+              enrollment_token: "",
+              tracker_payload: "",
+              workflow_internals: [],
+            ),
+          ),
+        ),
+      )
+    Error(Nil) ->
+      Error(query_types.QueryError(
+        query_types.QueryTimeout,
+        "daemon status query timed out",
+      ))
+  }
+}
+
 fn start_control_plane(
   dependencies: RuntimeDependencies,
   effective: config_types.EffectiveConfig,
   event_hub: process.Subject(hub.Message),
   daemon_subject: process.Subject(Message),
+  query_handle: query_service.Handle,
   secrets: List(String),
 ) -> Result(ControlPlane, StartupError) {
   use token <- try_startup(dependencies.make_control_token())
   let settings = control_server.default_settings(token)
   use handle <- try_startup(dependencies.start_control_server(
     settings,
-    control_backend(event_hub, daemon_subject),
+    control_backend(event_hub, daemon_subject, query_handle),
   ))
   case handle {
     NoControlServer -> Ok(ControlPlane(handle: handle, control_file_path: None))
@@ -457,10 +521,12 @@ fn restart_remote_client_if_enabled(state: State) -> State {
 fn control_backend(
   event_hub: process.Subject(hub.Message),
   daemon_subject: process.Subject(Message),
+  query_handle: query_service.Handle,
 ) -> control_server.Backend {
   let read_backend = control_server.event_hub_store(event_hub)
   control_server.Backend(
     ..read_backend,
+    query: fn(query) { query_service.query(query_handle, query) },
     apply_command: fn(operator_command, timeout_ms) {
       apply_operator_command(daemon_subject, operator_command, timeout_ms)
     },
@@ -478,6 +544,23 @@ pub fn apply_operator_command(
     ApplyOperatorCommand(operator_command, timeout_ms, reply),
   )
   process.receive(reply, within: timeout_ms)
+}
+
+pub fn execute_query(
+  daemon_subject: process.Subject(Message),
+  query: query_types.QueryRequest,
+  timeout_ms: Int,
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  let reply = process.new_subject()
+  process.send(daemon_subject, ExecuteQuery(query, timeout_ms, reply))
+  case process.receive(reply, within: timeout_ms) {
+    Ok(result) -> result
+    Error(Nil) ->
+      Error(query_types.QueryError(
+        query_types.QueryTimeout,
+        "daemon query timed out",
+      ))
+  }
 }
 
 pub fn get_remote_dispatch_paused(
@@ -520,110 +603,131 @@ pub fn start(
   )
   let runtime = startup_recovery.runtime
   use event_hub <- try_startup(dependencies.start_event_hub() |> map_hub_error)
+  use daemon_identity <- try_startup(
+    daemon_identity.load_or_create(effective.workspace.root)
+    |> result.map_error(fn(err) {
+      StartupError("daemon_identity_failed", daemon_identity.error_message(err))
+    }),
+  )
   let builder =
     actor.new_with_initialiser(10_000, fn(subject) {
-      case
-        start_control_plane(
-          dependencies,
-          effective,
-          event_hub,
-          subject,
-          secrets,
-        )
-      {
+      case start_query_service(effective, subject, daemon_identity) {
         Error(err) -> Error(encode_startup_error(err))
-        Ok(control_plane) ->
+        Ok(query_handle) ->
           case
-            effect_runner.start(
-              effect_runner.Dependencies(
-                max_concurrent: 4,
-                notify: fn(completion) {
-                  process.send(subject, SideEffectCompleted(completion))
-                },
-              ),
+            start_control_plane(
+              dependencies,
+              effective,
+              event_hub,
+              subject,
+              query_handle,
+              secrets,
             )
           {
-            Error(_) -> {
-              stop_control_plane(dependencies, control_plane)
-              Error(
-                encode_startup_error(StartupError(
-                  "effect_runner_start_failed",
-                  "effect runner start failed",
-                )),
-              )
+            Error(err) -> {
+              let _ = query_service.stop(query_handle, 1000)
+              Error(encode_startup_error(err))
             }
-            Ok(effect_runner_handle) -> {
-              let effect_runner_monitor =
-                effect_runner.monitor(effect_runner_handle)
-              case effect_runner.is_alive(effect_runner_handle) {
-                False -> {
-                  process.demonitor_process(effect_runner_monitor)
+            Ok(control_plane) ->
+              case
+                effect_runner.start(
+                  effect_runner.Dependencies(
+                    max_concurrent: 4,
+                    notify: fn(completion) {
+                      process.send(subject, SideEffectCompleted(completion))
+                    },
+                  ),
+                )
+              {
+                Error(_) -> {
                   stop_control_plane(dependencies, control_plane)
+                  let _ = query_service.stop(query_handle, 1000)
                   Error(
                     encode_startup_error(StartupError(
                       "effect_runner_start_failed",
-                      "effect runner exited during startup",
+                      "effect runner start failed",
                     )),
                   )
                 }
-                True -> {
-                  let poll =
-                    poll_scheduler.start(fn(generation) {
-                      dependencies.send_after(subject, 0, PollTick(generation))
-                    })
-                  let state =
-                    State(
-                      subject: subject,
-                      workflow: workflow,
-                      tracker_client: tracker_client,
-                      tracker_adapter: tracker_adapter,
-                      scheduled_runtime: startup_recovery.scheduled.runtime,
-                      scheduled_retry_timers: dict.new(),
-                      scheduled_report_retry_timers: dict.new(),
-                      runtime: runtime,
-                      workers: transition_types.new_worker_directory(),
-                      poll: poll,
-                      retry: retry_scheduler.new(),
-                      registry: worker_registry.new(),
-                      pending_claims: dict.new(),
-                      pending_dispatch_validations: dict.new(),
-                      next_dispatch_validation_generation: 1,
-                      recovery_by_issue: startup_recovery.recovery_by_issue,
-                      effect_runner: effect_runner_handle,
-                      effect_runner_monitor: effect_runner_monitor,
-                      event_hub: event_hub,
-                      control_server: control_plane.handle,
-                      control_file_path: control_plane.control_file_path,
-                      remote_client: None,
-                      remote_client_monitor: None,
-                      operator_paused: False,
-                      last_operator_command_result: None,
-                      shell_state_overrides_transition: False,
-                      dependencies: dependencies,
-                    )
-                    |> apply_startup_recovery(startup_recovery)
-                    |> apply_scheduled_startup_recovery(
-                      startup_recovery.scheduled,
-                    )
-                    |> spawn_recovered_workflow_resumptions(
-                      startup_recovery.workflow_resumptions,
-                    )
-                  process.send(subject, StartRemoteClient)
-                  let selector =
-                    process.new_selector()
-                    |> process.select(subject)
-                    |> process.select_specific_monitor(
-                      effect_runner_monitor,
-                      fn(down) { EffectRunnerDown(down) },
-                    )
-                    |> process.select_monitors(WorkerDown)
-                  actor.initialised(state)
-                  |> actor.selecting(selector)
-                  |> actor.returning(subject)
-                  |> Ok
+                Ok(effect_runner_handle) -> {
+                  let effect_runner_monitor =
+                    effect_runner.monitor(effect_runner_handle)
+                  case effect_runner.is_alive(effect_runner_handle) {
+                    False -> {
+                      process.demonitor_process(effect_runner_monitor)
+                      stop_control_plane(dependencies, control_plane)
+                      let _ = query_service.stop(query_handle, 1000)
+                      Error(
+                        encode_startup_error(StartupError(
+                          "effect_runner_start_failed",
+                          "effect runner exited during startup",
+                        )),
+                      )
+                    }
+                    True -> {
+                      let poll =
+                        poll_scheduler.start(fn(generation) {
+                          dependencies.send_after(
+                            subject,
+                            0,
+                            PollTick(generation),
+                          )
+                        })
+                      let state =
+                        State(
+                          subject: subject,
+                          workflow: workflow,
+                          tracker_client: tracker_client,
+                          tracker_adapter: tracker_adapter,
+                          scheduled_runtime: startup_recovery.scheduled.runtime,
+                          scheduled_retry_timers: dict.new(),
+                          scheduled_report_retry_timers: dict.new(),
+                          runtime: runtime,
+                          workers: transition_types.new_worker_directory(),
+                          poll: poll,
+                          retry: retry_scheduler.new(),
+                          registry: worker_registry.new(),
+                          pending_claims: dict.new(),
+                          pending_dispatch_validations: dict.new(),
+                          next_dispatch_validation_generation: 1,
+                          recovery_by_issue: startup_recovery.recovery_by_issue,
+                          effect_runner: effect_runner_handle,
+                          effect_runner_monitor: effect_runner_monitor,
+                          event_hub: event_hub,
+                          control_server: control_plane.handle,
+                          control_file_path: control_plane.control_file_path,
+                          query_service: query_handle,
+                          remote_client: None,
+                          remote_client_monitor: None,
+                          operator_paused: False,
+                          last_operator_command_result: None,
+                          shell_state_overrides_transition: False,
+                          dependencies: dependencies,
+                        )
+                        |> apply_startup_recovery(startup_recovery)
+                        |> apply_scheduled_startup_recovery(
+                          startup_recovery.scheduled,
+                        )
+                        |> spawn_recovered_workflow_resumptions(
+                          startup_recovery.workflow_resumptions,
+                        )
+                      process.send(subject, StartRemoteClient)
+                      let selector =
+                        process.new_selector()
+                        |> process.select(subject)
+                        |> process.select_specific_monitor(
+                          effect_runner_monitor,
+                          fn(down) { EffectRunnerDown(down) },
+                        )
+                        |> process.select_monitors(WorkerDown)
+                      actor.initialised(state)
+                      |> actor.selecting(selector)
+                      |> actor.returning(subject)
+                      |> Ok
+                    }
+                  }
                 }
               }
-            }
           }
       }
     })
@@ -1186,6 +1290,14 @@ fn handle_message(
         timeout_ms,
         reply,
       ))
+    ExecuteQuery(query, _timeout_ms, reply) -> {
+      let _ =
+        process.spawn_unlinked(fn() {
+          process.send(reply, query_service.query(state.query_service, query))
+          Nil
+        })
+      actor.continue(state)
+    }
     Shutdown(reply) -> {
       let state =
         run_transition_messages(state, [
@@ -6046,6 +6158,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       }
     None -> Nil
   }
+  let _ = query_service.stop(state.query_service, 1000)
   state.dependencies.stop_control_server(state.control_server)
   case state.control_file_path {
     Some(path) -> control_file.remove(path)
@@ -6088,6 +6201,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
     scheduled_report_retry_timers: dict.new(),
     control_server: NoControlServer,
     control_file_path: None,
+    query_service: state.query_service,
     remote_client: None,
     remote_client_monitor: None,
   )

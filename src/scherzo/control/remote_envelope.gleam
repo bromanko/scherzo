@@ -6,6 +6,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/control/command
+import scherzo/control/query/codec as query_codec
+import scherzo/control/query/types as query_types
 
 pub const version = 1
 
@@ -28,12 +30,17 @@ pub type Envelope {
   RemoteHello(capabilities: List(String))
   RemoteHeartbeat(sent_at_ms: Int)
   RemoteServerCommand(command_id: String, command: command.OperatorCommand)
+  RemoteQueryRequest(query_id: String, query: query_types.QueryRequest)
   RemoteCommandReceipt(
     command_id: String,
     accepted: Bool,
     message: Option(String),
   )
   RemoteCommandResult(command_id: String, result: command.CommandResult)
+  RemoteQueryResponse(
+    query_id: String,
+    result: Result(query_types.QueryResponse, query_types.QueryError),
+  )
   RemoteStateSnapshot(
     now_ms: Int,
     dispatch_paused: Bool,
@@ -48,9 +55,11 @@ type EnvelopeFields {
     capabilities: Option(List(String)),
     sent_at_ms: Option(Int),
     command_id: Option(String),
+    query_id: Option(String),
     accepted: Option(Bool),
     message: Option(String),
     command: Option(Dynamic),
+    query: Option(Dynamic),
     result: Option(Dynamic),
     now_ms: Option(Int),
     dispatch_paused: Option(Bool),
@@ -76,6 +85,13 @@ pub fn to_json(envelope: Envelope) -> json.Json {
         ..base_entries("server_command")
       ]
       |> json.object
+    RemoteQueryRequest(query_id, query) ->
+      [
+        #("query_id", json.string(query_id)),
+        #("query", query_codec.request_to_json(query)),
+        ..base_entries("query_request")
+      ]
+      |> json.object
     RemoteCommandReceipt(command_id, accepted, message) ->
       list.append(optional_message_entries(message), [
         #("accepted", json.bool(accepted)),
@@ -88,6 +104,13 @@ pub fn to_json(envelope: Envelope) -> json.Json {
         #("command_id", json.string(command_id)),
         #("result", command.command_result_to_json(result)),
         ..base_entries("command_result")
+      ]
+      |> json.object
+    RemoteQueryResponse(query_id, result) ->
+      [
+        #("query_id", json.string(query_id)),
+        #("result", query_result_to_json(result)),
+        ..base_entries("query_response")
       ]
       |> json.object
     RemoteStateSnapshot(now_ms, dispatch_paused, sessions) ->
@@ -133,6 +156,15 @@ fn optional_message_entries(
   }
 }
 
+fn query_result_to_json(
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> json.Json {
+  case result {
+    Ok(response) -> query_codec.response_to_json(response)
+    Error(error) -> query_codec.error_to_json(error)
+  }
+}
+
 fn remote_session_to_json(session: RemoteSession) -> json.Json {
   json.object([
     #("session_id", json.string(session.session_id)),
@@ -170,6 +202,11 @@ fn envelope_fields_decoder() -> decode.Decoder(EnvelopeFields) {
     None,
     decode.optional(decode.string),
   )
+  use query_id <- decode.optional_field(
+    "query_id",
+    None,
+    decode.optional(decode.string),
+  )
   use accepted <- decode.optional_field(
     "accepted",
     None,
@@ -182,6 +219,11 @@ fn envelope_fields_decoder() -> decode.Decoder(EnvelopeFields) {
   )
   use command_value <- decode.optional_field(
     "command",
+    None,
+    decode.optional(decode.dynamic),
+  )
+  use query_value <- decode.optional_field(
+    "query",
     None,
     decode.optional(decode.dynamic),
   )
@@ -211,9 +253,11 @@ fn envelope_fields_decoder() -> decode.Decoder(EnvelopeFields) {
     capabilities: capabilities,
     sent_at_ms: sent_at_ms,
     command_id: command_id,
+    query_id: query_id,
     accepted: accepted,
     message: message,
     command: command_value,
+    query: query_value,
     result: result_value,
     now_ms: now_ms,
     dispatch_paused: dispatch_paused,
@@ -259,6 +303,15 @@ fn envelope_from_fields(
       use operator_command <- result.try(decode_nested_command(nested))
       Ok(RemoteServerCommand(command_id, operator_command))
     }
+    "query_request" -> {
+      use query_id <- result.try(required_string_field(
+        fields.query_id,
+        "query_id",
+      ))
+      use nested <- result.try(required_dynamic_field(fields.query, "query"))
+      use query <- result.try(decode_nested_query_request(nested))
+      Ok(RemoteQueryRequest(query_id, query))
+    }
     "command_receipt" -> {
       use command_id <- result.try(required_string_field(
         fields.command_id,
@@ -278,6 +331,15 @@ fn envelope_from_fields(
       use nested <- result.try(required_dynamic_field(fields.result, "result"))
       use command_result <- result.try(decode_nested_result(nested))
       Ok(RemoteCommandResult(command_id, command_result))
+    }
+    "query_response" -> {
+      use query_id <- result.try(required_string_field(
+        fields.query_id,
+        "query_id",
+      ))
+      use nested <- result.try(required_dynamic_field(fields.result, "result"))
+      let query_result = decode_nested_query_response(nested)
+      Ok(RemoteQueryResponse(query_id, query_result))
     }
     "state_snapshot" -> {
       use now_ms <- result.try(required_int_field(fields.now_ms, "now_ms"))
@@ -399,6 +461,16 @@ fn decode_nested_command(
   }
 }
 
+fn decode_nested_query_request(
+  value: Dynamic,
+) -> Result(query_types.QueryRequest, DecodeError) {
+  case query_codec.decode_request_dynamic(value) {
+    Ok(query) -> Ok(query)
+    Error(query_types.QueryError(code: code, message: message)) ->
+      Error(DecodeError(query_types.error_code_to_string(code), message))
+  }
+}
+
 fn decode_nested_result(
   value: Dynamic,
 ) -> Result(command.CommandResult, DecodeError) {
@@ -407,6 +479,12 @@ fn decode_nested_result(
     Error(command.CodecError(code: code, message: message)) ->
       Error(DecodeError(code, message))
   }
+}
+
+fn decode_nested_query_response(
+  value: Dynamic,
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  query_codec.decode_response_dynamic(value)
 }
 
 fn int_to_string(value: Int) -> String {

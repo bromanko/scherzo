@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import scherzo/config/types as config_types
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/log
 import scherzo/orchestrator/daemon_remote_client
 import scherzo/session/hub
@@ -23,6 +24,8 @@ pub opaque type ControlDependencies(message) {
       command.OperatorCommand,
       Int,
     ) -> Result(command.CommandResult, Nil),
+    execute_query: fn(process.Subject(message), query_types.QueryRequest, Int) ->
+      Result(query_types.QueryResponse, query_types.QueryError),
     get_remote_dispatch_paused: fn(process.Subject(message), Int) ->
       Result(Bool, Nil),
   )
@@ -34,6 +37,11 @@ pub fn control_dependencies(
     command.OperatorCommand,
     Int,
   ) -> Result(command.CommandResult, Nil),
+  execute_query execute_query: fn(
+    process.Subject(message),
+    query_types.QueryRequest,
+    Int,
+  ) -> Result(query_types.QueryResponse, query_types.QueryError),
   get_remote_dispatch_paused get_remote_dispatch_paused: fn(
     process.Subject(message),
     Int,
@@ -41,6 +49,7 @@ pub fn control_dependencies(
 ) -> ControlDependencies(message) {
   ControlDependencies(
     apply_operator_command: apply_operator_command,
+    execute_query: execute_query,
     get_remote_dispatch_paused: get_remote_dispatch_paused,
   )
 }
@@ -56,6 +65,15 @@ pub fn apply_remote_command(
     operator_command,
     timeout_ms,
   )
+}
+
+pub fn execute_remote_query(
+  daemon_subject: process.Subject(message),
+  query: query_types.QueryRequest,
+  timeout_ms: Int,
+  dependencies: ControlDependencies(message),
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  dependencies.execute_query(daemon_subject, query, timeout_ms)
 }
 
 pub fn read_remote_dispatch_paused(
@@ -84,6 +102,9 @@ pub fn start_remote_client(
         timeout_ms,
         dependencies,
       )
+    },
+    fn(query, timeout_ms) {
+      execute_remote_query(daemon_subject, query, timeout_ms, dependencies)
     },
     fn(timeout_ms) {
       read_remote_dispatch_paused(daemon_subject, timeout_ms, dependencies)

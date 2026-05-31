@@ -7,6 +7,7 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/protocol
+import scherzo/control/query/types as query_types
 import scherzo/model_config
 import scherzo/session/event
 import scherzo/session/tokens as session_tokens
@@ -1432,6 +1433,10 @@ fn request_examples() -> List(RequestExample) {
         "session-1",
         after: 7,
       ),
+    ),
+    RequestExample(
+      "Query",
+      protocol.Query("req-query", "secret", query_types.Status),
     ),
     RequestExample("Pause", protocol.Pause("req-pause", "secret")),
     RequestExample("Resume", protocol.Resume("req-resume", "secret")),

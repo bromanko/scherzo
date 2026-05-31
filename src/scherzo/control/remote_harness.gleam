@@ -1,6 +1,5 @@
 import gleam/erlang/process
 import gleam/int
-import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -8,6 +7,7 @@ import gleam/result
 import gleam/string
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/client as remote_client
 import scherzo/control/remote_envelope
 import scherzo/control/remote_harness_hello
@@ -36,6 +36,7 @@ pub type Scenario {
     run_nonce: String,
     use_real_client: Bool,
     command_demo: Bool,
+    query_demo: Bool,
   )
 }
 
@@ -111,6 +112,7 @@ pub fn default_scenario(
     run_nonce: run_nonce,
     use_real_client: True,
     command_demo: False,
+    query_demo: False,
   ))
 }
 
@@ -128,6 +130,14 @@ pub fn run_command_demo(
 ) -> Result(Report, HarnessError) {
   use scenario <- result.try(default_scenario(token, transcript_path))
   run_scenario(Scenario(..scenario, command_demo: True))
+}
+
+pub fn run_query_demo(
+  token: String,
+  transcript_path: String,
+) -> Result(Report, HarnessError) {
+  use scenario <- result.try(default_scenario(token, transcript_path))
+  run_scenario(Scenario(..scenario, query_demo: True))
 }
 
 pub fn run_scenario(scenario: Scenario) -> Result(Report, HarnessError) {
@@ -310,70 +320,6 @@ fn report_from_outcome(
   ))
 }
 
-pub fn help_text() -> String {
-  "Usage: scherzo-ui-control-harness demo --token <token> --transcript <path>\n       scherzo-ui-control-harness command-demo --token <token> --transcript <path>\n\nDevelopment-only loopback harness for the remote control path. It binds 127.0.0.1 on an ephemeral port, runs the real outbound client, and writes a redacted transcript derived from live socket traffic."
-}
-
-pub fn main() -> Nil {
-  case parse_args(args()) {
-    Ok(Help) -> io.println(help_text())
-    Ok(Demo(token, transcript_path)) ->
-      print_report(run_demo(token, transcript_path), transcript_path)
-    Ok(CommandDemo(token, transcript_path)) ->
-      print_report(run_command_demo(token, transcript_path), transcript_path)
-    Error(err) -> {
-      io.println_error(err.message)
-      io.println_error(help_text())
-      halt(2)
-    }
-  }
-}
-
-fn print_report(
-  result: Result(Report, HarnessError),
-  transcript_path: String,
-) -> Nil {
-  case result {
-    Ok(report) -> {
-      io.println("REMOTE_HARNESS_RUN_NONCE=" <> report.run_nonce)
-      io.println(
-        "REMOTE_HARNESS_BOUND_PORT=" <> int.to_string(report.bound_port),
-      )
-      io.println("REMOTE_HARNESS_TRANSCRIPT=" <> transcript_path)
-    }
-    Error(err) -> {
-      io.println_error(err.code <> ": " <> err.message)
-      halt(1)
-    }
-  }
-}
-
-type CliAction {
-  Help
-  Demo(String, String)
-  CommandDemo(String, String)
-}
-
-type CliError {
-  CliError(message: String)
-}
-
-fn parse_args(args: List(String)) -> Result(CliAction, CliError) {
-  case args {
-    [] -> Ok(Help)
-    ["--help"] | ["-h"] -> Ok(Help)
-    ["demo", "--token", token, "--transcript", transcript_path] ->
-      Ok(Demo(token, transcript_path))
-    ["demo", "--transcript", transcript_path, "--token", token] ->
-      Ok(Demo(token, transcript_path))
-    ["command-demo", "--token", token, "--transcript", transcript_path] ->
-      Ok(CommandDemo(token, transcript_path))
-    ["command-demo", "--transcript", transcript_path, "--token", token] ->
-      Ok(CommandDemo(token, transcript_path))
-    _ -> Error(CliError("invalid arguments"))
-  }
-}
-
 fn client_exchange(
   client: Socket,
   scenario: Scenario,
@@ -385,7 +331,7 @@ fn client_exchange(
         scenario.daemon_id,
         scenario.boot_id,
         scenario.client_token,
-        ["control_commands", "session_snapshots"],
+        ["control_commands", "session_snapshots", "read_queries"],
       )
   }
   use _ <- result.try(
@@ -425,9 +371,15 @@ fn client_settings(
     daemon_id: scenario.daemon_id,
     boot_id: scenario.boot_id,
     enrollment_token: scenario.client_token,
-    capabilities: ["control_commands", "session_snapshots"],
-    heartbeat_interval_ms: 10_000,
-    state_interval_ms: 10_000,
+    capabilities: ["control_commands", "session_snapshots", "read_queries"],
+    heartbeat_interval_ms: case scenario.query_demo {
+      True -> 20
+      False -> 10_000
+    },
+    state_interval_ms: case scenario.query_demo {
+      True -> 30
+      False -> 10_000
+    },
     retry_initial_ms: 50,
     retry_max_ms: 100,
     connect_timeout_ms: 1000,
@@ -460,6 +412,22 @@ fn client_dependencies(
     apply_command: fn(operator_command, _timeout_ms) {
       Ok(command.applied(operator_command, Some("applied")))
     },
+    execute_query: fn(query) {
+      case query {
+        query_types.Status ->
+          Ok(
+            query_types.StatusResponse(
+              query_types.StatusDto(
+                daemon_id: scenario.daemon_id,
+                boot_id: scenario.boot_id,
+                dispatch_paused: False,
+                ui_server_enabled: False,
+                supported_queries: ["status"],
+              ),
+            ),
+          )
+      }
+    },
     dispatch_paused: fn(_timeout_ms) { Error("dispatch_state_unavailable") },
     logger: fn(_, _, _, _) { Ok(Nil) },
   )
@@ -477,9 +445,10 @@ fn client_events_from_subject(
 }
 
 fn expected_client_event_count(scenario: Scenario) -> Int {
-  case scenario.command_demo {
-    True -> 9
-    False -> 3
+  case scenario.command_demo, scenario.query_demo {
+    True, _ -> 9
+    _, True -> 6
+    _, False -> 3
   }
 }
 
@@ -597,21 +566,28 @@ fn server_exchange(
             remote_envelope.RemoteStateSnapshot(_, False, sessions)
               if sessions == scenario.state_sessions
             ->
-              case scenario.command_demo {
-                False ->
+              case scenario.command_demo, scenario.query_demo {
+                True, _ ->
+                  command_demo_exchange(
+                    server,
+                    refreshed,
+                    [hello_view, heartbeat_view],
+                    [hello_event, heartbeat_event, state_event],
+                  )
+                _, True ->
+                  query_demo_exchange(
+                    server,
+                    refreshed,
+                    [hello_view, heartbeat_view],
+                    [hello_event, heartbeat_event, state_event],
+                  )
+                _, False ->
                   Ok(
                     ServerOutcome(refreshed, [hello_view, heartbeat_view], [
                       hello_event,
                       heartbeat_event,
                       state_event,
                     ]),
-                  )
-                True ->
-                  command_demo_exchange(
-                    server,
-                    refreshed,
-                    [hello_view, heartbeat_view],
-                    [hello_event, heartbeat_event, state_event],
                   )
               }
             remote_envelope.RemoteStateSnapshot(_, _, _) ->
@@ -623,6 +599,35 @@ fn server_exchange(
     }
     _ -> Error(HarnessError("invalid_heartbeat", "expected heartbeat envelope"))
   }
+}
+
+fn query_demo_exchange(
+  server: Socket,
+  registry: remote_liveness.Registry,
+  observations: List(remote_liveness.View),
+  base_events: List(TranscriptEvent),
+) -> Result(ServerOutcome, HarnessError) {
+  let query_line =
+    remote_envelope.RemoteQueryRequest("query-1", query_types.Status)
+    |> remote_envelope.to_string
+  use _ <- result.try(
+    send_line(server, query_line, 1000)
+    |> result.map_error(socket_error("send query failed")),
+  )
+  use query_response <- result.try(recv_and_expect(server, 8, "query_response"))
+  use heartbeat <- result.try(recv_and_expect(server, 10, "heartbeat"))
+  use state <- result.try(recv_and_expect(server, 12, "state_snapshot"))
+
+  Ok(ServerOutcome(
+    registry,
+    observations,
+    list.append(base_events, [
+      line_event(7, 1, "server_send", "query_request", query_line),
+      query_response,
+      heartbeat,
+      state,
+    ]),
+  ))
 }
 
 fn command_demo_exchange(
@@ -735,6 +740,12 @@ fn envelope_metadata(
       None,
       None,
     )
+    Ok(remote_envelope.RemoteQueryRequest(query_id, _)) -> #(
+      "query_request",
+      Some(query_id),
+      None,
+      None,
+    )
     Ok(remote_envelope.RemoteCommandReceipt(command_id, _, _)) -> #(
       "command_receipt",
       Some(command_id),
@@ -745,6 +756,12 @@ fn envelope_metadata(
       "command_result",
       Some(command_id),
       Some(command.status_to_string(result.status)),
+      None,
+    )
+    Ok(remote_envelope.RemoteQueryResponse(query_id, _)) -> #(
+      "query_response",
+      Some(query_id),
+      None,
       None,
     )
     Ok(remote_envelope.RemoteStateSnapshot(_, dispatch_paused, _)) -> #(
@@ -935,9 +952,3 @@ fn bound_port(listener: Listener) -> Int
 
 @external(erlang, "scherzo_time_ffi", "monotonic_ms")
 fn monotonic_ms() -> Int
-
-@external(erlang, "scherzo_main_ffi", "args")
-fn args() -> List(String)
-
-@external(erlang, "scherzo_main_ffi", "halt")
-fn halt(code: Int) -> Nil

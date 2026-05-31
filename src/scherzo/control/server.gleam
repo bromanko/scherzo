@@ -4,6 +4,7 @@ import gleam/io
 import gleam/option.{type Option, None, Some}
 import scherzo/control/command
 import scherzo/control/protocol
+import scherzo/control/query/types as query_types
 import scherzo/log
 import scherzo/session/event
 import scherzo/session/hub
@@ -26,6 +27,8 @@ pub type Backend {
       Result(Option(event.SessionSummary), hub.HubError),
     events_after: fn(String, Int, Int, Int) ->
       Result(event.EventPage, hub.HubError),
+    query: fn(query_types.QueryRequest) ->
+      Result(query_types.QueryResponse, query_types.QueryError),
     apply_command: fn(command.OperatorCommand, Int) ->
       Result(command.CommandResult, Nil),
   )
@@ -70,6 +73,12 @@ pub fn event_hub_store(subject: process.Subject(hub.Message)) -> Backend {
     },
     events_after: fn(session_id, cursor, limit, timeout_ms) {
       hub.events_after(subject, session_id, cursor, limit, timeout_ms)
+    },
+    query: fn(_) {
+      Error(query_types.QueryError(
+        query_types.UnsupportedQuery,
+        "query backend unavailable",
+      ))
     },
     apply_command: fn(operator_command, _) {
       Ok(command.not_allowed(
@@ -220,6 +229,11 @@ fn handle_authorized_request(
     }
     protocol.StreamEvents(id, _, session_id, after) ->
       start_stream(socket, settings, store, id, session_id, after)
+    protocol.Query(id, _, query) ->
+      send_response_then_close(
+        socket,
+        protocol.success_response(id, protocol.query_data(store.query(query))),
+      )
     _ -> handle_command_request(socket, settings, store, request)
   }
 }
