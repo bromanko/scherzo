@@ -8,6 +8,7 @@ import scherzo/state/record/commands as command_record
 import scherzo/state/record/issue_recovery as issue_recovery_record
 import scherzo/state/record/legacy_runs as legacy_run_record
 import scherzo/state/record/outbox as outbox_record
+import scherzo/state/record/publications as publication_record
 import scherzo/state/record/scheduled as scheduled_record
 import scherzo/state/record/steps as step_record
 import scherzo/state/record/workflow_runs as workflow_run_record
@@ -131,6 +132,23 @@ pub type RecordBody {
     artifact_ref: String,
     artifact_sha256: String,
     artifact_bytes: Int,
+  )
+  PublicationAttemptRecorded(
+    run_id: String,
+    workflow_id: String,
+    publication_id: String,
+    series_id: String,
+    attempt_id: String,
+    status: String,
+    required: Bool,
+    retryable: Bool,
+    retry_execution_available: Bool,
+    version_id: Option(String),
+    manifest_ref: Option(String),
+    manifest_sha256: Option(String),
+    manifest_bytes: Option(Int),
+    error_code: Option(String),
+    error_message: Option(String),
   )
   WorkflowRunDiagnostic(
     run_id: String,
@@ -583,6 +601,15 @@ type RecordFields {
     artifact_ref: Option(String),
     artifact_sha256: Option(String),
     artifact_bytes: Option(Int),
+    publication_id: Option(String),
+    series_id: Option(String),
+    attempt_id: Option(String),
+    retryable: Option(Bool),
+    retry_execution_available: Option(Bool),
+    version_id: Option(String),
+    manifest_ref: Option(String),
+    manifest_sha256: Option(String),
+    manifest_bytes: Option(Int),
     superseded_by_run_id: Option(String),
     superseded_by_attempt_index: Option(Int),
     classification: Option(String),
@@ -611,6 +638,7 @@ type RecordFields {
     command_name: Option(String),
     excerpt: Option(String),
     status: Option(String),
+    required: Option(Bool),
     message_excerpt: Option(String),
     outbox_id: Option(String),
     outbox_kind: Option(String),
@@ -700,6 +728,7 @@ pub fn kind(body: RecordBody) -> String {
     WorkflowRunFinishedWithTask(..) -> "workflow_run_finished"
     WorkflowRunInputsRecorded(..) -> "workflow_run_inputs_recorded"
     WorkflowRunOutputsRecorded(..) -> "workflow_run_outputs_recorded"
+    PublicationAttemptRecorded(..) -> "publication_attempt_recorded"
     WorkflowRunDiagnostic(..) -> "workflow_run_diagnostic"
     WorkflowRunInterrupted(..) -> "workflow_run_interrupted"
     WorkflowRunSuperseded(..) -> "workflow_run_superseded"
@@ -949,6 +978,40 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         artifact_ref,
         artifact_sha256,
         artifact_bytes,
+      )
+    PublicationAttemptRecorded(
+      run_id,
+      workflow_id,
+      publication_id,
+      series_id,
+      attempt_id,
+      status,
+      required,
+      retryable,
+      retry_execution_available,
+      version_id,
+      manifest_ref,
+      manifest_sha256,
+      manifest_bytes,
+      error_code,
+      error_message,
+    ) ->
+      publication_record.attempt_recorded_entries(
+        run_id,
+        workflow_id,
+        publication_id,
+        series_id,
+        attempt_id,
+        status,
+        required,
+        retryable,
+        retry_execution_available,
+        version_id,
+        manifest_ref,
+        manifest_sha256,
+        manifest_bytes,
+        error_code,
+        error_message,
       )
     WorkflowRunDiagnostic(run_id, workflow_id, issue_id, reason) ->
       workflow_run_record.diagnostic_entries(
@@ -1909,6 +1972,46 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       decode_workflow_contract_record(fields, WorkflowRunInputsRecorded)
     "workflow_run_outputs_recorded" ->
       decode_workflow_contract_record(fields, WorkflowRunOutputsRecorded)
+    "publication_attempt_recorded" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use publication_id <- result.try(required_string(
+        fields.publication_id,
+        "publication_id",
+      ))
+      use series_id <- result.try(required_string(fields.series_id, "series_id"))
+      use attempt_id <- result.try(required_string(
+        fields.attempt_id,
+        "attempt_id",
+      ))
+      use status <- result.try(required_string(fields.status, "status"))
+      use required <- result.try(required_bool(fields.required, "required"))
+      use retryable <- result.try(required_bool(fields.retryable, "retryable"))
+      use retry_execution_available <- result.try(required_bool(
+        fields.retry_execution_available,
+        "retry_execution_available",
+      ))
+      Ok(PublicationAttemptRecorded(
+        run_id,
+        workflow_id,
+        publication_id,
+        series_id,
+        attempt_id,
+        status,
+        required,
+        retryable,
+        retry_execution_available,
+        fields.version_id,
+        fields.manifest_ref,
+        fields.manifest_sha256,
+        fields.manifest_bytes,
+        fields.error_code,
+        fields.error_message,
+      ))
+    }
     "workflow_run_diagnostic" -> {
       use run_id <- result.try(required_string(fields.run_id, "run_id"))
       use workflow_id <- result.try(required_string(
@@ -3219,6 +3322,51 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.int),
   )
+  use publication_id <- decode.optional_field(
+    "publication_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use series_id <- decode.optional_field(
+    "series_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use attempt_id <- decode.optional_field(
+    "attempt_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use retryable <- decode.optional_field(
+    "retryable",
+    None,
+    decode.optional(decode.bool),
+  )
+  use retry_execution_available <- decode.optional_field(
+    "retry_execution_available",
+    None,
+    decode.optional(decode.bool),
+  )
+  use version_id <- decode.optional_field(
+    "version_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use manifest_ref <- decode.optional_field(
+    "manifest_ref",
+    None,
+    decode.optional(decode.string),
+  )
+  use manifest_sha256 <- decode.optional_field(
+    "manifest_sha256",
+    None,
+    decode.optional(decode.string),
+  )
+  use manifest_bytes <- decode.optional_field(
+    "manifest_bytes",
+    None,
+    decode.optional(decode.int),
+  )
   use superseded_by_run_id <- decode.optional_field(
     "superseded_by_run_id",
     None,
@@ -3354,6 +3502,11 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     "status",
     None,
     decode.optional(decode.string),
+  )
+  use required <- decode.optional_field(
+    "required",
+    None,
+    decode.optional(decode.bool),
   )
   use message_excerpt <- decode.optional_field(
     "message_excerpt",
@@ -3655,6 +3808,15 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     artifact_ref: artifact_ref,
     artifact_sha256: artifact_sha256,
     artifact_bytes: artifact_bytes,
+    publication_id: publication_id,
+    series_id: series_id,
+    attempt_id: attempt_id,
+    retryable: retryable,
+    retry_execution_available: retry_execution_available,
+    version_id: version_id,
+    manifest_ref: manifest_ref,
+    manifest_sha256: manifest_sha256,
+    manifest_bytes: manifest_bytes,
     superseded_by_run_id: superseded_by_run_id,
     superseded_by_attempt_index: superseded_by_attempt_index,
     classification: classification,
@@ -3683,6 +3845,7 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     command_name: command_name,
     excerpt: excerpt,
     status: status,
+    required: required,
     message_excerpt: message_excerpt,
     outbox_id: outbox_id,
     outbox_kind: outbox_kind,
@@ -3939,6 +4102,43 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
         safe_excerpt(error_message, secrets),
         next_retry_at_ms,
         generation,
+      )
+    PublicationAttemptRecorded(
+      run_id,
+      workflow_id,
+      publication_id,
+      series_id,
+      attempt_id,
+      status,
+      required,
+      retryable,
+      retry_execution_available,
+      version_id,
+      manifest_ref,
+      manifest_sha256,
+      manifest_bytes,
+      error_code,
+      error_message,
+    ) ->
+      PublicationAttemptRecorded(
+        run_id,
+        workflow_id,
+        publication_id,
+        series_id,
+        attempt_id,
+        status,
+        required,
+        retryable,
+        retry_execution_available,
+        version_id,
+        manifest_ref,
+        manifest_sha256,
+        manifest_bytes,
+        error_code,
+        case error_message {
+          Some(message) -> Some(safe_excerpt(message, secrets))
+          None -> None
+        },
       )
     StepAttemptPiSessionRecorded(
       run_id,

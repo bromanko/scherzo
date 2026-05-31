@@ -229,6 +229,64 @@ pub fn scheduled_failure_report_errors_are_redacted_test() {
   assert string.contains(encoded, "[REDACTED]")
 }
 
+pub fn publication_attempt_records_roundtrip_and_redact_errors_test() {
+  let planned =
+    record.with_id(
+      "publication-planned",
+      9600,
+      record.PublicationAttemptRecorded(
+        run_id: "run-1",
+        workflow_id: "execplan",
+        publication_id: "review_doc",
+        series_id: "task-1:execplan:review_doc",
+        attempt_id: "version-1",
+        status: "planned",
+        required: True,
+        retryable: False,
+        retry_execution_available: False,
+        version_id: Some("version-1"),
+        manifest_ref: Some("runs/run-1/publications/review_doc/version-1.json"),
+        manifest_sha256: Some("manifest-sha"),
+        manifest_bytes: Some(42),
+        error_code: None,
+        error_message: None,
+      ),
+    )
+  let failed =
+    record.with_id(
+      "publication-failed",
+      9601,
+      record.PublicationAttemptRecorded(
+        run_id: "run-1",
+        workflow_id: "execplan",
+        publication_id: "review_doc",
+        series_id: "task-1:execplan:review_doc",
+        attempt_id: "failed-hash",
+        status: "failed",
+        required: False,
+        retryable: True,
+        retry_execution_available: False,
+        version_id: None,
+        manifest_ref: Some(
+          "runs/run-1/publications/review_doc/failed-hash.json",
+        ),
+        manifest_sha256: Some("manifest-sha-2"),
+        manifest_bytes: Some(64),
+        error_code: Some("unknown_output"),
+        error_message: Some("secret-value missing output"),
+      ),
+    )
+
+  assert_roundtrip(planned)
+  assert_roundtrip(failed)
+  let redacted =
+    failed
+    |> record.redact_excerpts(["secret-value"])
+    |> record.to_string
+  assert !string.contains(redacted, "secret-value")
+  assert string.contains(redacted, "[REDACTED]")
+}
+
 pub fn retry_scheduled_requires_delay_ms_test() {
   let missing_delay_line =
     "{\"schema_version\":2,\"record_id\":\"retry-missing-delay\",\"at_ms\":4000,\"kind\":\"retry_scheduled\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"generation\":2,\"reason\":\"backoff\"}"

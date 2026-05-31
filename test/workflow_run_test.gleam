@@ -4715,6 +4715,157 @@ fn output_named(
   output.value
 }
 
+fn publication_workflow_yaml(required: Bool) -> String {
+  "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      required: "
+  <> bool_yaml(required)
+  <> "\n      pull_request:\n        title: '{{ work.identifier }} publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}{{ artifact.default_extension }}\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n"
+}
+
+fn publication_free_workflow_yaml() -> String {
+  "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n"
+}
+
+fn bool_yaml(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
+  }
+}
+
+fn write_publication_template(root: String) -> Nil {
+  let template_dir = path.join(root, "templates")
+  let assert Ok(Nil) = simplifile.create_directory_all(template_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      path.join(template_dir, "publication.md"),
+      "Version {{ publication.version_id }}\n{{ publication.files_markdown }}",
+    )
+  Nil
+}
+
+fn publication_orchestrator(root: String) -> config_types.OrchestratorConfig {
+  let base = orchestrator()
+  config_types.OrchestratorConfig(
+    ..base,
+    config_dir: root,
+    effective: config_types.EffectiveConfig(
+      ..base.effective,
+      workspace: config_types.WorkspaceConfig(
+        root: "test/tmp/workflow-run/workspaces",
+      ),
+    ),
+    artifact_repositories: publication_repositories(),
+  )
+}
+
+fn publication_repositories() -> artifact_publication_config.ArtifactRepositories {
+  artifact_publication_config.ArtifactRepositories(
+    github: dict.from_list([
+      #(
+        "docs",
+        artifact_publication_config.GithubRepositoryTarget(
+          name: "docs",
+          repo: "scherzo-systems/scherzo",
+          base: "main",
+          checkout: artifact_publication_config.GithubCheckoutConfig(
+            strategy: artifact_publication_config.ManagedGit,
+          ),
+          branch: artifact_publication_config.GithubBranchConfig(
+            strategy: artifact_publication_config.StablePerWork,
+            template: "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}",
+          ),
+          pull_request: artifact_publication_config.GithubPullRequestConfig(
+            enabled: True,
+            strategy: artifact_publication_config.UpdateExisting,
+            draft: True,
+            title: Some("{{ work.identifier }} publication"),
+            body_template: Some("templates/publication.md"),
+          ),
+        ),
+      ),
+    ]),
+  )
+}
+
+fn publication_output_command_step(
+  subject: process.Subject(String),
+  contents: String,
+) -> fn(
+  workflow_run.StepContext,
+  String,
+  Int,
+  List(String),
+  config_types.ArtifactLimits,
+) -> step_artifact.StepArtifact {
+  fn(context: workflow_run.StepContext, _command, _timeout, secrets, limits) {
+    process.send(subject, "run:" <> context.step_id)
+    let output_dir = path.join(context.workspace_path, "tmp")
+    let assert Ok(Nil) = simplifile.create_directory_all(output_dir)
+    let assert Ok(Nil) =
+      simplifile.write(path.join(output_dir, "review_doc.md"), contents)
+    step_artifact.from_command_result(
+      context.step_id,
+      0,
+      "ok\n",
+      "",
+      False,
+      secrets,
+      limits,
+    )
+  }
+}
+
+fn publication_attempt_records(
+  root: String,
+  publication_id: String,
+) -> List(record.RecordBody) {
+  ledger_records(root)
+  |> list.filter_map(fn(ledger_record) {
+    case ledger_record.body {
+      record.PublicationAttemptRecorded(publication_id: id, ..) as body ->
+        case id == publication_id {
+          True -> Ok(body)
+          False -> Error(Nil)
+        }
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn publication_attempt_id(root: String, publication_id: String) -> String {
+  let assert [record.PublicationAttemptRecorded(attempt_id: attempt_id, ..)] =
+    publication_attempt_records(root, publication_id)
+  attempt_id
+}
+
+fn publication_resume_state(
+  recorded: workflow_checkpoint.ArtifactWritten,
+) -> workflow_run.ResumeState {
+  workflow_run.ResumeState(
+    artifacts: dict.from_list([
+      #(
+        "materialize",
+        step_artifact.from_command_result(
+          "materialize",
+          0,
+          "ok\n",
+          "",
+          False,
+          [],
+          orchestrator().artifact_limits,
+        ),
+      ),
+    ]),
+    workspaces: dict.new(),
+    next_attempt_indexes: dict.new(),
+    run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+    recovery_evidence: workflow_outcome.NoStepRecovery,
+    pi_session_continuations: dict.new(),
+    contract_inputs_recorded: None,
+    contract_outputs_recorded: Some(recorded),
+  )
+}
+
 pub fn contracted_mapped_input_can_be_supplied_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-supplied-input"
@@ -5453,6 +5604,223 @@ pub fn contracted_invalid_json_file_output_fails_publication_test() {
       root
       <> "/.scherzo-state/artifacts/runs/run-1/outputs/implementation_pack.json",
     )
+}
+
+pub fn workflow_publication_success_records_planned_attempt_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/publication-success"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  write_publication_template(root)
+  let assert Ok(dag) = workflow_dag.parse(publication_workflow_yaml(True))
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: publication_output_command_step(subject, "# Review\n"),
+      checkpoint: checkpoint,
+    )
+  let orchestrator = publication_orchestrator(root)
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let attempts = publication_attempt_records(root, "review_doc")
+  let assert [
+    record.PublicationAttemptRecorded(
+      status: status,
+      manifest_ref: Some(manifest_ref),
+      retryable: retryable,
+      ..,
+    ),
+  ] = attempts
+  assert status == "planned"
+  assert retryable == False
+  assert manifest_ref
+    == "runs/run-1/publications/review_doc/"
+    <> publication_attempt_id(root, "review_doc")
+    <> ".json"
+  assert workflow_finished_outcome(root) == "completed"
+}
+
+pub fn workflow_without_publication_routes_records_no_publication_attempts_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/publication-no-routes"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  let assert Ok(dag) = workflow_dag.parse(publication_free_workflow_yaml())
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      publication_orchestrator(root),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, None),
+        command_step: publication_output_command_step(subject, "# Review\n"),
+        checkpoint: checkpoint,
+      ),
+    )
+
+  assert publication_attempt_records(root, "review_doc") == []
+  assert workflow_finished_outcome(root) == "completed"
+}
+
+pub fn workflow_publication_required_failure_is_durable_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/publication-required-failure"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  let assert Ok(dag) = workflow_dag.parse(publication_workflow_yaml(True))
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: publication_output_command_step(subject, "# Review\n"),
+      checkpoint: checkpoint,
+    )
+  let orchestrator = publication_orchestrator(root)
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert string.starts_with(
+    failure.reason,
+    "workflow_publication_required_failed:review_doc:",
+  )
+  let attempts = publication_attempt_records(root, "review_doc")
+  assert list.length(attempts) == 1
+  let assert [record.PublicationAttemptRecorded(status: status, ..)] = attempts
+  assert status == "failed"
+  assert workflow_finished_outcome(root) == "failed_fatal"
+}
+
+pub fn workflow_publication_optional_failure_remains_non_blocking_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/publication-optional-failure"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  let assert Ok(dag) = workflow_dag.parse(publication_workflow_yaml(False))
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: publication_output_command_step(subject, "# Review\n"),
+      checkpoint: checkpoint,
+    )
+  let orchestrator = publication_orchestrator(root)
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let attempts = publication_attempt_records(root, "review_doc")
+  assert list.length(attempts) == 1
+  let assert [record.PublicationAttemptRecorded(status: status, ..)] = attempts
+  assert status == "failed"
+  assert workflow_finished_outcome(root) == "completed"
+}
+
+pub fn resumed_publication_finalization_dedupes_attempt_recording_after_finish_crash_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/publication-finalization-dedupe"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  write_publication_template(root)
+  let assert Ok(dag) = workflow_dag.parse(publication_workflow_yaml(True))
+  let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let resumed_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 456 })
+  let crashing_checkpoint =
+    workflow_checkpoint.Writer(
+      ..base_checkpoint,
+      workflow_finished: fn(_finished) {
+        Error(workflow_checkpoint.CheckpointAppendFailed(
+          "simulated_workflow_finished_crash",
+        ))
+      },
+    )
+
+  let assert Error(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      publication_orchestrator(root),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, None),
+        command_step: publication_output_command_step(subject, "# Review\n"),
+        checkpoint: crashing_checkpoint,
+      ),
+    )
+
+  let output_manifest = read_output_manifest(root, "run-1")
+  let resume =
+    publication_resume_state(workflow_checkpoint.ArtifactWritten(
+      ref: "runs/run-1/outputs.v1.json",
+      sha256: hash.sha256_hex(
+        workflow_contract_manifest.output_manifest_to_string(output_manifest),
+      ),
+      bytes: string.length(workflow_contract_manifest.output_manifest_to_string(
+        output_manifest,
+      )),
+    ))
+
+  let assert Ok(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      publication_orchestrator(root),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, None),
+        checkpoint: resumed_checkpoint,
+      ),
+      resume,
+    )
+
+  assert list.length(publication_attempt_records(root, "review_doc")) == 1
+  assert workflow_finished_outcome(root) == "completed"
 }
 
 pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {

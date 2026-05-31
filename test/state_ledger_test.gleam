@@ -207,6 +207,23 @@ pub fn read_records_ignores_final_malformed_json_as_truncated_tail_test() {
   assert read.truncated_tail == True
 }
 
+pub fn append_idempotent_publication_attempt_records_test() {
+  let root = "test/tmp/state-ledger/publication-idempotent"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+  let run_started = workflow_run_started_record("workflow-started")
+  let publication = publication_attempt_record("publication-attempt", "planned")
+  let conflicting = publication_attempt_record("publication-attempt", "failed")
+
+  let assert Ok(Nil) = ledger.append(path, run_started, True)
+  let assert Ok(ledger.Appended) =
+    ledger.append_idempotent(path, publication, True)
+  let assert Ok(ledger.AlreadyRecorded(_)) =
+    ledger.append_idempotent(path, publication, True)
+  let assert Error(ledger.RecordIdConflict("publication-attempt")) =
+    ledger.append_idempotent(path, conflicting, True)
+}
+
 pub fn read_records_rejects_malformed_middle_line_test() {
   let root = "test/tmp/state-ledger/read-records-malformed-middle"
   test_helpers.reset_dir(root)
@@ -627,6 +644,56 @@ fn step_attempt_superseded_record(suffix: String) -> record.LedgerRecord {
       1,
       2,
       "retry",
+    ),
+  )
+}
+
+fn workflow_run_started_record(suffix: String) -> record.LedgerRecord {
+  record.with_id(
+    "workflow-run-started-" <> suffix,
+    8000,
+    record.WorkflowRunStarted(
+      "run-1",
+      "execplan",
+      "wf-1",
+      "issue-1",
+      "LIV-739",
+      "issue-fingerprint",
+      7999,
+      "root/run-1",
+    ),
+  )
+}
+
+fn publication_attempt_record(
+  record_id: String,
+  status: String,
+) -> record.LedgerRecord {
+  record.with_id(
+    record_id,
+    8001,
+    record.PublicationAttemptRecorded(
+      run_id: "run-1",
+      workflow_id: "execplan",
+      publication_id: "review_doc",
+      series_id: "task-1:execplan:review_doc",
+      attempt_id: "version-1",
+      status: status,
+      required: True,
+      retryable: status == "failed",
+      retry_execution_available: False,
+      version_id: Some("version-1"),
+      manifest_ref: Some("runs/run-1/publications/review_doc/version-1.json"),
+      manifest_sha256: Some("sha-1"),
+      manifest_bytes: Some(10),
+      error_code: case status == "failed" {
+        True -> Some("unknown_output")
+        False -> None
+      },
+      error_message: case status == "failed" {
+        True -> Some("missing")
+        False -> None
+      },
     ),
   )
 }

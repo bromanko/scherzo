@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/artifact_publication_manifest
 import scherzo/hash
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
@@ -162,6 +163,15 @@ pub type WorkflowOutputBlobWrite {
   )
 }
 
+pub type WorkflowPublicationManifestWrite {
+  WorkflowPublicationManifestWrite(
+    run_id: String,
+    publication_id: String,
+    attempt_key: String,
+    payload_json: String,
+  )
+}
+
 pub type StepFinished {
   StepFinished(
     run_id: String,
@@ -221,6 +231,10 @@ pub type Writer {
       Result(ArtifactWritten, CheckpointError),
     workflow_outputs_recorded: fn(WorkflowContractManifestRecorded) ->
       Result(Nil, CheckpointError),
+    write_publication_manifest: fn(WorkflowPublicationManifestWrite) ->
+      Result(ArtifactWritten, CheckpointError),
+    publication_attempt_recorded: fn(record.LedgerRecord) ->
+      Result(ledger.AppendIdempotentResult, CheckpointError),
     write_workflow_output_blob: fn(WorkflowOutputBlobWrite) ->
       Result(ArtifactWritten, CheckpointError),
     step_finished: fn(StepFinished, ArtifactWritten) ->
@@ -348,6 +362,22 @@ pub fn noop_writer() -> Writer {
       ))
     },
     workflow_outputs_recorded: fn(_) { Ok(Nil) },
+    write_publication_manifest: fn(write) {
+      Ok(ArtifactWritten(
+        ref: "runs/"
+          <> write.run_id
+          <> "/publications/"
+          <> write.publication_id
+          <> "/"
+          <> write.attempt_key
+          <> ".json",
+        sha256: hash.sha256_hex(write.payload_json),
+        bytes: bit_array.byte_size(bit_array.from_string(write.payload_json)),
+      ))
+    },
+    publication_attempt_recorded: fn(ledger_record) {
+      Ok(ledger.AlreadyRecorded(ledger_record))
+    },
     write_workflow_output_blob: fn(write) {
       Ok(ArtifactWritten(
         ref: "noop/"
@@ -733,6 +763,61 @@ pub fn ledger_writer_with_artifact_store(
           )
       }
     },
+    write_publication_manifest: fn(write) {
+      let ref =
+        artifact_publication_manifest.manifest_ref(
+          write.run_id,
+          write.publication_id,
+          write.attempt_key,
+        )
+      case reusable_publication_manifest(store, ref, write.payload_json) {
+        Ok(Some(artifact)) -> Ok(artifact)
+        Ok(None) -> {
+          let bytes = bit_array.from_string(write.payload_json)
+          case
+            artifact_store.write_immutable_artifact_bytes(store, ref, bytes)
+          {
+            Ok(artifact_store.ImmutableConflict) ->
+              case
+                reusable_publication_manifest(store, ref, write.payload_json)
+              {
+                Ok(Some(artifact)) -> Ok(artifact)
+                Ok(None) ->
+                  Error(CheckpointArtifactFailed(
+                    "publication_manifest_conflict:" <> ref,
+                  ))
+                Error(error) -> Error(error)
+              }
+            Ok(_) ->
+              Ok(ArtifactWritten(
+                ref: ref,
+                sha256: hash.sha256_hex(write.payload_json),
+                bytes: bit_array.byte_size(bytes),
+              ))
+            Error(error) ->
+              Error(CheckpointArtifactFailed(describe_artifact_error(error)))
+          }
+        }
+        Error(error) -> Error(error)
+      }
+    },
+    publication_attempt_recorded: fn(ledger_record) {
+      use ledger_path <- result.try(
+        ledger.path_for_workspace_root(workspace_root)
+        |> result.map_error(fn(error) {
+          CheckpointAppendFailed(describe_ledger_error(error))
+        }),
+      )
+      ledger.append_idempotent(ledger_path, ledger_record, True)
+      |> result.map_error(fn(error) {
+        case error {
+          ledger.AppendLedgerError(ledger_error) ->
+            CheckpointAppendFailed(describe_ledger_error(ledger_error))
+          ledger.RecordIdConflict(record_id) ->
+            CheckpointAppendFailed("record_id_conflict:" <> record_id)
+        }
+      })
+    },
     write_workflow_output_blob: fn(write) {
       use repair_generation <- result.try(current_repair_generation(
         workspace_root,
@@ -1032,6 +1117,46 @@ fn reusable_output_manifest(
           ))
       }
     }
+  }
+}
+
+fn reusable_publication_manifest(
+  store: artifact_store.Store,
+  ref: String,
+  desired: String,
+) -> Result(Option(ArtifactWritten), CheckpointError) {
+  case artifact_store.read_artifact_unverified(store, ref) {
+    Error(artifact_store.MissingStepArtifact(_)) -> Ok(None)
+    Error(error) ->
+      Error(CheckpointArtifactFailed(describe_artifact_error(error)))
+    Ok(existing) ->
+      case publication_manifest_replay_equivalent(existing, desired) {
+        True -> Ok(Some(artifact_from_contents(ref, existing)))
+        False ->
+          Error(CheckpointArtifactFailed(
+            "publication_manifest_conflict:" <> ref,
+          ))
+      }
+  }
+}
+
+fn publication_manifest_replay_equivalent(
+  existing: String,
+  desired: String,
+) -> Bool {
+  existing == desired
+  || normalize_publication_generated_at(existing)
+  == normalize_publication_generated_at(desired)
+}
+
+fn normalize_publication_generated_at(contents: String) -> String {
+  case string.split_once(contents, on: "\"generated_at_ms\":") {
+    Ok(#(before, generated_and_rest)) ->
+      case string.split_once(generated_and_rest, on: ",\"dry_run_manifest\"") {
+        Ok(#(_, rest)) -> before <> "\"dry_run_manifest\"" <> rest
+        Error(_) -> contents
+      }
+    Error(_) -> contents
   }
 }
 

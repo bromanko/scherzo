@@ -506,6 +506,33 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "PublicationAttemptRecorded",
+      "publication_attempt_recorded",
+      record.with_id(
+        "record-publication-attempt-recorded",
+        1004,
+        record.PublicationAttemptRecorded(
+          run_id: "workflow-run-1",
+          workflow_id: "research",
+          publication_id: "review_doc",
+          series_id: "issue-1:research:review_doc",
+          attempt_id: "version-1",
+          status: "planned",
+          required: False,
+          retryable: False,
+          retry_execution_available: False,
+          version_id: Some("version-1"),
+          manifest_ref: Some(
+            "runs/workflow-run-1/publications/review_doc/version-1.json",
+          ),
+          manifest_sha256: Some("pub-sha"),
+          manifest_bytes: Some(789),
+          error_code: None,
+          error_message: None,
+        ),
+      ),
+    ),
+    LedgerExample(
       "WorkflowRunDiagnostic",
       "workflow_run_diagnostic",
       record.with_id(
@@ -1550,6 +1577,8 @@ fn projection_fixture_projection() -> projection.Projection {
     ]),
     workflow_input_manifests: dict.new(),
     workflow_output_manifests: dict.new(),
+    publication_attempts: dict.new(),
+    publication_latest_by_series: dict.new(),
     workflow_repairs: dict.new(),
     step_attempts: dict.from_list([
       #(

@@ -81,3 +81,16 @@ A future service-backed store must either:
 
 Do not change workflow YAML, helper scripts, or durable refs as part of merely
 adding a new store backend.
+
+## Publication inspection
+
+Artifact publication state is retained locally in the state ledger plus immutable
+publication manifest artifacts under `.scherzo-state/artifacts/runs/<run-id>/publications/`.
+Operators can inspect that state without a running daemon by using:
+
+- `scripts/scherzoctl artifact publication list --run <run-id> --root <workspace-root>`
+- `scripts/scherzoctl artifact publication show --run <run-id> --publication <publication-id> --root <workspace-root>`
+
+`retryable` reports whether a failed planning attempt should eventually be retryable.
+This slice does not implement retry execution yet, so
+`retry_execution_available` remains `false`.
