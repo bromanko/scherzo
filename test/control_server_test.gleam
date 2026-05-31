@@ -8,6 +8,8 @@ import scherzo/control/client
 import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
+import scherzo/control/query/dto as query_dto
+import scherzo/control/query/types as query_types
 import scherzo/control/server
 import scherzo/session/event
 import scherzo/session/hub
@@ -128,6 +130,7 @@ fn slow_session_backend(sleep_ms: Int) -> server.Backend {
       process.sleep(sleep_ms)
       Ok(event.EventPage(events: [], next_cursor: cursor, truncated: False))
     },
+    query: fn(_) { Error(server_query_unsupported()) },
     apply_command: fn(operator_command, _) {
       Ok(command.applied(operator_command, None))
     },
@@ -139,16 +142,80 @@ fn event_hub_timeout_backend() -> server.Backend {
     list_sessions: fn(_) { Error(hub.ActorCallTimeout) },
     get_session: fn(_, _) { Error(hub.ActorCallTimeout) },
     events_after: fn(_, _, _, _) { Error(hub.ActorCallTimeout) },
+    query: fn(_) { Error(server_query_unsupported()) },
     apply_command: fn(operator_command, _) {
       Ok(command.applied(operator_command, None))
     },
   )
 }
 
+fn server_query_unsupported() -> query_types.QueryError {
+  query_types.QueryError(
+    query_types.UnsupportedQuery,
+    "query backend unavailable",
+  )
+}
+
+fn backend_with_query(
+  subject: process.Subject(hub.Message),
+  query_subject: process.Subject(query_types.QueryRequest),
+) -> server.Backend {
+  server.Backend(..server.event_hub_store(subject), query: fn(query) {
+    process.send(query_subject, query)
+    Ok(query_types.StatusResponse(
+      query_types.default_status_source(
+        daemon_id: "daemon-1",
+        boot_id: "boot-1",
+      )
+      |> query_dto.status_from_source,
+    ))
+  })
+}
+
 fn assert_session_backend_timeout_message(message: String) -> Nil {
   assert string.contains(message, "control server is reachable")
   assert string.contains(message, "session backend")
   assert string.contains(message, "configured timeout")
+}
+
+pub fn server_runs_authenticated_query_test() {
+  let subject = start_hub_with_session("session-query")
+  let query_subject = process.new_subject()
+  let #(server_handle, control_file) =
+    start_server_for_backend(
+      backend_with_query(subject, query_subject),
+      "token",
+      500,
+    )
+
+  let assert Ok(query_types.StatusResponse(status)) =
+    client.query(control_file, query_types.Status)
+  assert status.daemon_id == "daemon-1"
+  let assert Ok(query_types.Status) =
+    process.receive(query_subject, within: 1000)
+
+  server.stop(server_handle)
+  hub.stop(subject)
+}
+
+pub fn server_rejects_bad_token_before_query_backend_test() {
+  let subject = start_hub_with_session("session-query-bad-token")
+  let query_subject = process.new_subject()
+  let #(server_handle, control_file) =
+    start_server_for_backend(
+      backend_with_query(subject, query_subject),
+      "good-token",
+      500,
+    )
+  let bad_control_file = file.ControlFile(..control_file, token: "bad-token")
+
+  let assert Error(client.RequestFailed(code, _)) =
+    client.query(bad_control_file, query_types.Status)
+  assert code == "unauthorized"
+  let assert Error(Nil) = process.receive(query_subject, within: 100)
+
+  server.stop(server_handle)
+  hub.stop(subject)
 }
 
 pub fn server_rejects_bad_token_test() {

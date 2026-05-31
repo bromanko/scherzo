@@ -7,6 +7,8 @@ import gleam/result
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/control/command
+import scherzo/control/query/codec as query_codec
+import scherzo/control/query/types as query_types
 import scherzo/session/event
 import scherzo/session/json as session_json
 import scherzo/session/reason as session_reason
@@ -27,6 +29,7 @@ pub type Request {
     limit: Int,
   )
   StreamEvents(id: String, token: String, session_id: String, after: Int)
+  Query(id: String, token: String, query: query_types.QueryRequest)
   Pause(id: String, token: String)
   Resume(id: String, token: String)
   ReloadWorkflow(id: String, token: String)
@@ -82,6 +85,7 @@ type RequestFields {
     token: String,
     type_: String,
     session_id: Option(String),
+    query: Option(Dynamic),
     after: Int,
     limit: Int,
     issue_id: Option(String),
@@ -106,6 +110,7 @@ pub fn request_id(request: Request) -> String {
     GetSession(id, _, _) -> id
     GetEvents(id, _, _, _, _) -> id
     StreamEvents(id, _, _, _) -> id
+    Query(id, _, _) -> id
     Pause(id, _) -> id
     Resume(id, _) -> id
     ReloadWorkflow(id, _) -> id
@@ -129,6 +134,7 @@ pub fn request_token(request: Request) -> String {
     GetSession(_, token, _) -> token
     GetEvents(_, token, _, _, _) -> token
     StreamEvents(_, token, _, _) -> token
+    Query(_, token, _) -> token
     Pause(_, token) -> token
     Resume(_, token) -> token
     ReloadWorkflow(_, token) -> token
@@ -173,6 +179,12 @@ pub fn request_to_json(request: Request) -> json.Json {
         #("session_id", json.string(session_id)),
         #("after", json.int(after)),
         ..base_request_entries(id, token, "stream_events")
+      ]
+      |> json.object
+    Query(id, token, query) ->
+      [
+        #("query", query_codec.request_to_json(query)),
+        ..base_request_entries(id, token, "query")
       ]
       |> json.object
     Pause(id, token) -> base_request_entries(id, token, "pause") |> json.object
@@ -363,6 +375,11 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
               Ok(StreamEvents(fields.id, fields.token, session_id, after))
           }
       }
+    "query" ->
+      case required_query(fields) {
+        Ok(query) -> Ok(Query(fields.id, fields.token, query))
+        Error(err) -> Error(err)
+      }
     "pause" -> Ok(Pause(fields.id, fields.token))
     "resume" -> Ok(Resume(fields.id, fields.token))
     "reload" | "reload_workflow" -> Ok(ReloadWorkflow(fields.id, fields.token))
@@ -446,6 +463,24 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
         "unknown_command",
         "unknown command: " <> other,
       ))
+  }
+}
+
+fn required_query(
+  fields: RequestFields,
+) -> Result(query_types.QueryRequest, RequestError) {
+  case fields.query {
+    Some(query) ->
+      case query_codec.decode_request_dynamic(query) {
+        Ok(request) -> Ok(request)
+        Error(query_types.QueryError(code: code, message: message)) ->
+          Error(RequestError(
+            fields.id,
+            query_types.error_code_to_string(code),
+            message,
+          ))
+      }
+    None -> invalid(fields.id, "missing query payload")
   }
 }
 
@@ -640,6 +675,11 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use query <- decode.optional_field(
+    "query",
+    None,
+    decode.optional(decode.dynamic),
+  )
   use after <- decode.optional_field("after", 0, decode.int)
   use limit <- decode.optional_field("limit", 100, decode.int)
   use issue_id <- decode.optional_field(
@@ -708,6 +748,7 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     token: token,
     type_: type_,
     session_id: session_id,
+    query: query,
     after: after,
     limit: limit,
     issue_id: issue_id,
@@ -824,6 +865,15 @@ pub fn command_result_data(result: command.CommandResult) -> json.Json {
   command.command_result_to_json(result)
 }
 
+pub fn query_data(
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> json.Json {
+  case result {
+    Ok(response) -> query_codec.response_to_json(response)
+    Error(error) -> query_codec.error_to_json(error)
+  }
+}
+
 pub fn command_request(
   id: String,
   token: String,
@@ -850,6 +900,14 @@ pub fn command_request(
       RespondUi(id, token, session_id, request_id, response)
     command.RunScheduleNow(job_id) -> RunScheduleNow(id, token, job_id)
   }
+}
+
+pub fn query_request(
+  id: String,
+  token: String,
+  query: query_types.QueryRequest,
+) -> Request {
+  Query(id, token, query)
 }
 
 pub fn request_operator_command(
@@ -879,7 +937,8 @@ pub fn request_operator_command(
     | ListSessions(_, _)
     | GetSession(_, _, _)
     | GetEvents(_, _, _, _, _)
-    | StreamEvents(_, _, _, _) -> None
+    | StreamEvents(_, _, _, _)
+    | Query(_, _, _) -> None
   }
 }
 

@@ -1,13 +1,17 @@
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/control/remote_command_router
 import scherzo/control/remote_envelope
 import scherzo/control/remote_harness_hello
 import scherzo/log
+
+const max_in_flight_queries = 8
 
 pub type Settings {
   Settings(
@@ -38,6 +42,8 @@ pub type Dependencies(connection, timer) {
     list_sessions: fn() -> Result(List(remote_envelope.RemoteSession), String),
     apply_command: fn(command.OperatorCommand, Int) ->
       Result(command.CommandResult, Nil),
+    execute_query: fn(query_types.QueryRequest) ->
+      Result(query_types.QueryResponse, query_types.QueryError),
     dispatch_paused: fn(Int) -> Result(Bool, String),
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
@@ -59,6 +65,12 @@ pub opaque type Message {
   ReaderLine(Int, String)
   ReaderFailed(Int, String)
   ApplyCompleted(Int, String, command.OperatorCommand, command.CommandResult)
+  QueryCompleted(
+    Int,
+    String,
+    process.Pid,
+    Result(query_types.QueryResponse, query_types.QueryError),
+  )
   Shutdown(process.Subject(Nil))
 }
 
@@ -75,6 +87,7 @@ type State(connection, timer) {
     connection_generation: Int,
     router: remote_command_router.State,
     last_known_dispatch_paused: Bool,
+    query_workers: List(process.Pid),
   )
 }
 
@@ -98,6 +111,7 @@ pub fn start(
           connection_generation: 0,
           router: remote_command_router.new(),
           last_known_dispatch_paused: False,
+          query_workers: [],
         )
         |> schedule_attempt_connect(0)
       let selector = process.new_selector() |> process.select(subject)
@@ -153,6 +167,14 @@ fn handle_message(
         generation,
         command_id,
         operator_command,
+        result,
+      ))
+    QueryCompleted(generation, query_id, worker, result) ->
+      actor.continue(handle_query_completed(
+        state,
+        generation,
+        query_id,
+        worker,
         result,
       ))
     Shutdown(reply) -> {
@@ -297,6 +319,8 @@ fn handle_reader_line(
             command_id,
             operator_command,
           )
+        Ok(remote_envelope.RemoteQueryRequest(query_id, query)) ->
+          handle_query_request(state, connection, generation, query_id, query)
         Ok(_) -> {
           emit_log(state, "warn", "remote_client_unexpected_inbound", [])
           state
@@ -395,6 +419,52 @@ fn handle_server_command(
   }
 }
 
+fn handle_query_request(
+  state: State(connection, timer),
+  connection: connection,
+  generation: Int,
+  query_id: String,
+  query: query_types.QueryRequest,
+) -> State(connection, timer) {
+  case list.length(state.query_workers) >= max_in_flight_queries {
+    True ->
+      case
+        send_query_result(
+          connection,
+          state,
+          query_id,
+          Error(query_types.QueryError(
+            query_types.QueryOverloaded,
+            "query service overloaded",
+          )),
+        )
+      {
+        Ok(Nil) -> state
+        Error(message) ->
+          retry_after_send_failure(
+            state,
+            connection,
+            "query_result_send_failed",
+            message,
+          )
+      }
+    False -> {
+      let worker =
+        process.spawn_unlinked(fn() {
+          let worker = process.self()
+          let result = state.dependencies.execute_query(query)
+          let _ =
+            process.send(
+              state.subject,
+              QueryCompleted(generation, query_id, worker, result),
+            )
+          Nil
+        })
+      State(..state, query_workers: [worker, ..state.query_workers])
+    }
+  }
+}
+
 fn handle_reader_failed(
   state: State(connection, timer),
   generation: Int,
@@ -443,6 +513,34 @@ fn handle_apply_completed(
             state,
             connection,
             "command_result_send_failed",
+            message,
+          )
+      }
+    _, _ -> state
+  }
+}
+
+fn handle_query_completed(
+  state: State(connection, timer),
+  generation: Int,
+  query_id: String,
+  worker: process.Pid,
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> State(connection, timer) {
+  let state =
+    State(
+      ..state,
+      query_workers: remove_query_worker(state.query_workers, worker),
+    )
+  case generation == state.connection_generation, state.connection {
+    True, Some(connection) ->
+      case send_query_result(connection, state, query_id, result) {
+        Ok(Nil) -> state
+        Error(message) ->
+          retry_after_send_failure(
+            state,
+            connection,
+            "query_result_send_failed",
             message,
           )
       }
@@ -583,12 +681,28 @@ fn send_command_result(
   )
 }
 
+fn send_query_result(
+  connection: connection,
+  state: State(connection, timer),
+  query_id: String,
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> Result(Nil, String) {
+  remote_envelope.RemoteQueryResponse(query_id, result)
+  |> remote_envelope.to_string
+  |> state.dependencies.send_line(
+    connection,
+    _,
+    state.settings.connect_timeout_ms,
+  )
+}
+
 fn retry_after_send_failure(
   state: State(connection, timer),
   connection: connection,
   event: String,
   message: String,
 ) -> State(connection, timer) {
+  let state = cancel_query_workers(state)
   state.dependencies.close(connection)
   schedule_retry_after_failure(State(..state, connection: None), event, message)
 }
@@ -675,8 +789,22 @@ fn cancel_optional_timer(
   }
 }
 
+fn cancel_query_workers(
+  state: State(connection, timer),
+) -> State(connection, timer) {
+  list.each(state.query_workers, process.kill)
+  State(..state, query_workers: [])
+}
+
+fn remove_query_worker(
+  workers: List(process.Pid),
+  worker: process.Pid,
+) -> List(process.Pid) {
+  list.filter(workers, fn(existing) { existing != worker })
+}
+
 fn shutdown_runtime(state: State(connection, timer)) -> Nil {
-  let state = cancel_connection_timers(state)
+  let state = state |> cancel_connection_timers |> cancel_query_workers
   case state.connection {
     Some(connection) -> state.dependencies.close(connection)
     None -> Nil
