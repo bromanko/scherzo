@@ -738,7 +738,9 @@ pub fn apply(
       issue_fingerprint,
       observed_updated_at_ms,
       run_root,
-    ) ->
+    ) -> {
+      let ref =
+        record.linear_task_ref_fields(issue_id, Some(issue_identifier), None)
       Projection(
         ..projection,
         workflow_runs: dict.insert(
@@ -766,18 +768,16 @@ pub fn apply(
             issue_fingerprint: issue_fingerprint,
             observed_updated_at_ms: observed_updated_at_ms,
             run_root: run_root,
-            task_ref: record.legacy_linear_task_ref_fields(
-              issue_id,
-              issue_identifier,
-            ),
+            task_ref: ref,
           ),
         ),
         workflow_task_refs: dict.insert(
           projection.workflow_task_refs,
           run_id,
-          record.legacy_linear_task_ref_fields(issue_id, issue_identifier),
+          ref,
         ),
       )
+    }
     record.WorkflowRunStartedWithTask(
       run_id,
       workflow_id,
@@ -1305,7 +1305,7 @@ pub fn apply(
         workspace_path,
         session_id,
         session_file,
-        record.legacy_linear_task_ref_fields(issue_id, issue_identifier),
+        record.linear_task_ref_fields(issue_id, Some(issue_identifier), None),
       )
     record.StepAttemptPiSessionRecordedWithTask(
       run_id,

@@ -1,6 +1,7 @@
 import gleam/option.{None, Some}
 import scherzo/state/ledger_batch
 import scherzo/state/record
+import scherzo/task
 
 pub fn claim_started_batch_emits_expected_records_in_order_test() {
   let workflow_started =
@@ -21,7 +22,6 @@ pub fn claim_started_batch_emits_expected_records_in_order_test() {
       "issue-1",
       "ABC-1",
       "test/tmp/workspaces/ABC-1",
-      "run-1",
       2,
       3,
       456,
@@ -29,13 +29,37 @@ pub fn claim_started_batch_emits_expected_records_in_order_test() {
     == [
       workflow_started,
       record.KnownWorkspace("issue-1", "ABC-1", "test/tmp/workspaces/ABC-1"),
-      record.RunStarted(
-        "run-1",
-        "issue-1",
-        "ABC-1",
-        "test/tmp/workspaces/ABC-1",
-      ),
       record.IssueCounterUpdated("issue-1", "ABC-1", 2, 3, 456, None),
+    ]
+}
+
+pub fn worker_terminal_batches_do_not_duplicate_workflow_outcomes_test() {
+  let task_ref = task.TaskRef("linear", "issue-1", Some("ABC-1"), None)
+  let durable_task_ref =
+    record.linear_task_ref_fields("issue-1", Some("ABC-1"), None)
+  let counter =
+    record.IssueCounterUpdated("issue-1", "ABC-1", 0, 1, 789, Some("run-1"))
+
+  assert ledger_batch.to_bodies(ledger_batch.worker_succeeded(counter))
+    == [counter]
+
+  assert ledger_batch.to_bodies(ledger_batch.worker_failed(counter))
+    == [counter]
+
+  assert ledger_batch.to_bodies(ledger_batch.workflow_cancelled(
+      #("run-3", "default", task_ref),
+      9,
+    ))
+    == [
+      record.WorkflowRunFinishedWithTask(
+        "run-3",
+        "default",
+        "issue-1",
+        durable_task_ref,
+        "cancelled",
+        9,
+        0,
+      ),
     ]
 }
 
@@ -91,7 +115,6 @@ pub fn workflow_checkpoint_step_batches_preserve_record_shapes_test() {
         "run-1",
         "issue-1",
         "ABC-1",
-        record.legacy_linear_task_ref_fields("issue-1", "ABC-1"),
         "default",
         "workflow-fingerprint",
         "step-1",
@@ -107,7 +130,7 @@ pub fn workflow_checkpoint_step_batches_preserve_record_shapes_test() {
         "run-1",
         "issue-1",
         "ABC-1",
-        record.legacy_linear_task_ref_fields("issue-1", "ABC-1"),
+        record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
         "default",
         "workflow-fingerprint",
         "step-1",

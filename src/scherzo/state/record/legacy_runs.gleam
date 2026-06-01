@@ -4,6 +4,9 @@ import gleam/result
 
 pub const context_name = "legacy_runs"
 
+// Legacy run constructors/encoders are retained only for compatibility recovery
+// of retained ledgers with no current workflow_run records. Retire them after
+// legacy run recovery is removed.
 pub type Fields {
   Fields(
     run_id: Option(String),

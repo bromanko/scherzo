@@ -501,10 +501,6 @@ pub fn ledger_writer_with_artifact_store(
           observation.run_id,
           observation.issue_id,
           observation.issue_identifier,
-          record.legacy_linear_task_ref_fields(
-            observation.issue_id,
-            observation.issue_identifier,
-          ),
           observation.workflow_id,
           observation.workflow_fingerprint,
           observation.step_id,

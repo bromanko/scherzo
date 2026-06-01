@@ -166,7 +166,6 @@ pub fn retry_step_appends_repair_records_before_spawning_recovered_worker_test()
     "workflow_repair_requested",
     "step_attempt_superseded",
     "workflow_run_started",
-    "run_started",
     "known_workspace",
     "issue_counter_updated",
   ])
@@ -2003,7 +2002,6 @@ fn recovery_append_state(
       "workflow_repair_requested",
       "step_attempt_superseded",
       "workflow_run_started",
-      "run_started",
       "known_workspace",
       "issue_counter_updated",
     ])

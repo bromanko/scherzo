@@ -990,7 +990,6 @@ fn claim_ledger_append_requested() -> transition_types.Message {
       "issue-1",
       "ABC-1",
       "test/tmp/workspaces/ABC-1",
-      "run-1",
       0,
       1,
       456,
