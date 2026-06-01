@@ -360,8 +360,18 @@ fn resolve_doctor_checks(
     Error(name) ->
       Error(StartupError(
         "unknown_doctor_check",
-        "unknown doctor check: " <> name,
+        unknown_doctor_check_message(name),
       ))
+  }
+}
+
+fn unknown_doctor_check_message(name: String) -> String {
+  case name {
+    "linear-smoke" ->
+      "unknown doctor check: linear-smoke (retired; use tracker-smoke)"
+    "linear-contract" ->
+      "unknown doctor check: linear-contract (retired; use tracker-contract)"
+    _ -> "unknown doctor check: " <> name
   }
 }
 

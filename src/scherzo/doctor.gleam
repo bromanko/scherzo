@@ -87,8 +87,8 @@ pub fn parse_check_name(name: String) -> Result(CheckName, String) {
   case name {
     "workflow-config" -> Ok(WorkflowConfig)
     "scheduled-jobs" -> Ok(ScheduledJobs)
-    "tracker-contract" | "linear-contract" -> Ok(LinearContract)
-    "tracker-smoke" | "linear-smoke" -> Ok(LinearSmoke)
+    "tracker-contract" -> Ok(LinearContract)
+    "tracker-smoke" -> Ok(LinearSmoke)
     "instance-lock" -> Ok(InstanceLock)
     "workspace-hooks" -> Ok(WorkspaceHooks)
     "pi-probe" -> Ok(PiProbe)

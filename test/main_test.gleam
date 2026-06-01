@@ -12,11 +12,7 @@ pub fn parse_args_default_explicit_and_help_test() {
     == Ok(main.Run(main.Once, Some("scherzo.yaml")))
   assert main.parse_args(["--tracker-smoke", "scherzo.yaml"])
     == Ok(main.Run(main.LinearSmoke, Some("scherzo.yaml")))
-  assert main.parse_args(["--linear-smoke", "scherzo.yaml"])
-    == Ok(main.Run(main.LinearSmoke, Some("scherzo.yaml")))
   assert main.parse_args(["--tracker-contract-check", "scherzo.yaml"])
-    == Ok(main.Run(main.LinearContractCheck, Some("scherzo.yaml")))
-  assert main.parse_args(["--linear-contract-check", "scherzo.yaml"])
     == Ok(main.Run(main.LinearContractCheck, Some("scherzo.yaml")))
   assert main.parse_args(["--pi-probe", "scherzo.yaml"])
     == Ok(main.Run(main.PiProbe, Some("scherzo.yaml")))
@@ -122,6 +118,12 @@ pub fn parse_args_default_explicit_and_help_test() {
 pub fn parse_args_rejects_usage_errors_test() {
   assert main.parse_args(["one", "two"]) == Error(main.UsageError)
   assert main.parse_args(["--unknown"]) == Error(main.UsageError)
+  assert main.parse_args(["--linear-smoke"]) == Error(main.UsageError)
+  assert main.parse_args(["--linear-smoke", "scherzo.yaml"])
+    == Error(main.UsageError)
+  assert main.parse_args(["--linear-contract-check"]) == Error(main.UsageError)
+  assert main.parse_args(["--linear-contract-check", "scherzo.yaml"])
+    == Error(main.UsageError)
   assert main.parse_args(["doctor", "--unknown"]) == Error(main.UsageError)
   assert main.parse_args(["doctor", "--check"]) == Error(main.UsageError)
   assert main.parse_args(["doctor", "one.yaml", "two.yaml"])
@@ -139,6 +141,25 @@ pub fn parse_args_rejects_usage_errors_test() {
       "two.yaml",
     ])
     == Error(main.UsageError)
+}
+
+pub fn usage_error_hint_reports_retired_flag_replacements_test() {
+  assert main.usage_error_hint(["--linear-smoke"])
+    == Some("--linear-smoke was retired; use --tracker-smoke.")
+  assert main.usage_error_hint(["--linear-smoke", "scherzo.yaml"])
+    == Some("--linear-smoke was retired; use --tracker-smoke.")
+  assert main.usage_error_hint(["--linear-contract-check"])
+    == Some(
+      "--linear-contract-check was retired; use --tracker-contract-check.",
+    )
+  assert main.usage_error_hint([
+      "--linear-contract-check",
+      "scherzo.yaml",
+    ])
+    == Some(
+      "--linear-contract-check was retired; use --tracker-contract-check.",
+    )
+  assert main.usage_error_hint(["--unknown"]) == None
 }
 
 pub fn usage_mentions_required_operational_constraints_test() {
@@ -169,15 +190,9 @@ pub fn usage_mentions_required_operational_constraints_test() {
   )
   assert string.contains(usage, "--once")
   assert string.contains(usage, "--tracker-smoke")
-  assert string.contains(
-    usage,
-    "--linear-smoke          Compatibility alias for --tracker-smoke",
-  )
+  assert !string.contains(usage, "--linear-smoke")
   assert string.contains(usage, "--tracker-contract-check")
-  assert string.contains(
-    usage,
-    "--linear-contract-check Compatibility alias for --tracker-contract-check",
-  )
+  assert !string.contains(usage, "--linear-contract-check")
   assert string.contains(usage, "--linear-attach-comment-file")
   assert string.contains(usage, "<comment-id> <file.md>")
   assert string.contains(usage, "mutates Linear")
