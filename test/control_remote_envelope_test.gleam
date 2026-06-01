@@ -1,6 +1,7 @@
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/command
+import scherzo/control/query/dto as query_dto
 import scherzo/control/query/types as query_types
 import scherzo/control/remote_envelope
 
@@ -16,6 +17,10 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
   assert_roundtrip(remote_envelope.RemoteQueryRequest(
     "query-1",
     query_types.Status,
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryRequest(
+    "query-1-metrics",
+    query_types.Metrics,
   ))
   assert_roundtrip(remote_envelope.RemoteCommandReceipt(
     "cmd-2",
@@ -45,6 +50,16 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
         ),
       ),
     ),
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryResponse(
+    "query-2-metrics",
+    Ok(query_types.MetricsResponse(
+      query_types.default_operational_metrics_source(
+        daemon_id: "daemon-1",
+        boot_id: "boot-1",
+      )
+      |> query_dto.operational_metrics_from_source,
+    )),
   ))
   assert_roundtrip(remote_envelope.RemoteQueryResponse(
     "query-3",

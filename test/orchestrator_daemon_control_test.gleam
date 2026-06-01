@@ -8,6 +8,7 @@ import scherzo/config/types as config_types
 import scherzo/control/client
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
 import scherzo/error
 import scherzo/handoff
@@ -489,6 +490,51 @@ pub fn daemon_control_server_uses_extended_command_timeout_test() {
   assert command_timeout_ms > 500
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_metrics_query_reports_runtime_counts_test() {
+  let candidate = issue("metrics-issue", "ABC-METRICS", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let #(workflow_path, _root) =
+    write_workflow_with_limits("test/tmp/daemon-control-metrics", 1, 3, 3)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      disabled_handoff(),
+      hub_subject,
+      long_running_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "dispatch_started", 20)
+
+  let assert Ok(paused) =
+    daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
+  assert command.status_to_string(paused.status) == "applied"
+  let assert Ok(query_types.MetricsResponse(metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+
+  assert metrics.schema_version
+    == query_types.operational_metrics_schema_version
+  assert metrics.daemon_id != ""
+  assert metrics.boot_id != ""
+  assert metrics.sampled_at_ms == 42
+  assert metrics.dispatch_paused
+  assert metrics.workflow_count == 1
+  assert metrics.scheduled_job_count == 0
+  assert metrics.active_sessions == 1
+  assert metrics.running_workers == 1
+  assert metrics.running_scheduled_workers == 0
+  assert metrics.queued_claims == 0
+  assert metrics.token_totals.total == 0
+
+  test_async.release_barrier(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
 }
 
 pub fn daemon_control_server_routes_authenticated_command_to_actor_test() {

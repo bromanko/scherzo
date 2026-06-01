@@ -365,7 +365,7 @@ pub fn daemon_remote_query_returns_status_response_test() {
   )
   let assert Ok(remote_envelope.RemoteQueryResponse("query-1", Ok(response))) =
     receive_envelope_of_kind(wire.outbound, "query_response")
-  let query_types.StatusResponse(query_types.StatusDto(
+  let assert query_types.StatusResponse(query_types.StatusDto(
     daemon_id: daemon_id,
     boot_id: boot_id,
     dispatch_paused: dispatch_paused,
@@ -376,7 +376,7 @@ pub fn daemon_remote_query_returns_status_response_test() {
   assert boot_id != ""
   assert dispatch_paused == False
   assert ui_server_enabled == True
-  assert supported_queries == ["status"]
+  assert supported_queries == ["status", "metrics"]
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   assert test_async.expect_message(stops) == "stop"

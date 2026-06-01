@@ -51,6 +51,13 @@ pub fn response_to_json(response: types.QueryResponse) -> json.Json {
         #("type", json.string(types.response_type(response))),
         #("status", dto.status_to_json(status)),
       ])
+    types.MetricsResponse(metrics) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #("metrics", dto.operational_metrics_to_json(metrics)),
+      ])
   }
 }
 
@@ -110,6 +117,7 @@ type ResponseFields {
     ok: Option(Bool),
     type_: Option(String),
     status: Option(Dynamic),
+    metrics: Option(Dynamic),
     error: Option(ErrorFields),
   )
 }
@@ -149,6 +157,11 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     None,
     decode.optional(decode.dynamic),
   )
+  use metrics <- decode.optional_field(
+    "metrics",
+    None,
+    decode.optional(decode.dynamic),
+  )
   use error <- decode.optional_field(
     "error",
     None,
@@ -159,6 +172,7 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     ok: ok,
     type_: type_,
     status: status,
+    metrics: metrics,
     error: error,
   ))
 }
@@ -185,6 +199,7 @@ fn request_from_fields(
     Ok(Nil) ->
       case fields.type_ {
         Some("status") -> Ok(types.Status)
+        Some("metrics") -> Ok(types.Metrics)
         Some(other) ->
           Error(types.QueryError(
             types.UnsupportedQuery,
@@ -214,21 +229,45 @@ fn response_from_fields(
 fn decode_success_response(
   fields: ResponseFields,
 ) -> Result(types.QueryResponse, types.QueryError) {
-  case fields.type_, fields.status {
-    Some("status"), Some(status) ->
-      dto.decode_status_dynamic(status) |> result.map(types.StatusResponse)
-    Some("status"), None ->
-      Error(types.QueryError(
-        types.QueryBackendFailed,
-        "missing query response payload",
-      ))
-    Some(other), _ ->
+  case fields.type_ {
+    Some("status") -> decode_status_response(fields.status)
+    Some("metrics") -> decode_metrics_response(fields.metrics)
+    Some(other) ->
       Error(types.QueryError(
         types.UnsupportedQuery,
         "unsupported query type: " <> other,
       ))
-    None, _ ->
+    None ->
       Error(types.QueryError(types.QueryBackendFailed, "missing query type"))
+  }
+}
+
+fn decode_status_response(
+  status: Option(Dynamic),
+) -> Result(types.QueryResponse, types.QueryError) {
+  case status {
+    Some(status) ->
+      dto.decode_status_dynamic(status) |> result.map(types.StatusResponse)
+    None ->
+      Error(types.QueryError(
+        types.QueryBackendFailed,
+        "missing query response payload",
+      ))
+  }
+}
+
+fn decode_metrics_response(
+  metrics: Option(Dynamic),
+) -> Result(types.QueryResponse, types.QueryError) {
+  case metrics {
+    Some(metrics) ->
+      dto.decode_operational_metrics_dynamic(metrics)
+      |> result.map(types.MetricsResponse)
+    None ->
+      Error(types.QueryError(
+        types.QueryBackendFailed,
+        "missing query response payload",
+      ))
   }
 }
 

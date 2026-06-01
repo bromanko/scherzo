@@ -309,6 +309,10 @@ pub fn scheduled_worker_handles(
   dict.values(registry.scheduled_workers)
 }
 
+pub fn scheduled_worker_count(registry: Registry) -> Int {
+  dict.size(registry.scheduled_workers)
+}
+
 pub fn worker_issue_ids(registry: Registry) -> List(String) {
   registry.workers |> dict.values |> list.map(fn(handle) { handle.issue_id })
 }

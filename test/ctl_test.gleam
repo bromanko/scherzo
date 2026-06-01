@@ -152,6 +152,47 @@ fn query_status_response() -> query_types.QueryResponse {
   )
 }
 
+fn query_metrics_response() -> query_types.QueryResponse {
+  query_types.MetricsResponse(query_types.OperationalMetricsDto(
+    schema_version: query_types.operational_metrics_schema_version,
+    daemon_id: "daemon-query",
+    boot_id: "boot-query",
+    sampled_at_ms: 456,
+    dispatch_paused: True,
+    ui_server_enabled: False,
+    remote_client_status: "disabled",
+    workflow_count: 2,
+    scheduled_job_count: 1,
+    active_sessions: 3,
+    running_workers: 2,
+    running_scheduled_workers: 1,
+    queued_claims: 4,
+    pending_dispatch_validations: 5,
+    claimed_tasks: 6,
+    retry_tasks: 7,
+    parked_tasks: 8,
+    completed_tasks: 9,
+    poll_generation: 10,
+    poll_in_flight: False,
+    poll_timer_active: True,
+    retry_timer_count: 11,
+    retry_refresh_in_flight_count: 12,
+    scheduled_due_count: 13,
+    scheduled_pending_count: 14,
+    scheduled_retry_count: 15,
+    scheduled_report_retry_count: 16,
+    scheduled_retry_timer_count: 17,
+    scheduled_report_retry_timer_count: 18,
+    token_totals: query_types.TokenTotalsDto(
+      input: 19,
+      output: 20,
+      cache_read: 21,
+      cache_write: 22,
+      total: 42,
+    ),
+  ))
+}
+
 fn output(subject: process.Subject(OutMsg)) -> ctl.Output {
   ctl.Output(line: subject_line(subject), inline: subject_inline(subject))
 }
@@ -228,6 +269,39 @@ pub fn query_status_human_executes_query_and_formats_status_test() {
     ]
 }
 
+pub fn query_metrics_human_executes_query_and_formats_metrics_test() {
+  let path = "test/tmp/ctl-query/human-metrics-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let query_calls = process.new_subject()
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, ""),
+      query: fn(control_file, query) {
+        process.send(query_calls, #(control_file, query))
+        Ok(query_metrics_response())
+      },
+    )
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Query(Some(path), False, query_types.Metrics),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(#(called_control_file, called_query)) =
+    process.receive(query_calls, within: 1000)
+  assert called_control_file.token == "token"
+  assert called_query == query_types.Metrics
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "daemon_id: daemon-query")
+  assert string.contains(transcript, "active_sessions: 3")
+  assert string.contains(transcript, "running_workers: 2")
+  assert string.contains(transcript, "token_total: 42")
+}
+
 pub fn query_status_json_uses_raw_request_with_query_payload_test() {
   let path = "test/tmp/ctl-query/json-control.json"
   write_control_file(path)
@@ -272,6 +346,10 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
   assert ctl.parse(["ps", "--json"]) == Ok(ctl.Ps(None, True))
   assert ctl.parse(["query", "status", "--json"])
     == Ok(ctl.Query(None, True, query_types.Status))
+  assert ctl.parse(["query", "metrics"])
+    == Ok(ctl.Query(None, False, query_types.Metrics))
+  assert ctl.parse(["query", "metrics", "--json"])
+    == Ok(ctl.Query(None, True, query_types.Metrics))
   assert ctl.parse(["session", "ABC-1", "--control-file", "state/control.json"])
     == Ok(ctl.Session(Some("state/control.json"), False, "ABC-1"))
   assert ctl.parse(["events", "ABC-1"])
