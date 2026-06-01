@@ -6,24 +6,19 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import scherzo/agent/run_attempt
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/artifact_publication_executor
 import scherzo/artifact_publication_recording
-import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/log
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
 import scherzo/process_ext
-import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/structured_output
-import scherzo/structured_output_metadata
-import scherzo/structured_output_source
 import scherzo/structured_output_tool_spec
 import scherzo/template
 import scherzo/tracker
@@ -37,10 +32,11 @@ import scherzo/workflow_identity
 import scherzo/workflow_outcome
 import scherzo/workflow_recovery_checkpoint_guard
 import scherzo/workflow_run/contract_io
+import scherzo/workflow_run/step_context as step_context_internal
+import scherzo/workflow_run/step_execution
 import scherzo/workflow_run/workstream_handoff
 import scherzo/workflow_scheduler
 import scherzo/workflow_step_recovery
-import scherzo/workflow_structured_retry
 import scherzo/workspace_profile
 import scherzo/workspace_run
 
@@ -331,12 +327,10 @@ pub fn default_dependencies() -> Dependencies {
     after_step: workspace_run.after_step,
     cleanup_run: workspace_run.cleanup_run,
     command_step: fn(context, command, timeout_ms, secrets, limits) {
-      command_step.run_with_env(
-        context.step_id,
+      step_execution.default_command_step(
+        internal_step_context(context),
         command,
-        context.workspace_path,
         timeout_ms,
-        step_command_env(context),
         secrets,
         limits,
       )
@@ -352,28 +346,109 @@ pub fn default_dependencies() -> Dependencies {
       command_ready,
       record_pi_session,
     ) {
-      let command_subject = process.new_subject()
-      let redaction_secrets =
-        step_redaction_secrets(context, effective_config_secrets(effective))
-      run_attempt.run_prompt_mode_in_workspace(
+      step_execution.default_agent_step(
         issue,
+        internal_step_context(context),
         prompt_mode,
         attempt_context,
-        config_types.with_pi_env(effective, step_command_env(context)),
+        effective,
         tracker_client,
-        fn(_, update) {
-          emit_update(agent_types.redact_runner_update(
-            update,
-            redaction_secrets,
-          ))
-        },
-        command_subject,
-        fn() { command_ready(command_subject) },
-        context.workspace_path,
+        emit_update,
+        command_ready,
         record_pi_session,
       )
     },
     checkpoint: workflow_checkpoint.noop_writer(),
+  )
+}
+
+fn step_execution_dependencies(
+  dependencies: Dependencies,
+) -> step_execution.Dependencies {
+  step_execution.Dependencies(
+    command_step: fn(context, command, timeout_ms, secrets, limits) {
+      dependencies.command_step(
+        external_step_context(context),
+        command,
+        timeout_ms,
+        secrets,
+        limits,
+      )
+    },
+    agent_step: fn(
+      issue,
+      context,
+      prompt_mode,
+      attempt_context,
+      effective,
+      tracker_client,
+      emit_update,
+      command_ready,
+      record_pi_session,
+    ) {
+      dependencies.agent_step(
+        issue,
+        external_step_context(context),
+        prompt_mode,
+        attempt_context,
+        effective,
+        tracker_client,
+        emit_update,
+        command_ready,
+        record_pi_session,
+      )
+    },
+    checkpoint: dependencies.checkpoint,
+  )
+}
+
+fn internal_step_context(
+  context: StepContext,
+) -> step_context_internal.StepContext {
+  step_context_internal.StepContext(
+    workflow_id: context.workflow_id,
+    run_id: context.run_id,
+    run_root: context.run_root,
+    workflow_bundle_dir: context.workflow_bundle_dir,
+    step_id: context.step_id,
+    attempt_index: context.attempt_index,
+    workspace_name: context.workspace_name,
+    workspace_path: context.workspace_path,
+    workspace_context: context.workspace_context,
+    config_dir: context.config_dir,
+    issue_id: context.issue_id,
+    issue_identifier: context.issue_identifier,
+    run_kind: context.run_kind,
+    scheduled_job_id: context.scheduled_job_id,
+    schedule_due_at: context.schedule_due_at,
+    schedule_started_at: context.schedule_started_at,
+    run_attempt: context.run_attempt,
+    extra_pi_env: context.extra_pi_env,
+  )
+}
+
+fn external_step_context(
+  context: step_context_internal.StepContext,
+) -> StepContext {
+  StepContext(
+    workflow_id: context.workflow_id,
+    run_id: context.run_id,
+    run_root: context.run_root,
+    workflow_bundle_dir: context.workflow_bundle_dir,
+    step_id: context.step_id,
+    attempt_index: context.attempt_index,
+    workspace_name: context.workspace_name,
+    workspace_path: context.workspace_path,
+    workspace_context: context.workspace_context,
+    config_dir: context.config_dir,
+    issue_id: context.issue_id,
+    issue_identifier: context.issue_identifier,
+    run_kind: context.run_kind,
+    scheduled_job_id: context.scheduled_job_id,
+    schedule_due_at: context.schedule_due_at,
+    schedule_started_at: context.schedule_started_at,
+    run_attempt: context.run_attempt,
+    extra_pi_env: context.extra_pi_env,
   )
 }
 
@@ -382,25 +457,6 @@ fn profile_redaction_secrets(
   secrets: List(String),
 ) -> List(String) {
   list.append(secrets, workspace_profile.profile_redaction_values(profile))
-}
-
-fn step_redaction_secrets(
-  context: StepContext,
-  secrets: List(String),
-) -> List(String) {
-  list.append(
-    secrets,
-    workspace_profile.driver_context_redaction_values(context.workspace_context),
-  )
-}
-
-fn effective_config_secrets(
-  config: config_types.EffectiveConfig,
-) -> List(String) {
-  case config.tracker.api_key {
-    Some(value) -> [value]
-    None -> []
-  }
 }
 
 pub fn empty_contract_run_values() -> ContractRunValues {
@@ -2203,7 +2259,7 @@ fn spawn_prepared_steps_loop(
             workspace.attempt_index,
             session_id,
             None,
-            step_is_continuation_capable(step, orchestrator),
+            step_execution.continuation_capable(step, orchestrator),
           )
       }
       case start_result {
@@ -2218,8 +2274,8 @@ fn spawn_prepared_steps_loop(
         Ok(Nil) -> {
           let pid =
             process.spawn(fn() {
-              let #(artifact, tokens, final_issue, turns) =
-                run_step(
+              let result =
+                step_execution.run(
                   step,
                   workspace,
                   issue,
@@ -2227,7 +2283,7 @@ fn spawn_prepared_steps_loop(
                   orchestrator,
                   tracker_client,
                   secrets,
-                  dependencies,
+                  step_execution_dependencies(dependencies),
                   artifacts,
                   pi_session_continuations,
                   profile,
@@ -2236,10 +2292,10 @@ fn spawn_prepared_steps_loop(
                 subject,
                 StepExecutionResult(
                   step_id: step.id,
-                  artifact: artifact,
-                  tokens: tokens,
-                  final_issue: final_issue,
-                  turns: turns,
+                  artifact: result.artifact,
+                  tokens: result.tokens,
+                  final_issue: result.final_issue,
+                  turns: result.turns,
                 ),
               )
             })
@@ -2322,7 +2378,7 @@ fn is_fatal_result(
   result: StepExecutionResult,
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
 ) -> Bool {
-  case is_recovery_resume_validation_artifact(result.artifact) {
+  case step_execution.is_recovery_resume_validation_artifact(result.artifact) {
     True -> True
     False ->
       case step_artifact.succeeded(result.artifact.status) {
@@ -2776,7 +2832,7 @@ fn terminal_fatal_batch_failure(
     ))
   Error(WorkflowRunFailure(
     reason: reason <> output_suffix <> cleanup_suffix,
-    agent_reason: agent_reason_for_artifact(result.artifact),
+    agent_reason: step_execution.agent_reason_for_artifact(result.artifact),
     artifacts: artifacts,
     run_root: run_root,
     failed_step_id: Some(result.step_id),
@@ -2911,13 +2967,15 @@ fn execute_step_recovery(
         }
         Ok(snapshot) ->
           case
-            recovery_context(step_context(
-              step,
-              workspace,
-              issue,
-              orchestrator,
-              profile,
-            ))
+            recovery_context(
+              external_step_context(step_context_internal.from_prepared(
+                step,
+                workspace,
+                issue,
+                orchestrator,
+                profile,
+              )),
+            )
           {
             Error(spec_error) -> {
               let failure_reason =
@@ -2957,8 +3015,8 @@ fn execute_step_recovery(
               let effective =
                 effective_for_recovery(orchestrator, step, config.model)
               let attempt_context =
-                workflow_attempt_context(
-                  context,
+                step_execution.workflow_attempt_context(
+                  internal_step_context(context),
                   dag,
                   orchestrator,
                   prompt_mode,
@@ -3716,1068 +3774,6 @@ fn after_step_down_reason(
     process.Killed -> "after_step_killed:" <> step_id
     process.Abnormal(_) -> "after_step_crashed:" <> step_id
   }
-}
-
-fn run_step(
-  step: workflow_dag.WorkflowStep,
-  workspace: workspace_run.PreparedStepWorkspace,
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  tracker_client: tracker.Client,
-  secrets: List(String),
-  dependencies: Dependencies,
-  artifacts: Dict(String, step_artifact.StepArtifact),
-  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
-  profile: config_types.WorkspaceHookProfile,
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  let context = step_context(step, workspace, issue, orchestrator, profile)
-  case step.kind {
-    workflow_dag.CommandStep(run, timeout_ms) -> {
-      let timeout_ms = option.unwrap(timeout_ms, 60_000)
-      #(
-        dependencies.command_step(
-          context,
-          run,
-          timeout_ms,
-          secrets,
-          orchestrator.artifact_limits,
-        ),
-        session_tokens.zero_token_totals(),
-        None,
-        0,
-      )
-    }
-    workflow_dag.AgentStep(prompt_ref, structured_output_spec) ->
-      run_agent_step(
-        step,
-        prompt_ref,
-        structured_output_spec,
-        context,
-        issue,
-        dag,
-        orchestrator,
-        tracker_client,
-        secrets,
-        dependencies,
-        artifacts,
-        pi_session_continuations,
-      )
-  }
-}
-
-fn run_agent_step(
-  step: workflow_dag.WorkflowStep,
-  prompt_ref: workflow_dag.PromptRef,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-  context: StepContext,
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  tracker_client: tracker.Client,
-  secrets: List(String),
-  dependencies: Dependencies,
-  artifacts: Dict(String, step_artifact.StepArtifact),
-  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  case prepare_structured_output_tool_context(context, structured_output_spec) {
-    Error(spec_error) -> #(
-      step_artifact.from_command_result(
-        step.id,
-        1,
-        "",
-        "structured-output tool spec generation failed: "
-          <> spec_error.code
-          <> ":"
-          <> spec_error.message,
-        False,
-        secrets,
-        orchestrator.artifact_limits,
-      ),
-      session_tokens.zero_token_totals(),
-      None,
-      0,
-    )
-    Ok(context) ->
-      case
-        prompt_mode_for_step(
-          step,
-          prompt_ref,
-          issue,
-          artifacts,
-          pi_session_continuations,
-          context,
-        )
-      {
-        Error(Nil) -> #(
-          step_artifact.from_command_result(
-            step.id,
-            1,
-            "",
-            "template render failed",
-            False,
-            secrets,
-            orchestrator.artifact_limits,
-          ),
-          session_tokens.zero_token_totals(),
-          None,
-          0,
-        )
-        Ok(prompt_mode) -> {
-          let effective = effective_for_step(orchestrator, step)
-          let continuation = case dict.get(pi_session_continuations, step.id) {
-            Ok(value) -> Some(value)
-            Error(Nil) -> None
-          }
-          case
-            run_agent_invocation(
-              issue,
-              context,
-              dag,
-              orchestrator,
-              prompt_mode,
-              continuation,
-              effective,
-              tracker_client,
-              dependencies,
-            )
-          {
-            Ok(success) ->
-              agent_success_result(
-                step,
-                context,
-                success,
-                structured_output_spec,
-                issue,
-                dag,
-                orchestrator,
-                tracker_client,
-                secrets,
-                dependencies,
-                effective,
-              )
-            Error(failure) ->
-              agent_failure_result(
-                step,
-                context,
-                failure,
-                structured_output_spec,
-                issue,
-                dag,
-                orchestrator,
-                tracker_client,
-                secrets,
-                dependencies,
-                effective,
-              )
-          }
-        }
-      }
-  }
-}
-
-fn prepare_structured_output_tool_context(
-  context: StepContext,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-) -> Result(StepContext, structured_output_tool_spec.ToolSpecError) {
-  case structured_output_spec {
-    Some(spec) ->
-      case structured_output_tool_spec.schema_path_for_source(spec.source) {
-        Some(_) -> {
-          use tool_spec <- result.try(
-            structured_output_tool_spec.for_step(
-              structured_output_tool_spec.BuildInput(
-                workflow_id: context.workflow_id,
-                run_id: context.run_id,
-                step_id: context.step_id,
-                attempt_index: context.attempt_index,
-                repository_root: structured_output.validator_repo_root(
-                  context.config_dir,
-                  context.workspace_path,
-                ),
-                spec: spec,
-              ),
-            ),
-          )
-          use written <- result.try(structured_output_tool_spec.write(
-            tool_spec,
-            context.run_root,
-          ))
-          Ok(
-            StepContext(..context, extra_pi_env: [
-              structured_output_tool_spec.env_pair(written),
-            ]),
-          )
-        }
-        None -> Ok(context)
-      }
-    None -> Ok(context)
-  }
-}
-
-fn run_agent_invocation(
-  issue: tracker_issue.Issue,
-  context: StepContext,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  prompt_mode: workflow_attempt.AgentPromptMode,
-  continuation: Option(workflow_attempt.PiContinuation),
-  effective: config_types.EffectiveConfig,
-  tracker_client: tracker.Client,
-  dependencies: Dependencies,
-) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  let attempt_context =
-    workflow_attempt_context(
-      context,
-      dag,
-      orchestrator,
-      prompt_mode,
-      continuation,
-    )
-  dependencies.agent_step(
-    issue,
-    context,
-    prompt_mode,
-    attempt_context,
-    effective,
-    tracker_client,
-    fn(_) { Nil },
-    fn(_) { Nil },
-    fn(observation) {
-      ignore_secondary_checkpoint_result(
-        dependencies.checkpoint.step_pi_session_recorded(observation),
-      )
-    },
-  )
-}
-
-fn agent_failure_result(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  failure: agent_types.WorkerFailure,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  tracker_client: tracker.Client,
-  secrets: List(String),
-  dependencies: Dependencies,
-  effective: config_types.EffectiveConfig,
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  let artifact =
-    agent_failure_artifact(
-      step.id,
-      failure,
-      secrets,
-      orchestrator.artifact_limits,
-    )
-  case
-    workflow_structured_retry.transient_agent_failure_diagnostic(
-      structured_output_spec,
-      failure,
-      secrets,
-    )
-  {
-    Some(#(spec, initial_diagnostic)) ->
-      retry_structured_output(
-        step,
-        context,
-        workflow_structured_retry.agent_failure_as_success(failure),
-        workflow_structured_retry.agent_failure_artifact_with_structured_output(
-          artifact,
-          failure,
-          spec,
-          secrets,
-        ),
-        Some(spec),
-        initial_diagnostic,
-        issue,
-        dag,
-        orchestrator,
-        tracker_client,
-        secrets,
-        dependencies,
-        effective,
-      )
-    None -> #(artifact, failure.tokens, failure.final_issue, 0)
-  }
-}
-
-fn agent_success_result(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  success: agent_types.WorkerSuccess,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  tracker_client: tracker.Client,
-  secrets: List(String),
-  dependencies: Dependencies,
-  effective: config_types.EffectiveConfig,
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  let artifact =
-    agent_success_artifact(
-      step,
-      context,
-      success,
-      structured_output_spec,
-      secrets,
-      orchestrator.artifact_limits,
-      dependencies.checkpoint,
-    )
-  case structured_output_retry_diagnostic(structured_output_spec, artifact) {
-    None -> #(artifact, success.tokens, success.final_issue, success.turns)
-    Some(initial_diagnostic) ->
-      retry_structured_output(
-        step,
-        context,
-        success,
-        artifact,
-        structured_output_spec,
-        initial_diagnostic,
-        issue,
-        dag,
-        orchestrator,
-        tracker_client,
-        secrets,
-        dependencies,
-        effective,
-      )
-  }
-}
-
-fn structured_output_retry_diagnostic(
-  spec: Option(workflow_dag.StructuredOutputSpec),
-  artifact: step_artifact.StepArtifact,
-) -> Option(step_artifact.StructuredOutputRetryDiagnostic) {
-  case spec {
-    Some(spec) ->
-      case
-        spec.required
-        && spec.validation_retries > 0
-        && structured_output_artifact_retryable(artifact)
-      {
-        True -> structured_output_attempt_diagnostic(1, artifact)
-        False -> None
-      }
-    None -> None
-  }
-}
-
-fn structured_output_artifact_retryable(
-  artifact: step_artifact.StepArtifact,
-) -> Bool {
-  case artifact.structured_output {
-    Some(step_artifact.StructuredOutputError(_, _, _, Some(details), _)) ->
-      details.retryable
-    _ -> is_structured_output_validation_failure(artifact.failure_code)
-  }
-}
-
-fn is_structured_output_validation_failure(code: Option(String)) -> Bool {
-  case code {
-    Some("structured_output_artifact_write_failed")
-    | Some("structured_output_json_schema_config_error")
-    | Some("structured_output_command_config_error")
-    | Some("structured_output_command_timeout") -> False
-    Some(value) -> string.starts_with(value, "structured_output_")
-    None -> False
-  }
-}
-
-fn structured_output_attempt_diagnostic(
-  attempt: Int,
-  artifact: step_artifact.StepArtifact,
-) -> Option(step_artifact.StructuredOutputRetryDiagnostic) {
-  case artifact.structured_output {
-    Some(step_artifact.StructuredOutputValid(_)) ->
-      Some(step_artifact.StructuredOutputRetryDiagnostic(
-        attempt: attempt,
-        status: "valid",
-        failure_code: None,
-        message: "required structured output validated",
-      ))
-    Some(step_artifact.StructuredOutputError(_, _, message, details, _)) ->
-      Some(step_artifact.StructuredOutputRetryDiagnostic(
-        attempt: attempt,
-        status: "error",
-        failure_code: artifact.failure_code,
-        message: structured_output_retry_message(message, details),
-      ))
-    _ -> None
-  }
-}
-
-fn structured_output_retry_message(
-  message: String,
-  details: Option(step_artifact.StructuredOutputErrorDetails),
-) -> String {
-  case details {
-    Some(details) ->
-      message <> "\nRetryable: " <> bool_string(details.retryable)
-    None -> message
-  }
-}
-
-fn bool_string(value: Bool) -> String {
-  case value {
-    True -> "true"
-    False -> "false"
-  }
-}
-
-fn retry_structured_output(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  first_success: agent_types.WorkerSuccess,
-  first_artifact: step_artifact.StepArtifact,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-  initial_diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  tracker_client: tracker.Client,
-  secrets: List(String),
-  dependencies: Dependencies,
-  effective: config_types.EffectiveConfig,
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  case structured_output_spec {
-    None -> #(
-      first_artifact,
-      first_success.tokens,
-      first_success.final_issue,
-      first_success.turns,
-    )
-    Some(spec) -> {
-      let retry_prompt =
-        workflow_structured_retry.retry_prompt(
-          step.id,
-          context.run_root,
-          context.workspace_path,
-          spec,
-          initial_diagnostic,
-        )
-      let retry_result =
-        run_agent_invocation(
-          issue,
-          context,
-          dag,
-          orchestrator,
-          workflow_attempt.StructuredOutputRetryPrompt(retry_prompt),
-          None,
-          effective,
-          tracker_client,
-          dependencies,
-        )
-      case retry_result {
-        Ok(retry_success) ->
-          finish_structured_output_retry_success(
-            step,
-            context,
-            first_success,
-            retry_success,
-            structured_output_spec,
-            initial_diagnostic,
-            spec,
-            orchestrator,
-            secrets,
-            dependencies,
-          )
-        Error(retry_failure) ->
-          finish_structured_output_retry_failure(
-            first_success,
-            first_artifact,
-            retry_failure,
-            initial_diagnostic,
-            spec,
-            secrets,
-          )
-      }
-    }
-  }
-}
-
-fn finish_structured_output_retry_success(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  first_success: agent_types.WorkerSuccess,
-  retry_success: agent_types.WorkerSuccess,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-  initial_diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
-  spec: workflow_dag.StructuredOutputSpec,
-  orchestrator: config_types.OrchestratorConfig,
-  secrets: List(String),
-  dependencies: Dependencies,
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  let retry_artifact =
-    agent_success_artifact(
-      step,
-      context,
-      retry_success,
-      structured_output_spec,
-      secrets,
-      orchestrator.artifact_limits,
-      dependencies.checkpoint,
-    )
-  let retry_diagnostic =
-    structured_output_attempt_diagnostic(2, retry_artifact)
-    |> option.unwrap(step_artifact.StructuredOutputRetryDiagnostic(
-      attempt: 2,
-      status: step_artifact.status_to_string(retry_artifact.status),
-      failure_code: retry_artifact.failure_code,
-      message: "structured output retry completed",
-    ))
-  let outcome = case step_artifact.succeeded(retry_artifact.status) {
-    True -> "succeeded"
-    False -> "failed"
-  }
-  let retry_info =
-    workflow_structured_retry.retry_info(spec, outcome, [
-      initial_diagnostic,
-      retry_diagnostic,
-    ])
-  let artifact =
-    step_artifact.with_structured_output_retry_info(retry_artifact, retry_info)
-  #(
-    artifact,
-    add_tokens(first_success.tokens, retry_success.tokens),
-    option.or(retry_success.final_issue, first_success.final_issue),
-    first_success.turns + retry_success.turns,
-  )
-}
-
-fn finish_structured_output_retry_failure(
-  first_success: agent_types.WorkerSuccess,
-  first_artifact: step_artifact.StepArtifact,
-  retry_failure: agent_types.WorkerFailure,
-  initial_diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
-  spec: workflow_dag.StructuredOutputSpec,
-  secrets: List(String),
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  let retry_diagnostic =
-    step_artifact.StructuredOutputRetryDiagnostic(
-      attempt: 2,
-      status: "agent_failure",
-      failure_code: Some(error.agent_code(retry_failure.reason)),
-      message: workflow_structured_retry.failure_message(retry_failure, secrets),
-    )
-  let retry_info =
-    workflow_structured_retry.retry_info(spec, "failed", [
-      initial_diagnostic,
-      retry_diagnostic,
-    ])
-  let artifact =
-    step_artifact.with_structured_output_retry_info(first_artifact, retry_info)
-  #(
-    artifact,
-    add_tokens(first_success.tokens, retry_failure.tokens),
-    option.or(retry_failure.final_issue, first_success.final_issue),
-    first_success.turns,
-  )
-}
-
-fn agent_success_artifact(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  success: agent_types.WorkerSuccess,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-  secrets: List(String),
-  limits: config_types.ArtifactLimits,
-  checkpoint: workflow_checkpoint.Writer,
-) -> step_artifact.StepArtifact {
-  case structured_output_spec {
-    None -> step_artifact.from_agent_success(step.id, success, secrets, limits)
-    Some(spec) ->
-      agent_success_with_structured_output(
-        step,
-        context,
-        success,
-        spec,
-        secrets,
-        limits,
-        checkpoint,
-      )
-  }
-}
-
-fn agent_success_with_structured_output(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  success: agent_types.WorkerSuccess,
-  spec: workflow_dag.StructuredOutputSpec,
-  secrets: List(String),
-  limits: config_types.ArtifactLimits,
-  checkpoint: workflow_checkpoint.Writer,
-) -> step_artifact.StepArtifact {
-  let base = step_artifact.from_agent_success(step.id, success, secrets, limits)
-  let format = workflow_dag.structured_output_format_to_string(spec.format)
-  let workflow_dag.StructuredObjectSchema(required_keys) = spec.schema
-  case
-    structured_output.validate_agent_result(
-      spec,
-      success.result,
-      secrets,
-      structured_output.default_validator_runner(
-        structured_output.default_validator_context(
-          context.config_dir,
-          context.run_root,
-          context.workflow_id,
-          context.workflow_bundle_dir,
-          context.run_id,
-          step.id,
-          context.attempt_index,
-          context.workspace_path,
-          spec.artifact_name,
-          format,
-          spec.source,
-        ),
-        secrets,
-      ),
-    )
-  {
-    Ok(structured_output.StructuredOutputAbsent) ->
-      step_artifact.StepArtifact(
-        ..base,
-        structured_output: Some(step_artifact.StructuredOutputAbsent(
-          spec.artifact_name,
-          format,
-          "not_applicable",
-        )),
-      )
-    Ok(structured_output.StructuredOutputPresent(payload_json)) ->
-      write_structured_output_artifact(
-        step,
-        context,
-        success,
-        spec,
-        format,
-        required_keys,
-        payload_json,
-        secrets,
-        limits,
-        checkpoint,
-      )
-    Error(error) -> {
-      let failure_code = structured_output.error_code(error)
-      step_artifact.from_agent_structured_output_error_with_details(
-        step.id,
-        success,
-        secrets,
-        limits,
-        failure_code,
-        structured_output.error_message_for_step(error, step.id),
-        spec.artifact_name,
-        format,
-        Some(step_artifact.StructuredOutputErrorDetails(
-          code: failure_code,
-          retryable: structured_output.error_retryable(error),
-          validator_name: structured_output.error_validator_name(error),
-          validator_type: structured_output.error_validator_type(error),
-          diagnostic_summary: structured_output.error_diagnostic_summary(error),
-          stdout_truncated: structured_output.error_stdout_truncated(error),
-          stderr_truncated: structured_output.error_stderr_truncated(error),
-        )),
-      )
-    }
-  }
-}
-
-fn write_structured_output_artifact(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  success: agent_types.WorkerSuccess,
-  spec: workflow_dag.StructuredOutputSpec,
-  format: String,
-  required_keys: List(String),
-  payload_json: String,
-  secrets: List(String),
-  limits: config_types.ArtifactLimits,
-  checkpoint: workflow_checkpoint.Writer,
-) -> step_artifact.StepArtifact {
-  let validation =
-    structured_output_metadata.from_spec_with_receipt(
-      spec,
-      structured_output.validator_repo_root(
-        context.config_dir,
-        context.workspace_path,
-      ),
-      receipt_json_for_source(spec.source, success.result.tool_calls),
-    )
-  let write =
-    workflow_checkpoint.StructuredOutputWrite(
-      run_id: context.run_id,
-      workflow_id: context.workflow_id,
-      step_id: step.id,
-      attempt_index: context.attempt_index,
-      artifact_name: spec.artifact_name,
-      format: format,
-      schema_required_keys: required_keys,
-      validation: validation,
-      payload_json: payload_json,
-    )
-  case checkpoint.write_structured_output_artifact(write) {
-    Ok(written) ->
-      step_artifact.from_agent_success_with_valid_structured_output(
-        step.id,
-        success,
-        secrets,
-        limits,
-        step_artifact.StructuredOutputMetadata(
-          artifact_name: spec.artifact_name,
-          format: format,
-          ref: written.ref,
-          path: written.path,
-          uri: written.uri,
-          display_path: written.display_path,
-          local_path: written.local_path,
-          sha256: written.sha256,
-          bytes: written.bytes,
-          schema_status: "valid",
-          source_type: validation.source_type,
-          source_tool_name: validation.source_tool_name,
-          source_parameters_schema_path: validation.source_parameters_schema_path,
-          source_parameters_schema_sha256: validation.source_parameters_schema_sha256,
-          source_receipt_json: validation.source_receipt_json,
-          baseline_required_keys: required_keys,
-          validators: structured_output_metadata.validator_summaries(validation),
-          retry: None,
-        ),
-      )
-    Error(error) -> {
-      let message =
-        "step "
-        <> step.id
-        <> " structured output artifact write failed: "
-        <> workflow_checkpoint.describe_error(error)
-      step_artifact.from_agent_structured_output_error(
-        step.id,
-        success,
-        secrets,
-        limits,
-        "structured_output_artifact_write_failed",
-        message,
-        spec.artifact_name,
-        format,
-      )
-    }
-  }
-}
-
-fn receipt_json_for_source(
-  source: structured_output_source.StructuredOutputSource,
-  tool_calls: List(result_artifact.ToolCallSubmission),
-) -> Option(String) {
-  case source {
-    structured_output_source.PiToolCallSource(tool_name, _, _, _) ->
-      receipt_json_for_tool(tool_calls, tool_name)
-    structured_output_source.FinalResponseSource -> None
-  }
-}
-
-fn receipt_json_for_tool(
-  tool_calls: List(result_artifact.ToolCallSubmission),
-  tool_name: String,
-) -> Option(String) {
-  case tool_calls {
-    [] -> None
-    [call, ..rest] ->
-      case call.name == tool_name, call.receipt_json {
-        True, Some(receipt_json) -> Some(receipt_json)
-        _, _ -> receipt_json_for_tool(rest, tool_name)
-      }
-  }
-}
-
-fn agent_failure_artifact(
-  step_id: String,
-  failure: agent_types.WorkerFailure,
-  secrets: List(String),
-  limits: config_types.ArtifactLimits,
-) -> step_artifact.StepArtifact {
-  let detail = error.agent_artifact_detail(failure.reason)
-  let stderr = case is_recovery_resume_validation_failure(failure.reason) {
-    True ->
-      "SCHERZO_FAILURE_CODE="
-      <> workflow_attempt.recovery_pi_resume_validation_failed
-      <> "\n"
-      <> detail
-    False -> detail
-  }
-  let artifact =
-    step_artifact.from_command_result(
-      step_id,
-      1,
-      "",
-      stderr,
-      False,
-      secrets,
-      limits,
-    )
-  step_artifact.StepArtifact(
-    ..artifact,
-    summary_text: artifact.summary_text
-      <> context_recovery_summary_suffix(failure.reason),
-  )
-}
-
-fn context_recovery_summary_suffix(reason: error.AgentRunnerError) -> String {
-  case reason {
-    error.ContextRecoveryExhausted(
-      recovery_method: recovery_method,
-      context_artifact_ref: context_artifact_ref,
-      result_artifact_ref: result_artifact_ref,
-      ..,
-    ) ->
-      " context_recovery=failed recovery_exhausted=true recovery_method="
-      <> recovery_method
-      <> summary_ref("context_artifact", context_artifact_ref)
-      <> summary_ref("result_artifact", result_artifact_ref)
-    _ -> ""
-  }
-}
-
-fn summary_ref(label: String, ref: Option(String)) -> String {
-  case ref {
-    Some(ref) -> " " <> label <> "=" <> ref
-    None -> ""
-  }
-}
-
-fn is_recovery_resume_validation_failure(
-  reason: error.AgentRunnerError,
-) -> Bool {
-  case reason {
-    error.PiFailed(error.PiProtocolError(message)) ->
-      message == workflow_attempt.recovery_pi_resume_validation_failed
-    _ -> False
-  }
-}
-
-fn is_recovery_resume_validation_artifact(
-  artifact: step_artifact.StepArtifact,
-) -> Bool {
-  artifact.failure_code
-  == Some(workflow_attempt.recovery_pi_resume_validation_failed)
-}
-
-fn agent_reason_for_artifact(
-  artifact: step_artifact.StepArtifact,
-) -> Option(error.AgentRunnerError) {
-  case is_recovery_resume_validation_artifact(artifact) {
-    True ->
-      Some(
-        error.PiFailed(error.PiProtocolError(
-          workflow_attempt.recovery_pi_resume_validation_failed,
-        )),
-      )
-    False -> None
-  }
-}
-
-fn prompt_mode_for_step(
-  step: workflow_dag.WorkflowStep,
-  prompt_ref: workflow_dag.PromptRef,
-  issue: tracker_issue.Issue,
-  artifacts: Dict(String, step_artifact.StepArtifact),
-  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
-  context: StepContext,
-) -> Result(workflow_attempt.AgentPromptMode, Nil) {
-  case dict.get(pi_session_continuations, step.id) {
-    Ok(continuation) ->
-      Ok(workflow_attempt.RecoveryPrompt(continuation.recovery_prompt))
-    Error(Nil) -> {
-      let prompt_template = case prompt_ref {
-        workflow_dag.PromptInline(prompt) -> prompt
-        workflow_dag.PromptFile(path) -> path
-      }
-      let locals =
-        list.append(
-          step_artifact.to_template_locals(artifacts),
-          workspace_profile.driver_context_template_locals(
-            context.workspace_context,
-          ),
-        )
-      case template.render_with_locals(prompt_template, issue, None, locals) {
-        Ok(prompt) -> Ok(workflow_attempt.OriginalPrompt(prompt))
-        Error(_) -> Error(Nil)
-      }
-    }
-  }
-}
-
-fn workflow_attempt_context(
-  context: StepContext,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  prompt_mode: workflow_attempt.AgentPromptMode,
-  continuation: Option(workflow_attempt.PiContinuation),
-) -> workflow_attempt.StepAttemptContext {
-  let workflow_fingerprint =
-    workflow_attempt.workflow_fingerprint(dag, orchestrator)
-  workflow_attempt.StepAttemptContext(
-    run_id: context.run_id,
-    issue_id: context.issue_id,
-    issue_identifier: context.issue_identifier,
-    workflow_id: context.workflow_id,
-    workflow_fingerprint: workflow_fingerprint,
-    step_id: context.step_id,
-    workspace_name: context.workspace_name,
-    attempt_index: context.attempt_index,
-    workspace_path: context.workspace_path,
-    continuation_capable: case prompt_mode {
-      workflow_attempt.RecoveryPrompt(_) -> True
-      workflow_attempt.StepRecoveryPrompt(_) -> False
-      workflow_attempt.OriginalPrompt(_)
-      | workflow_attempt.StructuredOutputRetryPrompt(_) ->
-        orchestrator.effective.pi.session_persistence.enabled
-    },
-    continuation_session_file: case continuation {
-      Some(value) -> Some(value.session_file)
-      None -> None
-    },
-  )
-}
-
-fn step_is_continuation_capable(
-  step: workflow_dag.WorkflowStep,
-  orchestrator: config_types.OrchestratorConfig,
-) -> Bool {
-  case step.kind {
-    workflow_dag.AgentStep(_, _) ->
-      orchestrator.effective.pi.session_persistence.enabled
-    workflow_dag.CommandStep(_, _) -> False
-  }
-}
-
-fn step_context(
-  step: workflow_dag.WorkflowStep,
-  workspace: workspace_run.PreparedStepWorkspace,
-  issue: tracker_issue.Issue,
-  orchestrator: config_types.OrchestratorConfig,
-  profile: config_types.WorkspaceHookProfile,
-) -> StepContext {
-  StepContext(
-    workflow_id: workspace.workflow_id,
-    run_id: workspace.run_id,
-    run_root: workspace.run_root,
-    workflow_bundle_dir: workspace.workflow_bundle_dir,
-    step_id: step.id,
-    attempt_index: workspace.attempt_index,
-    workspace_name: workspace.workspace_name,
-    workspace_path: workspace.path,
-    workspace_context: workspace_profile.driver_context(profile, orchestrator),
-    config_dir: orchestrator.config_dir,
-    issue_id: issue.id,
-    issue_identifier: issue.identifier,
-    run_kind: "issue",
-    scheduled_job_id: "",
-    schedule_due_at: "",
-    schedule_started_at: "",
-    run_attempt: 0,
-    extra_pi_env: [],
-  )
-}
-
-fn step_command_env(context: StepContext) -> List(#(String, String)) {
-  let generated = [
-    #("SCHERZO_CONFIG_DIR", context.config_dir),
-    #("SCHERZO_WORKFLOW_ID", context.workflow_id),
-    #("SCHERZO_WORKFLOW_BUNDLE_DIR", context.workflow_bundle_dir),
-    #("SCHERZO_RUN_ID", context.run_id),
-    #("SCHERZO_RUN_ROOT", context.run_root),
-    #("SCHERZO_RUN_KIND", context.run_kind),
-    #("SCHERZO_ISSUE_ID", context.issue_id),
-    #("SCHERZO_ISSUE_IDENTIFIER", context.issue_identifier),
-    #("SCHERZO_SCHEDULED_JOB_ID", context.scheduled_job_id),
-    #("SCHERZO_SCHEDULE_DUE_AT", context.schedule_due_at),
-    #("SCHERZO_SCHEDULE_STARTED_AT", context.schedule_started_at),
-    #("SCHERZO_RUN_ATTEMPT", int.to_string(context.run_attempt)),
-    #("SCHERZO_STEP_ID", context.step_id),
-    #("SCHERZO_ATTEMPT_INDEX", int.to_string(context.attempt_index)),
-    #(
-      "SCHERZO_ATTEMPT_KEY",
-      workflow_identity.attempt_key(
-        context.run_id,
-        context.step_id,
-        context.attempt_index,
-      ),
-    ),
-    #(
-      "SCHERZO_HOOK_IDEMPOTENCY_KEY",
-      workflow_identity.hook_idempotency_key(context.run_id, context.step_id),
-    ),
-    #("SCHERZO_WORKSPACE_NAME", context.workspace_name),
-    #("SCHERZO_WORKSPACE_PATH", context.workspace_path),
-  ]
-  workspace_profile.driver_context_env_vars_with_generated(
-    context.workspace_context,
-    generated,
-  )
-  |> list.append(context.extra_pi_env)
-}
-
-fn effective_for_step(
-  orchestrator: config_types.OrchestratorConfig,
-  step: workflow_dag.WorkflowStep,
-) -> config_types.EffectiveConfig {
-  let settings =
-    model_config.resolve(orchestrator.model_settings, step.model_settings)
-  let command =
-    model_config.apply_to_command(orchestrator.effective.pi.command, settings)
-  let argv_command = case orchestrator.effective.pi.argv_command {
-    Some(argv) ->
-      Some(
-        config_types.PiArgvCommand(
-          ..argv,
-          args: model_config.apply_to_argv_args(argv.args, settings),
-        ),
-      )
-    None -> None
-  }
-  config_types.EffectiveConfig(
-    ..orchestrator.effective,
-    pi: config_types.PiConfig(
-      ..orchestrator.effective.pi,
-      command: command,
-      argv_command: argv_command,
-    ),
-  )
 }
 
 fn mark_all_running(

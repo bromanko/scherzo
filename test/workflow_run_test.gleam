@@ -8,6 +8,7 @@ import gleam/result
 import gleam/string
 import scherzo/agent/pi_rpc
 import scherzo/agent/types as agent_types
+import scherzo/agent/worker_command
 import scherzo/artifact_publication_config
 import scherzo/config
 import scherzo/config/types as config_types
@@ -1617,6 +1618,69 @@ fn agent_attempt_context(root: String) -> workflow_attempt.StepAttemptContext {
     continuation_capable: False,
     continuation_session_file: None,
   )
+}
+
+pub fn default_agent_step_routes_command_ready_subject_test() {
+  let root = "test/tmp/workflow-run-agent-command-ready"
+  test_helpers.reset_dir(root)
+  let event_subject = process.new_subject()
+  let base = orchestrator()
+  let effective =
+    config_types.EffectiveConfig(
+      ..base.effective,
+      workspace: config_types.WorkspaceConfig(root: root <> "/workspaces"),
+      agent: config_types.AgentConfig(..base.effective.agent, max_turns: 2),
+      pi: config_types.PiConfig(
+        ..base.effective.pi,
+        command: test_helpers.shell_quote(fake_pi()),
+        compatibility_probe: False,
+      ),
+    )
+
+  let _ =
+    workflow_run.default_dependencies().agent_step(
+      issue(),
+      agent_driver_env_step_context(root, []),
+      workflow_attempt.OriginalPrompt("initial prompt"),
+      agent_attempt_context(root),
+      effective,
+      empty_tracker(),
+      fn(_) { Nil },
+      fn(command_subject) {
+        let _ =
+          process.spawn(fn() {
+            let reply = process.new_subject()
+            process.send(
+              command_subject,
+              worker_command.QueuePrompt("follow-up prompt", reply),
+            )
+            let event = case process.receive(reply, within: 1000) {
+              Ok(reply) -> command_ready_reply_event(reply)
+              Error(Nil) -> "command_ready:timeout"
+            }
+            process.send(event_subject, event)
+          })
+        Nil
+      },
+      fn(_) { Nil },
+    )
+
+  assert receive_event(event_subject)
+    == "command_ready:queued:prompt queued for next turn"
+}
+
+fn command_ready_reply_event(reply: worker_command.Reply) -> String {
+  case reply {
+    worker_command.Applied(message) ->
+      "command_ready:applied:" <> option.unwrap(message, "")
+    worker_command.Queued(message) ->
+      "command_ready:queued:" <> option.unwrap(message, "")
+    worker_command.Rejected(reason, _) -> "command_ready:rejected:" <> reason
+    worker_command.NotFound(message) ->
+      "command_ready:not_found:" <> option.unwrap(message, "")
+    worker_command.NotAllowed(reason, _) ->
+      "command_ready:not_allowed:" <> reason
+  }
 }
 
 pub fn default_agent_step_argv_mode_receives_profile_driver_environment_test() {
@@ -5073,6 +5137,67 @@ pub fn contracted_scheduled_context_records_metadata_test() {
   assert string.contains(value_text, "nightly-repair")
   assert string.contains(value_text, "run-scheduled")
   assert !string.contains(value_text, "ABC-123")
+}
+
+pub fn scheduled_command_step_receives_scheduled_env_test() {
+  let root = "test/tmp/workflow-run/scheduled-command-env"
+  test_helpers.reset_dir(root)
+  let command =
+    "printf '%s\\n' "
+    <> "\"$SCHERZO_RUN_KIND\" "
+    <> "\"$SCHERZO_SCHEDULED_JOB_ID\" "
+    <> "\"$SCHERZO_SCHEDULE_DUE_AT\" "
+    <> "\"$SCHERZO_SCHEDULE_STARTED_AT\" "
+    <> "\"$SCHERZO_RUN_ATTEMPT\" "
+    <> "\"issue:$SCHERZO_ISSUE_ID\" "
+    <> "\"identifier:$SCHERZO_ISSUE_IDENTIFIER\""
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: scheduled-repair\nsteps:\n  - id: inspect_env\n    kind: command\n    run: "
+      <> command
+      <> "\n",
+    )
+  let scheduled =
+    schedule_core.ScheduledRunContext(
+      job_id: "nightly-repair",
+      workflow_id: "scheduled-repair",
+      due_at_ms: 1_800_000,
+      started_at_ms: 1_860_000,
+      run_id: "run-scheduled-env",
+      attempt: 2,
+      trigger: "automatic",
+    )
+  let base = orchestrator()
+  let scheduled_orchestrator =
+    config_types.OrchestratorConfig(
+      ..base,
+      effective: config_types.EffectiveConfig(
+        ..base.effective,
+        workspace: config_types.WorkspaceConfig(root: root <> "/workspaces"),
+      ),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute_scheduled(
+      scheduled,
+      dag,
+      scheduled_orchestrator,
+      empty_tracker(),
+      [],
+      workflow_run.default_dependencies(),
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "inspect_env")
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(
+    artifact.stdout,
+    "scheduled\n"
+      <> "nightly-repair\n"
+      <> schedule_core.iso_utc(scheduled.due_at_ms)
+      <> "\n"
+      <> schedule_core.iso_utc(scheduled.started_at_ms)
+      <> "\n2\nissue:\nidentifier:\n",
+  )
 }
 
 pub fn contracted_optional_workspace_driver_base_records_absent_test() {
