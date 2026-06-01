@@ -65,6 +65,7 @@ Milestone 5 proves release readiness. Reviewers should see durable publication m
 - [x] (2026-05-31) Prepared the structured implementation-pack submission for Scherzo capture.
 - [x] (2026-05-31) Validated this review document with `workflows/dogfood/scripts/scherzo-execplan validate-review-doc --path docs/plans/github-artifact-repository-adapter.md`.
 - [x] (2026-05-31) Incorporated review feedback by making operator retry scope observable, aligning managed checkout identity to repository target/base/series, clarifying no-PR versus disappeared-PR behavior, and requiring fake-git negative evidence for early Git commands.
+- [x] (2026-05-31) Implemented the Milestone 1 execution seam: workflow completion now routes artifact publications through a Scherzo-owned executor that plans publications, rereads canonical artifact-store bytes for GitHub routes, and records outcomes before workflow success is finalized.
 
 ## Decision Log
 
@@ -90,6 +91,10 @@ Milestone 5 proves release readiness. Reviewers should see durable publication m
 
 - Decision: Keep publication retry in scope as an explicit local operator command while deferring live GitHub retry dogfood.
   Rationale: Rollout and recovery need an observable way to replay a retained manifest, but deterministic fake-command and seeded-state evidence is enough before a staging repository and credentials are chosen.
+  Date: 2026-05-31.
+
+- Decision: Land Milestone 1 as an additive executor seam that records repository-backed publication outcomes while proving artifact-store-byte handoff to a Scherzo-owned GitHub adapter boundary.
+  Rationale: This keeps workflow finalization observable while moving completion onto the non-workspace execution path required for checkout, materialization, and mutation retries.
   Date: 2026-05-31.
 
 ## Validation and Acceptance

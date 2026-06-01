@@ -9,6 +9,7 @@ import gleam/string
 import scherzo/agent/run_attempt
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
+import scherzo/artifact_publication_executor
 import scherzo/artifact_publication_recording
 import scherzo/command_step
 import scherzo/config/types as config_types
@@ -1070,7 +1071,7 @@ fn record_publications_if_configured(
 ) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
   case outputs.manifest {
     Some(output_manifest) ->
-      artifact_publication_recording.record_routes(
+      artifact_publication_executor.execute_routes(
         dag.publication_routes,
         orchestrator.artifact_repositories,
         orchestrator.config_dir,
