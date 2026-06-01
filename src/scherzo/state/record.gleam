@@ -1834,6 +1834,58 @@ fn legacy_run_body_from_fields(
   }
 }
 
+fn workstream_body_from_fields(
+  fields: RecordFields,
+) -> Result(RecordBody, DecodeError) {
+  let workstream_fields =
+    workstream_record.Fields(
+      workstream_id: fields.workstream_id,
+      assignment_id: fields.assignment_id,
+      workflow_id: fields.workflow_id,
+      playbook_id: fields.playbook_id,
+      reason: fields.reason,
+      idempotency_key: fields.idempotency_key,
+      artifact_id: fields.artifact_id,
+      artifact_type: fields.artifact_type,
+      snapshot_ref: fields.snapshot_ref,
+      snapshot_sha256: fields.snapshot_sha256,
+      snapshot_bytes: fields.snapshot_bytes,
+      original_path: fields.original_path,
+      contract_type: fields.contract_type,
+      media_type: fields.media_type,
+      producer_workflow_id: fields.producer_workflow_id,
+      producer_run_id: fields.producer_run_id,
+      producer_step_id: fields.producer_step_id,
+      handoff_id: fields.handoff_id,
+      handoff_ref: fields.handoff_ref,
+      handoff_sha256: fields.handoff_sha256,
+      handoff_bytes: fields.handoff_bytes,
+      source_workflow_id: fields.source_workflow_id,
+      source_run_id: fields.source_run_id,
+      phase_run_id: fields.phase_run_id,
+      action_id: fields.action_id,
+      input_bundle_ref: fields.input_bundle_ref,
+      input_bundle_sha256: fields.input_bundle_sha256,
+      input_bundle_bytes: fields.input_bundle_bytes,
+    )
+
+  workstream_record.decode(
+    fields.kind,
+    workstream_fields,
+    workstream_record.BodyConstructors(
+      WorkstreamCreated,
+      WorkstreamAssigned,
+      WorkstreamArtifactRecorded,
+      WorkstreamHandoffRecorded,
+      WorkstreamPhaseRunQueued,
+    ),
+    fn() { required_task_ref_fields(fields) },
+    required_string,
+    required_int,
+    UnknownKind,
+  )
+}
+
 fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
   case fields.kind {
     "run_started" | "run_finished" | "run_interrupted" ->
@@ -2995,199 +3047,11 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         }
       }
     }
-    "workstream_created" -> {
-      use workstream_id <- result.try(required_string(
-        fields.workstream_id,
-        "workstream_id",
-      ))
-      use task_ref <- result.try(required_task_ref_fields(fields))
-      use idempotency_key <- result.try(required_string(
-        fields.idempotency_key,
-        "idempotency_key",
-      ))
-      Ok(WorkstreamCreated(workstream_id, task_ref, idempotency_key))
-    }
-    "workstream_assigned" -> {
-      use workstream_id <- result.try(required_string(
-        fields.workstream_id,
-        "workstream_id",
-      ))
-      use assignment_id <- result.try(required_string(
-        fields.assignment_id,
-        "assignment_id",
-      ))
-      use workflow_id <- result.try(required_string(
-        fields.workflow_id,
-        "workflow_id",
-      ))
-      use reason <- result.try(required_string(fields.reason, "reason"))
-      use idempotency_key <- result.try(required_string(
-        fields.idempotency_key,
-        "idempotency_key",
-      ))
-      Ok(WorkstreamAssigned(
-        workstream_id,
-        assignment_id,
-        workflow_id,
-        fields.playbook_id,
-        reason,
-        idempotency_key,
-      ))
-    }
-    "workstream_artifact_recorded" -> {
-      use workstream_id <- result.try(required_string(
-        fields.workstream_id,
-        "workstream_id",
-      ))
-      use artifact_id <- result.try(required_string(
-        fields.artifact_id,
-        "artifact_id",
-      ))
-      use artifact_type <- result.try(required_string(
-        fields.artifact_type,
-        "artifact_type",
-      ))
-      use snapshot_ref <- result.try(required_string(
-        fields.snapshot_ref,
-        "snapshot_ref",
-      ))
-      use snapshot_sha256 <- result.try(required_string(
-        fields.snapshot_sha256,
-        "snapshot_sha256",
-      ))
-      use snapshot_bytes <- result.try(required_int(
-        fields.snapshot_bytes,
-        "snapshot_bytes",
-      ))
-      use original_path <- result.try(required_string(
-        fields.original_path,
-        "original_path",
-      ))
-      use contract_type <- result.try(required_string(
-        fields.contract_type,
-        "contract_type",
-      ))
-      use media_type <- result.try(required_string(
-        fields.media_type,
-        "media_type",
-      ))
-      use producer_workflow_id <- result.try(required_string(
-        fields.producer_workflow_id,
-        "producer_workflow_id",
-      ))
-      use producer_run_id <- result.try(required_string(
-        fields.producer_run_id,
-        "producer_run_id",
-      ))
-      use producer_step_id <- result.try(required_string(
-        fields.producer_step_id,
-        "producer_step_id",
-      ))
-      use idempotency_key <- result.try(required_string(
-        fields.idempotency_key,
-        "idempotency_key",
-      ))
-      Ok(WorkstreamArtifactRecorded(
-        workstream_id,
-        artifact_id,
-        artifact_type,
-        snapshot_ref,
-        snapshot_sha256,
-        snapshot_bytes,
-        original_path,
-        contract_type,
-        media_type,
-        producer_workflow_id,
-        producer_run_id,
-        producer_step_id,
-        idempotency_key,
-      ))
-    }
-    "workstream_handoff_recorded" -> {
-      use workstream_id <- result.try(required_string(
-        fields.workstream_id,
-        "workstream_id",
-      ))
-      use handoff_id <- result.try(required_string(
-        fields.handoff_id,
-        "handoff_id",
-      ))
-      use handoff_ref <- result.try(required_string(
-        fields.handoff_ref,
-        "handoff_ref",
-      ))
-      use handoff_sha256 <- result.try(required_string(
-        fields.handoff_sha256,
-        "handoff_sha256",
-      ))
-      use handoff_bytes <- result.try(required_int(
-        fields.handoff_bytes,
-        "handoff_bytes",
-      ))
-      use source_workflow_id <- result.try(required_string(
-        fields.source_workflow_id,
-        "source_workflow_id",
-      ))
-      use source_run_id <- result.try(required_string(
-        fields.source_run_id,
-        "source_run_id",
-      ))
-      use idempotency_key <- result.try(required_string(
-        fields.idempotency_key,
-        "idempotency_key",
-      ))
-      Ok(WorkstreamHandoffRecorded(
-        workstream_id,
-        handoff_id,
-        handoff_ref,
-        handoff_sha256,
-        handoff_bytes,
-        source_workflow_id,
-        source_run_id,
-        idempotency_key,
-      ))
-    }
-    "workstream_phase_run_queued" -> {
-      use workstream_id <- result.try(required_string(
-        fields.workstream_id,
-        "workstream_id",
-      ))
-      use phase_run_id <- result.try(required_string(
-        fields.phase_run_id,
-        "phase_run_id",
-      ))
-      use action_id <- result.try(required_string(fields.action_id, "action_id"))
-      use workflow_id <- result.try(required_string(
-        fields.workflow_id,
-        "workflow_id",
-      ))
-      use input_bundle_ref <- result.try(required_string(
-        fields.input_bundle_ref,
-        "input_bundle_ref",
-      ))
-      use input_bundle_sha256 <- result.try(required_string(
-        fields.input_bundle_sha256,
-        "input_bundle_sha256",
-      ))
-      use input_bundle_bytes <- result.try(required_int(
-        fields.input_bundle_bytes,
-        "input_bundle_bytes",
-      ))
-      use idempotency_key <- result.try(required_string(
-        fields.idempotency_key,
-        "idempotency_key",
-      ))
-      Ok(WorkstreamPhaseRunQueued(
-        workstream_id,
-        phase_run_id,
-        action_id,
-        workflow_id,
-        input_bundle_ref,
-        input_bundle_sha256,
-        input_bundle_bytes,
-        idempotency_key,
-      ))
-    }
+    "workstream_created"
+    | "workstream_assigned"
+    | "workstream_artifact_recorded"
+    | "workstream_handoff_recorded"
+    | "workstream_phase_run_queued" -> workstream_body_from_fields(fields)
     other -> Error(UnknownKind(other))
   }
 }
