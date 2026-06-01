@@ -1,12 +1,18 @@
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/artifact_publication_manifest
+import scherzo/artifact_publication_planner
+import scherzo/artifact_repository/command_runner
 import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/query/types as query_types
 import scherzo/ctl
+import scherzo/ctl/artifact_publication as ctl_artifact_publication
+import scherzo/hash
 import scherzo/path
 import scherzo/session/event
 import scherzo/session/reason
@@ -147,16 +153,21 @@ fn query_status_response() -> query_types.QueryResponse {
 }
 
 fn output(subject: process.Subject(OutMsg)) -> ctl.Output {
-  ctl.Output(
-    line: fn(text) {
-      process.send(subject, OutLine(text))
-      Nil
-    },
-    inline: fn(text) {
-      process.send(subject, OutInline(text))
-      Nil
-    },
-  )
+  ctl.Output(line: subject_line(subject), inline: subject_inline(subject))
+}
+
+fn subject_line(subject: process.Subject(OutMsg)) -> fn(String) -> Nil {
+  fn(text) {
+    process.send(subject, OutLine(text))
+    Nil
+  }
+}
+
+fn subject_inline(subject: process.Subject(OutMsg)) -> fn(String) -> Nil {
+  fn(text) {
+    process.send(subject, OutInline(text))
+    Nil
+  }
 }
 
 fn drain_output(subject: process.Subject(OutMsg)) -> String {
@@ -395,6 +406,16 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       "run-1",
       "review_doc",
     ))
+  assert ctl.parse([
+      "artifact",
+      "publication",
+      "retry",
+      "--run",
+      "run-1",
+      "--publication",
+      "review_doc",
+    ])
+    == Ok(ctl.ArtifactPublicationRetry(None, None, False, "run-1", "review_doc"))
   assert ctl.parse(["state", "status", "--root", "work", "--json"])
     == Ok(ctl.StateStatus("work", True))
   assert ctl.parse(["state", "archive-old", "--root", "work", "--yes"])
@@ -548,6 +569,10 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(
     usage,
     "artifact publication show --run <run-id> --publication <publication-id>",
+  )
+  assert string.contains(
+    usage,
+    "artifact publication retry --run <run-id> --publication <publication-id>",
   )
   assert string.contains(usage, "state status")
   assert string.contains(usage, "--control-file <path>")
@@ -1197,7 +1222,9 @@ pub fn artifact_publication_list_and_show_offline_state_test() {
   assert string.contains(transcript, "run_id: run-1")
   assert string.contains(transcript, "review_doc")
   assert string.contains(transcript, "failed")
-  assert string.contains(transcript, "RETRY EXEC")
+  assert string.contains(transcript, "branch:")
+  assert string.contains(transcript, "commit_sha:")
+  assert string.contains(transcript, "pr_url:")
 
   let json_subject = process.new_subject()
   assert ctl.run_with_deps(
@@ -1209,7 +1236,59 @@ pub fn artifact_publication_list_and_show_offline_state_test() {
   let json_transcript = drain_output(json_subject)
   assert string.contains(json_transcript, "\"publication_id\":\"review_doc\"")
   assert string.contains(json_transcript, "\"attempt_count\":2")
-  assert string.contains(json_transcript, "\"retry_execution_available\":false")
+  assert string.contains(json_transcript, "\"retry_execution_available\":true")
+  assert string.contains(
+    json_transcript,
+    "\"branch\":\"scherzo/workflow.execplan/LIV-739/review_doc\"",
+  )
+  assert string.contains(json_transcript, "\"commit_sha\":\"deadbeef\"")
+  assert string.contains(
+    json_transcript,
+    "\"pr_url\":\"https://example.test/pr/1\"",
+  )
+}
+
+pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test() {
+  let root = "test/tmp/ctl-artifact-publication-retry/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry")
+  seed_failed_retry_publication_state(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      "review_doc",
+      retry_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"publication_id\":\"review_doc\"")
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(transcript, "\"commit_sha\":\"deadbeef\"")
+  assert string.contains(
+    transcript,
+    "\"branch\":\"scherzo/workflow.execplan/LIV-739/review_doc\"",
+  )
+  let commands = drain_output(command_subject)
+  assert string.contains(commands, "git fetch origin main")
+  assert string.contains(commands, "git commit -m scherzo publication")
+  assert string.contains(commands, "gh pr create")
+
+  let show_subject = process.new_subject()
+  assert ctl_artifact_publication.show(
+      root,
+      True,
+      "run-1",
+      "review_doc",
+      subject_line(show_subject),
+    )
+    == Ok(Nil)
+  let show_transcript = drain_output(show_subject)
+  assert string.contains(show_transcript, "\"attempt_count\":2")
+  assert string.contains(show_transcript, "\"status\":\"published\"")
 }
 
 pub fn artifact_publication_uses_control_file_root_and_reports_not_found_test() {
@@ -1637,6 +1716,32 @@ pub fn ambiguous_display_ref_returns_clear_error_test() {
 }
 
 fn seed_publication_state(root: String) -> Nil {
+  let planned = seeded_publication_plan()
+  let planned_ref = "runs/run-1/publications/review_doc/version-1.json"
+  let failed_ref = "runs/run-1/publications/review_doc/failed-1.json"
+  let planned_manifest =
+    artifact_publication_manifest.planned_manifest(planned, "version-1", 1010)
+  let failed_manifest =
+    artifact_publication_manifest.failed_from_planned_manifest(
+      planned,
+      "failed-1",
+      1020,
+      True,
+      Some(planned.branch),
+      Some("deadbeef"),
+      Some("https://example.test/pr/1"),
+      ["docs/plans/LIV-739.md"],
+      [],
+      artifact_publication_manifest.PublicationErrorInfo(
+        code: "unknown_output",
+        message: "missing output",
+      ),
+    )
+  let #(planned_sha, planned_bytes) =
+    write_publication_manifest(root, planned_ref, planned_manifest)
+  let #(failed_sha, failed_bytes) =
+    write_publication_manifest(root, failed_ref, failed_manifest)
+  write_seed_artifact(root, "runs/run-1/outputs/review_doc.md", "# Review\n")
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) =
     ledger.append_many(
@@ -1663,18 +1768,16 @@ fn seed_publication_state(root: String) -> Nil {
             run_id: "run-1",
             workflow_id: "execplan",
             publication_id: "review_doc",
-            series_id: "task-1:execplan:review_doc",
+            series_id: planned.series_id,
             attempt_id: "version-1",
             status: "planned",
             required: True,
             retryable: False,
             retry_execution_available: False,
-            version_id: Some("version-1"),
-            manifest_ref: Some(
-              "runs/run-1/publications/review_doc/version-1.json",
-            ),
-            manifest_sha256: Some("sha-1"),
-            manifest_bytes: Some(10),
+            version_id: Some(planned.version_id),
+            manifest_ref: Some(planned_ref),
+            manifest_sha256: Some(planned_sha),
+            manifest_bytes: Some(planned_bytes),
             error_code: None,
             error_message: None,
           ),
@@ -1686,18 +1789,16 @@ fn seed_publication_state(root: String) -> Nil {
             run_id: "run-1",
             workflow_id: "execplan",
             publication_id: "review_doc",
-            series_id: "task-1:execplan:review_doc",
+            series_id: planned.series_id,
             attempt_id: "failed-1",
             status: "failed",
             required: True,
             retryable: True,
-            retry_execution_available: False,
-            version_id: None,
-            manifest_ref: Some(
-              "runs/run-1/publications/review_doc/failed-1.json",
-            ),
-            manifest_sha256: Some("sha-2"),
-            manifest_bytes: Some(11),
+            retry_execution_available: True,
+            version_id: Some(planned.version_id),
+            manifest_ref: Some(failed_ref),
+            manifest_sha256: Some(failed_sha),
+            manifest_bytes: Some(failed_bytes),
             error_code: Some("unknown_output"),
             error_message: Some("missing output"),
           ),
@@ -1706,6 +1807,164 @@ fn seed_publication_state(root: String) -> Nil {
       True,
     )
   Nil
+}
+
+fn seed_failed_retry_publication_state(root: String) -> Nil {
+  let planned = seeded_publication_plan()
+  let failed_ref = "runs/run-1/publications/review_doc/failed-1.json"
+  let failed_manifest =
+    artifact_publication_manifest.failed_from_planned_manifest(
+      planned,
+      "failed-1",
+      1020,
+      True,
+      Some(planned.branch),
+      None,
+      None,
+      ["docs/plans/LIV-739.md"],
+      [],
+      artifact_publication_manifest.PublicationErrorInfo(
+        code: "git_push_failed",
+        message: "previous push failed",
+      ),
+    )
+  let #(failed_sha, failed_bytes) =
+    write_publication_manifest(root, failed_ref, failed_manifest)
+  write_seed_artifact(root, "runs/run-1/outputs/review_doc.md", "# Review\n")
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started",
+          1000,
+          record.WorkflowRunStarted(
+            run_id: "run-1",
+            workflow_id: "execplan",
+            workflow_fingerprint: "wf-1",
+            issue_id: "issue-1",
+            issue_identifier: "LIV-739",
+            issue_fingerprint: "issue-fingerprint",
+            observed_updated_at_ms: 999,
+            run_root: root <> "/runs/run-1",
+          ),
+        ),
+        record.with_id(
+          "publication-failed",
+          1020,
+          record.PublicationAttemptRecorded(
+            run_id: "run-1",
+            workflow_id: "execplan",
+            publication_id: "review_doc",
+            series_id: planned.series_id,
+            attempt_id: "failed-1",
+            status: "failed",
+            required: True,
+            retryable: True,
+            retry_execution_available: True,
+            version_id: Some(planned.version_id),
+            manifest_ref: Some(failed_ref),
+            manifest_sha256: Some(failed_sha),
+            manifest_bytes: Some(failed_bytes),
+            error_code: Some("git_push_failed"),
+            error_message: Some("previous push failed"),
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
+}
+
+fn seeded_publication_plan() -> artifact_publication_planner.DryRunPublicationManifest {
+  artifact_publication_planner.DryRunPublicationManifest(
+    run_id: "run-1",
+    workflow_id: "execplan",
+    publication_id: "review_doc",
+    series_id: "task-1:execplan:review_doc",
+    version_id: "version-1",
+    required: True,
+    dry_run: False,
+    repository_kind: "github",
+    repository_id: "docs",
+    github_repo: Some("scherzo-systems/scherzo"),
+    github_base: Some("main"),
+    branch: "scherzo/workflow.execplan/LIV-739/review_doc",
+    pull_request: artifact_publication_planner.PlannedPullRequest(
+      enabled: True,
+      draft: True,
+      title: Some("LIV-739 publication"),
+      body: Some("Published by Scherzo."),
+    ),
+    files: [
+      artifact_publication_planner.PlannedPublicationFile(
+        source: artifact_publication_planner.SelectedArtifact(
+          output: "review_doc",
+          entry: None,
+          name: "review_doc",
+          artifact_type: None,
+          ref: "runs/run-1/outputs/review_doc.md",
+          sha256: hash.sha256_hex("# Review\n"),
+          bytes: 9,
+          media_type: "text/markdown",
+        ),
+        destination_path: "docs/plans/LIV-739.md",
+      ),
+    ],
+  )
+}
+
+fn write_publication_manifest(
+  root: String,
+  ref: String,
+  manifest: artifact_publication_manifest.PublicationManifest,
+) -> #(String, Int) {
+  let payload = artifact_publication_manifest.to_string(manifest)
+  write_seed_artifact(root, ref, payload)
+  #(
+    hash.sha256_hex(payload),
+    bit_array.byte_size(bit_array.from_string(payload)),
+  )
+}
+
+fn write_seed_artifact(root: String, ref: String, contents: String) -> Nil {
+  let absolute = root <> "/.scherzo-state/artifacts/" <> ref
+  let assert Ok(dir) = path.dirname(absolute)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let assert Ok(Nil) = simplifile.write(absolute, contents)
+  Nil
+}
+
+fn retry_publish_runner(
+  subject: process.Subject(OutMsg),
+) -> command_runner.Runner {
+  command_runner.Runner(run: fn(spec) {
+    process.send(subject, OutLine(command_runner.describe(spec)))
+    let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
+    let _ = simplifile.create_directory_all(cwd)
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] ->
+        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
 }
 
 fn turn_deps(summary: event.SessionSummary) -> ctl.ControlClient {

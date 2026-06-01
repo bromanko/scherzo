@@ -263,7 +263,7 @@ fn record_route_with_templates(
   }
 }
 
-fn record_route_failure(
+pub fn record_failed_attempt(
   route: artifact_publication_config.PublicationRoute,
   workflow_id: String,
   work: artifact_publication_planner.PublicationWork,
@@ -271,13 +271,15 @@ fn record_route_failure(
   checkpoint: workflow_checkpoint.Writer,
   code: String,
   message: String,
-) -> Result(RouteRecordingOutcome, String) {
+) -> Result(#(PublicationFailure, PublicationAttemptSummary), String) {
   let series_id = make_series_id(work.id, workflow_id, route.id)
+  let generated_at_ms = checkpoint.now_ms()
   let attempt_key =
     artifact_publication_manifest.attempt_key_for_failure(
       route.id,
       code,
       message,
+      generated_at_ms,
     )
   let manifest =
     artifact_publication_manifest.failed_manifest(
@@ -287,7 +289,7 @@ fn record_route_failure(
       series_id,
       route.required,
       attempt_key,
-      checkpoint.now_ms(),
+      generated_at_ms,
       artifact_publication_manifest.PublicationErrorInfo(
         code: code,
         message: message,
@@ -305,10 +307,28 @@ fn record_route_failure(
     Some(message),
     checkpoint,
   ))
-  Ok(RouteFailed(
-    PublicationFailure(route.id, code, message, route.required),
-    attempt,
+  Ok(#(PublicationFailure(route.id, code, message, route.required), attempt))
+}
+
+fn record_route_failure(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  code: String,
+  message: String,
+) -> Result(RouteRecordingOutcome, String) {
+  use #(failure, attempt) <- result.try(record_failed_attempt(
+    route,
+    workflow_id,
+    work,
+    run_id,
+    checkpoint,
+    code,
+    message,
   ))
+  Ok(RouteFailed(failure, attempt))
 }
 
 fn failure_code(reason: String) -> String {
@@ -320,9 +340,69 @@ fn failure_code(reason: String) -> String {
 
 fn failure_message(reason: String) -> String {
   case string.split_once(reason, on: ":") {
-    Ok(#(_, message)) -> message
+    Ok(#(_, message)) -> string.trim(message)
     Error(_) -> reason
   }
+}
+
+pub fn record_planned_attempt(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  run_id: String,
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(PublicationAttemptSummary, String) {
+  let attempt_key =
+    artifact_publication_manifest.attempt_key_for_success(planned.version_id)
+  let manifest =
+    artifact_publication_manifest.planned_manifest(
+      planned,
+      attempt_key,
+      checkpoint.now_ms(),
+    )
+  write_attempt(
+    route,
+    workflow_id,
+    run_id,
+    planned.series_id,
+    attempt_key,
+    manifest,
+    False,
+    None,
+    None,
+    checkpoint,
+  )
+}
+
+pub fn record_manifest_attempt(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  run_id: String,
+  manifest: artifact_publication_manifest.PublicationManifest,
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(PublicationAttemptSummary, String) {
+  let error_code = case manifest.error {
+    Some(artifact_publication_manifest.PublicationErrorInfo(code, _)) ->
+      Some(code)
+    None -> None
+  }
+  let error_message = case manifest.error {
+    Some(artifact_publication_manifest.PublicationErrorInfo(_, message)) ->
+      Some(message)
+    None -> None
+  }
+  write_attempt(
+    route,
+    workflow_id,
+    run_id,
+    manifest.series_id,
+    manifest.attempt_id,
+    manifest,
+    manifest.retryable,
+    error_code,
+    error_message,
+    checkpoint,
+  )
 }
 
 fn write_attempt(
@@ -362,7 +442,7 @@ fn write_attempt(
         status: artifact_publication_manifest.status_to_string(manifest.status),
         required: route.required,
         retryable: retryable,
-        retry_execution_available: False,
+        retry_execution_available: manifest.retry_execution_available,
         version_id: manifest.version_id,
         manifest_ref: Some(written.ref),
         manifest_sha256: Some(written.sha256),
@@ -382,7 +462,7 @@ fn write_attempt(
     status: artifact_publication_manifest.status_to_string(manifest.status),
     required: route.required,
     retryable: retryable,
-    retry_execution_available: False,
+    retry_execution_available: manifest.retry_execution_available,
     version_id: manifest.version_id,
     manifest_ref: written.ref,
     manifest_sha256: written.sha256,
@@ -405,7 +485,7 @@ fn publication_record_id(
   <> attempt_key
 }
 
-fn publication_work(
+pub fn publication_work(
   issue: tracker_issue.Issue,
 ) -> artifact_publication_planner.PublicationWork {
   artifact_publication_planner.PublicationWork(
@@ -416,7 +496,7 @@ fn publication_work(
   )
 }
 
-fn load_body_templates(
+pub fn load_body_templates(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,

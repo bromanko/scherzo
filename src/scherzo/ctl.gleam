@@ -4,12 +4,14 @@ import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/control/client
 import scherzo/control/command as control_command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/query/types as query_types
+import scherzo/ctl/artifact_publication as ctl_artifact_publication
 import scherzo/ctl/schedule_state
 import scherzo/ctl/workflow_recovery_history
 import scherzo/ctl/workstream as ctl_workstream
@@ -111,6 +113,13 @@ pub type Command {
     run_id: String,
   )
   ArtifactPublicationShow(
+    control_file: Option(String),
+    root: Option(String),
+    json: Bool,
+    run_id: String,
+    publication_id: String,
+  )
+  ArtifactPublicationRetry(
     control_file: Option(String),
     root: Option(String),
     json: Bool,
@@ -259,7 +268,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  query status                 Run the additive read-query status/introspection surface.\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  recovery cleanup-orphan-steps run:<run-id> [--dry-run|--yes]\n                               Dry run orphaned YAML child-step cleanup by default; use --yes to mutate.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  workstream start-from-handoff <workflow> <action> <ref> <sha256> [decision-id...]\n                               Create an input bundle and queue a phase from a retained handoff.\n  workstream start-from-input-bundle <workflow> <action> <ref> <sha256> [decision-id...]\n                               Queue a phase from an already retained workstream input bundle.\n  workstream decision <kind> <workstream-id> <action-id> <gate-id> <actor> <rationale> <name>:<ref>:<sha256>...\n                               Record approve/request-changes/reject/deviate gate decisions for exact snapshots.\n  artifact publication list --run <run-id> [--root <workspace-root>]\n                               Inspect the latest local publication status for one workflow run.\n  artifact publication show --run <run-id> --publication <publication-id> [--root <workspace-root>]\n                               Inspect the full local publication attempt history for one publication.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n  state repair-run-provenance run:<run-id> --root <workspace-root> --dry-run|--yes\n                               Inspect or append an auditable workflow provenance repair.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path; relative paths resolve from the caller working directory.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands, including target context; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --run <run-id>               Workflow run id for artifact publication inspection.\n  --publication <publication>  Publication id for artifact publication show.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  query status                 Run the additive read-query status/introspection surface.\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  recovery cleanup-orphan-steps run:<run-id> [--dry-run|--yes]\n                               Dry run orphaned YAML child-step cleanup by default; use --yes to mutate.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  workstream start-from-handoff <workflow> <action> <ref> <sha256> [decision-id...]\n                               Create an input bundle and queue a phase from a retained handoff.\n  workstream start-from-input-bundle <workflow> <action> <ref> <sha256> [decision-id...]\n                               Queue a phase from an already retained workstream input bundle.\n  workstream decision <kind> <workstream-id> <action-id> <gate-id> <actor> <rationale> <name>:<ref>:<sha256>...\n                               Record approve/request-changes/reject/deviate gate decisions for exact snapshots.\n  artifact publication list --run <run-id> [--root <workspace-root>]\n                               Inspect the latest local publication status for one workflow run.\n  artifact publication show --run <run-id> --publication <publication-id> [--root <workspace-root>]\n                               Inspect the full local publication attempt history for one publication.\n  artifact publication retry --run <run-id> --publication <publication-id> [--root <workspace-root>]\n                               Replay the retained publication manifest without reading a step workspace.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n  state repair-run-provenance run:<run-id> --root <workspace-root> --dry-run|--yes\n                               Inspect or append an auditable workflow provenance repair.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path; relative paths resolve from the caller working directory.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands, including target context; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --run <run-id>               Workflow run id for artifact publication inspection.\n  --publication <publication>  Publication id for artifact publication show.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -534,9 +543,20 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
         publication_id,
       ))
     }
+    "artifact", ["publication", "retry"] -> {
+      use run_id <- try_ctl(required_run_id(flags))
+      use publication_id <- try_ctl(required_publication_id(flags))
+      Ok(ArtifactPublicationRetry(
+        flags.control_file,
+        flags.root,
+        flags.json,
+        run_id,
+        publication_id,
+      ))
+    }
     "artifact", _ ->
       Error(UsageError(
-        "artifact usage: artifact publication list --run <run-id> | artifact publication show --run <run-id> --publication <publication-id>",
+        "artifact usage: artifact publication list --run <run-id> | artifact publication show --run <run-id> --publication <publication-id> | artifact publication retry --run <run-id> --publication <publication-id>",
       ))
     "state", ["status"] -> {
       use root <- try_ctl(required_root(flags))
@@ -891,6 +911,15 @@ pub fn run_with_deps(
       run_artifact_publication_list(control_path, root, json, run_id, output)
     ArtifactPublicationShow(control_path, root, json, run_id, publication_id) ->
       run_artifact_publication_show(
+        control_path,
+        root,
+        json,
+        run_id,
+        publication_id,
+        output,
+      )
+    ArtifactPublicationRetry(control_path, root, json, run_id, publication_id) ->
+      run_artifact_publication_retry(
         control_path,
         root,
         json,
@@ -1481,25 +1510,11 @@ fn run_artifact_publication_list(
   output: Output,
 ) -> Result(Nil, Error) {
   use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
-  use projected <- try_ctl(schedule_state.load_projection(root, Failed))
-  use _ <- try_ctl(require_publication_run(projected, run_id))
-  let summaries = publication_summaries(projected, run_id)
-  case json_output {
-    True ->
-      output.line(
-        json.object([
-          #("run_id", json.string(run_id)),
-          #("workspace_root", json.string(root)),
-          #(
-            "publications",
-            json.array(summaries, of: publication_summary_to_json),
-          ),
-        ])
-        |> json.to_string,
-      )
-    False -> print_artifact_publication_list(run_id, summaries, output)
-  }
-  Ok(Nil)
+  ctl_artifact_publication.list(root, json_output, run_id, output.line)
+  |> result.map_error(fn(error) {
+    let #(code, message) = error
+    Failed(code, message)
+  })
 }
 
 fn run_artifact_publication_show(
@@ -1511,242 +1526,39 @@ fn run_artifact_publication_show(
   output: Output,
 ) -> Result(Nil, Error) {
   use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
-  use projected <- try_ctl(schedule_state.load_projection(root, Failed))
-  use _ <- try_ctl(require_publication_run(projected, run_id))
-  let attempts =
-    projection.publication_attempts_for_run(projected, run_id, publication_id)
-  use latest <- try_ctl(publication_or_not_found(attempts, publication_id))
-  case json_output {
-    True ->
-      output.line(
-        json.object([
-          #("run_id", json.string(run_id)),
-          #("publication_id", json.string(publication_id)),
-          #("workspace_root", json.string(root)),
-          #("latest", publication_attempt_to_json(latest)),
-          #("attempt_count", json.int(list.length(attempts))),
-          #("attempts", json.array(attempts, of: publication_attempt_to_json)),
-        ])
-        |> json.to_string,
-      )
-    False ->
-      print_artifact_publication_show(
-        run_id,
-        publication_id,
-        latest,
-        attempts,
-        output,
-      )
-  }
-  Ok(Nil)
-}
-
-fn require_publication_run(
-  projected: projection.Projection,
-  run_id: String,
-) -> Result(Nil, Error) {
-  case projection.has_workflow_run(projected, run_id) {
-    True -> Ok(Nil)
-    False ->
-      Error(Failed(
-        "publication_run_not_found",
-        "publication run not found: " <> run_id,
-      ))
-  }
-}
-
-fn publication_or_not_found(
-  attempts: List(projection.PublicationAttempt),
-  publication_id: String,
-) -> Result(projection.PublicationAttempt, Error) {
-  case list.reverse(attempts) {
-    [latest, ..] -> Ok(latest)
-    [] ->
-      Error(Failed(
-        "publication_not_found",
-        "publication not found: " <> publication_id,
-      ))
-  }
-}
-
-type PublicationSummary {
-  PublicationSummary(
-    publication_id: String,
-    series_id: String,
-    latest_status: String,
-    latest_attempt_id: String,
-    attempt_count: Int,
-    manifest_ref: Option(String),
-    manifest_sha256: Option(String),
-    manifest_bytes: Option(Int),
-    retryable: Bool,
-    retry_execution_available: Bool,
-  )
-}
-
-fn publication_summaries(
-  projected: projection.Projection,
-  run_id: String,
-) -> List(PublicationSummary) {
-  publication_summaries_loop(
-    projection.publication_ids_for_run(projected, run_id),
-    projected,
+  ctl_artifact_publication.show(
+    root,
+    json_output,
     run_id,
-    [],
+    publication_id,
+    output.line,
   )
-}
-
-fn publication_summaries_loop(
-  publication_ids: List(String),
-  projected: projection.Projection,
-  run_id: String,
-  acc: List(PublicationSummary),
-) -> List(PublicationSummary) {
-  case publication_ids {
-    [] -> list.reverse(acc)
-    [publication_id, ..rest] -> {
-      let attempts =
-        projection.publication_attempts_for_run(
-          projected,
-          run_id,
-          publication_id,
-        )
-      case publication_or_not_found(attempts, publication_id) {
-        Ok(latest) ->
-          publication_summaries_loop(rest, projected, run_id, [
-            PublicationSummary(
-              publication_id: publication_id,
-              series_id: latest.series_id,
-              latest_status: latest.status,
-              latest_attempt_id: latest.attempt_id,
-              attempt_count: list.length(attempts),
-              manifest_ref: latest.manifest_ref,
-              manifest_sha256: latest.manifest_sha256,
-              manifest_bytes: latest.manifest_bytes,
-              retryable: latest.retryable,
-              retry_execution_available: latest.retry_execution_available,
-            ),
-            ..acc
-          ])
-        Error(_) -> publication_summaries_loop(rest, projected, run_id, acc)
-      }
-    }
-  }
-}
-
-fn print_artifact_publication_list(
-  run_id: String,
-  summaries: List(PublicationSummary),
-  output: Output,
-) -> Nil {
-  output.line("run_id: " <> run_id)
-  case summaries {
-    [] -> output.line("publications: -")
-    _ -> {
-      output.line(
-        "PUBLICATION  STATUS  ATTEMPTS  LATEST ATTEMPT  SERIES  MANIFEST  RETRYABLE  RETRY EXEC",
-      )
-      list.each(summaries, fn(summary) {
-        output.line(
-          summary.publication_id
-          <> "  "
-          <> summary.latest_status
-          <> "  "
-          <> int.to_string(summary.attempt_count)
-          <> "  "
-          <> summary.latest_attempt_id
-          <> "  "
-          <> summary.series_id
-          <> "  "
-          <> optional_string(summary.manifest_ref)
-          <> "  "
-          <> bool_string(summary.retryable)
-          <> "  "
-          <> bool_string(summary.retry_execution_available),
-        )
-      })
-    }
-  }
-}
-
-fn print_artifact_publication_show(
-  run_id: String,
-  publication_id: String,
-  latest: projection.PublicationAttempt,
-  attempts: List(projection.PublicationAttempt),
-  output: Output,
-) -> Nil {
-  output.line("run_id: " <> run_id)
-  output.line("publication_id: " <> publication_id)
-  output.line("series_id: " <> latest.series_id)
-  output.line("latest_status: " <> latest.status)
-  output.line("latest_attempt_id: " <> latest.attempt_id)
-  output.line("attempt_count: " <> int.to_string(list.length(attempts)))
-  output.line("manifest_ref: " <> optional_string(latest.manifest_ref))
-  output.line("manifest_sha256: " <> optional_string(latest.manifest_sha256))
-  output.line("manifest_bytes: " <> optional_ms(latest.manifest_bytes))
-  output.line("retryable: " <> bool_string(latest.retryable))
-  output.line(
-    "retry_execution_available: "
-    <> bool_string(latest.retry_execution_available),
-  )
-  output.line("attempts:")
-  list.each(attempts, fn(attempt) {
-    output.line(
-      "- "
-      <> int.to_string(attempt.recorded_at_ms)
-      <> " "
-      <> attempt.status
-      <> " "
-      <> attempt.attempt_id,
-    )
-    output.line("  manifest_ref: " <> optional_string(attempt.manifest_ref))
-    output.line(
-      "  manifest_sha256: " <> optional_string(attempt.manifest_sha256),
-    )
-    output.line("  manifest_bytes: " <> optional_ms(attempt.manifest_bytes))
-    output.line("  version_id: " <> optional_string(attempt.version_id))
-    output.line("  error_code: " <> optional_string(attempt.error_code))
-    output.line("  error_message: " <> optional_string(attempt.error_message))
+  |> result.map_error(fn(error) {
+    let #(code, message) = error
+    Failed(code, message)
   })
 }
 
-fn publication_summary_to_json(summary: PublicationSummary) -> json.Json {
-  json.object([
-    #("publication_id", json.string(summary.publication_id)),
-    #("series_id", json.string(summary.series_id)),
-    #("latest_status", json.string(summary.latest_status)),
-    #("latest_attempt_id", json.string(summary.latest_attempt_id)),
-    #("attempt_count", json.int(summary.attempt_count)),
-    #("manifest_ref", optional_string_json(summary.manifest_ref)),
-    #("manifest_sha256", optional_string_json(summary.manifest_sha256)),
-    #("manifest_bytes", optional_int_json(summary.manifest_bytes)),
-    #("retryable", json.bool(summary.retryable)),
-    #("retry_execution_available", json.bool(summary.retry_execution_available)),
-  ])
-}
-
-fn publication_attempt_to_json(
-  attempt: projection.PublicationAttempt,
-) -> json.Json {
-  json.object([
-    #("run_id", json.string(attempt.run_id)),
-    #("workflow_id", json.string(attempt.workflow_id)),
-    #("publication_id", json.string(attempt.publication_id)),
-    #("series_id", json.string(attempt.series_id)),
-    #("attempt_id", json.string(attempt.attempt_id)),
-    #("status", json.string(attempt.status)),
-    #("required", json.bool(attempt.required)),
-    #("retryable", json.bool(attempt.retryable)),
-    #("retry_execution_available", json.bool(attempt.retry_execution_available)),
-    #("version_id", optional_string_json(attempt.version_id)),
-    #("manifest_ref", optional_string_json(attempt.manifest_ref)),
-    #("manifest_sha256", optional_string_json(attempt.manifest_sha256)),
-    #("manifest_bytes", optional_int_json(attempt.manifest_bytes)),
-    #("error_code", optional_string_json(attempt.error_code)),
-    #("error_message", optional_string_json(attempt.error_message)),
-    #("recorded_at_ms", json.int(attempt.recorded_at_ms)),
-  ])
+fn run_artifact_publication_retry(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  json_output: Bool,
+  run_id: String,
+  publication_id: String,
+  output: Output,
+) -> Result(Nil, Error) {
+  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
+  ctl_artifact_publication.retry(
+    root,
+    json_output,
+    run_id,
+    publication_id,
+    output.line,
+  )
+  |> result.map_error(fn(error) {
+    let #(code, message) = error
+    Failed(code, message)
+  })
 }
 
 fn bool_string(value: Bool) -> String {
