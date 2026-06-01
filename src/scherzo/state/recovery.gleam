@@ -464,7 +464,7 @@ fn workflow_task_ref_or_legacy(
   case projection.workflow_task_ref(projection, run_id) {
     Ok(task_ref) -> task_ref
     Error(Nil) ->
-      record.legacy_linear_task_ref_fields(issue_id, issue_identifier)
+      record.linear_task_ref_fields(issue_id, Some(issue_identifier), None)
   }
 }
 

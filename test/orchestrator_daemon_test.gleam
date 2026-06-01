@@ -1517,6 +1517,27 @@ fn workflow_finished_outcomes(root: String) -> List(String) {
   })
 }
 
+fn workflow_finished_task_refs(root: String) -> List(record.TaskRefFields) {
+  load_test_records(root)
+  |> list.filter_map(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowRunFinishedWithTask(task_ref: task_ref, ..) -> Ok(task_ref)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn legacy_terminal_record_kinds(root: String) -> List(String) {
+  load_test_records(root)
+  |> list.filter_map(fn(ledger_record) {
+    case ledger_record.body {
+      record.RunFinished(..) -> Ok("run_finished")
+      record.WorkflowRunFinished(..) -> Ok("workflow_run_finished")
+      _ -> Error(Nil)
+    }
+  })
+}
+
 fn wait_for_workflow_finished_outcomes(
   root: String,
   expected: List(String),
@@ -2226,7 +2247,6 @@ pub fn daemon_claim_handoff_appends_parent_records_before_worker_spawn_test() {
     == [
       "workflow_run_started",
       "known_workspace",
-      "run_started",
       "issue_counter_updated",
     ]
 
@@ -3928,6 +3948,15 @@ pub fn daemon_startup_resume_preserves_recovered_success_outcome_test() {
     ["succeeded_after_recovery"],
     20,
   )
+  assert workflow_finished_task_refs(workspace_root)
+    == [
+      record.linear_task_ref_fields(
+        candidate.id,
+        Some(candidate.identifier),
+        None,
+      ),
+    ]
+  assert legacy_terminal_record_kinds(workspace_root) == []
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -4003,5 +4032,14 @@ pub fn daemon_startup_resume_preserves_recovered_failure_outcome_test() {
     ["failed_after_recovery"],
     20,
   )
+  assert workflow_finished_task_refs(workspace_root)
+    == [
+      record.linear_task_ref_fields(
+        candidate.id,
+        Some(candidate.identifier),
+        None,
+      ),
+    ]
+  assert legacy_terminal_record_kinds(workspace_root) == []
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }

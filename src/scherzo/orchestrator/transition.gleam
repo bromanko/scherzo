@@ -1991,20 +1991,13 @@ fn finish_worker_success_entry(
     )
   let state = transition_types.State(..state, runtime: runtime)
   let batch =
-    ledger_batch.worker_succeeded(
-      entry.run_id,
-      entry.issue_id,
-      classification_to_string(success.final_classification),
-      success.tokens.total,
-      success.turns,
-      counter_record_for_entry(
-        runtime,
-        entry,
-        final_issue.identifier,
-        Some(entry.run_id),
-        context.now_ms,
-      ),
-    )
+    ledger_batch.worker_succeeded(counter_record_for_entry(
+      runtime,
+      entry,
+      final_issue.identifier,
+      Some(entry.run_id),
+      context.now_ms,
+    ))
   let transition_types.Outcome(state: state, effects: follow_ups) =
     map_lifecycle_core_effects(
       state,
@@ -2104,19 +2097,13 @@ fn finish_standard_worker_failure_entry(
     )
   let state = transition_types.State(..state, runtime: runtime)
   let batch =
-    ledger_batch.worker_failed(
-      entry.run_id,
-      entry.issue_id,
-      failure.tokens.total,
-      0,
-      counter_record_for_entry(
-        runtime,
-        entry,
-        baseline_issue.identifier,
-        Some(entry.run_id),
-        context.now_ms,
-      ),
-    )
+    ledger_batch.worker_failed(counter_record_for_entry(
+      runtime,
+      entry,
+      baseline_issue.identifier,
+      Some(entry.run_id),
+      context.now_ms,
+    ))
   let transition_types.Outcome(state: state, effects: follow_ups) =
     map_lifecycle_core_effects(
       state,
@@ -2199,19 +2186,13 @@ fn finish_recovery_validation_failure_entry(
             <> entry.issue_id
             <> ":"
             <> entry.run_id,
-          batch: ledger_batch.worker_failed(
-            entry.run_id,
-            entry.issue_id,
-            failure.tokens.total,
-            0,
-            counter_record_for_entry(
-              runtime,
-              entry,
-              baseline_issue.identifier,
-              Some(entry.run_id),
-              context.now_ms,
-            ),
-          ),
+          batch: ledger_batch.worker_failed(counter_record_for_entry(
+            runtime,
+            entry,
+            baseline_issue.identifier,
+            Some(entry.run_id),
+            context.now_ms,
+          )),
           failure_event: "ledger_append_failed",
           policy: effects_types.ContinueRegardless,
         )),
@@ -2279,9 +2260,7 @@ fn finish_operator_worker_failure_entry(
             <> ":"
             <> entry.run_id,
           batch: ledger_batch.workflow_cancelled(
-            entry.run_id,
-            entry.workflow_id,
-            entry.issue_id,
+            #(entry.run_id, entry.workflow_id, entry.task_ref),
             failure.tokens.total,
           ),
           failure_event: "workflow_terminal_append_failed",
@@ -2397,9 +2376,7 @@ fn stop_worker_entry(
         <> ":"
         <> entry.run_id,
       batch: ledger_batch.workflow_cancelled(
-        entry.run_id,
-        entry.workflow_id,
-        entry.issue_id,
+        #(entry.run_id, entry.workflow_id, entry.task_ref),
         0,
       ),
       failure_event: "workflow_terminal_append_failed",
@@ -2713,16 +2690,6 @@ fn session_tokens_add(
     cache_write: a.cache_write + b.cache_write,
     total: a.total + b.total,
   )
-}
-
-fn classification_to_string(
-  classification: agent_types.FinalClassification,
-) -> String {
-  case classification {
-    agent_types.FinalActive -> "active"
-    agent_types.FinalTerminal -> "terminal"
-    agent_types.FinalNonActive -> "non_active"
-  }
 }
 
 fn worker_down_failure(

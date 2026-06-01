@@ -1741,7 +1741,6 @@ fn repair_records(
       observed_updated_at_ms,
       run.run_root,
     ),
-    record.RunStarted(run.run_id, issue.id, issue.identifier, workspace_path),
     record.KnownWorkspace(issue.id, issue.identifier, workspace_path),
     record.IssueCounterUpdated(
       issue.id,

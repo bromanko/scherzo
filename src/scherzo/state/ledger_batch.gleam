@@ -1,5 +1,6 @@
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import scherzo/state/record
+import scherzo/task
 
 pub opaque type LedgerBatch {
   LedgerBatch(List(record.RecordBody))
@@ -19,7 +20,6 @@ pub fn claim_started(
   issue_id: String,
   issue_identifier: String,
   workspace_path: String,
-  run_id: String,
   failure_attempts: Int,
   worker_sessions: Int,
   observed_updated_at_ms: Int,
@@ -27,7 +27,6 @@ pub fn claim_started(
   LedgerBatch([
     workflow_started,
     record.KnownWorkspace(issue_id, issue_identifier, workspace_path),
-    record.RunStarted(run_id, issue_id, issue_identifier, workspace_path),
     record.IssueCounterUpdated(
       issue_id,
       issue_identifier,
@@ -65,49 +64,43 @@ pub fn retry_cancelled(
   LedgerBatch([record.RetryCancelled(issue_id, generation, reason)])
 }
 
-pub fn worker_succeeded(
-  run_id: String,
-  issue_id: String,
-  classification: String,
-  token_total: Int,
-  turns: Int,
-  counter_record: record.RecordBody,
-) -> LedgerBatch {
-  LedgerBatch([
-    record.RunFinished(run_id, issue_id, classification, token_total, turns),
-    counter_record,
-  ])
+// Workflow execution checkpoints own current workflow_run terminal records.
+// Worker finish batches only update counters so they do not append legacy
+// run_finished records or duplicate generic workflow outcomes.
+pub fn worker_succeeded(counter_record: record.RecordBody) -> LedgerBatch {
+  LedgerBatch([counter_record])
 }
 
-pub fn worker_failed(
-  run_id: String,
-  issue_id: String,
-  token_total: Int,
-  turns: Int,
-  counter_record: record.RecordBody,
-) -> LedgerBatch {
-  LedgerBatch([
-    record.RunFinished(run_id, issue_id, "failure", token_total, turns),
-    counter_record,
-  ])
+pub fn worker_failed(counter_record: record.RecordBody) -> LedgerBatch {
+  LedgerBatch([counter_record])
 }
 
 pub fn workflow_cancelled(
-  run_id: String,
-  workflow_id: String,
-  issue_id: String,
+  run_ref: #(String, String, task.TaskRef),
   token_total: Int,
 ) -> LedgerBatch {
+  let #(run_id, workflow_id, task_ref) = run_ref
+  let durable_task_ref = task_ref_fields(task_ref)
   LedgerBatch([
-    record.WorkflowRunFinished(
+    record.WorkflowRunFinishedWithTask(
       run_id,
       workflow_id,
-      issue_id,
+      task_ref.remote_id,
+      durable_task_ref,
       "cancelled",
       token_total,
       0,
     ),
   ])
+}
+
+fn task_ref_fields(task_ref: task.TaskRef) -> record.TaskRefFields {
+  record.TaskRefFields(
+    task_ref.backend_kind,
+    task_ref.remote_id,
+    task_ref.key,
+    task_ref.url,
+  )
 }
 
 pub fn operator_retry_counter_reset(
@@ -236,7 +229,6 @@ pub fn step_attempt_pi_session_recorded_with_task(
   run_id: String,
   issue_id: String,
   issue_identifier: String,
-  task_ref: record.TaskRefFields,
   workflow_id: String,
   workflow_fingerprint: String,
   step_id: String,
@@ -251,7 +243,7 @@ pub fn step_attempt_pi_session_recorded_with_task(
       run_id,
       issue_id,
       issue_identifier,
-      task_ref,
+      record.linear_task_ref_fields(issue_id, Some(issue_identifier), None),
       workflow_id,
       workflow_fingerprint,
       step_id,

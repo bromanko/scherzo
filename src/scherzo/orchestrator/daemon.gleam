@@ -5707,7 +5707,6 @@ fn claim_ledger_batch_for_pending(
         pending.issue.id,
         pending.issue.identifier,
         pending.workspace_path,
-        pending.run_id,
         counter.failure_attempts,
         counter.worker_sessions,
         state.dependencies.now_ms(),
