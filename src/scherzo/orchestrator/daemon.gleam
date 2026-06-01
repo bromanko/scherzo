@@ -625,7 +625,7 @@ pub fn start(
             )
           {
             Error(err) -> {
-              let _ = query_service.stop(query_handle, 1000)
+              let _best_effort = query_service.stop(query_handle, 1000)
               Error(encode_startup_error(err))
             }
             Ok(control_plane) ->
@@ -641,7 +641,7 @@ pub fn start(
               {
                 Error(_) -> {
                   stop_control_plane(dependencies, control_plane)
-                  let _ = query_service.stop(query_handle, 1000)
+                  let _best_effort = query_service.stop(query_handle, 1000)
                   Error(
                     encode_startup_error(StartupError(
                       "effect_runner_start_failed",
@@ -656,7 +656,7 @@ pub fn start(
                     False -> {
                       process.demonitor_process(effect_runner_monitor)
                       stop_control_plane(dependencies, control_plane)
-                      let _ = query_service.stop(query_handle, 1000)
+                      let _best_effort = query_service.stop(query_handle, 1000)
                       Error(
                         encode_startup_error(StartupError(
                           "effect_runner_start_failed",
@@ -1291,7 +1291,7 @@ fn handle_message(
         reply,
       ))
     ExecuteQuery(query, _timeout_ms, reply) -> {
-      let _ =
+      let _query_worker_pid =
         process.spawn_unlinked(fn() {
           process.send(reply, query_service.query(state.query_service, query))
           Nil
@@ -1805,7 +1805,7 @@ fn continue_retry_workflow_step_for_operator(
               }
             }
             _ -> {
-              let _ =
+              let _best_effort_retry_step_rejection_diagnostic_appended =
                 append_ledger_bodies(
                   state,
                   retry_step_rejection_diagnostic_bodies(finalization),
@@ -4044,7 +4044,7 @@ fn start_pending_scheduled_run(
               pending.workflow_id,
             )
           {
-            Error(_) -> {
+            Error(runtime_bundle.BundleError(_, _)) -> {
               append_ledger_bodies_best_effort(
                 state,
                 [
@@ -6157,7 +6157,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       }
     None -> Nil
   }
-  let _ = query_service.stop(state.query_service, 1000)
+  let _best_effort = query_service.stop(state.query_service, 1000)
   state.dependencies.stop_control_server(state.control_server)
   case state.control_file_path {
     Some(path) -> control_file.remove(path)

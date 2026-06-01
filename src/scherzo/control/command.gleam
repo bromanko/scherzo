@@ -663,7 +663,7 @@ fn command_result_from_fields_decoder(
         target: fields.target,
         message: fields.message,
       ))
-    Error(_) ->
+    Error(Nil) ->
       decode.failure(
         CommandResult(
           command: fields.command_name,

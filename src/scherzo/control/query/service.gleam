@@ -207,7 +207,7 @@ fn start_request(state: State, pending: PendingRequest) -> State {
   let worker_pid =
     process.spawn_unlinked(fn() {
       let Backend(run) = state.backend
-      let _ =
+      let _worker_completion_send_result =
         process.send(state.subject, WorkerFinished(request_id, run(request)))
       Nil
     })
@@ -291,7 +291,7 @@ fn shutdown(state: State) -> Nil {
 
 fn cancel_running_timer(running_request: RunningRequest) -> Nil {
   let RunningRequest(_, _, timer) = running_request
-  let _ = process.cancel_timer(timer)
+  let _best_effort_timer_cancel_result = process.cancel_timer(timer)
   Nil
 }
 

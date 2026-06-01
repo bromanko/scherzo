@@ -28,6 +28,18 @@ pub fn query_service_backend_failure_test() {
   assert service.stop(handle, 1000) == Ok(Nil)
 }
 
+pub fn query_service_stop_reports_timeout_when_caller_does_not_wait_test() {
+  let assert Ok(handle) =
+    service.start(
+      service.Settings(max_concurrent: 1, max_queued: 1, timeout_ms: 50),
+      service.Backend(run: fn(_) { Ok(status_response()) }),
+    )
+
+  assert service.stop(handle, 0) == Error(Nil)
+  assert service.query(handle, types.Status)
+    == Error(types.QueryError(types.QueryShutdown, "query service unavailable"))
+}
+
 pub fn query_service_timeout_test() {
   let assert Ok(handle) =
     service.start(
