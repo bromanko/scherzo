@@ -3,6 +3,7 @@ import gleam/string
 import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/control/remote_envelope
+import scherzo/task
 
 pub fn remote_envelope_roundtrips_all_message_shapes_test() {
   assert_roundtrip(
@@ -16,6 +17,14 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
   assert_roundtrip(remote_envelope.RemoteQueryRequest(
     "query-1",
     query_types.Status,
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryRequest(
+    "query-task-list",
+    query_types.TaskList(query_types.TaskListQuery(
+      states: [task.Ready],
+      limit: 10,
+      cursor: Some("cursor:10"),
+    )),
   ))
   assert_roundtrip(remote_envelope.RemoteCommandReceipt(
     "cmd-2",
@@ -49,6 +58,15 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
   assert_roundtrip(remote_envelope.RemoteQueryResponse(
     "query-3",
     Error(query_types.QueryError(query_types.QueryTimeout, "query timed out")),
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryResponse(
+    "query-task-list-response",
+    Ok(
+      query_types.TaskListResponse(query_types.TaskListDto(
+        items: [task_summary()],
+        page: query_types.PageDto(next_cursor: None, has_more: False),
+      )),
+    ),
   ))
   assert_roundtrip(
     remote_envelope.RemoteStateSnapshot(999, False, [
@@ -164,6 +182,24 @@ pub fn remote_envelope_rejects_local_control_file_json_test() {
   assert_invalid_envelope(
     "{\"host\":\"127.0.0.1\",\"port\":4000,\"token\":\"secret\",\"workspace_root\":\"/tmp/work\"}",
     "invalid_envelope",
+  )
+}
+
+fn task_summary() -> query_types.TaskSummaryDto {
+  query_types.TaskSummaryDto(
+    id: "linear:issue-1",
+    source: query_types.TaskSourceDto(
+      provider: "linear",
+      id: "issue-1",
+      display_id: Some("LIV-1"),
+      url: None,
+    ),
+    title: "Task list item",
+    state: task.Ready,
+    priority: None,
+    labels: [],
+    created_at: None,
+    updated_at: None,
   )
 }
 

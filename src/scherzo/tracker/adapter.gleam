@@ -31,6 +31,23 @@ pub type TaskSearchRequest {
   )
 }
 
+pub type TaskListRequest {
+  TaskListRequest(
+    state_categories: List(task.TaskStateCategory),
+    limit: Int,
+    offset: Int,
+  )
+}
+
+pub type TaskPage {
+  TaskPage(items: List(task.Task), has_more: Bool)
+}
+
+pub type TaskLookupRef {
+  TaskLookupByDisplayId(String)
+  TaskLookupByRemoteId(provider: Option(String), id: String)
+}
+
 pub type TaskSourceCapability {
   TaskSourceCapability(
     fetch_candidates: fn(TaskSearchRequest) ->
@@ -38,6 +55,9 @@ pub type TaskSourceCapability {
     refresh_by_refs: fn(List(task.TaskRef)) ->
       Result(List(task.Task), TrackerError),
     lookup_by_operator_ref: fn(String) ->
+      Result(Option(task.Task), TrackerError),
+    list_tasks: fn(TaskListRequest) -> Result(TaskPage, TrackerError),
+    lookup_task_detail: fn(TaskLookupRef) ->
       Result(Option(task.Task), TrackerError),
   )
 }

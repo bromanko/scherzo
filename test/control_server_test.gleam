@@ -15,6 +15,7 @@ import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
+import scherzo/task
 
 fn summary(session_id: String) -> event.SessionSummary {
   event.SessionSummary(
@@ -193,6 +194,56 @@ pub fn server_runs_authenticated_query_test() {
   assert status.daemon_id == "daemon-1"
   let assert Ok(query_types.Status) =
     process.receive(query_subject, within: 1000)
+
+  server.stop(server_handle)
+  hub.stop(subject)
+}
+
+pub fn server_roundtrips_authenticated_task_list_query_test() {
+  let subject = start_hub_with_session("session-task-query")
+  let query_subject = process.new_subject()
+  let expected_query =
+    query_types.TaskList(query_types.TaskListQuery(
+      states: [task.Ready],
+      limit: 1,
+      cursor: Some("cursor:1"),
+    ))
+  let backend =
+    server.Backend(..server.event_hub_store(subject), query: fn(query) {
+      process.send(query_subject, query)
+      Ok(
+        query_types.TaskListResponse(query_types.TaskListDto(
+          items: [
+            query_types.TaskSummaryDto(
+              id: "linear:issue-1",
+              source: query_types.TaskSourceDto(
+                provider: "linear",
+                id: "issue-1",
+                display_id: Some("LIV-1"),
+                url: None,
+              ),
+              title: "Task list item",
+              state: task.Ready,
+              priority: None,
+              labels: [],
+              created_at: None,
+              updated_at: None,
+            ),
+          ],
+          page: query_types.PageDto(next_cursor: None, has_more: False),
+        )),
+      )
+    })
+  let #(server_handle, control_file) =
+    start_server_for_backend(backend, "token", 500)
+
+  let assert Ok(query_types.TaskListResponse(tasks)) =
+    client.query(control_file, expected_query)
+  let assert [item] = tasks.items
+  assert item.title == "Task list item"
+  assert tasks.page.has_more == False
+  let assert Ok(called_query) = process.receive(query_subject, within: 1000)
+  assert called_query == expected_query
 
   server.stop(server_handle)
   hub.stop(subject)
