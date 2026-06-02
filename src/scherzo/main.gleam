@@ -2,6 +2,7 @@ import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/connect
 import scherzo/ctl
 import scherzo/doctor
 import scherzo/json_schema_self_check
@@ -26,6 +27,7 @@ pub type CliResult {
   JsonSchemaSelfCheck(String, String, String)
   TrackerConformance(List(String))
   Control(List(String))
+  Connect(List(String))
   Doctor(doctor.Options)
   Version
   Help
@@ -41,6 +43,7 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
     ["--help"] | ["-h"] -> Ok(Help)
     ["--version"] -> Ok(Version)
     ["ctl", ..rest] -> Ok(Control(rest))
+    ["connect", ..rest] -> Ok(Connect(rest))
     ["tracker-conformance", ..rest] -> Ok(TrackerConformance(rest))
     ["__json-schema-self-check", repository_root, schema_path, payload_path] ->
       Ok(JsonSchemaSelfCheck(repository_root, schema_path, payload_path))
@@ -139,7 +142,7 @@ fn parse_doctor_args(
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo [mode] [path-to-scherzo.yaml]\n       scherzo --version\n       scherzo --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n       scherzo doctor [options] [path-to-scherzo.yaml]\n       scherzo workflow run <workflow.yml> [--run-root <dir>] [--run-id <id>] [--native-review-scenario <id>]\n       scherzo tracker-conformance run <manifest.json> --report <report.json>\n       scherzo ctl <command> [options]\n\nScherzo polls a tracker and runs pi agents in per-task workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, tracker-contract, tracker-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  workflow run            Run one workflow DAG file locally through Scherzo's workflow runner; by default agent steps use real pi-backed Scherzo agents. Native-review scenarios requested with --native-review-scenario use fixture responses for preflight only.\n  tracker-conformance run Run the black-box tracker adapter conformance MVP against one manifest and write a machine-readable report.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --tracker-smoke         Perform a bounded read-only tracker API check; no workspace lifecycle check, workspace preparation, or pi prompt.\n  --tracker-contract-check Compare workflow state/label policy to the tracker project board; read-only.\n  --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n                          Upload a local Markdown file to Linear and attach it to an existing comment; mutates Linear.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  --version               Print source/build identity for logs and bug reports.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nWhen using scripts/scherzoctl, relative --control-file, SCHERZO_CONTROL_FILE, and --root paths are resolved from the caller working directory before the wrapper enters the Scherzo source checkout. JSON ctl responses include non-secret target context (control file path and daemon workspace root).\n\nRequired runtime inputs: LINEAR_API_KEY, a tracker project slug such as tracker.linear.project, agents.runtime.type: pi, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace profiles with drivers that can prepare each step workspace.\n\nSet agents.concurrency: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per tracker project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. The repository scherzo-start helper translates Ctrl-C/SIGINT into SIGTERM for this path; direct gleam run Ctrl-C may still terminate abruptly, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
+  "Usage: scherzo [mode] [path-to-scherzo.yaml]\n       scherzo --version\n       scherzo --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n       scherzo doctor [options] [path-to-scherzo.yaml]\n       scherzo workflow run <workflow.yml> [--run-root <dir>] [--run-id <id>] [--native-review-scenario <id>]\n       scherzo tracker-conformance run <manifest.json> --report <report.json>\n       scherzo ctl <command> [options]\n       scherzo connect --pairing-token <pair_...> --server-url <url> [options]\n\nScherzo polls a tracker and runs pi agents in per-task workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, tracker-contract, tracker-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  workflow run            Run one workflow DAG file locally through Scherzo's workflow runner; by default agent steps use real pi-backed Scherzo agents. Native-review scenarios requested with --native-review-scenario use fixture responses for preflight only.\n  tracker-conformance run Run the black-box tracker adapter conformance MVP against one manifest and write a machine-readable report.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --tracker-smoke         Perform a bounded read-only tracker API check; no workspace lifecycle check, workspace preparation, or pi prompt.\n  --tracker-contract-check Compare workflow state/label policy to the tracker project board; read-only.\n  --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n                          Upload a local Markdown file to Linear and attach it to an existing comment; mutates Linear.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  connect                 Exchange a pairing token for a durable daemon credential.\n  --version               Print source/build identity for logs and bug reports.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nWhen using scripts/scherzoctl, relative --control-file, SCHERZO_CONTROL_FILE, and --root paths are resolved from the caller working directory before the wrapper enters the Scherzo source checkout. JSON ctl responses include non-secret target context (control file path and daemon workspace root).\n\nRequired runtime inputs: LINEAR_API_KEY, a tracker project slug such as tracker.linear.project, agents.runtime.type: pi, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace profiles with drivers that can prepare each step workspace.\n\nSet agents.concurrency: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per tracker project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. The repository scherzo-start helper translates Ctrl-C/SIGINT into SIGTERM for this path; direct gleam run Ctrl-C may still terminate abruptly, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
 }
 
 pub fn usage_error_hint(args: List(String)) -> Option(String) {
@@ -174,6 +177,22 @@ pub fn main() -> Nil {
           )
           case err {
             ctl.UsageError(_) -> halt(2)
+            _ -> halt(1)
+          }
+        }
+      }
+    Ok(Connect(args)) ->
+      case connect.main(args) {
+        Ok(Nil) -> Nil
+        Error(err) -> {
+          io.println_error(
+            log.error("connect_failed", [
+              #("code", connect.error_code(err)),
+              #("message", connect.error_message(err)),
+            ]),
+          )
+          case err {
+            connect.UsageError(_) -> halt(2)
             _ -> halt(1)
           }
         }

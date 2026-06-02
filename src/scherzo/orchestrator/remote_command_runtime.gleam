@@ -92,17 +92,11 @@ pub fn start_remote_client(
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
   dependencies: ControlDependencies(message),
 ) -> Result(Handle, StartError) {
+  let _ = dependencies
+  let _ = daemon_subject
   daemon_remote_client.start_with_control(
     effective,
     event_hub,
-    fn(operator_command, timeout_ms) {
-      apply_remote_command(
-        daemon_subject,
-        operator_command,
-        timeout_ms,
-        dependencies,
-      )
-    },
     fn(query, timeout_ms) {
       execute_remote_query(daemon_subject, query, timeout_ms, dependencies)
     },

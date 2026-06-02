@@ -102,8 +102,12 @@ pub fn default_values_test() {
   let ui_server = config.default_ui_server_config()
   assert ui_server.enabled == False
   assert ui_server.endpoint == None
-  assert ui_server.enrollment_token_env == None
-  assert ui_server.enrollment_token == None
+  assert ui_server.credential_ref == None
+  assert ui_server.command_bridge_enabled == False
+  assert ui_server.heartbeat_interval_ms == 5000
+  assert ui_server.state_interval_ms == 5000
+  assert ui_server.retry_initial_ms == 500
+  assert ui_server.retry_max_ms == 30_000
 }
 
 pub fn duration_string_fields_parse_to_milliseconds_test() {
@@ -260,7 +264,7 @@ pub fn ui_server_default_and_disabled_config_test() {
 
   let disabled_front =
     minimal_front()
-    <> "ui_server:\n  enabled: false\n  endpoint: https://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n"
+    <> "ui_server:\n  enabled: false\n  endpoint: https://ui.example.test/\n  credential_ref: work-laptop\n  command_bridge_enabled: true\n  heartbeat_interval_ms: 6000\n  state_interval_ms: 7000\n  retry_initial_ms: 800\n  retry_max_ms: 9000\n"
   let assert Ok(disabled) =
     config.resolve_with_env(
       definition(disabled_front),
@@ -269,8 +273,12 @@ pub fn ui_server_default_and_disabled_config_test() {
     )
   assert disabled.ui_server.enabled == False
   assert disabled.ui_server.endpoint == Some("https://ui.example.test")
-  assert disabled.ui_server.enrollment_token_env == Some("UI_SERVER_TOKEN")
-  assert disabled.ui_server.enrollment_token == None
+  assert disabled.ui_server.credential_ref == Some("work-laptop")
+  assert disabled.ui_server.command_bridge_enabled == True
+  assert disabled.ui_server.heartbeat_interval_ms == 6000
+  assert disabled.ui_server.state_interval_ms == 7000
+  assert disabled.ui_server.retry_initial_ms == 800
+  assert disabled.ui_server.retry_max_ms == 9000
   assert config.resolved_secrets(disabled) == ["linearkey"]
 }
 
@@ -278,63 +286,80 @@ pub fn ui_server_enabled_validation_and_secret_resolution_test() {
   let missing_endpoint =
     invalid_config_message(
       minimal_front()
-      <> "ui_server:\n  enabled: true\n  enrollment_token_env: UI_SERVER_TOKEN\n",
+      <> "ui_server:\n  enabled: true\n  credential_ref: work-laptop\n",
     )
   assert missing_endpoint == "ui_server.endpoint is required when enabled"
 
   let http_endpoint =
     invalid_config_message(
       minimal_front()
-      <> "ui_server:\n  enabled: true\n  endpoint: http://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n",
+      <> "ui_server:\n  enabled: true\n  endpoint: http://ui.example.test\n  credential_ref: work-laptop\n",
     )
-  assert http_endpoint == "ui_server.endpoint must be an HTTPS URL with a host"
+  assert string.contains(
+    http_endpoint,
+    "http only for loopback development URLs",
+  )
 
-  let empty_host_endpoint =
+  let loopback_http_front =
+    minimal_front()
+    <> "ui_server:\n  enabled: true\n  endpoint: http://127.0.0.1:4000/\n  credential_ref: work-laptop\n"
+  let assert Ok(loopback_http) =
+    config.resolve_with_env(
+      definition(loopback_http_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert loopback_http.ui_server.endpoint == Some("http://127.0.0.1:4000")
+
+  let query_endpoint =
     invalid_config_message(
       minimal_front()
-      <> "ui_server:\n  enabled: true\n  endpoint: https://\n  enrollment_token_env: UI_SERVER_TOKEN\n",
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test?x=1\n  credential_ref: work-laptop\n",
     )
-  assert empty_host_endpoint
-    == "ui_server.endpoint must be an HTTPS URL with a host"
+  assert string.contains(query_endpoint, "no query, fragment, or userinfo")
 
-  let missing_env_name =
+  let missing_credential_ref =
     invalid_config_message(
       minimal_front()
       <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n",
     )
-  assert missing_env_name
-    == "ui_server.enrollment_token_env is required when enabled"
+  assert missing_credential_ref
+    == "ui_server.credential_ref is required when enabled"
 
-  let invalid_env_name =
+  let invalid_credential_ref =
     invalid_config_message(
       minimal_front()
-      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: BAD-NAME\n",
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: bad/name\n",
     )
-  assert string.contains(invalid_env_name, "invalid environment variable name")
+  assert string.contains(invalid_credential_ref, "ui_server.credential_ref")
 
-  let missing_env_value =
+  let removed_enrollment_token_env =
     invalid_config_message(
       minimal_front()
-      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: MISSING_UI_SERVER_TOKEN\n",
-    )
-  assert string.contains(
-    missing_env_value,
-    "must resolve to a non-empty environment variable",
-  )
-
-  let empty_env_value =
-    invalid_config_message(
-      minimal_front()
-      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: EMPTY_UI_SERVER_TOKEN\n",
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n  credential_ref: work-laptop\n",
     )
   assert string.contains(
-    empty_env_value,
-    "must resolve to a non-empty environment variable",
+    removed_enrollment_token_env,
+    "ui_server.enrollment_token_env was removed",
   )
+
+  let raw_credential =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential: dcred_live_secret\n  credential_ref: work-laptop\n",
+    )
+  assert string.contains(raw_credential, "outside project YAML")
+
+  let invalid_retry =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n  retry_initial_ms: 1000\n  retry_max_ms: 999\n",
+    )
+  assert string.contains(invalid_retry, "ui_server.retry_max_ms")
 
   let enabled_front =
     minimal_front()
-    <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n"
+    <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test/\n  credential_ref: work-laptop\n"
   let assert Ok(enabled) =
     config.resolve_with_env(
       definition(enabled_front),
@@ -343,26 +368,17 @@ pub fn ui_server_enabled_validation_and_secret_resolution_test() {
     )
   assert enabled.ui_server.enabled == True
   assert enabled.ui_server.endpoint == Some("https://ui.example.test")
-  assert enabled.ui_server.enrollment_token_env == Some("UI_SERVER_TOKEN")
-  assert enabled.ui_server.enrollment_token == Some("ui-server-secret-token")
-  assert config.resolved_secrets(enabled)
-    == ["linearkey", "ui-server-secret-token"]
+  assert enabled.ui_server.credential_ref == Some("work-laptop")
+  assert enabled.ui_server.command_bridge_enabled == False
+  assert config.resolved_secrets(enabled) == ["linearkey"]
 }
 
 pub fn ui_server_redaction_and_local_control_separation_test() {
   ensure_test_control_file()
 
-  let missing_env_name =
-    invalid_config_message(
-      minimal_front()
-      <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n",
-    )
-  assert missing_env_name
-    == "ui_server.enrollment_token_env is required when enabled"
-
   let enabled_front =
     minimal_front()
-    <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  enrollment_token_env: UI_SERVER_TOKEN\n"
+    <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n"
   let assert Ok(enabled) =
     config.resolve_with_env(
       definition(enabled_front),
@@ -376,21 +392,17 @@ pub fn ui_server_redaction_and_local_control_separation_test() {
       [
         #("enabled", "true"),
         #("endpoint", option.unwrap(enabled.ui_server.endpoint, "")),
-        #(
-          "enrollment_token_env",
-          option.unwrap(enabled.ui_server.enrollment_token_env, ""),
-        ),
-        #(
-          "enrollment_token",
-          option.unwrap(enabled.ui_server.enrollment_token, ""),
-        ),
+        #("credential_ref", option.unwrap(enabled.ui_server.credential_ref, "")),
+        #("pairing_preview", "pair_preview_token"),
+        #("credential_preview", "dcred_live_secret"),
       ],
       config.resolved_secrets(enabled),
     )
 
   assert string.contains(summary, "event=ui_server_config")
   assert string.contains(summary, "[REDACTED]")
-  assert !string.contains(summary, "ui-server-secret-token")
+  assert !string.contains(summary, "pair_preview_token")
+  assert !string.contains(summary, "dcred_live_secret")
   assert !string.contains(summary, "local-control-token")
   assert !string.contains(summary, test_control_file_path())
   assert !list.contains(config.resolved_secrets(enabled), "local-control-token")
@@ -398,7 +410,6 @@ pub fn ui_server_redaction_and_local_control_separation_test() {
     config.resolved_secrets(enabled),
     test_control_file_path(),
   )
-  assert enabled.ui_server.enrollment_token == Some("ui-server-secret-token")
 }
 
 pub fn tracker_states_default_when_absent_test() {

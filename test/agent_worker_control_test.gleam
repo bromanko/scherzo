@@ -132,8 +132,12 @@ fn config(
     ui_server: config_types.UiServerConfig(
       enabled: False,
       endpoint: None,
-      enrollment_token_env: None,
-      enrollment_token: None,
+      credential_ref: None,
+      command_bridge_enabled: False,
+      heartbeat_interval_ms: 5000,
+      state_interval_ms: 5000,
+      retry_initial_ms: 500,
+      retry_max_ms: 30_000,
     ),
   )
 }

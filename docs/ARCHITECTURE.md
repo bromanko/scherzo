@@ -219,13 +219,16 @@ is eliminated.
   `workspace.root/.scherzo-state/daemon_identity.json`. It persists only a
   stable `daemon_id`; each helper load still generates a fresh in-memory
   `boot_id`.
-- `ui_server` config is disabled by default. When enabled the daemon loads the
-  durable daemon identity, starts one outbound remote client, sends hello,
-  heartbeat, and minimal state snapshots, retries unreachable loopback/demo
-  endpoints without blocking local control, and stops the client during daemon
-  shutdown. It still requires an explicit HTTPS endpoint and an
-  environment-variable secret named by `enrollment_token_env`, and it does not
-  read `control.json` or `SCHERZO_CONTROL_FILE`.
+- `ui_server` config is disabled by default. Operators pair a daemon with
+  `scherzo connect`, which exchanges a one-time pairing token for a durable
+  daemon credential and stores that credential outside project YAML. When
+  enabled the daemon loads the durable daemon identity plus stored credential,
+  starts one outbound UI client, sends `daemon_hello`, `heartbeat`, and minimal
+  `daemon_state` snapshots, retries temporary outages without blocking local
+  control, and stops retrying when the credential or daemon identity is revoked
+  until the operator pairs again. Project config keeps only the non-secret UI
+  base URL and `credential_ref`; it does not read or reuse `control.json` or
+  `SCHERZO_CONTROL_FILE` for remote auth.
 - This lifecycle slice does not add browser UI, server-originated command
   mutation, workflow-helper/schema changes, provider-live or provider-cache
   behavior changes, or token-accounting changes.

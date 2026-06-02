@@ -42,3 +42,20 @@ pub fn log_redacts_known_secret_inside_error_string_test() {
   assert string.contains(line, "[REDACTED]")
   assert !string.contains(line, "abc123")
 }
+
+pub fn log_redacts_registration_tokens_without_redacting_repair_words_test() {
+  let repair_line =
+    log.info("plan_completion", [
+      #("stdout", "PLAN_COMPLETION_RECOVERY_STATUS=repair_needed"),
+    ])
+  assert string.contains(repair_line, "repair_needed")
+
+  let secret_line =
+    log.info("remote_registration", [
+      #("message", "server revoked dcred_secret_1"),
+      #("invite", "pair_secret_1"),
+    ])
+  assert string.contains(secret_line, "[REDACTED]")
+  assert !string.contains(secret_line, "dcred_secret_1")
+  assert !string.contains(secret_line, "pair_secret_1")
+}
