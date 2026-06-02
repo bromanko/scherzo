@@ -7,6 +7,13 @@ import scherzo/control/query/types as query_types
 import scherzo/task
 import scherzo/terminal/sanitize
 
+pub type StateCategory =
+  task.TaskStateCategory
+
+pub fn state_category_from_string(value: String) -> Result(StateCategory, Nil) {
+  task.state_category_from_string(value)
+}
+
 pub fn list_json(tasks: query_types.TaskListDto) -> String {
   tasks |> query_dto.task_list_to_json |> json.to_string
 }

@@ -20,7 +20,6 @@ import scherzo/ctl/usage as ctl_usage
 import scherzo/ctl/workstream as ctl_workstream
 import scherzo/session/event
 import scherzo/state/local_artifacts
-import scherzo/task
 import scherzo/terminal/render
 import scherzo/terminal/style
 
@@ -47,7 +46,7 @@ pub type Command {
   TaskList(
     control_file: Option(String),
     json: Bool,
-    states: List(task.TaskStateCategory),
+    states: List(task_output.StateCategory),
     limit: Int,
     cursor: Option(String),
   )
@@ -131,7 +130,7 @@ pub type Command {
     root: Option(String),
     json: Bool,
     run_id: String,
-    publication_id: String,
+    publication_id: Option(String),
   )
   StateStatus(root: String, json: Bool)
   StateArchiveOld(root: String, json: Bool, yes: Bool)
@@ -426,18 +425,17 @@ fn command_from(name: String, flags: parser.Flags) -> Result(Command, Error) {
     }
     "artifact", ["publication", "retry"] -> {
       use run_id <- try_ctl(required_run_id(flags))
-      use publication_id <- try_ctl(required_publication_id(flags))
       Ok(ArtifactPublicationRetry(
         flags.control_file,
         flags.root,
         flags.json,
         run_id,
-        publication_id,
+        flags.publication_id,
       ))
     }
     "artifact", _ ->
       Error(UsageError(
-        "artifact usage: artifact publication list --run <run-id> | artifact publication show --run <run-id> --publication <publication-id> | artifact publication retry --run <run-id> --publication <publication-id>",
+        "artifact usage: artifact publication list --run <run-id> | artifact publication show --run <run-id> --publication <publication-id> | artifact publication retry --run <run-id> [--publication <publication-id>]",
       ))
     "state", ["status"] -> {
       use root <- try_ctl(required_root(flags))
@@ -686,11 +684,14 @@ pub fn run_with_deps(
               ctl_renderers.print_query_metrics(metrics, line: output.line)
               Ok(Nil)
             }
-            Ok(_) ->
-              Error(Failed(
-                "unexpected_query_response",
-                "unexpected query response",
-              ))
+            Ok(query_types.TaskListResponse(tasks)) -> {
+              task_output.print_list(tasks, output.line)
+              Ok(Nil)
+            }
+            Ok(query_types.TaskShowResponse(task_detail)) -> {
+              task_output.print_detail(task_detail, output.line)
+              Ok(Nil)
+            }
             Error(err) -> Error(client_error(err))
           }
       }
@@ -857,6 +858,7 @@ pub fn run_with_deps(
         control_path,
         root,
         json,
+        deps,
         run_id,
         publication_id,
         output,
@@ -1171,22 +1173,49 @@ fn run_artifact_publication_retry(
   control_path: Option(String),
   explicit_root: Option(String),
   json_output: Bool,
+  deps: ControlClient,
   run_id: String,
-  publication_id: String,
+  publication_id: Option(String),
   output: Output,
 ) -> Result(Nil, Error) {
-  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
-  ctl_artifact_publication.retry(
-    root,
-    json_output,
-    run_id,
-    publication_id,
-    output.line,
-  )
-  |> result.map_error(fn(error) {
-    let #(code, message) = error
-    Failed(code, message)
-  })
+  case explicit_root {
+    None -> {
+      use target <- try_ctl(load_control_target(control_path))
+      let operator_command =
+        control_command.RetryArtifactPublication(run_id, publication_id)
+      case json_output {
+        True ->
+          print_raw_request(
+            target,
+            protocol.command_request("1", "", operator_command),
+            deps,
+            output,
+          )
+        False ->
+          case deps.apply_command(target.control_file, operator_command) {
+            Ok(result) -> {
+              ctl_renderers.print_command_result(result, line: output.line)
+              Ok(Nil)
+            }
+            Error(err) -> Error(client_error(err))
+          }
+      }
+    }
+    Some(_) -> {
+      use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
+      ctl_artifact_publication.retry(
+        root,
+        json_output,
+        run_id,
+        publication_id,
+        output.line,
+      )
+      |> result.map_error(fn(error) {
+        let #(code, message) = error
+        Failed(code, message)
+      })
+    }
+  }
 }
 
 fn run_events(

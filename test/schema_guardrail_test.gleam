@@ -1462,6 +1462,15 @@ fn request_examples() -> List(RequestExample) {
       ),
     ),
     RequestExample(
+      "RetryArtifactPublication",
+      protocol.RetryArtifactPublication(
+        "req-retry-publication",
+        "secret",
+        "run-1",
+        Some("review_doc"),
+      ),
+    ),
+    RequestExample(
       "ParkIssue",
       protocol.ParkIssue(
         "req-park",

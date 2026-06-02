@@ -25,6 +25,16 @@ pub fn command_names_and_targets_are_stable_test() {
       None,
     ))
     == Some("ABC-123")
+  assert command.command_name(command.RetryArtifactPublication(
+      "run-1",
+      Some("review_doc"),
+    ))
+    == "retry_artifact_publication"
+  assert command.command_target(command.RetryArtifactPublication(
+      "run-1",
+      Some("review_doc"),
+    ))
+    == Some("run:run-1:review_doc")
   assert command.command_name(command.ParkIssue(issue_ref, "manual")) == "park"
   assert command.command_target(command.ParkIssue(issue_ref, "manual"))
     == Some("ABC-123")
@@ -94,6 +104,11 @@ pub fn operator_command_codec_roundtrips_all_variants_test() {
     command.RetryWorkflowStepRunId("run-1"),
     Some("step-2"),
   ))
+  assert_command_roundtrip(command.RetryArtifactPublication("run-1", None))
+  assert_command_roundtrip(command.RetryArtifactPublication(
+    "run-1",
+    Some("review_doc"),
+  ))
   assert_command_roundtrip(command.ParkIssue(
     command.IssueId("issue-123"),
     "manual hold",
@@ -151,6 +166,10 @@ pub fn invalid_operator_command_payloads_return_stable_errors_test() {
   )
   assert_invalid_command(
     "{\"type\":\"retry_step\",\"step_id\":\"   \",\"target\":\"ABC-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"retry_artifact_publication\",\"run_id\":\"run-1\",\"publication_id\":\"   \"}",
     "invalid_command",
   )
   assert_invalid_command(

@@ -2861,6 +2861,13 @@ pub fn has_workflow_run(projection: Projection, run_id: String) -> Bool {
   workflow_runs_projection.has_run(projection.workflow_runs, run_id)
 }
 
+pub fn workflow_run(
+  projection: Projection,
+  run_id: String,
+) -> Result(WorkflowRunStatus, Nil) {
+  dict.get(projection.workflow_runs, run_id)
+}
+
 pub fn workflow_input_manifest(
   projection: Projection,
   run_id: String,

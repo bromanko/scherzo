@@ -27,10 +27,33 @@ pub fn execute_routes(
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
 ) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
-  execute_routes_with_runner(
+  execute_routes_with_state_root(
     routes,
     repositories,
     config_dir,
+    config_dir,
+    output_manifest,
+    issue,
+    run_id,
+    checkpoint,
+  )
+}
+
+pub fn execute_routes_with_state_root(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_routes_with_runner_and_state_root(
+    routes,
+    repositories,
+    config_dir,
+    state_root,
     output_manifest,
     issue,
     run_id,
@@ -39,7 +62,99 @@ pub fn execute_routes(
   )
 }
 
-pub fn execute_routes_with_runner(
+pub fn execute_recovered_routes(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_recovered_routes_with_state_root(
+    routes,
+    repositories,
+    config_dir,
+    config_dir,
+    output_manifest,
+    issue,
+    run_id,
+    checkpoint,
+  )
+}
+
+pub fn execute_recovered_routes_with_state_root(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_recovered_routes_with_runner_and_state_root(
+    routes,
+    repositories,
+    config_dir,
+    state_root,
+    output_manifest,
+    issue,
+    run_id,
+    checkpoint,
+    command_runner.production(),
+  )
+}
+
+pub fn execute_routes_for_work(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_routes_for_work_with_state_root(
+    routes,
+    repositories,
+    config_dir,
+    config_dir,
+    output_manifest,
+    work,
+    run_id,
+    checkpoint,
+    runner,
+  )
+}
+
+pub fn execute_routes_for_work_with_state_root(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_routes_for_work_with_mode(
+    routes,
+    repositories,
+    config_dir,
+    state_root,
+    output_manifest,
+    work,
+    run_id,
+    checkpoint,
+    runner,
+    False,
+  )
+}
+
+pub fn execute_recovered_routes_with_runner(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
@@ -49,17 +164,69 @@ pub fn execute_routes_with_runner(
   checkpoint: workflow_checkpoint.Writer,
   runner: command_runner.Runner,
 ) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_recovered_routes_with_runner_and_state_root(
+    routes,
+    repositories,
+    config_dir,
+    config_dir,
+    output_manifest,
+    issue,
+    run_id,
+    checkpoint,
+    runner,
+  )
+}
+
+pub fn execute_recovered_routes_with_runner_and_state_root(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
   let work = artifact_publication_recording.publication_work(issue)
+  execute_routes_for_work_with_mode(
+    routes,
+    repositories,
+    config_dir,
+    state_root,
+    output_manifest,
+    work,
+    run_id,
+    checkpoint,
+    runner,
+    True,
+  )
+}
+
+fn execute_routes_for_work_with_mode(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+  recovered_execution: Bool,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
   execute_routes_loop(
     routes,
     repositories,
     output_manifest,
     config_dir,
+    state_root,
     work,
     run_id,
     checkpoint,
     dict.new(),
     runner,
+    recovered_execution,
     [],
     [],
     [],
@@ -78,16 +245,67 @@ pub fn execute_routes_with_runner(
   })
 }
 
+pub fn execute_routes_with_runner(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_routes_with_runner_and_state_root(
+    routes,
+    repositories,
+    config_dir,
+    config_dir,
+    output_manifest,
+    issue,
+    run_id,
+    checkpoint,
+    runner,
+  )
+}
+
+pub fn execute_routes_with_runner_and_state_root(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  let work = artifact_publication_recording.publication_work(issue)
+  execute_routes_for_work_with_mode(
+    routes,
+    repositories,
+    config_dir,
+    state_root,
+    output_manifest,
+    work,
+    run_id,
+    checkpoint,
+    runner,
+    False,
+  )
+}
+
 fn execute_routes_loop(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   config_dir: String,
+  state_root: String,
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
   body_templates: dict.Dict(String, String),
   runner: command_runner.Runner,
+  recovered_execution: Bool,
   required_failures: List(artifact_publication_recording.PublicationFailure),
   optional_failures: List(artifact_publication_recording.PublicationFailure),
   attempts: List(artifact_publication_recording.PublicationAttemptSummary),
@@ -105,11 +323,13 @@ fn execute_routes_loop(
         repositories,
         output_manifest,
         config_dir,
+        state_root,
         work,
         run_id,
         checkpoint,
         body_templates,
         runner,
+        recovered_execution,
       ))
       let #(next_required, next_optional) = case outcome.failure {
         Some(failure) ->
@@ -124,11 +344,13 @@ fn execute_routes_loop(
         repositories,
         output_manifest,
         config_dir,
+        state_root,
         work,
         run_id,
         checkpoint,
         body_templates,
         runner,
+        recovered_execution,
         next_required,
         next_optional,
         [outcome.attempt, ..attempts],
@@ -149,11 +371,13 @@ fn execute_route(
   repositories: artifact_publication_config.ArtifactRepositories,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   config_dir: String,
+  state_root: String,
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
   _body_templates: dict.Dict(String, String),
   runner: command_runner.Runner,
+  recovered_execution: Bool,
 ) -> Result(RouteExecutionOutcome, String) {
   case
     artifact_publication_recording.load_body_templates(
@@ -187,13 +411,15 @@ fn execute_route(
         Ok(planned) ->
           case
             existing_terminal_attempt(
-              config_dir,
+              state_root,
               run_id,
               route.id,
               planned.version_id,
+              recovered_execution,
             )
           {
-            Some(attempt) -> Ok(RouteExecutionOutcome(attempt, None))
+            Some(attempt) ->
+              Ok(RouteExecutionOutcome(attempt, failure_from_attempt(attempt)))
             None ->
               case
                 prepare_repository_execution_input(route, planned, checkpoint)
@@ -282,6 +508,7 @@ fn existing_terminal_attempt(
   run_id: String,
   publication_id: String,
   version_id: String,
+  recovered_execution: Bool,
 ) -> Option(artifact_publication_recording.PublicationAttemptSummary) {
   case ledger.path_for_workspace_root(workspace_root) {
     Error(_) -> None
@@ -294,7 +521,7 @@ fn existing_terminal_attempt(
             run_id,
             publication_id,
           )
-          |> latest_matching_terminal(version_id, None)
+          |> latest_matching_terminal(version_id, recovered_execution, None)
       }
   }
 }
@@ -302,14 +529,19 @@ fn existing_terminal_attempt(
 fn latest_matching_terminal(
   attempts: List(projection.PublicationAttempt),
   version_id: String,
+  recovered_execution: Bool,
   best: Option(projection.PublicationAttempt),
 ) -> Option(artifact_publication_recording.PublicationAttemptSummary) {
   case attempts {
     [] -> option.map(best, projection_attempt_to_summary)
     [attempt, ..rest] -> {
+      let terminal =
+        attempt.status == "published"
+        || attempt.status == "unchanged"
+        || { recovered_execution && attempt.status == "failed" }
       let next_best = case
         attempt.version_id == Some(version_id),
-        attempt.status == "published" || attempt.status == "unchanged",
+        terminal,
         best
       {
         True, True, None -> Some(attempt)
@@ -318,8 +550,23 @@ fn latest_matching_terminal(
         -> Some(attempt)
         _, _, _ -> best
       }
-      latest_matching_terminal(rest, version_id, next_best)
+      latest_matching_terminal(rest, version_id, recovered_execution, next_best)
     }
+  }
+}
+
+fn failure_from_attempt(
+  attempt: artifact_publication_recording.PublicationAttemptSummary,
+) -> Option(artifact_publication_recording.PublicationFailure) {
+  case attempt.status, attempt.error_code, attempt.error_message {
+    "failed", Some(code), Some(message) ->
+      Some(artifact_publication_recording.PublicationFailure(
+        publication_id: attempt.publication_id,
+        code: code,
+        message: message,
+        required: attempt.required,
+      ))
+    _, _, _ -> None
   }
 }
 
