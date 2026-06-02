@@ -2,9 +2,9 @@ import gleam/option.{type Option}
 import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/log
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/reason
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/identity
+import scherzo/runtime/reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens

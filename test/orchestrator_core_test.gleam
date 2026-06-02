@@ -3,8 +3,8 @@ import gleam/dict
 import gleam/option.{type Option, None, Some}
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
-import scherzo/orchestrator/reason
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue

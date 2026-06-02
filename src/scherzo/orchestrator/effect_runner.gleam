@@ -8,9 +8,9 @@ import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/error
 import scherzo/orchestrator/effects/interpreter as transition_interpreter
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
+import scherzo/runtime/state as orchestrator_state
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/adapter_legacy

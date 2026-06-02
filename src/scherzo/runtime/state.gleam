@@ -1,12 +1,37 @@
 import birl.{type Time}
 import gleam/dict.{type Dict}
-import gleam/option.{type Option}
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/reason
+import gleam/option.{type Option, None}
+import scherzo/config/types as config_types
+import scherzo/runtime/identity
+import scherzo/runtime/reason
 import scherzo/session/live as session_live
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
+
+pub type TaskIdentity =
+  identity.TaskIdentity
+
+pub fn task_identity_to_string(task_identity: TaskIdentity) -> String {
+  identity.to_string(task_identity)
+}
+
+pub fn new(config: config_types.EffectiveConfig) -> RuntimeState {
+  RuntimeState(
+    poll_interval_ms: config.polling.interval_ms,
+    max_concurrent_agents: config.agent.max_concurrent_agents,
+    running: dict.new(),
+    claimed: dict.new(),
+    retry_attempts: dict.new(),
+    issue_counters: dict.new(),
+    parked: dict.new(),
+    invalid_workflow_reports: dict.new(),
+    blocked_dependency_reports: dict.new(),
+    completed: dict.new(),
+    aggregate_pi_totals: session_tokens.zero_token_totals(),
+    latest_rate_limit_payload: None,
+  )
+}
 
 pub fn task_ref_identity(ref: task.TaskRef) -> identity.TaskIdentity {
   identity.task_ref(ref)
@@ -27,7 +52,7 @@ pub fn issue_ref_for_backend(
   identity.issue_ref_for_backend(issue, backend_kind)
 }
 
-// Linear compatibility boundary: legacy orchestrator paths still receive a
+// Linear compatibility boundary: legacy runtime paths still receive a
 // tracker_issue.Issue, so derive the TaskRef identity from the Linear-shaped
 // issue at the edge instead of using the bare issue id as a runtime key.
 pub fn issue_identity(issue: tracker_issue.Issue) -> identity.TaskIdentity {

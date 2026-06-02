@@ -5,9 +5,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
 import gleam/string
 import scherzo/config/types as config_types
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/reason
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/reason
+import scherzo/runtime/recovery_policy
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
@@ -53,20 +53,7 @@ pub type BlockerDecision {
 pub fn new_state(
   config: config_types.EffectiveConfig,
 ) -> orchestrator_state.RuntimeState {
-  orchestrator_state.RuntimeState(
-    poll_interval_ms: config.polling.interval_ms,
-    max_concurrent_agents: config.agent.max_concurrent_agents,
-    running: dict.new(),
-    claimed: dict.new(),
-    retry_attempts: dict.new(),
-    issue_counters: dict.new(),
-    parked: dict.new(),
-    invalid_workflow_reports: dict.new(),
-    blocked_dependency_reports: dict.new(),
-    completed: dict.new(),
-    aggregate_pi_totals: session_tokens.zero_token_totals(),
-    latest_rate_limit_payload: None,
-  )
+  recovery_policy.new_state(config)
 }
 
 pub fn sort_candidates(
@@ -92,18 +79,18 @@ fn compare_priority(a: Option(Int), b: Option(Int)) -> Order {
 }
 
 pub fn issue_fingerprint(issue: tracker_issue.Issue) -> String {
-  tracker_issue.content_fingerprint(issue)
+  recovery_policy.issue_fingerprint(issue)
 }
 
 pub fn issues_by_id(
   issues: List(tracker_issue.Issue),
 ) -> Dict(String, tracker_issue.Issue) {
-  issues
-  |> list.map(fn(issue) { #(issue.id, issue) })
-  |> dict.from_list
+  recovery_policy.issues_by_id(issues)
 }
 
-pub fn issue_identity(issue: tracker_issue.Issue) -> identity.TaskIdentity {
+pub fn issue_identity(
+  issue: tracker_issue.Issue,
+) -> orchestrator_state.TaskIdentity {
   orchestrator_state.issue_identity(issue)
 }
 
@@ -194,7 +181,7 @@ pub fn is_active(
   config: config_types.EffectiveConfig,
   state: issue_state.IssueState,
 ) -> Bool {
-  issue_state.contains_normalized(config.tracker.active_states, state)
+  recovery_policy.is_active(config, state)
 }
 
 pub fn is_dispatch_state(
@@ -208,7 +195,7 @@ pub fn is_terminal(
   config: config_types.EffectiveConfig,
   state: issue_state.IssueState,
 ) -> Bool {
-  issue_state.contains_normalized(config.tracker.terminal_states, state)
+  recovery_policy.is_terminal(config, state)
 }
 
 pub fn retry_candidate_precondition_failure(
@@ -885,22 +872,7 @@ pub fn unpark_if_issue_changed(
 }
 
 pub fn backoff_delay(attempt: Int, max_ms: Int) -> Int {
-  backoff_delay_loop(10_000, attempt - 1, max_ms)
-}
-
-fn backoff_delay_loop(
-  delay_ms: Int,
-  remaining_doubles: Int,
-  max_ms: Int,
-) -> Int {
-  case delay_ms >= max_ms {
-    True -> max_ms
-    False ->
-      case remaining_doubles <= 0 {
-        True -> delay_ms
-        False -> backoff_delay_loop(delay_ms * 2, remaining_doubles - 1, max_ms)
-      }
-  }
+  recovery_policy.backoff_delay(attempt, max_ms)
 }
 
 pub fn add_tokens(
@@ -1122,10 +1094,10 @@ pub fn clear_blocked_dependency_report(
 }
 
 fn blocked_dependency_report_key(
-  task_identity: identity.TaskIdentity,
+  task_identity: orchestrator_state.TaskIdentity,
   phase: String,
 ) -> String {
-  identity.to_string(task_identity) <> "|" <> phase
+  orchestrator_state.task_identity_to_string(task_identity) <> "|" <> phase
 }
 
 fn trim_blocked_dependency_reports(
@@ -1260,10 +1232,13 @@ pub fn clear_invalid_workflow_report(
 
 fn trim_invalid_workflow_reports(
   reports: dict.Dict(
-    identity.TaskIdentity,
+    orchestrator_state.TaskIdentity,
     orchestrator_state.InvalidWorkflowReport,
   ),
-) -> dict.Dict(identity.TaskIdentity, orchestrator_state.InvalidWorkflowReport) {
+) -> dict.Dict(
+  orchestrator_state.TaskIdentity,
+  orchestrator_state.InvalidWorkflowReport,
+) {
   case dict.size(reports) <= invalid_workflow_report_cache_limit {
     True -> reports
     False ->
@@ -1276,13 +1251,23 @@ fn trim_invalid_workflow_reports(
 }
 
 fn compare_invalid_workflow_report_entries(
-  a: #(identity.TaskIdentity, orchestrator_state.InvalidWorkflowReport),
-  b: #(identity.TaskIdentity, orchestrator_state.InvalidWorkflowReport),
+  a: #(
+    orchestrator_state.TaskIdentity,
+    orchestrator_state.InvalidWorkflowReport,
+  ),
+  b: #(
+    orchestrator_state.TaskIdentity,
+    orchestrator_state.InvalidWorkflowReport,
+  ),
 ) -> Order {
   let #(a_id, a_report) = a
   let #(b_id, b_report) = b
   case int.compare(b_report.attempted_at_ms, a_report.attempted_at_ms) {
-    Eq -> string.compare(identity.to_string(a_id), identity.to_string(b_id))
+    Eq ->
+      string.compare(
+        orchestrator_state.task_identity_to_string(a_id),
+        orchestrator_state.task_identity_to_string(b_id),
+      )
     order -> order
   }
 }

@@ -8,7 +8,7 @@ import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/error
 import scherzo/orchestrator/daemon
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/hub
 import scherzo/session/tokens as session_tokens
 import scherzo/tracker

@@ -4,10 +4,10 @@ import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/log
 import scherzo/orchestrator/effects/types as effects_types
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/reason
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
+import scherzo/runtime/identity
+import scherzo/runtime/reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
 import scherzo/task

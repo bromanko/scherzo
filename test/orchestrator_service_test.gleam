@@ -8,9 +8,9 @@ import scherzo/error
 import scherzo/linear
 import scherzo/linear_contract
 import scherzo/orchestrator/service
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/path
 import scherzo/result_artifact
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker

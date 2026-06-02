@@ -2,9 +2,9 @@ import gleam/option.{None}
 import orchestrator_transition_test
 import scherzo/orchestrator/effects/interpreter
 import scherzo/orchestrator/effects/types as effects_types
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
+import scherzo/runtime/identity
+import scherzo/runtime/state as orchestrator_state
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 

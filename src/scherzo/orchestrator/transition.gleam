@@ -9,12 +9,12 @@ import scherzo/log
 
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/reason as orchestrator_reason
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/claims
 import scherzo/orchestrator/transitions/commands
+import scherzo/runtime/identity
+import scherzo/runtime/reason as orchestrator_reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 

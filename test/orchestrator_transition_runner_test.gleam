@@ -8,11 +8,11 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/orchestrator/effects/interpreter
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/result_artifact
+import scherzo/runtime/identity
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
