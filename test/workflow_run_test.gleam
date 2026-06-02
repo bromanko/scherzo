@@ -3928,6 +3928,81 @@ pub fn workflow_run_step_worker_crash_returns_failure_test() {
   test_async.assert_no_extra_message_within(subject, 50)
 }
 
+pub fn workflow_run_after_step_crash_returns_failure_for_cleanup_step_test() {
+  use <- expected_crash.suppressing([
+    "test/workflow_run_test.gleam",
+    "workflow_run_after_step_crash_returns_failure_for_cleanup_step_test",
+    "after step crashed",
+  ])
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: cleanup\n    kind: command\n    run: cleanup\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      after_step: fn(_issue, step_id, _prepared, _orchestrator, _profile) {
+        process.send(subject, "after:" <> step_id)
+        panic as "after step crashed"
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  assert failure.reason == "after_step_crashed:cleanup"
+  assert receive_event(subject) == "prepare:cleanup:main:"
+  assert receive_event(subject) == "run:cleanup"
+  assert receive_event(subject) == "after:cleanup"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
+pub fn workflow_run_after_step_down_returns_failure_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: cleanup\n    kind: command\n    run: cleanup\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      after_step: fn(_issue, step_id, _prepared, _orchestrator, _profile) {
+        process.send(subject, "after:" <> step_id)
+        process.kill(process.self())
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  assert failure.reason == "after_step_killed:cleanup"
+  assert receive_event(subject) == "prepare:cleanup:main:"
+  assert receive_event(subject) == "run:cleanup"
+  assert receive_event(subject) == "after:cleanup"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
 pub fn workflow_run_fatal_failure_stops_remaining_steps_test() {
   let subject = process.new_subject()
   let assert Ok(dag) =
