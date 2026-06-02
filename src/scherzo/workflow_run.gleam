@@ -12,8 +12,6 @@ import scherzo/orchestrator/schedule_core
 import scherzo/process_ext
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
-import scherzo/structured_output
-import scherzo/structured_output_tool_spec
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
@@ -29,12 +27,12 @@ import scherzo/workflow_run/contract_io_error as contract_error
 import scherzo/workflow_run/recovery_execution
 import scherzo/workflow_run/step_context as step_context_internal
 import scherzo/workflow_run/step_execution
+import scherzo/workflow_run/structured_output_step
 import scherzo/workflow_run/terminal_policy
 import scherzo/workflow_run/workspace_preparation.{
   type PreparedStart, PrepareReadyFailure, PreparedBatch, PreparedStart,
 }
 import scherzo/workflow_scheduler
-import scherzo/workflow_step_recovery
 import scherzo/workspace_profile
 import scherzo/workspace_run
 
@@ -2224,21 +2222,43 @@ fn execute_step_recovery(
     secrets,
     recovery_execution.dependencies(
       checkpoint: dependencies.checkpoint,
-      agent_step: dependencies.agent_step,
+      agent_step: fn(
+        issue,
+        context,
+        prompt_mode,
+        attempt_context,
+        effective,
+        tracker_client,
+        emit_update,
+        command_ready,
+        record_pi_session,
+      ) {
+        dependencies.agent_step(
+          issue,
+          external_step_context(context),
+          prompt_mode,
+          attempt_context,
+          effective,
+          tracker_client,
+          emit_update,
+          command_ready,
+          record_pi_session,
+        )
+      },
       make_context: fn() {
-        recovery_context(
-          external_step_context(step_context_internal.from_prepared(
+        structured_output_step.recovery_context(
+          step_context_internal.from_prepared(
             step,
             workspace,
             issue,
             orchestrator,
             profile,
-          )),
+          ),
         )
       },
       make_attempt_context: fn(context, prompt_mode) {
         step_execution.workflow_attempt_context(
-          internal_step_context(context),
+          context,
           dag,
           orchestrator,
           prompt_mode,
@@ -2247,23 +2267,6 @@ fn execute_step_recovery(
       },
     ),
   )
-}
-
-fn recovery_context(
-  context: StepContext,
-) -> Result(StepContext, structured_output_tool_spec.ToolSpecError) {
-  workflow_step_recovery.tool_spec_env(
-    context.workflow_id,
-    context.run_id,
-    context.step_id,
-    context.attempt_index,
-    structured_output.validator_repo_root(
-      context.config_dir,
-      context.workspace_path,
-    ),
-    context.run_root,
-  )
-  |> result.map(fn(env) { StepContext(..context, extra_pi_env: [env]) })
 }
 
 fn latest_final_issue(

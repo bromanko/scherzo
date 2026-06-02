@@ -19,7 +19,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_run/step_artifacts
 import scherzo/workflow_run/step_context.{type StepContext}
-import scherzo/workflow_structured_retry
+import scherzo/workflow_run/structured_output_step
 import scherzo/workspace_profile
 import scherzo/workspace_run
 
@@ -137,19 +137,6 @@ fn note_ignored_checkpoint_error(_message: String) -> Nil {
   Nil
 }
 
-fn add_tokens(
-  left: session_tokens.TokenTotals,
-  right: session_tokens.TokenTotals,
-) -> session_tokens.TokenTotals {
-  session_tokens.TokenTotals(
-    input: left.input + right.input,
-    output: left.output + right.output,
-    cache_read: left.cache_read + right.cache_read,
-    cache_write: left.cache_write + right.cache_write,
-    total: left.total + right.total,
-  )
-}
-
 pub fn run(
   step: workflow_dag.WorkflowStep,
   workspace: workspace_run.PreparedStepWorkspace,
@@ -262,10 +249,7 @@ fn run_agent_step(
   Int,
 ) {
   case
-    step_artifacts.prepare_structured_output_tool_context(
-      context,
-      structured_output_spec,
-    )
+    structured_output_step.prepare_tool_context(context, structured_output_spec)
   {
     Error(spec_error) -> #(
       step_artifact.from_command_result(
@@ -416,43 +400,29 @@ fn agent_failure_result(
   Option(tracker_issue.Issue),
   Int,
 ) {
-  let artifact =
-    step_artifacts.agent_failure_artifact(
-      step.id,
-      failure,
-      secrets,
-      orchestrator.artifact_limits,
-    )
-  case
-    workflow_structured_retry.transient_agent_failure_diagnostic(
-      structured_output_spec,
-      failure,
-      secrets,
-    )
-  {
-    Some(#(spec, initial_diagnostic)) ->
-      retry_structured_output(
-        step,
-        context,
-        workflow_structured_retry.agent_failure_as_success(failure),
-        workflow_structured_retry.agent_failure_artifact_with_structured_output(
-          artifact,
-          failure,
-          spec,
-          secrets,
-        ),
-        Some(spec),
-        initial_diagnostic,
+  structured_output_step.finish_failure(
+    step,
+    context,
+    failure,
+    structured_output_spec,
+    secrets,
+    orchestrator.artifact_limits,
+    dependencies.checkpoint,
+    fn(prompt_mode, continuation) {
+      run_agent_invocation(
         issue,
+        context,
         dag,
         orchestrator,
-        tracker_client,
-        secrets,
-        dependencies,
+        prompt_mode,
+        continuation,
         effective,
+        tracker_client,
+        dependencies,
       )
-    None -> #(artifact, failure.tokens, failure.final_issue, 0)
-  }
+    },
+  )
+  |> structured_output_agent_result_tuple
 }
 
 fn agent_success_result(
@@ -473,209 +443,46 @@ fn agent_success_result(
   Option(tracker_issue.Issue),
   Int,
 ) {
-  let artifact =
-    step_artifacts.agent_success_artifact(
-      step,
-      context,
-      success,
-      structured_output_spec,
-      secrets,
-      orchestrator.artifact_limits,
-      dependencies.checkpoint,
-    )
-  case
-    step_artifacts.structured_output_retry_diagnostic(
-      structured_output_spec,
-      artifact,
-    )
-  {
-    None -> #(artifact, success.tokens, success.final_issue, success.turns)
-    Some(initial_diagnostic) ->
-      retry_structured_output(
-        step,
-        context,
-        success,
-        artifact,
-        structured_output_spec,
-        initial_diagnostic,
+  structured_output_step.finish_success(
+    step,
+    context,
+    success,
+    structured_output_spec,
+    secrets,
+    orchestrator.artifact_limits,
+    dependencies.checkpoint,
+    fn(prompt_mode, continuation) {
+      run_agent_invocation(
         issue,
+        context,
         dag,
         orchestrator,
-        tracker_client,
-        secrets,
-        dependencies,
+        prompt_mode,
+        continuation,
         effective,
+        tracker_client,
+        dependencies,
       )
-  }
-}
-
-fn retry_structured_output(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  first_success: agent_types.WorkerSuccess,
-  first_artifact: step_artifact.StepArtifact,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-  initial_diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  tracker_client: tracker.Client,
-  secrets: List(String),
-  dependencies: Dependencies,
-  effective: config_types.EffectiveConfig,
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  case structured_output_spec {
-    None -> #(
-      first_artifact,
-      first_success.tokens,
-      first_success.final_issue,
-      first_success.turns,
-    )
-    Some(spec) -> {
-      let retry_prompt =
-        workflow_structured_retry.retry_prompt(
-          step.id,
-          context.run_root,
-          context.workspace_path,
-          spec,
-          initial_diagnostic,
-        )
-      let retry_result =
-        run_agent_invocation(
-          issue,
-          context,
-          dag,
-          orchestrator,
-          workflow_attempt.StructuredOutputRetryPrompt(retry_prompt),
-          None,
-          effective,
-          tracker_client,
-          dependencies,
-        )
-      case retry_result {
-        Ok(retry_success) ->
-          finish_structured_output_retry_success(
-            step,
-            context,
-            first_success,
-            retry_success,
-            structured_output_spec,
-            initial_diagnostic,
-            spec,
-            orchestrator,
-            secrets,
-            dependencies,
-          )
-        Error(retry_failure) ->
-          finish_structured_output_retry_failure(
-            first_success,
-            first_artifact,
-            retry_failure,
-            initial_diagnostic,
-            spec,
-            secrets,
-          )
-      }
-    }
-  }
-}
-
-fn finish_structured_output_retry_success(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  first_success: agent_types.WorkerSuccess,
-  retry_success: agent_types.WorkerSuccess,
-  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
-  initial_diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
-  spec: workflow_dag.StructuredOutputSpec,
-  orchestrator: config_types.OrchestratorConfig,
-  secrets: List(String),
-  dependencies: Dependencies,
-) -> #(
-  step_artifact.StepArtifact,
-  session_tokens.TokenTotals,
-  Option(tracker_issue.Issue),
-  Int,
-) {
-  let retry_artifact =
-    step_artifacts.agent_success_artifact(
-      step,
-      context,
-      retry_success,
-      structured_output_spec,
-      secrets,
-      orchestrator.artifact_limits,
-      dependencies.checkpoint,
-    )
-  let retry_diagnostic = case
-    step_artifacts.structured_output_attempt_diagnostic(2, retry_artifact)
-  {
-    Some(diagnostic) -> diagnostic
-    None ->
-      step_artifact.StructuredOutputRetryDiagnostic(
-        attempt: 2,
-        status: step_artifact.status_to_string(retry_artifact.status),
-        failure_code: retry_artifact.failure_code,
-        message: "structured output retry completed",
-      )
-  }
-  let outcome = case step_artifact.succeeded(retry_artifact.status) {
-    True -> "succeeded"
-    False -> "failed"
-  }
-  let retry_info =
-    workflow_structured_retry.retry_info(spec, outcome, [
-      initial_diagnostic,
-      retry_diagnostic,
-    ])
-  let artifact =
-    step_artifact.with_structured_output_retry_info(retry_artifact, retry_info)
-  #(
-    artifact,
-    add_tokens(first_success.tokens, retry_success.tokens),
-    option.or(retry_success.final_issue, first_success.final_issue),
-    first_success.turns + retry_success.turns,
+    },
   )
+  |> structured_output_agent_result_tuple
 }
 
-fn finish_structured_output_retry_failure(
-  first_success: agent_types.WorkerSuccess,
-  first_artifact: step_artifact.StepArtifact,
-  retry_failure: agent_types.WorkerFailure,
-  initial_diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
-  spec: workflow_dag.StructuredOutputSpec,
-  secrets: List(String),
+fn structured_output_agent_result_tuple(
+  result: structured_output_step.AgentResult,
 ) -> #(
   step_artifact.StepArtifact,
   session_tokens.TokenTotals,
   Option(tracker_issue.Issue),
   Int,
 ) {
-  let retry_diagnostic =
-    step_artifact.StructuredOutputRetryDiagnostic(
-      attempt: 2,
-      status: "agent_failure",
-      failure_code: Some(error.agent_code(retry_failure.reason)),
-      message: workflow_structured_retry.failure_message(retry_failure, secrets),
-    )
-  let retry_info =
-    workflow_structured_retry.retry_info(spec, "failed", [
-      initial_diagnostic,
-      retry_diagnostic,
-    ])
-  let artifact =
-    step_artifact.with_structured_output_retry_info(first_artifact, retry_info)
-  #(
-    artifact,
-    add_tokens(first_success.tokens, retry_failure.tokens),
-    option.or(retry_failure.final_issue, first_success.final_issue),
-    first_success.turns,
-  )
+  let structured_output_step.AgentResult(
+    artifact: artifact,
+    tokens: tokens,
+    final_issue: final_issue,
+    turns: turns,
+  ) = result
+  #(artifact, tokens, final_issue, turns)
 }
 
 pub fn is_recovery_resume_validation_artifact(
