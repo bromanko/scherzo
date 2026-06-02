@@ -77,6 +77,128 @@ pub fn fake_adapter_fetches_refreshes_and_looks_up_non_linear_task_test() {
   assert found_by_id.ref == candidate.ref
 }
 
+pub fn fake_adapter_runtime_issue_source_refreshes_non_linear_task_test() {
+  let tracker = fake_tracker_adapter.seam_adapter()
+
+  let assert Ok([candidate]) = adapter.fetch_runtime_candidate_issues(tracker)
+  assert candidate.id == "card-1"
+  assert candidate.identifier == "CARD-1"
+
+  let assert Ok([by_state]) =
+    adapter.fetch_runtime_issues_by_states(
+      tracker,
+      issue_state.list_from_strings(["Todo"]),
+    )
+  assert by_state.id == "card-1"
+  assert by_state.identifier == "CARD-1"
+
+  let assert Ok([refreshed]) =
+    adapter.refresh_runtime_issues_by_ids(tracker, ["card-1"])
+  assert refreshed.id == "card-1"
+  assert refreshed.identifier == "CARD-1"
+
+  let assert Ok(Some(found_by_key)) =
+    adapter.lookup_runtime_issue(tracker, "CARD-1")
+  assert found_by_key.id == "card-1"
+  assert found_by_key.identifier == "CARD-1"
+}
+
+pub fn adapter_runtime_helpers_reject_mismatched_backend_kind_test() {
+  let tracker = mismatched_backend_adapter()
+
+  let assert Error(adapter.Permanent(candidate_message)) =
+    adapter.fetch_runtime_candidate_issues(tracker)
+  assert_mismatched_backend_message(candidate_message)
+
+  let assert Error(adapter.Permanent(state_message)) =
+    adapter.fetch_runtime_issues_by_states(
+      tracker,
+      issue_state.list_from_strings(["Todo"]),
+    )
+  assert_mismatched_backend_message(state_message)
+
+  let assert Error(adapter.Permanent(refresh_message)) =
+    adapter.refresh_runtime_issues_by_ids(tracker, ["card-1"])
+  assert_mismatched_backend_message(refresh_message)
+
+  let assert Error(adapter.Permanent(lookup_message)) =
+    adapter.lookup_runtime_issue(tracker, "CARD-1")
+  assert_mismatched_backend_message(lookup_message)
+}
+
+pub fn adapter_runtime_helpers_preserve_task_source_errors_test() {
+  let tracker = task_source_errors_adapter()
+
+  let assert Error(adapter.Transient(candidate_message)) =
+    adapter.fetch_runtime_candidate_issues(tracker)
+  assert candidate_message == "fetch failed"
+
+  let assert Error(adapter.Transient(state_message)) =
+    adapter.fetch_runtime_issues_by_states(
+      tracker,
+      issue_state.list_from_strings(["Todo"]),
+    )
+  assert state_message == "fetch failed"
+
+  let assert Error(adapter.Transient(refresh_message)) =
+    adapter.refresh_runtime_issues_by_ids(tracker, ["card-1"])
+  assert refresh_message == "refresh failed"
+
+  let assert Error(adapter.Transient(lookup_message)) =
+    adapter.lookup_runtime_issue(tracker, "CARD-1")
+  assert lookup_message == "lookup failed"
+}
+
+fn mismatched_backend_adapter() -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    ..fake_tracker_adapter.read_only_adapter(),
+    task_source: mismatched_backend_task_source(),
+  )
+}
+
+fn mismatched_backend_task_source() -> adapter.TaskSourceCapability {
+  let item =
+    task.Task(
+      ..fake_tracker_adapter.task(),
+      ref: task.TaskRef(
+        backend_kind: "foreign-memory",
+        remote_id: "card-1",
+        key: Some("CARD-1"),
+        url: Some("https://tracker.test/cards/CARD-1"),
+      ),
+    )
+
+  adapter.TaskSourceCapability(
+    fetch_candidates: fn(_) { Ok([item]) },
+    refresh_by_refs: fn(_) { Ok([item]) },
+    lookup_by_operator_ref: fn(_) { Ok(Some(item)) },
+    list_tasks: fn(_) { Ok(adapter.TaskPage(items: [item], has_more: False)) },
+    lookup_task_detail: fn(_) { Ok(Some(item)) },
+  )
+}
+
+fn task_source_errors_adapter() -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    ..fake_tracker_adapter.read_only_adapter(),
+    task_source: task_source_errors(),
+  )
+}
+
+fn task_source_errors() -> adapter.TaskSourceCapability {
+  adapter.TaskSourceCapability(
+    fetch_candidates: fn(_) { Error(adapter.Transient("fetch failed")) },
+    refresh_by_refs: fn(_) { Error(adapter.Transient("refresh failed")) },
+    lookup_by_operator_ref: fn(_) { Error(adapter.Transient("lookup failed")) },
+    list_tasks: fn(_) { Error(adapter.Transient("list failed")) },
+    lookup_task_detail: fn(_) { Error(adapter.Transient("detail failed")) },
+  )
+}
+
+fn assert_mismatched_backend_message(message: String) -> Nil {
+  assert string.contains(message, "foreign-memory")
+  assert string.contains(message, fake_tracker_adapter.backend_kind)
+}
+
 pub fn fake_adapter_workflow_compat_client_refreshes_non_linear_task_test() {
   let client =
     fake_tracker_adapter.seam_adapter()

@@ -1,12 +1,12 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/agent/pi_rpc
 import scherzo/json_value
+import scherzo/pi/protocol
 import scherzo/result_artifact
 
-fn decode(line: String) -> pi_rpc.RpcRecord {
-  let assert Ok(record) = pi_rpc.decode_record(line)
+fn decode(line: String) -> protocol.RpcRecord {
+  let assert Ok(record) = protocol.decode_record(line)
   record
 }
 
@@ -215,10 +215,10 @@ pub fn dedupes_repeated_assistant_tool_call_lifecycle_records_test() {
 }
 
 fn repeat_record(
-  record: pi_rpc.RpcRecord,
+  record: protocol.RpcRecord,
   remaining: Int,
-  acc: List(pi_rpc.RpcRecord),
-) -> List(pi_rpc.RpcRecord) {
+  acc: List(protocol.RpcRecord),
+) -> List(protocol.RpcRecord) {
   case remaining <= 0 {
     True -> acc
     False -> repeat_record(record, remaining - 1, [record, ..acc])

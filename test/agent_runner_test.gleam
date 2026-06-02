@@ -5,8 +5,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_event
-import scherzo/agent/run_attempt
-import scherzo/agent/runner
+import scherzo/agent/run_attempt as runner
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/error
@@ -931,7 +930,7 @@ pub fn recovery_prompt_reopens_recorded_session_without_original_prompt_test() {
     )
 
   let assert Ok(success) =
-    run_attempt.run_prompt_mode_in_workspace(
+    runner.run_prompt_mode_in_workspace(
       issue("Todo"),
       workflow_attempt.RecoveryPrompt("RECOVERY_PROMPT_MARKER"),
       context,
@@ -986,7 +985,7 @@ pub fn recovery_resume_validation_failure_returns_specific_failure_before_prompt
     )
 
   let assert Error(failure) =
-    run_attempt.run_prompt_mode_in_workspace(
+    runner.run_prompt_mode_in_workspace(
       issue("Todo"),
       workflow_attempt.RecoveryPrompt("RECOVERY_PROMPT_MARKER"),
       context,

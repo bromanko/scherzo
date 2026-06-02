@@ -617,11 +617,5 @@ fn boundary_allowlist() -> List(AllowlistEntry) {
       rule_id: "legacy_adapter_imports_require_allowlist",
       reason: "The daemon still bridges tracker adapters to legacy issue-shaped workflow runtime APIs during the adapter migration.",
     ),
-    AllowlistEntry(
-      path: "src/scherzo/orchestrator/effect_runner.gleam",
-      imported_module: "scherzo/tracker/adapter_legacy",
-      rule_id: "legacy_adapter_imports_require_allowlist",
-      reason: "Effect execution still translates adapter capabilities to legacy handoff effects during the tracker migration.",
-    ),
   ]
 }
