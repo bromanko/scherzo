@@ -1,6 +1,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/error
 import scherzo/task
 import scherzo/tracker
@@ -239,7 +240,96 @@ pub fn task_source_from_legacy_client(
         [issue, ..] -> Ok(Some(task.from_legacy_issue(issue)))
       }
     },
+    list_tasks: fn(request) { legacy_list_tasks(client, request) },
+    lookup_task_detail: fn(ref) { legacy_lookup_task_detail(client, ref) },
   )
+}
+
+fn legacy_list_tasks(
+  client: tracker.Client,
+  request: adapter.TaskListRequest,
+) -> Result(adapter.TaskPage, adapter.TrackerError) {
+  use issues <- try_legacy(client.fetch_candidate_issues())
+  let tasks =
+    issues
+    |> list.map(task.from_legacy_issue)
+    |> list.map(categorize_legacy_task)
+    |> filter_state_categories(request.state_categories)
+  let remaining = drop_first(tasks, request.offset)
+  Ok(adapter.TaskPage(
+    items: take_first(remaining, request.limit),
+    has_more: list.length(remaining) > request.limit,
+  ))
+}
+
+fn legacy_lookup_task_detail(
+  client: tracker.Client,
+  ref: adapter.TaskLookupRef,
+) -> Result(Option(task.Task), adapter.TrackerError) {
+  let operator_ref = case ref {
+    adapter.TaskLookupByDisplayId(value) -> value
+    adapter.TaskLookupByRemoteId(id: value, ..) -> value
+  }
+  use issues <- try_legacy(client.fetch_issue_states_by_ids([operator_ref]))
+  case issues {
+    [] -> Ok(None)
+    [issue, ..] ->
+      Ok(Some(categorize_legacy_task(task.from_legacy_issue(issue))))
+  }
+}
+
+fn categorize_legacy_task(item: task.Task) -> task.Task {
+  let state = item.state
+  task.Task(
+    ..item,
+    state: task.TaskState(
+      id: state.id,
+      name: state.name,
+      category: legacy_state_category(state.name),
+    ),
+  )
+}
+
+fn filter_state_categories(
+  tasks: List(task.Task),
+  categories: List(task.TaskStateCategory),
+) -> List(task.Task) {
+  case categories {
+    [] -> tasks
+    categories ->
+      list.filter(tasks, fn(item) {
+        list.contains(categories, item.state.category)
+      })
+  }
+}
+
+fn legacy_state_category(name: String) -> task.TaskStateCategory {
+  let name = name |> string.trim |> string.lowercase
+  case name {
+    "backlog" -> task.Backlog
+    "todo" | "to do" | "ready" | "triage" -> task.Ready
+    "in progress" | "doing" | "started" -> task.Active
+    "done" | "complete" | "completed" -> task.Done
+    "canceled" | "cancelled" -> task.Canceled
+    "duplicate" -> task.Duplicate
+    _ -> task.Unknown
+  }
+}
+
+fn drop_first(values: List(a), count: Int) -> List(a) {
+  case count <= 0, values {
+    True, _ -> values
+    _, [] -> []
+    False, [_, ..rest] -> drop_first(rest, count - 1)
+  }
+}
+
+fn take_first(values: List(a), count: Int) -> List(a) {
+  case count <= 0, values {
+    True, _ -> []
+    _, [] -> []
+    False, [first, ..rest] -> [first, ..take_first(rest, count - 1)]
+  }
 }
 
 fn tasks_to_legacy_issues(
