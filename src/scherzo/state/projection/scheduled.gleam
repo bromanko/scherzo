@@ -3,6 +3,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import scherzo/state/record
 
 pub const context_name = "scheduled"
 
@@ -84,6 +85,176 @@ pub fn statuses(
   statuses: Dict(String, ScheduledJobStatus),
 ) -> List(ScheduledJobStatus) {
   dict.values(statuses)
+}
+
+pub fn apply_record(
+  statuses: Dict(String, ScheduledJobStatus),
+  ledger_record: record.LedgerRecord,
+) -> Result(ScheduledJobStatus, Nil) {
+  case ledger_record.body {
+    record.ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> due_status(due_at_ms, run_id, trigger)
+      |> Ok
+
+    record.ScheduledJobSkipped(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      reason,
+      skipped_count,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> skipped_status(due_at_ms, run_id, reason, skipped_count)
+      |> Ok
+
+    record.ScheduledRunPending(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      trigger,
+      _,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> pending_status(due_at_ms, run_id, trigger)
+      |> Ok
+
+    record.ScheduledRunPendingBlocked(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      reason,
+      _,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> blocked_status(due_at_ms, run_id, reason)
+      |> Ok
+
+    record.ScheduledRunPendingCancelled(
+      job_id,
+      workflow_id,
+      _,
+      run_id,
+      reason,
+      _,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> cancelled_status(run_id, reason)
+      |> Ok
+
+    record.ScheduledRunStarted(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      _,
+      run_id,
+      attempt,
+      session_id,
+      run_root,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> started_status(due_at_ms, run_id, attempt, session_id, run_root)
+      |> Ok
+
+    record.ScheduledRunSucceeded(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      attempt,
+      finished_at_ms,
+      _,
+      _,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> succeeded_status(due_at_ms, run_id, attempt, finished_at_ms)
+      |> Ok
+
+    record.ScheduledRunFailed(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      attempt,
+      finished_at_ms,
+      reason,
+      retry_exhausted,
+      run_root,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> failed_status(
+        due_at_ms,
+        run_id,
+        attempt,
+        finished_at_ms,
+        reason,
+        retry_exhausted,
+        run_root,
+      )
+      |> Ok
+
+    record.ScheduledRunRetryScheduled(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      next_attempt,
+      _,
+      _,
+      reason,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> retry_status(due_at_ms, run_id, next_attempt, reason)
+      |> Ok
+
+    record.ScheduledRunRetryCancelled(job_id, run_id, _, reason) ->
+      ensure_status(statuses, job_id, "")
+      |> cancelled_status(run_id, reason)
+      |> Ok
+
+    record.ScheduledFailureReported(
+      job_id,
+      workflow_id,
+      _,
+      _,
+      _,
+      dedupe_key,
+      linear_issue_id,
+      _,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> reported_status(dedupe_key, linear_issue_id)
+      |> Ok
+
+    record.ScheduledFailureReportFailed(
+      job_id,
+      workflow_id,
+      _,
+      run_id,
+      attempt,
+      dedupe_key,
+      error_code,
+      error_message,
+      next_retry_at_ms,
+      generation,
+    ) ->
+      ensure_status(statuses, job_id, workflow_id)
+      |> report_failed_status(
+        run_id,
+        attempt,
+        dedupe_key,
+        error_code,
+        error_message,
+        next_retry_at_ms,
+        generation,
+      )
+      |> Ok
+
+    _ -> Error(Nil)
+  }
 }
 
 pub fn ensure_status(
