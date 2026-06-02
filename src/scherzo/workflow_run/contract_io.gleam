@@ -11,6 +11,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest as contract_manifest
 import scherzo/workflow_dag
+import scherzo/workflow_run/contract_io_error as contract_error
 import scherzo/workspace_profile
 import scherzo/workspace_run
 import simplifile
@@ -59,6 +60,11 @@ pub type ContractOutputsResult {
   )
 }
 
+type ContractValueKind {
+  InputValue
+  ContextValue
+}
+
 pub fn record_recovered_inputs_if_contracted(
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
@@ -66,7 +72,7 @@ pub fn record_recovered_inputs_if_contracted(
   recovered: RecoveredInvocation,
   checkpoint: workflow_checkpoint.Writer,
   profile: config_types.WorkspaceHookProfile,
-) -> Result(Nil, String) {
+) -> Result(Nil, contract_error.ContractIoError) {
   case recovered.contract_inputs_recorded, dag.contract {
     Some(_), _ | _, None -> Ok(Nil)
     None, Some(contract) ->
@@ -118,7 +124,7 @@ pub fn record_inputs_if_contracted(
   invocation: RunInvocation,
   checkpoint: workflow_checkpoint.Writer,
   profile: config_types.WorkspaceHookProfile,
-) -> Result(Nil, String) {
+) -> Result(Nil, contract_error.ContractIoError) {
   case dag.contract {
     None -> Ok(Nil)
     Some(contract) -> {
@@ -156,19 +162,19 @@ pub fn record_outputs_if_contracted(
   checkpoint: workflow_checkpoint.Writer,
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
-) -> Result(ContractOutputsResult, String) {
+) -> Result(ContractOutputsResult, contract_error.ContractIoError) {
   case dag.contract, contract_outputs_recorded {
     None, _ -> Ok(ContractOutputsResult([], None, None))
     Some(_), Some(recorded) -> {
       use contents <- result.try(
         checkpoint.read_artifact(recorded.ref)
-        |> result.map_error(workflow_checkpoint.describe_error),
+        |> result.map_error(contract_error.OutputManifestReadFailed),
       )
       use manifest <- result.try(
         contract_manifest.decode_output_manifest(contents)
-        |> result.map_error(fn(_) {
-          "workflow_output_manifest_decode_failed:" <> recorded.ref
-        }),
+        |> result.replace_error(contract_error.OutputManifestDecodeFailed(
+          recorded.ref,
+        )),
       )
       Ok(ContractOutputsResult([], Some(manifest), Some(recorded)))
     }
@@ -196,7 +202,7 @@ pub fn record_outputs_if_contracted(
       let contents = contract_manifest.output_manifest_to_string(manifest)
       use written <- result.try(
         checkpoint.write_workflow_outputs_manifest(run_id, contents)
-        |> result.map_error(workflow_checkpoint.describe_error),
+        |> result.map_error(contract_error.OutputManifestWriteFailed),
       )
       use Nil <- result.try(
         checkpoint.workflow_outputs_recorded(
@@ -207,7 +213,7 @@ pub fn record_outputs_if_contracted(
             artifact: written,
           ),
         )
-        |> result.map_error(workflow_checkpoint.describe_error),
+        |> result.map_error(contract_error.OutputManifestRecordFailed),
       )
       Ok(ContractOutputsResult(
         missing: list.reverse(missing),
@@ -243,11 +249,11 @@ fn recovered_context_value(
 fn write_recorded_input_manifest(
   manifest: contract_manifest.ContractInputManifest,
   checkpoint: workflow_checkpoint.Writer,
-) -> Result(Nil, String) {
+) -> Result(Nil, contract_error.ContractIoError) {
   let contents = contract_manifest.input_manifest_to_string(manifest)
   use written <- result.try(
     checkpoint.write_workflow_inputs_manifest(manifest.run_id, contents)
-    |> result.map_error(workflow_checkpoint.describe_error),
+    |> result.map_error(contract_error.InputManifestWriteFailed),
   )
   checkpoint.workflow_inputs_recorded(
     workflow_checkpoint.WorkflowContractManifestRecorded(
@@ -257,7 +263,7 @@ fn write_recorded_input_manifest(
       artifact: written,
     ),
   )
-  |> result.map_error(workflow_checkpoint.describe_error)
+  |> result.map_error(contract_error.InputManifestRecordFailed)
 }
 
 fn resolve_contract_inputs(
@@ -265,7 +271,10 @@ fn resolve_contract_inputs(
   issue: tracker_issue.Issue,
   invocation: RunInvocation,
   acc: List(contract_manifest.NamedManifestValue),
-) -> Result(List(contract_manifest.NamedManifestValue), String) {
+) -> Result(
+  List(contract_manifest.NamedManifestValue),
+  contract_error.ContractIoError,
+) {
   case inputs {
     [] -> Ok(list.reverse(acc))
     [spec, ..rest] -> {
@@ -284,7 +293,10 @@ fn resolve_contract_context(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
   acc: List(contract_manifest.NamedManifestValue),
-) -> Result(List(contract_manifest.NamedManifestValue), String) {
+) -> Result(
+  List(contract_manifest.NamedManifestValue),
+  contract_error.ContractIoError,
+) {
   case context {
     [] -> Ok(list.reverse(acc))
     [spec, ..rest] -> {
@@ -306,7 +318,7 @@ fn resolve_contract_input(
   spec: workflow_contract.InputSpec,
   issue: tracker_issue.Issue,
   invocation: RunInvocation,
-) -> Result(contract_manifest.ManifestValue, String) {
+) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
   case spec.source {
     Some(workflow_contract.IssueContext) ->
       Ok(inline_value(spec.type_, json_value.JString(issue_context_text(issue))))
@@ -314,7 +326,7 @@ fn resolve_contract_input(
       case invocation.scheduled_context {
         Some(scheduled) ->
           Ok(inline_value(spec.type_, scheduled_context_json(scheduled)))
-        None -> Error("workflow_required_input_missing:" <> spec.name)
+        None -> Error(contract_error.RequiredInputMissing(spec.name))
       }
     Some(workflow_contract.LiteralInput(value)) ->
       Ok(inline_value(spec.type_, json_value.JString(value)))
@@ -324,7 +336,7 @@ fn resolve_contract_input(
         spec.type_,
         spec.required,
         invocation.supplied_contract_values.inputs,
-        "input",
+        InputValue,
       )
     None -> optional_or_missing_input(spec)
   }
@@ -335,7 +347,7 @@ fn resolve_contract_context_value(
   invocation: RunInvocation,
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
-) -> Result(contract_manifest.ManifestValue, String) {
+) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
   case spec.source {
     Some(workflow_contract.WorkspaceDriverBase) ->
       case workspace_driver_base(orchestrator, profile) {
@@ -350,7 +362,7 @@ fn resolve_contract_context_value(
         spec.type_,
         spec.required,
         invocation.supplied_contract_values.context,
-        "context",
+        ContextValue,
       )
     None -> optional_or_missing_context(spec)
   }
@@ -361,35 +373,41 @@ fn mapped_contract_value(
   expected_type: workflow_contract.ContractType,
   required: Bool,
   values: Dict(String, contract_manifest.ManifestValue),
-  kind: String,
-) -> Result(contract_manifest.ManifestValue, String) {
+  kind: ContractValueKind,
+) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
   case dict.get(values, name) {
     Ok(value) ->
       case contract_manifest.type_matches(value, expected_type) {
-        False -> Error("workflow_contract_type_mismatch:" <> name)
+        False -> Error(contract_error.ContractTypeMismatch(name))
         True ->
           case contract_manifest.artifact_type_matches(value, expected_type) {
             True -> Ok(value)
-            False -> Error("workflow_contract_artifact_type_mismatch:" <> name)
+            False -> Error(contract_error.ContractArtifactTypeMismatch(name))
           }
       }
     Error(Nil) ->
       case required {
-        True -> Error("workflow_required_" <> kind <> "_missing:" <> name)
-        False ->
-          Ok(contract_manifest.absent(
-            expected_type,
-            Some("optional mapped " <> kind <> " not supplied"),
-          ))
+        True ->
+          case kind {
+            InputValue -> Error(contract_error.RequiredInputMissing(name))
+            ContextValue -> Error(contract_error.RequiredContextMissing(name))
+          }
+        False -> {
+          let diagnostic = case kind {
+            InputValue -> "optional mapped input not supplied"
+            ContextValue -> "optional mapped context not supplied"
+          }
+          Ok(contract_manifest.absent(expected_type, Some(diagnostic)))
+        }
       }
   }
 }
 
 fn optional_or_missing_input(
   spec: workflow_contract.InputSpec,
-) -> Result(contract_manifest.ManifestValue, String) {
+) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
   case spec.required {
-    True -> Error("workflow_required_input_missing:" <> spec.name)
+    True -> Error(contract_error.RequiredInputMissing(spec.name))
     False ->
       Ok(contract_manifest.absent(
         spec.type_,
@@ -400,9 +418,9 @@ fn optional_or_missing_input(
 
 fn optional_or_missing_context(
   spec: workflow_contract.ContextSpec,
-) -> Result(contract_manifest.ManifestValue, String) {
+) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
   case spec.required {
-    True -> Error("workflow_required_context_missing:" <> spec.name)
+    True -> Error(contract_error.RequiredContextMissing(spec.name))
     False ->
       Ok(contract_manifest.absent(
         spec.type_,

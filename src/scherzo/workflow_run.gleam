@@ -25,6 +25,7 @@ import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workflow_outcome
 import scherzo/workflow_run/contract_io
+import scherzo/workflow_run/contract_io_error as contract_error
 import scherzo/workflow_run/recovery_execution
 import scherzo/workflow_run/step_context as step_context_internal
 import scherzo/workflow_run/step_execution
@@ -262,6 +263,15 @@ type StepBatchOutcome {
   StepBatchFatal(StepExecutionResult)
 }
 
+type WorkflowStartError {
+  WorkflowRunRootFailed(error.WorkspaceError)
+  WorkflowStartCheckpointFailed(workflow_checkpoint.CheckpointError)
+}
+
+type StepBatchError {
+  StepWorkerDown(step_id: String, reason: process.ExitReason)
+}
+
 type StepBatchStartError {
   StepBatchStartError(reason: String, cleanup_allowed: Bool)
 }
@@ -270,6 +280,13 @@ type AfterStepMessage {
   AfterStepCompleted
   AfterStepDown(process.Down)
   AfterStepLinkedExit
+}
+
+type AfterStepError {
+  AfterStepExitedWithoutResult(step_id: String)
+  AfterStepKilled(step_id: String)
+  AfterStepCrashed(step_id: String)
+  AfterStepMonitorDown(step_id: String)
 }
 
 pub fn default_dependencies() -> Dependencies {
@@ -708,9 +725,9 @@ pub fn execute_with_context(
               dependencies,
             )
           {
-            Error(reason) ->
+            Error(error) ->
               Error(WorkflowRunFailure(
-                reason: reason,
+                reason: workflow_start_error_reason(error),
                 agent_reason: None,
                 artifacts: dict.new(),
                 run_root: None,
@@ -727,7 +744,8 @@ pub fn execute_with_context(
                   profile,
                 )
               {
-                Error(reason) -> {
+                Error(error) -> {
+                  let reason = contract_error.describe_error(error)
                   ignore_secondary_checkpoint_result(
                     dependencies.checkpoint.workflow_finished(
                       workflow_checkpoint.WorkflowFinished(
@@ -796,9 +814,9 @@ pub fn execute_with_context(
                   dependencies,
                 )
               {
-                Error(reason) ->
+                Error(error) ->
                   Error(WorkflowRunFailure(
-                    reason: reason,
+                    reason: workflow_start_error_reason(error),
                     agent_reason: None,
                     artifacts: recovered.artifacts,
                     run_root: Some(recovered.run_root),
@@ -815,7 +833,8 @@ pub fn execute_with_context(
                       profile,
                     )
                   {
-                    Error(reason) -> {
+                    Error(error) -> {
+                      let reason = contract_error.describe_error(error)
                       ignore_secondary_checkpoint_result(
                         dependencies.checkpoint.workflow_finished(
                           workflow_checkpoint.WorkflowFinished(
@@ -950,13 +969,21 @@ fn run_context_run_root(context: RunContext) -> Option(String) {
   }
 }
 
+fn workflow_start_error_reason(error: WorkflowStartError) -> String {
+  case error {
+    WorkflowRunRootFailed(error) -> error.workspace_code(error)
+    WorkflowStartCheckpointFailed(error) ->
+      "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
+  }
+}
+
 fn ensure_workflow_started(
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
   invocation: RunInvocation,
   dependencies: Dependencies,
-) -> Result(Nil, String) {
+) -> Result(Nil, WorkflowStartError) {
   use run_root <- result.try(
     case invocation.scheduled_context {
       Some(scheduled) ->
@@ -974,7 +1001,7 @@ fn ensure_workflow_started(
           orchestrator,
         )
     }
-    |> result.map_error(error.workspace_code),
+    |> result.map_error(WorkflowRunRootFailed),
   )
   dependencies.checkpoint.workflow_started(workflow_checkpoint.WorkflowStarted(
     run_id: invocation.run_id,
@@ -987,16 +1014,14 @@ fn ensure_workflow_started(
     observed_updated_at_ms: observed_updated_at_ms(issue),
     run_root: run_root,
   ))
-  |> result.map_error(fn(error) {
-    "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
-  })
+  |> result.map_error(WorkflowStartCheckpointFailed)
 }
 
 fn ensure_recovered_workflow_started(
   issue: tracker_issue.Issue,
   recovered: RecoveredRunContext,
   dependencies: Dependencies,
-) -> Result(Nil, String) {
+) -> Result(Nil, WorkflowStartError) {
   dependencies.checkpoint.workflow_started(workflow_checkpoint.WorkflowStarted(
     run_id: recovered.run_id,
     workflow_id: recovered.workflow_id,
@@ -1008,9 +1033,7 @@ fn ensure_recovered_workflow_started(
     observed_updated_at_ms: observed_updated_at_ms(issue),
     run_root: recovered.run_root,
   ))
-  |> result.map_error(fn(error) {
-    "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
-  })
+  |> result.map_error(WorkflowStartCheckpointFailed)
 }
 
 fn record_recovered_inputs_if_contracted(
@@ -1020,7 +1043,7 @@ fn record_recovered_inputs_if_contracted(
   recovered: RecoveredRunContext,
   dependencies: Dependencies,
   profile: config_types.WorkspaceHookProfile,
-) -> Result(Nil, String) {
+) -> Result(Nil, contract_error.ContractIoError) {
   contract_io.record_recovered_inputs_if_contracted(
     issue,
     dag,
@@ -1045,7 +1068,7 @@ fn record_inputs_if_contracted(
   invocation: RunInvocation,
   dependencies: Dependencies,
   profile: config_types.WorkspaceHookProfile,
-) -> Result(Nil, String) {
+) -> Result(Nil, contract_error.ContractIoError) {
   contract_io.record_inputs_if_contracted(
     issue,
     dag,
@@ -1497,7 +1520,9 @@ fn run_prepared_batch(
           failure_policy_by_step(starts, dict.new()),
           [],
         )
-        |> result.map_error(fn(reason) { StepBatchStartError(reason, True) })
+        |> result.map_error(fn(error) {
+          StepBatchStartError(step_batch_error_reason(error), True)
+        })
       let _previous_trap_exits = process_ext.trap_exits(was_trapping_exits)
       result
     }
@@ -1714,7 +1739,7 @@ fn collect_step_results(
   monitor_to_pid: Dict(process.Monitor, process.Pid),
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
   acc: List(StepExecutionResult),
-) -> Result(StepBatchOutcome, String) {
+) -> Result(StepBatchOutcome, StepBatchError) {
   case remaining <= 0 {
     True -> Ok(StepBatchCompleted(acc))
     False ->
@@ -1788,7 +1813,7 @@ fn handle_step_worker_down(
   monitor_to_pid: Dict(process.Monitor, process.Pid),
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
   acc: List(StepExecutionResult),
-) -> Result(StepBatchOutcome, String) {
+) -> Result(StepBatchOutcome, StepBatchError) {
   case down {
     process.ProcessDown(monitor, _, reason) ->
       case dict.get(monitor_to_step, monitor) {
@@ -1804,7 +1829,7 @@ fn handle_step_worker_down(
           )
         Ok(step_id) -> {
           terminate_step_workers(monitor_to_pid)
-          Error(step_worker_down_reason(step_id, reason))
+          Error(StepWorkerDown(step_id, reason))
         }
       }
     process.PortDown(_, _, _) ->
@@ -1856,6 +1881,12 @@ fn step_worker_down_reason(
     process.Normal -> "step_worker_exited_without_result:" <> step_id
     process.Killed -> "step_worker_killed:" <> step_id
     process.Abnormal(_) -> "step_worker_crashed:" <> step_id
+  }
+}
+
+fn step_batch_error_reason(error: StepBatchError) -> String {
+  case error {
+    StepWorkerDown(step_id, reason) -> step_worker_down_reason(step_id, reason)
   }
 }
 
@@ -2158,7 +2189,9 @@ fn finalize_step_attempt(
       orchestrator,
       profile,
     )
-    |> result.map_error(workflow_checkpoint.CheckpointAppendFailed),
+    |> result.map_error(fn(error) {
+      workflow_checkpoint.CheckpointAppendFailed(after_step_error_reason(error))
+    }),
   )
   use Nil <- result.try(dependencies.checkpoint.step_finished(
     finished,
@@ -2451,7 +2484,8 @@ fn apply_prepared_results(
                   profile,
                 )
               {
-                Error(reason) -> {
+                Error(error) -> {
+                  let reason = after_step_error_reason(error)
                   mark_workflow_failed_terminal(
                     dependencies,
                     recovery_evidence,
@@ -2573,7 +2607,7 @@ fn run_after_step(
   workspace: workspace_run.PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
-) -> Result(Nil, String) {
+) -> Result(Nil, AfterStepError) {
   let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
   let pid =
@@ -2596,7 +2630,7 @@ fn receive_after_step_result(
   selector: process.Selector(AfterStepMessage),
   monitor: process.Monitor,
   step_id: String,
-) -> Result(Nil, String) {
+) -> Result(Nil, AfterStepError) {
   case process.selector_receive_forever(selector) {
     AfterStepCompleted -> {
       process.demonitor_process(monitor)
@@ -2610,22 +2644,32 @@ fn receive_after_step_result(
 fn after_step_down_result(
   step_id: String,
   down: process.Down,
-) -> Result(Nil, String) {
+) -> Result(Nil, AfterStepError) {
   case down {
     process.ProcessDown(_, _, reason) ->
-      Error(after_step_down_reason(step_id, reason))
-    process.PortDown(_, _, _) -> Error("after_step_monitor_down:" <> step_id)
+      Error(after_step_error_from_exit(step_id, reason))
+    process.PortDown(_, _, _) -> Error(AfterStepMonitorDown(step_id))
   }
 }
 
-fn after_step_down_reason(
+fn after_step_error_from_exit(
   step_id: String,
   reason: process.ExitReason,
-) -> String {
+) -> AfterStepError {
   case reason {
-    process.Normal -> "after_step_exited_without_result:" <> step_id
-    process.Killed -> "after_step_killed:" <> step_id
-    process.Abnormal(_) -> "after_step_crashed:" <> step_id
+    process.Normal -> AfterStepExitedWithoutResult(step_id)
+    process.Killed -> AfterStepKilled(step_id)
+    process.Abnormal(_) -> AfterStepCrashed(step_id)
+  }
+}
+
+fn after_step_error_reason(error: AfterStepError) -> String {
+  case error {
+    AfterStepExitedWithoutResult(step_id) ->
+      "after_step_exited_without_result:" <> step_id
+    AfterStepKilled(step_id) -> "after_step_killed:" <> step_id
+    AfterStepCrashed(step_id) -> "after_step_crashed:" <> step_id
+    AfterStepMonitorDown(step_id) -> "after_step_monitor_down:" <> step_id
   }
 }
 

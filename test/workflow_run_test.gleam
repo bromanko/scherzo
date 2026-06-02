@@ -3175,6 +3175,40 @@ pub fn recovered_pi_resume_validation_failure_is_fatal_even_with_continue_policy
   test_async.assert_no_extra_message_within(subject, 50)
 }
 
+pub fn workflow_run_start_checkpoint_failure_fails_before_prepare_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: build\n    kind: command\n    run: build\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      checkpoint: workflow_checkpoint.Writer(
+        ..workflow_checkpoint.noop_writer(),
+        workflow_started: fn(_) {
+          Error(workflow_checkpoint.CheckpointAppendFailed("run start failed"))
+        },
+      ),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "checkpoint_failed:run start failed"
+  assert failure.run_root == None
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
 pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -3804,6 +3838,51 @@ pub fn workflow_run_after_step_runs_in_dag_order_for_ready_batch_test() {
   let assert Ok(Ok(_success)) = process.receive(result_subject, within: 1000)
 }
 
+pub fn workflow_run_after_step_crash_returns_failure_test() {
+  use <- expected_crash.suppressing([
+    "test/workflow_run_test.gleam",
+    "workflow_run_after_step_crash_returns_failure_test",
+    "after step crashed",
+  ])
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      after_step: fn(_issue, step_id, _prepared, _orchestrator, _profile) {
+        process.send(subject, "after-crash:" <> step_id)
+        panic as "after step crashed"
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "after_step_crashed:collect"
+  assert failure.failed_step_id == Some("collect")
+  let events = receive_events(subject, 4, [])
+  assert list.contains(events, "prepare:collect:main:")
+  assert list.contains(events, "run:collect")
+  assert list.contains(events, "after-crash:collect")
+  assert list.contains(
+    events,
+    "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
 pub fn workflow_run_step_worker_crash_returns_failure_test() {
   use <- expected_crash.suppressing([
     "test/workflow_run_test.gleam",
@@ -4354,6 +4433,147 @@ pub fn contracted_command_run_records_inputs_before_steps_and_outputs_test() {
   assert findings.value.ref == Some("runs/run-1/outputs/findings.md")
 }
 
+pub fn contracted_output_manifest_write_failure_is_reported_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-output-recording-failure"
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo findings\n",
+    )
+  let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let checkpoint =
+    workflow_checkpoint.Writer(
+      ..base_checkpoint,
+      write_workflow_outputs_manifest: fn(_, _) {
+        Error(workflow_checkpoint.CheckpointArtifactFailed(
+          "outputs unavailable",
+        ))
+      },
+    )
+  let dependencies =
+    workflow_run.Dependencies(..deps(subject, None), checkpoint: checkpoint)
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_output_manifest_failed:outputs unavailable"
+}
+
+pub fn recovered_output_manifest_read_failure_is_reported_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-output-read-failure"
+  test_helpers.reset_dir(root)
+  let dag = contracted_findings_output_dag()
+  let recorded = recorded_findings_output_manifest_ref()
+  let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let checkpoint =
+    workflow_checkpoint.Writer(..base_checkpoint, read_artifact: fn(_) {
+      Error(workflow_checkpoint.CheckpointArtifactFailed("manifest unavailable"))
+    })
+
+  let assert Error(failure) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(..deps(subject, None), checkpoint: checkpoint),
+      completed_findings_output_resume_state(recorded),
+    )
+
+  assert failure.reason
+    == "workflow_output_manifest_failed:manifest unavailable"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
+pub fn recovered_output_manifest_decode_failure_is_reported_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-output-decode-failure"
+  test_helpers.reset_dir(root)
+  let dag = contracted_findings_output_dag()
+  let recorded = recorded_findings_output_manifest_ref()
+  let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let checkpoint =
+    workflow_checkpoint.Writer(..base_checkpoint, read_artifact: fn(_) {
+      Ok("not an output manifest")
+    })
+
+  let assert Error(failure) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(..deps(subject, None), checkpoint: checkpoint),
+      completed_findings_output_resume_state(recorded),
+    )
+
+  assert failure.reason
+    == "workflow_output_manifest_failed:workflow_output_manifest_decode_failed:runs/run-1/outputs.v1.json"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
+fn contracted_findings_output_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo findings\n",
+    )
+  dag
+}
+
+fn recorded_findings_output_manifest_ref() -> workflow_checkpoint.ArtifactWritten {
+  workflow_checkpoint.ArtifactWritten(
+    ref: "runs/run-1/outputs.v1.json",
+    sha256: "already-recorded",
+    bytes: 1,
+  )
+}
+
+fn completed_findings_output_resume_state(
+  recorded: workflow_checkpoint.ArtifactWritten,
+) -> workflow_run.ResumeState {
+  workflow_run.ResumeState(
+    artifacts: dict.from_list([
+      #(
+        "collect_findings",
+        step_artifact.from_command_result(
+          "collect_findings",
+          0,
+          "# Accepted\n",
+          "",
+          False,
+          [],
+          orchestrator().artifact_limits,
+        ),
+      ),
+    ]),
+    workspaces: dict.new(),
+    next_attempt_indexes: dict.new(),
+    run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+    recovery_evidence: workflow_outcome.NoStepRecovery,
+    pi_session_continuations: dict.new(),
+    contract_inputs_recorded: None,
+    contract_outputs_recorded: Some(recorded),
+  )
+}
+
 pub fn contracted_mapped_input_missing_fails_before_prepare_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-missing-input"
@@ -4624,6 +4844,57 @@ pub fn opted_in_workstream_phase_fails_closed_when_output_is_absent_test() {
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
   test_async.assert_no_extra_message_within(subject, 50)
+}
+
+pub fn opted_in_workstream_phase_reports_record_append_failure_test() {
+  let root = "test/tmp/workflow-run/workstream-phase-record-append-failure"
+  test_helpers.reset_dir(root)
+  let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let checkpoint =
+    workflow_checkpoint.Writer(
+      ..base_checkpoint,
+      append_workstream_record_idempotent: fn(_) {
+        Error(workflow_checkpoint.CheckpointAppendFailed(
+          "workstream append failed",
+        ))
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      opted_in_workstream_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(process.new_subject(), None),
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _command,
+          _timeout_ms,
+          secrets,
+          limits,
+        ) {
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "{\"bundle_id\":\"bundle-1\"}\n",
+            "",
+            False,
+            secrets,
+            limits,
+          )
+        },
+        checkpoint: checkpoint,
+      ),
+    )
+
+  assert string.starts_with(
+    failure.reason,
+    "workflow_workstream_handoff_failed:workstream append failed",
+  )
 }
 
 pub fn resumed_opted_in_workstream_phase_reuses_recorded_output_manifest_test() {
