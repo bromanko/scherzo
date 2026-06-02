@@ -1,18 +1,13 @@
 import birl
 import gleam/dict.{type Dict}
 import gleam/erlang/process
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
-import scherzo/artifact_publication_executor
-import scherzo/artifact_publication_recording
 import scherzo/config/types as config_types
 import scherzo/error
-import scherzo/model_config
 import scherzo/orchestrator/schedule_core
 import scherzo/process_ext
 import scherzo/session/tokens as session_tokens
@@ -29,14 +24,14 @@ import scherzo/workflow_contract_manifest as contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workflow_outcome
-import scherzo/workflow_recovery_checkpoint_guard
 import scherzo/workflow_run/contract_io
+import scherzo/workflow_run/recovery_execution
 import scherzo/workflow_run/step_context as step_context_internal
 import scherzo/workflow_run/step_execution
+import scherzo/workflow_run/terminal_policy
 import scherzo/workflow_run/workspace_preparation.{
   type PreparedStart, PrepareReadyFailure, PreparedBatch, PreparedStart,
 }
-import scherzo/workflow_run/workstream_handoff
 import scherzo/workflow_scheduler
 import scherzo/workflow_step_recovery
 import scherzo/workspace_profile
@@ -275,35 +270,6 @@ type AfterStepMessage {
   AfterStepCompleted
   AfterStepDown(process.Down)
   AfterStepLinkedExit
-}
-
-type RecoveryAttemptOutcome {
-  RecoveryRetryRequested(
-    tokens: session_tokens.TokenTotals,
-    final_issue: Option(tracker_issue.Issue),
-    turns: Int,
-  )
-  RecoveryStop(
-    tokens: session_tokens.TokenTotals,
-    final_issue: Option(tracker_issue.Issue),
-    turns: Int,
-    recovery_evidence: workflow_outcome.RecoveryEvidence,
-  )
-}
-
-fn combine_recovery_evidence(
-  current: workflow_outcome.RecoveryEvidence,
-  next: workflow_outcome.RecoveryEvidence,
-) -> workflow_outcome.RecoveryEvidence {
-  case current, next {
-    workflow_outcome.StepRecoveryRetryRequested, _ ->
-      workflow_outcome.StepRecoveryRetryRequested
-    _, workflow_outcome.StepRecoveryRetryRequested ->
-      workflow_outcome.StepRecoveryRetryRequested
-    workflow_outcome.StepRecoveryRan, _ -> workflow_outcome.StepRecoveryRan
-    _, workflow_outcome.StepRecoveryRan -> workflow_outcome.StepRecoveryRan
-    _, _ -> workflow_outcome.NoStepRecovery
-  }
 }
 
 pub fn default_dependencies() -> Dependencies {
@@ -926,6 +892,48 @@ pub fn execute_with_context(
   }
 }
 
+fn terminal_runtime(dependencies: Dependencies) -> terminal_policy.Runtime {
+  terminal_policy.runtime(
+    checkpoint: dependencies.checkpoint,
+    cleanup_run: dependencies.cleanup_run,
+  )
+}
+
+fn terminal_result_to_workflow_result(
+  result: Result(terminal_policy.Success, terminal_policy.Failure),
+) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  case result {
+    Ok(success) ->
+      Ok(WorkflowRunSuccess(
+        worker_success: success.worker_success,
+        artifacts: success.artifacts,
+        run_root: success.run_root,
+        cleanup_warning: option.map(
+          success.cleanup_warning,
+          terminal_cleanup_warning,
+        ),
+      ))
+    Error(failure) ->
+      Error(WorkflowRunFailure(
+        reason: failure.reason,
+        agent_reason: failure.agent_reason,
+        artifacts: failure.artifacts,
+        run_root: failure.run_root,
+        failed_step_id: failure.failed_step_id,
+      ))
+  }
+}
+
+fn terminal_cleanup_warning(
+  warning: terminal_policy.PostSuccessCleanupWarning,
+) -> PostSuccessCleanupWarning {
+  PostSuccessCleanupWarning(
+    code: warning.code,
+    message: warning.message,
+    run_root: warning.run_root,
+  )
+}
+
 fn run_context_artifacts(
   context: RunContext,
 ) -> Dict(String, step_artifact.StepArtifact) {
@@ -1065,122 +1073,21 @@ fn record_inputs_if_contracted(
   )
 }
 
-fn record_outputs_if_contracted(
-  dag: workflow_dag.WorkflowDag,
-  run_id: String,
-  workflow_fingerprint: String,
-  contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
-  dependencies: Dependencies,
-  artifacts: Dict(String, step_artifact.StepArtifact),
-  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
-) -> Result(contract_io.ContractOutputsResult, String) {
-  contract_io.record_outputs_if_contracted(
-    dag,
-    run_id,
-    workflow_fingerprint,
-    contract_outputs_recorded,
-    dependencies.checkpoint,
-    artifacts,
-    prepared_workspaces,
-  )
-}
-
-fn emit_workstream_handoff_if_configured(
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  run_id: String,
-  workflow_fingerprint: String,
-  outputs: contract_io.ContractOutputsResult,
-  dependencies: Dependencies,
-) -> Result(Nil, String) {
-  workstream_handoff.emit_if_configured(
-    issue,
-    dag,
-    run_id,
-    workflow_fingerprint,
-    outputs,
-    dependencies.checkpoint,
-  )
-}
-
-fn record_publications_if_configured(
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  outputs: contract_io.ContractOutputsResult,
-  run_id: String,
-  dependencies: Dependencies,
-) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
-  case outputs.manifest {
-    Some(output_manifest) ->
-      artifact_publication_executor.execute_routes(
-        dag.publication_routes,
-        orchestrator.artifact_repositories,
-        orchestrator.config_dir,
-        output_manifest,
-        issue,
-        run_id,
-        dependencies.checkpoint,
-      )
-    None ->
-      Ok(
-        artifact_publication_recording.PublicationRecordingResult(
-          required_failures: [],
-          optional_failures: [],
-          attempts: [],
-        ),
-      )
-  }
-}
-
 pub fn failure_report(failure: WorkflowRunFailure) -> String {
-  case failed_command_artifact(failure) {
-    Some(artifact) ->
-      case step_artifact.command_failure_summary(artifact) {
-        Some(summary) ->
-          workflow_command_failure_prefix(artifact)
-          <> failure.reason
-          <> "\n"
-          <> summary
-        None -> failure.reason
-      }
-    None -> failure.reason
-  }
+  terminal_policy.failure_report(
+    failure.reason,
+    failure.failed_step_id,
+    failure.artifacts,
+  )
 }
 
 pub fn failed_command_failure(
   failure: WorkflowRunFailure,
 ) -> Option(#(String, String)) {
-  case failed_command_artifact(failure) {
-    Some(artifact) ->
-      case artifact.failure_code {
-        Some(code) -> Some(#(code, artifact.step_id))
-        None -> None
-      }
-    None -> None
-  }
-}
-
-fn failed_command_artifact(
-  failure: WorkflowRunFailure,
-) -> Option(step_artifact.StepArtifact) {
-  case failure.failed_step_id {
-    Some(step_id) ->
-      case dict.get(failure.artifacts, step_id) {
-        Ok(artifact) -> Some(artifact)
-        Error(Nil) -> None
-      }
-    None -> None
-  }
-}
-
-fn workflow_command_failure_prefix(
-  artifact: step_artifact.StepArtifact,
-) -> String {
-  case artifact.failure_code {
-    Some(code) -> "workflow_command_failed:" <> code <> "\n"
-    None -> ""
-  }
+  terminal_policy.failed_command_failure(
+    failure.failed_step_id,
+    failure.artifacts,
+  )
 }
 
 fn loop(
@@ -1209,380 +1116,46 @@ fn loop(
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case workflow_scheduler.outcome(dag, scheduler_state) {
     workflow_scheduler.WorkflowSucceeded -> {
-      let result =
-        step_artifact.workflow_result_artifact(
-          dag,
-          artifacts,
-          orchestrator.artifact_limits,
-        )
       let final_issue = option.unwrap(final_issue, issue)
-      let workspace_path = option.unwrap(run_root, "")
-      case
-        record_outputs_if_contracted(
-          dag,
-          run_id,
-          workflow_fingerprint,
-          contract_outputs_recorded,
-          dependencies,
-          artifacts,
-          prepared_workspaces,
-        )
-      {
-        Ok(outputs) if outputs.missing == [] ->
-          case
-            record_publications_if_configured(
-              final_issue,
-              dag,
-              orchestrator,
-              outputs,
-              run_id,
-              dependencies,
-            )
-          {
-            Ok(publication_result) ->
-              case publication_result.required_failures {
-                [] ->
-                  case
-                    emit_workstream_handoff_if_configured(
-                      issue,
-                      dag,
-                      run_id,
-                      workflow_fingerprint,
-                      outputs,
-                      dependencies,
-                    )
-                  {
-                    Ok(Nil) -> {
-                      use Nil <- result_try_checkpoint(
-                        dependencies.checkpoint.workflow_finished(
-                          workflow_checkpoint.WorkflowFinished(
-                            run_id: run_id,
-                            workflow_id: dag.id,
-                            issue_id: issue.id,
-                            task_ref: task_ref(issue),
-                            outcome: workflow_outcome.terminal_success(
-                              recovery_evidence,
-                            ),
-                            token_total: tokens.total,
-                            turns: turns,
-                          ),
-                        ),
-                        artifacts,
-                        run_root,
-                        None,
-                      )
-                      let cleanup_result =
-                        cleanup_if_allowed(
-                          run_root,
-                          orchestrator,
-                          profile,
-                          dependencies,
-                          cleanup_allowed,
-                        )
-                      case cleanup_result {
-                        Ok(Nil) -> {
-                          Ok(WorkflowRunSuccess(
-                            worker_success: agent_types.WorkerSuccess(
-                              final_issue: Some(final_issue),
-                              final_classification: agent_types.FinalTerminal,
-                              workspace_path: workspace_path,
-                              tokens: tokens,
-                              turns: turns,
-                              result: result,
-                            ),
-                            artifacts: artifacts,
-                            run_root: workspace_path,
-                            cleanup_warning: None,
-                          ))
-                        }
-                        Error(err) -> {
-                          let cleanup_code = error.workspace_code(err)
-                          let cleanup_reason =
-                            "post_success_cleanup_failed:"
-                            <> cleanup_code
-                            <> "; run_root="
-                            <> workspace_path
-                          let warning_message = case
-                            dependencies.checkpoint.workflow_diagnostic(
-                              workflow_checkpoint.WorkflowDiagnostic(
-                                run_id: run_id,
-                                workflow_id: dag.id,
-                                issue_id: issue.id,
-                                reason: cleanup_reason,
-                              ),
-                            )
-                          {
-                            Ok(Nil) -> cleanup_reason
-                            Error(checkpoint_error) ->
-                              cleanup_reason
-                              <> "; diagnostic_append_failed:"
-                              <> workflow_checkpoint.describe_error(
-                                checkpoint_error,
-                              )
-                          }
-                          Ok(WorkflowRunSuccess(
-                            worker_success: agent_types.WorkerSuccess(
-                              final_issue: Some(final_issue),
-                              final_classification: agent_types.FinalTerminal,
-                              workspace_path: workspace_path,
-                              tokens: tokens,
-                              turns: turns,
-                              result: result,
-                            ),
-                            artifacts: artifacts,
-                            run_root: workspace_path,
-                            cleanup_warning: Some(PostSuccessCleanupWarning(
-                              code: cleanup_code,
-                              message: warning_message,
-                              run_root: workspace_path,
-                            )),
-                          ))
-                        }
-                      }
-                    }
-                    Error(reason) -> {
-                      use Nil <- result_try_checkpoint(
-                        dependencies.checkpoint.workflow_finished(
-                          workflow_checkpoint.WorkflowFinished(
-                            run_id: run_id,
-                            workflow_id: dag.id,
-                            issue_id: issue.id,
-                            task_ref: task_ref(issue),
-                            outcome: workflow_outcome.terminal_failed_fatal(
-                              recovery_evidence,
-                            ),
-                            token_total: tokens.total,
-                            turns: turns,
-                          ),
-                        ),
-                        artifacts,
-                        run_root,
-                        None,
-                      )
-                      let cleanup_suffix =
-                        cleanup_failure_suffix(cleanup_if_allowed(
-                          run_root,
-                          orchestrator,
-                          profile,
-                          dependencies,
-                          cleanup_allowed,
-                        ))
-                      Error(WorkflowRunFailure(
-                        reason: "workflow_workstream_handoff_failed:"
-                          <> reason
-                          <> cleanup_suffix,
-                        agent_reason: None,
-                        artifacts: artifacts,
-                        run_root: run_root,
-                        failed_step_id: None,
-                      ))
-                    }
-                  }
-                [failure, ..] -> {
-                  use Nil <- result_try_checkpoint(
-                    dependencies.checkpoint.workflow_finished(
-                      workflow_checkpoint.WorkflowFinished(
-                        run_id: run_id,
-                        workflow_id: dag.id,
-                        issue_id: issue.id,
-                        task_ref: task_ref(issue),
-                        outcome: workflow_outcome.terminal_failed_fatal(
-                          recovery_evidence,
-                        ),
-                        token_total: tokens.total,
-                        turns: turns,
-                      ),
-                    ),
-                    artifacts,
-                    run_root,
-                    None,
-                  )
-                  let cleanup_suffix =
-                    cleanup_failure_suffix(cleanup_if_allowed(
-                      run_root,
-                      orchestrator,
-                      profile,
-                      dependencies,
-                      cleanup_allowed,
-                    ))
-                  Error(WorkflowRunFailure(
-                    reason: "workflow_publication_required_failed:"
-                      <> failure.publication_id
-                      <> ":"
-                      <> failure.code
-                      <> cleanup_suffix,
-                    agent_reason: None,
-                    artifacts: artifacts,
-                    run_root: run_root,
-                    failed_step_id: None,
-                  ))
-                }
-              }
-            Error(reason) -> {
-              use Nil <- result_try_checkpoint(
-                dependencies.checkpoint.workflow_finished(
-                  workflow_checkpoint.WorkflowFinished(
-                    run_id: run_id,
-                    workflow_id: dag.id,
-                    issue_id: issue.id,
-                    task_ref: task_ref(issue),
-                    outcome: workflow_outcome.terminal_failed_fatal(
-                      recovery_evidence,
-                    ),
-                    token_total: tokens.total,
-                    turns: turns,
-                  ),
-                ),
-                artifacts,
-                run_root,
-                None,
-              )
-              let cleanup_suffix =
-                cleanup_failure_suffix(cleanup_if_allowed(
-                  run_root,
-                  orchestrator,
-                  profile,
-                  dependencies,
-                  cleanup_allowed,
-                ))
-              Error(WorkflowRunFailure(
-                reason: "workflow_publication_recording_failed:"
-                  <> reason
-                  <> cleanup_suffix,
-                agent_reason: None,
-                artifacts: artifacts,
-                run_root: run_root,
-                failed_step_id: None,
-              ))
-            }
-          }
-        Ok(outputs) -> {
-          let missing = case outputs.missing {
-            [missing, ..] -> missing
-            [] -> "unknown"
-          }
-          use Nil <- result_try_checkpoint(
-            dependencies.checkpoint.workflow_finished(
-              workflow_checkpoint.WorkflowFinished(
-                run_id: run_id,
-                workflow_id: dag.id,
-                issue_id: issue.id,
-                task_ref: task_ref(issue),
-                outcome: workflow_outcome.terminal_failed_fatal(
-                  recovery_evidence,
-                ),
-                token_total: tokens.total,
-                turns: turns,
-              ),
-            ),
-            artifacts,
-            run_root,
-            None,
-          )
-          let cleanup_suffix =
-            cleanup_failure_suffix(cleanup_if_allowed(
-              run_root,
-              orchestrator,
-              profile,
-              dependencies,
-              cleanup_allowed,
-            ))
-          Error(WorkflowRunFailure(
-            reason: "workflow_required_output_missing:"
-              <> missing
-              <> cleanup_suffix,
-            agent_reason: None,
-            artifacts: artifacts,
-            run_root: run_root,
-            failed_step_id: None,
-          ))
-        }
-        Error(reason) -> {
-          use Nil <- result_try_checkpoint(
-            dependencies.checkpoint.workflow_finished(
-              workflow_checkpoint.WorkflowFinished(
-                run_id: run_id,
-                workflow_id: dag.id,
-                issue_id: issue.id,
-                task_ref: task_ref(issue),
-                outcome: workflow_outcome.terminal_failed_fatal(
-                  recovery_evidence,
-                ),
-                token_total: tokens.total,
-                turns: turns,
-              ),
-            ),
-            artifacts,
-            run_root,
-            None,
-          )
-          let cleanup_suffix =
-            cleanup_failure_suffix(cleanup_if_allowed(
-              run_root,
-              orchestrator,
-              profile,
-              dependencies,
-              cleanup_allowed,
-            ))
-          Error(WorkflowRunFailure(
-            reason: "workflow_output_manifest_failed:"
-              <> reason
-              <> cleanup_suffix,
-            agent_reason: None,
-            artifacts: artifacts,
-            run_root: run_root,
-            failed_step_id: None,
-          ))
-        }
-      }
-    }
-    workflow_scheduler.WorkflowFailed -> {
-      let output_suffix = case
-        record_outputs_if_contracted(
-          dag,
-          run_id,
-          workflow_fingerprint,
-          contract_outputs_recorded,
-          dependencies,
-          artifacts,
-          prepared_workspaces,
-        )
-      {
-        Ok(_) -> ""
-        Error(error) -> "; workflow_output_manifest_failed:" <> error
-      }
-      let cleanup_suffix =
-        cleanup_failure_suffix(cleanup_if_allowed(
-          run_root,
-          orchestrator,
-          profile,
-          dependencies,
-          cleanup_allowed,
-        ))
-      use Nil <- result_try_checkpoint(
-        dependencies.checkpoint.workflow_finished(
-          workflow_checkpoint.WorkflowFinished(
-            run_id: run_id,
-            workflow_id: dag.id,
-            issue_id: issue.id,
-            task_ref: task_ref(issue),
-            outcome: workflow_outcome.terminal_failed_fatal(recovery_evidence),
-            token_total: tokens.total,
-            turns: turns,
-          ),
-        ),
-        artifacts,
-        run_root,
-        None,
-      )
-      Error(WorkflowRunFailure(
-        reason: "workflow_step_failed" <> output_suffix <> cleanup_suffix,
-        agent_reason: None,
+      terminal_policy.finish_success(terminal_policy.SuccessInput(
+        issue: issue,
+        final_issue: final_issue,
+        dag: dag,
+        orchestrator: orchestrator,
+        run_id: run_id,
+        workflow_fingerprint: workflow_fingerprint,
+        contract_outputs_recorded: contract_outputs_recorded,
+        recovery_evidence: recovery_evidence,
+        runtime: terminal_runtime(dependencies),
         artifacts: artifacts,
+        prepared_workspaces: prepared_workspaces,
         run_root: run_root,
-        failed_step_id: None,
+        tokens: tokens,
+        turns: turns,
+        cleanup_allowed: cleanup_allowed,
+        profile: profile,
       ))
+      |> terminal_result_to_workflow_result
     }
+    workflow_scheduler.WorkflowFailed ->
+      terminal_policy.finish_scheduler_failure(terminal_policy.FailureInput(
+        issue: issue,
+        dag: dag,
+        orchestrator: orchestrator,
+        run_id: run_id,
+        workflow_fingerprint: workflow_fingerprint,
+        contract_outputs_recorded: contract_outputs_recorded,
+        recovery_evidence: recovery_evidence,
+        runtime: terminal_runtime(dependencies),
+        artifacts: artifacts,
+        prepared_workspaces: prepared_workspaces,
+        run_root: run_root,
+        token_total: tokens.total,
+        turns: turns,
+        cleanup_allowed: cleanup_allowed,
+        profile: profile,
+      ))
+      |> terminal_result_to_workflow_result
     workflow_scheduler.WorkflowInProgress -> {
       let ready = workflow_scheduler.ready_steps(dag, scheduler_state)
       case ready {
@@ -2383,7 +1956,11 @@ fn finish_fatal_batch_result(
           )
         Ok(_) ->
           case
-            effective_recovery_for_failure(dag, step, workspace.attempt_index)
+            recovery_execution.effective_for_failure(
+              dag,
+              step,
+              workspace.attempt_index,
+            )
           {
             Some(config) ->
               case
@@ -2401,7 +1978,7 @@ fn finish_fatal_batch_result(
                   profile,
                 )
               {
-                RecoveryRetryRequested(
+                recovery_execution.RecoveryRetryRequested(
                   recovery_tokens,
                   recovery_final_issue,
                   recovery_turns,
@@ -2440,14 +2017,14 @@ fn finish_fatal_batch_result(
                     profile,
                   )
                 }
-                RecoveryStop(
+                recovery_execution.RecoveryStop(
                   recovery_tokens,
                   _,
                   recovery_turns,
                   stop_recovery_evidence,
                 ) -> {
                   let recovery_evidence =
-                    combine_recovery_evidence(
+                    recovery_execution.combine_evidence(
                       recovery_evidence,
                       stop_recovery_evidence,
                     )
@@ -2520,64 +2097,39 @@ fn terminal_fatal_batch_failure(
   profile: config_types.WorkspaceHookProfile,
   checkpoint_error checkpoint_error: Option(workflow_checkpoint.CheckpointError),
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
-  let reason = case checkpoint_error {
-    Some(error) ->
-      "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
-    None -> workflow_step_failed_reason(result)
-  }
-  let output_suffix = case checkpoint_error {
-    Some(_) -> ""
-    None ->
-      case
-        record_outputs_if_contracted(
-          dag,
-          run_id,
-          workflow_fingerprint,
-          contract_outputs_recorded,
+  terminal_policy.finish_fatal_step_failure(
+    terminal_policy.FatalStepFailureInput(
+      issue: issue,
+      dag: dag,
+      orchestrator: orchestrator,
+      run_id: run_id,
+      workflow_fingerprint: workflow_fingerprint,
+      contract_outputs_recorded: contract_outputs_recorded,
+      recovery_evidence: recovery_evidence,
+      runtime: terminal_runtime(dependencies),
+      artifacts: artifacts,
+      prepared_workspaces: prepared_workspaces,
+      run_root: run_root,
+      workflow_finished_token_total: workflow_finished_token_total,
+      workflow_finished_turns: workflow_finished_turns,
+      cleanup_allowed: cleanup_allowed,
+      profile: profile,
+      failed_step_id: result.step_id,
+      failed_artifact: result.artifact,
+      agent_reason: step_execution.agent_reason_for_artifact(result.artifact),
+      checkpoint_error: checkpoint_error,
+      interrupt_active_attempts: fn() {
+        mark_prepared_attempts_interrupted(
+          starts,
           dependencies,
-          artifacts,
-          prepared_workspaces,
+          dag.id,
+          "fatal_sibling_finished",
+          Some(result.step_id),
         )
-      {
-        Ok(_) -> ""
-        Error(error) -> "; workflow_output_manifest_failed:" <> error
-      }
-  }
-  mark_prepared_attempts_interrupted(
-    starts,
-    dependencies,
-    dag.id,
-    "fatal_sibling_finished",
-    Some(result.step_id),
-  )
-  ignore_secondary_checkpoint_result(
-    dependencies.checkpoint.workflow_finished(
-      workflow_checkpoint.WorkflowFinished(
-        run_id: run_id,
-        workflow_id: dag.id,
-        issue_id: issue.id,
-        task_ref: task_ref(issue),
-        outcome: workflow_outcome.terminal_failed_fatal(recovery_evidence),
-        token_total: workflow_finished_token_total,
-        turns: workflow_finished_turns,
-      ),
+      },
     ),
   )
-  let cleanup_suffix =
-    cleanup_failure_suffix(cleanup_if_allowed(
-      run_root,
-      orchestrator,
-      profile,
-      dependencies,
-      cleanup_allowed,
-    ))
-  Error(WorkflowRunFailure(
-    reason: reason <> output_suffix <> cleanup_suffix,
-    agent_reason: step_execution.agent_reason_for_artifact(result.artifact),
-    artifacts: artifacts,
-    run_root: run_root,
-    failed_step_id: Some(result.step_id),
-  ))
+  |> terminal_result_to_workflow_result
 }
 
 fn finalize_step_attempt(
@@ -2615,22 +2167,6 @@ fn finalize_step_attempt(
   Ok(artifact_ref)
 }
 
-fn effective_recovery_for_failure(
-  dag: workflow_dag.WorkflowDag,
-  step: workflow_dag.WorkflowStep,
-  failed_attempt_index: Int,
-) -> Option(workflow_dag.EffectiveRecoveryConfig) {
-  case step.on_failure == workflow_dag.ContinueWorkflow {
-    True -> None
-    False ->
-      case workflow_dag.effective_recovery_config(dag, step) {
-        Ok(Some(config)) if failed_attempt_index <= config.attempts ->
-          Some(config)
-        _ -> None
-      }
-  }
-}
-
 fn execute_step_recovery(
   step: workflow_dag.WorkflowStep,
   workspace: workspace_run.PreparedStepWorkspace,
@@ -2643,401 +2179,41 @@ fn execute_step_recovery(
   secrets: List(String),
   dependencies: Dependencies,
   profile: config_types.WorkspaceHookProfile,
-) -> RecoveryAttemptOutcome {
-  let recovery_attempt_number = workspace.attempt_index
-  let recovery_session_id =
-    workflow_identity.step_session_id(
-      workspace.run_id,
-      step.id <> "-recovery-" <> int.to_string(recovery_attempt_number),
-      workspace.attempt_index,
-    )
-  let prompt_ref = prompt_ref_text(config.prompt)
-  let start =
-    workflow_checkpoint.StepRecoveryStarted(
-      run_id: workspace.run_id,
-      workflow_id: workspace.workflow_id,
-      step_id: step.id,
-      failed_attempt_index: workspace.attempt_index,
-      recovery_attempt_number: recovery_attempt_number,
-      recovery_session_id: recovery_session_id,
-      model: recovery_model_name(orchestrator, step, config.model),
-      prompt_ref: prompt_ref,
-    )
-  case dependencies.checkpoint.step_recovery_started(start) {
-    Error(error) -> {
-      let Nil =
-        note_ignored_checkpoint_error(workflow_checkpoint.describe_error(error))
-      RecoveryStop(
-        session_tokens.zero_token_totals(),
-        None,
-        0,
-        workflow_outcome.NoStepRecovery,
-      )
-    }
-    Ok(Nil) -> {
-      let checkpoint_root = checkpoint_workspace_root(orchestrator)
-      case
-        workflow_recovery_checkpoint_guard.snapshot_for_run(
-          checkpoint_root,
-          workspace.run_id,
-        )
-      {
-        Error(guard_error) -> {
-          ignore_secondary_checkpoint_result(
-            workflow_step_recovery.record_finished(
-              dependencies.checkpoint,
-              workspace,
-              step.id,
-              recovery_attempt_number,
-              recovery_session_id,
-              workflow_recovery_checkpoint_guard.recovery_artifact_restore_failed,
-              "Protected checkpoint preflight failed",
-              workflow_step_recovery.detail(
-                workflow_recovery_checkpoint_guard.describe_error(guard_error),
-                secrets,
-              ),
-              None,
-            ),
-          )
-          RecoveryStop(
-            session_tokens.zero_token_totals(),
-            None,
-            0,
-            workflow_outcome.StepRecoveryRan,
-          )
-        }
-        Ok(snapshot) ->
-          case
-            recovery_context(
-              external_step_context(step_context_internal.from_prepared(
-                step,
-                workspace,
-                issue,
-                orchestrator,
-                profile,
-              )),
-            )
-          {
-            Error(spec_error) -> {
-              let failure_reason =
-                workflow_step_recovery.tool_spec_unavailable_reason(
-                  spec_error,
-                  secrets,
-                )
-              ignore_secondary_checkpoint_result(
-                workflow_step_recovery.record_finished(
-                  dependencies.checkpoint,
-                  workspace,
-                  step.id,
-                  recovery_attempt_number,
-                  recovery_session_id,
-                  "tool_spec_unavailable",
-                  "Recovery tool spec unavailable",
-                  failure_reason,
-                  None,
-                ),
-              )
-              RecoveryStop(
-                session_tokens.zero_token_totals(),
-                None,
-                0,
-                workflow_outcome.StepRecoveryRan,
-              )
-            }
-            Ok(context) -> {
-              let prompt =
-                workflow_step_recovery.prompt(
-                  prompt_ref,
-                  step.id,
-                  workspace.attempt_index,
-                  failed_artifact,
-                )
-              let prompt_mode = workflow_attempt.StepRecoveryPrompt(prompt)
-              let effective =
-                effective_for_recovery(orchestrator, step, config.model)
-              let attempt_context =
-                step_execution.workflow_attempt_context(
-                  internal_step_context(context),
-                  dag,
-                  orchestrator,
-                  prompt_mode,
-                  None,
-                )
-              case
-                dependencies.agent_step(
-                  issue,
-                  context,
-                  prompt_mode,
-                  attempt_context,
-                  effective,
-                  tracker_client,
-                  fn(_) { Nil },
-                  fn(_) { Nil },
-                  fn(observation) {
-                    ignore_secondary_checkpoint_result(
-                      dependencies.checkpoint.step_pi_session_recorded(
-                        observation,
-                      ),
-                    )
-                  },
-                )
-              {
-                Ok(success) ->
-                  case
-                    workflow_recovery_checkpoint_guard.restore_after_recovery(
-                      checkpoint_root,
-                      snapshot,
-                    )
-                  {
-                    Ok(events) ->
-                      apply_recovery_success(
-                        step,
-                        workspace,
-                        recovery_attempt_number,
-                        recovery_session_id,
-                        success,
-                        secrets,
-                        dependencies,
-                        guard_reason_suffix(events),
-                      )
-                    Error(guard_error) ->
-                      stop_recovery_after_guard_failure(
-                        step,
-                        workspace,
-                        recovery_attempt_number,
-                        recovery_session_id,
-                        success.tokens,
-                        success.final_issue,
-                        success.turns,
-                        guard_error,
-                        secrets,
-                        dependencies,
-                      )
-                  }
-                Error(failure) ->
-                  case
-                    workflow_recovery_checkpoint_guard.restore_after_recovery(
-                      checkpoint_root,
-                      snapshot,
-                    )
-                  {
-                    Ok(events) -> {
-                      let failure_reason =
-                        append_recovery_reason_suffix(
-                          error.agent_artifact_detail(failure.reason)
-                            |> workflow_step_recovery.detail(secrets),
-                          guard_reason_suffix(events),
-                        )
-                      ignore_secondary_checkpoint_result(
-                        workflow_step_recovery.record_finished(
-                          dependencies.checkpoint,
-                          workspace,
-                          step.id,
-                          recovery_attempt_number,
-                          recovery_session_id,
-                          "worker_failed",
-                          "Recovery worker failed",
-                          failure_reason,
-                          None,
-                        ),
-                      )
-                      RecoveryStop(
-                        failure.tokens,
-                        failure.final_issue,
-                        0,
-                        workflow_outcome.StepRecoveryRan,
-                      )
-                    }
-                    Error(guard_error) ->
-                      stop_recovery_after_guard_failure(
-                        step,
-                        workspace,
-                        recovery_attempt_number,
-                        recovery_session_id,
-                        failure.tokens,
-                        failure.final_issue,
-                        0,
-                        guard_error,
-                        secrets,
-                        dependencies,
-                      )
-                  }
-              }
-            }
-          }
-      }
-    }
-  }
-}
-
-fn apply_recovery_success(
-  step: workflow_dag.WorkflowStep,
-  workspace: workspace_run.PreparedStepWorkspace,
-  recovery_attempt_number: Int,
-  recovery_session_id: String,
-  success: agent_types.WorkerSuccess,
-  secrets: List(String),
-  dependencies: Dependencies,
-  reason_suffix: String,
-) -> RecoveryAttemptOutcome {
-  case workflow_step_recovery.decision(success) {
-    Ok(workflow_step_recovery.RetryRequested(summary, reason)) ->
-      case
-        workflow_step_recovery.record_decision(
-          dependencies.checkpoint,
-          step.id,
-          workspace,
-          recovery_attempt_number,
-          recovery_session_id,
-          "retry_requested",
-          summary,
-          append_recovery_reason_suffix(reason, reason_suffix),
-          Some(workspace.attempt_index + 1),
-          secrets,
-        )
-      {
-        Ok(Nil) ->
-          RecoveryRetryRequested(
-            success.tokens,
-            success.final_issue,
-            success.turns,
-          )
-        Error(record_error) -> {
-          let Nil =
-            note_ignored_checkpoint_error(
-              describe_recovery_decision_record_error(record_error),
-            )
-          RecoveryStop(
-            success.tokens,
-            success.final_issue,
-            success.turns,
-            workflow_outcome.StepRecoveryRan,
-          )
-        }
-      }
-    Ok(workflow_step_recovery.GaveUp(summary, reason)) -> {
-      let Nil = case
-        workflow_step_recovery.record_decision(
-          dependencies.checkpoint,
-          step.id,
-          workspace,
-          recovery_attempt_number,
-          recovery_session_id,
-          "gave_up",
-          summary,
-          append_recovery_reason_suffix(reason, reason_suffix),
-          None,
-          secrets,
-        )
-      {
-        Ok(Nil) -> Nil
-        Error(record_error) ->
-          note_ignored_checkpoint_error(describe_recovery_decision_record_error(
-            record_error,
-          ))
-      }
-      RecoveryStop(
-        success.tokens,
-        success.final_issue,
-        success.turns,
-        workflow_outcome.StepRecoveryRan,
-      )
-    }
-    Error(protocol_error) -> {
-      let protocol_reason =
-        workflow_step_recovery.describe_error(protocol_error)
-        <> ":"
-        <> workflow_step_recovery.error_message(protocol_error)
-      let protocol_reason =
-        append_recovery_reason_suffix(
-          workflow_step_recovery.detail(protocol_reason, secrets),
-          reason_suffix,
-        )
-      ignore_secondary_checkpoint_result(workflow_step_recovery.record_finished(
-        dependencies.checkpoint,
-        workspace,
-        step.id,
-        recovery_attempt_number,
-        recovery_session_id,
-        "invalid_output",
-        "Recovery output was invalid",
-        protocol_reason,
-        None,
-      ))
-      RecoveryStop(
-        success.tokens,
-        success.final_issue,
-        success.turns,
-        workflow_outcome.StepRecoveryRan,
-      )
-    }
-  }
-}
-
-fn describe_recovery_decision_record_error(
-  error: workflow_step_recovery.DecisionRecordError,
-) -> String {
-  case error {
-    workflow_step_recovery.RecoveryDecisionArtifactWriteFailed(checkpoint_error) ->
-      "artifact_write_failed:"
-      <> workflow_checkpoint.describe_error(checkpoint_error)
-    workflow_step_recovery.RecoveryDecisionFinishedCheckpointFailed(
-      checkpoint_error,
-    ) ->
-      "finished_checkpoint_failed:"
-      <> workflow_checkpoint.describe_error(checkpoint_error)
-  }
-}
-
-fn checkpoint_workspace_root(
-  orchestrator: config_types.OrchestratorConfig,
-) -> String {
-  orchestrator.effective.workspace.root
-}
-
-fn guard_reason_suffix(
-  events: List(workflow_recovery_checkpoint_guard.GuardEvent),
-) -> String {
-  case events {
-    [] -> ""
-    _ -> workflow_recovery_checkpoint_guard.events_to_diagnostic(events)
-  }
-}
-
-fn append_recovery_reason_suffix(reason: String, suffix: String) -> String {
-  case suffix == "" {
-    True -> reason
-    False -> reason <> "; " <> suffix
-  }
-}
-
-fn stop_recovery_after_guard_failure(
-  step: workflow_dag.WorkflowStep,
-  workspace: workspace_run.PreparedStepWorkspace,
-  recovery_attempt_number: Int,
-  recovery_session_id: String,
-  tokens: session_tokens.TokenTotals,
-  final_issue: Option(tracker_issue.Issue),
-  turns: Int,
-  guard_error: workflow_recovery_checkpoint_guard.GuardError,
-  secrets: List(String),
-  dependencies: Dependencies,
-) -> RecoveryAttemptOutcome {
-  ignore_secondary_checkpoint_result(workflow_step_recovery.record_finished(
-    dependencies.checkpoint,
+) -> recovery_execution.AttemptOutcome {
+  recovery_execution.execute(
+    step,
     workspace,
-    step.id,
-    recovery_attempt_number,
-    recovery_session_id,
-    workflow_recovery_checkpoint_guard.recovery_artifact_restore_failed,
-    "Protected checkpoint restoration failed",
-    workflow_step_recovery.detail(
-      workflow_recovery_checkpoint_guard.describe_error(guard_error),
-      secrets,
+    failed_artifact,
+    config,
+    issue,
+    orchestrator,
+    tracker_client,
+    secrets,
+    recovery_execution.dependencies(
+      checkpoint: dependencies.checkpoint,
+      agent_step: dependencies.agent_step,
+      make_context: fn() {
+        recovery_context(
+          external_step_context(step_context_internal.from_prepared(
+            step,
+            workspace,
+            issue,
+            orchestrator,
+            profile,
+          )),
+        )
+      },
+      make_attempt_context: fn(context, prompt_mode) {
+        step_execution.workflow_attempt_context(
+          internal_step_context(context),
+          dag,
+          orchestrator,
+          prompt_mode,
+          None,
+        )
+      },
     ),
-    None,
-  ))
-  RecoveryStop(tokens, final_issue, turns, workflow_outcome.StepRecoveryRan)
+  )
 }
 
 fn recovery_context(
@@ -3055,59 +2231,6 @@ fn recovery_context(
     context.run_root,
   )
   |> result.map(fn(env) { StepContext(..context, extra_pi_env: [env]) })
-}
-
-fn prompt_ref_text(prompt_ref: workflow_dag.PromptRef) -> String {
-  case prompt_ref {
-    workflow_dag.PromptInline(prompt) -> prompt
-    workflow_dag.PromptFile(path) -> path
-  }
-}
-
-fn recovery_model_name(
-  orchestrator: config_types.OrchestratorConfig,
-  step: workflow_dag.WorkflowStep,
-  override_model: Option(String),
-) -> Option(String) {
-  case override_model {
-    Some(model) -> Some(model)
-    None ->
-      model_config.resolve(orchestrator.model_settings, step.model_settings).model
-  }
-}
-
-fn effective_for_recovery(
-  orchestrator: config_types.OrchestratorConfig,
-  step: workflow_dag.WorkflowStep,
-  override_model: Option(String),
-) -> config_types.EffectiveConfig {
-  let base =
-    model_config.resolve(orchestrator.model_settings, step.model_settings)
-  let settings =
-    model_config.Settings(
-      model: option.or(override_model, base.model),
-      thinking: base.thinking,
-    )
-  let command =
-    model_config.apply_to_command(orchestrator.effective.pi.command, settings)
-  let argv_command = case orchestrator.effective.pi.argv_command {
-    Some(argv) ->
-      Some(
-        config_types.PiArgvCommand(
-          ..argv,
-          args: model_config.apply_to_argv_args(argv.args, settings),
-        ),
-      )
-    None -> None
-  }
-  config_types.EffectiveConfig(
-    ..orchestrator.effective,
-    pi: config_types.PiConfig(
-      ..orchestrator.effective.pi,
-      command: command,
-      argv_command: argv_command,
-    ),
-  )
 }
 
 fn latest_final_issue(
@@ -3128,17 +2251,6 @@ fn mark_batch_pending(
     [] -> state
     [PreparedStart(step: step, ..), ..rest] ->
       mark_batch_pending(workflow_scheduler.mark_pending(state, step.id), rest)
-  }
-}
-
-fn workflow_step_failed_reason(result: StepExecutionResult) -> String {
-  case result.artifact.failure_code {
-    Some(code) ->
-      case string.starts_with(code, "structured_output_") {
-        True -> "workflow_step_failed:" <> code <> ":step=" <> result.step_id
-        False -> "workflow_step_failed"
-      }
-    None -> "workflow_step_failed"
   }
 }
 
@@ -3535,31 +2647,19 @@ fn cleanup_if_allowed(
   dependencies: Dependencies,
   allowed: Bool,
 ) -> Result(Nil, error.WorkspaceError) {
-  case allowed {
-    True -> cleanup_if_needed(run_root, orchestrator, profile, dependencies)
-    False -> Ok(Nil)
-  }
+  terminal_policy.cleanup_if_allowed(
+    run_root,
+    orchestrator,
+    profile,
+    terminal_runtime(dependencies),
+    allowed,
+  )
 }
 
 fn cleanup_failure_suffix(
   cleanup_result: Result(Nil, error.WorkspaceError),
 ) -> String {
-  case cleanup_result {
-    Ok(Nil) -> ""
-    Error(err) -> "; cleanup_failed:" <> error.workspace_code(err)
-  }
-}
-
-fn cleanup_if_needed(
-  run_root: Option(String),
-  orchestrator: config_types.OrchestratorConfig,
-  profile: config_types.WorkspaceHookProfile,
-  dependencies: Dependencies,
-) -> Result(Nil, error.WorkspaceError) {
-  case run_root {
-    None -> Ok(Nil)
-    Some(path) -> dependencies.cleanup_run(path, orchestrator, profile)
-  }
+  terminal_policy.cleanup_failure_suffix(cleanup_result)
 }
 
 fn observed_updated_at_ms(issue: tracker_issue.Issue) -> Int {
@@ -3588,40 +2688,31 @@ fn mark_workflow_failed_terminal(
   turns: Int,
   active_attempts: List(PreparedStart),
 ) -> Nil {
-  mark_prepared_attempts_interrupted(
-    active_attempts,
-    dependencies,
+  terminal_policy.mark_workflow_failed_terminal(
+    dependencies.checkpoint,
+    recovery_evidence,
+    run_id,
     workflow_id,
-    "terminal_failure",
-    None,
-  )
-  ignore_secondary_checkpoint_result(
-    dependencies.checkpoint.workflow_finished(
-      workflow_checkpoint.WorkflowFinished(
-        run_id: run_id,
-        workflow_id: workflow_id,
-        issue_id: issue_id,
-        task_ref: task_ref,
-        outcome: workflow_outcome.terminal_failed_fatal(recovery_evidence),
-        token_total: token_total,
-        turns: turns,
-      ),
-    ),
+    issue_id,
+    task_ref,
+    token_total,
+    turns,
+    fn() {
+      mark_prepared_attempts_interrupted(
+        active_attempts,
+        dependencies,
+        workflow_id,
+        "terminal_failure",
+        None,
+      )
+    },
   )
 }
 
 fn ignore_secondary_checkpoint_result(
   result: Result(Nil, workflow_checkpoint.CheckpointError),
 ) -> Nil {
-  case result {
-    Ok(Nil) -> Nil
-    Error(error) ->
-      note_ignored_checkpoint_error(workflow_checkpoint.describe_error(error))
-  }
-}
-
-fn note_ignored_checkpoint_error(_message: String) -> Nil {
-  Nil
+  terminal_policy.ignore_secondary_checkpoint_result(result)
 }
 
 fn add_tokens(
@@ -3655,26 +2746,5 @@ fn first_run_root(
   case dict.values(workspaces) {
     [workspace, ..] -> Some(workspace.run_root)
     [] -> None
-  }
-}
-
-fn result_try_checkpoint(
-  result: Result(Nil, workflow_checkpoint.CheckpointError),
-  artifacts: Dict(String, step_artifact.StepArtifact),
-  run_root: Option(String),
-  failed_step_id: Option(String),
-  next: fn(Nil) -> Result(WorkflowRunSuccess, WorkflowRunFailure),
-) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
-  case result {
-    Ok(Nil) -> next(Nil)
-    Error(error) ->
-      Error(WorkflowRunFailure(
-        reason: "checkpoint_failed:"
-          <> workflow_checkpoint.describe_error(error),
-        agent_reason: None,
-        artifacts: artifacts,
-        run_root: run_root,
-        failed_step_id: failed_step_id,
-      ))
   }
 }
