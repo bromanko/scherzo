@@ -20,6 +20,11 @@ pub fn run(
   case query {
     types.Status ->
       execute_status_query(effective, identity, read_dispatch_paused)
+    types.Metrics ->
+      Error(types.QueryError(
+        types.UnsupportedQuery,
+        "unsupported query type: metrics",
+      ))
     types.TaskList(task_query) ->
       execute_task_list_query(tracker_adapter, task_query)
     types.TaskShow(task_query) ->

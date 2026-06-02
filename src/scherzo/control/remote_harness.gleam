@@ -7,6 +7,7 @@ import gleam/result
 import gleam/string
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/query/dto as query_dto
 import scherzo/control/query/types as query_types
 import scherzo/control/remote/client as remote_client
 import scherzo/control/remote_envelope
@@ -422,10 +423,23 @@ fn client_dependencies(
                 boot_id: scenario.boot_id,
                 dispatch_paused: False,
                 ui_server_enabled: False,
-                supported_queries: ["status", "task_list", "task_show"],
+                supported_queries: [
+                  "status",
+                  "metrics",
+                  "task_list",
+                  "task_show",
+                ],
               ),
             ),
           )
+        query_types.Metrics ->
+          Ok(query_types.MetricsResponse(
+            query_types.default_operational_metrics_source(
+              daemon_id: scenario.daemon_id,
+              boot_id: scenario.boot_id,
+            )
+            |> query_dto.operational_metrics_from_source,
+          ))
         query_types.TaskList(_) ->
           Ok(
             query_types.TaskListResponse(query_types.TaskListDto(

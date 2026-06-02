@@ -376,7 +376,7 @@ pub fn daemon_remote_query_returns_status_response_test() {
   assert boot_id != ""
   assert dispatch_paused == False
   assert ui_server_enabled == True
-  assert supported_queries == ["status", "task_list", "task_show"]
+  assert supported_queries == ["status", "metrics", "task_list", "task_show"]
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   assert test_async.expect_message(stops) == "stop"

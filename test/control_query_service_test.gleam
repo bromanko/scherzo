@@ -15,6 +15,17 @@ pub fn query_service_fast_success_test() {
   assert service.stop(handle, 1000) == Ok(Nil)
 }
 
+pub fn query_service_metrics_success_test() {
+  let assert Ok(handle) =
+    service.start(
+      service.Settings(max_concurrent: 1, max_queued: 1, timeout_ms: 50),
+      service.Backend(run: fn(_) { Ok(metrics_response()) }),
+    )
+
+  assert service.query(handle, types.Metrics) == Ok(metrics_response())
+  assert service.stop(handle, 1000) == Ok(Nil)
+}
+
 pub fn query_service_backend_failure_test() {
   let backend_error =
     types.QueryError(types.QueryBackendFailed, "backend failed")
@@ -161,4 +172,45 @@ fn status_response() -> types.QueryResponse {
       supported_queries: ["status"],
     ),
   )
+}
+
+fn metrics_response() -> types.QueryResponse {
+  types.MetricsResponse(types.OperationalMetricsDto(
+    schema_version: types.operational_metrics_schema_version,
+    daemon_id: "daemon-1",
+    boot_id: "boot-1",
+    sampled_at_ms: 123,
+    dispatch_paused: False,
+    ui_server_enabled: False,
+    remote_client_status: "disabled",
+    workflow_count: 1,
+    scheduled_job_count: 0,
+    active_sessions: 0,
+    running_workers: 0,
+    running_scheduled_workers: 0,
+    queued_claims: 0,
+    pending_dispatch_validations: 0,
+    claimed_tasks: 0,
+    retry_tasks: 0,
+    parked_tasks: 0,
+    completed_tasks: 0,
+    poll_generation: 1,
+    poll_in_flight: False,
+    poll_timer_active: True,
+    retry_timer_count: 0,
+    retry_refresh_in_flight_count: 0,
+    scheduled_due_count: 0,
+    scheduled_pending_count: 0,
+    scheduled_retry_count: 0,
+    scheduled_report_retry_count: 0,
+    scheduled_retry_timer_count: 0,
+    scheduled_report_retry_timer_count: 0,
+    token_totals: types.TokenTotalsDto(
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      total: 0,
+    ),
+  ))
 }

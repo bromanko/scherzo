@@ -17,6 +17,7 @@ pub fn request_to_json(request: types.QueryRequest) -> json.Json {
 fn request_entries(request: types.QueryRequest) -> List(#(String, json.Json)) {
   case request {
     types.Status -> base_request_entries(types.query_type(request))
+    types.Metrics -> base_request_entries(types.query_type(request))
     types.TaskList(query) ->
       list.append(
         task_list_query_entries(query),
@@ -98,6 +99,13 @@ pub fn response_to_json(response: types.QueryResponse) -> json.Json {
         #("ok", json.bool(True)),
         #("type", json.string(types.response_type(response))),
         #("status", dto.status_to_json(status)),
+      ])
+    types.MetricsResponse(metrics) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #("metrics", dto.operational_metrics_to_json(metrics)),
       ])
     types.TaskListResponse(tasks) ->
       json.object([
@@ -188,6 +196,7 @@ type ResponseFields {
     ok: Option(Bool),
     type_: Option(String),
     status: Option(Dynamic),
+    metrics: Option(Dynamic),
     task_list: Option(Dynamic),
     task: Option(Dynamic),
     error: Option(ErrorFields),
@@ -273,6 +282,11 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     None,
     decode.optional(decode.dynamic),
   )
+  use metrics <- decode.optional_field(
+    "metrics",
+    None,
+    decode.optional(decode.dynamic),
+  )
   use task_list <- decode.optional_field(
     "task_list",
     None,
@@ -293,6 +307,7 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     ok: ok,
     type_: type_,
     status: status,
+    metrics: metrics,
     task_list: task_list,
     task: task,
     error: error,
@@ -321,6 +336,7 @@ fn request_from_fields(
     Ok(Nil) ->
       case fields.type_ {
         Some("status") -> Ok(types.Status)
+        Some("metrics") -> Ok(types.Metrics)
         Some("task_list") -> task_list_request_from_fields(fields)
         Some("task_show") -> task_show_request_from_fields(fields)
         Some(other) ->
@@ -451,12 +467,8 @@ fn decode_success_response(
   fields: ResponseFields,
 ) -> Result(types.QueryResponse, types.QueryError) {
   case fields.type_ {
-    Some("status") ->
-      case fields.status {
-        Some(status) ->
-          dto.decode_status_dynamic(status) |> result.map(types.StatusResponse)
-        None -> missing_response_payload()
-      }
+    Some("status") -> decode_status_response(fields.status)
+    Some("metrics") -> decode_metrics_response(fields.metrics)
     Some("task_list") ->
       case fields.task_list {
         Some(task_list) ->
@@ -478,6 +490,27 @@ fn decode_success_response(
       ))
     None ->
       Error(types.QueryError(types.QueryBackendFailed, "missing query type"))
+  }
+}
+
+fn decode_status_response(
+  status: Option(Dynamic),
+) -> Result(types.QueryResponse, types.QueryError) {
+  case status {
+    Some(status) ->
+      dto.decode_status_dynamic(status) |> result.map(types.StatusResponse)
+    None -> missing_response_payload()
+  }
+}
+
+fn decode_metrics_response(
+  metrics: Option(Dynamic),
+) -> Result(types.QueryResponse, types.QueryError) {
+  case metrics {
+    Some(metrics) ->
+      dto.decode_operational_metrics_dynamic(metrics)
+      |> result.map(types.MetricsResponse)
+    None -> missing_response_payload()
   }
 }
 

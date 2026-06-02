@@ -76,6 +76,13 @@ pub fn query_request_roundtrip_test() {
     protocol.decode_request(protocol.request_to_string(request))
   assert id == "query-1"
   assert token == "secret"
+
+  let metrics_request =
+    protocol.query_request("query-2", "secret", query_types.Metrics)
+  let assert Ok(protocol.Query(metrics_id, metrics_token, query_types.Metrics)) =
+    protocol.decode_request(protocol.request_to_string(metrics_request))
+  assert metrics_id == "query-2"
+  assert metrics_token == "secret"
 }
 
 pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
