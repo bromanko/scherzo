@@ -2813,7 +2813,7 @@ fn fetch_candidates_with_identifier(
   state: State,
   identifier: String,
 ) -> Result(tracker_issue.Issue, command.CommandStatus) {
-  case adapter_legacy.lookup_runtime_issue(state.tracker_adapter, identifier) {
+  case adapter.lookup_runtime_issue(state.tracker_adapter, identifier) {
     Ok(Some(issue)) -> Ok(issue)
     Ok(None) -> Error(command.NotFound)
     Error(_) -> Error(command.Rejected("candidate_fetch_failed"))
@@ -2825,9 +2825,7 @@ fn fetch_issue_by_id(
   issue_id: String,
 ) -> Result(tracker_issue.Issue, command.CommandStatus) {
   case
-    adapter_legacy.refresh_runtime_issues_by_ids(state.tracker_adapter, [
-      issue_id,
-    ])
+    adapter.refresh_runtime_issues_by_ids(state.tracker_adapter, [issue_id])
   {
     Ok([issue]) -> Ok(issue)
     Ok([]) -> Error(command.NotFound)

@@ -31,117 +31,35 @@ pub fn workflow_compat_client(
 pub fn fetch_runtime_candidate_issues(
   tracker_adapter: adapter.TrackerAdapter,
 ) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
-  let request =
-    adapter.TaskSearchRequest(
-      active_states: [],
-      dispatch_states: [],
-      terminal_states: [],
-      workflow_labels: [],
-      limit: 100,
-    )
-  case tracker_adapter.task_source.fetch_candidates(request) {
-    Ok(tasks) -> tasks_to_runtime_issues(tracker_adapter.kind, tasks)
-    Error(err) -> Error(err)
-  }
+  adapter.fetch_runtime_candidate_issues(tracker_adapter)
 }
 
 pub fn fetch_runtime_issues_by_states(
   tracker_adapter: adapter.TrackerAdapter,
   states: List(issue_state.IssueState),
 ) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
-  let state_names = issue_state.to_strings(states)
-  let request =
-    adapter.TaskSearchRequest(
-      active_states: state_names,
-      dispatch_states: state_names,
-      terminal_states: [],
-      workflow_labels: [],
-      limit: 100,
-    )
-  case tracker_adapter.task_source.fetch_candidates(request) {
-    Ok(tasks) -> tasks_to_runtime_issues(tracker_adapter.kind, tasks)
-    Error(err) -> Error(err)
-  }
+  adapter.fetch_runtime_issues_by_states(tracker_adapter, states)
 }
 
 pub fn refresh_runtime_issues_by_ids(
   tracker_adapter: adapter.TrackerAdapter,
   ids: List(String),
 ) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
-  let refs =
-    list.map(ids, fn(id) {
-      task.TaskRef(
-        backend_kind: tracker_adapter.kind,
-        remote_id: id,
-        key: None,
-        url: None,
-      )
-    })
-  refresh_runtime_issues_by_refs(tracker_adapter, refs)
+  adapter.refresh_runtime_issues_by_ids(tracker_adapter, ids)
 }
 
 pub fn refresh_runtime_issues_by_refs(
   tracker_adapter: adapter.TrackerAdapter,
   refs: List(task.TaskRef),
 ) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
-  case tracker_adapter.task_source.refresh_by_refs(refs) {
-    Ok(tasks) -> tasks_to_runtime_issues(tracker_adapter.kind, tasks)
-    Error(err) -> Error(err)
-  }
+  adapter.refresh_runtime_issues_by_refs(tracker_adapter, refs)
 }
 
 pub fn lookup_runtime_issue(
   tracker_adapter: adapter.TrackerAdapter,
   operator_ref: String,
 ) -> Result(Option(tracker_issue.Issue), adapter.TrackerError) {
-  case tracker_adapter.task_source.lookup_by_operator_ref(operator_ref) {
-    Ok(Some(item)) -> {
-      use issue <- try_task_to_runtime_issue(tracker_adapter.kind, item)
-      Ok(Some(issue))
-    }
-    Ok(None) -> Ok(None)
-    Error(err) -> Error(err)
-  }
-}
-
-fn tasks_to_runtime_issues(
-  backend_kind: String,
-  tasks: List(task.Task),
-) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
-  tasks_to_runtime_issues_loop(backend_kind, tasks, [])
-}
-
-fn tasks_to_runtime_issues_loop(
-  backend_kind: String,
-  tasks: List(task.Task),
-  acc: List(tracker_issue.Issue),
-) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
-  case tasks {
-    [] -> Ok(list.reverse(acc))
-    [item, ..rest] -> {
-      use issue <- try_task_to_runtime_issue(backend_kind, item)
-      tasks_to_runtime_issues_loop(backend_kind, rest, [issue, ..acc])
-    }
-  }
-}
-
-fn try_task_to_runtime_issue(
-  backend_kind: String,
-  item: task.Task,
-  next: fn(tracker_issue.Issue) -> Result(a, adapter.TrackerError),
-) -> Result(a, adapter.TrackerError) {
-  let task.Task(ref: ref, ..) = item
-  case ref.backend_kind == backend_kind {
-    True -> next(task.to_runtime_issue(item))
-    False ->
-      Error(adapter.Permanent(
-        "tracker adapter returned task for backend "
-        <> ref.backend_kind
-        <> " while "
-        <> backend_kind
-        <> " was expected",
-      ))
-  }
+  adapter.lookup_runtime_issue(tracker_adapter, operator_ref)
 }
 
 pub fn legacy_client(

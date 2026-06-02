@@ -13,7 +13,6 @@ import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/task
 import scherzo/tracker/adapter
-import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
@@ -515,17 +514,14 @@ fn adapter_result(
 fn fetch_candidate_issues(
   tracker_adapter: adapter.TrackerAdapter,
 ) -> Result(List(tracker_issue.Issue), error.TrackerError) {
-  adapter_result(adapter_legacy.fetch_runtime_candidate_issues(tracker_adapter))
+  adapter_result(adapter.fetch_runtime_candidate_issues(tracker_adapter))
 }
 
 fn refresh_issue_states_by_ids(
   tracker_adapter: adapter.TrackerAdapter,
   ids: List(String),
 ) -> Result(List(tracker_issue.Issue), error.TrackerError) {
-  adapter_result(adapter_legacy.refresh_runtime_issues_by_ids(
-    tracker_adapter,
-    ids,
-  ))
+  adapter_result(adapter.refresh_runtime_issues_by_ids(tracker_adapter, ids))
 }
 
 fn adapter_error_to_tracker_error(

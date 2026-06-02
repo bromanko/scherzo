@@ -2,6 +2,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/task
+import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/state as issue_state
 
 pub type TrackerAdapter {
   TrackerAdapter(
@@ -557,4 +559,126 @@ fn missing_capability(
     backend_kind: adapter.kind,
     message: message,
   )
+}
+
+pub fn fetch_runtime_candidate_issues(
+  tracker_adapter: TrackerAdapter,
+) -> Result(List(tracker_issue.Issue), TrackerError) {
+  let request =
+    TaskSearchRequest(
+      active_states: [],
+      dispatch_states: [],
+      terminal_states: [],
+      workflow_labels: [],
+      limit: 100,
+    )
+  use tasks <- try_tracker(tracker_adapter.task_source.fetch_candidates(request))
+  tasks_to_runtime_issues(tracker_adapter.kind, tasks)
+}
+
+pub fn fetch_runtime_issues_by_states(
+  tracker_adapter: TrackerAdapter,
+  states: List(issue_state.IssueState),
+) -> Result(List(tracker_issue.Issue), TrackerError) {
+  let state_names = issue_state.to_strings(states)
+  let request =
+    TaskSearchRequest(
+      active_states: state_names,
+      dispatch_states: state_names,
+      terminal_states: [],
+      workflow_labels: [],
+      limit: 100,
+    )
+  use tasks <- try_tracker(tracker_adapter.task_source.fetch_candidates(request))
+  tasks_to_runtime_issues(tracker_adapter.kind, tasks)
+}
+
+pub fn refresh_runtime_issues_by_ids(
+  tracker_adapter: TrackerAdapter,
+  ids: List(String),
+) -> Result(List(tracker_issue.Issue), TrackerError) {
+  let refs =
+    list.map(ids, fn(id) {
+      task.TaskRef(
+        backend_kind: tracker_adapter.kind,
+        remote_id: id,
+        key: None,
+        url: None,
+      )
+    })
+  refresh_runtime_issues_by_refs(tracker_adapter, refs)
+}
+
+pub fn refresh_runtime_issues_by_refs(
+  tracker_adapter: TrackerAdapter,
+  refs: List(task.TaskRef),
+) -> Result(List(tracker_issue.Issue), TrackerError) {
+  use tasks <- try_tracker(tracker_adapter.task_source.refresh_by_refs(refs))
+  tasks_to_runtime_issues(tracker_adapter.kind, tasks)
+}
+
+pub fn lookup_runtime_issue(
+  tracker_adapter: TrackerAdapter,
+  operator_ref: String,
+) -> Result(Option(tracker_issue.Issue), TrackerError) {
+  use maybe_task <- try_tracker(
+    tracker_adapter.task_source.lookup_by_operator_ref(operator_ref),
+  )
+  case maybe_task {
+    Some(found_task) -> {
+      use issue <- try_task_to_runtime_issue(tracker_adapter.kind, found_task)
+      Ok(Some(issue))
+    }
+    None -> Ok(None)
+  }
+}
+
+fn tasks_to_runtime_issues(
+  backend_kind: String,
+  tasks: List(task.Task),
+) -> Result(List(tracker_issue.Issue), TrackerError) {
+  tasks_to_runtime_issues_loop(backend_kind, tasks, [])
+}
+
+fn tasks_to_runtime_issues_loop(
+  backend_kind: String,
+  tasks: List(task.Task),
+  acc: List(tracker_issue.Issue),
+) -> Result(List(tracker_issue.Issue), TrackerError) {
+  case tasks {
+    [] -> Ok(list.reverse(acc))
+    [item, ..rest] -> {
+      use issue <- try_task_to_runtime_issue(backend_kind, item)
+      tasks_to_runtime_issues_loop(backend_kind, rest, [issue, ..acc])
+    }
+  }
+}
+
+fn try_task_to_runtime_issue(
+  backend_kind: String,
+  item: task.Task,
+  next: fn(tracker_issue.Issue) -> Result(a, TrackerError),
+) -> Result(a, TrackerError) {
+  let task.Task(ref: ref, ..) = item
+  case ref.backend_kind == backend_kind {
+    True -> next(task.to_runtime_issue(item))
+    False ->
+      Error(Permanent(
+        "tracker adapter returned task for backend "
+        <> ref.backend_kind
+        <> " while "
+        <> backend_kind
+        <> " was expected",
+      ))
+  }
+}
+
+fn try_tracker(
+  result: Result(a, TrackerError),
+  next: fn(a) -> Result(b, TrackerError),
+) -> Result(b, TrackerError) {
+  case result {
+    Ok(value) -> next(value)
+    Error(err) -> Error(err)
+  }
 }

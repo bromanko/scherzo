@@ -4,9 +4,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
-import scherzo/config/ui_server as ui_server_config
 import scherzo/control/file as control_file
 import scherzo/error
+import scherzo/log
 import scherzo/pi/command as pi_command
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -369,7 +369,24 @@ pub fn ui_server_redaction_and_local_control_separation_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  let summary = ui_server_config.debug_summary(enabled)
+  let summary =
+    log.format(
+      "debug",
+      "ui_server_config",
+      [
+        #("enabled", "true"),
+        #("endpoint", option.unwrap(enabled.ui_server.endpoint, "")),
+        #(
+          "enrollment_token_env",
+          option.unwrap(enabled.ui_server.enrollment_token_env, ""),
+        ),
+        #(
+          "enrollment_token",
+          option.unwrap(enabled.ui_server.enrollment_token, ""),
+        ),
+      ],
+      config.resolved_secrets(enabled),
+    )
 
   assert string.contains(summary, "event=ui_server_config")
   assert string.contains(summary, "[REDACTED]")

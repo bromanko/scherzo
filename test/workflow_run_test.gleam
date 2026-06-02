@@ -6,7 +6,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import scherzo/agent/pi_rpc
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/artifact_publication_config
@@ -18,6 +17,7 @@ import scherzo/json_value
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
 import scherzo/path
+import scherzo/pi/protocol
 import scherzo/result_artifact
 import scherzo/session/event as session_event
 import scherzo/session/tokens as session_tokens
@@ -1055,7 +1055,7 @@ fn structured_output_downstream_dag() -> workflow_dag.WorkflowDag {
   dag
 }
 
-fn final_message_record(content: String) -> pi_rpc.RpcRecord {
+fn final_message_record(content: String) -> protocol.RpcRecord {
   let line =
     json.object([
       #("type", json.string("agent_end")),
@@ -1073,7 +1073,7 @@ fn final_message_record(content: String) -> pi_rpc.RpcRecord {
       ),
     ])
     |> json.to_string
-  let assert Ok(record) = pi_rpc.decode_record(line)
+  let assert Ok(record) = protocol.decode_record(line)
   record
 }
 
