@@ -364,6 +364,8 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
         fetch_candidates: fn(_) { Ok([]) },
         refresh_by_refs: fn(_) { Ok([]) },
         lookup_by_operator_ref: fn(_) { Ok(None) },
+        list_tasks: fn(_) { Ok(adapter.TaskPage(items: [], has_more: False)) },
+        lookup_task_detail: fn(_) { Ok(None) },
       ),
       comments: None,
       remote_commands: None,

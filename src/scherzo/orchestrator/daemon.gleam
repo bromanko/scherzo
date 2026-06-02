@@ -14,7 +14,7 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
-import scherzo/control/query/dto as query_dto
+import scherzo/control/query/backend as query_backend
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
@@ -368,52 +368,26 @@ fn start_query_service(
   effective: config_types.EffectiveConfig,
   daemon_subject: process.Subject(Message),
   identity: daemon_identity.DaemonIdentity,
+  tracker_adapter: adapter.TrackerAdapter,
 ) -> Result(query_service.Handle, StartupError) {
   query_service.start(
     query_service.default_settings(),
     query_service.Backend(run: fn(query) {
-      case query {
-        query_types.Status ->
-          execute_status_query(effective, daemon_subject, identity)
-      }
+      query_backend.run(
+        effective,
+        identity,
+        tracker_adapter,
+        fn(timeout_ms) {
+          get_remote_dispatch_paused(daemon_subject, timeout_ms)
+        },
+        query,
+      )
     }),
   )
   |> result.map_error(fn(error) {
     let query_service.StartError(code, message) = error
     StartupError(code, message)
   })
-}
-
-fn execute_status_query(
-  effective: config_types.EffectiveConfig,
-  daemon_subject: process.Subject(Message),
-  identity: daemon_identity.DaemonIdentity,
-) -> Result(query_types.QueryResponse, query_types.QueryError) {
-  case get_remote_dispatch_paused(daemon_subject, 100) {
-    Ok(dispatch_paused) ->
-      Ok(
-        query_types.StatusResponse(
-          query_dto.status_from_source(
-            query_types.StatusSource(
-              daemon_id: identity.daemon_id,
-              boot_id: identity.boot_id,
-              dispatch_paused: dispatch_paused,
-              ui_server_enabled: effective.ui_server.enabled,
-              supported_queries: query_types.supported_queries(),
-              local_control_token: "",
-              enrollment_token: "",
-              tracker_payload: "",
-              workflow_internals: [],
-            ),
-          ),
-        ),
-      )
-    Error(Nil) ->
-      Error(query_types.QueryError(
-        query_types.QueryTimeout,
-        "daemon status query timed out",
-      ))
-  }
 }
 
 fn start_control_plane(
@@ -611,7 +585,14 @@ pub fn start(
   )
   let builder =
     actor.new_with_initialiser(10_000, fn(subject) {
-      case start_query_service(effective, subject, daemon_identity) {
+      case
+        start_query_service(
+          effective,
+          subject,
+          daemon_identity,
+          tracker_adapter,
+        )
+      {
         Error(err) -> Error(encode_startup_error(err))
         Ok(query_handle) ->
           case
