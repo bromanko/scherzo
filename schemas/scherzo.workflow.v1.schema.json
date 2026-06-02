@@ -21,7 +21,7 @@
     },
     "ContractName": {
       "type": "string",
-      "pattern": "^[a-z][a-z0-9_-]*$"
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
     },
     "RelativePath": {
       "type": "string",
@@ -47,7 +47,8 @@
           { "pattern": "(^|[/\\\\])\\.\\.([/\\\\]|$)" },
           { "pattern": "^\\$" },
           { "pattern": "^[A-Za-z]:[/\\\\]" },
-          { "pattern": "^<absolute-local-path>" }
+          { "pattern": "^<absolute-local-path>" },
+          { "pattern": "[\\n\\r\\t]" }
         ]
       },
       "description": "Repository-relative path without absolute prefixes or parent traversal."
@@ -371,10 +372,123 @@
     },
     "Contract": {
       "type": "object",
-      "additionalProperties": true,
+      "required": ["version"],
+      "additionalProperties": false,
       "properties": {
-        "version": { "const": 1 }
+        "version": { "const": 1 },
+        "inputs": { "$ref": "#/$defs/ContractEntries" },
+        "context": { "$ref": "#/$defs/ContractEntries" },
+        "outputs": { "$ref": "#/$defs/ContractEntries" }
       }
+    },
+    "ContractEntries": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/ContractName" },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string" },
+          { "$ref": "#/$defs/ContractEntry" }
+        ]
+      }
+    },
+    "ContractEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "text",
+            "artifact[]",
+            "document.markdown",
+            "exec_plan",
+            "exec_plan_bundle",
+            "implementation_pack",
+            "code_change_bundle",
+            "git_ref",
+            "url",
+            "code_change"
+          ]
+        },
+        "kind": { "type": "string", "minLength": 1 },
+        "ref_type": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "artifact_type": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "required": { "type": "boolean" },
+        "source": { "$ref": "#/$defs/ContractSource" }
+      }
+    },
+    "ContractSource": {
+      "oneOf": [
+        { "enum": ["issue_context", "scheduled_context", "workspace_driver_base", "mapped_output"] },
+        {
+          "type": "object",
+          "required": ["type", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "literal" },
+            "value": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "url" },
+            "value": { "type": "string", "minLength": 1, "pattern": "^https?://" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "git_ref" },
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "not": { "pattern": "[\\n\\r\\t]" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["step", "field"],
+          "additionalProperties": false,
+          "properties": {
+            "step": { "$ref": "#/$defs/StepId" },
+            "field": { "enum": ["stdout", "final_response"] }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["step", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "step": { "$ref": "#/$defs/StepId" },
+            "path": { "$ref": "#/$defs/RepositoryRelativePath" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["step", "structured_output"],
+          "additionalProperties": false,
+          "properties": {
+            "step": { "$ref": "#/$defs/StepId" },
+            "structured_output": { "$ref": "#/$defs/StepId" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["step", "inline_json"],
+          "additionalProperties": false,
+          "properties": {
+            "step": { "$ref": "#/$defs/StepId" },
+            "inline_json": { "$ref": "#/$defs/StepId" }
+          }
+        }
+      ]
     },
     "PhaseHandoff": {
       "type": "object",
@@ -392,7 +506,7 @@
       "additionalProperties": false,
       "properties": {
         "action_id": { "$ref": "#/$defs/ContractName" },
-        "workflow_id": { "$ref": "#/$defs/ContractName" },
+        "workflow_id": { "$ref": "#/$defs/WorkflowId" },
         "state": { "enum": ["suggested", "available", "blocked"] },
         "priority": { "type": "integer" },
         "inputs": {
@@ -456,7 +570,7 @@
         "id": { "$ref": "#/$defs/ContractName" },
         "repository": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9_-]*\\.[a-z][a-z0-9_-]*$"
+          "pattern": "^[a-z0-9][a-z0-9_-]*\\.[a-z0-9][a-z0-9_-]*$"
         },
         "required": { "type": "boolean" },
         "pull_request": { "$ref": "#/$defs/PublicationPullRequest" },

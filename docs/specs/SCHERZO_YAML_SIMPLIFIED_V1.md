@@ -23,6 +23,7 @@ strings, and recovery uses the noun `recovery`.
 ## Minimal root config
 
 ```yaml
+# yaml-language-server: $schema=../schemas/scherzo.config.v1.schema.json
 version: 1
 
 tracker:
@@ -41,6 +42,7 @@ a time, and not updating tracker tasks after runs.
 ## Typical implementation config
 
 ```yaml
+# yaml-language-server: $schema=../schemas/scherzo.config.v1.schema.json
 version: 1
 
 tracker:
@@ -75,6 +77,7 @@ task_updates:
 ## Full root schema example
 
 ```yaml
+# yaml-language-server: $schema=../schemas/scherzo.config.v1.schema.json
 version: 1
 
 tracker:
@@ -365,6 +368,7 @@ from `publish-change` are deferred.
 Workflow files also keep `version: 1` while adopting simpler names.
 
 ```yaml
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: implementation
 description: Implement requested changes, validate, and review.
@@ -374,9 +378,6 @@ workspace:
   driver: jj
   requires: [status, diff, changed-files, baseline, refresh-base, publish-change]
 
-agents:
-  model: openai-codex/gpt-5.5:xhigh
-  thinking: high
 
 steps:
   - id: implement

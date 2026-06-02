@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import scherzo/config
 import scherzo/json_schema_self_check
 import scherzo/json_value
@@ -108,6 +109,23 @@ fn validate_yaml_against_schema(
 ) {
   let validator = validator(schema_name, schema_path)
   let root = root_from_file(yaml_path)
+  validate_root_against_schema(validator, root)
+}
+
+fn validate_yaml_source_against_schema(
+  schema_name: String,
+  schema_path: String,
+  yaml: String,
+) {
+  let validator = validator(schema_name, schema_path)
+  let root = root_from_yaml(yaml)
+  validate_root_against_schema(validator, root)
+}
+
+fn validate_root_against_schema(
+  validator: workflow_dag.StructuredOutputValidator,
+  root: yay.Node,
+) {
   let assert Ok(payload) = yaml_node_to_json(root)
   assert structured_output_json_schema.run_json_schema_validator(
       validator,
@@ -138,6 +156,13 @@ fn reject_yaml_against_schema(
 fn assert_config_parses(path: String) {
   let root = root_from_file(path)
   let assert Ok(_) = config.resolve_orchestrator_root(root, path, env)
+}
+
+fn assert_config_source_parses(yaml: String) {
+  let root = root_from_yaml(yaml)
+  let assert Ok(_) =
+    config.resolve_orchestrator_root(root, "test/tmp/scherzo.yaml", env)
+  Nil
 }
 
 fn assert_config_rejected(yaml: String) {
@@ -198,6 +223,7 @@ pub fn config_examples_validate_and_parse_test() {
     "examples/scherzo-packaged-noop.yaml",
     "examples/scherzo-packaged-jj.yaml",
     ".scherzo/scherzo.yaml",
+    "test/fixtures/schema/orchestrator_config_complete.yaml",
   ]
 
   list.each(config_paths, fn(path) {
@@ -225,6 +251,7 @@ pub fn workflow_examples_validate_and_parse_test() {
     "workflows/dogfood/merge-conflict-resolution.yaml",
     "workflows/dogfood/origin-sync.yaml",
     "workflows/dogfood/workspace-cleanup.yaml",
+    "test/fixtures/schema/workflow_dag_complete.yaml",
   ]
 
   list.each(workflow_paths, fn(path) {
@@ -234,6 +261,65 @@ pub fn workflow_examples_validate_and_parse_test() {
       path,
     )
     assert_workflow_parses(path)
+  })
+}
+
+pub fn yaml_schema_modeline_comments_are_checked_in_test() {
+  let config_paths = [
+    ".scherzo/scherzo.yaml",
+    "examples/scherzo.yaml",
+    "examples/scherzo-packaged-noop.yaml",
+    "examples/scherzo-packaged-jj.yaml",
+    "test/fixtures/schema/orchestrator_config_complete.yaml",
+  ]
+  let workflow_paths = [
+    "examples/workflows/research.yaml",
+    "examples/workflows/implementation.yaml",
+    "examples/workflows/github-pr-conflict-scout.yaml",
+    "examples/workflows/merge-conflict-resolution.yaml",
+    "workflows/dogfood/execplan.yaml",
+    "workflows/dogfood/execplan-revision.yaml",
+    "workflows/dogfood/execplan-implementation.yaml",
+    "workflows/dogfood/research.yaml",
+    "workflows/dogfood/implementation.yaml",
+    "workflows/dogfood/github-pr-conflict-scout.yaml",
+    "workflows/dogfood/merge-conflict-resolution.yaml",
+    "workflows/dogfood/origin-sync.yaml",
+    "workflows/dogfood/workspace-cleanup.yaml",
+    "test/fixtures/schema/workflow_dag_complete.yaml",
+  ]
+
+  list.each(config_paths, fn(path) {
+    assert_file_starts_with(path, config_modeline_for(path))
+  })
+  list.each(workflow_paths, fn(path) {
+    assert_file_starts_with(path, workflow_modeline_for(path))
+  })
+}
+
+pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
+  let cases = [
+    minimal_config()
+      <> "agents:\n"
+      <> "  recovery:\n"
+      <> "    attempts: 0\n"
+      <> "  runtime:\n"
+      <> "    type: pi\n"
+      <> "    stall_timeout: 0ms\n",
+    minimal_config()
+      <> "schedules:\n"
+      <> "  - id: disabled_research\n"
+      <> "    workflow: research\n"
+      <> "    enabled: false\n",
+  ]
+
+  list.each(cases, fn(yaml) {
+    assert_config_source_parses(yaml)
+    validate_yaml_source_against_schema(
+      "public_config_schema",
+      "schemas/scherzo.config.v1.schema.json",
+      yaml,
+    )
   })
 }
 
@@ -370,6 +456,27 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
         <> "  endpoint: https://user@scherzo.example/enroll\n"
         <> "  enrollment_token_env: UI_SERVER_TOKEN\n",
     ),
+    #(
+      "ui_server.endpoint is required when enabled",
+      minimal_config()
+        <> "ui_server:\n"
+        <> "  enabled: true\n"
+        <> "  enrollment_token_env: UI_SERVER_TOKEN\n",
+    ),
+    #(
+      "ui_server.enrollment_token_env is required when enabled",
+      minimal_config()
+        <> "ui_server:\n"
+        <> "  enabled: true\n"
+        <> "  endpoint: https://scherzo.example/enroll\n",
+    ),
+    #(
+      "agents.provider is not a public config field",
+      minimal_config()
+        <> "agents:\n"
+        <> "  model: openai/gpt-5\n"
+        <> "  provider: openai\n",
+    ),
   ]
 
   list.each(cases, fn(case_) {
@@ -496,6 +603,34 @@ pub fn workflow_removed_keys_and_invalid_shapes_are_rejected_test() {
       "version: 1\nid: sample\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: ../schema.json\n",
     ),
     #(
+      "step provider is not a public workflow field",
+      "version: 1\nid: sample\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n    model: openai/gpt-5\n    provider: openai\n",
+    ),
+    #(
+      "contract output source path rejects traversal",
+      "version: 1\nid: sample\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: draft\n        path: ../tmp/review.md\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n",
+    ),
+    #(
+      "publication file path rejects traversal",
+      publication_workflow_source(
+        "      files:\n"
+        <> "        - select:\n"
+        <> "            output: exec_plan_bundle\n"
+        <> "          path: ../docs/review.md\n",
+      ),
+    ),
+    #(
+      "publication pull request template rejects traversal",
+      publication_workflow_source(
+        "      pull_request:\n"
+        <> "        body_template: ../docs/pr-body.md\n"
+        <> "      files:\n"
+        <> "        - select:\n"
+        <> "            output: exec_plan_bundle\n"
+        <> "          path: docs/review.md\n",
+      ),
+    ),
+    #(
       "invalid next action state",
       minimal_workflow()
         <> "workstream_phase:\n"
@@ -565,4 +700,48 @@ pub fn workflow_schema_only_invalid_shapes_are_rejected_test() {
       yaml,
     )
   })
+}
+
+fn publication_workflow_source(publication_fields: String) -> String {
+  "version: 1\n"
+  <> "id: sample\n"
+  <> "contract:\n"
+  <> "  version: 1\n"
+  <> "  outputs:\n"
+  <> "    exec_plan_bundle:\n"
+  <> "      type: exec_plan_bundle\n"
+  <> "      source:\n"
+  <> "        step: draft\n"
+  <> "        field: final_response\n"
+  <> "steps:\n"
+  <> "  - id: draft\n"
+  <> "    prompt: prompts/draft.md\n"
+  <> "artifacts:\n"
+  <> "  publications:\n"
+  <> "    - id: review_doc\n"
+  <> "      repository: github.docs\n"
+  <> publication_fields
+}
+
+fn assert_file_starts_with(path: String, expected: String) {
+  let assert Ok(source) = simplifile.read(path)
+  assert string.starts_with(source, expected <> "\n")
+}
+
+fn config_modeline_for(path: String) -> String {
+  case string.starts_with(path, "test/fixtures/") {
+    True ->
+      "# yaml-language-server: $schema=../../../schemas/scherzo.config.v1.schema.json"
+    False ->
+      "# yaml-language-server: $schema=../schemas/scherzo.config.v1.schema.json"
+  }
+}
+
+fn workflow_modeline_for(path: String) -> String {
+  case string.starts_with(path, "test/fixtures/") {
+    True ->
+      "# yaml-language-server: $schema=../../../schemas/scherzo.workflow.v1.schema.json"
+    False ->
+      "# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json"
+  }
 }

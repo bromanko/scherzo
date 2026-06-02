@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: execplan
 description: Draft a concise ExecPlan review doc, retain the mechanical implementation pack, publish the review surface, and emit an exec_plan_bundle.
