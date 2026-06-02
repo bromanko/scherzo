@@ -14,7 +14,6 @@ import scherzo/artifact_publication_recording
 import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/error
-import scherzo/log
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
 import scherzo/process_ext
@@ -38,6 +37,9 @@ import scherzo/workflow_outcome
 import scherzo/workflow_recovery_checkpoint_guard
 import scherzo/workflow_run/contract_io
 import scherzo/workflow_run/contract_io_error as contract_error
+import scherzo/workflow_run/workspace_preparation.{
+  type PreparedStart, PrepareReadyFailure, PreparedBatch, PreparedStart,
+}
 import scherzo/workflow_run/workstream_handoff
 import scherzo/workflow_scheduler
 import scherzo/workflow_step_recovery
@@ -245,13 +247,6 @@ pub type ResumeState {
   )
 }
 
-type PreparedStart {
-  PreparedStart(
-    step: workflow_dag.WorkflowStep,
-    workspace: workspace_run.PreparedStepWorkspace,
-  )
-}
-
 type StepExecutionResult {
   StepExecutionResult(
     step_id: String,
@@ -334,15 +329,6 @@ fn combine_recovery_evidence(
     _, workflow_outcome.StepRecoveryRan -> workflow_outcome.StepRecoveryRan
     _, _ -> workflow_outcome.NoStepRecovery
   }
-}
-
-type PrepareReadyFailure {
-  PrepareReadyFailure(
-    reason: String,
-    agent_reason: Option(error.AgentRunnerError),
-    run_root: Option(String),
-    prepared_starts: List(PreparedStart),
-  )
 }
 
 pub fn default_dependencies() -> Dependencies {
@@ -1617,32 +1603,26 @@ fn loop(
           ))
         }
         steps -> {
-          let steps =
-            select_workspace_serial_batch(
-              steps,
-              issue,
-              dag.id,
-              run_id,
-              orchestrator,
-              attempt_indexes,
-              dict.new(),
-              [],
-            )
           case
-            prepare_ready_steps(
+            workspace_preparation.prepare_ready_batch(
               steps,
-              issue,
-              dag.id,
-              run_id,
-              orchestrator,
-              dependencies,
-              secrets,
+              workspace_preparation.Context(
+                issue: issue,
+                workflow_id: dag.id,
+                run_id: run_id,
+                orchestrator: orchestrator,
+                secrets: secrets,
+                current_run_root: run_root,
+                recovered_execution: recovered_execution,
+                profile: profile,
+              ),
+              workspace_preparation.Dependencies(
+                prepare_step: dependencies.prepare_step,
+                prepare_recovered_step: dependencies.prepare_recovered_step,
+                step_prepared: dependencies.checkpoint.step_prepared,
+              ),
               prepared_workspaces,
-              run_root,
-              recovered_execution,
               attempt_indexes,
-              [],
-              profile,
             )
           {
             Error(PrepareReadyFailure(
@@ -1679,13 +1659,12 @@ fn loop(
                 failed_step_id: None,
               ))
             }
-            Ok(prepared) -> {
-              let #(
-                prepared_starts,
-                prepared_workspaces,
-                run_root,
-                attempt_indexes,
-              ) = prepared
+            Ok(PreparedBatch(
+              prepared_starts,
+              prepared_workspaces,
+              run_root,
+              attempt_indexes,
+            )) -> {
               let scheduler_state =
                 mark_all_running(scheduler_state, prepared_starts)
               execute_prepared_steps(
@@ -1718,244 +1697,6 @@ fn loop(
         }
       }
     }
-  }
-}
-
-// Workspace paths are shared per logical workspace for the whole workflow run.
-// Keep each ready batch to one step per resolved workspace path so command
-// execution and before_step hooks for mutable worktrees never overlap in the
-// same directory, while still allowing different workspaces to run together.
-fn select_workspace_serial_batch(
-  steps: List(workflow_dag.WorkflowStep),
-  issue: tracker_issue.Issue,
-  workflow_id: String,
-  run_id: String,
-  orchestrator: config_types.OrchestratorConfig,
-  attempt_indexes: Dict(String, Int),
-  selected_locks: Dict(String, Nil),
-  acc: List(workflow_dag.WorkflowStep),
-) -> List(workflow_dag.WorkflowStep) {
-  case steps {
-    [] -> list.reverse(acc)
-    [step, ..rest] -> {
-      let lock =
-        workspace_lock_for_step(
-          step,
-          issue,
-          workflow_id,
-          run_id,
-          orchestrator,
-          attempt_indexes,
-        )
-      case dict.get(selected_locks, lock) {
-        Ok(_) ->
-          select_workspace_serial_batch(
-            rest,
-            issue,
-            workflow_id,
-            run_id,
-            orchestrator,
-            attempt_indexes,
-            selected_locks,
-            acc,
-          )
-        Error(Nil) ->
-          select_workspace_serial_batch(
-            rest,
-            issue,
-            workflow_id,
-            run_id,
-            orchestrator,
-            attempt_indexes,
-            dict.insert(selected_locks, lock, Nil),
-            [step, ..acc],
-          )
-      }
-    }
-  }
-}
-
-fn workspace_lock_for_step(
-  step: workflow_dag.WorkflowStep,
-  issue: tracker_issue.Issue,
-  workflow_id: String,
-  run_id: String,
-  orchestrator: config_types.OrchestratorConfig,
-  attempt_indexes: Dict(String, Int),
-) -> String {
-  let attempt_index =
-    dict.get(attempt_indexes, step.id)
-    |> result.unwrap(1)
-  case
-    workspace_run.workspace_path_for_attempt(
-      issue,
-      workflow_id,
-      run_id,
-      step.id,
-      attempt_index,
-      step.workspace.name,
-      orchestrator,
-    )
-  {
-    Ok(path) -> "path:" <> path
-    // nolint: thrown_away_error -- path rendering failure still needs a stable serialization lock; workspace name is the safe fallback.
-    Error(_) -> "name:" <> step.workspace.name
-  }
-}
-
-fn prepare_ready_steps(
-  steps: List(workflow_dag.WorkflowStep),
-  issue: tracker_issue.Issue,
-  workflow_id: String,
-  run_id: String,
-  orchestrator: config_types.OrchestratorConfig,
-  dependencies: Dependencies,
-  secrets: List(String),
-  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
-  current_run_root: Option(String),
-  recovered_execution: Bool,
-  attempt_indexes: Dict(String, Int),
-  acc: List(PreparedStart),
-  profile: config_types.WorkspaceHookProfile,
-) -> Result(
-  #(
-    List(PreparedStart),
-    Dict(String, workspace_run.PreparedStepWorkspace),
-    Option(String),
-    Dict(String, Int),
-  ),
-  PrepareReadyFailure,
-) {
-  case steps {
-    [] -> {
-      let run_root = option.or(prepared_run_root(acc), current_run_root)
-      Ok(#(list.reverse(acc), prepared_workspaces, run_root, attempt_indexes))
-    }
-    [step, ..rest] -> {
-      let attempt_index =
-        dict.get(attempt_indexes, step.id)
-        |> result.unwrap(1)
-      let next_attempt_indexes =
-        dict.insert(attempt_indexes, step.id, attempt_index + 1)
-      case
-        prepare_step_for_mode(
-          dependencies,
-          recovered_execution,
-          current_run_root,
-          issue,
-          workflow_id,
-          run_id,
-          step.id,
-          attempt_index,
-          step.workspace,
-          orchestrator,
-          profile,
-          prepared_workspaces,
-        )
-      {
-        Error(workspace_run.WorkspaceFailure(err)) ->
-          Error(PrepareReadyFailure(
-            "workspace_failed:" <> error.workspace_code(err),
-            None,
-            option.or(prepared_run_root(acc), current_run_root),
-            list.reverse(acc),
-          ))
-        Error(workspace_run.HookFailure(err)) ->
-          Error(PrepareReadyFailure(
-            hook_failure_report(err, secrets),
-            Some(error.WorkflowHookFailed(err)),
-            option.or(prepared_run_root(acc), current_run_root),
-            list.reverse(acc),
-          ))
-        Ok(prepared) -> {
-          case
-            dependencies.checkpoint.step_prepared(
-              run_id,
-              workflow_id,
-              step.id,
-              prepared,
-            )
-          {
-            Error(error) ->
-              Error(PrepareReadyFailure(
-                "checkpoint_failed:"
-                  <> workflow_checkpoint.describe_error(error),
-                None,
-                prepared_run_root([
-                  PreparedStart(step: step, workspace: prepared),
-                  ..acc
-                ]),
-                list.reverse([
-                  PreparedStart(step: step, workspace: prepared),
-                  ..acc
-                ]),
-              ))
-            Ok(Nil) -> {
-              let prepared_workspaces =
-                dict.insert(prepared_workspaces, step.workspace.name, prepared)
-              prepare_ready_steps(
-                rest,
-                issue,
-                workflow_id,
-                run_id,
-                orchestrator,
-                dependencies,
-                secrets,
-                prepared_workspaces,
-                current_run_root,
-                recovered_execution,
-                next_attempt_indexes,
-                [PreparedStart(step: step, workspace: prepared), ..acc],
-                profile,
-              )
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-fn prepare_step_for_mode(
-  dependencies: Dependencies,
-  recovered_execution: Bool,
-  current_run_root: Option(String),
-  issue: tracker_issue.Issue,
-  workflow_id: String,
-  run_id: String,
-  step_id: String,
-  attempt_index: Int,
-  workspace_ref: workflow_dag.WorkspaceRef,
-  orchestrator: config_types.OrchestratorConfig,
-  profile: config_types.WorkspaceHookProfile,
-  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
-) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError) {
-  case recovered_execution, current_run_root {
-    True, Some(expected_run_root) ->
-      dependencies.prepare_recovered_step(
-        issue,
-        workflow_id,
-        run_id,
-        expected_run_root,
-        step_id,
-        attempt_index,
-        workspace_ref,
-        orchestrator,
-        profile,
-        prepared_workspaces,
-      )
-    _, _ ->
-      dependencies.prepare_step(
-        issue,
-        workflow_id,
-        run_id,
-        step_id,
-        attempt_index,
-        workspace_ref,
-        orchestrator,
-        profile,
-        prepared_workspaces,
-      )
   }
 }
 
@@ -5006,36 +4747,5 @@ fn result_try_checkpoint(
         run_root: run_root,
         failed_step_id: failed_step_id,
       ))
-  }
-}
-
-fn hook_failure_report(err: error.HookError, secrets: List(String)) -> String {
-  let code = "hook_failed:" <> error.hook_code(err)
-  let detail = case err {
-    error.HookFailed(name, status, diagnostics) -> {
-      let diagnostics = string.trim(diagnostics)
-      case diagnostics == "" {
-        True -> code <> ":" <> name <> " exited " <> int.to_string(status)
-        False ->
-          code
-          <> ":"
-          <> name
-          <> " exited "
-          <> int.to_string(status)
-          <> ": "
-          <> diagnostics
-      }
-    }
-    error.HookTimedOut(name) -> code <> ":" <> name <> " timed out"
-    error.HookIo(message) -> code <> ":" <> message
-  }
-  log.redact("failure", detail, secrets)
-  |> log.truncate(4000)
-}
-
-fn prepared_run_root(starts: List(PreparedStart)) -> Option(String) {
-  case starts {
-    [PreparedStart(workspace: workspace, ..), ..] -> Some(workspace.run_root)
-    [] -> None
   }
 }
