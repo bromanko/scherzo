@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "research",
+  "workspace": {
+    "driver": "noop"
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "prompt": "prompts/research.md",
+      "run_in": "main"
+    }
+  ]
+}
