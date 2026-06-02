@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: github-pr-conflict-scout
 description: Scan open same-repository GitHub pull requests and enqueue merge-conflict resolver issues.

@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: execplan-revision
 description: Revise a previously retained ExecPlan bundle from review feedback and emit a superseding exec_plan_bundle.

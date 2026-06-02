@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: origin-sync
 description: Fetch the configured root remote, advance local main to the configured base when safe, and auto-rebase the empty root jj stack.

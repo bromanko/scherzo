@@ -120,6 +120,7 @@ Start with the minimal config. It names the Linear project and the workflow file
 
 ```yaml
 # .scherzo/scherzo.yaml
+# yaml-language-server: $schema=../schemas/scherzo.config.v1.schema.json
 version: 1
 
 tracker:
@@ -136,6 +137,7 @@ After the minimal config loads, expand deliberately. This starter keeps task upd
 
 ```yaml
 # .scherzo/scherzo.yaml
+# yaml-language-server: $schema=../schemas/scherzo.config.v1.schema.json
 version: 1
 
 tracker:
@@ -477,6 +479,7 @@ Do not use retired `-v2` ExecPlan workflow names or old nested routing blocks.
 Create `.scherzo/workflows/getting-started.yaml`:
 
 ```yaml
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: getting-started
 description: Draft a small plan and verify that the expected artifact exists.
