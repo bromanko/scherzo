@@ -10,6 +10,7 @@ import gleam/string
 import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
+import scherzo/artifact_repository/command_runner
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
@@ -19,6 +20,7 @@ import scherzo/control/query/metrics as query_metrics
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
+import scherzo/ctl/artifact_publication as ctl_artifact_publication
 import scherzo/daemon_identity
 import scherzo/error
 import scherzo/log
@@ -1661,6 +1663,7 @@ fn apply_shell_operator_command(
       operator_runtime.shell_handlers(
         reload_workflow_for_operator: reload_workflow_for_operator,
         retry_workflow_step_for_operator: retry_workflow_step_for_operator,
+        retry_artifact_publication_for_operator: retry_artifact_publication_for_operator,
         schedule_run_now_for_operator: schedule_run_now_for_operator,
         abort_session_for_operator_sync: abort_session_for_operator_sync,
         route_worker_command_sync: route_worker_command_sync,
@@ -2332,6 +2335,51 @@ fn reload_workflow_for_operator(
       state,
       command.rejected(operator_command, reason, failure_message),
     )
+  }
+}
+
+fn retry_artifact_publication_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  publication_id: Option(String),
+) -> #(State, command.CommandResult) {
+  let root = state.workflow.effective.workspace.root
+  case
+    ctl_artifact_publication.retry_attempts_with_bundle_runner(
+      root,
+      run_id,
+      publication_id,
+      state.workflow.bundle,
+      command_runner.production(),
+    )
+  {
+    Ok(attempts) -> {
+      let message = case attempts {
+        [attempt] ->
+          Some(
+            "publication retry recorded "
+            <> attempt.publication_id
+            <> " as "
+            <> attempt.status,
+          )
+        _ ->
+          Some(
+            "publication retry recorded "
+            <> int.to_string(list.length(attempts))
+            <> " attempt(s)",
+          )
+      }
+      #(state, command.applied(operator_command, message))
+    }
+    Error(#(code, message)) -> {
+      let result = case code {
+        "publication_run_not_found" | "publication_not_found" ->
+          command.not_found(operator_command, Some(message))
+        _ -> command.rejected(operator_command, code, Some(message))
+      }
+      #(state, result)
+    }
   }
 }
 

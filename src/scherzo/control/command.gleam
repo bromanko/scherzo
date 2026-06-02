@@ -28,6 +28,7 @@ pub type OperatorCommand {
   ReloadWorkflow
   RetryIssue(IssueRef)
   RetryWorkflowStep(target: RetryWorkflowStepTarget, step_id: Option(String))
+  RetryArtifactPublication(run_id: String, publication_id: Option(String))
   ParkIssue(IssueRef, reason: String)
   UnparkIssue(IssueRef)
   AbortSession(session_id: String)
@@ -67,6 +68,7 @@ type CommandFields {
     target: Option(String),
     run_id: Option(String),
     step_id: Option(String),
+    publication_id: Option(String),
     reason: Option(String),
     session_id: Option(String),
     message: Option(String),
@@ -95,6 +97,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     ReloadWorkflow -> "reload"
     RetryIssue(_) -> "retry"
     RetryWorkflowStep(_, _) -> "retry_step"
+    RetryArtifactPublication(_, _) -> "retry_artifact_publication"
     ParkIssue(_, _) -> "park"
     UnparkIssue(_) -> "unpark"
     AbortSession(_) -> "abort"
@@ -113,6 +116,8 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
       Some(issue_ref_to_string(issue_ref))
     RetryWorkflowStep(target, _) ->
       Some(retry_workflow_step_target_to_string(target))
+    RetryArtifactPublication(run_id, publication_id) ->
+      Some(retry_artifact_publication_target_to_string(run_id, publication_id))
     AbortSession(session_id)
     | StopAfterCurrentTurn(session_id)
     | PromptSession(session_id, _)
@@ -136,6 +141,16 @@ pub fn retry_workflow_step_target_to_string(
     RetryWorkflowStepAutoTarget(target) -> target
     RetryWorkflowStepIssueRef(issue_ref) -> issue_ref_to_string(issue_ref)
     RetryWorkflowStepRunId(run_id) -> run_id
+  }
+}
+
+fn retry_artifact_publication_target_to_string(
+  run_id: String,
+  publication_id: Option(String),
+) -> String {
+  case publication_id {
+    Some(publication_id) -> "run:" <> run_id <> ":" <> publication_id
+    None -> "run:" <> run_id
   }
 }
 
@@ -184,6 +199,12 @@ pub fn operator_command_to_json(
       list.append(
         retry_workflow_step_entries(target, step_id),
         base_command_entries("retry_step"),
+      )
+      |> json.object
+    RetryArtifactPublication(run_id, publication_id) ->
+      list.append(
+        retry_artifact_publication_entries(run_id, publication_id),
+        base_command_entries("retry_artifact_publication"),
       )
       |> json.object
     ParkIssue(issue_ref, reason) ->
@@ -364,6 +385,19 @@ fn retry_workflow_step_entries(
   }
 }
 
+fn retry_artifact_publication_entries(
+  run_id: String,
+  publication_id: Option(String),
+) -> List(#(String, json.Json)) {
+  case publication_id {
+    Some(publication_id) -> [
+      #("publication_id", json.string(publication_id)),
+      #("run_id", json.string(run_id)),
+    ]
+    None -> [#("run_id", json.string(run_id))]
+  }
+}
+
 fn ui_response_entries(response: UiResponse) -> List(#(String, json.Json)) {
   case response {
     UiCancel -> [#("cancel", json.bool(True))]
@@ -399,6 +433,11 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
   )
   use step_id <- decode.optional_field(
     "step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use publication_id <- decode.optional_field(
+    "publication_id",
     None,
     decode.optional(decode.string),
   )
@@ -449,6 +488,7 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     target: target,
     run_id: run_id,
     step_id: step_id,
+    publication_id: publication_id,
     reason: reason,
     session_id: session_id,
     message: message,
@@ -475,6 +515,11 @@ fn operator_command_from_fields(
           use target <- result.try(required_retry_workflow_step_target(fields))
           use step_id <- result.try(optional_step_id(fields))
           Ok(RetryWorkflowStep(target, step_id))
+        }
+        "retry_artifact_publication" -> {
+          use run_id <- result.try(required_run_id(fields))
+          use publication_id <- result.try(optional_publication_id(fields))
+          Ok(RetryArtifactPublication(run_id, publication_id))
         }
         "park" -> {
           use issue_ref <- result.try(required_issue_ref(fields))
@@ -556,6 +601,17 @@ fn optional_step_id(
   case fields.step_id {
     Some(step_id) ->
       trimmed_non_empty(step_id, "step_id must not be empty")
+      |> result.map(Some)
+    None -> Ok(None)
+  }
+}
+
+fn optional_publication_id(
+  fields: CommandFields,
+) -> Result(Option(String), CodecError) {
+  case fields.publication_id {
+    Some(publication_id) ->
+      trimmed_non_empty(publication_id, "publication_id must not be empty")
       |> result.map(Some)
     None -> Ok(None)
   }

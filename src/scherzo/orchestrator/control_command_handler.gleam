@@ -88,6 +88,18 @@ pub fn apply(
       log_context_result(context, context.state, result, [])
       #(context.state, result)
     }
+    command.RetryArtifactPublication(_, _) -> {
+      let result =
+        command.rejected(
+          operator_command,
+          "retry_artifact_publication_requires_daemon_shell",
+          Some(
+            "artifact publication retry must be handled by the daemon shell path",
+          ),
+        )
+      log_context_result(context, context.state, result, [])
+      #(context.state, result)
+    }
     command.CleanupOrphanSteps(_, _) -> {
       let result =
         command.rejected(

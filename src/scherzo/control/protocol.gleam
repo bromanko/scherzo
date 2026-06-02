@@ -40,6 +40,12 @@ pub type Request {
     target: command.RetryWorkflowStepTarget,
     step_id: Option(String),
   )
+  RetryArtifactPublication(
+    id: String,
+    token: String,
+    run_id: String,
+    publication_id: Option(String),
+  )
   ParkIssue(
     id: String,
     token: String,
@@ -93,6 +99,7 @@ type RequestFields {
     target: Option(String),
     run_id: Option(String),
     step_id: Option(String),
+    publication_id: Option(String),
     reason: Option(String),
     message: Option(String),
     request_id: Option(String),
@@ -116,6 +123,7 @@ pub fn request_id(request: Request) -> String {
     ReloadWorkflow(id, _) -> id
     RetryIssue(id, _, _) -> id
     RetryWorkflowStep(id, _, _, _) -> id
+    RetryArtifactPublication(id, _, _, _) -> id
     ParkIssue(id, _, _, _) -> id
     UnparkIssue(id, _, _) -> id
     AbortSession(id, _, _) -> id
@@ -140,6 +148,7 @@ pub fn request_token(request: Request) -> String {
     ReloadWorkflow(_, token) -> token
     RetryIssue(_, token, _) -> token
     RetryWorkflowStep(_, token, _, _) -> token
+    RetryArtifactPublication(_, token, _, _) -> token
     ParkIssue(_, token, _, _) -> token
     UnparkIssue(_, token, _) -> token
     AbortSession(_, token, _) -> token
@@ -202,6 +211,12 @@ pub fn request_to_json(request: Request) -> json.Json {
       list.append(
         retry_workflow_step_entries(target, step_id),
         base_request_entries(id, token, "retry_step"),
+      )
+      |> json.object
+    RetryArtifactPublication(id, token, run_id, publication_id) ->
+      list.append(
+        retry_artifact_publication_entries(run_id, publication_id),
+        base_request_entries(id, token, "retry_artifact_publication"),
       )
       |> json.object
     ParkIssue(id, token, issue_ref, reason) ->
@@ -286,6 +301,19 @@ fn retry_workflow_step_entries(
   case step_id {
     Some(step_id) -> [#("step_id", json.string(step_id)), ..base]
     None -> base
+  }
+}
+
+fn retry_artifact_publication_entries(
+  run_id: String,
+  publication_id: Option(String),
+) -> List(#(String, json.Json)) {
+  case publication_id {
+    Some(publication_id) -> [
+      #("publication_id", json.string(publication_id)),
+      #("run_id", json.string(run_id)),
+    ]
+    None -> [#("run_id", json.string(run_id))]
   }
 }
 
@@ -395,6 +423,17 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
       {
         Ok(target), Ok(step_id) ->
           Ok(RetryWorkflowStep(fields.id, fields.token, target, step_id))
+        Error(err), _ | _, Error(err) -> Error(err)
+      }
+    "retry_artifact_publication" ->
+      case required_run_id(fields), optional_publication_id(fields) {
+        Ok(run_id), Ok(publication_id) ->
+          Ok(RetryArtifactPublication(
+            fields.id,
+            fields.token,
+            run_id,
+            publication_id,
+          ))
         Error(err), _ | _, Error(err) -> Error(err)
       }
     "park" | "park_issue" ->
@@ -567,6 +606,21 @@ fn optional_step_id(
   }
 }
 
+fn optional_publication_id(
+  fields: RequestFields,
+) -> Result(Option(String), RequestError) {
+  case fields.publication_id {
+    Some(publication_id) -> {
+      let publication_id = string.trim(publication_id)
+      case publication_id == "" {
+        True -> invalid(fields.id, "publication_id must not be empty")
+        False -> Ok(Some(publication_id))
+      }
+    }
+    None -> Ok(None)
+  }
+}
+
 fn required_reason(fields: RequestFields) -> Result(String, RequestError) {
   case fields.reason {
     Some(reason) -> {
@@ -707,6 +761,11 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use publication_id <- decode.optional_field(
+    "publication_id",
+    None,
+    decode.optional(decode.string),
+  )
   use reason <- decode.optional_field(
     "reason",
     None,
@@ -756,6 +815,7 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     target: target,
     run_id: run_id,
     step_id: step_id,
+    publication_id: publication_id,
     reason: reason,
     message: message,
     request_id: request_id,
@@ -886,6 +946,8 @@ pub fn command_request(
     command.RetryIssue(issue_ref) -> RetryIssue(id, token, issue_ref)
     command.RetryWorkflowStep(target, step_id) ->
       RetryWorkflowStep(id, token, target, step_id)
+    command.RetryArtifactPublication(run_id, publication_id) ->
+      RetryArtifactPublication(id, token, run_id, publication_id)
     command.ParkIssue(issue_ref, reason) ->
       ParkIssue(id, token, issue_ref, reason)
     command.UnparkIssue(issue_ref) -> UnparkIssue(id, token, issue_ref)
@@ -920,6 +982,8 @@ pub fn request_operator_command(
     RetryIssue(_, _, issue_ref) -> Some(command.RetryIssue(issue_ref))
     RetryWorkflowStep(_, _, target, step_id) ->
       Some(command.RetryWorkflowStep(target, step_id))
+    RetryArtifactPublication(_, _, run_id, publication_id) ->
+      Some(command.RetryArtifactPublication(run_id, publication_id))
     ParkIssue(_, _, issue_ref, reason) ->
       Some(command.ParkIssue(issue_ref, reason))
     UnparkIssue(_, _, issue_ref) -> Some(command.UnparkIssue(issue_ref))

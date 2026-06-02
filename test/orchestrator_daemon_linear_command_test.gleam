@@ -11,6 +11,8 @@ import scherzo/orchestrator/daemon
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/hub
 import scherzo/session/tokens as session_tokens
+import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/tracker
 import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
@@ -109,6 +111,53 @@ steps:
   config_path
 }
 
+fn seed_failed_publication_without_output_manifest(root: String) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started",
+          1000,
+          record.WorkflowRunStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            workflow_fingerprint: "wf-1",
+            issue_id: "issue-1",
+            issue_identifier: "LIV-826",
+            issue_fingerprint: "issue-fingerprint",
+            observed_updated_at_ms: 999,
+            run_root: root <> "/runs/run-1",
+          ),
+        ),
+        record.with_id(
+          "publication-failed",
+          1020,
+          record.PublicationAttemptRecorded(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            publication_id: "review_doc",
+            series_id: "issue-1:implementation:review_doc",
+            attempt_id: "failed-1",
+            status: "failed",
+            required: True,
+            retryable: True,
+            retry_execution_available: True,
+            version_id: Some("version-1"),
+            manifest_ref: None,
+            manifest_sha256: None,
+            manifest_bytes: None,
+            error_code: Some("git_push_failed"),
+            error_message: Some("previous push failed"),
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
+}
+
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
     id: id,
@@ -189,6 +238,39 @@ fn dependencies(
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
+}
+
+pub fn retry_artifact_publication_rejects_missing_output_manifest_test() {
+  let #(workflow_path, root) =
+    write_workflow_with_limits(
+      "test/tmp/daemon-artifact-publication-retry-missing-output",
+      1,
+      3,
+      3,
+    )
+  seed_failed_publication_without_output_manifest(root)
+  let deps =
+    dependencies(
+      tracker_with(issue("issue-1", "LIV-826", "Todo")),
+      fn(_, _, _, _, _, _, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unused")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("run-1", Some("review_doc")),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "not_found"
 }
 
 pub fn retry_issue_identifier_dispatches_tracker_candidate_test() {

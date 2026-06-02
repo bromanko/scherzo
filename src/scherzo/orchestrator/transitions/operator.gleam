@@ -66,7 +66,8 @@ pub fn handle_submitted(
     }
     command.RetryIssue(_) ->
       handle_retry(state, request, context, issue_resolution, callbacks)
-    command.RetryWorkflowStep(_, _) -> shell_command(state, request)
+    command.RetryWorkflowStep(_, _) | command.RetryArtifactPublication(_, _) ->
+      shell_command(state, request)
     command.ParkIssue(_, reason) ->
       handle_park(state, request, context, issue_resolution, reason, callbacks)
     command.UnparkIssue(_) ->

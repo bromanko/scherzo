@@ -322,6 +322,13 @@ fn authenticate(
       protocol.RetryIssue(id, control_file.token, issue_ref)
     protocol.RetryWorkflowStep(id, _, target, step_id) ->
       protocol.RetryWorkflowStep(id, control_file.token, target, step_id)
+    protocol.RetryArtifactPublication(id, _, run_id, publication_id) ->
+      protocol.RetryArtifactPublication(
+        id,
+        control_file.token,
+        run_id,
+        publication_id,
+      )
     protocol.ParkIssue(id, _, issue_ref, reason) ->
       protocol.ParkIssue(id, control_file.token, issue_ref, reason)
     protocol.UnparkIssue(id, _, issue_ref) ->

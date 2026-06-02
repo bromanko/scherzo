@@ -60,6 +60,9 @@ pub fn apply_shell_operator_command_routes_prompt_session_test() {
       retry_workflow_step_for_operator: fn(state, _, _, _) {
         #(state, command.applied(command.ReloadWorkflow, None))
       },
+      retry_artifact_publication_for_operator: fn(state, _, _, _) {
+        #(state, command.applied(command.ReloadWorkflow, None))
+      },
       schedule_run_now_for_operator: fn(state, _, _) {
         #(state, command.applied(command.ReloadWorkflow, None))
       },

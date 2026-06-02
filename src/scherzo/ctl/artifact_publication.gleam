@@ -1,18 +1,24 @@
+import gleam/dict
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/artifact_publication_config
+import scherzo/artifact_publication_executor
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
 import scherzo/artifact_repository/command_runner
-import scherzo/artifact_repository/github as github_repository
 import scherzo/ctl/schedule_state
+import scherzo/path
+import scherzo/runtime_bundle
 import scherzo/state/artifact_store
 import scherzo/state/projection
 import scherzo/workflow_checkpoint
+import scherzo/workflow_contract_manifest
+import scherzo/workflow_dag
+import simplifile
 
 pub fn list(
   root: String,
@@ -78,7 +84,7 @@ pub fn retry(
   root: String,
   json_output: Bool,
   run_id: String,
-  publication_id: String,
+  publication_id: Option(String),
   output_line: fn(String) -> Nil,
 ) -> Result(Nil, #(String, String)) {
   retry_with_runner(
@@ -95,71 +101,73 @@ pub fn retry_with_runner(
   root: String,
   json_output: Bool,
   run_id: String,
-  publication_id: String,
+  publication_id: Option(String),
   runner: command_runner.Runner,
   output_line: fn(String) -> Nil,
 ) -> Result(Nil, #(String, String)) {
   use projected <- result.try(schedule_state.load_projection(root, pair_error))
-  use _ <- result.try(require_publication_run(projected, run_id))
-  let attempts =
-    projection.publication_attempts_for_run(projected, run_id, publication_id)
-  use latest <- result.try(publication_or_not_found(attempts, publication_id))
-  use manifest_ref <- result.try(require_manifest_ref(latest))
-  use retained <- result.try(load_publication_manifest(root, manifest_ref))
-  use planned <- result.try(require_retry_manifest(retained))
-  let route =
-    artifact_publication_config.PublicationRoute(
-      id: retained.publication_id,
-      repository: planned.repository_kind <> "." <> planned.repository_id,
-      required: retained.required,
-      pull_request: None,
-      files: [],
-    )
-  let checkpoint = workflow_checkpoint.ledger_writer(root, monotonic_ms)
-  use prepared <- result.try(
-    github_repository.prepare_publication_input(
-      planned,
-      artifact_store.new(root),
-    )
+  use config_path <- result.try(require_config_path(root))
+  use bundle <- result.try(
+    runtime_bundle.load(Some(config_path))
     |> result.map_error(fn(error) {
-      #(github_repository.code(error), github_repository.message(error))
+      let runtime_bundle.BundleError(code: code, message: message) = error
+      #("publication_retry_config_load_failed", code <> ": " <> message)
     }),
   )
-  let manifest =
-    github_repository.publish(prepared, root, runner, checkpoint.now_ms())
-  use attempt <- result.try(
-    artifact_publication_recording.record_manifest_attempt(
-      route,
-      retained.workflow_id,
-      retained.run_id,
-      manifest,
-      checkpoint,
-    )
-    |> result.map_error(fn(message) {
-      #("publication_retry_record_failed", message)
-    }),
-  )
-  let projected_attempt =
-    projection_attempt_from_summary(
-      retained.run_id,
-      retained.workflow_id,
-      attempt,
-    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, monotonic_ms)
+  use attempts <- result.try(retry_selected_publications(
+    projected,
+    root,
+    run_id,
+    publication_id,
+    bundle,
+    checkpoint,
+    runner,
+  ))
   case json_output {
     True ->
       output_line(
         json.object([
           #("run_id", json.string(run_id)),
-          #("publication_id", json.string(publication_id)),
+          #("publication_id", optional_string_json(publication_id)),
           #("workspace_root", json.string(root)),
-          #("attempt", publication_attempt_to_json(root, projected_attempt)),
+          #(
+            "attempts",
+            json.array(attempts, fn(attempt) {
+              publication_attempt_to_json(root, attempt)
+            }),
+          ),
         ])
         |> json.to_string,
       )
     False ->
-      print_retry(root, run_id, publication_id, projected_attempt, output_line)
+      print_retry_results(run_id, publication_id, root, attempts, output_line)
   }
   Ok(Nil)
+}
+
+pub fn retry_attempts_with_bundle_runner(
+  root: String,
+  run_id: String,
+  publication_id: Option(String),
+  bundle: runtime_bundle.RuntimeBundle,
+  runner: command_runner.Runner,
+) -> Result(List(projection.PublicationAttempt), #(String, String)) {
+  use projected <- result.try(schedule_state.load_projection(root, pair_error))
+  let checkpoint = workflow_checkpoint.ledger_writer(root, monotonic_ms)
+  retry_selected_publications(
+    projected,
+    root,
+    run_id,
+    publication_id,
+    bundle,
+    checkpoint,
+    runner,
+  )
+}
+
+type RetrySelection {
+  RetrySelection(publication_id: String, latest: projection.PublicationAttempt)
 }
 
 type PublicationSummary {
@@ -191,6 +199,13 @@ type PublicationManifestDetails {
   )
 }
 
+type RetryResolvedRoute {
+  RetryResolvedRoute(
+    route: artifact_publication_config.PublicationRoute,
+    latest: projection.PublicationAttempt,
+  )
+}
+
 fn pair_error(code: String, message: String) -> #(String, String) {
   #(code, message)
 }
@@ -207,6 +222,299 @@ fn require_publication_run(
         "publication run not found: " <> run_id,
       ))
   }
+}
+
+fn select_retry_targets(
+  projected: projection.Projection,
+  run_id: String,
+  publication_id: Option(String),
+) -> Result(List(RetrySelection), #(String, String)) {
+  case publication_id {
+    Some(publication_id) -> {
+      let attempts =
+        projection.publication_attempts_for_run(
+          projected,
+          run_id,
+          publication_id,
+        )
+      use latest <- result.try(publication_or_not_found(
+        attempts,
+        publication_id,
+      ))
+      use _ <- result.try(require_retryable_latest(latest))
+      Ok([RetrySelection(publication_id: publication_id, latest: latest)])
+    }
+    None -> {
+      let targets =
+        projection.publication_ids_for_run(projected, run_id)
+        |> list.fold([], fn(acc, publication_id) {
+          let attempts =
+            projection.publication_attempts_for_run(
+              projected,
+              run_id,
+              publication_id,
+            )
+          case publication_or_not_found(attempts, publication_id) {
+            Ok(latest) ->
+              case is_retryable_latest(latest) {
+                True -> [
+                  RetrySelection(publication_id: publication_id, latest: latest),
+                  ..acc
+                ]
+                False -> acc
+              }
+            Error(_) -> acc
+          }
+        })
+        |> list.reverse
+      case targets {
+        [] ->
+          Error(#(
+            "publication_retry_targets_not_found",
+            "no failed retryable publications found for run: " <> run_id,
+          ))
+        _ -> Ok(targets)
+      }
+    }
+  }
+}
+
+fn retry_selected_publications(
+  projected: projection.Projection,
+  root: String,
+  run_id: String,
+  publication_id: Option(String),
+  bundle: runtime_bundle.RuntimeBundle,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+) -> Result(List(projection.PublicationAttempt), #(String, String)) {
+  use _ <- result.try(require_publication_run(projected, run_id))
+  use output_manifest_ref <- result.try(require_output_manifest_ref(
+    projected,
+    run_id,
+  ))
+  use output_manifest <- result.try(load_output_manifest(
+    root,
+    output_manifest_ref.artifact_ref,
+  ))
+  use workflow_status <- result.try(require_workflow_run(projected, run_id))
+  use #(_, workflow) <- result.try(
+    runtime_bundle.workflow_by_id(bundle, output_manifest.workflow_id)
+    |> result.map_error(fn(error) {
+      let runtime_bundle.BundleError(code: code, message: message) = error
+      #(code, message)
+    }),
+  )
+  use work <- result.try(publication_workflow_identity(
+    projected,
+    run_id,
+    workflow_status,
+  ))
+  use targets <- result.try(select_retry_targets(
+    projected,
+    run_id,
+    publication_id,
+  ))
+  use resolved <- result.try(resolve_retry_routes(
+    targets,
+    workflow,
+    bundle,
+    output_manifest,
+    root,
+    work,
+    run_id,
+  ))
+  let retry_result =
+    artifact_publication_executor.execute_routes_for_work_with_state_root(
+      list.map(resolved, fn(entry) { entry.route }),
+      bundle.orchestrator.artifact_repositories,
+      bundle.orchestrator.config_dir,
+      root,
+      output_manifest,
+      work,
+      run_id,
+      checkpoint,
+      runner,
+    )
+  use
+    artifact_publication_recording.PublicationRecordingResult(
+      required_failures: required_failures,
+      optional_failures: optional_failures,
+      attempts: attempts,
+    )
+  <- result.try(
+    retry_result
+    |> result.map_error(fn(message) { #("publication_retry_failed", message) }),
+  )
+  case list.append(required_failures, optional_failures) {
+    [failure, ..] ->
+      Error(#(
+        "publication_retry_attempt_failed",
+        "publication retry recorded failed attempt for "
+          <> failure.publication_id
+          <> ": "
+          <> failure.code
+          <> ": "
+          <> failure.message,
+      ))
+    [] ->
+      Ok(
+        list.map(attempts, fn(attempt) {
+          projection_attempt_from_summary(
+            run_id,
+            output_manifest.workflow_id,
+            attempt,
+          )
+        }),
+      )
+  }
+}
+
+fn resolve_retry_routes(
+  targets: List(RetrySelection),
+  workflow: workflow_dag.WorkflowDag,
+  bundle: runtime_bundle.RuntimeBundle,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  root: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+) -> Result(List(RetryResolvedRoute), #(String, String)) {
+  use body_templates <- result.try(
+    artifact_publication_recording.load_body_templates(
+      workflow.publication_routes,
+      bundle.orchestrator.artifact_repositories,
+      bundle.orchestrator.config_dir,
+    )
+    |> result.map_error(fn(message) {
+      #("publication_retry_config_invalid", message)
+    }),
+  )
+  resolve_retry_routes_loop(
+    targets,
+    workflow.publication_routes,
+    bundle,
+    output_manifest,
+    root,
+    work,
+    run_id,
+    body_templates,
+    [],
+  )
+}
+
+fn resolve_retry_routes_loop(
+  targets: List(RetrySelection),
+  routes: List(artifact_publication_config.PublicationRoute),
+  bundle: runtime_bundle.RuntimeBundle,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  root: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  body_templates: dict.Dict(String, String),
+  acc: List(RetryResolvedRoute),
+) -> Result(List(RetryResolvedRoute), #(String, String)) {
+  case targets {
+    [] -> Ok(list.reverse(acc))
+    [RetrySelection(publication_id: publication_id, latest: latest), ..rest] -> {
+      use route <- result.try(find_retry_route(routes, publication_id))
+      use _ <- result.try(validate_retry_route(
+        route,
+        latest,
+        bundle,
+        output_manifest,
+        root,
+        work,
+        run_id,
+        body_templates,
+      ))
+      resolve_retry_routes_loop(
+        rest,
+        routes,
+        bundle,
+        output_manifest,
+        root,
+        work,
+        run_id,
+        body_templates,
+        [RetryResolvedRoute(route: route, latest: latest), ..acc],
+      )
+    }
+  }
+}
+
+fn find_retry_route(
+  routes: List(artifact_publication_config.PublicationRoute),
+  publication_id: String,
+) -> Result(artifact_publication_config.PublicationRoute, #(String, String)) {
+  case list.find(routes, fn(route) { route.id == publication_id }) {
+    Ok(route) -> Ok(route)
+    Error(Nil) ->
+      Error(#(
+        "publication_retry_config_drift",
+        "current workflow no longer defines publication route: "
+          <> publication_id,
+      ))
+  }
+}
+
+fn validate_retry_route(
+  route: artifact_publication_config.PublicationRoute,
+  latest: projection.PublicationAttempt,
+  bundle: runtime_bundle.RuntimeBundle,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  root: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  body_templates: dict.Dict(String, String),
+) -> Result(Nil, #(String, String)) {
+  use planned <- result.try(
+    artifact_publication_planner.plan_publication(
+      output_manifest,
+      bundle.orchestrator.artifact_repositories,
+      route,
+      artifact_store.new(root),
+      work,
+      run_id,
+      body_templates,
+    )
+    |> result.map_error(fn(error) {
+      #(artifact_publication_planner.code(error), planner_error_message(error))
+    }),
+  )
+  case
+    planned.series_id == latest.series_id
+    && planned.version_id == option_or_empty(latest.version_id)
+  {
+    True -> Ok(Nil)
+    False ->
+      Error(#(
+        "publication_retry_config_drift",
+        "current workflow publication config no longer matches retained retry target: "
+          <> latest.publication_id,
+      ))
+  }
+}
+
+fn require_retryable_latest(
+  latest: projection.PublicationAttempt,
+) -> Result(Nil, #(String, String)) {
+  case is_retryable_latest(latest) {
+    True -> Ok(Nil)
+    False ->
+      Error(#(
+        "publication_not_retryable",
+        "latest publication attempt is not retryable: "
+          <> latest.publication_id
+          <> " status="
+          <> latest.status,
+      ))
+  }
+}
+
+fn is_retryable_latest(latest: projection.PublicationAttempt) -> Bool {
+  latest.status == "failed"
+  && latest.retryable
+  && latest.retry_execution_available
 }
 
 fn publication_or_not_found(
@@ -267,11 +575,9 @@ fn publication_summaries_loop(
               manifest_ref: latest.manifest_ref,
               manifest_sha256: latest.manifest_sha256,
               manifest_bytes: latest.manifest_bytes,
-              branch: manifest_detail_option(details, fn(value) { value.branch }),
-              commit_sha: manifest_detail_option(details, fn(value) {
-                value.commit_sha
-              }),
-              pr_url: manifest_detail_option(details, fn(value) { value.pr_url }),
+              branch: manifest_detail_option(details, branch_option),
+              commit_sha: manifest_detail_option(details, commit_sha_option),
+              pr_url: manifest_detail_option(details, pr_url_option),
               retryable: latest.retryable,
               retry_execution_available: latest.retry_execution_available,
               error_code: latest.error_code,
@@ -348,16 +654,13 @@ fn print_show(
   output_line("attempt_count: " <> int.to_string(list.length(attempts)))
   output_line("version_id: " <> optional_string(latest.version_id))
   output_line(
-    "branch: "
-    <> manifest_detail_string(latest_details, fn(value) { value.branch }),
+    "branch: " <> manifest_detail_string(latest_details, branch_option),
   )
   output_line(
-    "commit_sha: "
-    <> manifest_detail_string(latest_details, fn(value) { value.commit_sha }),
+    "commit_sha: " <> manifest_detail_string(latest_details, commit_sha_option),
   )
   output_line(
-    "pr_url: "
-    <> manifest_detail_string(latest_details, fn(value) { value.pr_url }),
+    "pr_url: " <> manifest_detail_string(latest_details, pr_url_option),
   )
   output_line("manifest_ref: " <> optional_string(latest.manifest_ref))
   output_line("manifest_sha256: " <> optional_string(latest.manifest_sha256))
@@ -381,18 +684,11 @@ fn print_show(
       <> attempt.attempt_id,
     )
     output_line("  version_id: " <> optional_string(attempt.version_id))
+    output_line("  branch: " <> manifest_detail_string(details, branch_option))
     output_line(
-      "  branch: "
-      <> manifest_detail_string(details, fn(value) { value.branch }),
+      "  commit_sha: " <> manifest_detail_string(details, commit_sha_option),
     )
-    output_line(
-      "  commit_sha: "
-      <> manifest_detail_string(details, fn(value) { value.commit_sha }),
-    )
-    output_line(
-      "  pr_url: "
-      <> manifest_detail_string(details, fn(value) { value.pr_url }),
-    )
+    output_line("  pr_url: " <> manifest_detail_string(details, pr_url_option))
     output_line("  manifest_ref: " <> optional_string(attempt.manifest_ref))
     output_line(
       "  manifest_sha256: " <> optional_string(attempt.manifest_sha256),
@@ -408,37 +704,47 @@ fn print_show(
   })
 }
 
-fn print_retry(
-  root: String,
+fn print_retry_results(
   run_id: String,
-  publication_id: String,
+  publication_id: Option(String),
+  root: String,
+  attempts: List(projection.PublicationAttempt),
+  output_line: fn(String) -> Nil,
+) -> Nil {
+  output_line("run_id: " <> run_id)
+  case publication_id {
+    Some(publication_id) -> output_line("publication_id: " <> publication_id)
+    None -> output_line("publication_id: all failed retryable publications")
+  }
+  output_line("attempts:")
+  list.each(attempts, fn(attempt) {
+    print_retry_attempt(root, attempt, output_line)
+  })
+}
+
+fn print_retry_attempt(
+  root: String,
   attempt: projection.PublicationAttempt,
   output_line: fn(String) -> Nil,
 ) -> Nil {
   let details = manifest_details_for_attempt(root, attempt)
-  output_line("run_id: " <> run_id)
-  output_line("publication_id: " <> publication_id)
-  output_line("status: " <> attempt.status)
-  output_line("attempt_id: " <> attempt.attempt_id)
-  output_line("manifest_ref: " <> optional_string(attempt.manifest_ref))
-  output_line("version_id: " <> optional_string(attempt.version_id))
+  output_line("- publication_id: " <> attempt.publication_id)
+  output_line("  status: " <> attempt.status)
+  output_line("  attempt_id: " <> attempt.attempt_id)
+  output_line("  manifest_ref: " <> optional_string(attempt.manifest_ref))
+  output_line("  version_id: " <> optional_string(attempt.version_id))
+  output_line("  branch: " <> manifest_detail_string(details, branch_option))
   output_line(
-    "branch: " <> manifest_detail_string(details, fn(value) { value.branch }),
+    "  commit_sha: " <> manifest_detail_string(details, commit_sha_option),
   )
+  output_line("  pr_url: " <> manifest_detail_string(details, pr_url_option))
+  output_line("  retryable: " <> bool_string(attempt.retryable))
   output_line(
-    "commit_sha: "
-    <> manifest_detail_string(details, fn(value) { value.commit_sha }),
-  )
-  output_line(
-    "pr_url: " <> manifest_detail_string(details, fn(value) { value.pr_url }),
-  )
-  output_line("retryable: " <> bool_string(attempt.retryable))
-  output_line(
-    "retry_execution_available: "
+    "  retry_execution_available: "
     <> bool_string(attempt.retry_execution_available),
   )
-  output_line("error_code: " <> optional_string(attempt.error_code))
-  output_line("error_message: " <> optional_string(attempt.error_message))
+  output_line("  error_code: " <> optional_string(attempt.error_code))
+  output_line("  error_message: " <> optional_string(attempt.error_message))
 }
 
 fn publication_summary_to_json(summary: PublicationSummary) -> json.Json {
@@ -480,21 +786,15 @@ fn publication_attempt_to_json(
     #("version_id", optional_string_json(attempt.version_id)),
     #(
       "branch",
-      optional_string_json(
-        manifest_detail_option(details, fn(value) { value.branch }),
-      ),
+      optional_string_json(manifest_detail_option(details, branch_option)),
     ),
     #(
       "commit_sha",
-      optional_string_json(
-        manifest_detail_option(details, fn(value) { value.commit_sha }),
-      ),
+      optional_string_json(manifest_detail_option(details, commit_sha_option)),
     ),
     #(
       "pr_url",
-      optional_string_json(
-        manifest_detail_option(details, fn(value) { value.pr_url }),
-      ),
+      optional_string_json(manifest_detail_option(details, pr_url_option)),
     ),
     #("manifest_ref", optional_string_json(attempt.manifest_ref)),
     #("manifest_sha256", optional_string_json(attempt.manifest_sha256)),
@@ -546,32 +846,98 @@ fn load_publication_manifest(
   })
 }
 
-fn require_manifest_ref(
-  attempt: projection.PublicationAttempt,
-) -> Result(String, #(String, String)) {
-  case attempt.manifest_ref {
-    Some(ref) -> Ok(ref)
+fn require_output_manifest_ref(
+  projected: projection.Projection,
+  run_id: String,
+) -> Result(projection.WorkflowContractManifestRef, #(String, String)) {
+  case projection.workflow_output_manifest(projected, run_id) {
+    Some(output_manifest) -> Ok(output_manifest)
     None ->
       Error(#(
-        "publication_manifest_missing",
-        "publication attempt is missing a retained manifest ref",
+        "publication_retry_output_manifest_missing",
+        "workflow run is missing a retained output manifest: " <> run_id,
       ))
   }
 }
 
-fn require_retry_manifest(
-  manifest: artifact_publication_manifest.PublicationManifest,
+fn load_output_manifest(
+  root: String,
+  manifest_ref: String,
 ) -> Result(
-  artifact_publication_planner.DryRunPublicationManifest,
+  workflow_contract_manifest.ContractOutputManifest,
   #(String, String),
 ) {
-  case manifest.dry_run_manifest {
-    Some(planned) -> Ok(planned)
-    None ->
+  use contents <- result.try(
+    artifact_store.read_artifact_unverified(
+      artifact_store.new(root),
+      manifest_ref,
+    )
+    |> result.map_error(fn(error) {
+      #(
+        "publication_retry_output_manifest_read_failed",
+        artifact_store_error_message(error),
+      )
+    }),
+  )
+  case workflow_contract_manifest.decode_output_manifest(contents) {
+    Ok(manifest) -> Ok(manifest)
+    Error(Nil) ->
       Error(#(
-        "publication_retry_unavailable",
-        "retained publication manifest does not include retry execution inputs",
+        "publication_retry_output_manifest_decode_failed",
+        "retained output manifest is invalid JSON",
       ))
+  }
+}
+
+fn require_workflow_run(
+  projected: projection.Projection,
+  run_id: String,
+) -> Result(projection.WorkflowRunStatus, #(String, String)) {
+  projection.workflow_run(projected, run_id)
+  |> result.map_error(fn(_) {
+    #("publication_run_not_found", "publication run not found: " <> run_id)
+  })
+}
+
+fn publication_workflow_identity(
+  projected: projection.Projection,
+  run_id: String,
+  workflow_status: projection.WorkflowRunStatus,
+) -> Result(artifact_publication_planner.PublicationWork, #(String, String)) {
+  case workflow_status {
+    projection.WorkflowRunActive(
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      ..,
+    ) ->
+      Ok(artifact_publication_planner.PublicationWork(
+        kind: artifact_publication_planner.TaskWork,
+        id: issue_id,
+        identifier: issue_identifier,
+        slug: issue_identifier,
+      ))
+    projection.WorkflowRunFinished(issue_id: issue_id, ..)
+    | projection.WorkflowRunInterrupted(issue_id: issue_id, ..)
+    | projection.WorkflowRunSuperseded(issue_id: issue_id, ..) -> {
+      use task_ref <- result.try(
+        projection.workflow_task_ref(projected, run_id)
+        |> result.map_error(fn(_) {
+          #(
+            "publication_retry_task_ref_missing",
+            "workflow run is missing retained task identity for retry: "
+              <> run_id,
+          )
+        }),
+      )
+      let issue_identifier =
+        option_or(task_ref.task_key, task_ref.task_remote_id)
+      Ok(artifact_publication_planner.PublicationWork(
+        kind: artifact_publication_planner.TaskWork,
+        id: issue_id,
+        identifier: issue_identifier,
+        slug: issue_identifier,
+      ))
+    }
   }
 }
 
@@ -617,6 +983,63 @@ fn manifest_detail_option(
   }
 }
 
+fn branch_option(details: PublicationManifestDetails) -> Option(String) {
+  details.branch
+}
+
+fn commit_sha_option(details: PublicationManifestDetails) -> Option(String) {
+  details.commit_sha
+}
+
+fn pr_url_option(details: PublicationManifestDetails) -> Option(String) {
+  details.pr_url
+}
+
+fn planner_error_message(
+  error: artifact_publication_planner.PlannerError,
+) -> String {
+  let artifact_publication_planner.PlannerError(message: message, ..) = error
+  message
+}
+
+fn require_config_path(root: String) -> Result(String, #(String, String)) {
+  case config_path_for_root(root) {
+    Some(config_path) -> Ok(config_path)
+    None ->
+      Error(#(
+        "publication_retry_config_missing",
+        "could not find scherzo.yaml for artifact publication retry; pass --root pointing at a workspace directory with a neighboring scherzo.yaml",
+      ))
+  }
+}
+
+fn config_path_for_root(root: String) -> Option(String) {
+  config_candidates(root) |> first_existing_file
+}
+
+fn config_candidates(root: String) -> List(String) {
+  let root = path.absolute_or_original(root)
+  list.append([path.join(root, "scherzo.yaml")], parent_config_candidates(root))
+}
+
+fn parent_config_candidates(root: String) -> List(String) {
+  case path.dirname(root) {
+    Ok(parent) -> [path.join(parent, "scherzo.yaml")]
+    Error(Nil) -> []
+  }
+}
+
+fn first_existing_file(paths: List(String)) -> Option(String) {
+  case paths {
+    [] -> None
+    [candidate, ..rest] ->
+      case simplifile.is_file(candidate) {
+        Ok(True) -> Some(candidate)
+        Ok(False) | Error(_) -> first_existing_file(rest)
+      }
+  }
+}
+
 fn artifact_store_error_message(error: artifact_store.ArtifactError) -> String {
   case error {
     artifact_store.ArtifactIo(message)
@@ -628,6 +1051,17 @@ fn artifact_store_error_message(error: artifact_store.ArtifactError) -> String {
     artifact_store.ArtifactWriteFailed(write_error) ->
       artifact_store.artifact_write_error_to_string(write_error)
   }
+}
+
+fn option_or(value: Option(String), fallback: String) -> String {
+  case value {
+    Some(value) -> value
+    None -> fallback
+  }
+}
+
+fn option_or_empty(value: Option(String)) -> String {
+  option_or(value, "")
 }
 
 fn optional_string(value: Option(String)) -> String {
