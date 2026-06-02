@@ -1,1 +1,0 @@
-pub const implementation_note = "Linear conformance live-driver implementation lives in scherzo_linear_conformance_live_driver so generic tracker/conformance modules do not import Linear modules directly."

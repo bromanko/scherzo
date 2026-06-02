@@ -1,7 +1,7 @@
 import gleam/dict
 import gleam/option.{None}
-import scherzo/orchestrator/reason
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 

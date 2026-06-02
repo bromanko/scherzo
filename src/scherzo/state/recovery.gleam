@@ -7,11 +7,11 @@ import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/hash
-import scherzo/orchestrator/core
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/reason
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/path
+import scherzo/runtime/identity
+import scherzo/runtime/reason
+import scherzo/runtime/recovery_policy
+import scherzo/runtime/state as orchestrator_state
 import scherzo/state/artifact_store
 import scherzo/state/outbox
 import scherzo/state/projection
@@ -372,8 +372,8 @@ pub fn plan(
   now_ms: Int,
 ) -> Result(RecoveryPlan, RecoveryError) {
   let outbox_recovery = replayable_outbox(projection)
-  let issue_by_id = core.issues_by_id(refreshed_issues)
-  let base = core.new_state(config)
+  let issue_by_id = recovery_policy.issues_by_id(refreshed_issues)
+  let base = recovery_policy.new_state(config)
   let build =
     Build(
       runtime: restore_counters(base, projection),
@@ -2479,7 +2479,7 @@ fn restore_scheduled_retry(
                 "recovery_missing_issue",
               )
             Ok(issue) ->
-              case core.is_terminal(config, issue.state) {
+              case recovery_policy.is_terminal(config, issue.state) {
                 True ->
                   cancel_recovered_retry(
                     build,
@@ -2662,7 +2662,7 @@ fn recover_one_interrupted_run(
   case dict.get(issue_by_id, issue_id) {
     Error(Nil) -> warn(build, "missing_issue_for_interrupted_run:" <> issue_id)
     Ok(issue) ->
-      case core.is_terminal(config, issue.state) {
+      case recovery_policy.is_terminal(config, issue.state) {
         True ->
           recover_terminal_interrupted(
             build,
@@ -2673,7 +2673,7 @@ fn recover_one_interrupted_run(
             workspace_path,
           )
         False ->
-          case core.is_active(config, issue.state) {
+          case recovery_policy.is_active(config, issue.state) {
             True ->
               recover_active_interrupted(
                 build,
@@ -2799,7 +2799,7 @@ fn ensure_retry_or_park_for_counter(
       {
         True -> build
         False -> {
-          let fingerprint = core.issue_fingerprint(issue)
+          let fingerprint = recovery_policy.issue_fingerprint(issue)
           let task_ref = orchestrator_state.issue_ref(issue)
           let identity = orchestrator_state.task_ref_identity(task_ref)
           let parked =
@@ -2848,7 +2848,7 @@ fn ensure_retry_or_park_for_counter(
         True -> build
         False -> {
           let delay_ms =
-            core.backoff_delay(
+            recovery_policy.backoff_delay(
               counter.failure_attempts,
               config.agent.max_retry_backoff_ms,
             )

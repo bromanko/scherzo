@@ -1,9 +1,9 @@
 import gleam/list
-import scherzo/agent/pi_rpc
 import scherzo/agent/turn_result_buffer
+import scherzo/pi/protocol
 
-fn decode(line: String) -> pi_rpc.RpcRecord {
-  let assert Ok(record) = pi_rpc.decode_record(line)
+fn decode(line: String) -> protocol.RpcRecord {
+  let assert Ok(record) = protocol.decode_record(line)
   record
 }
 
@@ -104,10 +104,10 @@ pub fn high_volume_token_stream_retains_only_result_relevant_records_test() {
 }
 
 fn repeat_record(
-  record: pi_rpc.RpcRecord,
+  record: protocol.RpcRecord,
   remaining: Int,
-  acc: List(pi_rpc.RpcRecord),
-) -> List(pi_rpc.RpcRecord) {
+  acc: List(protocol.RpcRecord),
+) -> List(protocol.RpcRecord) {
   case remaining <= 0 {
     True -> acc
     False -> repeat_record(record, remaining - 1, [record, ..acc])

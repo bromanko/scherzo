@@ -7,7 +7,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import scherzo/agent/pi_rpc
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/artifact_publication_config
@@ -21,6 +20,7 @@ import scherzo/json_value
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
 import scherzo/path
+import scherzo/pi/protocol
 import scherzo/result_artifact
 import scherzo/session/event as session_event
 import scherzo/session/tokens as session_tokens
@@ -1059,7 +1059,7 @@ fn structured_output_downstream_dag() -> workflow_dag.WorkflowDag {
   dag
 }
 
-fn final_message_record(content: String) -> pi_rpc.RpcRecord {
+fn final_message_record(content: String) -> protocol.RpcRecord {
   let line =
     json.object([
       #("type", json.string("agent_end")),
@@ -1077,7 +1077,7 @@ fn final_message_record(content: String) -> pi_rpc.RpcRecord {
       ),
     ])
     |> json.to_string
-  let assert Ok(record) = pi_rpc.decode_record(line)
+  let assert Ok(record) = protocol.decode_record(line)
   record
 }
 
@@ -3927,6 +3927,81 @@ pub fn workflow_run_step_worker_crash_returns_failure_test() {
   assert failure.reason == "step_worker_crashed:crash"
   assert receive_event(subject) == "prepare:crash:main:"
   assert receive_event(subject) == "run:crash"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
+pub fn workflow_run_after_step_crash_returns_failure_for_cleanup_step_test() {
+  use <- expected_crash.suppressing([
+    "test/workflow_run_test.gleam",
+    "workflow_run_after_step_crash_returns_failure_for_cleanup_step_test",
+    "after step crashed",
+  ])
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: cleanup\n    kind: command\n    run: cleanup\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      after_step: fn(_issue, step_id, _prepared, _orchestrator, _profile) {
+        process.send(subject, "after:" <> step_id)
+        panic as "after step crashed"
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  assert failure.reason == "after_step_crashed:cleanup"
+  assert receive_event(subject) == "prepare:cleanup:main:"
+  assert receive_event(subject) == "run:cleanup"
+  assert receive_event(subject) == "after:cleanup"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
+pub fn workflow_run_after_step_down_returns_failure_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: cleanup\n    kind: command\n    run: cleanup\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      after_step: fn(_issue, step_id, _prepared, _orchestrator, _profile) {
+        process.send(subject, "after:" <> step_id)
+        process.kill(process.self())
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  assert failure.reason == "after_step_killed:cleanup"
+  assert receive_event(subject) == "prepare:cleanup:main:"
+  assert receive_event(subject) == "run:cleanup"
+  assert receive_event(subject) == "after:cleanup"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
   test_async.assert_no_extra_message_within(subject, 50)

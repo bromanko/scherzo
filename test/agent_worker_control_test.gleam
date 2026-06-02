@@ -4,7 +4,7 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/pi_event
-import scherzo/agent/runner
+import scherzo/agent/run_attempt as runner
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types

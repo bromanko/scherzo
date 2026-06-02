@@ -1,6 +1,6 @@
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/orchestrator/identity
+import scherzo/runtime/identity
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -99,7 +99,7 @@ pub fn high_risk_orchestrator_maps_use_task_identity_keys_test() {
   let assert Ok(transition_types_source) =
     simplifile.read("src/scherzo/orchestrator/transition_types.gleam")
   let assert Ok(state_source) =
-    simplifile.read("src/scherzo/orchestrator/state.gleam")
+    simplifile.read("src/scherzo/runtime/state.gleam")
 
   assert !string.contains(
     transition_types_source,

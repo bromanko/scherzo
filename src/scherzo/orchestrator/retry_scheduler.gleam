@@ -1,6 +1,6 @@
 import gleam/dict.{type Dict}
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/identity
+import scherzo/runtime/state as orchestrator_state
 import scherzo/task
 
 pub opaque type State(timer) {

@@ -2,12 +2,12 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
-import scherzo/orchestrator/identity
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_lifecycle
 import scherzo/orchestrator/worker_registry
 import scherzo/result_artifact
+import scherzo/runtime/identity
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue

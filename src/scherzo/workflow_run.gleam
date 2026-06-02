@@ -11,7 +11,6 @@ import scherzo/artifact_publication_recording
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/orchestrator/schedule_core
-import scherzo/process_ext
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/structured_output
@@ -31,9 +30,13 @@ import scherzo/workflow_run/contract_io_error as contract_error
 import scherzo/workflow_run/recovery_execution
 import scherzo/workflow_run/step_context as step_context_internal
 import scherzo/workflow_run/step_execution
+import scherzo/workflow_run/step_worker_pool.{
+  type PreparedStart, type StepBatchError, type StepBatchOutcome,
+  type StepExecutionResult,
+}
 import scherzo/workflow_run/terminal_policy
 import scherzo/workflow_run/workspace_preparation.{
-  type PreparedStart, PrepareReadyFailure, PreparedBatch, PreparedStart,
+  PrepareReadyFailure, PreparedBatch,
 }
 import scherzo/workflow_run/workstream_handoff
 import scherzo/workflow_scheduler
@@ -241,55 +244,9 @@ pub type ResumeState {
   )
 }
 
-type StepExecutionResult {
-  StepExecutionResult(
-    step_id: String,
-    artifact: step_artifact.StepArtifact,
-    tokens: session_tokens.TokenTotals,
-    final_issue: Option(tracker_issue.Issue),
-    turns: Int,
-  )
-}
-
-type SpawnedStepWorker {
-  SpawnedStepWorker(step_id: String, pid: process.Pid, monitor: process.Monitor)
-}
-
-type StepBatchMessage {
-  StepBatchResult(StepExecutionResult)
-  StepBatchDown(process.Down)
-  StepBatchLinkedExit
-}
-
-type StepBatchOutcome {
-  StepBatchCompleted(List(StepExecutionResult))
-  StepBatchFatal(StepExecutionResult)
-}
-
 type WorkflowStartError {
   WorkflowRunRootFailed(error.WorkspaceError)
   WorkflowStartCheckpointFailed(workflow_checkpoint.CheckpointError)
-}
-
-type StepBatchError {
-  StepWorkerDown(step_id: String, reason: process.ExitReason)
-}
-
-type StepBatchStartError {
-  StepBatchStartError(reason: String, cleanup_allowed: Bool)
-}
-
-type AfterStepMessage {
-  AfterStepCompleted
-  AfterStepDown(process.Down)
-  AfterStepLinkedExit
-}
-
-type AfterStepError {
-  AfterStepExitedWithoutResult(step_id: String)
-  AfterStepKilled(step_id: String)
-  AfterStepCrashed(step_id: String)
-  AfterStepMonitorDown(step_id: String)
 }
 
 pub fn default_dependencies() -> Dependencies {
@@ -1782,6 +1739,7 @@ fn loop(
               prepared_starts,
             )) -> {
               let failure_run_root = option.or(prepared_run_root, run_root)
+              let prepared_starts = worker_prepared_starts(prepared_starts)
               mark_workflow_failed_terminal(
                 dependencies,
                 recovery_evidence,
@@ -1815,6 +1773,7 @@ fn loop(
               run_root,
               attempt_indexes,
             )) -> {
+              let prepared_starts = worker_prepared_starts(prepared_starts)
               let scheduler_state =
                 mark_all_running(scheduler_state, prepared_starts)
               execute_prepared_steps(
@@ -1848,6 +1807,16 @@ fn loop(
       }
     }
   }
+}
+
+fn worker_prepared_starts(
+  starts: List(workspace_preparation.PreparedStart),
+) -> List(PreparedStart) {
+  list.map(starts, fn(start) {
+    let workspace_preparation.PreparedStart(step: step, workspace: workspace) =
+      start
+    step_worker_pool.prepared_start(step, workspace)
+  })
 }
 
 // The scheduler can return a ready batch larger than one when independent steps
@@ -1921,7 +1890,10 @@ fn execute_prepared_steps(
           profile,
         )
       {
-        Error(StepBatchStartError(reason, batch_cleanup_allowed)) -> {
+        Error(batch_error) -> {
+          let reason = step_worker_pool.describe_step_batch_error(batch_error)
+          let batch_cleanup_allowed =
+            step_worker_pool.step_batch_error_cleanup_allowed(batch_error)
           mark_workflow_failed_terminal(
             dependencies,
             recovery_evidence,
@@ -1949,64 +1921,71 @@ fn execute_prepared_steps(
             failed_step_id: None,
           ))
         }
-        Ok(StepBatchCompleted(results)) -> {
-          let result_by_step =
-            results
-            |> list.map(fn(result) { #(result.step_id, result) })
-            |> dict.from_list
-          apply_prepared_results(
-            starts,
-            result_by_step,
-            issue,
-            dag,
-            orchestrator,
-            tracker_client,
-            secrets,
-            run_id,
-            workflow_fingerprint,
-            contract_outputs_recorded,
-            recovery_evidence,
-            dependencies,
-            scheduler_state,
-            artifacts,
-            prepared_workspaces,
-            run_root,
-            attempt_indexes,
-            tokens,
-            final_issue,
-            turns,
-            True,
-            recovered_execution,
-            pi_session_continuations,
-            profile,
-          )
-        }
-        Ok(StepBatchFatal(result)) ->
-          finish_fatal_batch_result(
-            starts,
-            result,
-            issue,
-            dag,
-            orchestrator,
-            tracker_client,
-            secrets,
-            run_id,
-            workflow_fingerprint,
-            contract_outputs_recorded,
-            recovery_evidence,
-            dependencies,
-            scheduler_state,
-            artifacts,
-            prepared_workspaces,
-            run_root,
-            attempt_indexes,
-            tokens,
-            final_issue,
-            turns,
-            True,
-            recovered_execution,
-            pi_session_continuations,
-            profile,
+        Ok(outcome) ->
+          step_worker_pool.fold_step_batch_outcome(
+            outcome,
+            fn(results) {
+              let result_by_step =
+                results
+                |> list.map(fn(result) {
+                  #(step_worker_pool.step_result_step_id(result), result)
+                })
+                |> dict.from_list
+              apply_prepared_results(
+                starts,
+                result_by_step,
+                issue,
+                dag,
+                orchestrator,
+                tracker_client,
+                secrets,
+                run_id,
+                workflow_fingerprint,
+                contract_outputs_recorded,
+                recovery_evidence,
+                dependencies,
+                scheduler_state,
+                artifacts,
+                prepared_workspaces,
+                run_root,
+                attempt_indexes,
+                tokens,
+                final_issue,
+                turns,
+                True,
+                recovered_execution,
+                pi_session_continuations,
+                profile,
+              )
+            },
+            fn(result) {
+              finish_fatal_batch_result(
+                starts,
+                result,
+                issue,
+                dag,
+                orchestrator,
+                tracker_client,
+                secrets,
+                run_id,
+                workflow_fingerprint,
+                contract_outputs_recorded,
+                recovery_evidence,
+                dependencies,
+                scheduler_state,
+                artifacts,
+                prepared_workspaces,
+                run_root,
+                attempt_indexes,
+                tokens,
+                final_issue,
+                turns,
+                True,
+                recovered_execution,
+                pi_session_continuations,
+                profile,
+              )
+            },
           )
       }
     }
@@ -2024,412 +2003,75 @@ fn run_prepared_batch(
   artifacts: Dict(String, step_artifact.StepArtifact),
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
   profile: config_types.WorkspaceHookProfile,
-) -> Result(StepBatchOutcome, StepBatchStartError) {
-  let was_trapping_exits = process_ext.trap_exits(True)
-  let subject = process.new_subject()
-  let spawned =
-    spawn_prepared_steps(
-      starts,
-      subject,
-      issue,
-      dag,
-      orchestrator,
-      tracker_client,
-      secrets,
-      dependencies,
-      artifacts,
-      pi_session_continuations,
-      profile,
-    )
-  case spawned {
-    Error(error) -> {
-      let _previous_trap_exits = process_ext.trap_exits(was_trapping_exits)
-      Error(error)
-    }
-    Ok(workers) -> {
-      let selector =
-        process.new_selector()
-        |> process.select_map(subject, StepBatchResult)
-        |> process.select_monitors(StepBatchDown)
-        |> process.select_trapped_exits(fn(_) { StepBatchLinkedExit })
-      let result =
-        collect_step_results(
-          count_prepared(starts),
-          selector,
-          monitor_to_step(workers, dict.new()),
-          step_to_monitor(workers, dict.new()),
-          monitor_to_pid(workers, dict.new()),
-          failure_policy_by_step(starts, dict.new()),
-          [],
-        )
-        |> result.map_error(fn(error) {
-          StepBatchStartError(step_batch_error_reason(error), True)
-        })
-      let _previous_trap_exits = process_ext.trap_exits(was_trapping_exits)
-      result
-    }
-  }
-}
-
-fn spawn_prepared_steps(
-  starts: List(PreparedStart),
-  subject: process.Subject(StepExecutionResult),
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  tracker_client: tracker.Client,
-  secrets: List(String),
-  dependencies: Dependencies,
-  artifacts: Dict(String, step_artifact.StepArtifact),
-  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
-  profile: config_types.WorkspaceHookProfile,
-) -> Result(List(SpawnedStepWorker), StepBatchStartError) {
-  spawn_prepared_steps_loop(
+) -> Result(StepBatchOutcome, StepBatchError) {
+  step_worker_pool.run_prepared_batch(
     starts,
-    subject,
-    issue,
-    dag,
-    orchestrator,
-    tracker_client,
-    secrets,
-    dependencies,
-    artifacts,
-    pi_session_continuations,
-    profile,
-    [],
+    fn(step, workspace) {
+      start_prepared_step(
+        step,
+        workspace,
+        orchestrator,
+        dependencies,
+        pi_session_continuations,
+      )
+    },
+    fn(step, workspace) {
+      let result =
+        step_execution.run(
+          step,
+          workspace,
+          issue,
+          dag,
+          orchestrator,
+          tracker_client,
+          secrets,
+          step_execution_dependencies(dependencies),
+          artifacts,
+          pi_session_continuations,
+          profile,
+        )
+      #(result.artifact, result.tokens, result.final_issue, result.turns)
+    },
   )
 }
 
-fn spawn_prepared_steps_loop(
-  starts: List(PreparedStart),
-  subject: process.Subject(StepExecutionResult),
-  issue: tracker_issue.Issue,
-  dag: workflow_dag.WorkflowDag,
+fn start_prepared_step(
+  step: workflow_dag.WorkflowStep,
+  workspace: workspace_run.PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
-  tracker_client: tracker.Client,
-  secrets: List(String),
   dependencies: Dependencies,
-  artifacts: Dict(String, step_artifact.StepArtifact),
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
-  profile: config_types.WorkspaceHookProfile,
-  acc: List(SpawnedStepWorker),
-) -> Result(List(SpawnedStepWorker), StepBatchStartError) {
-  case starts {
-    [] -> Ok(list.reverse(acc))
-    [PreparedStart(step, workspace), ..rest] -> {
-      let session_id =
-        workflow_identity.step_session_id(
-          workspace.run_id,
-          step.id,
-          workspace.attempt_index,
-        )
-      let start_result = case dict.get(pi_session_continuations, step.id) {
-        Ok(continuation) ->
-          dependencies.checkpoint.step_continuation_started(
-            workspace.run_id,
-            workspace.workflow_id,
-            step.id,
-            workspace.attempt_index,
-            continuation.session_id,
-          )
-        Error(Nil) ->
-          dependencies.checkpoint.step_started(
-            workspace.run_id,
-            workspace.workflow_id,
-            step.id,
-            workspace.attempt_index,
-            session_id,
-            None,
-            step_execution.continuation_capable(step, orchestrator),
-          )
-      }
-      case start_result {
-        Error(error) -> {
-          terminate_step_workers(monitor_to_pid(acc, dict.new()))
-          Error(StepBatchStartError(
-            reason: "checkpoint_failed:"
-              <> workflow_checkpoint.describe_error(error),
-            cleanup_allowed: acc != [],
-          ))
-        }
-        Ok(Nil) -> {
-          let pid =
-            process.spawn(fn() {
-              let result =
-                step_execution.run(
-                  step,
-                  workspace,
-                  issue,
-                  dag,
-                  orchestrator,
-                  tracker_client,
-                  secrets,
-                  step_execution_dependencies(dependencies),
-                  artifacts,
-                  pi_session_continuations,
-                  profile,
-                )
-              process.send(
-                subject,
-                StepExecutionResult(
-                  step_id: step.id,
-                  artifact: result.artifact,
-                  tokens: result.tokens,
-                  final_issue: result.final_issue,
-                  turns: result.turns,
-                ),
-              )
-            })
-          let monitor = process.monitor(pid)
-          spawn_prepared_steps_loop(
-            rest,
-            subject,
-            issue,
-            dag,
-            orchestrator,
-            tracker_client,
-            secrets,
-            dependencies,
-            artifacts,
-            pi_session_continuations,
-            profile,
-            [
-              SpawnedStepWorker(step_id: step.id, pid: pid, monitor: monitor),
-              ..acc
-            ],
-          )
-        }
-      }
-    }
-  }
-}
-
-fn count_prepared(starts: List(PreparedStart)) -> Int {
-  case starts {
-    [] -> 0
-    [_, ..rest] -> 1 + count_prepared(rest)
-  }
-}
-
-fn monitor_to_step(
-  workers: List(SpawnedStepWorker),
-  acc: Dict(process.Monitor, String),
-) -> Dict(process.Monitor, String) {
-  case workers {
-    [] -> acc
-    [SpawnedStepWorker(step_id: step_id, monitor: monitor, ..), ..rest] ->
-      monitor_to_step(rest, dict.insert(acc, monitor, step_id))
-  }
-}
-
-fn step_to_monitor(
-  workers: List(SpawnedStepWorker),
-  acc: Dict(String, process.Monitor),
-) -> Dict(String, process.Monitor) {
-  case workers {
-    [] -> acc
-    [SpawnedStepWorker(step_id: step_id, monitor: monitor, ..), ..rest] ->
-      step_to_monitor(rest, dict.insert(acc, step_id, monitor))
-  }
-}
-
-fn monitor_to_pid(
-  workers: List(SpawnedStepWorker),
-  acc: Dict(process.Monitor, process.Pid),
-) -> Dict(process.Monitor, process.Pid) {
-  case workers {
-    [] -> acc
-    [SpawnedStepWorker(pid: pid, monitor: monitor, ..), ..rest] ->
-      monitor_to_pid(rest, dict.insert(acc, monitor, pid))
-  }
-}
-
-fn failure_policy_by_step(
-  starts: List(PreparedStart),
-  acc: Dict(String, workflow_dag.FailurePolicy),
-) -> Dict(String, workflow_dag.FailurePolicy) {
-  case starts {
-    [] -> acc
-    [PreparedStart(step: step, ..), ..rest] ->
-      failure_policy_by_step(rest, dict.insert(acc, step.id, step.on_failure))
-  }
-}
-
-fn is_fatal_result(
-  result: StepExecutionResult,
-  failure_policies: Dict(String, workflow_dag.FailurePolicy),
-) -> Bool {
-  case step_execution.is_recovery_resume_validation_artifact(result.artifact) {
-    True -> True
-    False ->
-      case step_artifact.succeeded(result.artifact.status) {
-        True -> False
-        False ->
-          case dict.get(failure_policies, result.step_id) {
-            Ok(workflow_dag.ContinueWorkflow) -> False
-            _ -> True
-          }
-      }
-  }
-}
-
-fn collect_step_results(
-  remaining: Int,
-  selector: process.Selector(StepBatchMessage),
-  monitor_to_step: Dict(process.Monitor, String),
-  step_to_monitor: Dict(String, process.Monitor),
-  monitor_to_pid: Dict(process.Monitor, process.Pid),
-  failure_policies: Dict(String, workflow_dag.FailurePolicy),
-  acc: List(StepExecutionResult),
-) -> Result(StepBatchOutcome, StepBatchError) {
-  case remaining <= 0 {
-    True -> Ok(StepBatchCompleted(acc))
-    False ->
-      case process.selector_receive_forever(selector) {
-        StepBatchResult(result) ->
-          case dict.get(step_to_monitor, result.step_id) {
-            Error(Nil) ->
-              collect_step_results(
-                remaining,
-                selector,
-                monitor_to_step,
-                step_to_monitor,
-                monitor_to_pid,
-                failure_policies,
-                acc,
-              )
-            Ok(monitor) -> {
-              process.demonitor_process(monitor)
-              let monitor_to_step = dict.delete(monitor_to_step, monitor)
-              let step_to_monitor = dict.delete(step_to_monitor, result.step_id)
-              let monitor_to_pid = dict.delete(monitor_to_pid, monitor)
-              case is_fatal_result(result, failure_policies) {
-                True -> {
-                  terminate_step_workers(monitor_to_pid)
-                  Ok(StepBatchFatal(result))
-                }
-                False ->
-                  collect_step_results(
-                    remaining - 1,
-                    selector,
-                    monitor_to_step,
-                    step_to_monitor,
-                    monitor_to_pid,
-                    failure_policies,
-                    [result, ..acc],
-                  )
-              }
-            }
-          }
-        StepBatchDown(down) ->
-          handle_step_worker_down(
-            down,
-            selector,
-            remaining,
-            monitor_to_step,
-            step_to_monitor,
-            monitor_to_pid,
-            failure_policies,
-            acc,
-          )
-        StepBatchLinkedExit ->
-          collect_step_results(
-            remaining,
-            selector,
-            monitor_to_step,
-            step_to_monitor,
-            monitor_to_pid,
-            failure_policies,
-            acc,
-          )
-      }
-  }
-}
-
-fn handle_step_worker_down(
-  down: process.Down,
-  selector: process.Selector(StepBatchMessage),
-  remaining: Int,
-  monitor_to_step: Dict(process.Monitor, String),
-  step_to_monitor: Dict(String, process.Monitor),
-  monitor_to_pid: Dict(process.Monitor, process.Pid),
-  failure_policies: Dict(String, workflow_dag.FailurePolicy),
-  acc: List(StepExecutionResult),
-) -> Result(StepBatchOutcome, StepBatchError) {
-  case down {
-    process.ProcessDown(monitor, _, reason) ->
-      case dict.get(monitor_to_step, monitor) {
-        Error(Nil) ->
-          collect_step_results(
-            remaining,
-            selector,
-            monitor_to_step,
-            step_to_monitor,
-            monitor_to_pid,
-            failure_policies,
-            acc,
-          )
-        Ok(step_id) -> {
-          terminate_step_workers(monitor_to_pid)
-          Error(StepWorkerDown(step_id, reason))
-        }
-      }
-    process.PortDown(_, _, _) ->
-      collect_step_results(
-        remaining,
-        selector,
-        monitor_to_step,
-        step_to_monitor,
-        monitor_to_pid,
-        failure_policies,
-        acc,
+) -> Result(Nil, String) {
+  let session_id =
+    workflow_identity.step_session_id(
+      workspace.run_id,
+      step.id,
+      workspace.attempt_index,
+    )
+  let start_result = case dict.get(pi_session_continuations, step.id) {
+    Ok(continuation) ->
+      dependencies.checkpoint.step_continuation_started(
+        workspace.run_id,
+        workspace.workflow_id,
+        step.id,
+        workspace.attempt_index,
+        continuation.session_id,
+      )
+    Error(Nil) ->
+      dependencies.checkpoint.step_started(
+        workspace.run_id,
+        workspace.workflow_id,
+        step.id,
+        workspace.attempt_index,
+        session_id,
+        None,
+        step_execution.continuation_capable(step, orchestrator),
       )
   }
-}
-
-fn terminate_step_workers(
-  monitor_to_pid: Dict(process.Monitor, process.Pid),
-) -> Nil {
-  kill_pids(dict.values(monitor_to_pid))
-  demonitor_all(dict.keys(monitor_to_pid))
-}
-
-fn kill_pids(pids: List(process.Pid)) -> Nil {
-  case pids {
-    [] -> Nil
-    [pid, ..rest] -> {
-      process.unlink(pid)
-      process.kill(pid)
-      kill_pids(rest)
-    }
-  }
-}
-
-fn demonitor_all(monitors: List(process.Monitor)) -> Nil {
-  case monitors {
-    [] -> Nil
-    [monitor, ..rest] -> {
-      process.demonitor_process(monitor)
-      demonitor_all(rest)
-    }
-  }
-}
-
-fn step_worker_down_reason(
-  step_id: String,
-  reason: process.ExitReason,
-) -> String {
-  case reason {
-    process.Normal -> "step_worker_exited_without_result:" <> step_id
-    process.Killed -> "step_worker_killed:" <> step_id
-    process.Abnormal(_) -> "step_worker_crashed:" <> step_id
-  }
-}
-
-fn step_batch_error_reason(error: StepBatchError) -> String {
-  case error {
-    StepWorkerDown(step_id, reason) -> step_worker_down_reason(step_id, reason)
-  }
+  start_result
+  |> result.map_error(fn(error) {
+    "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
+  })
 }
 
 fn finish_fatal_batch_result(
@@ -2458,8 +2100,12 @@ fn finish_fatal_batch_result(
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
-  let artifacts = dict.insert(artifacts, result.step_id, result.artifact)
-  case prepared_start_by_step(starts, result.step_id) {
+  let result_step_id = step_worker_pool.step_result_step_id(result)
+  let result_artifact = step_worker_pool.step_result_artifact(result)
+  let result_tokens = step_worker_pool.step_result_tokens(result)
+  let result_turns = step_worker_pool.step_result_turns(result)
+  let artifacts = dict.insert(artifacts, result_step_id, result_artifact)
+  case prepared_start_by_step(starts, result_step_id) {
     Error(Nil) ->
       terminal_fatal_batch_failure(
         starts,
@@ -2481,7 +2127,9 @@ fn finish_fatal_batch_result(
         profile,
         checkpoint_error: None,
       )
-    Ok(PreparedStart(step, workspace)) -> {
+    Ok(start) -> {
+      let step = step_worker_pool.prepared_start_step(start)
+      let workspace = step_worker_pool.prepared_start_workspace(start)
       let finished =
         workflow_checkpoint.StepFinished(
           run_id: run_id,
@@ -2491,8 +2139,8 @@ fn finish_fatal_batch_result(
           outcome: workflow_outcome.failed_fatal,
           workspace_name: workspace.workspace_name,
           workspace_path: workspace.path,
-          token_total: result.tokens.total,
-          turns: result.turns,
+          token_total: result_tokens.total,
+          turns: result_turns,
         )
       case
         finalize_step_attempt(
@@ -2503,7 +2151,7 @@ fn finish_fatal_batch_result(
           orchestrator,
           profile,
           finished,
-          result.artifact,
+          result_artifact,
         )
       {
         Error(error) ->
@@ -2540,7 +2188,7 @@ fn finish_fatal_batch_result(
                 execute_step_recovery(
                   step,
                   workspace,
-                  result.artifact,
+                  result_artifact,
                   config,
                   issue,
                   dag,
@@ -2560,7 +2208,7 @@ fn finish_fatal_batch_result(
                     mark_batch_pending(scheduler_state, starts)
                   let tokens =
                     add_tokens(
-                      add_tokens(tokens, result.tokens),
+                      add_tokens(tokens, result_tokens),
                       recovery_tokens,
                     )
                   let final_issue =
@@ -2584,7 +2232,7 @@ fn finish_fatal_batch_result(
                     attempt_indexes,
                     tokens,
                     final_issue,
-                    turns + result.turns + recovery_turns,
+                    turns + result_turns + recovery_turns,
                     cleanup_allowed,
                     pi_session_continuations,
                     profile,
@@ -2615,8 +2263,8 @@ fn finish_fatal_batch_result(
                     artifacts,
                     prepared_workspaces,
                     run_root,
-                    tokens.total + result.tokens.total + recovery_tokens.total,
-                    turns + result.turns + recovery_turns,
+                    tokens.total + result_tokens.total + recovery_tokens.total,
+                    turns + result_turns + recovery_turns,
                     cleanup_allowed,
                     profile,
                     checkpoint_error: None,
@@ -2638,8 +2286,8 @@ fn finish_fatal_batch_result(
                 artifacts,
                 prepared_workspaces,
                 run_root,
-                tokens.total + result.tokens.total,
-                turns + result.turns,
+                tokens.total + result_tokens.total,
+                turns + result_turns,
                 cleanup_allowed,
                 profile,
                 checkpoint_error: None,
@@ -2670,6 +2318,8 @@ fn terminal_fatal_batch_failure(
   profile: config_types.WorkspaceHookProfile,
   checkpoint_error checkpoint_error: Option(workflow_checkpoint.CheckpointError),
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  let result_step_id = step_worker_pool.step_result_step_id(result)
+  let result_artifact = step_worker_pool.step_result_artifact(result)
   terminal_policy.finish_fatal_step_failure(
     terminal_policy.FatalStepFailureInput(
       issue: issue,
@@ -2687,9 +2337,9 @@ fn terminal_fatal_batch_failure(
       workflow_finished_turns: workflow_finished_turns,
       cleanup_allowed: cleanup_allowed,
       profile: profile,
-      failed_step_id: result.step_id,
-      failed_artifact: result.artifact,
-      agent_reason: step_execution.agent_reason_for_artifact(result.artifact),
+      failed_step_id: result_step_id,
+      failed_artifact: result_artifact,
+      agent_reason: step_execution.agent_reason_for_artifact(result_artifact),
       checkpoint_error: checkpoint_error,
       interrupt_active_attempts: fn() {
         mark_prepared_attempts_interrupted(
@@ -2697,7 +2347,7 @@ fn terminal_fatal_batch_failure(
           dependencies,
           dag.id,
           "fatal_sibling_finished",
-          Some(result.step_id),
+          Some(result_step_id),
         )
       },
     ),
@@ -2731,9 +2381,7 @@ fn finalize_step_attempt(
       orchestrator,
       profile,
     )
-    |> result.map_error(fn(error) {
-      workflow_checkpoint.CheckpointAppendFailed(after_step_error_reason(error))
-    }),
+    |> result.map_error(workflow_checkpoint.CheckpointAppendFailed),
   )
   use Nil <- result.try(dependencies.checkpoint.step_finished(
     finished,
@@ -2824,8 +2472,10 @@ fn mark_batch_pending(
 ) -> workflow_scheduler.SchedulerState {
   case starts {
     [] -> state
-    [PreparedStart(step: step, ..), ..rest] ->
-      mark_batch_pending(workflow_scheduler.mark_pending(state, step.id), rest)
+    [start, ..rest] -> {
+      let step_id = step_worker_pool.prepared_start_step_id(start)
+      mark_batch_pending(workflow_scheduler.mark_pending(state, step_id), rest)
+    }
   }
 }
 
@@ -2838,7 +2488,9 @@ fn mark_prepared_attempts_interrupted(
 ) -> Nil {
   case starts {
     [] -> Nil
-    [PreparedStart(step: step, workspace: workspace), ..rest] -> {
+    [start, ..rest] -> {
+      let step = step_worker_pool.prepared_start_step(start)
+      let workspace = step_worker_pool.prepared_start_workspace(start)
       case skipped_step_id != Some(step.id) {
         True ->
           ignore_secondary_checkpoint_result(
@@ -2870,8 +2522,7 @@ fn prepared_start_by_step(
   case starts {
     [] -> Error(Nil)
     [start, ..rest] -> {
-      let PreparedStart(step: step, ..) = start
-      case step.id == step_id {
+      case step_worker_pool.prepared_start_step_id(start) == step_id {
         True -> Ok(start)
         False -> prepared_start_by_step(rest, step_id)
       }
@@ -2931,7 +2582,9 @@ fn apply_prepared_results(
         pi_session_continuations,
         profile,
       )
-    [PreparedStart(step: step, workspace: workspace), ..rest] -> {
+    [start, ..rest] -> {
+      let step = step_worker_pool.prepared_start_step(start)
+      let workspace = step_worker_pool.prepared_start_workspace(start)
       case dict.get(result_by_step, step.id) {
         Error(Nil) -> {
           mark_workflow_failed_terminal(
@@ -2962,9 +2615,14 @@ fn apply_prepared_results(
           ))
         }
         Ok(result) -> {
+          let result_artifact = step_worker_pool.step_result_artifact(result)
+          let result_tokens = step_worker_pool.step_result_tokens(result)
+          let result_turns = step_worker_pool.step_result_turns(result)
+          let result_final_issue =
+            step_worker_pool.step_result_final_issue(result)
           let outcome =
             workflow_checkpoint.step_outcome(
-              result.artifact,
+              result_artifact,
               on_failure: step.on_failure == workflow_dag.ContinueWorkflow,
             )
           let finished =
@@ -2976,13 +2634,13 @@ fn apply_prepared_results(
               outcome: outcome,
               workspace_name: workspace.workspace_name,
               workspace_path: workspace.path,
-              token_total: result.tokens.total,
-              turns: result.turns,
+              token_total: result_tokens.total,
+              turns: result_turns,
             )
           case
             dependencies.checkpoint.write_step_artifact(
               finished,
-              result.artifact,
+              result_artifact,
             )
           {
             Error(error) -> {
@@ -2993,8 +2651,8 @@ fn apply_prepared_results(
                 dag.id,
                 issue.id,
                 task_ref(issue),
-                tokens.total + result.tokens.total,
-                turns + result.turns,
+                tokens.total + result_tokens.total,
+                turns + result_turns,
                 starts,
               )
               let cleanup_suffix =
@@ -3027,7 +2685,7 @@ fn apply_prepared_results(
                 )
               {
                 Error(error) -> {
-                  let reason = after_step_error_reason(error)
+                  let reason = error
                   mark_workflow_failed_terminal(
                     dependencies,
                     recovery_evidence,
@@ -3035,8 +2693,8 @@ fn apply_prepared_results(
                     dag.id,
                     issue.id,
                     task_ref(issue),
-                    tokens.total + result.tokens.total,
-                    turns + result.turns,
+                    tokens.total + result_tokens.total,
+                    turns + result_turns,
                     starts,
                   )
                   let cleanup_suffix =
@@ -3070,8 +2728,8 @@ fn apply_prepared_results(
                         dag.id,
                         issue.id,
                         task_ref(issue),
-                        tokens.total + result.tokens.total,
-                        turns + result.turns,
+                        tokens.total + result_tokens.total,
+                        turns + result_turns,
                         starts,
                       )
                       let cleanup_suffix =
@@ -3094,16 +2752,16 @@ fn apply_prepared_results(
                     }
                     Ok(Nil) -> {
                       let artifacts =
-                        dict.insert(artifacts, step.id, result.artifact)
+                        dict.insert(artifacts, step.id, result_artifact)
                       let scheduler_state =
                         workflow_scheduler.mark_finished(
                           scheduler_state,
                           step.id,
-                          result.artifact,
+                          result_artifact,
                         )
-                      let tokens = add_tokens(tokens, result.tokens)
-                      let final_issue = case result.final_issue {
-                        Some(_) -> result.final_issue
+                      let tokens = add_tokens(tokens, result_tokens)
+                      let final_issue = case result_final_issue {
+                        Some(_) -> result_final_issue
                         None -> final_issue
                       }
                       apply_prepared_results(
@@ -3126,7 +2784,7 @@ fn apply_prepared_results(
                         attempt_indexes,
                         tokens,
                         final_issue,
-                        turns + result.turns,
+                        turns + result_turns,
                         cleanup_allowed,
                         recovered_execution,
                         pi_session_continuations,
@@ -3149,70 +2807,11 @@ fn run_after_step(
   workspace: workspace_run.PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
-) -> Result(Nil, AfterStepError) {
-  let was_trapping_exits = process_ext.trap_exits(True)
-  let subject = process.new_subject()
-  let pid =
-    process.spawn(fn() {
-      dependencies.after_step(issue, step_id, workspace, orchestrator, profile)
-      process.send(subject, Nil)
-    })
-  let monitor = process.monitor(pid)
-  let selector =
-    process.new_selector()
-    |> process.select_map(subject, fn(_) { AfterStepCompleted })
-    |> process.select_specific_monitor(monitor, AfterStepDown)
-    |> process.select_trapped_exits(fn(_) { AfterStepLinkedExit })
-  let result = receive_after_step_result(selector, monitor, step_id)
-  let _previous_trap_exits = process_ext.trap_exits(was_trapping_exits)
-  result
-}
-
-fn receive_after_step_result(
-  selector: process.Selector(AfterStepMessage),
-  monitor: process.Monitor,
-  step_id: String,
-) -> Result(Nil, AfterStepError) {
-  case process.selector_receive_forever(selector) {
-    AfterStepCompleted -> {
-      process.demonitor_process(monitor)
-      Ok(Nil)
-    }
-    AfterStepDown(down) -> after_step_down_result(step_id, down)
-    AfterStepLinkedExit -> receive_after_step_result(selector, monitor, step_id)
-  }
-}
-
-fn after_step_down_result(
-  step_id: String,
-  down: process.Down,
-) -> Result(Nil, AfterStepError) {
-  case down {
-    process.ProcessDown(_, _, reason) ->
-      Error(after_step_error_from_exit(step_id, reason))
-    process.PortDown(_, _, _) -> Error(AfterStepMonitorDown(step_id))
-  }
-}
-
-fn after_step_error_from_exit(
-  step_id: String,
-  reason: process.ExitReason,
-) -> AfterStepError {
-  case reason {
-    process.Normal -> AfterStepExitedWithoutResult(step_id)
-    process.Killed -> AfterStepKilled(step_id)
-    process.Abnormal(_) -> AfterStepCrashed(step_id)
-  }
-}
-
-fn after_step_error_reason(error: AfterStepError) -> String {
-  case error {
-    AfterStepExitedWithoutResult(step_id) ->
-      "after_step_exited_without_result:" <> step_id
-    AfterStepKilled(step_id) -> "after_step_killed:" <> step_id
-    AfterStepCrashed(step_id) -> "after_step_crashed:" <> step_id
-    AfterStepMonitorDown(step_id) -> "after_step_monitor_down:" <> step_id
-  }
+) -> Result(Nil, String) {
+  step_worker_pool.run_after_step(step_id, fn() {
+    dependencies.after_step(issue, step_id, workspace, orchestrator, profile)
+  })
+  |> result.map_error(step_worker_pool.describe_after_step_error)
 }
 
 fn mark_all_running(
@@ -3221,8 +2820,10 @@ fn mark_all_running(
 ) -> workflow_scheduler.SchedulerState {
   case starts {
     [] -> state
-    [PreparedStart(step: step, ..), ..rest] ->
-      mark_all_running(workflow_scheduler.mark_running(state, step.id), rest)
+    [start, ..rest] -> {
+      let step_id = step_worker_pool.prepared_start_step_id(start)
+      mark_all_running(workflow_scheduler.mark_running(state, step_id), rest)
+    }
   }
 }
 

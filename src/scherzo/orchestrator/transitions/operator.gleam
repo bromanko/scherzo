@@ -6,10 +6,10 @@ import scherzo/control/command
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
-import scherzo/orchestrator/reason as orchestrator_reason
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/claims
+import scherzo/runtime/reason as orchestrator_reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 import scherzo/task

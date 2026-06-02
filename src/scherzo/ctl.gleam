@@ -1,5 +1,4 @@
 import gleam/dynamic
-import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
@@ -12,23 +11,17 @@ import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/query/types as query_types
 import scherzo/ctl/artifact_publication as ctl_artifact_publication
-import scherzo/ctl/schedule_state
+import scherzo/ctl/parser
+import scherzo/ctl/renderers as ctl_renderers
+import scherzo/ctl/schedules as ctl_schedules
+import scherzo/ctl/state_handlers as ctl_state_handlers
 import scherzo/ctl/task_output
-import scherzo/ctl/workflow_recovery_history
+import scherzo/ctl/usage as ctl_usage
 import scherzo/ctl/workstream as ctl_workstream
-import scherzo/path
-import scherzo/schedule_doctor
 import scherzo/session/event
-import scherzo/session/reason as session_reason
-import scherzo/state/ledger
 import scherzo/state/local_artifacts
-import scherzo/state/projection
-import scherzo/state/record
 import scherzo/terminal/render
 import scherzo/terminal/style
-import scherzo/turn_telemetry
-import scherzo/workflow_repair
-import simplifile
 
 pub type OutputMode {
   Pretty
@@ -188,54 +181,6 @@ pub type Replay {
   Replay(events: List(event.SessionEvent), last_cursor: Int, truncated: Bool)
 }
 
-type ScheduleDoctorReport {
-  ScheduleDoctorReport(
-    job_id: String,
-    config_path: Option(String),
-    diagnostics: List(schedule_doctor.Diagnostic),
-  )
-}
-
-type StateRunProvenanceRepairResult {
-  StateRunProvenanceRepairResult(
-    status: String,
-    run_id: String,
-    repair_status: String,
-    repair_mode: String,
-    source_evidence: List(String),
-    reason: Option(String),
-    message: Option(String),
-  )
-}
-
-type Flags {
-  Flags(
-    control_file: Option(String),
-    json: Bool,
-    raw: Bool,
-    pretty: Bool,
-    yes: Bool,
-    dry_run: Bool,
-    root: Option(String),
-    reason: Option(String),
-    step: Option(String),
-    cancel: Bool,
-    value: Option(String),
-    no_follow: Bool,
-    since_cursor: Int,
-    color: style.ColorMode,
-    verbose: Bool,
-    now: Bool,
-    last: Bool,
-    run_id: Option(String),
-    publication_id: Option(String),
-    state_filters: List(task_output.StateCategory),
-    limit: Option(Int),
-    cursor: Option(String),
-    positional: List(String),
-  )
-}
-
 pub fn main(args: List(String)) -> Result(Nil, Error) {
   case parse(args) {
     Error(err) -> Error(err)
@@ -251,168 +196,15 @@ pub fn parse(args: List(String)) -> Result(Command, Error) {
   case args {
     [] | ["--help"] | ["-h"] -> Ok(Help)
     [name, ..rest] ->
-      case parse_flags(rest, default_flags()) {
-        Error(err) -> Error(err)
+      case parser.parse_flags(rest, parser.default_flags()) {
+        Error(error) -> Error(UsageError(parser.error_message(error)))
         Ok(flags) -> command_from(name, flags)
       }
   }
 }
 
-fn default_flags() -> Flags {
-  Flags(
-    control_file: None,
-    json: False,
-    raw: False,
-    pretty: False,
-    yes: False,
-    dry_run: False,
-    root: None,
-    reason: None,
-    step: None,
-    cancel: False,
-    value: None,
-    no_follow: False,
-    since_cursor: 0,
-    color: style.ColorAuto,
-    verbose: False,
-    now: False,
-    last: False,
-    run_id: None,
-    publication_id: None,
-    state_filters: [],
-    limit: None,
-    cursor: None,
-    positional: [],
-  )
-}
-
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  query status                 Run the additive read-query status/introspection surface.\n  query metrics                Show daemon operational health and runtime counters.\n  task list                    List tracker tasks through the daemon query surface.\n  task show <task|id:<id>>     Show one tracker task through the daemon query surface.\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  recovery cleanup-orphan-steps run:<run-id> [--dry-run|--yes]\n                               Dry run orphaned YAML child-step cleanup by default; use --yes to mutate.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  workstream start-from-handoff <workflow> <action> <ref> <sha256> [decision-id...]\n                               Create an input bundle and queue a phase from a retained handoff.\n  workstream start-from-input-bundle <workflow> <action> <ref> <sha256> [decision-id...]\n                               Queue a phase from an already retained workstream input bundle.\n  workstream decision <kind> <workstream-id> <action-id> <gate-id> <actor> <rationale> <name>:<ref>:<sha256>...\n                               Record approve/request-changes/reject/deviate gate decisions for exact snapshots.\n  artifact publication list --run <run-id> [--root <workspace-root>]\n                               Inspect the latest local publication status for one workflow run.\n  artifact publication show --run <run-id> --publication <publication-id> [--root <workspace-root>]\n                               Inspect the full local publication attempt history for one publication.\n  artifact publication retry --run <run-id> [--publication <publication-id>] [--root <workspace-root>]\n                               Replay the retained publication manifest without reading a step workspace.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n  state repair-run-provenance run:<run-id> --root <workspace-root> --dry-run|--yes\n                               Inspect or append an auditable workflow provenance repair.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path; relative paths resolve from the caller working directory.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands, including target context; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --run <run-id>               Workflow run id for artifact publication inspection.\n  --publication <publication>  Publication id for artifact publication show.\n  --state <state>              Filter task list by canonical state; may be repeated.\n  --limit <n>                  Maximum task list items (daemon clamps to 100).\n  --cursor <cursor>            Opaque cursor returned by task list.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
-}
-
-fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
-  case args {
-    [] ->
-      Ok(
-        Flags(
-          ..flags,
-          positional: list.reverse(flags.positional),
-          state_filters: list.reverse(flags.state_filters),
-        ),
-      )
-    ["--control-file", path, ..rest] ->
-      parse_flags(rest, Flags(..flags, control_file: Some(path)))
-    ["--control-file"] -> Error(UsageError("--control-file requires a path"))
-    ["--root", root, ..rest] ->
-      parse_flags(rest, Flags(..flags, root: Some(root)))
-    ["--root"] -> Error(UsageError("--root requires a workspace root"))
-    ["--json", ..rest] -> parse_flags(rest, Flags(..flags, json: True))
-    ["--dry-run", ..rest] -> parse_flags(rest, Flags(..flags, dry_run: True))
-    ["--raw", ..rest] -> parse_flags(rest, Flags(..flags, raw: True))
-    ["--pretty", ..rest] -> parse_flags(rest, Flags(..flags, pretty: True))
-    ["--verbose", ..rest] -> parse_flags(rest, Flags(..flags, verbose: True))
-    ["--now", ..rest] -> parse_flags(rest, Flags(..flags, now: True))
-    ["--last", ..rest] -> parse_flags(rest, Flags(..flags, last: True))
-    ["--run", run_id, ..rest] ->
-      parse_flags(rest, Flags(..flags, run_id: Some(run_id)))
-    ["--run"] -> Error(UsageError("--run requires a run id"))
-    ["--publication", publication_id, ..rest] ->
-      parse_flags(rest, Flags(..flags, publication_id: Some(publication_id)))
-    ["--publication"] ->
-      Error(UsageError("--publication requires a publication id"))
-    ["--state", state, ..rest] ->
-      case task_output.state_category_from_string(state) {
-        Ok(category) ->
-          parse_flags(
-            rest,
-            Flags(..flags, state_filters: [category, ..flags.state_filters]),
-          )
-        Error(_) ->
-          Error(UsageError(
-            "--state must be backlog, ready, active, done, canceled, duplicate, or unknown",
-          ))
-      }
-    ["--state"] -> Error(UsageError("--state requires a task state"))
-    ["--limit", value, ..rest] ->
-      case parse_task_limit(value) {
-        Ok(limit) -> parse_flags(rest, Flags(..flags, limit: Some(limit)))
-        Error(err) -> Error(err)
-      }
-    ["--limit"] -> Error(UsageError("--limit requires a positive integer"))
-    ["--cursor", cursor, ..rest] ->
-      case string.trim(cursor) {
-        "" -> Error(UsageError("--cursor must not be empty"))
-        _ -> parse_flags(rest, Flags(..flags, cursor: Some(cursor)))
-      }
-    ["--cursor"] -> Error(UsageError("--cursor requires a cursor"))
-    ["--yes", ..rest] -> parse_flags(rest, Flags(..flags, yes: True))
-    ["--no-follow", ..rest] ->
-      parse_flags(rest, Flags(..flags, no_follow: True))
-    ["--since-cursor", value, ..rest] ->
-      case parse_cursor(value) {
-        Ok(cursor) -> parse_flags(rest, Flags(..flags, since_cursor: cursor))
-        Error(err) -> Error(err)
-      }
-    ["--since-cursor"] ->
-      Error(UsageError("--since-cursor requires a non-negative integer"))
-    ["--color", value, ..rest] ->
-      case style.parse_color_mode(value) {
-        Ok(mode) -> parse_flags(rest, Flags(..flags, color: mode))
-        Error(_) -> Error(UsageError("--color must be auto, always, or never"))
-      }
-    ["--color"] -> Error(UsageError("--color requires auto, always, or never"))
-    ["--reason", reason, ..rest] ->
-      parse_flags(rest, Flags(..flags, reason: Some(reason)))
-    ["--reason"] -> Error(UsageError("--reason requires text"))
-    ["--step", step, ..rest] ->
-      parse_flags(rest, Flags(..flags, step: Some(step)))
-    ["--step"] -> Error(UsageError("--step requires a step id"))
-    ["--cancel", ..rest] -> parse_flags(rest, Flags(..flags, cancel: True))
-    ["--value", value, ..rest] ->
-      parse_flags(rest, Flags(..flags, value: Some(value)))
-    ["--value"] -> Error(UsageError("--value requires text"))
-    ["--help", ..] | ["-h", ..] -> Ok(Flags(..flags, positional: ["--help"]))
-    [arg, ..rest] ->
-      case string.starts_with(arg, "--color=") {
-        True -> {
-          let value = string.drop_start(arg, 8)
-          case style.parse_color_mode(value) {
-            Ok(mode) -> parse_flags(rest, Flags(..flags, color: mode))
-            Error(_) ->
-              Error(UsageError("--color must be auto, always, or never"))
-          }
-        }
-        False ->
-          case string.starts_with(arg, "--") {
-            True -> Error(UsageError("unknown option: " <> arg))
-            False ->
-              parse_flags(
-                rest,
-                Flags(..flags, positional: [arg, ..flags.positional]),
-              )
-          }
-      }
-  }
-}
-
-fn parse_cursor(value: String) -> Result(Int, Error) {
-  case int.parse(value) {
-    Ok(cursor) ->
-      case cursor < 0 {
-        True ->
-          Error(UsageError("--since-cursor requires a non-negative integer"))
-        False -> Ok(cursor)
-      }
-    Error(_) ->
-      Error(UsageError("--since-cursor requires a non-negative integer"))
-  }
-}
-
-fn parse_task_limit(value: String) -> Result(Int, Error) {
-  case int.parse(value) {
-    Ok(limit) if limit > 0 -> Ok(limit)
-    _ -> Error(UsageError("--limit requires a positive integer"))
-  }
+  ctl_usage.text()
 }
 
 fn option_with_default(value: Option(a), default: a) -> a {
@@ -422,25 +214,7 @@ fn option_with_default(value: Option(a), default: a) -> a {
   }
 }
 
-fn task_query_ref(value: String) -> Result(query_types.TaskQueryRef, Error) {
-  let value = string.trim(value)
-  case value == "" {
-    True -> Error(UsageError("task show requires a non-empty task reference"))
-    False ->
-      case string.starts_with(value, "id:") {
-        True -> {
-          let id = string.drop_start(value, 3) |> string.trim
-          case id == "" {
-            True -> Error(UsageError("task show id must include a remote id"))
-            False -> Ok(query_types.TaskRemoteId(provider: None, id: id))
-          }
-        }
-        False -> Ok(query_types.TaskDisplayId(value))
-      }
-  }
-}
-
-fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
+fn command_from(name: String, flags: parser.Flags) -> Result(Command, Error) {
   case name, flags.positional {
     "--help", _ | "-h", _ -> Ok(Help)
     _, ["--help"] -> Ok(Help)
@@ -459,7 +233,12 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
         flags.cursor,
       ))
     "task", ["show", ref] -> {
-      use ref <- try_ctl(task_query_ref(ref))
+      use ref <- try_ctl(
+        parser.task_query_ref(ref)
+        |> result.map_error(fn(error) {
+          UsageError(parser.error_message(error))
+        }),
+      )
       Ok(TaskShow(flags.control_file, flags.json, ref))
     }
     "task", _ ->
@@ -715,14 +494,14 @@ fn recovery_cleanup_run_id(target: String) -> Result(String, String) {
   }
 }
 
-fn required_root(flags: Flags) -> Result(String, Error) {
+fn required_root(flags: parser.Flags) -> Result(String, Error) {
   case flags.root {
     Some(root) -> Ok(root)
     None -> Error(UsageError("state commands require --root <workspace-root>"))
   }
 }
 
-fn required_run_id(flags: Flags) -> Result(String, Error) {
+fn required_run_id(flags: parser.Flags) -> Result(String, Error) {
   case flags.run_id {
     Some(run_id) -> Ok(run_id)
     None ->
@@ -730,7 +509,7 @@ fn required_run_id(flags: Flags) -> Result(String, Error) {
   }
 }
 
-fn required_publication_id(flags: Flags) -> Result(String, Error) {
+fn required_publication_id(flags: parser.Flags) -> Result(String, Error) {
   case flags.publication_id {
     Some(publication_id) -> Ok(publication_id)
     None ->
@@ -740,7 +519,7 @@ fn required_publication_id(flags: Flags) -> Result(String, Error) {
   }
 }
 
-fn attach_mode(flags: Flags) -> Result(OutputMode, Error) {
+fn attach_mode(flags: parser.Flags) -> Result(OutputMode, Error) {
   case flags.pretty, flags.raw, flags.json {
     True, True, _ | True, _, True ->
       Error(UsageError("choose only one of --pretty, --raw, or --json"))
@@ -752,7 +531,7 @@ fn attach_mode(flags: Flags) -> Result(OutputMode, Error) {
   }
 }
 
-fn events_mode(flags: Flags) -> Result(OutputMode, Error) {
+fn events_mode(flags: parser.Flags) -> Result(OutputMode, Error) {
   case flags.pretty, flags.raw, flags.json {
     True, True, _ | True, _, True | False, True, True ->
       Error(UsageError("choose only one of --pretty, --raw, or --json"))
@@ -786,7 +565,10 @@ fn pretty_options(
   }
 }
 
-fn operator(flags: Flags, command: control_command.OperatorCommand) -> Command {
+fn operator(
+  flags: parser.Flags,
+  command: control_command.OperatorCommand,
+) -> Command {
   Operator(flags.control_file, flags.json, command)
 }
 
@@ -870,7 +652,11 @@ pub fn run_with_deps(
         False ->
           case deps.list_sessions(control_file) {
             Ok(snapshot) -> {
-              print_sessions_table(snapshot.sessions, snapshot.now_ms, output)
+              ctl_renderers.print_sessions_table(
+                snapshot.sessions,
+                snapshot.now_ms,
+                line: output.line,
+              )
               Ok(Nil)
             }
             Error(err) -> Error(client_error(err))
@@ -891,11 +677,11 @@ pub fn run_with_deps(
         False ->
           case deps.query(control_file, query) {
             Ok(query_types.StatusResponse(status)) -> {
-              print_query_status(status, output)
+              ctl_renderers.print_query_status(status, line: output.line)
               Ok(Nil)
             }
             Ok(query_types.MetricsResponse(metrics)) -> {
-              print_query_metrics(metrics, output)
+              ctl_renderers.print_query_metrics(metrics, line: output.line)
               Ok(Nil)
             }
             Ok(query_types.TaskListResponse(tasks)) -> {
@@ -966,11 +752,11 @@ pub fn run_with_deps(
         False ->
           case deps.get_session(control_file, session_id) {
             Ok(Some(summary)) -> {
-              print_session(summary, output)
-              print_workflow_recovery_history(
+              ctl_renderers.print_session(summary, line: output.line)
+              ctl_renderers.print_workflow_recovery_history(
                 control_file.workspace_root,
                 summary,
-                output,
+                line: output.line,
               )
               Ok(Nil)
             }
@@ -1025,7 +811,7 @@ pub fn run_with_deps(
         False ->
           case deps.apply_command(control_file, resolved_command) {
             Ok(result) -> {
-              print_command_result(result, output)
+              ctl_renderers.print_command_result(result, line: output.line)
               Ok(Nil)
             }
             Error(err) -> Error(client_error(err))
@@ -1078,23 +864,56 @@ pub fn run_with_deps(
         output,
       )
     StateStatus(root, json) ->
-      run_state_status(resolve_path_option(root), json, output)
-    StateArchiveOld(root, json, yes) ->
-      run_state_archive_old(resolve_path_option(root), json, yes, output)
-    StateDiscardOld(root, json, yes) ->
-      run_state_discard_old(resolve_path_option(root), json, yes, output)
-    StateReinitialize(root, json, yes) ->
-      run_state_reinitialize(resolve_path_option(root), json, yes, output)
-    StateRepairRunProvenance(root, json, run_id, dry_run, yes) ->
-      run_state_repair_run_provenance(
+      ctl_state_handlers.run_status(
         resolve_path_option(root),
-        json,
-        run_id,
-        dry_run,
-        yes,
-        output,
+        json_output: json,
+        line: output.line,
       )
+      |> result.map_error(pair_error_to_failed)
+    StateArchiveOld(root, json, yes) ->
+      ctl_state_handlers.run_archive_old(
+        resolve_path_option(root),
+        json_output: json,
+        yes: yes,
+        line: output.line,
+      )
+      |> result.map_error(pair_error_to_failed)
+    StateDiscardOld(root, json, yes) ->
+      ctl_state_handlers.run_discard_old(
+        resolve_path_option(root),
+        json_output: json,
+        yes: yes,
+        line: output.line,
+      )
+      |> result.map_error(pair_error_to_failed)
+    StateReinitialize(root, json, yes) ->
+      ctl_state_handlers.run_reinitialize(
+        resolve_path_option(root),
+        json_output: json,
+        yes: yes,
+        line: output.line,
+      )
+      |> result.map_error(pair_error_to_failed)
+    StateRepairRunProvenance(root, json, run_id, dry_run, yes) ->
+      ctl_state_handlers.run_repair_run_provenance(
+        resolve_path_option(root),
+        run_id,
+        json_output: json,
+        dry_run: dry_run,
+        yes: yes,
+        line: output.line,
+      )
+      |> result.map_error(pair_error_to_failed)
   }
+}
+
+fn pair_error_to_failed(error: #(String, String)) -> Error {
+  let #(code, message) = error
+  Failed(code, message)
+}
+
+fn error_to_pair(error: Error) -> #(String, String) {
+  #(error_code(error), error_message(error))
 }
 
 fn run_cleanup(
@@ -1188,26 +1007,13 @@ fn run_schedules_status(
   output: Output,
 ) -> Result(Nil, Error) {
   use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
-  use projected <- try_ctl(schedule_state.load_projection(root, Failed))
-  let statuses = case job_id {
-    None -> projection.scheduled_statuses(projected)
-    Some(id) ->
-      case projection.scheduled_status_for(projected, id) {
-        Ok(status) -> [status]
-        Error(Nil) -> []
-      }
-  }
-  case json_output {
-    True ->
-      output.line(
-        json.object([
-          #("schedules", json.array(statuses, of: scheduled_status_to_json)),
-        ])
-        |> json.to_string,
-      )
-    False -> print_scheduled_statuses(statuses, output)
-  }
-  Ok(Nil)
+  ctl_schedules.run_status(
+    root,
+    job_id,
+    json_output: json_output,
+    line: output.line,
+  )
+  |> result.map_error(pair_error_to_failed)
 }
 
 fn run_schedules_history(
@@ -1218,18 +1024,13 @@ fn run_schedules_history(
   output: Output,
 ) -> Result(Nil, Error) {
   use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
-  use projected <- try_ctl(schedule_state.load_projection(root, Failed))
-  let status = projection.scheduled_status_for(projected, job_id)
-  case status {
-    Error(_) -> Error(Failed("schedule_not_found", "scheduled job not found"))
-    Ok(status) -> {
-      case json_output {
-        True -> output.line(scheduled_status_to_json(status) |> json.to_string)
-        False -> print_scheduled_history(status, output)
-      }
-      Ok(Nil)
-    }
-  }
+  ctl_schedules.run_history(
+    root,
+    job_id,
+    json_output: json_output,
+    line: output.line,
+  )
+  |> result.map_error(pair_error_to_failed)
 }
 
 fn run_schedules_logs(
@@ -1243,12 +1044,21 @@ fn run_schedules_logs(
   output: Output,
 ) -> Result(Nil, Error) {
   use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
-  use projected <- try_ctl(schedule_state.load_projection(root, Failed))
-  use status <- try_ctl(schedule_status_or_error(projected, job_id))
-  use run <- try_ctl(current_scheduled_run_or_error(status))
+  use projected <- try_ctl(
+    ctl_schedules.load_projection(root)
+    |> result.map_error(pair_error_to_failed),
+  )
+  use status <- try_ctl(
+    ctl_schedules.status_or_error(projected, job_id)
+    |> result.map_error(pair_error_to_failed),
+  )
+  use run <- try_ctl(
+    ctl_schedules.current_run_or_error(status)
+    |> result.map_error(pair_error_to_failed),
+  )
   case json_output {
     True -> {
-      output.line(scheduled_log_lookup_to_json(status, run) |> json.to_string)
+      output.line(ctl_schedules.log_lookup_json(status, run))
       Ok(Nil)
     }
     False ->
@@ -1268,12 +1078,16 @@ fn run_schedules_logs(
               )
             Error(err) -> {
               output.line("control_error: " <> error_message(err))
-              print_scheduled_transcript_expired(status, run, output)
+              ctl_schedules.print_transcript_expired(
+                status,
+                run,
+                line: output.line,
+              )
               Ok(Nil)
             }
           }
         None -> {
-          print_scheduled_transcript_expired(status, run, output)
+          ctl_schedules.print_transcript_expired(status, run, line: output.line)
           Ok(Nil)
         }
       }
@@ -1287,349 +1101,15 @@ fn run_schedules_doctor(
   job_id: String,
   output: Output,
 ) -> Result(Nil, Error) {
-  let report = build_schedule_doctor_report(control_path, explicit_root, job_id)
-  case json_output {
-    True ->
-      output.line(schedule_doctor_report_to_json(report) |> json.to_string)
-    False -> print_schedule_doctor_report(report, output)
-  }
-  Ok(Nil)
-}
-
-fn build_schedule_doctor_report(
-  control_path: Option(String),
-  explicit_root: Option(String),
-  job_id: String,
-) -> ScheduleDoctorReport {
-  let config_path = schedule_config_path(explicit_root)
-  let config_diagnostics =
-    schedule_state.config_diagnostics(config_path, job_id)
-  let projection_diagnostics =
-    schedule_projection_diagnostics(control_path, explicit_root, job_id)
-  ScheduleDoctorReport(
-    job_id: job_id,
-    config_path: config_path,
-    diagnostics: list.append(config_diagnostics, projection_diagnostics),
+  ctl_schedules.run_doctor(
+    schedule_workspace_root(control_path, explicit_root)
+      |> result.map_error(error_to_pair),
+    explicit_root,
+    job_id,
+    json_output: json_output,
+    line: output.line,
   )
-}
-
-fn schedule_projection_diagnostics(
-  control_path: Option(String),
-  explicit_root: Option(String),
-  job_id: String,
-) -> List(schedule_doctor.Diagnostic) {
-  case schedule_workspace_root(control_path, explicit_root) {
-    Error(err) -> [workspace_root_unavailable_diagnostic(job_id, err)]
-    Ok(root) ->
-      case schedule_state.load_projection(root, Failed) {
-        Error(err) -> [projection_load_failed_diagnostic(root, job_id, err)]
-        Ok(projected) ->
-          case projection.scheduled_status_for(projected, job_id) {
-            Error(Nil) -> [
-              schedule_doctor.Diagnostic(
-                name: "local_projection",
-                severity: schedule_doctor.Pass,
-                code: "ok",
-                message: "local ledger projection is readable; no scheduled runs are recorded for this job yet",
-                fields: [#("job_id", job_id), #("workspace_root", root)],
-              ),
-            ]
-            Ok(status) -> scheduled_projection_status_diagnostics(root, status)
-          }
-      }
-  }
-}
-
-fn workspace_root_unavailable_diagnostic(
-  job_id: String,
-  err: Error,
-) -> schedule_doctor.Diagnostic {
-  schedule_doctor.Diagnostic(
-    name: "local_projection",
-    severity: schedule_doctor.Skip,
-    code: error_code(err),
-    message: "local schedule history was not inspected: " <> error_message(err),
-    fields: [#("job_id", job_id)],
-  )
-}
-
-fn projection_load_failed_diagnostic(
-  root: String,
-  job_id: String,
-  err: Error,
-) -> schedule_doctor.Diagnostic {
-  let #(code, message) = case err {
-    Failed(code, message) -> #(code, message)
-    UsageError(message) -> #("usage_error", message)
-  }
-  schedule_doctor.Diagnostic(
-    name: "local_projection",
-    severity: schedule_doctor.Warn,
-    code: code,
-    message: message,
-    fields: [#("job_id", job_id), #("workspace_root", root)],
-  )
-}
-
-fn scheduled_projection_status_diagnostics(
-  root: String,
-  status: projection.ScheduledJobStatus,
-) -> List(schedule_doctor.Diagnostic) {
-  let base = [
-    schedule_doctor.Diagnostic(
-      name: "local_projection",
-      severity: schedule_doctor.Pass,
-      code: "ok",
-      message: "local ledger projection is readable",
-      fields: [
-        #("job_id", status.job_id),
-        #("workspace_root", root),
-        #("state", scheduled_state_to_string(status.state)),
-      ],
-    ),
-  ]
-  let base = case status.current_run {
-    Some(run) -> [
-      schedule_doctor.Diagnostic(
-        name: "latest_run",
-        severity: schedule_doctor.Pass,
-        code: "ok",
-        message: "latest scheduled run is visible in local history",
-        fields: [
-          #("job_id", status.job_id),
-          #("run_id", run.run_id),
-          #("run_status", run.status),
-          #("session_id", optional_string(run.session_id)),
-          #("run_root", optional_string(run.run_root)),
-        ],
-      ),
-      ..base
-    ]
-    None -> [
-      schedule_doctor.Diagnostic(
-        name: "latest_run",
-        severity: schedule_doctor.Pass,
-        code: "ok",
-        message: "no scheduled runs are recorded for this job yet",
-        fields: [#("job_id", status.job_id)],
-      ),
-      ..base
-    ]
-  }
-  let base = case status.failure_issue_id {
-    Some(issue_id) -> [
-      schedule_doctor.Diagnostic(
-        name: "failure_issue",
-        severity: schedule_doctor.Pass,
-        code: "ok",
-        message: "latest scheduled failure report remembered a failure task in Linear",
-        fields: [#("job_id", status.job_id), #("linear_issue_id", issue_id)],
-      ),
-      ..base
-    ]
-    None -> base
-  }
-  let base = case status.report_retry {
-    Some(retry) -> [
-      schedule_doctor.Diagnostic(
-        name: "failure_report_retry",
-        severity: schedule_doctor.Warn,
-        code: retry.error_code,
-        message: "failure report retry is pending and will retry without rerunning the workflow",
-        fields: [
-          #("job_id", status.job_id),
-          #("run_id", retry.run_id),
-          #("next_retry_at_ms", int.to_string(retry.next_retry_at_ms)),
-          #("generation", int.to_string(retry.generation)),
-        ],
-      ),
-      ..base
-    ]
-    None -> base
-  }
-  list.reverse(base)
-}
-
-fn schedule_config_path(explicit_root: Option(String)) -> Option(String) {
-  schedule_config_candidates(explicit_root)
-  |> first_existing_file
-}
-
-fn schedule_config_candidates(explicit_root: Option(String)) -> List(String) {
-  let caller_config = resolve_path_option("scherzo.yaml")
-  case explicit_root {
-    None -> [caller_config]
-    Some(root) -> {
-      let root = resolve_path_option(root)
-      list.append(
-        [path.join(root, "scherzo.yaml")],
-        list.append(parent_config_candidates(root), [caller_config]),
-      )
-    }
-  }
-}
-
-fn parent_config_candidates(root: String) -> List(String) {
-  case path.dirname(root) {
-    Ok(parent) -> [path.join(parent, "scherzo.yaml")]
-    Error(Nil) -> []
-  }
-}
-
-fn first_existing_file(paths: List(String)) -> Option(String) {
-  case paths {
-    [] -> None
-    [candidate, ..rest] ->
-      case is_file(candidate) {
-        True -> Some(candidate)
-        False -> first_existing_file(rest)
-      }
-  }
-}
-
-fn is_file(candidate: String) -> Bool {
-  case simplifile.is_file(candidate) {
-    Ok(True) -> True
-    _ -> False
-  }
-}
-
-fn schedule_status_or_error(
-  projected: projection.Projection,
-  job_id: String,
-) -> Result(projection.ScheduledJobStatus, Error) {
-  case projection.scheduled_status_for(projected, job_id) {
-    Ok(status) -> Ok(status)
-    Error(_) -> Error(Failed("schedule_not_found", "scheduled job not found"))
-  }
-}
-
-fn current_scheduled_run_or_error(
-  status: projection.ScheduledJobStatus,
-) -> Result(projection.ScheduledRunSummary, Error) {
-  case status.current_run {
-    Some(run) -> Ok(run)
-    None -> Error(Failed("schedule_no_runs", "scheduled job has no runs"))
-  }
-}
-
-fn scheduled_log_lookup_to_json(
-  status: projection.ScheduledJobStatus,
-  run: projection.ScheduledRunSummary,
-) -> json.Json {
-  json.object([
-    #("job_id", json.string(status.job_id)),
-    #("run_id", json.string(run.run_id)),
-    #("session_id", optional_string_json(run.session_id)),
-    #("run_root", optional_string_json(run.run_root)),
-    #("status", json.string(run.status)),
-  ])
-}
-
-fn print_scheduled_transcript_expired(
-  status: projection.ScheduledJobStatus,
-  run: projection.ScheduledRunSummary,
-  output: Output,
-) -> Nil {
-  output.line("job: " <> status.job_id)
-  output.line("run_id: " <> run.run_id)
-  output.line("session_id: " <> optional_string(run.session_id))
-  output.line("run_root: " <> optional_string(run.run_root))
-  output.line(
-    "logs: latest scheduled session transcript is not available from the local event hub",
-  )
-}
-
-fn schedule_doctor_report_to_json(report: ScheduleDoctorReport) -> json.Json {
-  json.object([
-    #("job_id", json.string(report.job_id)),
-    #("config_path", optional_string_json(report.config_path)),
-    #(
-      "status",
-      json.string(
-        schedule_doctor.severity_to_string(schedule_doctor.most_severe(
-          report.diagnostics,
-        )),
-      ),
-    ),
-    #(
-      "checks",
-      json.array(report.diagnostics, of: schedule_doctor_diagnostic_to_json),
-    ),
-  ])
-}
-
-fn schedule_doctor_diagnostic_to_json(
-  diagnostic: schedule_doctor.Diagnostic,
-) -> json.Json {
-  json.object([
-    #("name", json.string(diagnostic.name)),
-    #(
-      "status",
-      json.string(schedule_doctor.severity_to_string(diagnostic.severity)),
-    ),
-    #("code", json.string(diagnostic.code)),
-    #("message", json.string(diagnostic.message)),
-    #(
-      "fields",
-      json.object(
-        list.map(diagnostic.fields, fn(field) {
-          let #(key, value) = field
-          #(key, json.string(value))
-        }),
-      ),
-    ),
-  ])
-}
-
-fn print_schedule_doctor_report(
-  report: ScheduleDoctorReport,
-  output: Output,
-) -> Nil {
-  output.line("schedule doctor: " <> report.job_id)
-  output.line("config: " <> optional_string(report.config_path))
-  output.line(
-    "status: "
-    <> schedule_doctor.severity_to_string(schedule_doctor.most_severe(
-      report.diagnostics,
-    )),
-  )
-  list.each(report.diagnostics, fn(diagnostic) {
-    output.line(
-      "- "
-      <> schedule_doctor_marker(diagnostic.severity)
-      <> " "
-      <> diagnostic.name
-      <> ": "
-      <> diagnostic.message
-      <> " ("
-      <> diagnostic.code
-      <> ")",
-    )
-    case diagnostic.fields {
-      [] -> Nil
-      _ ->
-        output.line(
-          "  fields: "
-          <> string.join(
-            list.map(diagnostic.fields, fn(field) {
-              let #(key, value) = field
-              key <> "=" <> value
-            }),
-            with: " ",
-          ),
-        )
-    }
-  })
-}
-
-fn schedule_doctor_marker(severity: schedule_doctor.Severity) -> String {
-  case severity {
-    schedule_doctor.Pass -> "PASS"
-    schedule_doctor.Warn -> "WARN"
-    schedule_doctor.Fail -> "FAIL"
-    schedule_doctor.Skip -> "SKIP"
-  }
+  |> result.map_error(pair_error_to_failed)
 }
 
 fn schedule_workspace_root(
@@ -1714,7 +1194,7 @@ fn run_artifact_publication_retry(
         False ->
           case deps.apply_command(target.control_file, operator_command) {
             Ok(result) -> {
-              print_command_result(result, output)
+              ctl_renderers.print_command_result(result, line: output.line)
               Ok(Nil)
             }
             Error(err) -> Error(client_error(err))
@@ -1734,557 +1214,6 @@ fn run_artifact_publication_retry(
         let #(code, message) = error
         Failed(code, message)
       })
-    }
-  }
-}
-
-fn bool_string(value: Bool) -> String {
-  case value {
-    True -> "true"
-    False -> "false"
-  }
-}
-
-fn print_scheduled_statuses(
-  statuses: List(projection.ScheduledJobStatus),
-  output: Output,
-) -> Nil {
-  case statuses {
-    [] -> output.line("No scheduled job history found.")
-    _ -> {
-      output.line(
-        "JOB  WORKFLOW  STATUS  LAST SUCCESS  LAST FAILURE  SKIPPED  RECENT RUNS",
-      )
-      list.each(statuses, fn(status) {
-        output.line(
-          status.job_id
-          <> "  "
-          <> status.workflow_id
-          <> "  "
-          <> scheduled_state_to_string(status.state)
-          <> "  "
-          <> optional_ms(status.last_success_at_ms)
-          <> "  "
-          <> optional_ms(status.last_failure_at_ms)
-          <> "  "
-          <> int.to_string(scheduled_skipped_total(status))
-          <> "  "
-          <> string.join(status.recent_run_ids, with: ","),
-        )
-      })
-    }
-  }
-}
-
-fn print_scheduled_history(
-  status: projection.ScheduledJobStatus,
-  output: Output,
-) -> Nil {
-  output.line("job: " <> status.job_id)
-  output.line("workflow: " <> status.workflow_id)
-  output.line("status: " <> scheduled_state_to_string(status.state))
-  output.line("last_due_at: " <> optional_ms(status.last_due_at_ms))
-  output.line("last_success_at: " <> optional_ms(status.last_success_at_ms))
-  output.line(
-    "last_success_run_id: " <> optional_string(status.last_success_run_id),
-  )
-  output.line("last_failure_at: " <> optional_ms(status.last_failure_at_ms))
-  output.line(
-    "last_failure_run_id: " <> optional_string(status.last_failure_run_id),
-  )
-  output.line(
-    "last_failure_reason: " <> optional_string(status.last_failure_reason),
-  )
-  output.line(
-    "skipped_overlap_count: " <> int.to_string(status.skipped_overlap_count),
-  )
-  output.line(
-    "skipped_catch_up_count: " <> int.to_string(status.skipped_catch_up_count),
-  )
-  output.line(
-    "skipped_paused_count: " <> int.to_string(status.skipped_paused_count),
-  )
-  output.line(
-    "skipped_capacity_count: " <> int.to_string(status.skipped_capacity_count),
-  )
-  output.line("failure_issue_id: " <> optional_string(status.failure_issue_id))
-  output.line(
-    "failure_dedupe_key: " <> optional_string(status.failure_dedupe_key),
-  )
-  case status.report_retry {
-    None -> output.line("report_retry: -")
-    Some(report_retry) -> {
-      output.line("report_retry: " <> report_retry.run_id)
-      output.line("report_retry_error: " <> report_retry.error_code)
-      output.line(
-        "report_retry_next_retry_at_ms: "
-        <> int.to_string(report_retry.next_retry_at_ms),
-      )
-    }
-  }
-  output.line(
-    "recent_run_ids: " <> string.join(status.recent_run_ids, with: ","),
-  )
-  case status.current_run {
-    None -> output.line("current_run: -")
-    Some(run) -> {
-      output.line("current_run: " <> run.run_id)
-      output.line("current_run_status: " <> run.status)
-      output.line("current_run_trigger: " <> run.trigger)
-      output.line("current_run_due_at: " <> int.to_string(run.due_at_ms))
-      output.line("current_run_attempt: " <> int.to_string(run.attempt))
-      output.line("current_run_reason: " <> optional_string(run.reason))
-      output.line("current_run_session_id: " <> optional_string(run.session_id))
-      output.line("current_run_root: " <> optional_string(run.run_root))
-    }
-  }
-}
-
-fn scheduled_status_to_json(
-  status: projection.ScheduledJobStatus,
-) -> json.Json {
-  json.object([
-    #("job_id", json.string(status.job_id)),
-    #("workflow_id", json.string(status.workflow_id)),
-    #("state", json.string(scheduled_state_to_string(status.state))),
-    #("current_run", scheduled_run_to_json(status.current_run)),
-    #("last_due_at_ms", optional_int_json(status.last_due_at_ms)),
-    #("last_success_at_ms", optional_int_json(status.last_success_at_ms)),
-    #("last_success_run_id", optional_string_json(status.last_success_run_id)),
-    #("last_failure_at_ms", optional_int_json(status.last_failure_at_ms)),
-    #("last_failure_run_id", optional_string_json(status.last_failure_run_id)),
-    #("last_failure_reason", optional_string_json(status.last_failure_reason)),
-    #("retry_count", json.int(status.retry_count)),
-    #("skipped_overlap_count", json.int(status.skipped_overlap_count)),
-    #("skipped_catch_up_count", json.int(status.skipped_catch_up_count)),
-    #("skipped_paused_count", json.int(status.skipped_paused_count)),
-    #("skipped_capacity_count", json.int(status.skipped_capacity_count)),
-    #("failure_issue_id", optional_string_json(status.failure_issue_id)),
-    #("failure_dedupe_key", optional_string_json(status.failure_dedupe_key)),
-    #("report_retry", scheduled_report_retry_to_json(status.report_retry)),
-    #("recent_run_ids", json.array(status.recent_run_ids, of: json.string)),
-  ])
-}
-
-fn scheduled_report_retry_to_json(
-  retry: Option(projection.ScheduledReportRetry),
-) -> json.Json {
-  case retry {
-    None -> json.null()
-    Some(retry) ->
-      json.object([
-        #("run_id", json.string(retry.run_id)),
-        #("attempt", json.int(retry.attempt)),
-        #("dedupe_key", json.string(retry.dedupe_key)),
-        #("error_code", json.string(retry.error_code)),
-        #("error_message", json.string(retry.error_message)),
-        #("next_retry_at_ms", json.int(retry.next_retry_at_ms)),
-        #("generation", json.int(retry.generation)),
-      ])
-  }
-}
-
-fn scheduled_run_to_json(
-  run: Option(projection.ScheduledRunSummary),
-) -> json.Json {
-  case run {
-    None -> json.null()
-    Some(run) ->
-      json.object([
-        #("run_id", json.string(run.run_id)),
-        #("due_at_ms", json.int(run.due_at_ms)),
-        #("trigger", json.string(run.trigger)),
-        #("attempt", json.int(run.attempt)),
-        #("status", json.string(run.status)),
-        #("reason", optional_string_json(run.reason)),
-        #("session_id", optional_string_json(run.session_id)),
-        #("run_root", optional_string_json(run.run_root)),
-      ])
-  }
-}
-
-fn scheduled_skipped_total(status: projection.ScheduledJobStatus) -> Int {
-  status.skipped_overlap_count
-  + status.skipped_catch_up_count
-  + status.skipped_paused_count
-  + status.skipped_capacity_count
-}
-
-fn scheduled_state_to_string(state: projection.ScheduledRunState) -> String {
-  case state {
-    projection.ScheduledIdle -> "idle"
-    projection.ScheduledDuePending -> "due_pending"
-    projection.ScheduledPaused -> "paused"
-    projection.ScheduledWaitingForGlobalSlot -> "waiting_for_global_slot"
-    projection.ScheduledActive -> "active"
-    projection.ScheduledRetryWaiting -> "retry_waiting"
-    projection.ScheduledReportRetryWaiting -> "report_retry_waiting"
-    projection.ScheduledTerminalSuccess -> "terminal_success"
-    projection.ScheduledTerminalFailure -> "terminal_failure"
-  }
-}
-
-fn optional_ms(value: Option(Int)) -> String {
-  case value {
-    Some(ms) -> int.to_string(ms)
-    None -> "-"
-  }
-}
-
-fn optional_string(value: Option(String)) -> String {
-  case value {
-    Some(value) -> value
-    None -> "-"
-  }
-}
-
-fn optional_int_json(value: Option(Int)) -> json.Json {
-  case value {
-    Some(value) -> json.int(value)
-    None -> json.null()
-  }
-}
-
-fn optional_string_json(value: Option(String)) -> json.Json {
-  case value {
-    Some(value) -> json.string(value)
-    None -> json.null()
-  }
-}
-
-fn run_state_status(
-  root: String,
-  json_output: Bool,
-  output: Output,
-) -> Result(Nil, Error) {
-  let status = local_artifacts.inspect_state(root)
-  case json_output {
-    True ->
-      output.line(
-        status |> local_artifacts.state_status_to_json |> json.to_string,
-      )
-    False -> print_state_status(status, output)
-  }
-  Ok(Nil)
-}
-
-fn run_state_archive_old(
-  root: String,
-  json_output: Bool,
-  yes: Bool,
-  output: Output,
-) -> Result(Nil, Error) {
-  let result =
-    local_artifacts.archive_old_state(root, yes, local_artifacts.now_ms())
-  print_state_mutation(result, json_output, output)
-  Ok(Nil)
-}
-
-fn run_state_discard_old(
-  root: String,
-  json_output: Bool,
-  yes: Bool,
-  output: Output,
-) -> Result(Nil, Error) {
-  let result =
-    local_artifacts.discard_old_state(root, yes, local_artifacts.now_ms())
-  print_state_mutation(result, json_output, output)
-  Ok(Nil)
-}
-
-fn run_state_reinitialize(
-  root: String,
-  json_output: Bool,
-  yes: Bool,
-  output: Output,
-) -> Result(Nil, Error) {
-  let result = local_artifacts.reinitialize_state(root, yes: yes)
-  print_state_mutation(result, json_output, output)
-  Ok(Nil)
-}
-
-fn run_state_repair_run_provenance(
-  root: String,
-  json_output: Bool,
-  run_id: String,
-  dry_run: Bool,
-  yes: Bool,
-  output: Output,
-) -> Result(Nil, Error) {
-  let result = state_repair_run_provenance(root, run_id, dry_run, yes)
-  print_state_repair_run_provenance(result, json_output, output)
-  Ok(Nil)
-}
-
-fn state_repair_run_provenance(
-  root: String,
-  run_id: String,
-  dry_run: Bool,
-  yes: Bool,
-) -> StateRunProvenanceRepairResult {
-  case ledger.path_for_workspace_root(root) {
-    Error(error) ->
-      rejected_state_repair_result(
-        run_id,
-        "ledger_path_failed",
-        ledger_error_message(error),
-      )
-    Ok(ledger_path) ->
-      case ledger.read_records(ledger_path) {
-        Error(error) ->
-          rejected_state_repair_result(
-            run_id,
-            "ledger_read_failed",
-            ledger_error_message(error),
-          )
-        Ok(read) -> {
-          let projection_state = projection.fold(read.records)
-          case
-            workflow_repair.inspect_run_provenance_repair(
-              projection_state,
-              run_id,
-              workflow_repair.state_repair_explicit_mode,
-            )
-          {
-            Error(error) ->
-              rejected_state_repair_result(
-                run_id,
-                workflow_repair.describe_error(error),
-                repair_error_message_text(error),
-              )
-            Ok(workflow_repair.RunProvenanceRepairAlreadyPresent(..)) ->
-              StateRunProvenanceRepairResult(
-                status: "already_repaired",
-                run_id: run_id,
-                repair_status: "already_repaired",
-                repair_mode: workflow_repair.state_repair_explicit_mode,
-                source_evidence: [],
-                reason: None,
-                message: Some("workflow run provenance is already present"),
-              )
-            Ok(workflow_repair.RunProvenanceRepairRequired(plan)) ->
-              case
-                workflow_repair.validate_run_root_for_repair(
-                  run_id,
-                  plan.run_root,
-                  root,
-                )
-              {
-                Error(error) ->
-                  rejected_state_repair_result(
-                    run_id,
-                    workflow_repair.describe_error(error),
-                    repair_error_message_text(error),
-                  )
-                Ok(Nil) ->
-                  case dry_run, yes {
-                    True, _ ->
-                      StateRunProvenanceRepairResult(
-                        status: "dry_run",
-                        run_id: run_id,
-                        repair_status: "would_repair",
-                        repair_mode: plan.repair_mode,
-                        source_evidence: plan.source_evidence,
-                        reason: None,
-                        message: Some("workflow run provenance can be repaired"),
-                      )
-                    _, True ->
-                      append_state_repair_run_provenance(ledger_path, plan)
-                    _, _ ->
-                      rejected_state_repair_result(
-                        run_id,
-                        "confirmation_required",
-                        "pass --dry-run to inspect or --yes to repair",
-                      )
-                  }
-              }
-          }
-        }
-      }
-  }
-}
-
-fn append_state_repair_run_provenance(
-  ledger_path: ledger.LedgerPath,
-  plan: workflow_repair.RunProvenanceRepairPlan,
-) -> StateRunProvenanceRepairResult {
-  let ledger_record =
-    record.with_id(
-      "workflow-run-provenance-repaired-" <> plan.run_id,
-      local_artifacts.now_ms(),
-      plan.record_body,
-    )
-  case ledger.append_idempotent(ledger_path, ledger_record, True) {
-    Ok(ledger.Appended) ->
-      StateRunProvenanceRepairResult(
-        status: "repaired",
-        run_id: plan.run_id,
-        repair_status: "repaired",
-        repair_mode: plan.repair_mode,
-        source_evidence: plan.source_evidence,
-        reason: None,
-        message: Some("workflow run provenance repaired"),
-      )
-    Ok(ledger.AlreadyRecorded(_)) ->
-      StateRunProvenanceRepairResult(
-        status: "already_repaired",
-        run_id: plan.run_id,
-        repair_status: "already_repaired",
-        repair_mode: plan.repair_mode,
-        source_evidence: plan.source_evidence,
-        reason: None,
-        message: Some("workflow run provenance repair was already recorded"),
-      )
-    Error(error) ->
-      rejected_state_repair_result(
-        plan.run_id,
-        "ledger_append_failed",
-        append_idempotent_error_message(error),
-      )
-  }
-}
-
-fn repair_error_message_text(error: workflow_repair.RepairError) -> String {
-  case workflow_repair.error_message(error) {
-    Some(message) -> message
-    None -> workflow_repair.describe_error(error)
-  }
-}
-
-fn rejected_state_repair_result(
-  run_id: String,
-  reason: String,
-  message: String,
-) -> StateRunProvenanceRepairResult {
-  StateRunProvenanceRepairResult(
-    status: "rejected",
-    run_id: run_id,
-    repair_status: "rejected",
-    repair_mode: workflow_repair.state_repair_explicit_mode,
-    source_evidence: [],
-    reason: Some(reason),
-    message: Some(message),
-  )
-}
-
-fn print_state_repair_run_provenance(
-  result: StateRunProvenanceRepairResult,
-  json_output: Bool,
-  output: Output,
-) -> Nil {
-  case json_output {
-    True ->
-      output.line(
-        result
-        |> state_repair_run_provenance_to_json
-        |> json.to_string,
-      )
-    False -> {
-      output.line("state repair-run-provenance " <> result.status)
-      output.line("run_id: " <> result.run_id)
-      output.line("repair_status: " <> result.repair_status)
-      case result.reason {
-        Some(reason) -> output.line("reason: " <> reason)
-        None -> Nil
-      }
-      case result.message {
-        Some(message) -> output.line("message: " <> message)
-        None -> Nil
-      }
-      case result.source_evidence {
-        [] -> Nil
-        _ -> {
-          output.line("source_evidence:")
-          list.each(result.source_evidence, fn(evidence) {
-            output.line("  " <> evidence)
-          })
-        }
-      }
-    }
-  }
-}
-
-fn state_repair_run_provenance_to_json(
-  result: StateRunProvenanceRepairResult,
-) -> json.Json {
-  [
-    #("command", json.string("state repair-run-provenance")),
-    #("status", json.string(result.status)),
-    #("run_id", json.string(result.run_id)),
-    #("repair_status", json.string(result.repair_status)),
-    #("repair_mode", json.string(result.repair_mode)),
-    #("source_evidence", json.array(result.source_evidence, of: json.string)),
-    #("reason", optional_string_json(result.reason)),
-    #("message", optional_string_json(result.message)),
-  ]
-  |> json.object
-}
-
-fn ledger_error_message(error: ledger.LedgerError) -> String {
-  ledger.ledger_error_to_string(error)
-}
-
-fn append_idempotent_error_message(
-  error: ledger.AppendIdempotentError,
-) -> String {
-  case error {
-    ledger.AppendLedgerError(error) -> ledger_error_message(error)
-    ledger.RecordIdConflict(record_id) ->
-      "ledger record id conflict: " <> record_id
-  }
-}
-
-fn print_state_status(
-  status: local_artifacts.StateStatusResult,
-  output: Output,
-) -> Nil {
-  output.line("state: " <> state_status_name(status.status))
-  output.line("message: " <> status.message)
-  output.line("workspace_root: " <> status.workspace_root)
-  output.line("ledger_dir: " <> status.ledger_dir)
-  case status.warnings {
-    [] -> Nil
-    _ -> {
-      output.line("warnings:")
-      list.each(status.warnings, fn(warning) { output.line("  " <> warning) })
-    }
-  }
-  case status.status {
-    local_artifacts.StateUnsupported(_, _) -> {
-      output.line("recovery: old_state_reset_required")
-      output.line("safe actions: archive-old, discard-old, reinitialize")
-    }
-    _ -> output.line("recovery: -")
-  }
-}
-
-fn state_status_name(status: local_artifacts.StateStatus) -> String {
-  case status {
-    local_artifacts.StateCurrent -> "current"
-    local_artifacts.StateUnsupported(_, _) -> "unsupported"
-    local_artifacts.StateCorrupt(_) -> "corrupt"
-    local_artifacts.StateMissing -> "missing"
-    local_artifacts.StateArchived -> "archived"
-  }
-}
-
-fn print_state_mutation(
-  result: local_artifacts.StateMutationResult,
-  json_output: Bool,
-  output: Output,
-) -> Nil {
-  case json_output {
-    True ->
-      output.line(
-        result |> local_artifacts.state_mutation_to_json |> json.to_string,
-      )
-    False -> {
-      output.line(result.action <> " " <> result.status)
-      output.line("message: " <> result.message)
-      case result.archive_path {
-        Some(path) -> output.line("archive_path: " <> path)
-        None -> Nil
-      }
     }
   }
 }
@@ -2664,441 +1593,6 @@ fn print_raw_request(
     }
     Error(err) -> Error(client_error(err))
   }
-}
-
-const ps_session_width = 20
-
-const ps_issue_width = 6
-
-const ps_turn_width = 14
-
-const ps_status_width = 11
-
-const ps_recovery_width = 8
-
-fn print_sessions_table(
-  sessions: List(event.SessionSummary),
-  now_ms: Int,
-  output: Output,
-) -> Nil {
-  output.line(ps_table_row(
-    "SESSION",
-    "ISSUE",
-    "TURN",
-    "STATUS",
-    "RECOVERY",
-    "LAST EVENT",
-  ))
-  list.each(sessions, fn(summary) {
-    output.line(ps_table_row(
-      ellipsize_middle(summary.display_name, ps_session_width),
-      ellipsize_middle(summary.issue_identifier, ps_issue_width),
-      ellipsize_middle(turn_summary_text(summary), ps_turn_width),
-      ps_status_to_string(summary.status),
-      ps_recovery_to_string(summary.recovery),
-      format_last_event_age(now_ms, summary.last_event_at_ms),
-    ))
-  })
-}
-
-fn turn_summary_text(summary: event.SessionSummary) -> String {
-  let base = "turn " <> int.to_string(summary.current_turn)
-  let with_status = case summary.current_turn_status {
-    Some(status) -> base <> " " <> turn_telemetry.status_to_string(status)
-    None -> base
-  }
-  let with_duration = case summary.last_turn_duration_ms {
-    Some(duration) -> with_status <> " " <> format_duration(duration)
-    None -> with_status
-  }
-  case summary.last_turn_token_delta.total > 0 {
-    True ->
-      with_duration
-      <> " +"
-      <> int.to_string(summary.last_turn_token_delta.total)
-      <> " tok"
-    False -> with_duration
-  }
-}
-
-fn format_duration(duration_ms: Int) -> String {
-  case duration_ms < 1000 {
-    True -> int.to_string(duration_ms) <> "ms"
-    False -> {
-      let tenths = duration_ms / 100
-      let whole = tenths / 10
-      let decimal = tenths - whole * 10
-      int.to_string(whole) <> "." <> int.to_string(decimal) <> "s"
-    }
-  }
-}
-
-fn print_optional_int(
-  label: String,
-  value: Option(Int),
-  output: Output,
-) -> Nil {
-  case value {
-    Some(value) -> output.line(label <> ": " <> int.to_string(value))
-    None -> Nil
-  }
-}
-
-fn print_token_delta(summary: event.SessionSummary, output: Output) -> Nil {
-  case summary.last_turn_token_delta.total > 0 {
-    True ->
-      output.line(
-        "last_turn_token_delta: "
-        <> int.to_string(summary.last_turn_token_delta.total),
-      )
-    False -> Nil
-  }
-}
-
-fn print_optional_reason(
-  reason: Option(turn_telemetry.TurnReason),
-  output: Output,
-) -> Nil {
-  case reason {
-    Some(reason) ->
-      output.line(
-        "last_turn_reason: " <> turn_telemetry.reason_to_string(reason),
-      )
-    None -> Nil
-  }
-}
-
-fn ps_status_to_string(status: event.SessionStatus) -> String {
-  case status {
-    event.Exited(reason) -> ps_exit_reason_to_string(reason)
-    _ -> event.status_to_string(status)
-  }
-}
-
-fn ps_recovery_to_string(recovery: Option(event.RecoveryInfo)) -> String {
-  case recovery {
-    Some(recovery) -> event.recovery_status_to_string(recovery.status)
-    None -> "-"
-  }
-}
-
-fn ps_exit_reason_to_string(reason: session_reason.WorkerExitReason) -> String {
-  case reason {
-    session_reason.Normal -> "success"
-    session_reason.Failed -> "failed"
-    session_reason.WorkerDown -> "worker_down"
-    session_reason.OperatorAbort -> "operator_abort"
-    session_reason.OperatorStopAfterCurrentTurn -> "op_stop_after"
-    session_reason.Stopped -> "stopped"
-  }
-}
-
-fn ps_table_row(
-  session_name: String,
-  issue: String,
-  turn: String,
-  status: String,
-  recovery: String,
-  last_event: String,
-) -> String {
-  pad_right(session_name, ps_session_width)
-  <> "  "
-  <> pad_right(issue, ps_issue_width)
-  <> "  "
-  <> pad_left(turn, ps_turn_width)
-  <> "  "
-  <> pad_right(status, ps_status_width)
-  <> "  "
-  <> pad_right(recovery, ps_recovery_width)
-  <> "  "
-  <> last_event
-}
-
-fn format_last_event_age(now_ms: Int, event_ms: Int) -> String {
-  let age_ms = case now_ms - event_ms < 0 {
-    True -> 0
-    False -> now_ms - event_ms
-  }
-  let seconds = age_ms / 1000
-  case seconds < 60 {
-    True -> int.to_string(seconds) <> "s ago"
-    False -> {
-      let minutes = seconds / 60
-      case minutes < 60 {
-        True -> int.to_string(minutes) <> "m ago"
-        False -> {
-          let hours = minutes / 60
-          case hours < 24 {
-            True -> int.to_string(hours) <> "h ago"
-            False -> int.to_string(hours / 24) <> "d ago"
-          }
-        }
-      }
-    }
-  }
-}
-
-fn ellipsize_middle(value: String, max_width: Int) -> String {
-  case string.length(value) <= max_width {
-    True -> value
-    False ->
-      case max_width <= 0 {
-        True -> ""
-        False ->
-          case max_width == 1 {
-            True -> "…"
-            False -> {
-              let available_width = max_width - 1
-              let prefix_width = available_width / 2
-              let suffix_width = available_width - prefix_width
-              string.slice(value, 0, prefix_width)
-              <> "…"
-              <> string.slice(
-                value,
-                string.length(value) - suffix_width,
-                suffix_width,
-              )
-            }
-          }
-      }
-  }
-}
-
-fn pad_right(value: String, width: Int) -> String {
-  let padding = width - string.length(value)
-  case padding > 0 {
-    True -> value <> string.repeat(" ", times: padding)
-    False -> value
-  }
-}
-
-fn pad_left(value: String, width: Int) -> String {
-  let padding = width - string.length(value)
-  case padding > 0 {
-    True -> string.repeat(" ", times: padding) <> value
-    False -> value
-  }
-}
-
-fn print_session(summary: event.SessionSummary, output: Output) -> Nil {
-  output.line("display_name: " <> summary.display_name)
-  output.line("session_id: " <> summary.session_id)
-  output.line(
-    "issue: " <> summary.issue_identifier <> " " <> summary.issue_title,
-  )
-  output.line("status: " <> event.status_to_string(summary.status))
-  output.line("turn: " <> turn_summary_text(summary))
-  print_optional_int(
-    "turn_started_at_ms",
-    summary.current_turn_started_at_ms,
-    output,
-  )
-  print_optional_int(
-    "last_turn_finished_at_ms",
-    summary.last_turn_finished_at_ms,
-    output,
-  )
-  print_optional_int(
-    "last_turn_duration_ms",
-    summary.last_turn_duration_ms,
-    output,
-  )
-  print_token_delta(summary, output)
-  print_optional_reason(summary.last_turn_reason, output)
-  output.line("workspace: " <> summary.workspace_path)
-  output.line("last_event_at_ms: " <> int.to_string(summary.last_event_at_ms))
-  print_recovery_section(summary.recovery, output)
-}
-
-fn print_workflow_recovery_history(
-  workspace_root: String,
-  summary: event.SessionSummary,
-  output: Output,
-) -> Nil {
-  case workflow_recovery_history.load(workspace_root, summary) {
-    Ok(history) ->
-      workflow_recovery_history.render(history)
-      |> list.each(output.line)
-    Error(error) ->
-      output.line(
-        "workflow_step_recovery_history: unavailable ("
-        <> workflow_recovery_history.describe_load_error(error)
-        <> ")",
-      )
-  }
-}
-
-fn print_recovery_section(
-  recovery: Option(event.RecoveryInfo),
-  output: Output,
-) -> Nil {
-  case recovery {
-    None -> output.line("recovery: -")
-    Some(recovery) -> {
-      output.line("recovery:")
-      output.line(
-        "  status: " <> event.recovery_status_to_string(recovery.status),
-      )
-      output.line("  source: " <> recovery.source)
-      case recovery.message {
-        Some(message) -> output.line("  reason: " <> message)
-        None -> Nil
-      }
-      let actions =
-        recovery.safe_actions
-        |> list.map(event.recovery_action_to_string)
-        |> string.join(with: ", ")
-      output.line("  safe_actions: " <> actions)
-      print_optional(
-        "  current_pi_session_id",
-        recovery.current_pi_session_id,
-        output,
-      )
-      print_optional("  workflow_run_id", recovery.workflow_run_id, output)
-      print_optional("  workflow_step_id", recovery.workflow_step_id, output)
-      print_optional(
-        "  previous_pi_session_id",
-        recovery.previous_pi_session_id,
-        output,
-      )
-      print_optional("  park_reason", recovery.park_reason, output)
-      print_optional(
-        "  park_release_policy",
-        recovery.park_release_policy,
-        output,
-      )
-      print_optional_int("  parked_at_ms", recovery.parked_at_ms, output)
-      print_optional("  drift_kind", recovery.drift_kind, output)
-      print_optional_int(
-        "  retention_until_ms",
-        recovery.retention_until_ms,
-        output,
-      )
-      print_optional_int(
-        "  cleanup_eligible_at_ms",
-        recovery.cleanup_eligible_at_ms,
-        output,
-      )
-      case recovery.cleanup_phase {
-        Some(phase) ->
-          output.line(
-            "  cleanup_phase: " <> event.cleanup_phase_to_string(phase),
-          )
-        None -> Nil
-      }
-    }
-  }
-}
-
-fn print_optional(label: String, value: Option(String), output: Output) -> Nil {
-  case value {
-    Some(value) -> output.line(label <> ": " <> value)
-    None -> Nil
-  }
-}
-
-fn print_query_status(status: query_types.StatusDto, output: Output) -> Nil {
-  output.line("daemon_id: " <> status.daemon_id)
-  output.line("boot_id: " <> status.boot_id)
-  output.line("dispatch_paused: " <> bool_string(status.dispatch_paused))
-  output.line("ui_server_enabled: " <> bool_string(status.ui_server_enabled))
-  output.line(
-    "supported_queries: " <> string.join(status.supported_queries, with: ", "),
-  )
-}
-
-fn print_query_metrics(
-  metrics: query_types.OperationalMetricsDto,
-  output: Output,
-) -> Nil {
-  output.line("daemon_id: " <> metrics.daemon_id)
-  output.line("boot_id: " <> metrics.boot_id)
-  print_int("schema_version", metrics.schema_version, output)
-  print_int("sampled_at_ms", metrics.sampled_at_ms, output)
-  output.line("dispatch_paused: " <> bool_string(metrics.dispatch_paused))
-  output.line("ui_server_enabled: " <> bool_string(metrics.ui_server_enabled))
-  output.line("remote_client_status: " <> metrics.remote_client_status)
-  print_int("workflow_count", metrics.workflow_count, output)
-  print_int("scheduled_job_count", metrics.scheduled_job_count, output)
-  print_int("active_sessions", metrics.active_sessions, output)
-  print_int("running_workers", metrics.running_workers, output)
-  print_int(
-    "running_scheduled_workers",
-    metrics.running_scheduled_workers,
-    output,
-  )
-  print_int("queued_claims", metrics.queued_claims, output)
-  print_int(
-    "pending_dispatch_validations",
-    metrics.pending_dispatch_validations,
-    output,
-  )
-  print_int("claimed_tasks", metrics.claimed_tasks, output)
-  print_int("retry_tasks", metrics.retry_tasks, output)
-  print_int("parked_tasks", metrics.parked_tasks, output)
-  print_int("completed_tasks", metrics.completed_tasks, output)
-  print_int("poll_generation", metrics.poll_generation, output)
-  output.line("poll_in_flight: " <> bool_string(metrics.poll_in_flight))
-  output.line("poll_timer_active: " <> bool_string(metrics.poll_timer_active))
-  print_int("retry_timer_count", metrics.retry_timer_count, output)
-  print_int(
-    "retry_refresh_in_flight_count",
-    metrics.retry_refresh_in_flight_count,
-    output,
-  )
-  print_int("scheduled_due_count", metrics.scheduled_due_count, output)
-  print_int("scheduled_pending_count", metrics.scheduled_pending_count, output)
-  print_int("scheduled_retry_count", metrics.scheduled_retry_count, output)
-  print_int(
-    "scheduled_report_retry_count",
-    metrics.scheduled_report_retry_count,
-    output,
-  )
-  print_int(
-    "scheduled_retry_timer_count",
-    metrics.scheduled_retry_timer_count,
-    output,
-  )
-  print_int(
-    "scheduled_report_retry_timer_count",
-    metrics.scheduled_report_retry_timer_count,
-    output,
-  )
-  print_int("token_input", metrics.token_totals.input, output)
-  print_int("token_output", metrics.token_totals.output, output)
-  print_int("token_cache_read", metrics.token_totals.cache_read, output)
-  print_int("token_cache_write", metrics.token_totals.cache_write, output)
-  print_int("token_total", metrics.token_totals.total, output)
-}
-
-fn print_int(label: String, value: Int, output: Output) -> Nil {
-  output.line(label <> ": " <> int.to_string(value))
-}
-
-fn print_command_result(
-  result: control_command.CommandResult,
-  output: Output,
-) -> Nil {
-  let target = case result.target {
-    Some(target) -> " target=" <> target
-    None -> ""
-  }
-  let reason = case control_command.status_reason(result.status) {
-    Some(reason) -> " reason=" <> reason
-    None -> ""
-  }
-  let message = case result.message {
-    Some(message) -> " " <> message
-    None -> ""
-  }
-  output.line(
-    result.command
-    <> " "
-    <> control_command.status_to_string(result.status)
-    <> target
-    <> reason
-    <> message,
-  )
 }
 
 fn render_state_key(session_id: String) -> String {

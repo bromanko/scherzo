@@ -6,6 +6,9 @@ task-oriented schema. Existing users are expected to update their config files;
 Scherzo should reject old keys with targeted migration messages rather than support
 both schemas indefinitely.
 
+For editor completion, hover text, and local structural validation, see the checked-in
+JSON Schemas and setup examples in [docs/GETTING_STARTED.md#yaml-editor-schema-support](../GETTING_STARTED.md#yaml-editor-schema-support).
+
 ## Design goals
 
 The root config should describe what operators want Scherzo to do, not every

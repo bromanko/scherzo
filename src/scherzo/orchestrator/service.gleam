@@ -16,8 +16,8 @@ import scherzo/linear_contract
 import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
-import scherzo/orchestrator/reason as orchestrator_reason
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/reason as orchestrator_reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
 import scherzo/schedule_doctor
 import scherzo/signal

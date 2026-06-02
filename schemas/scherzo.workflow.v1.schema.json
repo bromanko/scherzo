@@ -1,0 +1,506 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scherzo.dev/schemas/scherzo.workflow.v1.schema.json",
+  "title": "Scherzo workflow DAG v1",
+  "description": "Editor-facing JSON Schema for Scherzo's public v1 workflow YAML.",
+  "$ref": "#/$defs/WorkflowRoot",
+  "$defs": {
+    "NonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "WorkflowId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Workflow and workspace ids must start with a lowercase letter or digit and may contain lowercase letters, digits, underscores, and hyphens."
+    },
+    "StepId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Step ids must start with a lowercase letter and may contain lowercase letters, digits, and underscores."
+    },
+    "ContractName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "RelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^\\\\" },
+          { "pattern": "^~[/\\\\]" },
+          { "pattern": "^[A-Za-z]:[/\\\\]" },
+          { "pattern": "(^|[/\\\\])\\.\\.([/\\\\]|$)" }
+        ]
+      }
+    },
+    "RepositoryRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^\\\\" },
+          { "pattern": "^~[/\\\\]" },
+          { "pattern": "(^|[/\\\\])\\.\\.([/\\\\]|$)" },
+          { "pattern": "^\\$" },
+          { "pattern": "^[A-Za-z]:[/\\\\]" },
+          { "pattern": "^<absolute-local-path>" }
+        ]
+      },
+      "description": "Repository-relative path without absolute prefixes or parent traversal."
+    },
+    "Duration": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*(ms|s|m|h)$"
+    },
+    "StringList": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "Recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "attempts": { "type": "integer", "minimum": 1 },
+        "model": { "type": "string" },
+        "prompt": { "type": "string" }
+      }
+    },
+    "RemovedWorkflowWorkspaceProfile": {
+      "description": "workspace_profile was removed. Use workspace.driver.",
+      "not": {}
+    },
+    "RemovedWorkflowWorkspaceCapabilities": {
+      "description": "workspace_capabilities was removed. Use workspace.requires.",
+      "not": {}
+    },
+    "RemovedWorkflowMaxParallelSteps": {
+      "description": "max_parallel_steps was removed. Use concurrency.",
+      "not": {}
+    },
+    "RemovedWorkflowRecover": {
+      "description": "recover was removed. Use recovery.",
+      "not": {}
+    },
+    "WorkflowWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "driver": { "$ref": "#/$defs/WorkflowId" },
+        "requires": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "status",
+              "diff",
+              "changed-files",
+              "assert-only",
+              "baseline",
+              "refresh-base",
+              "publish-change"
+            ]
+          }
+        }
+      }
+    },
+    "RunIn": {
+      "oneOf": [
+        { "$ref": "#/$defs/WorkflowId" },
+        {
+          "type": "object",
+          "required": ["name"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "$ref": "#/$defs/WorkflowId" },
+            "from": { "$ref": "#/$defs/WorkflowId" }
+          }
+        }
+      ]
+    },
+    "StructuredOutputSource": {
+      "type": "object",
+      "required": ["type", "tool_name"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "pi_tool_call" },
+        "tool_name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "require_single": { "const": true },
+        "reject_sibling_tool_calls": { "const": true },
+        "parameters_schema_path": { "$ref": "#/$defs/RepositoryRelativePath" }
+      }
+    },
+    "StructuredOutputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["object"] },
+        "required": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StepId" }
+        }
+      }
+    },
+    "LegacyValidator": {
+      "type": "string",
+      "enum": ["review_lane_draft"]
+    },
+    "JsonSchemaValidator": {
+      "type": "object",
+      "required": ["type", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "json_schema" },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "path": { "$ref": "#/$defs/RepositoryRelativePath" },
+        "draft": { "type": "string" },
+        "timeout_ms": {
+          "description": "structured_output.validators.timeout_ms was removed. Use timeout.",
+          "not": {}
+        }
+      }
+    },
+    "CommandValidator": {
+      "type": "object",
+      "required": ["type", "argv"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "command" },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "timeout": { "$ref": "#/$defs/Duration" },
+        "working_directory": { "enum": ["workspace", "repository", "run_root"] },
+        "env": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": { "type": "string" }
+        },
+        "timeout_ms": {
+          "description": "structured_output.validators.timeout_ms was removed. Use timeout.",
+          "not": {}
+        }
+      }
+    },
+    "Validators": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/JsonSchemaValidator" },
+          { "$ref": "#/$defs/CommandValidator" }
+        ]
+      }
+    },
+    "StructuredOutput": {
+      "type": "object",
+      "required": ["source"],
+      "additionalProperties": false,
+      "not": { "required": ["validator", "validators"] },
+      "properties": {
+        "format": { "enum": ["json"] },
+        "artifact_name": { "$ref": "#/$defs/StepId" },
+        "required": { "type": "boolean" },
+        "source": { "$ref": "#/$defs/StructuredOutputSource" },
+        "schema": { "$ref": "#/$defs/StructuredOutputSchema" },
+        "validator": { "$ref": "#/$defs/LegacyValidator" },
+        "validators": { "$ref": "#/$defs/Validators" },
+        "validation_retries": { "type": "integer", "enum": [0, 1] }
+      }
+    },
+    "ModelSettings": {
+      "type": "object",
+      "properties": {
+        "model": { "type": "string" },
+        "thinking": { "type": "string" }
+      }
+    },
+    "StepCommon": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/StepId" },
+        "depends_on": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StepId" }
+        },
+        "run_in": { "$ref": "#/$defs/RunIn" },
+        "on_failure": { "enum": ["fail", "continue"] },
+        "recovery": { "$ref": "#/$defs/Recovery" },
+        "workspace_profile": { "$ref": "#/$defs/RemovedWorkflowWorkspaceProfile" },
+        "workspace_capabilities": { "$ref": "#/$defs/RemovedWorkflowWorkspaceCapabilities" },
+        "workspace": {
+          "description": "step.workspace was removed. Use run_in.",
+          "not": {}
+        },
+        "timeout_ms": {
+          "description": "step.timeout_ms was removed. Use timeout.",
+          "not": {}
+        },
+        "recover": {
+          "description": "step.recover was removed. Use recovery.",
+          "not": {}
+        }
+      }
+    },
+    "AgentStepExplicit": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/StepCommon" },
+        {
+          "type": "object",
+          "required": ["id", "kind", "prompt"],
+          "properties": {
+            "kind": { "const": "agent" },
+            "prompt": { "type": "string", "minLength": 1 },
+            "structured_output": { "$ref": "#/$defs/StructuredOutput" },
+            "run": {
+              "description": "run is not used for agent steps.",
+              "not": {}
+            },
+            "timeout": {
+              "description": "timeout only applies to command steps.",
+              "not": {}
+            },
+            "model": { "type": "string" },
+            "thinking": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "CommandStepExplicit": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/StepCommon" },
+        {
+          "type": "object",
+          "required": ["id", "kind", "run"],
+          "properties": {
+            "kind": { "const": "command" },
+            "run": { "type": "string", "minLength": 1 },
+            "timeout": { "$ref": "#/$defs/Duration" },
+            "prompt": {
+              "description": "prompt is not used for command steps.",
+              "not": {}
+            },
+            "structured_output": {
+              "description": "structured_output is only valid on agent steps.",
+              "not": {}
+            },
+            "model": {
+              "description": "model is only valid on agent steps.",
+              "not": {}
+            },
+            "thinking": {
+              "description": "thinking is only valid on agent steps.",
+              "not": {}
+            }
+          }
+        }
+      ]
+    },
+    "AgentStepInferred": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/StepCommon" },
+        {
+          "type": "object",
+          "required": ["id", "prompt"],
+          "properties": {
+            "prompt": { "type": "string", "minLength": 1 },
+            "structured_output": { "$ref": "#/$defs/StructuredOutput" },
+            "model": { "type": "string" },
+            "thinking": { "type": "string" }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["run"] },
+              { "required": ["kind"] }
+            ]
+          }
+        }
+      ]
+    },
+    "CommandStepInferred": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/StepCommon" },
+        {
+          "type": "object",
+          "required": ["id", "run"],
+          "properties": {
+            "run": { "type": "string", "minLength": 1 },
+            "timeout": { "$ref": "#/$defs/Duration" }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["prompt"] },
+              { "required": ["structured_output"] },
+              { "required": ["model"] },
+              { "required": ["thinking"] },
+              { "required": ["kind"] }
+            ]
+          }
+        }
+      ]
+    },
+    "Step": {
+      "oneOf": [
+        { "$ref": "#/$defs/AgentStepExplicit" },
+        { "$ref": "#/$defs/CommandStepExplicit" },
+        { "$ref": "#/$defs/AgentStepInferred" },
+        { "$ref": "#/$defs/CommandStepInferred" }
+      ]
+    },
+    "Contract": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "version": { "const": 1 }
+      }
+    },
+    "PhaseHandoff": {
+      "type": "object",
+      "required": ["output", "artifact_type", "snapshot"],
+      "additionalProperties": false,
+      "properties": {
+        "output": { "$ref": "#/$defs/ContractName" },
+        "artifact_type": { "$ref": "#/$defs/NonEmptyString" },
+        "snapshot": { "enum": ["required"] }
+      }
+    },
+    "PhaseNextAction": {
+      "type": "object",
+      "required": ["action_id", "workflow_id"],
+      "additionalProperties": false,
+      "properties": {
+        "action_id": { "$ref": "#/$defs/ContractName" },
+        "workflow_id": { "$ref": "#/$defs/ContractName" },
+        "state": { "enum": ["suggested", "available", "blocked"] },
+        "priority": { "type": "integer" },
+        "inputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ContractName" }
+        },
+        "requires_gate": { "$ref": "#/$defs/ContractName" },
+        "auto_enqueue": { "type": "boolean" }
+      }
+    },
+    "WorkstreamPhase": {
+      "type": "object",
+      "required": ["phase_id"],
+      "additionalProperties": false,
+      "properties": {
+        "phase_id": { "$ref": "#/$defs/ContractName" },
+        "display_name": { "type": "string" },
+        "handoff": { "$ref": "#/$defs/PhaseHandoff" },
+        "gates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ContractName" }
+        },
+        "next_actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PhaseNextAction" }
+        },
+        "final_phase": { "type": "boolean" }
+      }
+    },
+    "PublicationSelector": {
+      "type": "object",
+      "required": ["output"],
+      "additionalProperties": false,
+      "properties": {
+        "output": { "$ref": "#/$defs/ContractName" },
+        "entry": { "$ref": "#/$defs/ContractName" }
+      }
+    },
+    "PublicationFile": {
+      "type": "object",
+      "required": ["select", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "select": { "$ref": "#/$defs/PublicationSelector" },
+        "path": { "$ref": "#/$defs/RepositoryRelativePath" }
+      }
+    },
+    "PublicationPullRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "body_template": { "$ref": "#/$defs/RepositoryRelativePath" }
+      }
+    },
+    "PublicationRoute": {
+      "type": "object",
+      "required": ["id", "repository", "files"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/ContractName" },
+        "repository": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*\\.[a-z][a-z0-9_-]*$"
+        },
+        "required": { "type": "boolean" },
+        "pull_request": { "$ref": "#/$defs/PublicationPullRequest" },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/PublicationFile" }
+        }
+      }
+    },
+    "WorkflowArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "publications": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PublicationRoute" }
+        }
+      }
+    },
+    "WorkflowRoot": {
+      "type": "object",
+      "required": ["version", "id", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "const": 1 },
+        "id": { "$ref": "#/$defs/WorkflowId" },
+        "description": { "type": "string" },
+        "workspace": { "$ref": "#/$defs/WorkflowWorkspace" },
+        "concurrency": { "type": "integer", "minimum": 1 },
+        "recovery": { "$ref": "#/$defs/Recovery" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/Step" }
+        },
+        "contract": { "$ref": "#/$defs/Contract" },
+        "workstream_phase": { "$ref": "#/$defs/WorkstreamPhase" },
+        "artifacts": { "$ref": "#/$defs/WorkflowArtifacts" },
+        "workspace_profile": { "$ref": "#/$defs/RemovedWorkflowWorkspaceProfile" },
+        "workspace_capabilities": { "$ref": "#/$defs/RemovedWorkflowWorkspaceCapabilities" },
+        "max_parallel_steps": { "$ref": "#/$defs/RemovedWorkflowMaxParallelSteps" },
+        "recover": { "$ref": "#/$defs/RemovedWorkflowRecover" }
+      }
+    }
+  }
+}
