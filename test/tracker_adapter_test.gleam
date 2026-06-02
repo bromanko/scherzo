@@ -1,7 +1,11 @@
 import gleam/list
 import gleam/option.{None, Some}
 import scherzo/task
+import scherzo/tracker
 import scherzo/tracker/adapter
+import scherzo/tracker/adapter_legacy
+import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/state as issue_state
 
 fn task_ref() -> task.TaskRef {
   task.TaskRef(
@@ -28,11 +32,64 @@ fn fake_task() -> task.Task {
   )
 }
 
+fn legacy_issue(
+  id: String,
+  identifier: String,
+  state_name: String,
+) -> tracker_issue.Issue {
+  tracker_issue.Issue(
+    id: id,
+    identifier: identifier,
+    title: identifier <> " title",
+    description: Some(identifier <> " description"),
+    priority: Some(2),
+    state: issue_state.from_string_unchecked(state_name),
+    branch_name: Some(identifier <> "-branch"),
+    url: Some("https://tracker.example/tasks/" <> identifier),
+    labels: ["workflow:execplan"],
+    blocked_by: [],
+    blocked_by_complete: True,
+    created_at: None,
+    updated_at: None,
+  )
+}
+
+fn legacy_client(issues: List(tracker_issue.Issue)) -> tracker.Client {
+  tracker.Client(
+    fetch_candidate_issues: fn() { Ok(issues) },
+    fetch_issues_by_states: fn(_) { Ok(issues) },
+    fetch_issue_states_by_ids: fn(ids) {
+      Ok(
+        list.filter(issues, fn(issue) { legacy_issue_matches_ids(issue, ids) }),
+      )
+    },
+  )
+}
+
+fn legacy_issue_matches_ids(
+  issue: tracker_issue.Issue,
+  ids: List(String),
+) -> Bool {
+  list.contains(ids, issue.id) || list.contains(ids, issue.identifier)
+}
+
+fn legacy_task_source(
+  issues: List(tracker_issue.Issue),
+) -> adapter.TaskSourceCapability {
+  let adapter =
+    adapter_legacy.adapter_from_legacy_client(legacy_client(issues), "linear")
+  adapter.task_source
+}
+
 fn task_source_capability() -> adapter.TaskSourceCapability {
   adapter.TaskSourceCapability(
     fetch_candidates: fn(_) { Ok([fake_task()]) },
     refresh_by_refs: fn(_) { Ok([fake_task()]) },
     lookup_by_operator_ref: fn(_) { Ok(Some(fake_task())) },
+    list_tasks: fn(_) {
+      Ok(adapter.TaskPage(items: [fake_task()], has_more: False))
+    },
+    lookup_task_detail: fn(_) { Ok(Some(fake_task())) },
   )
 }
 
@@ -274,6 +331,60 @@ pub fn full_adapter_satisfies_all_requirements_test() {
       all_requirements(),
     )
     == Ok(Nil)
+}
+
+pub fn legacy_adapter_task_list_filters_and_paginates_new_surface_test() {
+  let task_source =
+    legacy_task_source([
+      legacy_issue("issue-1", "CARD-1", "Todo"),
+      legacy_issue("issue-2", "CARD-2", "In Progress"),
+      legacy_issue("issue-3", "CARD-3", "Ready"),
+    ])
+
+  let assert Ok(first_page) =
+    task_source.list_tasks(adapter.TaskListRequest(
+      state_categories: [task.Ready],
+      limit: 1,
+      offset: 0,
+    ))
+  let assert [first] = first_page.items
+  assert first.ref.remote_id == "issue-1"
+  assert first.state.category == task.Ready
+  assert first_page.has_more == True
+
+  let assert Ok(second_page) =
+    task_source.list_tasks(adapter.TaskListRequest(
+      state_categories: [task.Ready],
+      limit: 1,
+      offset: 1,
+    ))
+  let assert [second] = second_page.items
+  assert second.ref.remote_id == "issue-3"
+  assert second.state.category == task.Ready
+  assert second_page.has_more == False
+}
+
+pub fn legacy_adapter_task_show_resolves_display_and_remote_ids_test() {
+  let task_source =
+    legacy_task_source([
+      legacy_issue("issue-1", "CARD-1", "Todo"),
+      legacy_issue("issue-2", "CARD-2", "In Progress"),
+    ])
+
+  let assert Ok(Some(by_display)) =
+    task_source.lookup_task_detail(adapter.TaskLookupByDisplayId("CARD-2"))
+  assert by_display.ref.remote_id == "issue-2"
+  assert by_display.ref.key == Some("CARD-2")
+  assert by_display.description == Some("CARD-2 description")
+  assert by_display.state.category == task.Active
+
+  let assert Ok(Some(by_remote_id)) =
+    task_source.lookup_task_detail(adapter.TaskLookupByRemoteId(
+      provider: Some("linear"),
+      id: "issue-1",
+    ))
+  assert by_remote_id.ref.key == Some("CARD-1")
+  assert by_remote_id.state.category == task.Ready
 }
 
 pub fn handoff_comments_requires_handoff_capability_not_comments_test() {

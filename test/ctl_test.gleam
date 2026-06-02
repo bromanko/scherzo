@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/command_runner
+import scherzo/control/client as control_client
 import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
@@ -19,6 +20,7 @@ import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/task
 import scherzo/terminal/style
 import scherzo/turn_telemetry
 import simplifile
@@ -152,6 +154,81 @@ fn query_status_response() -> query_types.QueryResponse {
   )
 }
 
+fn task_summary() -> query_types.TaskSummaryDto {
+  query_types.TaskSummaryDto(
+    id: "linear:issue-770",
+    source: query_types.TaskSourceDto(
+      provider: "linear",
+      id: "issue-770",
+      display_id: Some("LIV-770"),
+      url: Some("https://linear.app/living-systems/issue/LIV-770"),
+    ),
+    title: "Implement task queries",
+    state: task.Ready,
+    priority: Some(query_types.TaskPriorityDto(value: 2, label: "High")),
+    labels: [
+      query_types.TaskLabelDto(
+        id: Some("label-workflow"),
+        name: "workflow:implementation",
+      ),
+    ],
+    created_at: Some("2026-04-28T10:00:00Z"),
+    updated_at: Some("2026-04-28T11:00:00Z"),
+  )
+}
+
+fn task_list_response() -> query_types.QueryResponse {
+  query_types.TaskListResponse(query_types.TaskListDto(
+    items: [task_summary()],
+    page: query_types.PageDto(next_cursor: Some("cursor:1"), has_more: True),
+  ))
+}
+
+fn task_detail_response() -> query_types.QueryResponse {
+  query_types.TaskShowResponse(query_types.TaskDetailDto(
+    summary: task_summary(),
+    description: query_types.TaskDescriptionDto(
+      format: "markdown",
+      body: "Detailed task body",
+    ),
+  ))
+}
+
+fn task_detail_response_with_terminal_controls() -> query_types.QueryResponse {
+  let esc = "\u{1b}"
+  let bel = "\u{7}"
+  let c1 = "\u{9b}"
+  query_types.TaskShowResponse(query_types.TaskDetailDto(
+    summary: query_types.TaskSummaryDto(
+      id: "linear:issue-770" <> esc <> "[31m",
+      source: query_types.TaskSourceDto(
+        provider: "linear" <> esc <> "]0;provider" <> bel,
+        id: "issue-770" <> esc <> "[31m",
+        display_id: Some("LIV-770" <> esc <> "[31m"),
+        url: Some("https://linear.example/" <> esc <> "]8;;bad" <> bel),
+      ),
+      title: "Implement" <> esc <> "[31m task",
+      state: task.Ready,
+      priority: Some(query_types.TaskPriorityDto(
+        value: 2,
+        label: "High" <> esc <> "[31m",
+      )),
+      labels: [
+        query_types.TaskLabelDto(
+          id: Some("label-workflow"),
+          name: "workflow" <> esc <> "[31m",
+        ),
+      ],
+      created_at: Some("2026-04-28T10:00:00Z" <> c1 <> "31m"),
+      updated_at: None,
+    ),
+    description: query_types.TaskDescriptionDto(
+      format: "markdown" <> esc <> "[31m",
+      body: "body" <> esc <> "]0;owned" <> bel <> "\nline" <> c1 <> "31m",
+    ),
+  ))
+}
+
 fn output(subject: process.Subject(OutMsg)) -> ctl.Output {
   ctl.Output(line: subject_line(subject), inline: subject_inline(subject))
 }
@@ -267,11 +344,156 @@ pub fn query_status_json_uses_raw_request_with_query_payload_test() {
   assert !string.contains(transcript, "token")
 }
 
+pub fn task_list_human_executes_daemon_query_and_formats_page_test() {
+  let path = "test/tmp/ctl-task/list-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let query_calls = process.new_subject()
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, ""),
+      query: fn(control_file, query) {
+        process.send(query_calls, #(control_file, query))
+        Ok(task_list_response())
+      },
+    )
+
+  let result =
+    ctl.run_with_deps(
+      ctl.TaskList(Some(path), False, [task.Ready], 1, Some("cursor:0")),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(#(called_control_file, called_query)) =
+    process.receive(query_calls, within: 1000)
+  assert called_control_file.token == "token"
+  assert called_query
+    == query_types.TaskList(query_types.TaskListQuery(
+      states: [task.Ready],
+      limit: 1,
+      cursor: Some("cursor:0"),
+    ))
+  assert output_lines(drain_output(output_subject))
+    == ["LIV-770 ready [High] Implement task queries", "next_cursor: cursor:1"]
+}
+
+pub fn task_show_json_prints_detail_without_raw_state_name_test() {
+  let path = "test/tmp/ctl-task/show-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let query_calls = process.new_subject()
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), query: fn(_, query) {
+      process.send(query_calls, query)
+      Ok(task_detail_response())
+    })
+
+  let result =
+    ctl.run_with_deps(
+      ctl.TaskShow(Some(path), True, query_types.TaskDisplayId("LIV-770")),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(called_query) = process.receive(query_calls, within: 1000)
+  assert called_query
+    == query_types.TaskShow(
+      query_types.TaskShowQuery(ref: query_types.TaskDisplayId("LIV-770")),
+    )
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"id\":\"linear:issue-770\"")
+  assert string.contains(transcript, "\"state\":\"ready\"")
+  assert string.contains(transcript, "\"description\"")
+  assert !string.contains(transcript, "Todo")
+}
+
+pub fn task_show_human_sanitizes_untrusted_task_text_test() {
+  let path = "test/tmp/ctl-task/sanitize-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), query: fn(_, _) {
+      Ok(task_detail_response_with_terminal_controls())
+    })
+
+  let result =
+    ctl.run_with_deps(
+      ctl.TaskShow(Some(path), False, query_types.TaskDisplayId("LIV-770")),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert !string.contains(transcript, "\u{1b}")
+  assert !string.contains(transcript, "\u{7}")
+  assert !string.contains(transcript, "\u{9b}")
+  assert string.contains(
+    transcript,
+    "LIV-770␛[31m ready [High␛[31m] Implement␛[31m task",
+  )
+  assert string.contains(transcript, "labels: workflow␛[31m")
+  assert string.contains(transcript, "description (markdown␛[31m):")
+  assert string.contains(transcript, "body␛]0;owned␇")
+  assert string.contains(transcript, "line\\u{9B}31m")
+}
+
+pub fn task_show_not_found_returns_failed_error_test() {
+  let path = "test/tmp/ctl-task/not-found-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), query: fn(_, _) {
+      Error(control_client.RequestFailed("not_found", "task not found"))
+    })
+
+  let result =
+    ctl.run_with_deps(
+      ctl.TaskShow(Some(path), False, query_types.TaskDisplayId("LIV-999")),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Error(ctl.Failed("not_found", "task not found"))
+  assert drain_output(output_subject) == ""
+}
+
 pub fn parse_ping_ps_session_events_and_attach_test() {
   assert ctl.parse(["ping"]) == Ok(ctl.Ping(None, False))
   assert ctl.parse(["ps", "--json"]) == Ok(ctl.Ps(None, True))
   assert ctl.parse(["query", "status", "--json"])
     == Ok(ctl.Query(None, True, query_types.Status))
+  assert ctl.parse([
+      "task",
+      "list",
+      "--state",
+      "ready",
+      "--state",
+      "active",
+      "--limit",
+      "50",
+      "--cursor",
+      "cursor:50",
+      "--json",
+    ])
+    == Ok(ctl.TaskList(
+      None,
+      True,
+      [task.Ready, task.Active],
+      50,
+      Some("cursor:50"),
+    ))
+  assert ctl.parse(["task", "show", "LIV-770"])
+    == Ok(ctl.TaskShow(None, False, query_types.TaskDisplayId("LIV-770")))
+  assert ctl.parse(["task", "show", "id:issue-770", "--json"])
+    == Ok(ctl.TaskShow(
+      None,
+      True,
+      query_types.TaskRemoteId(provider: None, id: "issue-770"),
+    ))
   assert ctl.parse(["session", "ABC-1", "--control-file", "state/control.json"])
     == Ok(ctl.Session(Some("state/control.json"), False, "ABC-1"))
   assert ctl.parse(["events", "ABC-1"])
@@ -533,6 +755,13 @@ pub fn parse_rejects_usage_errors_test() {
     ctl.parse(["attach", "--color=bad", "ABC-1"])
   let assert Error(ctl.UsageError(_)) = ctl.parse(["ps", "--control-file"])
   let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["task", "list", "--state", "linear-todo"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["task", "list", "--limit", "0"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["task", "list", "--cursor", ""])
+  let assert Error(ctl.UsageError(_)) = ctl.parse(["task", "show", "id:"])
+  let assert Error(ctl.UsageError(_)) =
     ctl.parse(["artifact", "publication", "list"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["artifact", "publication", "show", "--run", "run-1"])
@@ -548,6 +777,8 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "events <session-ref>")
   assert string.contains(usage, "events --pretty <session-ref>")
   assert string.contains(usage, "events --pretty --verbose <session-ref>")
+  assert string.contains(usage, "task list")
+  assert string.contains(usage, "task show <task|id:<id>>")
   assert string.contains(usage, "attach <session-ref>")
   assert string.contains(usage, "attach --verbose <session-ref>")
   assert string.contains(usage, "attach --raw <session-ref>")
@@ -582,6 +813,9 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "--since-cursor <n>")
   assert string.contains(usage, "--run <run-id>")
   assert string.contains(usage, "--publication <publication>")
+  assert string.contains(usage, "--state <state>")
+  assert string.contains(usage, "--limit <n>")
+  assert string.contains(usage, "--cursor <cursor>")
   assert string.contains(usage, "--dry-run")
   assert string.contains(usage, "--step <step-id>")
 }

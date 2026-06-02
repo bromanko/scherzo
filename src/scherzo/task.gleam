@@ -24,6 +24,33 @@ pub type TaskStateCategory {
   Unknown
 }
 
+pub fn state_category_to_string(category: TaskStateCategory) -> String {
+  case category {
+    Backlog -> "backlog"
+    Ready -> "ready"
+    Active -> "active"
+    Done -> "done"
+    Canceled -> "canceled"
+    Duplicate -> "duplicate"
+    Unknown -> "unknown"
+  }
+}
+
+pub fn state_category_from_string(
+  value: String,
+) -> Result(TaskStateCategory, Nil) {
+  case value |> string.trim |> string.lowercase {
+    "backlog" -> Ok(Backlog)
+    "ready" -> Ok(Ready)
+    "active" -> Ok(Active)
+    "done" -> Ok(Done)
+    "canceled" | "cancelled" -> Ok(Canceled)
+    "duplicate" -> Ok(Duplicate)
+    "unknown" -> Ok(Unknown)
+    _ -> Error(Nil)
+  }
+}
+
 pub type TaskState {
   TaskState(id: Option(String), name: String, category: TaskStateCategory)
 }
@@ -163,9 +190,14 @@ pub fn to_runtime_issue(task: Task) -> tracker_issue.Issue {
   ) = task
   let TaskRef(remote_id: remote_id, key: key, url: url, ..) = ref
 
+  let identifier = case non_empty(key) {
+    Some(key) -> key
+    None -> remote_id
+  }
+
   tracker_issue.Issue(
     id: remote_id,
-    identifier: non_empty(key) |> option.unwrap(remote_id),
+    identifier: identifier,
     title: title,
     description: description,
     priority: priority,
