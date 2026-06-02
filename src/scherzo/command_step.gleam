@@ -154,7 +154,7 @@ fn read_loop(
       )
     }
     Error(port.ReadTimeout) -> {
-      let _ = port.terminate(process)
+      let _timeout_cleanup_result = port.terminate(process)
       let stderr = read_diagnostics_or_error(process)
       finish_command(
         step_id,
@@ -210,13 +210,23 @@ fn prepare_diagnostics(
     path.join(path.join(workspace_path, ".scherzo"), "command-step-diagnostics")
   let dir = path.absolute(relative_dir) |> result.unwrap(relative_dir)
   case simplifile.create_directory_all(dir) {
-    Error(_) -> None
+    Error(create_dir_error) -> {
+      // Diagnostics capture is advisory; command execution must continue when
+      // preparing the sidecar directory fails.
+      let _diagnostics_directory_best_effort_error = create_dir_error
+      None
+    }
     Ok(Nil) -> {
       let stdout_path = path.join(dir, step_id <> ".stdout.raw")
       let artifact_path = path.join(dir, step_id <> ".txt")
       case simplifile.write(stdout_path, "") {
         Ok(Nil) -> Some(DiagnosticsCapture(stdout_path, artifact_path))
-        Error(_) -> None
+        Error(write_error) -> {
+          // Diagnostics capture is advisory; the primary command result remains
+          // authoritative when sidecar initialization fails.
+          let _diagnostics_stdout_best_effort_error = write_error
+          None
+        }
       }
     }
   }
@@ -339,7 +349,7 @@ fn cleanup_stdout_capture(diagnostics: Option(DiagnosticsCapture)) -> Nil {
   case diagnostics {
     None -> Nil
     Some(DiagnosticsCapture(stdout_path: stdout_path, ..)) -> {
-      let _ = simplifile.delete(stdout_path)
+      let _best_effort_stdout_cleanup_result = simplifile.delete(stdout_path)
       Nil
     }
   }
@@ -375,10 +385,13 @@ fn write_diagnostic_artifact(
           secrets,
         )
       let result = simplifile.write(path, body)
-      let _ = simplifile.delete(stdout_path)
+      let _best_effort_stdout_cleanup_result = simplifile.delete(stdout_path)
       case result {
         Ok(Nil) -> Some(path)
-        Error(_) -> None
+        Error(write_error) -> {
+          let _diagnostic_artifact_best_effort_error = write_error
+          None
+        }
       }
     }
   }

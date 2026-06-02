@@ -31,6 +31,10 @@ pub type ControlFileError {
   TokenGenerationFailed(message: String)
 }
 
+type ControlFileRemoveError {
+  ControlFileRemoveFailed(path: String, message: String)
+}
+
 pub fn path_for_workspace(workspace_root: String) -> String {
   trim_trailing_slash(workspace_root)
   <> "/"
@@ -71,8 +75,16 @@ pub fn write(
           case chmod_private(path) {
             Ok(Nil) -> Ok(Nil)
             Error(message) -> {
-              let _ = simplifile.delete_file(path)
-              Error(ControlFilePermissionFailed(path, message))
+              case remove_checked(path) {
+                Ok(Nil) -> Error(ControlFilePermissionFailed(path, message))
+                Error(remove_error) ->
+                  Error(ControlFilePermissionFailed(
+                    path,
+                    message
+                      <> "; cleanup failed: "
+                      <> remove_error_message(remove_error),
+                  ))
+              }
             }
           }
       }
@@ -111,8 +123,22 @@ fn trim_trailing_slash(path: String) -> String {
 }
 
 pub fn remove(path: String) -> Nil {
-  let _ = simplifile.delete_file(path)
+  let _best_effort_control_file_remove_result = remove_checked(path)
   Nil
+}
+
+fn remove_checked(path: String) -> Result(Nil, ControlFileRemoveError) {
+  case simplifile.delete_file(path) {
+    Ok(Nil) -> Ok(Nil)
+    Error(err) ->
+      Error(ControlFileRemoveFailed(path, simplifile.describe_error(err)))
+  }
+}
+
+fn remove_error_message(error: ControlFileRemoveError) -> String {
+  case error {
+    ControlFileRemoveFailed(path, message) -> path <> ": " <> message
+  }
 }
 
 pub fn discover(
@@ -194,7 +220,10 @@ pub fn generate_token() -> Result(String, ControlFileError) {
 pub fn get_env(name: String) -> Option(String) {
   case ffi_getenv(name) {
     Ok(value) -> Some(value)
-    Error(_) -> None
+    Error(getenv_error) -> {
+      let _missing_env_is_expected = getenv_error
+      None
+    }
   }
 }
 

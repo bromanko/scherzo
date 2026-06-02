@@ -1196,7 +1196,7 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
         last_event_at_ms: last_event_at_ms,
         token_totals: token_totals,
       ))
-    Error(_) ->
+    Error(Nil) ->
       decode.failure(
         event.SessionSummary(
           session_id: session_id,
@@ -1647,7 +1647,7 @@ fn status_from_string(
         Some(reason) ->
           case session_reason.from_string(reason) {
             Ok(reason) -> Ok(event.Exited(reason))
-            Error(_) -> Ok(event.Exited(session_reason.Failed))
+            Error(Nil) -> Ok(event.Exited(session_reason.Failed))
           }
         None -> Error(Nil)
       }

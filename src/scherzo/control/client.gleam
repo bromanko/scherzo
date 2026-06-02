@@ -68,7 +68,10 @@ pub fn target_response_line(line: String, target: ControlTarget) -> String {
         #("target", target_to_json(target)),
       ])
       |> json.to_string
-    Error(_) -> line
+    Error(decode_error) -> {
+      let _target_annotation_decode_error = decode_error
+      line
+    }
   }
 }
 
@@ -110,7 +113,9 @@ pub fn raw_request(
         Error(error) -> Error(ConnectionFailed(error))
       }
   }
-  ffi_close_socket(socket)
+  // The response (or send/receive error) is already determined; close is a
+  // best-effort transport cleanup and must not mask the request result.
+  let _best_effort_socket_close_result = ffi_close_socket(socket)
   result
 }
 

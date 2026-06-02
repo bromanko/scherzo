@@ -1,6 +1,8 @@
 import gleam/option.{None, Some}
+import gleam/string
 import scherzo/control/file
 import scherzo/path
+import simplifile
 import support/test_helpers
 
 pub fn write_and_read_control_json_test() {
@@ -113,4 +115,35 @@ pub fn default_discovery_fails_cleanly_when_no_file_exists_test() {
   let assert Error(file.ControlFileNotFound(path)) =
     file.discover_with_default(None, fn(_) { None }, missing_path)
   assert path == missing_path
+}
+
+pub fn write_reports_cleanup_failure_when_permission_cleanup_fails_test() {
+  let base = "test/tmp/control-file/write-cleanup-failure"
+  test_helpers.reset_dir(base)
+  let control_path = base <> "/control.json"
+
+  case simplifile.file_info("/dev/null"), simplifile.file_info(base) {
+    Ok(dev_null_info), Ok(base_info)
+      if dev_null_info.user_id != base_info.user_id
+    -> {
+      let assert Ok(Nil) = path.symlink("/dev/null", control_path)
+      let assert Ok(Nil) =
+        simplifile.set_permissions_octal(for_file_at: base, to: 0o500)
+      let write_result =
+        file.write(
+          control_path,
+          file.ControlFile("127.0.0.1", 10_004, "token", base, 1),
+        )
+      let restore_result =
+        simplifile.set_permissions_octal(for_file_at: base, to: 0o700)
+      let assert Ok(Nil) = restore_result
+
+      let assert Error(file.ControlFilePermissionFailed(error_path, message)) =
+        write_result
+      assert error_path == control_path
+      assert string.contains(message, "cleanup failed")
+      assert string.contains(message, control_path)
+    }
+    _, _ -> Nil
+  }
 }

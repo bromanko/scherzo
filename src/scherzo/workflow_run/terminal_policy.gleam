@@ -13,6 +13,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_outcome
 import scherzo/workflow_run/contract_io
+import scherzo/workflow_run/contract_io_error as contract_error
 import scherzo/workflow_run/workstream_handoff
 import scherzo/workspace_run
 
@@ -66,7 +67,7 @@ type PublicationPolicyError {
 }
 
 type WorkstreamHandoffError {
-  WorkstreamHandoffError(reason: String)
+  WorkstreamHandoffError(reason: workstream_handoff.HandoffError)
 }
 
 pub type SuccessInput {
@@ -271,7 +272,8 @@ pub fn finish_success(input: SuccessInput) -> Result(Success, Failure) {
                 Error(error) ->
                   terminal_success_blocker_failure(
                     input,
-                    "workflow_workstream_handoff_failed:" <> error.reason,
+                    "workflow_workstream_handoff_failed:"
+                      <> workstream_handoff.describe_error(error.reason),
                   )
               }
             [failure, ..] ->
@@ -299,10 +301,11 @@ pub fn finish_success(input: SuccessInput) -> Result(Success, Failure) {
         "workflow_required_output_missing:" <> missing,
       )
     }
-    Error(reason) ->
+    Error(error) ->
       terminal_success_blocker_failure(
         input,
-        "workflow_output_manifest_failed:" <> reason,
+        "workflow_output_manifest_failed:"
+          <> contract_error.describe_error(error),
       )
   }
 }
@@ -359,7 +362,9 @@ pub fn finish_scheduler_failure(
     )
   {
     Ok(_) -> ""
-    Error(error) -> "; workflow_output_manifest_failed:" <> error
+    Error(error) ->
+      "; workflow_output_manifest_failed:"
+      <> contract_error.describe_error(error)
   }
   let cleanup_suffix =
     cleanup_failure_suffix(cleanup_if_allowed(
@@ -417,7 +422,9 @@ pub fn finish_fatal_step_failure(
         )
       {
         Ok(_) -> ""
-        Error(error) -> "; workflow_output_manifest_failed:" <> error
+        Error(error) ->
+          "; workflow_output_manifest_failed:"
+          <> contract_error.describe_error(error)
       }
   }
   input.interrupt_active_attempts()

@@ -1,15 +1,18 @@
 import gleam/list
 import gleam/option.{type Option, None}
+import scherzo/session/tokens as session_tokens
 import scherzo/task
 
 pub type QueryRequest {
   Status
+  Metrics
   TaskList(TaskListQuery)
   TaskShow(TaskShowQuery)
 }
 
 pub type QueryResponse {
   StatusResponse(status: StatusDto)
+  MetricsResponse(metrics: OperationalMetricsDto)
   TaskListResponse(tasks: TaskListDto)
   TaskShowResponse(task: TaskDetailDto)
 }
@@ -115,8 +118,89 @@ pub type StatusSource {
   )
 }
 
+pub type TokenTotalsDto {
+  TokenTotalsDto(
+    input: Int,
+    output: Int,
+    cache_read: Int,
+    cache_write: Int,
+    total: Int,
+  )
+}
+
+pub type OperationalMetricsDto {
+  OperationalMetricsDto(
+    schema_version: Int,
+    daemon_id: String,
+    boot_id: String,
+    sampled_at_ms: Int,
+    dispatch_paused: Bool,
+    ui_server_enabled: Bool,
+    remote_client_status: String,
+    workflow_count: Int,
+    scheduled_job_count: Int,
+    active_sessions: Int,
+    running_workers: Int,
+    running_scheduled_workers: Int,
+    queued_claims: Int,
+    pending_dispatch_validations: Int,
+    claimed_tasks: Int,
+    retry_tasks: Int,
+    parked_tasks: Int,
+    completed_tasks: Int,
+    poll_generation: Int,
+    poll_in_flight: Bool,
+    poll_timer_active: Bool,
+    retry_timer_count: Int,
+    retry_refresh_in_flight_count: Int,
+    scheduled_due_count: Int,
+    scheduled_pending_count: Int,
+    scheduled_retry_count: Int,
+    scheduled_report_retry_count: Int,
+    scheduled_retry_timer_count: Int,
+    scheduled_report_retry_timer_count: Int,
+    token_totals: TokenTotalsDto,
+  )
+}
+
+pub type OperationalMetricsSource {
+  OperationalMetricsSource(
+    daemon_id: String,
+    boot_id: String,
+    sampled_at_ms: Int,
+    dispatch_paused: Bool,
+    ui_server_enabled: Bool,
+    remote_client_status: String,
+    workflow_count: Int,
+    scheduled_job_count: Int,
+    active_sessions: Int,
+    running_workers: Int,
+    running_scheduled_workers: Int,
+    queued_claims: Int,
+    pending_dispatch_validations: Int,
+    claimed_tasks: Int,
+    retry_tasks: Int,
+    parked_tasks: Int,
+    completed_tasks: Int,
+    poll_generation: Int,
+    poll_in_flight: Bool,
+    poll_timer_active: Bool,
+    retry_timer_count: Int,
+    retry_refresh_in_flight_count: Int,
+    scheduled_due_count: Int,
+    scheduled_pending_count: Int,
+    scheduled_retry_count: Int,
+    scheduled_report_retry_count: Int,
+    scheduled_retry_timer_count: Int,
+    scheduled_report_retry_timer_count: Int,
+    aggregate_tokens: session_tokens.TokenTotals,
+  )
+}
+
+pub const operational_metrics_schema_version = 1
+
 pub fn supported_queries() -> List(String) {
-  ["status", "task_list", "task_show"]
+  ["status", "metrics", "task_list", "task_show"]
 }
 
 pub fn error_code_to_string(code: QueryErrorCode) -> String {
@@ -147,6 +231,7 @@ pub fn error_code_from_string(value: String) -> Result(QueryErrorCode, Nil) {
 pub fn query_type(request: QueryRequest) -> String {
   case request {
     Status -> "status"
+    Metrics -> "metrics"
     TaskList(_) -> "task_list"
     TaskShow(_) -> "task_show"
   }
@@ -155,6 +240,7 @@ pub fn query_type(request: QueryRequest) -> String {
 pub fn response_type(response: QueryResponse) -> String {
   case response {
     StatusResponse(_) -> "status"
+    MetricsResponse(_) -> "metrics"
     TaskListResponse(_) -> "task_list"
     TaskShowResponse(_) -> "task_show"
   }
@@ -178,6 +264,43 @@ pub fn default_status_source(
     enrollment_token: "",
     tracker_payload: "",
     workflow_internals: [],
+  )
+}
+
+pub fn default_operational_metrics_source(
+  daemon_id daemon_id: String,
+  boot_id boot_id: String,
+) -> OperationalMetricsSource {
+  OperationalMetricsSource(
+    daemon_id: daemon_id,
+    boot_id: boot_id,
+    sampled_at_ms: 0,
+    dispatch_paused: False,
+    ui_server_enabled: False,
+    remote_client_status: "disabled",
+    workflow_count: 0,
+    scheduled_job_count: 0,
+    active_sessions: 0,
+    running_workers: 0,
+    running_scheduled_workers: 0,
+    queued_claims: 0,
+    pending_dispatch_validations: 0,
+    claimed_tasks: 0,
+    retry_tasks: 0,
+    parked_tasks: 0,
+    completed_tasks: 0,
+    poll_generation: 0,
+    poll_in_flight: False,
+    poll_timer_active: False,
+    retry_timer_count: 0,
+    retry_refresh_in_flight_count: 0,
+    scheduled_due_count: 0,
+    scheduled_pending_count: 0,
+    scheduled_retry_count: 0,
+    scheduled_report_retry_count: 0,
+    scheduled_retry_timer_count: 0,
+    scheduled_report_retry_timer_count: 0,
+    aggregate_tokens: session_tokens.zero_token_totals(),
   )
 }
 

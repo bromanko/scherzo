@@ -99,7 +99,10 @@ fn find_bundled_driver_root(start: String) -> Option(String) {
       case path.dirname(start) {
         Ok(parent) if parent != start -> find_bundled_driver_root(parent)
         Ok(_) -> None
-        Error(_error) -> None
+        Error(dirname_error) -> {
+          let _bundled_driver_parent_lookup_error = dirname_error
+          None
+        }
       }
   }
 }
@@ -112,7 +115,10 @@ fn is_file(path: String) -> Bool {
   case simplifile.is_file(path) {
     Ok(True) -> True
     Ok(False) -> False
-    Error(_error) -> False
+    Error(stat_error) -> {
+      let _bundled_driver_stat_error = stat_error
+      False
+    }
   }
 }
 

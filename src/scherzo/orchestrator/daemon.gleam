@@ -15,6 +15,7 @@ import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/query/backend as query_backend
+import scherzo/control/query/metrics as query_metrics
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
@@ -107,6 +108,7 @@ pub type Message {
   SideEffectCompleted(effect_runner.Completion)
   Shutdown(process.Subject(Nil))
   GetSnapshot(process.Subject(orchestrator_state.RuntimeState))
+  GetMetricsSnapshot(process.Subject(query_metrics.RuntimeMetrics))
   GetRemoteDispatchPaused(process.Subject(Bool))
   StartRemoteClient
   ApplyOperatorCommand(
@@ -368,26 +370,85 @@ fn start_query_service(
   effective: config_types.EffectiveConfig,
   daemon_subject: process.Subject(Message),
   identity: daemon_identity.DaemonIdentity,
+  now_ms: fn() -> Int,
   tracker_adapter: adapter.TrackerAdapter,
 ) -> Result(query_service.Handle, StartupError) {
   query_service.start(
     query_service.default_settings(),
     query_service.Backend(run: fn(query) {
-      query_backend.run(
-        effective,
-        identity,
-        tracker_adapter,
-        fn(timeout_ms) {
-          get_remote_dispatch_paused(daemon_subject, timeout_ms)
-        },
-        query,
-      )
+      let get_dispatch_paused = fn(timeout_ms) {
+        get_remote_dispatch_paused(daemon_subject, timeout_ms)
+      }
+      case query {
+        query_types.Status ->
+          query_metrics.execute_status(
+            ui_server_enabled: effective.ui_server.enabled,
+            identity: identity,
+            get_dispatch_paused: get_dispatch_paused,
+          )
+        query_types.Metrics ->
+          query_metrics.execute_metrics(
+            ui_server_enabled: effective.ui_server.enabled,
+            identity: identity,
+            sampled_at_ms: now_ms(),
+            get_dispatch_paused: get_dispatch_paused,
+            get_runtime_metrics: fn(timeout_ms) {
+              get_metrics_snapshot(daemon_subject, timeout_ms)
+            },
+          )
+        query_types.TaskList(_) | query_types.TaskShow(_) ->
+          query_backend.run(
+            effective,
+            identity,
+            tracker_adapter,
+            get_dispatch_paused,
+            query,
+          )
+      }
     }),
   )
   |> result.map_error(fn(error) {
     let query_service.StartError(code, message) = error
     StartupError(code, message)
   })
+}
+
+fn metrics_snapshot_from_state(state: State) -> query_metrics.RuntimeMetrics {
+  query_metrics.RuntimeMetrics(
+    workflow_count: dict.size(state.workflow.bundle.workflows),
+    scheduled_job_count: list.length(
+      state.workflow.bundle.orchestrator.scheduled_jobs,
+    ),
+    active_sessions: dict.size(state.runtime.running),
+    running_workers: dict.size(state.runtime.running),
+    running_scheduled_workers: worker_registry.scheduled_worker_count(
+      state.registry,
+    ),
+    queued_claims: dict.size(state.pending_claims),
+    pending_dispatch_validations: dict.size(state.pending_dispatch_validations),
+    claimed_tasks: dict.size(state.runtime.claimed),
+    retry_tasks: dict.size(state.runtime.retry_attempts),
+    parked_tasks: dict.size(state.runtime.parked),
+    completed_tasks: dict.size(state.runtime.completed),
+    poll_generation: poll_scheduler.generation(state.poll),
+    poll_in_flight: option_is_some(poll_scheduler.in_flight(state.poll)),
+    poll_timer_active: option_is_some(poll_scheduler.timer(state.poll)),
+    retry_timer_count: retry_scheduler.timer_count(state.retry),
+    retry_refresh_in_flight_count: retry_scheduler.refresh_in_flight_count(
+      state.retry,
+    ),
+    scheduled_due_count: dict.size(state.scheduled_runtime.next_due),
+    scheduled_pending_count: dict.size(state.scheduled_runtime.pending_starts),
+    scheduled_retry_count: dict.size(state.scheduled_runtime.scheduled_retries),
+    scheduled_report_retry_count: dict.size(
+      state.scheduled_runtime.scheduled_report_retries,
+    ),
+    scheduled_retry_timer_count: dict.size(state.scheduled_retry_timers),
+    scheduled_report_retry_timer_count: dict.size(
+      state.scheduled_report_retry_timers,
+    ),
+    aggregate_tokens: state.runtime.aggregate_pi_totals,
+  )
 }
 
 fn start_control_plane(
@@ -590,6 +651,7 @@ pub fn start(
           effective,
           subject,
           daemon_identity,
+          dependencies.now_ms,
           tracker_adapter,
         )
       {
@@ -606,7 +668,7 @@ pub fn start(
             )
           {
             Error(err) -> {
-              let _ = query_service.stop(query_handle, 1000)
+              let _best_effort = query_service.stop(query_handle, 1000)
               Error(encode_startup_error(err))
             }
             Ok(control_plane) ->
@@ -622,7 +684,7 @@ pub fn start(
               {
                 Error(_) -> {
                   stop_control_plane(dependencies, control_plane)
-                  let _ = query_service.stop(query_handle, 1000)
+                  let _best_effort = query_service.stop(query_handle, 1000)
                   Error(
                     encode_startup_error(StartupError(
                       "effect_runner_start_failed",
@@ -637,7 +699,7 @@ pub fn start(
                     False -> {
                       process.demonitor_process(effect_runner_monitor)
                       stop_control_plane(dependencies, control_plane)
-                      let _ = query_service.stop(query_handle, 1000)
+                      let _best_effort = query_service.stop(query_handle, 1000)
                       Error(
                         encode_startup_error(StartupError(
                           "effect_runner_start_failed",
@@ -746,6 +808,15 @@ pub fn get_snapshot(
 ) -> Result(orchestrator_state.RuntimeState, Nil) {
   let reply = process.new_subject()
   process.send(subject, GetSnapshot(reply))
+  process.receive(reply, within: timeout_ms)
+}
+
+fn get_metrics_snapshot(
+  subject: process.Subject(Message),
+  timeout_ms: Int,
+) -> Result(query_metrics.RuntimeMetrics, Nil) {
+  let reply = process.new_subject()
+  process.send(subject, GetMetricsSnapshot(reply))
   process.receive(reply, within: timeout_ms)
 }
 
@@ -1259,6 +1330,10 @@ fn handle_message(
       effect_runner.reply_snapshot(state.runtime, reply)
       actor.continue(state)
     }
+    GetMetricsSnapshot(reply) -> {
+      process.send(reply, metrics_snapshot_from_state(state))
+      actor.continue(state)
+    }
     GetRemoteDispatchPaused(reply) -> {
       process.send(reply, state.operator_paused)
       actor.continue(state)
@@ -1272,7 +1347,7 @@ fn handle_message(
         reply,
       ))
     ExecuteQuery(query, _timeout_ms, reply) -> {
-      let _ =
+      let _query_worker_pid =
         process.spawn_unlinked(fn() {
           process.send(reply, query_service.query(state.query_service, query))
           Nil
@@ -1786,7 +1861,7 @@ fn continue_retry_workflow_step_for_operator(
               }
             }
             _ -> {
-              let _ =
+              let _best_effort_retry_step_rejection_diagnostic_appended =
                 append_ledger_bodies(
                   state,
                   retry_step_rejection_diagnostic_bodies(finalization),
@@ -2997,7 +3072,7 @@ fn transition_dispatch_context(
     state.operator_paused,
     worker_registry.worker_issue_ids(state.registry),
     worker_registry.worker_issues(state.registry),
-    list.length(worker_registry.scheduled_worker_handles(state.registry)),
+    worker_registry.scheduled_worker_count(state.registry),
     state.workflow.effective.workspace.root,
     state.dependencies.now_ms(),
     state.recovery_by_issue,
@@ -4025,7 +4100,7 @@ fn start_pending_scheduled_run(
               pending.workflow_id,
             )
           {
-            Error(_) -> {
+            Error(runtime_bundle.BundleError(_, _)) -> {
               append_ledger_bodies_best_effort(
                 state,
                 [
@@ -6138,7 +6213,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       }
     None -> Nil
   }
-  let _ = query_service.stop(state.query_service, 1000)
+  let _best_effort = query_service.stop(state.query_service, 1000)
   state.dependencies.stop_control_server(state.control_server)
   case state.control_file_path {
     Some(path) -> control_file.remove(path)

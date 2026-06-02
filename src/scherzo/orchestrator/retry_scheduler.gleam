@@ -140,6 +140,14 @@ pub fn cancel_all(
   new()
 }
 
+pub fn timer_count(state: State(timer)) -> Int {
+  dict.size(state.timers)
+}
+
+pub fn refresh_in_flight_count(state: State(timer)) -> Int {
+  dict.size(state.refreshes_in_flight)
+}
+
 pub fn timer_for_issue(
   state: State(timer),
   issue_id: String,

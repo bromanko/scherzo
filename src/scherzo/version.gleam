@@ -98,7 +98,7 @@ fn identity_from_vcs(
           ))
       }
     }
-    Error(_) -> None
+    Error(Nil) -> None
   }
 }
 
@@ -118,7 +118,7 @@ fn vcs_field_or_unknown(
 ) -> String {
   case run_vcs(query) {
     Ok(value) -> field_or_unknown(value)
-    Error(_) -> unknown
+    Error(Nil) -> unknown
   }
 }
 
@@ -128,7 +128,7 @@ fn vcs_dirty(
 ) -> Option(Bool) {
   case run_vcs(query) {
     Ok(value) -> Some(string.trim(value) != "")
-    Error(_) -> None
+    Error(Nil) -> None
   }
 }
 
@@ -199,22 +199,26 @@ fn command(query: VcsQuery) -> #(String, List(String)) {
 fn run_argv(executable: String, args: List(String)) -> Result(String, Nil) {
   case port.start_argv(executable, args, ".", []) {
     Ok(process) -> read_first_stdout(process)
-    Error(_) -> Error(Nil)
+    Error(start_error) -> {
+      let _vcs_process_start_error = start_error
+      Error(Nil)
+    }
   }
 }
 
 fn read_first_stdout(process: port.Process) -> Result(String, Nil) {
   case port.read_stdout_line(process, vcs_timeout_ms) {
     Ok(line) -> {
-      let _ = port.terminate(process)
+      let _vcs_process_cleanup_result = port.terminate(process)
       Ok(string.trim(line))
     }
     Error(port.ProcessExited(0)) -> {
       let _cleanup_result = port.terminate(process)
       Ok("")
     }
-    Error(_) -> {
-      let _ = port.terminate(process)
+    Error(read_error) -> {
+      let _vcs_stdout_read_error = read_error
+      let _vcs_process_cleanup_result = port.terminate(process)
       Error(Nil)
     }
   }
