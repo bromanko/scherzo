@@ -600,6 +600,12 @@ fn boundary_allowlist() -> List(AllowlistEntry) {
       reason: "This file is the Linear adapter boundary; generic tracker modules must not copy this dependency.",
     ),
     AllowlistEntry(
+      path: "src/scherzo/tracker/linear_adapter.gleam",
+      imported_module: "scherzo/linear/task_query",
+      rule_id: "tracker_must_not_import_linear",
+      reason: "Task query GraphQL helpers remain Linear-specific and are only consumed by the Linear adapter boundary.",
+    ),
+    AllowlistEntry(
       path: "src/scherzo/orchestrator/service.gleam",
       imported_module: "scherzo/orchestrator/daemon",
       rule_id: "orchestrator_must_not_import_daemon",

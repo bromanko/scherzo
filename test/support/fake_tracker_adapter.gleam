@@ -35,10 +35,16 @@ pub fn task() -> task.Task {
 }
 
 pub fn read_only_adapter() -> adapter.TrackerAdapter {
+  read_only_adapter_with_tasks([task()])
+}
+
+pub fn read_only_adapter_with_tasks(
+  tasks: List(task.Task),
+) -> adapter.TrackerAdapter {
   adapter.TrackerAdapter(
     kind: backend_kind,
     display_name: "Test memory tracker",
-    task_source: task_source_capability([task()]),
+    task_source: task_source_capability(tasks),
     comments: None,
     remote_commands: None,
     state_transitions: None,
@@ -95,6 +101,27 @@ fn task_source_capability(
           }
       }
     },
+    list_tasks: fn(request) {
+      let matching =
+        list.filter(tasks, fn(candidate) {
+          matches_state_categories(candidate, request.state_categories)
+        })
+      let remaining = drop_first(matching, request.offset)
+      Ok(adapter.TaskPage(
+        items: take_first(remaining, request.limit),
+        has_more: list.length(remaining) > request.limit,
+      ))
+    },
+    lookup_task_detail: fn(ref) {
+      let matches =
+        list.filter(tasks, fn(candidate) {
+          matches_lookup_ref(candidate.ref, ref)
+        })
+      case matches {
+        [] -> Ok(None)
+        [first, ..] -> Ok(Some(first))
+      }
+    },
   )
 }
 
@@ -116,13 +143,57 @@ fn matches_search(
   state_matches && label_matches
 }
 
+fn matches_state_categories(
+  candidate: task.Task,
+  categories: List(task.TaskStateCategory),
+) -> Bool {
+  case categories {
+    [] -> True
+    categories -> list.contains(categories, candidate.state.category)
+  }
+}
+
+fn matches_lookup_ref(
+  ref: task.TaskRef,
+  lookup: adapter.TaskLookupRef,
+) -> Bool {
+  case lookup {
+    adapter.TaskLookupByDisplayId(value) -> option_equals(ref.key, value)
+    adapter.TaskLookupByRemoteId(provider: provider, id: value) ->
+      provider_matches(ref.backend_kind, provider) && ref.remote_id == value
+  }
+}
+
 fn matches_operator_ref(ref: task.TaskRef, operator_ref: String) -> Bool {
   let task.TaskRef(remote_id: remote_id, key: key, ..) = ref
   remote_id == operator_ref || option_equals(key, operator_ref)
 }
 
+fn provider_matches(provider: String, expected: Option(String)) -> Bool {
+  case expected {
+    Some(expected) -> provider == expected
+    None -> True
+  }
+}
+
 fn same_ref(left: task.TaskRef, right: task.TaskRef) -> Bool {
   task.identity(left) == task.identity(right)
+}
+
+fn drop_first(values: List(a), count: Int) -> List(a) {
+  case count <= 0, values {
+    True, _ -> values
+    _, [] -> []
+    False, [_, ..rest] -> drop_first(rest, count - 1)
+  }
+}
+
+fn take_first(values: List(a), count: Int) -> List(a) {
+  case count <= 0, values {
+    True, _ -> []
+    _, [] -> []
+    False, [first, ..rest] -> [first, ..take_first(rest, count - 1)]
+  }
 }
 
 fn option_equals(value: Option(String), expected: String) -> Bool {
