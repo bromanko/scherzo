@@ -77,7 +77,10 @@ fn start_cleanup_server(
 fn cleanup_once(subject: process.Subject(CleanupMessage)) -> Nil {
   let ack = process.new_subject()
   case process.subject_owner(subject) {
-    Error(_) -> Nil
+    Error(owner_error) -> {
+      let _cleanup_server_already_gone = owner_error
+      Nil
+    }
     Ok(pid) -> {
       let monitor = process.monitor(pid)
       case process.is_alive(pid) {
@@ -91,7 +94,8 @@ fn cleanup_once(subject: process.Subject(CleanupMessage)) -> Nil {
             process.new_selector()
             |> process.select(ack)
             |> process.select_specific_monitor(monitor, fn(_) { Nil })
-          let _ = process.selector_receive(selector, within: 1000)
+          let _cleanup_ack_or_down_result =
+            process.selector_receive(selector, within: 1000)
           process.demonitor_process(monitor)
           Nil
         }
