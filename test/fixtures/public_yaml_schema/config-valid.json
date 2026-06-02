@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tracker": {
+    "linear": {
+      "project": "demo-project",
+      "api_key_env": "LINEAR_API_KEY"
+    }
+  },
+  "workflows": {
+    "research": "workflows/research.yaml"
+  },
+  "workspace": {
+    "driver": "noop"
+  }
+}

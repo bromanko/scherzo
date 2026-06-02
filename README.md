@@ -25,7 +25,7 @@ Workflow files and workspace drivers are trusted local configuration. Scherzo en
 
 If you are adapting Scherzo to another repository, start with the guided adopter path:
 
-- [Getting started](docs/GETTING_STARTED.md) — from minimal repo config to a cautious `--once` run.
+- [Getting started](docs/GETTING_STARTED.md) — from minimal repo config to a cautious `--once` run, including YAML editor schema setup.
 - [Simplified YAML migration guide](docs/runbooks/simplified-yaml-migration.md) — old/new config examples and upgrade checklist.
 - [Example orchestrator config](examples/scherzo.yaml) — complete source-tree example.
 - [Packaged no-op driver example](examples/scherzo-packaged-noop.yaml) — artifact-only/research workflows.
@@ -51,7 +51,7 @@ When working from this source checkout, run the same entrypoints through devenv,
 | End-to-end adoption path | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
 | Repository architecture and change checklist | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Breaking-change upgrade policy | [docs/runbooks/upgrades.md](docs/runbooks/upgrades.md) |
-| Simplified YAML schema and migration | [docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md](docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md) and [docs/runbooks/simplified-yaml-migration.md](docs/runbooks/simplified-yaml-migration.md) |
+| Simplified YAML schema, editor schema setup, and migration | [docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md](docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md), [docs/GETTING_STARTED.md#yaml-editor-schema-support](docs/GETTING_STARTED.md#yaml-editor-schema-support), and [docs/runbooks/simplified-yaml-migration.md](docs/runbooks/simplified-yaml-migration.md) |
 | Workspace driver contract | [docs/specs/WORKSPACE_DRIVER_SPEC.md](docs/specs/WORKSPACE_DRIVER_SPEC.md) |
 | Structured output and validators | [docs/specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md](docs/specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md) |
 | Workspace driver migration notes | [docs/runbooks/workspace-driver-migration.md](docs/runbooks/workspace-driver-migration.md) |
@@ -78,7 +78,7 @@ A typical consuming repository uses this layout:
     prompts/
       implement.md             # prompt template
       research.md              # prompt template
-schemas/                       # optional JSON Schemas for structured output
+schemas/                       # public YAML schemas and optional structured-output schemas
 scripts/                       # optional validators or custom workspace drivers
 ```
 

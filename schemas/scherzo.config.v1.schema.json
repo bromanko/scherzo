@@ -1,0 +1,602 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scherzo.dev/schemas/scherzo.config.v1.schema.json",
+  "title": "Scherzo config v1",
+  "description": "Editor-facing JSON Schema for Scherzo's public v1 orchestrator config YAML.",
+  "$ref": "#/$defs/RootConfig",
+  "$defs": {
+    "NonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "WorkflowId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Workflow ids must start with a lowercase letter or digit and may contain lowercase letters, digits, underscores, and hyphens."
+    },
+    "DriverId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "EnvVarName": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "HttpsUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^[Hh][Tt][Tt][Pp][Ss]://",
+      "description": "HTTPS endpoint URL. JSON Schema format is treated as an annotation by some editors, so the scheme is also checked explicitly."
+    },
+    "HttpsUrlNoUserinfo": {
+      "allOf": [{ "$ref": "#/$defs/HttpsUrl" }],
+      "pattern": "^[Hh][Tt][Tt][Pp][Ss]://[^/?#@]+",
+      "not": { "pattern": "^[Hh][Tt][Tt][Pp][Ss]://[^/?#]*@" },
+      "description": "HTTPS endpoint URL with a host and without embedded userinfo credentials."
+    },
+    "RelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^\\\\" },
+          { "pattern": "^~[/\\\\]" },
+          { "pattern": "^\\$" },
+          { "pattern": "^[A-Za-z]:[/\\\\]" },
+          { "pattern": "(^|[/\\\\])\\.\\.([/\\\\]|$)" }
+        ]
+      },
+      "description": "Repository-relative or config-relative path. Absolute, home-expanded, and parent-traversal paths are not allowed in this public surface."
+    },
+    "Duration": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*(ms|s|m|h)$",
+      "description": "Duration string with an explicit unit: ms, s, m, or h."
+    },
+    "StringList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/NonEmptyString" }
+    },
+    "StateList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/NonEmptyString" }
+    },
+    "StringMap": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/NonEmptyString" },
+      "additionalProperties": { "type": "string" }
+    },
+    "PiRuntimeArg": {
+      "type": "string",
+      "not": {
+        "pattern": "^(--session(=.*)?|--no-session|--mode(=.*)?|--rpc-message-updates(=.*)?)$"
+      },
+      "description": "User-supplied pi argument. Scherzo-owned protocol, mode, and session flags are added automatically and must not be configured here."
+    },
+    "RemovedRouting": {
+      "description": "routing was removed. Move the workflow map to top-level workflows and the label policy to task_routing.labels.",
+      "not": {}
+    },
+    "RemovedPolling": {
+      "description": "polling was removed. Use tracker.polling.",
+      "not": {}
+    },
+    "RemovedHandoff": {
+      "description": "handoff was removed. Use task_updates.",
+      "not": {}
+    },
+    "RemovedLinearContract": {
+      "description": "linear_contract was removed from the public config. Use tracker.linear.check_setup and the simplified tracker/task-routing/task_updates fields.",
+      "not": {}
+    },
+    "RemovedRemoteCommands": {
+      "description": "remote_commands was removed. Use scherzoctl for operator control.",
+      "not": {}
+    },
+    "RemovedLinearCommands": {
+      "description": "linear_commands was removed. Use scherzoctl for operator control.",
+      "not": {}
+    },
+    "RemovedScheduledJobs": {
+      "description": "scheduled_jobs was removed. Use schedules.",
+      "not": {}
+    },
+    "RemovedArtifactLimits": {
+      "description": "artifact_limits was removed. Use artifacts.limits.",
+      "not": {}
+    },
+    "RemovedAgent": {
+      "description": "agent was removed. Use agents.",
+      "not": {}
+    },
+    "RemovedPi": {
+      "description": "pi was removed. Use agents.runtime.",
+      "not": {}
+    },
+    "Tracker": {
+      "type": "object",
+      "required": ["linear"],
+      "additionalProperties": false,
+      "properties": {
+        "linear": {
+          "type": "object",
+          "description": "Linear is the current production tracker adapter.",
+          "required": ["project"],
+          "additionalProperties": false,
+          "properties": {
+            "project": { "$ref": "#/$defs/NonEmptyString" },
+            "api_key_env": { "$ref": "#/$defs/EnvVarName" },
+            "endpoint": { "$ref": "#/$defs/HttpsUrl" },
+            "check_setup": { "type": "boolean" },
+            "labels": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "support": { "$ref": "#/$defs/StringList" }
+              }
+            }
+          }
+        },
+        "states": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ready": { "$ref": "#/$defs/StateList" },
+            "active": { "$ref": "#/$defs/StateList" },
+            "terminal": { "$ref": "#/$defs/StateList" }
+          }
+        },
+        "polling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "every": { "$ref": "#/$defs/Duration" }
+          }
+        },
+        "kind": {
+          "description": "tracker.kind was removed. Only tracker.linear is supported here.",
+          "not": {}
+        },
+        "credentials": {
+          "description": "tracker.credentials.api_key_env moved to tracker.linear.api_key_env.",
+          "not": {}
+        },
+        "dispatch_states": {
+          "description": "tracker.dispatch_states was removed. Use tracker.states.ready.",
+          "not": {}
+        },
+        "active_states": {
+          "description": "tracker.active_states was removed. Use tracker.states.active.",
+          "not": {}
+        },
+        "terminal_states": {
+          "description": "tracker.terminal_states was removed. Use tracker.states.terminal.",
+          "not": {}
+        }
+      }
+    },
+    "WorkflowMap": {
+      "type": "object",
+      "description": "Map from workflow id to workflow YAML path, resolved relative to the config file directory.",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/WorkflowId" },
+      "additionalProperties": { "$ref": "#/$defs/RelativePath" }
+    },
+    "TaskRouting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "labels": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "prefix": { "type": "string" },
+            "require_exactly_one": { "type": "boolean" },
+            "default_workflow": { "$ref": "#/$defs/WorkflowId" },
+            "on_invalid": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "state": { "$ref": "#/$defs/NonEmptyString" },
+                "comment": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "WorkspaceRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "root": { "$ref": "#/$defs/RelativePath" },
+        "driver": { "$ref": "#/$defs/DriverId" },
+        "drivers": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/DriverId" },
+          "additionalProperties": { "$ref": "#/$defs/WorkspaceDriver" }
+        },
+        "default_profile": {
+          "description": "workspace.default_profile was removed. Use workspace.driver.",
+          "not": {}
+        },
+        "profiles": {
+          "description": "workspace.profiles was removed. Use workspace.drivers.",
+          "not": {}
+        },
+        "hooks": {
+          "description": "workspace.hooks was removed. Use a custom workspace driver instead.",
+          "not": {}
+        }
+      }
+    },
+    "DriverEnv": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/EnvVarName" },
+      "additionalProperties": { "type": "string" }
+    },
+    "WorkspaceDriver": {
+      "oneOf": [
+        { "$ref": "#/$defs/NoopDriver" },
+        { "$ref": "#/$defs/JjDriver" },
+        { "$ref": "#/$defs/CustomDriver" }
+      ]
+    },
+    "DriverCommonRemovedProperties": {
+      "type": "object",
+      "properties": {
+        "driver": {
+          "description": "Nested driver blocks were removed. Put type, command, timeout, and env directly under workspace.drivers.<name>.",
+          "not": {}
+        },
+        "timeout_ms": {
+          "description": "timeout_ms was removed. Use timeout with a duration string.",
+          "not": {}
+        },
+        "hooks": {
+          "description": "Driver hooks were removed from the public config. Use a custom driver command instead.",
+          "not": {}
+        },
+        "lifecycle": {
+          "description": "Driver lifecycle selection was removed from the public config.",
+          "not": {}
+        },
+        "capabilities": {
+          "description": "Driver capabilities are discovered at runtime and are not configured in this public YAML.",
+          "not": {}
+        }
+      }
+    },
+    "NoopDriver": {
+      "allOf": [
+        { "$ref": "#/$defs/DriverCommonRemovedProperties" },
+        {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "noop" },
+            "timeout": { "$ref": "#/$defs/Duration" },
+            "env": { "$ref": "#/$defs/DriverEnv" },
+            "command": {
+              "description": "command is only valid for type: custom.",
+              "not": {}
+            },
+            "remote": {
+              "description": "jj-friendly fields are only valid for type: jj.",
+              "not": {}
+            },
+            "base_branch": { "description": "Only valid for type: jj.", "not": {} },
+            "base": { "description": "Only valid for type: jj.", "not": {} },
+            "fetch_base": { "description": "Only valid for type: jj.", "not": {} },
+            "publish_remote": { "description": "Only valid for type: jj.", "not": {} },
+            "github_repo": { "description": "Only valid for type: jj.", "not": {} }
+          }
+        }
+      ]
+    },
+    "JjDriver": {
+      "allOf": [
+        { "$ref": "#/$defs/DriverCommonRemovedProperties" },
+        {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "jj" },
+            "timeout": { "$ref": "#/$defs/Duration" },
+            "env": { "$ref": "#/$defs/DriverEnv" },
+            "remote": { "type": "string" },
+            "base_branch": { "type": "string" },
+            "base": { "type": "string" },
+            "fetch_base": { "type": "boolean" },
+            "publish_remote": { "type": "string" },
+            "github_repo": {
+              "type": "string",
+              "pattern": "^[^/]+/[^/]+$"
+            },
+            "command": {
+              "description": "command is only valid for type: custom.",
+              "not": {}
+            }
+          }
+        }
+      ]
+    },
+    "CustomDriver": {
+      "allOf": [
+        { "$ref": "#/$defs/DriverCommonRemovedProperties" },
+        {
+          "type": "object",
+          "required": ["type", "command"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "custom" },
+            "command": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S+$",
+              "description": "Single executable token. Whitespace is rejected by the parser."
+            },
+            "timeout": { "$ref": "#/$defs/Duration" },
+            "env": { "$ref": "#/$defs/DriverEnv" },
+            "remote": {
+              "description": "jj-friendly fields are only valid for type: jj.",
+              "not": {}
+            },
+            "base_branch": { "description": "Only valid for type: jj.", "not": {} },
+            "base": { "description": "Only valid for type: jj.", "not": {} },
+            "fetch_base": { "description": "Only valid for type: jj.", "not": {} },
+            "publish_remote": { "description": "Only valid for type: jj.", "not": {} },
+            "github_repo": { "description": "Only valid for type: jj.", "not": {} }
+          }
+        }
+      ]
+    },
+    "AgentConcurrency": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "default": { "type": "integer", "minimum": 0 },
+            "by_state": {
+              "type": "object",
+              "propertyNames": { "$ref": "#/$defs/NonEmptyString" },
+              "additionalProperties": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      ]
+    },
+    "Agents": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "concurrency": { "$ref": "#/$defs/AgentConcurrency" },
+        "max_turns": { "type": "integer", "minimum": 1 },
+        "sessions_per_task": { "type": "integer", "minimum": 1 },
+        "model": { "type": "string" },
+        "thinking": { "type": "string" },
+        "retries": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "attempts": { "type": "integer", "minimum": 1 },
+            "max_backoff": { "$ref": "#/$defs/Duration" }
+          }
+        },
+        "recovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "attempts": { "type": "integer", "minimum": 1 },
+            "prompt_char_limit": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "pi" },
+            "sessions": { "enum": ["ephemeral", "persistent"] },
+            "pi": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "executable": { "type": "string", "minLength": 1 },
+                "args": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/PiRuntimeArg" }
+                },
+                "env": { "$ref": "#/$defs/DriverEnv" }
+              }
+            },
+            "turn_timeout": { "$ref": "#/$defs/Duration" },
+            "read_timeout": { "$ref": "#/$defs/Duration" },
+            "stall_timeout": { "$ref": "#/$defs/Duration" },
+            "auto_retry": { "type": "boolean" },
+            "ui_requests": { "enum": ["cancel", "fail", "ignore", "operator"] },
+            "ui_request_timeout": { "$ref": "#/$defs/Duration" },
+            "compatibility_check": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "TaskUpdates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "states": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "claim": { "$ref": "#/$defs/NonEmptyString" },
+            "success": { "$ref": "#/$defs/NonEmptyString" },
+            "no_review_success": { "$ref": "#/$defs/NonEmptyString" },
+            "failure": { "$ref": "#/$defs/NonEmptyString" },
+            "partial_success": { "$ref": "#/$defs/NonEmptyString" }
+          }
+        },
+        "comment_on": {
+          "type": "array",
+          "items": {
+            "enum": ["claim", "success", "failure", "park"]
+          }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on_success": { "enum": ["none", "comment", "attachment"] },
+            "max_chars": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "Schedule": {
+      "type": "object",
+      "required": ["workflow", "every"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/WorkflowId" },
+        "workflow": { "$ref": "#/$defs/WorkflowId" },
+        "enabled": { "type": "boolean" },
+        "every": { "$ref": "#/$defs/Duration" },
+        "overlap": { "enum": ["skip"] },
+        "catch_up": { "type": "boolean" },
+        "on_failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "task": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "state": { "$ref": "#/$defs/NonEmptyString" },
+                "labels": { "$ref": "#/$defs/StringList" },
+                "dedupe": { "enum": ["open_task_per_schedule"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Schedules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Schedule" }
+    },
+    "Artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "command_output_chars": { "type": "integer", "minimum": 1 },
+            "template_field_chars": { "type": "integer", "minimum": 1 },
+            "workflow_summary_chars": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "repositories": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "github": {
+              "type": "object",
+              "propertyNames": { "$ref": "#/$defs/DriverId" },
+              "additionalProperties": { "$ref": "#/$defs/GithubRepositoryTarget" }
+            }
+          }
+        }
+      }
+    },
+    "GithubRepositoryTarget": {
+      "type": "object",
+      "required": ["repo", "base"],
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[^/]+/[^/]+$"
+        },
+        "base": { "$ref": "#/$defs/NonEmptyString" },
+        "checkout": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "strategy": { "enum": ["managed_git"] }
+          }
+        },
+        "branch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "strategy": { "enum": ["stable_per_work"] },
+            "template": { "$ref": "#/$defs/RelativePath" }
+          }
+        },
+        "pull_request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "strategy": { "enum": ["update_existing"] },
+            "draft": { "type": "boolean" },
+            "title": { "type": "string" },
+            "body_template": { "$ref": "#/$defs/RelativePath" }
+          }
+        },
+        "draft_pr": {
+          "description": "draft_pr was removed. Use pull_request.draft.",
+          "not": {}
+        }
+      }
+    },
+    "UiServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "endpoint": { "$ref": "#/$defs/HttpsUrlNoUserinfo" },
+        "enrollment_token_env": { "$ref": "#/$defs/EnvVarName" }
+      }
+    },
+    "RootConfig": {
+      "type": "object",
+      "required": ["version", "tracker", "workflows"],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1,
+          "description": "The simplified public config intentionally keeps version: 1."
+        },
+        "tracker": { "$ref": "#/$defs/Tracker" },
+        "workflows": { "$ref": "#/$defs/WorkflowMap" },
+        "task_routing": { "$ref": "#/$defs/TaskRouting" },
+        "workspace": { "$ref": "#/$defs/WorkspaceRoot" },
+        "agents": { "$ref": "#/$defs/Agents" },
+        "ui_server": { "$ref": "#/$defs/UiServer" },
+        "task_updates": { "$ref": "#/$defs/TaskUpdates" },
+        "schedules": { "$ref": "#/$defs/Schedules" },
+        "artifacts": { "$ref": "#/$defs/Artifacts" },
+        "routing": { "$ref": "#/$defs/RemovedRouting" },
+        "polling": { "$ref": "#/$defs/RemovedPolling" },
+        "handoff": { "$ref": "#/$defs/RemovedHandoff" },
+        "linear_contract": { "$ref": "#/$defs/RemovedLinearContract" },
+        "remote_commands": { "$ref": "#/$defs/RemovedRemoteCommands" },
+        "linear_commands": { "$ref": "#/$defs/RemovedLinearCommands" },
+        "scheduled_jobs": { "$ref": "#/$defs/RemovedScheduledJobs" },
+        "artifact_limits": { "$ref": "#/$defs/RemovedArtifactLimits" },
+        "agent": { "$ref": "#/$defs/RemovedAgent" },
+        "pi": { "$ref": "#/$defs/RemovedPi" }
+      }
+    }
+  }
+}

@@ -215,6 +215,50 @@ Path rule of thumb:
 - Command validator `argv` entries run from `working_directory`, usually `repository` for scripts under `scripts/`.
 - Packaged workspace drivers can be named directly, for example `noop` or `jj`. Repository-local drivers can use a named `workspace.drivers.<name>` entry with `type: custom` and `command: scripts/...`.
 
+### YAML editor schema support
+
+Scherzo now ships checked-in public YAML schemas at `schemas/scherzo.config.v1.schema.json` and `schemas/scherzo.workflow.v1.schema.json`. Treat those local files as the authoritative editor/CLI artifacts for now, even though their `$id` values are stable public identifiers.
+
+You can attach a schema inline with a yaml-language-server modeline comment. For `.scherzo/scherzo.yaml` from the repository root:
+
+```yaml
+# yaml-language-server: $schema=../schemas/scherzo.config.v1.schema.json
+version: 1
+tracker:
+  linear:
+    project: YOUR_LINEAR_PROJECT_SLUG
+```
+
+For a workflow file such as `.scherzo/workflows/getting-started.yaml`:
+
+```yaml
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
+version: 1
+id: getting-started
+steps:
+  - id: draft
+    prompt: prompts/getting-started.md
+```
+
+Or configure yaml-language-server / VS Code once for the repository:
+
+```json
+{
+  "yaml.schemas": {
+    "./schemas/scherzo.config.v1.schema.json": [
+      ".scherzo/scherzo.yaml",
+      "scherzo.yaml"
+    ],
+    "./schemas/scherzo.workflow.v1.schema.json": [
+      ".scherzo/workflows/*.yaml",
+      "workflows/*.yaml"
+    ]
+  }
+}
+```
+
+Use these schemas for editor completion, hover text, and structural validation. Scherzo's runtime parser remains the final authority for workflow graph semantics such as dependency existence, cycle detection, workspace lineage, and contract cross-reference checks.
+
 ## 4. Configure Linear and task routing
 
 ### Project, API key, and states
