@@ -9,7 +9,7 @@ import scherzo/orchestrator/core
 import scherzo/orchestrator/runtime_recovery
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/recovery as session_recovery

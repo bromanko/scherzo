@@ -14,7 +14,7 @@ import scherzo/error
 import scherzo/handoff
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason as session_reason

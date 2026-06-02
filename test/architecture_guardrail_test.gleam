@@ -65,14 +65,14 @@ pub fn architecture_guardrail_flags_synthetic_forbidden_import_test() {
 pub fn architecture_guardrail_allows_explicit_exception_test() {
   let source_import =
     SourceImport(
-      path: "src/scherzo/state/projection.gleam",
+      path: "src/scherzo/state/legacy_runtime_bridge.gleam",
       imported_module: "scherzo/orchestrator/state",
       line: 10,
     )
 
   let allowlist = [
     AllowlistEntry(
-      path: "src/scherzo/state/projection.gleam",
+      path: "src/scherzo/state/legacy_runtime_bridge.gleam",
       imported_module: "scherzo/orchestrator/state",
       rule_id: "state_must_not_import_orchestrator",
       reason: "documented compatibility seam",
@@ -80,6 +80,16 @@ pub fn architecture_guardrail_allows_explicit_exception_test() {
   ]
 
   assert boundary_failures_for([source_import], allowlist) == []
+}
+
+pub fn architecture_guardrail_has_no_state_orchestrator_allowlist_entries_test() {
+  let state_orchestrator_entries =
+    boundary_allowlist()
+    |> list.filter(fn(entry) {
+      entry.rule_id == "state_must_not_import_orchestrator"
+    })
+
+  assert state_orchestrator_entries == []
 }
 
 pub fn architecture_guardrail_flags_tracker_linear_import_test() {
@@ -564,36 +574,6 @@ fn failure_report(failures: List(String)) -> String {
 fn boundary_allowlist() -> List(AllowlistEntry) {
   [
     AllowlistEntry(
-      path: "src/scherzo/state/projection.gleam",
-      imported_module: "scherzo/orchestrator/state",
-      rule_id: "state_must_not_import_orchestrator",
-      reason: "Projection snapshots still expose daemon-state compatibility fields; move the shared DTOs out of orchestrator before removing this exception.",
-    ),
-    AllowlistEntry(
-      path: "src/scherzo/state/recovery.gleam",
-      imported_module: "scherzo/orchestrator/core",
-      rule_id: "state_must_not_import_orchestrator",
-      reason: "Startup recovery currently reuses orchestrator dispatch policy to avoid divergent retry/parking decisions during the recovery split.",
-    ),
-    AllowlistEntry(
-      path: "src/scherzo/state/recovery.gleam",
-      imported_module: "scherzo/orchestrator/reason",
-      rule_id: "state_must_not_import_orchestrator",
-      reason: "Recovery records preserve orchestrator-visible reasons until the reason type is moved to a neutral policy module.",
-    ),
-    AllowlistEntry(
-      path: "src/scherzo/state/recovery.gleam",
-      imported_module: "scherzo/orchestrator/state",
-      rule_id: "state_must_not_import_orchestrator",
-      reason: "Recovery planning consumes projected orchestrator state while durable recovery DTOs are still shared with the daemon.",
-    ),
-    AllowlistEntry(
-      path: "src/scherzo/state/recovery.gleam",
-      imported_module: "scherzo/orchestrator/identity",
-      rule_id: "state_must_not_import_orchestrator",
-      reason: "Recovery rebuilds task-keyed retry state with the same opaque task identity wrapper the orchestrator now uses internally.",
-    ),
-    AllowlistEntry(
       path: "src/scherzo/tracker/linear_adapter.gleam",
       imported_module: "scherzo/linear",
       rule_id: "tracker_must_not_import_linear",
@@ -609,7 +589,7 @@ fn boundary_allowlist() -> List(AllowlistEntry) {
       path: "src/scherzo/orchestrator/service.gleam",
       imported_module: "scherzo/orchestrator/daemon",
       rule_id: "orchestrator_must_not_import_daemon",
-      reason: "Service startup is the process edge that launches the daemon actor; lower orchestrator subsystems should depend on core/effects/state instead.",
+      reason: "Service startup is the process edge that launches the daemon actor; lower orchestrator subsystems should depend on core/effects/runtime state instead.",
     ),
     AllowlistEntry(
       path: "src/scherzo/orchestrator/daemon.gleam",

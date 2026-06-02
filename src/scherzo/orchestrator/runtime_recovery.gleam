@@ -1,7 +1,7 @@
 import gleam/dict
 import gleam/list
-import scherzo/orchestrator/reason
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/state/record
 
 pub fn runtime_with_appended_park_records(

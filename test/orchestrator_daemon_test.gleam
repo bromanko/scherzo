@@ -13,9 +13,9 @@ import scherzo/handoff_format
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/poll_jitter
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/path
 import scherzo/result_artifact
+import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
 import scherzo/scheduled_failure_reporter
 import scherzo/session/event

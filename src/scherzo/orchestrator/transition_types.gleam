@@ -3,10 +3,10 @@ import gleam/option.{type Option, None}
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/orchestrator/effects/types as effects_types
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
+import scherzo/runtime/identity
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger

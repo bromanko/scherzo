@@ -3,10 +3,10 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
-import scherzo/orchestrator/identity
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_registry
+import scherzo/runtime/identity
 import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens

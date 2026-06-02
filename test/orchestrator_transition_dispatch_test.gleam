@@ -5,12 +5,12 @@ import orchestrator_transition_test
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/orchestrator/effects/types as effects_types
-import scherzo/orchestrator/reason as orchestrator_reason
-import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
+import scherzo/runtime/reason as orchestrator_reason
+import scherzo/runtime/state as orchestrator_state
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state

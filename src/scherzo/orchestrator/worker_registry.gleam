@@ -3,8 +3,8 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, Some}
 import scherzo/agent/worker_command
-import scherzo/orchestrator/identity
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/identity
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/reason as session_reason
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue

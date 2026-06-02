@@ -5,7 +5,7 @@ import gleam/option.{None, Some}
 import legacy_ledger_fixtures
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/session/recovery as session_recovery
 import scherzo/state/outbox

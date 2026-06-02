@@ -8,7 +8,7 @@ import gleam/order.{type Order, Eq}
 import gleam/result
 import gleam/string
 import scherzo/json_decode_error
-import scherzo/orchestrator/state as orchestrator_state
+import scherzo/runtime/state as orchestrator_state
 import scherzo/state/projection/commands as commands_projection
 import scherzo/state/projection/issue_recovery as issue_recovery_projection
 import scherzo/state/projection/legacy_runs as legacy_runs_projection
