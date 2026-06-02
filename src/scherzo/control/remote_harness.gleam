@@ -423,7 +423,12 @@ fn client_dependencies(
                 boot_id: scenario.boot_id,
                 dispatch_paused: False,
                 ui_server_enabled: False,
-                supported_queries: ["status", "metrics"],
+                supported_queries: [
+                  "status",
+                  "metrics",
+                  "task_list",
+                  "task_show",
+                ],
               ),
             ),
           )
@@ -434,6 +439,18 @@ fn client_dependencies(
               boot_id: scenario.boot_id,
             )
             |> query_dto.operational_metrics_from_source,
+          ))
+        query_types.TaskList(_) ->
+          Ok(
+            query_types.TaskListResponse(query_types.TaskListDto(
+              items: [],
+              page: query_types.PageDto(next_cursor: None, has_more: False),
+            )),
+          )
+        query_types.TaskShow(_) ->
+          Error(query_types.QueryError(
+            query_types.QueryNotFound,
+            "task not found",
           ))
       }
     },

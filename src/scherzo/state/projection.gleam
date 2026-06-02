@@ -1865,260 +1865,30 @@ pub fn apply(
         ),
       )
     }
-    record.ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.due_status(due_at_ms, run_id, trigger)
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledJobSkipped(
-      job_id,
-      workflow_id,
-      due_at_ms,
-      run_id,
-      reason,
-      skipped_count,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.skipped_status(
-            due_at_ms,
-            run_id,
-            reason,
-            skipped_count,
-          )
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledRunPending(
-      job_id,
-      workflow_id,
-      due_at_ms,
-      run_id,
-      trigger,
-      _,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.pending_status(due_at_ms, run_id, trigger)
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledRunPendingBlocked(
-      job_id,
-      workflow_id,
-      due_at_ms,
-      run_id,
-      reason,
-      _,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.blocked_status(due_at_ms, run_id, reason)
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledRunPendingCancelled(
-      job_id,
-      workflow_id,
-      _,
-      run_id,
-      reason,
-      _,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.cancelled_status(run_id, reason)
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledRunStarted(
-      job_id,
-      workflow_id,
-      due_at_ms,
-      _,
-      run_id,
-      attempt,
-      session_id,
-      run_root,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.started_status(
-            due_at_ms,
-            run_id,
-            attempt,
-            session_id,
-            run_root,
-          )
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledRunSucceeded(
-      job_id,
-      workflow_id,
-      due_at_ms,
-      run_id,
-      attempt,
-      finished_at_ms,
-      _,
-      _,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.succeeded_status(
-            due_at_ms,
-            run_id,
-            attempt,
-            finished_at_ms,
-          )
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledRunFailed(
-      job_id,
-      workflow_id,
-      due_at_ms,
-      run_id,
-      attempt,
-      finished_at_ms,
-      reason,
-      retry_exhausted,
-      run_root,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.failed_status(
-            due_at_ms,
-            run_id,
-            attempt,
-            finished_at_ms,
-            reason,
-            retry_exhausted,
-            run_root,
-          )
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledRunRetryScheduled(
-      job_id,
-      workflow_id,
-      due_at_ms,
-      run_id,
-      next_attempt,
-      _,
-      _,
-      reason,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.retry_status(
-            due_at_ms,
-            run_id,
-            next_attempt,
-            reason,
-          )
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledRunRetryCancelled(job_id, run_id, _, reason) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          "",
-        )
-          |> scheduled_projection.cancelled_status(run_id, reason)
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledFailureReported(
-      job_id,
-      workflow_id,
-      _,
-      _,
-      _,
-      dedupe_key,
-      linear_issue_id,
-      _,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.reported_status(dedupe_key, linear_issue_id)
-          |> local_scheduled_status_to_parent,
-      )
-    record.ScheduledFailureReportFailed(
-      job_id,
-      workflow_id,
-      _,
-      run_id,
-      attempt,
-      dedupe_key,
-      error_code,
-      error_message,
-      next_retry_at_ms,
-      generation,
-    ) ->
-      update_scheduled_job(
-        projection,
-        scheduled_projection.ensure_status(
-          scheduled_jobs_to_local(projection.scheduled_jobs),
-          job_id,
-          workflow_id,
-        )
-          |> scheduled_projection.report_failed_status(
-            run_id,
-            attempt,
-            dedupe_key,
-            error_code,
-            error_message,
-            next_retry_at_ms,
-            generation,
-          )
-          |> local_scheduled_status_to_parent,
-      )
+    record.ScheduledJobDue(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledJobSkipped(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledRunPending(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledRunPendingBlocked(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledRunPendingCancelled(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledRunStarted(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledRunSucceeded(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledRunFailed(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledRunRetryScheduled(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledRunRetryCancelled(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledFailureReported(..) ->
+      apply_scheduled_record(projection, ledger_record)
+    record.ScheduledFailureReportFailed(..) ->
+      apply_scheduled_record(projection, ledger_record)
     record.OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key) ->
       Projection(
         ..projection,
@@ -2653,6 +2423,22 @@ fn apply_step_attempt_pi_session_recorded(
       task_ref,
     ),
   )
+}
+
+fn apply_scheduled_record(
+  projection: Projection,
+  ledger_record: record.LedgerRecord,
+) -> Projection {
+  case
+    scheduled_projection.apply_record(
+      scheduled_jobs_to_local(projection.scheduled_jobs),
+      ledger_record,
+    )
+  {
+    Ok(status) ->
+      update_scheduled_job(projection, local_scheduled_status_to_parent(status))
+    Error(Nil) -> projection
+  }
 }
 
 fn update_scheduled_job(
@@ -4249,39 +4035,35 @@ fn command_entry_to_json(entry: #(String, CommandStatus)) -> json.Json {
   let #(comment_id, status) = entry
   case status {
     CommandSeen(issue_id, author_id, command_name, excerpt, seen_at_ms) ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("seen")),
-        #("issue_id", json.string(issue_id)),
-        #("author_id", json.string(author_id)),
-        #("command_name", json.string(command_name)),
-        #("excerpt", json.string(excerpt)),
-        #("seen_at_ms", json.int(seen_at_ms)),
-      ])
+      commands_projection.seen_status_entry_to_json(
+        comment_id,
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+        seen_at_ms,
+      )
     CommandStarted(issue_id, command_name, started_at_ms) ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("started")),
-        #("issue_id", json.string(issue_id)),
-        #("command_name", json.string(command_name)),
-        #("started_at_ms", json.int(started_at_ms)),
-      ])
-    CommandCompleted(issue_id, result_status, message_excerpt, completed_at_ms) ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("completed")),
-        #("issue_id", json.string(issue_id)),
-        #("result_status", json.string(result_status)),
-        #("message_excerpt", json.string(message_excerpt)),
-        #("completed_at_ms", json.int(completed_at_ms)),
-      ])
+      commands_projection.started_status_entry_to_json(
+        comment_id,
+        issue_id,
+        command_name,
+        started_at_ms,
+      )
+    CommandCompleted(issue_id, status, message_excerpt, completed_at_ms) ->
+      commands_projection.completed_status_entry_to_json(
+        comment_id,
+        issue_id,
+        status,
+        message_excerpt,
+        completed_at_ms,
+      )
     CommandAcked(issue_id, acked_at_ms) ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("acked")),
-        #("issue_id", json.string(issue_id)),
-        #("acked_at_ms", json.int(acked_at_ms)),
-      ])
+      commands_projection.acked_status_entry_to_json(
+        comment_id,
+        issue_id,
+        acked_at_ms,
+      )
   }
 }
 
@@ -4298,20 +4080,16 @@ fn command_receipt_entry_to_json(
   let #(comment_id, receipt) = entry
   case receipt {
     CommandReceiptUnseen ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("unseen")),
-      ])
+      commands_projection.unseen_receipt_entry_to_json(comment_id)
     CommandReceiptSeen(issue_id, author_id, command_name, excerpt, seen_at_ms) ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("seen")),
-        #("issue_id", json.string(issue_id)),
-        #("author_id", json.string(author_id)),
-        #("command_name", json.string(command_name)),
-        #("excerpt", json.string(excerpt)),
-        #("seen_at_ms", json.int(seen_at_ms)),
-      ])
+      commands_projection.seen_receipt_entry_to_json(
+        comment_id,
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+        seen_at_ms,
+      )
     CommandReceiptStarted(
       issue_id,
       author_id,
@@ -4320,16 +4098,15 @@ fn command_receipt_entry_to_json(
       seen_at_ms,
       started_at_ms,
     ) ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("started")),
-        #("issue_id", json.string(issue_id)),
-        #("author_id", json.string(author_id)),
-        #("command_name", json.string(command_name)),
-        #("excerpt", json.string(excerpt)),
-        #("seen_at_ms", json.int(seen_at_ms)),
-        #("started_at_ms", json.int(started_at_ms)),
-      ])
+      commands_projection.started_receipt_entry_to_json(
+        comment_id,
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+        seen_at_ms,
+        started_at_ms,
+      )
     CommandReceiptCompleted(
       issue_id,
       author_id,
@@ -4342,27 +4119,25 @@ fn command_receipt_entry_to_json(
       completed_at_ms,
       acked_at_ms,
     ) ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("completed")),
-        #("issue_id", json.string(issue_id)),
-        #("author_id", json.string(author_id)),
-        #("command_name", json.string(command_name)),
-        #("excerpt", json.string(excerpt)),
-        #("result_status", json.string(result_status)),
-        #("message_excerpt", json.string(message_excerpt)),
-        #("seen_at_ms", json.int(seen_at_ms)),
-        #("started_at_ms", json.int(started_at_ms)),
-        #("completed_at_ms", json.int(completed_at_ms)),
-        #("acked_at_ms", option_int_to_json(acked_at_ms)),
-      ])
+      commands_projection.completed_receipt_entry_to_json(
+        comment_id,
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+        result_status,
+        message_excerpt,
+        seen_at_ms,
+        started_at_ms,
+        completed_at_ms,
+        acked_at_ms,
+      )
     CommandReceiptAcked(issue_id, acked_at_ms) ->
-      json.object([
-        #("comment_id", json.string(comment_id)),
-        #("status", json.string("acked")),
-        #("issue_id", json.string(issue_id)),
-        #("acked_at_ms", json.int(acked_at_ms)),
-      ])
+      commands_projection.acked_receipt_entry_to_json(
+        comment_id,
+        issue_id,
+        acked_at_ms,
+      )
   }
 }
 
@@ -5535,147 +5310,32 @@ fn parked_snapshot_decoder() -> decode.Decoder(ParkedSnapshot) {
 }
 
 fn command_snapshot_decoder() -> decode.Decoder(CommandSnapshot) {
-  use comment_id <- decode.field("comment_id", decode.string)
-  use status <- decode.field("status", decode.string)
-  case status {
-    "seen" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
-      use author_id <- decode.field("author_id", decode.string)
-      use command_name <- decode.field("command_name", decode.string)
-      use excerpt <- decode.field("excerpt", decode.string)
-      use seen_at_ms <- decode.field("seen_at_ms", decode.int)
-      decode.success(CommandSnapshot(
-        comment_id,
-        CommandSeen(issue_id, author_id, command_name, excerpt, seen_at_ms),
-      ))
-    }
-    "started" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
-      use command_name <- decode.field("command_name", decode.string)
-      use started_at_ms <- decode.field("started_at_ms", decode.int)
-      decode.success(CommandSnapshot(
-        comment_id,
-        CommandStarted(issue_id, command_name, started_at_ms),
-      ))
-    }
-    "completed" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
-      use result_status <- decode.field("result_status", decode.string)
-      use message_excerpt <- decode.field("message_excerpt", decode.string)
-      use completed_at_ms <- decode.field("completed_at_ms", decode.int)
-      decode.success(CommandSnapshot(
-        comment_id,
-        CommandCompleted(
-          issue_id,
-          result_status,
-          message_excerpt,
-          completed_at_ms,
-        ),
-      ))
-    }
-    "acked" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
-      use acked_at_ms <- decode.field("acked_at_ms", decode.int)
-      decode.success(CommandSnapshot(
-        comment_id,
-        CommandAcked(issue_id, acked_at_ms),
-      ))
-    }
-    _ ->
-      decode.failure(
-        CommandSnapshot("", CommandAcked("", 0)),
-        expected: "CommandSnapshot",
-      )
-  }
+  commands_projection.status_snapshot_decoder(
+    CommandSeen,
+    CommandStarted,
+    CommandCompleted,
+    CommandAcked,
+    CommandAcked("", 0),
+  )
+  |> decode.map(fn(entry) {
+    let #(comment_id, status) = entry
+    CommandSnapshot(comment_id, status)
+  })
 }
 
 fn command_receipt_snapshot_decoder() -> decode.Decoder(CommandReceiptSnapshot) {
-  use comment_id <- decode.field("comment_id", decode.string)
-  use status <- decode.field("status", decode.string)
-  case status {
-    "unseen" ->
-      decode.success(CommandReceiptSnapshot(comment_id, CommandReceiptUnseen))
-    "seen" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
-      use author_id <- decode.field("author_id", decode.string)
-      use command_name <- decode.field("command_name", decode.string)
-      use excerpt <- decode.field("excerpt", decode.string)
-      use seen_at_ms <- decode.field("seen_at_ms", decode.int)
-      decode.success(CommandReceiptSnapshot(
-        comment_id,
-        CommandReceiptSeen(
-          issue_id,
-          author_id,
-          command_name,
-          excerpt,
-          seen_at_ms,
-        ),
-      ))
-    }
-    "started" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
-      use author_id <- decode.field("author_id", decode.string)
-      use command_name <- decode.field("command_name", decode.string)
-      use excerpt <- decode.field("excerpt", decode.string)
-      use seen_at_ms <- decode.field("seen_at_ms", decode.int)
-      use started_at_ms <- decode.field("started_at_ms", decode.int)
-      decode.success(CommandReceiptSnapshot(
-        comment_id,
-        CommandReceiptStarted(
-          issue_id,
-          author_id,
-          command_name,
-          excerpt,
-          seen_at_ms,
-          started_at_ms,
-        ),
-      ))
-    }
-    "completed" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
-      use author_id <- decode.field("author_id", decode.string)
-      use command_name <- decode.field("command_name", decode.string)
-      use excerpt <- decode.field("excerpt", decode.string)
-      use result_status <- decode.field("result_status", decode.string)
-      use message_excerpt <- decode.field("message_excerpt", decode.string)
-      use seen_at_ms <- decode.field("seen_at_ms", decode.int)
-      use started_at_ms <- decode.field("started_at_ms", decode.int)
-      use completed_at_ms <- decode.field("completed_at_ms", decode.int)
-      use acked_at_ms <- decode.optional_field(
-        "acked_at_ms",
-        None,
-        decode.optional(decode.int),
-      )
-      decode.success(CommandReceiptSnapshot(
-        comment_id,
-        CommandReceiptCompleted(
-          issue_id,
-          author_id,
-          command_name,
-          excerpt,
-          result_status,
-          message_excerpt,
-          seen_at_ms,
-          started_at_ms,
-          completed_at_ms,
-          acked_at_ms,
-        ),
-      ))
-    }
-    "acked" -> {
-      use issue_id <- decode.field("issue_id", decode.string)
-      use acked_at_ms <- decode.field("acked_at_ms", decode.int)
-      decode.success(CommandReceiptSnapshot(
-        comment_id,
-        CommandReceiptAcked(issue_id, acked_at_ms),
-      ))
-    }
-    _ ->
-      decode.failure(
-        CommandReceiptSnapshot("", CommandReceiptUnseen),
-        expected: "CommandReceiptSnapshot",
-      )
-  }
+  commands_projection.receipt_snapshot_decoder(
+    CommandReceiptUnseen,
+    CommandReceiptSeen,
+    CommandReceiptStarted,
+    CommandReceiptCompleted,
+    CommandReceiptAcked,
+    CommandReceiptUnseen,
+  )
+  |> decode.map(fn(entry) {
+    let #(comment_id, receipt) = entry
+    CommandReceiptSnapshot(comment_id, receipt)
+  })
 }
 
 fn outbox_snapshot_decoder() -> decode.Decoder(OutboxSnapshot) {

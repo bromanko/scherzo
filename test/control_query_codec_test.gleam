@@ -1,11 +1,13 @@
 import gleam/dynamic/decode
 import gleam/json
+import gleam/option.{Some}
 import gleam/string
 import scherzo/control/query/codec
 import scherzo/control/query/cursor
 import scherzo/control/query/dto
 import scherzo/control/query/types
 import scherzo/session/tokens as session_tokens
+import scherzo/task
 
 pub fn status_query_request_roundtrip_test() {
   let encoded = codec.request_to_string(types.Status)
@@ -90,6 +92,50 @@ pub fn shared_query_codec_decodes_nested_local_and_remote_payloads_test() {
   let metrics_line = "{\"payload\":" <> metrics_request <> "}"
   let assert Ok(metrics_dynamic) = nested_field(metrics_line, "payload")
   assert codec.decode_request_dynamic(metrics_dynamic) == Ok(types.Metrics)
+}
+
+pub fn task_query_request_response_roundtrip_test() {
+  let list_request =
+    types.TaskList(types.TaskListQuery(
+      states: [task.Ready, task.Active],
+      limit: 25,
+      cursor: Some("cursor:25"),
+    ))
+  let show_request =
+    types.TaskShow(
+      types.TaskShowQuery(ref: types.TaskRemoteId(
+        provider: Some("linear"),
+        id: "issue-1",
+      )),
+    )
+
+  assert codec.decode_request(codec.request_to_string(list_request))
+    == Ok(list_request)
+  assert codec.decode_request(codec.request_to_string(show_request))
+    == Ok(show_request)
+
+  let list_response =
+    types.TaskListResponse(types.TaskListDto(
+      items: [task_summary()],
+      page: types.PageDto(next_cursor: Some("cursor:1"), has_more: True),
+    ))
+  let detail_response =
+    types.TaskShowResponse(types.TaskDetailDto(
+      summary: task_summary(),
+      description: types.TaskDescriptionDto(
+        format: "markdown",
+        body: "task detail body",
+      ),
+    ))
+
+  let encoded_list = codec.response_to_string(list_response)
+  assert string.contains(encoded_list, "\"state\":\"ready\"")
+  assert !string.contains(encoded_list, "Todo")
+  assert codec.decode_response(encoded_list) == Ok(list_response)
+
+  let encoded_detail = codec.response_to_string(detail_response)
+  assert string.contains(encoded_detail, "\"description\"")
+  assert codec.decode_response(encoded_detail) == Ok(detail_response)
 }
 
 pub fn cursor_encode_decode_roundtrip_test() {
@@ -187,6 +233,29 @@ pub fn metrics_dto_uses_narrow_non_secret_source_test() {
   assert !string.contains(encoded, "api_key")
   assert !string.contains(encoded, "provider:linear")
   assert !string.contains(encoded, "raw failure payload")
+}
+
+fn task_summary() -> types.TaskSummaryDto {
+  types.TaskSummaryDto(
+    id: "linear:issue-1",
+    source: types.TaskSourceDto(
+      provider: "linear",
+      id: "issue-1",
+      display_id: Some("LIV-770"),
+      url: Some("https://linear.app/living-systems/issue/LIV-770"),
+    ),
+    title: "Implement task queries",
+    state: task.Ready,
+    priority: Some(types.TaskPriorityDto(value: 2, label: "High")),
+    labels: [
+      types.TaskLabelDto(
+        id: Some("label-workflow"),
+        name: "workflow:implementation",
+      ),
+    ],
+    created_at: Some("2026-04-28T10:00:00Z"),
+    updated_at: Some("2026-04-28T11:00:00Z"),
+  )
 }
 
 fn nested_field(line: String, field_name: String) {

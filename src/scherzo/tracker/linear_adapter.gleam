@@ -7,6 +7,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
+import scherzo/linear/task_query as linear_task_query
 import scherzo/scheduled_failure_reporter
 import scherzo/smoke
 import scherzo/task
@@ -110,6 +111,8 @@ fn task_source_capability(
     lookup_by_operator_ref: fn(operator_ref) {
       lookup_task_by_operator_ref(config, transport, operator_ref)
     },
+    list_tasks: fn(request) { list_tasks(config, transport, request) },
+    lookup_task_detail: fn(ref) { lookup_task_detail(config, transport, ref) },
   )
 }
 
@@ -189,6 +192,302 @@ fn lookup_candidate_task_by_identifier(
         Ok(task) -> Ok(Some(task))
         Error(Nil) -> Ok(None)
       }
+  }
+}
+
+fn list_tasks(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  request: adapter.TaskListRequest,
+) -> Result(adapter.TaskPage, adapter.TrackerError) {
+  let state_names =
+    linear_state_names_for_query(config, request.state_categories)
+  fetch_task_page_from_offset(
+    config,
+    transport,
+    state_names,
+    request.state_categories,
+    request.offset,
+    request.limit,
+    None,
+    0,
+    [],
+  )
+}
+
+fn fetch_task_page_from_offset(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  state_names: List(issue_state.IssueState),
+  categories: List(task.TaskStateCategory),
+  offset: Int,
+  limit: Int,
+  after: Option(String),
+  skipped: Int,
+  acc: List(task.Task),
+) -> Result(adapter.TaskPage, adapter.TrackerError) {
+  use page <- try_adapter(linear_task_query.fetch_page(
+    config,
+    state_names,
+    after,
+    transport,
+  ))
+  let tasks =
+    page.nodes
+    |> list.map(fn(item) { categorize_task(config, item) })
+    |> filter_categories(categories)
+  let #(skipped, acc, reached_limit, has_buffered_more) =
+    collect_page(tasks, offset, limit, skipped, acc)
+  case reached_limit {
+    True ->
+      Ok(adapter.TaskPage(
+        items: list.reverse(acc),
+        has_more: has_buffered_more || page.has_next_page,
+      ))
+    False ->
+      case page.has_next_page, page.end_cursor {
+        True, Some(cursor) ->
+          fetch_task_page_from_offset(
+            config,
+            transport,
+            state_names,
+            categories,
+            offset,
+            limit,
+            Some(cursor),
+            skipped,
+            acc,
+          )
+        True, None ->
+          Error(adapter.DecodeFailed(
+            "Linear response missing pagination endCursor",
+          ))
+        False, _ ->
+          Ok(adapter.TaskPage(items: list.reverse(acc), has_more: False))
+      }
+  }
+}
+
+fn lookup_task_detail(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  ref: adapter.TaskLookupRef,
+) -> Result(Option(task.Task), adapter.TrackerError) {
+  case ref {
+    adapter.TaskLookupByDisplayId(display_id) -> {
+      use found <- try_adapter(linear_task_query.fetch_detail_by_identifier(
+        config,
+        string.trim(display_id),
+        transport,
+      ))
+      Ok(option_map(found, fn(item) { categorize_task(config, item) }))
+    }
+    adapter.TaskLookupByRemoteId(provider: provider, id: id) ->
+      case provider_allowed(provider) {
+        False -> Ok(None)
+        True -> {
+          use found <- try_adapter(linear_task_query.fetch_detail_by_id(
+            config,
+            normalize_linear_remote_id(id),
+            transport,
+          ))
+          Ok(option_map(found, fn(item) { categorize_task(config, item) }))
+        }
+      }
+  }
+}
+
+fn linear_state_names_for_query(
+  config: config_types.TrackerConfig,
+  categories: List(task.TaskStateCategory),
+) -> List(issue_state.IssueState) {
+  case categories {
+    [] -> []
+    categories ->
+      case must_query_without_state_filter(categories) {
+        True -> []
+        False ->
+          categories
+          |> list.flat_map(fn(category) {
+            states_for_category(config, category)
+          })
+          |> dedupe_states([])
+      }
+  }
+}
+
+fn must_query_without_state_filter(
+  categories: List(task.TaskStateCategory),
+) -> Bool {
+  list.any(categories, fn(category) {
+    case category {
+      task.Backlog | task.Unknown -> True
+      _ -> False
+    }
+  })
+}
+
+fn states_for_category(
+  config: config_types.TrackerConfig,
+  category: task.TaskStateCategory,
+) -> List(issue_state.IssueState) {
+  case category {
+    task.Ready -> config.dispatch_states
+    task.Active -> active_only_states(config)
+    task.Done -> terminal_states_for(config, task.Done)
+    task.Canceled -> terminal_states_for(config, task.Canceled)
+    task.Duplicate -> terminal_states_for(config, task.Duplicate)
+    task.Backlog | task.Unknown -> []
+  }
+}
+
+fn active_only_states(
+  config: config_types.TrackerConfig,
+) -> List(issue_state.IssueState) {
+  let active =
+    list.filter(config.active_states, fn(state) {
+      !issue_state.contains_normalized(config.dispatch_states, state)
+    })
+  case active {
+    [] -> config.active_states
+    _ -> active
+  }
+}
+
+fn terminal_states_for(
+  config: config_types.TrackerConfig,
+  category: task.TaskStateCategory,
+) -> List(issue_state.IssueState) {
+  list.filter(config.terminal_states, fn(state) {
+    state_name_category(issue_state.to_string(state)) == category
+  })
+}
+
+fn dedupe_states(
+  states: List(issue_state.IssueState),
+  acc: List(issue_state.IssueState),
+) -> List(issue_state.IssueState) {
+  case states {
+    [] -> list.reverse(acc)
+    [state, ..rest] ->
+      case issue_state.contains_normalized(acc, state) {
+        True -> dedupe_states(rest, acc)
+        False -> dedupe_states(rest, [state, ..acc])
+      }
+  }
+}
+
+fn categorize_task(
+  config: config_types.TrackerConfig,
+  item: task.Task,
+) -> task.Task {
+  let state = item.state
+  let category = state_category(config, state)
+  task.Task(
+    ..item,
+    state: task.TaskState(id: state.id, name: state.name, category: category),
+  )
+}
+
+fn state_category(
+  config: config_types.TrackerConfig,
+  state: task.TaskState,
+) -> task.TaskStateCategory {
+  let state_value = issue_state.from_string_unchecked(state.name)
+  case issue_state.contains_normalized(config.dispatch_states, state_value) {
+    True -> task.Ready
+    False ->
+      case issue_state.contains_normalized(config.active_states, state_value) {
+        True -> task.Active
+        False ->
+          case
+            issue_state.contains_normalized(config.terminal_states, state_value)
+          {
+            True -> terminal_category(state.name)
+            False ->
+              case state.category {
+                task.Unknown -> state_name_category(state.name)
+                category -> category
+              }
+          }
+      }
+  }
+}
+
+fn terminal_category(name: String) -> task.TaskStateCategory {
+  case state_name_category(name) {
+    task.Canceled -> task.Canceled
+    task.Duplicate -> task.Duplicate
+    _ -> task.Done
+  }
+}
+
+fn state_name_category(name: String) -> task.TaskStateCategory {
+  let name = name |> string.trim |> string.lowercase
+  case name {
+    "backlog" -> task.Backlog
+    "todo" | "to do" | "ready" | "triage" -> task.Ready
+    "in progress" | "doing" | "started" -> task.Active
+    "done" | "complete" | "completed" -> task.Done
+    "canceled" | "cancelled" -> task.Canceled
+    "duplicate" -> task.Duplicate
+    _ -> task.Unknown
+  }
+}
+
+fn filter_categories(
+  tasks: List(task.Task),
+  categories: List(task.TaskStateCategory),
+) -> List(task.Task) {
+  case categories {
+    [] -> tasks
+    categories ->
+      list.filter(tasks, fn(item) {
+        list.contains(categories, item.state.category)
+      })
+  }
+}
+
+fn collect_page(
+  tasks: List(task.Task),
+  offset: Int,
+  limit: Int,
+  skipped: Int,
+  acc: List(task.Task),
+) -> #(Int, List(task.Task), Bool, Bool) {
+  case tasks {
+    [] -> #(skipped, acc, False, False)
+    [item, ..rest] ->
+      case skipped < offset {
+        True -> collect_page(rest, offset, limit, skipped + 1, acc)
+        False ->
+          case list.length(acc) >= limit {
+            True -> #(skipped, acc, True, True)
+            False -> collect_page(rest, offset, limit, skipped, [item, ..acc])
+          }
+      }
+  }
+}
+
+fn provider_allowed(provider: Option(String)) -> Bool {
+  case provider {
+    Some("linear") | None -> True
+    Some(_) -> False
+  }
+}
+
+fn normalize_linear_remote_id(id: String) -> String {
+  let id = string.trim(id)
+  case string.starts_with(id, "linear:") {
+    True -> string.drop_start(id, 7)
+    False -> id
+  }
+}
+
+fn option_map(value: Option(a), mapper: fn(a) -> b) -> Option(b) {
+  case value {
+    Some(value) -> Some(mapper(value))
+    None -> None
   }
 }
 

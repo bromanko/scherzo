@@ -13,6 +13,7 @@ import scherzo/control/protocol
 import scherzo/control/query/types as query_types
 import scherzo/ctl/artifact_publication as ctl_artifact_publication
 import scherzo/ctl/schedule_state
+import scherzo/ctl/task_output
 import scherzo/ctl/workflow_recovery_history
 import scherzo/ctl/workstream as ctl_workstream
 import scherzo/path
@@ -23,6 +24,7 @@ import scherzo/state/ledger
 import scherzo/state/local_artifacts
 import scherzo/state/projection
 import scherzo/state/record
+import scherzo/task
 import scherzo/terminal/render
 import scherzo/terminal/style
 import scherzo/turn_telemetry
@@ -48,6 +50,18 @@ pub type Command {
     control_file: Option(String),
     json: Bool,
     query: query_types.QueryRequest,
+  )
+  TaskList(
+    control_file: Option(String),
+    json: Bool,
+    states: List(task.TaskStateCategory),
+    limit: Int,
+    cursor: Option(String),
+  )
+  TaskShow(
+    control_file: Option(String),
+    json: Bool,
+    ref: query_types.TaskQueryRef,
   )
   Session(control_file: Option(String), json: Bool, session_id: String)
   Events(
@@ -216,6 +230,9 @@ type Flags {
     last: Bool,
     run_id: Option(String),
     publication_id: Option(String),
+    state_filters: List(task.TaskStateCategory),
+    limit: Option(Int),
+    cursor: Option(String),
     positional: List(String),
   )
 }
@@ -263,17 +280,27 @@ fn default_flags() -> Flags {
     last: False,
     run_id: None,
     publication_id: None,
+    state_filters: [],
+    limit: None,
+    cursor: None,
     positional: [],
   )
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  query status                 Run the additive read-query status/introspection surface.\n  query metrics                Show daemon operational health and runtime counters.\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  recovery cleanup-orphan-steps run:<run-id> [--dry-run|--yes]\n                               Dry run orphaned YAML child-step cleanup by default; use --yes to mutate.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  workstream start-from-handoff <workflow> <action> <ref> <sha256> [decision-id...]\n                               Create an input bundle and queue a phase from a retained handoff.\n  workstream start-from-input-bundle <workflow> <action> <ref> <sha256> [decision-id...]\n                               Queue a phase from an already retained workstream input bundle.\n  workstream decision <kind> <workstream-id> <action-id> <gate-id> <actor> <rationale> <name>:<ref>:<sha256>...\n                               Record approve/request-changes/reject/deviate gate decisions for exact snapshots.\n  artifact publication list --run <run-id> [--root <workspace-root>]\n                               Inspect the latest local publication status for one workflow run.\n  artifact publication show --run <run-id> --publication <publication-id> [--root <workspace-root>]\n                               Inspect the full local publication attempt history for one publication.\n  artifact publication retry --run <run-id> --publication <publication-id> [--root <workspace-root>]\n                               Replay the retained publication manifest without reading a step workspace.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n  state repair-run-provenance run:<run-id> --root <workspace-root> --dry-run|--yes\n                               Inspect or append an auditable workflow provenance repair.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path; relative paths resolve from the caller working directory.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands, including target context; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --run <run-id>               Workflow run id for artifact publication inspection.\n  --publication <publication>  Publication id for artifact publication show.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  query status                 Run the additive read-query status/introspection surface.\n  query metrics                Show daemon operational health and runtime counters.\n  task list                    List tracker tasks through the daemon query surface.\n  task show <task|id:<id>>     Show one tracker task through the daemon query surface.\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed or interrupted workflow step without redispatching the whole task.\n  recovery cleanup-orphan-steps run:<run-id> [--dry-run|--yes]\n                               Dry run orphaned YAML child-step cleanup by default; use --yes to mutate.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  workstream list [task]      List local workstreams, optionally for a Linear/task ref.\n  workstream show <ref>       Inspect one workstream id or Linear/task ref.\n  workstream start-from-handoff <workflow> <action> <ref> <sha256> [decision-id...]\n                               Create an input bundle and queue a phase from a retained handoff.\n  workstream start-from-input-bundle <workflow> <action> <ref> <sha256> [decision-id...]\n                               Queue a phase from an already retained workstream input bundle.\n  workstream decision <kind> <workstream-id> <action-id> <gate-id> <actor> <rationale> <name>:<ref>:<sha256>...\n                               Record approve/request-changes/reject/deviate gate decisions for exact snapshots.\n  artifact publication list --run <run-id> [--root <workspace-root>]\n                               Inspect the latest local publication status for one workflow run.\n  artifact publication show --run <run-id> --publication <publication-id> [--root <workspace-root>]\n                               Inspect the full local publication attempt history for one publication.\n  artifact publication retry --run <run-id> --publication <publication-id> [--root <workspace-root>]\n                               Replay the retained publication manifest without reading a step workspace.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n  state repair-run-provenance run:<run-id> --root <workspace-root> --dry-run|--yes\n                               Inspect or append an auditable workflow provenance repair.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path; relative paths resolve from the caller working directory.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands, including target context; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --run <run-id>               Workflow run id for artifact publication inspection.\n  --publication <publication>  Publication id for artifact publication show.\n  --state <state>              Filter task list by canonical state; may be repeated.\n  --limit <n>                  Maximum task list items (daemon clamps to 100).\n  --cursor <cursor>            Opaque cursor returned by task list.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed or interrupted workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
   case args {
-    [] -> Ok(Flags(..flags, positional: list.reverse(flags.positional)))
+    [] ->
+      Ok(
+        Flags(
+          ..flags,
+          positional: list.reverse(flags.positional),
+          state_filters: list.reverse(flags.state_filters),
+        ),
+      )
     ["--control-file", path, ..rest] ->
       parse_flags(rest, Flags(..flags, control_file: Some(path)))
     ["--control-file"] -> Error(UsageError("--control-file requires a path"))
@@ -294,6 +321,31 @@ fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
       parse_flags(rest, Flags(..flags, publication_id: Some(publication_id)))
     ["--publication"] ->
       Error(UsageError("--publication requires a publication id"))
+    ["--state", state, ..rest] ->
+      case task.state_category_from_string(state) {
+        Ok(category) ->
+          parse_flags(
+            rest,
+            Flags(..flags, state_filters: [category, ..flags.state_filters]),
+          )
+        Error(_) ->
+          Error(UsageError(
+            "--state must be backlog, ready, active, done, canceled, duplicate, or unknown",
+          ))
+      }
+    ["--state"] -> Error(UsageError("--state requires a task state"))
+    ["--limit", value, ..rest] ->
+      case parse_task_limit(value) {
+        Ok(limit) -> parse_flags(rest, Flags(..flags, limit: Some(limit)))
+        Error(err) -> Error(err)
+      }
+    ["--limit"] -> Error(UsageError("--limit requires a positive integer"))
+    ["--cursor", cursor, ..rest] ->
+      case string.trim(cursor) {
+        "" -> Error(UsageError("--cursor must not be empty"))
+        _ -> parse_flags(rest, Flags(..flags, cursor: Some(cursor)))
+      }
+    ["--cursor"] -> Error(UsageError("--cursor requires a cursor"))
     ["--yes", ..rest] -> parse_flags(rest, Flags(..flags, yes: True))
     ["--no-follow", ..rest] ->
       parse_flags(rest, Flags(..flags, no_follow: True))
@@ -357,6 +409,38 @@ fn parse_cursor(value: String) -> Result(Int, Error) {
   }
 }
 
+fn parse_task_limit(value: String) -> Result(Int, Error) {
+  case int.parse(value) {
+    Ok(limit) if limit > 0 -> Ok(limit)
+    _ -> Error(UsageError("--limit requires a positive integer"))
+  }
+}
+
+fn option_with_default(value: Option(a), default: a) -> a {
+  case value {
+    Some(value) -> value
+    None -> default
+  }
+}
+
+fn task_query_ref(value: String) -> Result(query_types.TaskQueryRef, Error) {
+  let value = string.trim(value)
+  case value == "" {
+    True -> Error(UsageError("task show requires a non-empty task reference"))
+    False ->
+      case string.starts_with(value, "id:") {
+        True -> {
+          let id = string.drop_start(value, 3) |> string.trim
+          case id == "" {
+            True -> Error(UsageError("task show id must include a remote id"))
+            False -> Ok(query_types.TaskRemoteId(provider: None, id: id))
+          }
+        }
+        False -> Ok(query_types.TaskDisplayId(value))
+      }
+  }
+}
+
 fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
   case name, flags.positional {
     "--help", _ | "-h", _ -> Ok(Help)
@@ -367,6 +451,22 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
       Ok(Query(flags.control_file, flags.json, query_types.Status))
     "query", ["metrics"] ->
       Ok(Query(flags.control_file, flags.json, query_types.Metrics))
+    "task", ["list"] ->
+      Ok(TaskList(
+        flags.control_file,
+        flags.json,
+        flags.state_filters,
+        option_with_default(flags.limit, 50),
+        flags.cursor,
+      ))
+    "task", ["show", ref] -> {
+      use ref <- try_ctl(task_query_ref(ref))
+      Ok(TaskShow(flags.control_file, flags.json, ref))
+    }
+    "task", _ ->
+      Error(UsageError(
+        "task usage: task list [--state <state>] [--limit <n>] [--cursor <cursor>] | task show <task-or-id:<remote-id>>",
+      ))
     "session", [session_id] ->
       Ok(Session(flags.control_file, flags.json, session_id))
     "events", [session_id] -> {
@@ -800,8 +900,50 @@ pub fn run_with_deps(
               print_query_metrics(metrics, output)
               Ok(Nil)
             }
+            Ok(_) ->
+              Error(Failed(
+                "unexpected_query_response",
+                "unexpected query response",
+              ))
             Error(err) -> Error(client_error(err))
           }
+      }
+    }
+    TaskList(control_path, json, states, limit, cursor) -> {
+      use target <- try_ctl(load_control_target(control_path))
+      let query =
+        query_types.TaskList(query_types.TaskListQuery(
+          states: states,
+          limit: limit,
+          cursor: cursor,
+        ))
+      case deps.query(target.control_file, query) {
+        Ok(query_types.TaskListResponse(tasks)) -> {
+          case json {
+            True -> output.line(task_output.list_json(tasks))
+            False -> task_output.print_list(tasks, output.line)
+          }
+          Ok(Nil)
+        }
+        Ok(_) ->
+          Error(Failed("unexpected_query_response", "unexpected query response"))
+        Error(err) -> Error(client_error(err))
+      }
+    }
+    TaskShow(control_path, json, ref) -> {
+      use target <- try_ctl(load_control_target(control_path))
+      let query = query_types.TaskShow(query_types.TaskShowQuery(ref: ref))
+      case deps.query(target.control_file, query) {
+        Ok(query_types.TaskShowResponse(task_detail)) -> {
+          case json {
+            True -> output.line(task_output.detail_json(task_detail))
+            False -> task_output.print_detail(task_detail, output.line)
+          }
+          Ok(Nil)
+        }
+        Ok(_) ->
+          Error(Failed("unexpected_query_response", "unexpected query response"))
+        Error(err) -> Error(client_error(err))
       }
     }
     Session(control_path, json, session_ref) -> {

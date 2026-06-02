@@ -3148,6 +3148,45 @@ pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test()
   test_async.assert_no_extra_message_within(subject, 50)
 }
 
+pub fn recovered_prepare_checkpoint_failure_stops_before_step_run_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: build\n    kind: command\n    run: build\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      checkpoint: workflow_checkpoint.Writer(
+        ..workflow_checkpoint.noop_writer(),
+        step_prepared: fn(_, _, step_id, _) {
+          process.send(subject, "step_prepared_failed:" <> step_id)
+          Error(workflow_checkpoint.CheckpointAppendFailed("prepare failed"))
+        },
+      ),
+    )
+  let context =
+    recovered_context(dag.id, dict.new(), dict.new(), dict.new(), dict.new())
+  let assert Error(failure) =
+    workflow_run.execute_with_context(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      workflow_run.RecoveredRun(context),
+      dependencies,
+    )
+
+  assert failure.reason == "checkpoint_failed:prepare failed"
+  assert failure.run_root
+    == Some("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  assert receive_event(subject) == "prepare_recovered:build:main:"
+  assert receive_event(subject) == "step_prepared_failed:build"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
 pub fn recovered_prepare_failure_interrupts_stale_prepared_attempt_before_terminal_failure_test() {
   let root =
     "test/tmp/workflow-run/recovered-prepare-failure-interrupts-stale-attempt"
@@ -3341,6 +3380,41 @@ pub fn workflow_run_prepare_failure_cleans_partial_ready_batch_test() {
   assert receive_event(subject) == "after:implement"
   assert receive_event(subject) == "prepare:test_after_implement:main:"
   assert receive_event(subject) == "prepare_failed:code_review"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
+pub fn workflow_run_prepare_checkpoint_failure_stops_before_step_run_test() {
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      checkpoint: workflow_checkpoint.Writer(
+        ..workflow_checkpoint.noop_writer(),
+        step_prepared: fn(_, _, step_id, _) {
+          process.send(subject, "step_prepared_failed:" <> step_id)
+          Error(workflow_checkpoint.CheckpointAppendFailed("prepare failed"))
+        },
+      ),
+    )
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      implementation_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "checkpoint_failed:prepare failed"
+  assert failure.run_root
+    == Some("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  assert receive_event(subject) == "prepare:implement:main:"
+  assert receive_event(subject) == "step_prepared_failed:implement"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
   test_async.assert_no_extra_message_within(subject, 50)

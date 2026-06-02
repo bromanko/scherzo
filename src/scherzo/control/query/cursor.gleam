@@ -19,7 +19,7 @@ pub fn decode_offset(token: String) -> Result(Int, types.QueryError) {
             True -> invalid_cursor()
             False -> Ok(parsed)
           }
-        Error(_) -> invalid_cursor()
+        Error(Nil) -> invalid_cursor()
       }
     }
   }

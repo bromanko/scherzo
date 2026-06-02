@@ -800,6 +800,239 @@ pub fn scheduled_records_fold_into_status_test() {
   assert decoded == folded
 }
 
+pub fn scheduled_cancellation_records_project_to_idle_status_test() {
+  let pending_run_id = "schedule-repair-20260505T120000Z"
+  let pending_folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-due",
+        1000,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: pending_run_id,
+          trigger: "automatic",
+        ),
+      ),
+      record.with_id(
+        "scheduled-pending",
+        1001,
+        record.ScheduledRunPending(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: pending_run_id,
+          trigger: "automatic",
+          requested_at_ms: 1001,
+        ),
+      ),
+      record.with_id(
+        "scheduled-pending-cancelled",
+        1002,
+        record.ScheduledRunPendingCancelled(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: pending_run_id,
+          reason: "job_disabled",
+          cancelled_at_ms: 1002,
+        ),
+      ),
+    ])
+
+  let assert Ok(pending_status) =
+    projection.scheduled_status_for(pending_folded, "repair")
+  assert pending_status.state == projection.ScheduledIdle
+  assert pending_status.workflow_id == "repair"
+  assert pending_status.last_due_at_ms == Some(900_000)
+  assert pending_status.recent_run_ids == [pending_run_id]
+  let assert Some(pending_run) = pending_status.current_run
+  assert pending_run.run_id == pending_run_id
+  assert pending_run.due_at_ms == 900_000
+  assert pending_run.trigger == "automatic"
+  assert pending_run.attempt == 0
+  assert pending_run.status == "cancelled"
+  assert pending_run.reason == Some("job_disabled")
+
+  let retry_run_id = "schedule-repair-20260505T121500Z"
+  let run_root = "workspaces/repair/scheduled/repair/" <> retry_run_id
+  let retry_folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-retry-due",
+        2000,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          run_id: retry_run_id,
+          trigger: "automatic",
+        ),
+      ),
+      record.with_id(
+        "scheduled-retry-started",
+        2001,
+        record.ScheduledRunStarted(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          started_at_ms: 2001,
+          run_id: retry_run_id,
+          attempt: 1,
+          session_id: "session-retry",
+          run_root: run_root,
+        ),
+      ),
+      record.with_id(
+        "scheduled-retry-failed",
+        2002,
+        record.ScheduledRunFailed(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          run_id: retry_run_id,
+          attempt: 1,
+          finished_at_ms: 2002,
+          reason: "workflow_step_failed",
+          retry_exhausted: False,
+          run_root: Some(run_root),
+        ),
+      ),
+      record.with_id(
+        "scheduled-retry-scheduled",
+        2003,
+        record.ScheduledRunRetryScheduled(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          run_id: retry_run_id,
+          next_attempt: 2,
+          delay_ms: 10_000,
+          generation: 1,
+          reason: "workflow_step_failed",
+        ),
+      ),
+      record.with_id(
+        "scheduled-retry-cancelled",
+        2004,
+        record.ScheduledRunRetryCancelled(
+          job_id: "repair",
+          run_id: retry_run_id,
+          generation: 1,
+          reason: "operator_cancelled",
+        ),
+      ),
+    ])
+
+  let assert Ok(retry_status) =
+    projection.scheduled_status_for(retry_folded, "repair")
+  assert retry_status.state == projection.ScheduledIdle
+  assert retry_status.workflow_id == "repair"
+  assert retry_status.retry_count == 1
+  assert retry_status.last_failure_reason == Some("workflow_step_failed")
+  let assert Some(retry_run) = retry_status.current_run
+  assert retry_run.run_id == retry_run_id
+  assert retry_run.due_at_ms == 1_800_000
+  assert retry_run.attempt == 2
+  assert retry_run.status == "cancelled"
+  assert retry_run.reason == Some("operator_cancelled")
+  assert retry_run.session_id == Some("session-retry")
+  assert retry_run.run_root == Some(run_root)
+}
+
+pub fn scheduled_alternate_reasons_update_state_and_counters_test() {
+  let paused_run_id = "schedule-repair-20260505T120000Z"
+  let paused_folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-paused-due",
+        1000,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: paused_run_id,
+          trigger: "automatic",
+        ),
+      ),
+      record.with_id(
+        "scheduled-paused-blocked",
+        1001,
+        record.ScheduledRunPendingBlocked(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: paused_run_id,
+          reason: "paused",
+          observed_at_ms: 1001,
+        ),
+      ),
+    ])
+
+  let assert Ok(paused_status) =
+    projection.scheduled_status_for(paused_folded, "repair")
+  assert paused_status.state == projection.ScheduledPaused
+  let assert Some(paused_run) = paused_status.current_run
+  assert paused_run.run_id == paused_run_id
+  assert paused_run.status == "blocked"
+  assert paused_run.reason == Some("paused")
+
+  let skipped_folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-skip-catch-up",
+        2000,
+        record.ScheduledJobSkipped(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: "schedule-repair-20260505T120000Z",
+          reason: "catch_up_disabled",
+          skipped_count: 2,
+        ),
+      ),
+      record.with_id(
+        "scheduled-skip-paused",
+        2001,
+        record.ScheduledJobSkipped(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          run_id: "schedule-repair-20260505T121500Z",
+          reason: "schedule_paused",
+          skipped_count: 3,
+        ),
+      ),
+      record.with_id(
+        "scheduled-skip-capacity",
+        2002,
+        record.ScheduledJobSkipped(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 2_700_000,
+          run_id: "schedule-repair-20260505T123000Z",
+          reason: "waiting_for_global_slot",
+          skipped_count: 4,
+        ),
+      ),
+    ])
+
+  let assert Ok(skipped_status) =
+    projection.scheduled_status_for(skipped_folded, "repair")
+  assert skipped_status.skipped_overlap_count == 0
+  assert skipped_status.skipped_catch_up_count == 2
+  assert skipped_status.skipped_paused_count == 3
+  assert skipped_status.skipped_capacity_count == 4
+  assert skipped_status.last_due_at_ms == Some(2_700_000)
+  assert skipped_status.recent_run_ids
+    == [
+      "schedule-repair-20260505T123000Z",
+      "schedule-repair-20260505T121500Z",
+      "schedule-repair-20260505T120000Z",
+    ]
+}
+
 pub fn scheduled_due_preserves_existing_history_test() {
   let first_run = "schedule-repair-20260505T120000Z"
   let second_run = "schedule-repair-20260505T121500Z"

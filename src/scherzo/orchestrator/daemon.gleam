@@ -14,6 +14,7 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/query/backend as query_backend
 import scherzo/control/query/metrics as query_metrics
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
@@ -370,6 +371,7 @@ fn start_query_service(
   daemon_subject: process.Subject(Message),
   identity: daemon_identity.DaemonIdentity,
   now_ms: fn() -> Int,
+  tracker_adapter: adapter.TrackerAdapter,
 ) -> Result(query_service.Handle, StartupError) {
   query_service.start(
     query_service.default_settings(),
@@ -393,6 +395,14 @@ fn start_query_service(
             get_runtime_metrics: fn(timeout_ms) {
               get_metrics_snapshot(daemon_subject, timeout_ms)
             },
+          )
+        query_types.TaskList(_) | query_types.TaskShow(_) ->
+          query_backend.run(
+            effective,
+            identity,
+            tracker_adapter,
+            get_dispatch_paused,
+            query,
           )
       }
     }),
@@ -642,6 +652,7 @@ pub fn start(
           subject,
           daemon_identity,
           dependencies.now_ms,
+          tracker_adapter,
         )
       {
         Error(err) -> Error(encode_startup_error(err))
