@@ -311,6 +311,16 @@ pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
       <> "  - id: disabled_research\n"
       <> "    workflow: research\n"
       <> "    enabled: false\n",
+    minimal_config()
+      <> "ui_server:\n"
+      <> "  enabled: true\n"
+      <> "  endpoint: https://scherzo.example\n"
+      <> "  credential_ref: work-laptop\n",
+    minimal_config()
+      <> "ui_server:\n"
+      <> "  enabled: true\n"
+      <> "  endpoint: http://127.0.0.1:4000\n"
+      <> "  credential_ref: work-laptop\n",
   ]
 
   list.each(cases, fn(yaml) {
@@ -441,34 +451,43 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
         <> "  research: workflows/research.yaml\n",
     ),
     #(
-      "ui_server.endpoint must be https",
+      "ui_server.endpoint rejects non-loopback http",
       minimal_config()
         <> "ui_server:\n"
         <> "  enabled: true\n"
-        <> "  endpoint: http://scherzo.example/enroll\n"
-        <> "  enrollment_token_env: UI_SERVER_TOKEN\n",
+        <> "  endpoint: http://scherzo.example\n"
+        <> "  credential_ref: work-laptop\n",
     ),
     #(
       "ui_server.endpoint rejects userinfo",
       minimal_config()
         <> "ui_server:\n"
         <> "  enabled: true\n"
-        <> "  endpoint: https://user@scherzo.example/enroll\n"
-        <> "  enrollment_token_env: UI_SERVER_TOKEN\n",
+        <> "  endpoint: https://user@scherzo.example\n"
+        <> "  credential_ref: work-laptop\n",
     ),
     #(
       "ui_server.endpoint is required when enabled",
       minimal_config()
         <> "ui_server:\n"
         <> "  enabled: true\n"
-        <> "  enrollment_token_env: UI_SERVER_TOKEN\n",
+        <> "  credential_ref: work-laptop\n",
     ),
     #(
-      "ui_server.enrollment_token_env is required when enabled",
+      "ui_server.credential_ref is required when enabled",
       minimal_config()
         <> "ui_server:\n"
         <> "  enabled: true\n"
         <> "  endpoint: https://scherzo.example/enroll\n",
+    ),
+    #(
+      "ui_server.enrollment_token_env is removed",
+      minimal_config()
+        <> "ui_server:\n"
+        <> "  enabled: true\n"
+        <> "  endpoint: https://scherzo.example/enroll\n"
+        <> "  enrollment_token_env: UI_SERVER_TOKEN\n"
+        <> "  credential_ref: work-laptop\n",
     ),
     #(
       "agents.provider is not a public config field",

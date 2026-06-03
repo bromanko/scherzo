@@ -54,13 +54,19 @@ fn render_field(field: Field, secrets: List(String)) -> String {
 pub fn redact(key: String, value: String, secrets: List(String)) -> String {
   case sensitive_key(key) {
     True -> "[REDACTED]"
-    False ->
-      list.fold(secrets, value, fn(acc, secret) {
-        case secret == "" {
-          True -> acc
-          False -> string.replace(acc, each: secret, with: "[REDACTED]")
-        }
-      })
+    False -> {
+      let redacted =
+        list.fold(secrets, value, fn(acc, secret) {
+          case secret == "" {
+            True -> acc
+            False -> string.replace(acc, each: secret, with: "[REDACTED]")
+          }
+        })
+      case contains_registration_secret(redacted) {
+        True -> "[REDACTED]"
+        False -> redacted
+      }
+    }
   }
 }
 
@@ -70,6 +76,38 @@ fn sensitive_key(key: String) -> Bool {
   || string.contains(key, "api_key")
   || string.contains(key, "authorization")
   || string.contains(key, "secret")
+}
+
+fn contains_registration_secret(value: String) -> Bool {
+  contains_registration_token(value, "pair_")
+  || contains_registration_token(value, "dcred_")
+}
+
+fn contains_registration_token(value: String, prefix: String) -> Bool {
+  string.starts_with(value, prefix)
+  || list.any(token_boundaries(), fn(boundary) {
+    string.contains(value, boundary <> prefix)
+  })
+}
+
+fn token_boundaries() -> List(String) {
+  [
+    " ",
+    "\n",
+    "\r",
+    "\t",
+    "\"",
+    "'",
+    "=",
+    ":",
+    "(",
+    "[",
+    "{",
+    ",",
+    "/",
+    "?",
+    "&",
+  ]
 }
 
 pub fn escape(value: String) -> String {

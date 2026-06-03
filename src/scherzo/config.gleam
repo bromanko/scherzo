@@ -9,11 +9,11 @@ import scherzo/artifact_publication_config
 import scherzo/config/duration_config
 import scherzo/config/tracker_config
 import scherzo/config/types as config_types
+import scherzo/control/remote/credential_store
 import scherzo/error
 import scherzo/model_config
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
-import scherzo/workspace_driver_env
 import yay
 
 pub type ReloadStatus {
@@ -134,8 +134,12 @@ pub fn default_ui_server_config() -> config_types.UiServerConfig {
   config_types.UiServerConfig(
     enabled: False,
     endpoint: None,
-    enrollment_token_env: None,
-    enrollment_token: None,
+    credential_ref: None,
+    command_bridge_enabled: False,
+    heartbeat_interval_ms: 5000,
+    state_interval_ms: 5000,
+    retry_initial_ms: 500,
+    retry_max_ms: 30_000,
   )
 }
 
@@ -351,13 +355,9 @@ pub fn apply_reload(
 }
 
 pub fn resolved_secrets(config: config_types.EffectiveConfig) -> List(String) {
-  let tracker_secrets = case config.tracker.api_key {
+  case config.tracker.api_key {
     Some(value) -> [value]
     None -> []
-  }
-  case config.ui_server.enrollment_token {
-    Some(value) -> list.append(tracker_secrets, [value])
-    None -> tracker_secrets
   }
 }
 
@@ -1101,7 +1101,7 @@ fn resolve_linear_commands(
 
 fn resolve_ui_server(
   root: yay.Node,
-  env: Env,
+  _env: Env,
 ) -> Result(config_types.UiServerConfig, error.ConfigError) {
   let defaults = default_ui_server_config()
   case get_node(root, "ui_server") {
@@ -1109,6 +1109,19 @@ fn resolve_ui_server(
     Some(node) ->
       case node {
         yay.NodeMap(_) -> {
+          use _ <- result.try(reject_removed_ui_server_keys(node))
+          use _ <- result.try(
+            reject_unknown_map_keys(node, "ui_server", [
+              "enabled",
+              "endpoint",
+              "credential_ref",
+              "command_bridge_enabled",
+              "heartbeat_interval_ms",
+              "state_interval_ms",
+              "retry_initial_ms",
+              "retry_max_ms",
+            ]),
+          )
           use enabled_option <- result.try(get_bool_strict(
             node,
             "enabled",
@@ -1119,24 +1132,75 @@ fn resolve_ui_server(
             "endpoint",
             "ui_server.endpoint",
           ))
-          use enrollment_token_env_option <- result.try(
-            get_optional_string_strict(
-              node,
-              "enrollment_token_env",
-              "ui_server.enrollment_token_env",
-            ),
-          )
+          use credential_ref_option <- result.try(get_optional_string_strict(
+            node,
+            "credential_ref",
+            "ui_server.credential_ref",
+          ))
+          use command_bridge_enabled_option <- result.try(get_bool_strict(
+            node,
+            "command_bridge_enabled",
+            "ui_server.command_bridge_enabled",
+          ))
+          use heartbeat_interval_ms_option <- result.try(get_int_strict(
+            node,
+            "heartbeat_interval_ms",
+            "ui_server.heartbeat_interval_ms",
+          ))
+          use state_interval_ms_option <- result.try(get_int_strict(
+            node,
+            "state_interval_ms",
+            "ui_server.state_interval_ms",
+          ))
+          use retry_initial_ms_option <- result.try(get_int_strict(
+            node,
+            "retry_initial_ms",
+            "ui_server.retry_initial_ms",
+          ))
+          use retry_max_ms_option <- result.try(get_int_strict(
+            node,
+            "retry_max_ms",
+            "ui_server.retry_max_ms",
+          ))
           let enabled = enabled_option |> bool_default(defaults.enabled)
           let endpoint = endpoint_option |> optional_non_empty_string
-          let enrollment_token_env =
-            enrollment_token_env_option |> optional_non_empty_string
+          let credential_ref =
+            credential_ref_option |> optional_non_empty_string
+          let command_bridge_enabled =
+            command_bridge_enabled_option
+            |> bool_default(defaults.command_bridge_enabled)
+          let heartbeat_interval_ms =
+            heartbeat_interval_ms_option
+            |> int_default(defaults.heartbeat_interval_ms)
+          let state_interval_ms =
+            state_interval_ms_option |> int_default(defaults.state_interval_ms)
+          let retry_initial_ms =
+            retry_initial_ms_option |> int_default(defaults.retry_initial_ms)
+          let retry_max_ms =
+            retry_max_ms_option |> int_default(defaults.retry_max_ms)
+          use _ <- result.try(validate_ui_server_timing(
+            heartbeat_interval_ms,
+            state_interval_ms,
+            retry_initial_ms,
+            retry_max_ms,
+          ))
+          let endpoint = endpoint |> option.map(normalize_ui_server_endpoint)
+          use credential_ref <- result.try(
+            credential_ref
+            |> option.map(normalize_ui_server_credential_ref)
+            |> collapse_result_option,
+          )
           case enabled {
             False ->
               Ok(config_types.UiServerConfig(
                 enabled: False,
                 endpoint: endpoint,
-                enrollment_token_env: enrollment_token_env,
-                enrollment_token: None,
+                credential_ref: credential_ref,
+                command_bridge_enabled: command_bridge_enabled,
+                heartbeat_interval_ms: heartbeat_interval_ms,
+                state_interval_ms: state_interval_ms,
+                retry_initial_ms: retry_initial_ms,
+                retry_max_ms: retry_max_ms,
               ))
             True -> {
               use endpoint <- result.try(required_option(
@@ -1146,40 +1210,59 @@ fn resolve_ui_server(
                 ),
               ))
               use _ <- result.try(validate_ui_server_endpoint(endpoint))
-              use enrollment_token_env <- result.try(required_option(
-                enrollment_token_env,
+              use credential_ref <- result.try(required_option(
+                credential_ref,
                 error.InvalidConfig(
-                  "ui_server.enrollment_token_env is required when enabled",
+                  "ui_server.credential_ref is required when enabled",
                 ),
               ))
-              use _ <- result.try(validate_ui_server_env_name(
-                enrollment_token_env,
+              Ok(config_types.UiServerConfig(
+                enabled: True,
+                endpoint: Some(endpoint),
+                credential_ref: Some(credential_ref),
+                command_bridge_enabled: command_bridge_enabled,
+                heartbeat_interval_ms: heartbeat_interval_ms,
+                state_interval_ms: state_interval_ms,
+                retry_initial_ms: retry_initial_ms,
+                retry_max_ms: retry_max_ms,
               ))
-              let enrollment_token =
-                env(enrollment_token_env) |> option.map(string.trim)
-              use enrollment_token <- result.try(required_option(
-                enrollment_token,
-                error.InvalidConfig(
-                  "ui_server.enrollment_token_env must resolve to a non-empty environment variable",
-                ),
-              ))
-              case enrollment_token == "" {
-                True ->
-                  Error(error.InvalidConfig(
-                    "ui_server.enrollment_token_env must resolve to a non-empty environment variable",
-                  ))
-                False ->
-                  Ok(config_types.UiServerConfig(
-                    enabled: True,
-                    endpoint: Some(endpoint),
-                    enrollment_token_env: Some(enrollment_token_env),
-                    enrollment_token: Some(enrollment_token),
-                  ))
-              }
             }
           }
         }
         _ -> Error(error.InvalidConfig("ui_server must be a map"))
+      }
+  }
+}
+
+fn reject_removed_ui_server_keys(
+  node: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(node, "enrollment_token_env") {
+    Some(_) ->
+      Error(error.InvalidConfig(
+        "ui_server.enrollment_token_env was removed. Pair with scherzo connect and use ui_server.credential_ref instead.",
+      ))
+    None ->
+      case get_node(node, "enrollment_token") {
+        Some(_) ->
+          Error(error.InvalidConfig(
+            "ui_server.enrollment_token was removed. Pair with scherzo connect and use ui_server.credential_ref instead.",
+          ))
+        None ->
+          case get_node(node, "credential") {
+            Some(_) ->
+              Error(error.InvalidConfig(
+                "ui_server.credential is not supported; store daemon credentials outside project YAML and use ui_server.credential_ref instead.",
+              ))
+            None ->
+              case get_node(node, "daemon_credential") {
+                Some(_) ->
+                  Error(error.InvalidConfig(
+                    "ui_server.daemon_credential is not supported; store daemon credentials outside project YAML and use ui_server.credential_ref instead.",
+                  ))
+                None -> Ok(Nil)
+              }
+          }
       }
   }
 }
@@ -1190,26 +1273,101 @@ fn validate_ui_server_endpoint(
   case uri.parse(endpoint) {
     Error(_) -> Error(invalid_ui_server_endpoint_error())
     Ok(parsed) -> {
-      let uri.Uri(scheme: scheme, userinfo: userinfo, host: host, ..) = parsed
-      case scheme, userinfo, host {
-        Some("https"), None, Some(host) if host != "" -> Ok(Nil)
-        _, _, _ -> Error(invalid_ui_server_endpoint_error())
+      let uri.Uri(
+        scheme: scheme,
+        userinfo: userinfo,
+        host: host,
+        query: query,
+        fragment: fragment,
+        ..,
+      ) = parsed
+      case scheme, userinfo, host, query, fragment {
+        Some("https"), None, Some(host), None, None ->
+          case valid_ui_server_host(host) {
+            True -> Ok(Nil)
+            False -> Error(invalid_ui_server_endpoint_error())
+          }
+        Some("http"), None, Some(host), None, None ->
+          case valid_ui_server_host(host) && loopback_ui_server_host(host) {
+            True -> Ok(Nil)
+            False -> Error(invalid_ui_server_endpoint_error())
+          }
+        _, _, _, _, _ -> Error(invalid_ui_server_endpoint_error())
       }
     }
   }
 }
 
-fn invalid_ui_server_endpoint_error() -> error.ConfigError {
-  error.InvalidConfig("ui_server.endpoint must be an HTTPS URL with a host")
+fn valid_ui_server_host(host: String) -> Bool {
+  host != "" && host != "0.0.0.0" && host != "::"
 }
 
-fn validate_ui_server_env_name(name: String) -> Result(Nil, error.ConfigError) {
-  case workspace_driver_env.valid_key(name) {
-    True -> Ok(Nil)
-    False ->
+fn loopback_ui_server_host(host: String) -> Bool {
+  host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+fn invalid_ui_server_endpoint_error() -> error.ConfigError {
+  error.InvalidConfig(
+    "ui_server.endpoint must use https, or http only for loopback development URLs; it must include a host and no query, fragment, or userinfo",
+  )
+}
+
+fn validate_ui_server_timing(
+  heartbeat_interval_ms: Int,
+  state_interval_ms: Int,
+  retry_initial_ms: Int,
+  retry_max_ms: Int,
+) -> Result(Nil, error.ConfigError) {
+  case
+    heartbeat_interval_ms <= 0
+    || state_interval_ms <= 0
+    || retry_initial_ms <= 0
+    || retry_max_ms <= 0
+  {
+    True ->
       Error(error.InvalidConfig(
-        "ui_server.enrollment_token_env has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*",
+        "ui_server heartbeat and retry timing values must be positive integers",
       ))
+    False ->
+      case retry_max_ms < retry_initial_ms {
+        True ->
+          Error(error.InvalidConfig(
+            "ui_server.retry_max_ms must be greater than or equal to ui_server.retry_initial_ms",
+          ))
+        False -> Ok(Nil)
+      }
+  }
+}
+
+fn normalize_ui_server_endpoint(value: String) -> String {
+  trim_trailing_slashes(string.trim(value))
+}
+
+fn trim_trailing_slashes(value: String) -> String {
+  case
+    value != "https://" && value != "http://" && string.ends_with(value, "/")
+  {
+    True -> trim_trailing_slashes(string.drop_end(value, 1))
+    False -> value
+  }
+}
+
+fn normalize_ui_server_credential_ref(
+  value: String,
+) -> Result(String, error.ConfigError) {
+  case credential_store.normalize_credential_ref(value) {
+    Ok(credential_store.CredentialRef(profile: profile)) -> Ok(profile)
+    Error(message) -> Error(error.InvalidConfig(message))
+  }
+}
+
+fn collapse_result_option(
+  value: Option(Result(a, error.ConfigError)),
+) -> Result(Option(a), error.ConfigError) {
+  case value {
+    None -> Ok(None)
+    Some(Ok(value)) -> Ok(Some(value))
+    Some(Error(error)) -> Error(error)
   }
 }
 

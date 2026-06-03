@@ -145,4 +145,4 @@ ui_server:
   # browser UI or server transport in the current slice.
   enabled: false
   # endpoint: https://ui.example.test
-  # enrollment_token_env: UI_SERVER_TOKEN
+  # credential_ref: work-laptop

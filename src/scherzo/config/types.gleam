@@ -100,8 +100,12 @@ pub type UiServerConfig {
   UiServerConfig(
     enabled: Bool,
     endpoint: Option(String),
-    enrollment_token_env: Option(String),
-    enrollment_token: Option(String),
+    credential_ref: Option(String),
+    command_bridge_enabled: Bool,
+    heartbeat_interval_ms: Int,
+    state_interval_ms: Int,
+    retry_initial_ms: Int,
+    retry_max_ms: Int,
   )
 }
 
