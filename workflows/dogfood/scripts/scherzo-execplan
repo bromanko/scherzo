@@ -264,8 +264,17 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(canonical_json(value), encoding="utf-8")
 
 
-def descriptor_file_entry(name: str, ref: str, sha256: str, bytes_: int, media_type: str, artifact_type: str) -> dict[str, Any]:
-    return {
+def descriptor_file_entry(
+    name: str,
+    ref: str,
+    sha256: str,
+    bytes_: int,
+    media_type: str,
+    artifact_type: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    entry = {
         "name": name,
         "kind": "file",
         "artifact_type": artifact_type,
@@ -274,6 +283,9 @@ def descriptor_file_entry(name: str, ref: str, sha256: str, bytes_: int, media_t
         "bytes": bytes_,
         "media_type": media_type,
     }
+    if metadata is not None:
+        entry["metadata"] = metadata
+    return entry
 
 
 def named_retained_artifact_entry(artifact: dict[str, Any], *, media_type: str = "application/json") -> dict[str, Any]:
@@ -294,6 +306,38 @@ def implementation_pack_descriptor(pack: dict[str, Any]) -> dict[str, Any]:
         "media_type": "application/json",
         "artifact_type": IMPLEMENTATION_PACK_ARTIFACT_TYPE,
         **review_doc,
+    }
+
+
+def plan_publication_metadata(review_meta: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "publication": {
+            "destination_path": review_meta["path"],
+        }
+    }
+
+
+def review_surface_from_publish_context(
+    publish_context: dict[str, Any] | None,
+    *,
+    review_doc_path: str,
+) -> dict[str, Any]:
+    if publish_context is None:
+        return {
+            "status": "not_applicable",
+            "pr_url": None,
+            "branch": None,
+            "source_bundle_ref": None,
+            "head_revision": None,
+            "review_doc_path": review_doc_path,
+        }
+    return {
+        "status": publish_context["review_surface"]["status"],
+        "pr_url": publish_context["pr"]["url"],
+        "branch": publish_context["pr"]["branch"],
+        "source_bundle_ref": publish_context["review_surface"].get("source_bundle_ref"),
+        "head_revision": publish_context["review_surface"].get("head_revision") or publish_context["pr"].get("head_revision"),
+        "review_doc_path": review_doc_path,
     }
 
 
@@ -408,6 +452,68 @@ def ensure_repo_relative_path(value: str, *, label: str) -> None:
 def review_doc_filesystem_path(path_value: str, root: Path | None = None) -> Path:
     normalized = normalize_repo_relative_path(path_value, label="review doc path")
     return (root or repo_root()) / normalized
+
+
+def plan_entry_publication_destination_path(bundle: dict[str, Any]) -> str | None:
+    entries = bundle.get("entries")
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("name") != "plan":
+            continue
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, dict):
+            return None
+        publication = metadata.get("publication")
+        if not isinstance(publication, dict):
+            return None
+        destination = publication.get("destination_path")
+        if not isinstance(destination, str) or not destination.strip():
+            return None
+        return normalize_repo_relative_path(
+            destination,
+            label="artifact.metadata.publication.destination_path",
+        )
+    return None
+
+
+def review_surface_review_doc_path(bundle: dict[str, Any]) -> str | None:
+    surface = bundle.get("review_surface")
+    if not isinstance(surface, dict):
+        return None
+    value = surface.get("review_doc_path")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return normalize_repo_relative_path(value, label="review_surface.review_doc_path")
+
+
+def review_doc_seed_filesystem_path(
+    bundle: dict[str, Any],
+    path_value: str,
+    root: Path,
+) -> Path:
+    normalized = normalize_repo_relative_path(path_value, label="review doc path")
+    if not normalized.endswith(".md"):
+        fail(
+            "review doc must be Markdown source, not generated HTML or another format: "
+            + normalized,
+            code="execplan_revision_base_missing",
+        )
+    expected_destination = plan_entry_publication_destination_path(bundle)
+    if expected_destination is not None and normalized != expected_destination:
+        fail(
+            "exec_plan_bundle.review_doc.path does not match plan metadata publication.destination_path: "
+            + normalized,
+            code="execplan_revision_base_missing",
+        )
+    expected_surface_path = review_surface_review_doc_path(bundle)
+    if expected_surface_path is not None and normalized != expected_surface_path:
+        fail(
+            "exec_plan_bundle.review_doc.path does not match review_surface.review_doc_path: "
+            + normalized,
+            code="execplan_revision_base_missing",
+        )
+    return root / normalized
 
 
 def headings(markdown: str) -> list[tuple[int, str]]:
@@ -2048,7 +2154,7 @@ def materialize_bundle(args: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="scherzo-execplan materialize-bundle")
     parser.add_argument("--review-doc-path-file", required=True)
     parser.add_argument("--pack", required=True)
-    parser.add_argument("--publish-context", required=True)
+    parser.add_argument("--publish-context")
     parser.add_argument("--output", required=True)
     ns = parser.parse_args(args)
     review_path = read_review_doc_path_file(Path(ns.review_doc_path_file))
@@ -2058,8 +2164,8 @@ def materialize_bundle(args: list[str]) -> None:
     pack_meta = file_meta(pack_path)
     source_issue = source_issue_from_submission_or_env(pack)
     ensure_source_issue_identifier_matches(source_issue, os.environ.get("SCHERZO_ISSUE_IDENTIFIER"), "SCHERZO_ISSUE_IDENTIFIER")
-    publish_context = load_json(Path(ns.publish_context))
-    publish_source_issue = publish_context.get("source_issue")
+    publish_context = load_json(Path(ns.publish_context)) if ns.publish_context else None
+    publish_source_issue = publish_context.get("source_issue") if isinstance(publish_context, dict) else None
     if isinstance(publish_source_issue, dict):
         ensure_source_issue_identifier_matches(
             source_issue,
@@ -2070,6 +2176,7 @@ def materialize_bundle(args: list[str]) -> None:
     plan_meta = write_canonical_plan_output(review_path)
     pack_ref = f"runs/{run_id}/outputs/implementation_pack.json"
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
+    plan_entry_metadata = plan_publication_metadata(review_meta)
     bundle = {
         "schema_version": 2,
         "kind": "artifact_set",
@@ -2100,6 +2207,7 @@ def materialize_bundle(args: list[str]) -> None:
                 plan_meta["bytes"],
                 plan_meta["media_type"],
                 EXEC_PLAN_ARTIFACT_TYPE,
+                metadata=plan_entry_metadata,
             ),
             descriptor_file_entry(
                 "implementation_pack",
@@ -2110,14 +2218,10 @@ def materialize_bundle(args: list[str]) -> None:
                 IMPLEMENTATION_PACK_ARTIFACT_TYPE,
             ),
         ],
-        "review_surface": {
-            "status": publish_context["review_surface"]["status"],
-            "pr_url": publish_context["pr"]["url"],
-            "branch": publish_context["pr"]["branch"],
-            "source_bundle_ref": publish_context["review_surface"].get("source_bundle_ref"),
-            "head_revision": publish_context["review_surface"].get("head_revision") or publish_context["pr"].get("head_revision"),
-            "review_doc_path": review_meta["path"],
-        },
+        "review_surface": review_surface_from_publish_context(
+            publish_context,
+            review_doc_path=review_meta["path"],
+        ),
         "implementation_handoff": {
             "issue_identifier": "pending",
             "issue_url": "https://linear.app/living-systems/issue/pending",
@@ -2744,9 +2848,39 @@ def refresh_revision_base(target: str) -> tuple[bool, str]:
     return False, detail or f"refresh-base returned status {status!r}"
 
 
+def seed_revision_review_doc_from_canonical_plan(bundle: dict[str, Any], *, repo_root_arg: str | None = None) -> bool:
+    review_doc = bundle.get("review_doc")
+    if not isinstance(review_doc, dict):
+        return False
+    plan_result = validate_bundle_plan(bundle, artifact_root=None, repo_root_arg=repo_root_arg)
+    if plan_result is None:
+        return False
+    _plan_meta, plan_path = plan_result
+    review_path = review_doc_seed_filesystem_path(
+        bundle,
+        str(review_doc["path"]),
+        repo_root(repo_root_arg),
+    )
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    if review_path.resolve() != plan_path.resolve():
+        shutil.copyfile(plan_path, review_path)
+    validate_bundle_review_doc(
+        bundle,
+        repo_root_arg=repo_root_arg,
+        missing_code="execplan_revision_base_missing",
+    )
+    return True
+
+
+
 def ensure_revision_review_doc_available(bundle: dict[str, Any], *, repo_root_arg: str | None = None) -> None:
     state, _meta, review_path = review_doc_state_for_bundle(bundle, repo_root_arg=repo_root_arg)
     if state == "ok":
+        return
+    if state in {"missing", "mismatch"} and seed_revision_review_doc_from_canonical_plan(
+        bundle,
+        repo_root_arg=repo_root_arg,
+    ):
         return
     candidates = revision_base_candidates(bundle)
     if not candidates:
@@ -2822,7 +2956,7 @@ def materialize_revision(args: list[str]) -> None:
     parser.add_argument("--previous-bundle", required=True)
     parser.add_argument("--review-doc-path-file", required=True)
     parser.add_argument("--pack", required=True)
-    parser.add_argument("--publish-context", required=True)
+    parser.add_argument("--publish-context")
     parser.add_argument("--status", choices=["auto", "changed", "unchanged"], default="auto")
     parser.add_argument("--output", required=True)
     ns = parser.parse_args(args)
@@ -2840,8 +2974,8 @@ def materialize_revision(args: list[str]) -> None:
             str(previous_source_issue.get("identifier") or ""),
             "previous bundle source_issue.identifier",
         )
-    publish_context = load_json(Path(ns.publish_context))
-    publish_source_issue = publish_context.get("source_issue")
+    publish_context = load_json(Path(ns.publish_context)) if ns.publish_context else None
+    publish_source_issue = publish_context.get("source_issue") if isinstance(publish_context, dict) else None
     if isinstance(publish_source_issue, dict):
         ensure_source_issue_identifier_matches(
             source_issue,
@@ -2856,6 +2990,7 @@ def materialize_revision(args: list[str]) -> None:
     run_id = os.environ.get("SCHERZO_RUN_ID", "local-run")
     plan_meta = write_canonical_plan_output(review_path)
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
+    plan_entry_metadata = plan_publication_metadata(review_meta)
     bundle = {
         **previous,
         "kind": "artifact_set",
@@ -2890,6 +3025,7 @@ def materialize_revision(args: list[str]) -> None:
                 plan_meta["bytes"],
                 plan_meta["media_type"],
                 EXEC_PLAN_ARTIFACT_TYPE,
+                metadata=plan_entry_metadata,
             ),
             descriptor_file_entry(
                 "implementation_pack",
@@ -2900,14 +3036,10 @@ def materialize_revision(args: list[str]) -> None:
                 IMPLEMENTATION_PACK_ARTIFACT_TYPE,
             ),
         ],
-        "review_surface": {
-            "status": publish_context["review_surface"]["status"],
-            "pr_url": publish_context["pr"]["url"],
-            "branch": publish_context["pr"]["branch"],
-            "source_bundle_ref": publish_context["review_surface"].get("source_bundle_ref"),
-            "head_revision": publish_context["review_surface"].get("head_revision") or publish_context["pr"].get("head_revision"),
-            "review_doc_path": review_meta["path"],
-        },
+        "review_surface": review_surface_from_publish_context(
+            publish_context,
+            review_doc_path=review_meta["path"],
+        ),
         "implementation_handoff": {
             **previous["implementation_handoff"],
             "bundle_ref": bundle_ref,

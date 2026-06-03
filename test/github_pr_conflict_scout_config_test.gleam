@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/config/types as config_types
 import scherzo/runtime_bundle
 import scherzo/workflow_dag
@@ -92,6 +93,19 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
       "merge-conflict-resolution",
       "research",
     ]
+
+  let github = bundle.orchestrator.artifact_repositories.github
+  let assert Ok(target) = dict.get(github, "docs")
+  assert target.repo == "scherzo-systems/scherzo"
+  assert target.base == "main"
+  assert target.checkout.strategy == artifact_publication_config.ManagedGit
+  assert target.branch.strategy == artifact_publication_config.StablePerWork
+  assert target.branch.template
+    == "scherzo/{{ work.identifier }}/{{ publication.id }}"
+  assert target.pull_request.enabled == True
+  assert target.pull_request.strategy
+    == artifact_publication_config.UpdateExisting
+  assert target.pull_request.draft == True
 }
 
 pub fn checked_in_origin_sync_schedule_loads_test() {

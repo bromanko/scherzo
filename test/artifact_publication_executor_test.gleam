@@ -42,7 +42,11 @@ pub fn execute_routes_prepares_artifact_bytes_and_records_published_attempt_test
   assert attempt.status == "published"
   let projected = load_projection(root)
   let assert Ok(latest) =
-    projection.latest_publication_for_run(projected, "run-1", "review_doc")
+    projection.latest_publication_for_run(
+      projected,
+      "run-1",
+      "execplan_review_doc",
+    )
   assert latest.status == "published"
   assert latest.retry_execution_available == True
 }
@@ -157,7 +161,11 @@ pub fn execute_routes_dedupes_repeated_finalization_after_success_test() {
 
   let projected = load_projection(root)
   let attempts =
-    projection.publication_attempts_for_run(projected, "run-1", "review_doc")
+    projection.publication_attempts_for_run(
+      projected,
+      "run-1",
+      "execplan_review_doc",
+    )
   assert list.length(attempts) == 1
 }
 
@@ -302,7 +310,7 @@ fn repositories() -> artifact_publication_config.ArtifactRepositories {
 
 fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
   artifact_publication_config.PublicationRoute(
-    id: "review_doc",
+    id: "execplan_review_doc",
     repository: "github.docs",
     required: required,
     pull_request: Some(
