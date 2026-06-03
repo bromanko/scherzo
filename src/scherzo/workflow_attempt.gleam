@@ -153,6 +153,30 @@ pub fn recovery_issue_state_drift(
   issue: tracker_issue.Issue,
   run_id: String,
 ) -> Option(#(String, String)) {
+  case recovery_terminal_issue_state_drift(effective_config, issue, run_id) {
+    Some(drift) -> Some(drift)
+    None ->
+      case effective_config {
+        None -> None
+        Some(config) ->
+          case core.is_active(config, issue.state) {
+            True -> None
+            False ->
+              Some(issue_state_drift_reason(
+                run_id,
+                "non_active_state",
+                issue_state.to_string(issue.state),
+              ))
+          }
+      }
+  }
+}
+
+pub fn recovery_terminal_issue_state_drift(
+  effective_config: Option(config_types.EffectiveConfig),
+  issue: tracker_issue.Issue,
+  run_id: String,
+) -> Option(#(String, String)) {
   case effective_config {
     None -> None
     Some(config) ->
@@ -163,16 +187,7 @@ pub fn recovery_issue_state_drift(
             "terminal_state",
             issue_state.to_string(issue.state),
           ))
-        False ->
-          case core.is_active(config, issue.state) {
-            True -> None
-            False ->
-              Some(issue_state_drift_reason(
-                run_id,
-                "non_active_state",
-                issue_state.to_string(issue.state),
-              ))
-          }
+        False -> None
       }
   }
 }

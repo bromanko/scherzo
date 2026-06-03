@@ -119,6 +119,7 @@ pub type CurrentWorkflowObservation {
 pub type WorkflowRecoveryMode {
   ResumeRecoveredWorkflows
   ParkRecoveredWorkflows
+  ResumeExplicitRetryStep
 }
 
 type SessionRecoveryConfig {
@@ -317,6 +318,29 @@ pub fn finalize_workflow_candidates_with_config(
       recovery_prompt: config.pi.session_persistence.recovery_prompt,
     ),
     ResumeRecoveredWorkflows,
+  )
+}
+
+pub fn finalize_retry_step_candidates_with_config(
+  projection: projection.Projection,
+  candidates: List(WorkflowRecoveryCandidate),
+  observations: Dict(String, CurrentWorkflowObservation),
+  artifact_store: artifact_store.Store,
+  now_ms: Int,
+  config: config_types.EffectiveConfig,
+) -> Result(WorkflowFinalization, RecoveryError) {
+  finalize_workflow_candidates_with_config_and_mode(
+    projection,
+    candidates,
+    observations,
+    artifact_store,
+    now_ms,
+    Some(config),
+    SessionRecoveryConfig(
+      enabled: config.pi.session_persistence.enabled,
+      recovery_prompt: config.pi.session_persistence.recovery_prompt,
+    ),
+    ResumeExplicitRetryStep,
   )
 }
 
@@ -714,9 +738,10 @@ fn finalize_one_workflow_candidate(
                   [],
                 ),
               )
-            ResumeRecoveredWorkflows ->
+            ResumeRecoveredWorkflows | ResumeExplicitRetryStep ->
               case
-                workflow_attempt.recovery_issue_state_drift(
+                recovery_issue_state_drift_for_mode(
+                  mode,
                   effective_config,
                   issue,
                   candidate.run_id,
@@ -750,6 +775,29 @@ fn finalize_one_workflow_candidate(
               }
           }
       }
+  }
+}
+
+fn recovery_issue_state_drift_for_mode(
+  mode: WorkflowRecoveryMode,
+  effective_config: Option(config_types.EffectiveConfig),
+  issue: tracker_issue.Issue,
+  run_id: String,
+) -> Option(#(String, String)) {
+  case mode {
+    ResumeRecoveredWorkflows ->
+      workflow_attempt.recovery_issue_state_drift(
+        effective_config,
+        issue,
+        run_id,
+      )
+    ResumeExplicitRetryStep ->
+      workflow_attempt.recovery_terminal_issue_state_drift(
+        effective_config,
+        issue,
+        run_id,
+      )
+    ParkRecoveredWorkflows -> None
   }
 }
 
