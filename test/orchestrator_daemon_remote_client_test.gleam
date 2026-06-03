@@ -70,7 +70,7 @@ pub fn daemon_remote_client_uses_websocket_authorization_handshake_test() {
   let transcript =
     remote_ui_test_server.wait_for_contains(
       transcript_path,
-      "client_frame=",
+      "daemon_state",
       100,
     )
   assert string.contains(transcript, "authorization=Bearer dcred_secret_1")
