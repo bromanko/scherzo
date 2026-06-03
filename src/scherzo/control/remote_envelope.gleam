@@ -135,6 +135,15 @@ pub fn decode(line: String) -> Result(Envelope, DecodeError) {
   }
 }
 
+pub fn decode_server_command_rejection(
+  line: String,
+) -> Result(#(String, command.CommandResult), DecodeError) {
+  case json.parse(line, decode.dynamic) {
+    Ok(value) -> decode_server_command_rejection_dynamic(value)
+    Error(_) -> Error(DecodeError("bad_json", "malformed remote envelope JSON"))
+  }
+}
+
 pub fn decode_dynamic(value: Dynamic) -> Result(Envelope, DecodeError) {
   case decode.run(value, envelope_fields_decoder()) {
     Ok(fields) -> envelope_from_fields(fields)
@@ -285,8 +294,7 @@ fn remote_session_decoder() -> decode.Decoder(RemoteSession) {
 fn envelope_from_fields(
   fields: EnvelopeFields,
 ) -> Result(Envelope, DecodeError) {
-  use envelope_version <- result.try(required_version(fields.version))
-  let _ = envelope_version
+  use _ <- result.try(required_version(fields.version))
   use type_ <- result.try(required_type(fields.type_))
   case type_ {
     "hello" ->
@@ -485,6 +493,90 @@ fn decode_nested_query_response(
   value: Dynamic,
 ) -> Result(query_types.QueryResponse, query_types.QueryError) {
   query_codec.decode_response_dynamic(value)
+}
+
+fn decode_server_command_rejection_dynamic(
+  value: Dynamic,
+) -> Result(#(String, command.CommandResult), DecodeError) {
+  case decode.run(value, envelope_fields_decoder()) {
+    Ok(fields) -> server_command_rejection_from_fields(fields)
+    Error(_) ->
+      Error(DecodeError("invalid_envelope", "invalid remote envelope"))
+  }
+}
+
+fn server_command_rejection_from_fields(
+  fields: EnvelopeFields,
+) -> Result(#(String, command.CommandResult), DecodeError) {
+  use _ <- result.try(required_version(fields.version))
+  use type_ <- result.try(required_type(fields.type_))
+  case type_ {
+    "server_command" -> {
+      use command_id <- result.try(required_string_field(
+        fields.command_id,
+        "command_id",
+      ))
+      case required_dynamic_field(fields.command, "command") {
+        Ok(nested) ->
+          case decode_nested_command(nested) {
+            Ok(_) ->
+              Error(DecodeError(
+                "valid_server_command",
+                "server_command payload is valid",
+              ))
+            Error(err) ->
+              Ok(#(
+                command_id,
+                rejected_decode_result(command_name_from_dynamic(nested), err),
+              ))
+          }
+        Error(err) -> Ok(#(command_id, rejected_decode_result("unknown", err)))
+      }
+    }
+    _ ->
+      Error(DecodeError(
+        "not_server_command",
+        "remote envelope is not a server_command",
+      ))
+  }
+}
+
+fn rejected_decode_result(
+  command_name: String,
+  error: DecodeError,
+) -> command.CommandResult {
+  let DecodeError(code: code, message: message) = error
+  command.CommandResult(
+    command: normalize_command_name(command_name),
+    status: command.Rejected(code),
+    target: None,
+    message: Some(message),
+  )
+}
+
+fn command_name_from_dynamic(value: Dynamic) -> String {
+  case decode.run(value, command_type_decoder()) {
+    Ok(Some(command_name)) -> normalize_command_name(command_name)
+    Ok(None) -> "unknown"
+    Error(_) -> "unknown"
+  }
+}
+
+fn command_type_decoder() -> decode.Decoder(Option(String)) {
+  use type_ <- decode.optional_field(
+    "type",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(type_)
+}
+
+fn normalize_command_name(command_name: String) -> String {
+  let command_name = string.trim(command_name)
+  case command_name == "" {
+    True -> "unknown"
+    False -> command_name
+  }
 }
 
 fn int_to_string(value: Int) -> String {

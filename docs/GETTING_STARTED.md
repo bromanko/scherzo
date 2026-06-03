@@ -192,12 +192,12 @@ ui_server:
   enabled: false
   # Leave this off for local-only operation. When enabled, the daemon starts an
   # outbound remote client that sends hello, heartbeat, and state snapshots,
-  # accepts remote pause/resume commands over the outbound socket, retries
+  # accepts remote operator commands over the outbound socket, retries
   # unreachable endpoints in the background, and keeps local scherzoctl control
   # as the fallback. This slice does not add browser UI, durable central command
   # storage, or revive removed tracker/comment remote_commands transport. The
-  # current socket transport is loopback-only; do not expose remote pause/resume
-  # off-host without adding authenticated transport and command authorization.
+  # current socket transport is loopback-only; do not expose remote operator
+  # control off-host without adding authenticated transport and authorization.
   # endpoint: https://127.0.0.1:8443
   # enrollment_token_env: UI_SERVER_TOKEN
 

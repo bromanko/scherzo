@@ -436,6 +436,87 @@ pub fn daemon_remote_pause_resume_uses_apply_operator_command_and_updates_state_
   assert test_async.expect_message(stops) == "stop"
 }
 
+pub fn daemon_remote_retry_missing_issue_returns_failure_result_with_command_id_test() {
+  let workflow_path =
+    write_workflow("test/tmp/daemon-remote-client-command-failure", True)
+  let starts = process.new_subject()
+  let stops = process.new_subject()
+  let wire = new_wire()
+  let deps =
+    remote_dependencies(
+      starts,
+      stops,
+      None,
+      RemoteConnectOk(wire),
+      [session_summary()],
+      UseNoControlServer,
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let _ = test_async.expect_message(starts)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+
+  append_inbound_line(
+    wire.inbound_path,
+    remote_envelope.RemoteServerCommand(
+      "retry-missing-1",
+      command.RetryIssue(command.IssueIdentifier("LIV-MISSING")),
+    )
+      |> remote_envelope.to_string,
+  )
+  let assert Ok(remote_envelope.RemoteCommandReceipt("retry-missing-1", True, _)) =
+    receive_envelope_of_kind(wire.outbound, "command_receipt")
+  let assert Ok(remote_envelope.RemoteCommandResult("retry-missing-1", result)) =
+    receive_envelope_of_kind(wire.outbound, "command_result")
+  assert result.command == "retry"
+  assert result.status == command.NotFound
+  assert result.target == Some("LIV-MISSING")
+  let _ = receive_envelope_of_kind(wire.outbound, "state_snapshot")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert test_async.expect_message(stops) == "stop"
+}
+
+pub fn daemon_remote_unknown_server_command_returns_rejected_result_with_command_id_test() {
+  let workflow_path =
+    write_workflow("test/tmp/daemon-remote-client-command-rejected", True)
+  let starts = process.new_subject()
+  let stops = process.new_subject()
+  let wire = new_wire()
+  let deps =
+    remote_dependencies(
+      starts,
+      stops,
+      None,
+      RemoteConnectOk(wire),
+      [session_summary()],
+      UseNoControlServer,
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let _ = test_async.expect_message(starts)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+  let _ = test_async.expect_message(wire.outbound)
+
+  append_inbound_line(
+    wire.inbound_path,
+    "{\"version\":1,\"type\":\"server_command\",\"command_id\":\"cmd-unknown\",\"command\":{\"type\":\"mystery\"}}",
+  )
+  let assert Ok(remote_envelope.RemoteCommandReceipt("cmd-unknown", False, _)) =
+    receive_envelope_of_kind(wire.outbound, "command_receipt")
+  let assert Ok(remote_envelope.RemoteCommandResult("cmd-unknown", result)) =
+    receive_envelope_of_kind(wire.outbound, "command_result")
+  assert result.command == "mystery"
+  assert result.status == command.Rejected("unknown_command")
+  let _ = receive_envelope_of_kind(wire.outbound, "state_snapshot")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert test_async.expect_message(stops) == "stop"
+}
+
 fn write_workflow(dir: String, ui_server_enabled: Bool) -> String {
   test_helpers.reset_dir(dir)
   let workflow_path = dir <> "/scherzo.yaml"

@@ -13,6 +13,8 @@ import scherzo/log
 
 const max_in_flight_queries = 8
 
+const max_in_flight_commands = 8
+
 pub type Settings {
   Settings(
     endpoint: String,
@@ -325,16 +327,85 @@ fn handle_reader_line(
           emit_log(state, "warn", "remote_client_unexpected_inbound", [])
           state
         }
-        Error(err) -> {
-          let remote_envelope.DecodeError(code: code, message: message) = err
-          emit_log(state, "warn", "remote_client_bad_inbound", [
-            #("code", code),
-            #("reason", message),
-          ])
-          state
-        }
+        Error(err) -> handle_bad_inbound(state, connection, line, err)
       }
     _, _ -> state
+  }
+}
+
+fn handle_bad_inbound(
+  state: State(connection, timer),
+  connection: connection,
+  line: String,
+  err: remote_envelope.DecodeError,
+) -> State(connection, timer) {
+  let remote_envelope.DecodeError(code: code, message: message) = err
+  emit_log(state, "warn", "remote_client_bad_inbound", [
+    #("code", code),
+    #("reason", message),
+  ])
+  case remote_envelope.decode_server_command_rejection(line) {
+    Ok(#(command_id, result)) ->
+      handle_bad_server_command(state, connection, command_id, result)
+    Error(remote_envelope.DecodeError(code: rejection_code, message: _)) -> {
+      emit_log(state, "debug", "remote_client_unrepliable_bad_inbound", [
+        #("code", rejection_code),
+      ])
+      state
+    }
+  }
+}
+
+fn handle_bad_server_command(
+  state: State(connection, timer),
+  connection: connection,
+  command_id: String,
+  result: command.CommandResult,
+) -> State(connection, timer) {
+  let #(router, decision) =
+    remote_command_router.register_rejection(state.router, command_id, result)
+  let state = State(..state, router: router)
+  case decision {
+    remote_command_router.StartApply ->
+      send_receipt_result_and_state(
+        state,
+        connection,
+        command_id,
+        False,
+        result.message,
+        result,
+      )
+    remote_command_router.DuplicateInFlight ->
+      case
+        send_command_receipt(
+          connection,
+          state,
+          command_id,
+          True,
+          Some("command already in flight"),
+        )
+      {
+        Ok(Nil) -> state
+        Error(message) -> retry_command_receipt(state, connection, message)
+      }
+    remote_command_router.ReplayCompleted(result) ->
+      send_receipt_result_and_state(
+        state,
+        connection,
+        command_id,
+        True,
+        Some("command result replayed"),
+        result,
+      )
+    remote_command_router.Reject(result) ->
+      send_receipt_result_and_state(
+        state,
+        connection,
+        command_id,
+        False,
+        result.message,
+        result,
+      )
   }
 }
 
@@ -346,7 +417,12 @@ fn handle_server_command(
   operator_command: command.OperatorCommand,
 ) -> State(connection, timer) {
   let #(router, decision) =
-    remote_command_router.register(state.router, command_id, operator_command)
+    remote_command_router.register_limited(
+      state.router,
+      command_id,
+      operator_command,
+      max_in_flight_commands,
+    )
   let state = State(..state, router: router)
   case decision {
     remote_command_router.StartApply ->
@@ -371,12 +447,7 @@ fn handle_server_command(
                 command_id,
               ),
             )
-          retry_after_send_failure(
-            state,
-            connection,
-            "command_receipt_send_failed",
-            message,
-          )
+          retry_command_receipt(state, connection, message)
         }
       }
     remote_command_router.DuplicateInFlight ->
@@ -390,13 +461,7 @@ fn handle_server_command(
         )
       {
         Ok(Nil) -> state
-        Error(message) ->
-          retry_after_send_failure(
-            state,
-            connection,
-            "command_receipt_send_failed",
-            message,
-          )
+        Error(message) -> retry_command_receipt(state, connection, message)
       }
     remote_command_router.ReplayCompleted(result) ->
       send_receipt_result_and_state(
@@ -586,14 +651,21 @@ fn send_receipt_result_and_state(
             message,
           )
       }
-    Error(message) ->
-      retry_after_send_failure(
-        state,
-        connection,
-        "command_receipt_send_failed",
-        message,
-      )
+    Error(message) -> retry_command_receipt(state, connection, message)
   }
+}
+
+fn retry_command_receipt(
+  state: State(connection, timer),
+  connection: connection,
+  message: String,
+) -> State(connection, timer) {
+  retry_after_send_failure(
+    state,
+    connection,
+    "command_receipt_send_failed",
+    message,
+  )
 }
 
 fn send_hello(
