@@ -1767,26 +1767,7 @@ fn retry_step_issue_preflight(
                       <> issue_state.to_string(issue.state),
                     ),
                   ))
-                False ->
-                  case core.is_active(state.workflow.effective, issue.state) {
-                    True -> Ok(issue)
-                    False ->
-                      Error(command.rejected(
-                        operator_command,
-                        "issue_state_drift:non_active_state",
-                        Some(
-                          "run "
-                          <> command.retry_workflow_step_target_to_string(
-                            target,
-                          )
-                          <> " for issue "
-                          <> issue.identifier
-                          <> " is currently in non-active state "
-                          <> issue_state.to_string(issue.state)
-                          <> "; move the issue to a configured active state before retrying",
-                        ),
-                      ))
-                  }
+                False -> Ok(issue)
               }
           }
       }
@@ -1814,7 +1795,7 @@ fn continue_retry_workflow_step_for_operator(
     )
     Ok(plan) ->
       case
-        recovery.finalize_workflow_candidates_with_config(
+        recovery.finalize_retry_step_candidates_with_config(
           projection_state,
           [plan.candidate],
           dict.from_list([#(plan.run_id, observation)]),
