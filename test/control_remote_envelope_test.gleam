@@ -167,6 +167,28 @@ pub fn remote_envelope_rejects_invalid_nested_command_payloads_test() {
   )
 }
 
+pub fn remote_envelope_extracts_rejected_server_command_result_with_id_test() {
+  let assert Ok(#(command_id, result)) =
+    remote_envelope.decode_server_command_rejection(
+      "{\"version\":1,\"type\":\"server_command\",\"command_id\":\"cmd-1\",\"command\":{\"type\":\"mystery\"}}",
+    )
+  assert command_id == "cmd-1"
+  assert result.command == "mystery"
+  assert result.status == command.Rejected("unknown_command")
+  assert result.message == Some("unknown command type: mystery")
+}
+
+pub fn remote_envelope_rejected_server_command_result_falls_back_to_unknown_command_test() {
+  let assert Ok(#(command_id, result)) =
+    remote_envelope.decode_server_command_rejection(
+      "{\"version\":1,\"type\":\"server_command\",\"command_id\":\"cmd-2\"}",
+    )
+  assert command_id == "cmd-2"
+  assert result.command == "unknown"
+  assert result.status == command.Rejected("invalid_envelope")
+  assert result.message == Some("missing command")
+}
+
 pub fn remote_envelope_rejects_invalid_nested_query_payloads_test() {
   assert_invalid_envelope(
     "{\"version\":1,\"type\":\"query_request\",\"query_id\":\"q-1\",\"query\":{\"version\":1,\"type\":\"mystery\"}}",

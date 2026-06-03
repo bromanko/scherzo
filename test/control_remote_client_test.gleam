@@ -266,7 +266,7 @@ pub fn remote_client_conflicting_duplicate_rejected_before_apply_test() {
   let assert Ok(Nil) = client.stop(handle, 1000)
 }
 
-pub fn remote_client_rejects_unsupported_remote_command_before_apply_test() {
+pub fn remote_client_routes_non_pause_operator_command_to_apply_test() {
   let fixture =
     new_fixture(
       SessionList([session_fixture()]),
@@ -281,13 +281,89 @@ pub fn remote_client_rejects_unsupported_remote_command_before_apply_test() {
   let _ = receive_envelope(fixture.outbound)
 
   send_server_command(connection, "cmd-1", command.ReloadWorkflow)
-  let assert remote_envelope.RemoteCommandReceipt(_, accepted, _) =
-    receive_envelope(fixture.outbound)
-  assert !accepted
-  let assert remote_envelope.RemoteCommandResult(_, result) =
-    receive_envelope(fixture.outbound)
-  assert result.status == command.Rejected("unsupported_remote_command")
+  let assert remote_envelope.RemoteCommandReceipt(command_id, accepted, _) =
+    receive_envelope_of_kind(fixture.outbound, "command_receipt")
+  assert command_id == "cmd-1"
+  assert accepted
+  let ApplyRequest(applied_command, _) =
+    test_async.expect_message(fixture.apply_requests)
+  assert applied_command == command.ReloadWorkflow
+  let assert remote_envelope.RemoteCommandResult(result_id, result) =
+    receive_envelope_of_kind(fixture.outbound, "command_result")
+  assert result_id == "cmd-1"
+  assert result.status == command.Applied
   let _ = receive_envelope(fixture.outbound)
+
+  let assert Ok(Nil) = client.stop(handle, 1000)
+}
+
+pub fn remote_client_rejects_unknown_server_command_with_command_id_test() {
+  let fixture =
+    new_fixture(
+      SessionList([session_fixture()]),
+      NoSendFailure,
+      ApplyImmediately,
+    )
+
+  let assert Ok(handle) = client.start(fixture.settings, fixture.dependencies)
+  let connection = connect_ok(fixture)
+  let _ = assert_hello(fixture)
+  let _ = assert_heartbeat(fixture)
+  let _ = receive_envelope(fixture.outbound)
+
+  append_inbound_line(
+    connection.inbound_path,
+    "{\"version\":1,\"type\":\"server_command\",\"command_id\":\"cmd-unknown\",\"command\":{\"type\":\"mystery\"}}",
+  )
+  let assert remote_envelope.RemoteCommandReceipt(command_id, accepted, _) =
+    receive_envelope_of_kind(fixture.outbound, "command_receipt")
+  assert command_id == "cmd-unknown"
+  assert !accepted
+  let assert remote_envelope.RemoteCommandResult(result_id, result) =
+    receive_envelope_of_kind(fixture.outbound, "command_result")
+  assert result_id == "cmd-unknown"
+  assert result.command == "mystery"
+  assert result.status == command.Rejected("unknown_command")
+  let _ = receive_envelope(fixture.outbound)
+  test_async.assert_no_extra_message_within(fixture.apply_requests, 50)
+
+  let assert Ok(Nil) = client.stop(handle, 1000)
+}
+
+pub fn remote_client_replays_completed_result_for_malformed_duplicate_command_id_test() {
+  let fixture =
+    new_fixture(
+      SessionList([session_fixture()]),
+      NoSendFailure,
+      ApplyImmediately,
+    )
+
+  let assert Ok(handle) = client.start(fixture.settings, fixture.dependencies)
+  let connection = connect_ok(fixture)
+  let _ = assert_hello(fixture)
+  let _ = assert_heartbeat(fixture)
+  let _ = receive_envelope(fixture.outbound)
+
+  send_server_command(connection, "cmd-1", command.PauseDispatch)
+  let assert remote_envelope.RemoteCommandReceipt("cmd-1", True, _) =
+    receive_envelope_of_kind(fixture.outbound, "command_receipt")
+  let _ = test_async.expect_message(fixture.apply_requests)
+  let assert remote_envelope.RemoteCommandResult("cmd-1", applied) =
+    receive_envelope_of_kind(fixture.outbound, "command_result")
+  assert applied.status == command.Applied
+  let _ = receive_envelope_of_kind(fixture.outbound, "state_snapshot")
+
+  append_inbound_line(
+    connection.inbound_path,
+    "{\"version\":1,\"type\":\"server_command\",\"command_id\":\"cmd-1\",\"command\":{\"type\":\"mystery\"}}",
+  )
+  let assert remote_envelope.RemoteCommandReceipt("cmd-1", True, message) =
+    receive_envelope_of_kind(fixture.outbound, "command_receipt")
+  assert message == Some("command result replayed")
+  let assert remote_envelope.RemoteCommandResult("cmd-1", replayed) =
+    receive_envelope_of_kind(fixture.outbound, "command_result")
+  assert replayed == applied
+  let _ = receive_envelope_of_kind(fixture.outbound, "state_snapshot")
   test_async.assert_no_extra_message_within(fixture.apply_requests, 50)
 
   let assert Ok(Nil) = client.stop(handle, 1000)
@@ -639,6 +715,30 @@ pub fn remote_client_clears_inflight_when_command_receipt_send_fails_test() {
   assert applied_command == command.PauseDispatch
 
   let assert Ok(Nil) = client.stop(handle, 1000)
+}
+
+pub fn remote_client_shutdown_during_in_flight_command_closes_without_result_test() {
+  let fixture =
+    new_fixture(
+      SessionList([session_fixture()]),
+      NoSendFailure,
+      ApplyDelay(100),
+    )
+
+  let assert Ok(handle) = client.start(fixture.settings, fixture.dependencies)
+  let connection = connect_ok(fixture)
+  let _ = assert_hello(fixture)
+  let _ = assert_heartbeat(fixture)
+  let _ = receive_envelope(fixture.outbound)
+
+  send_server_command(connection, "pause-1", command.PauseDispatch)
+  let assert remote_envelope.RemoteCommandReceipt("pause-1", True, _) =
+    receive_envelope_of_kind(fixture.outbound, "command_receipt")
+  let _ = test_async.expect_message(fixture.apply_requests)
+
+  let assert Ok(Nil) = client.stop(handle, 1000)
+  assert test_async.expect_message(fixture.closes) == "closed"
+  test_async.assert_no_extra_message_within(fixture.outbound, 150)
 }
 
 pub fn remote_client_stop_cancels_timers_and_closes_connection_test() {
