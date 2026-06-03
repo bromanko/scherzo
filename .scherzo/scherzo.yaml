@@ -149,7 +149,7 @@ artifacts:
         pull_request:
           enabled: true
           strategy: update_existing
-          draft: true
+          draft: false
   limits:
     command_output_chars: 20000
     template_field_chars: 8000

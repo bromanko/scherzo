@@ -105,7 +105,7 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
   assert target.pull_request.enabled == True
   assert target.pull_request.strategy
     == artifact_publication_config.UpdateExisting
-  assert target.pull_request.draft == True
+  assert target.pull_request.draft == False
 }
 
 pub fn checked_in_origin_sync_schedule_loads_test() {
