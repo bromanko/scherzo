@@ -1,7 +1,7 @@
 import gleam/bit_array
 import gleam/dict
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/artifact_publication_config
@@ -61,6 +61,10 @@ pub fn publish_clones_materializes_commits_pushes_and_creates_draft_pr_test() {
   assert string.contains(transcript, "git fetch origin main")
   assert string.contains(
     transcript,
+    "git ls-remote --exit-code --heads origin scherzo/workflow.execplan/LIV-761/review_doc",
+  )
+  assert string.contains(
+    transcript,
     "git checkout -B scherzo/workflow.execplan/LIV-761/review_doc origin/main",
   )
   assert string.contains(transcript, "git add -- docs/plans/LIV-761.md")
@@ -111,6 +115,25 @@ pub fn publish_returns_unchanged_without_commands_when_latest_version_matches_te
     == "unchanged"
   assert manifest.commit_sha == Some("deadbeef")
   assert manifest.pr_url == Some("https://example.test/pr/1")
+}
+
+pub fn publish_recovers_pr_when_latest_version_matches_without_pr_test() {
+  let root = "test/tmp/artifact-repository-github/unchanged-missing-pr"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  seed_latest_publication_without_pr(root)
+  let input = prepared_input(root, True)
+
+  let manifest = github.publish(input, root, no_diff_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "unchanged"
+  assert string.starts_with(manifest.attempt_id, "recovered-")
+  assert manifest.commit_sha == Some("deadbeef")
+  assert manifest.pr_url == Some("https://example.test/pr/1")
+  let transcript = read_file(log)
+  assert string.contains(transcript, "gh pr create")
+  assert !string.contains(transcript, "git commit")
 }
 
 pub fn publish_fails_when_checkout_is_dirty_test() {
@@ -300,8 +323,10 @@ pub fn publish_records_unchanged_when_materialization_has_no_diff_test() {
   assert artifact_publication_manifest.status_to_string(manifest.status)
     == "unchanged"
   assert manifest.commit_sha == Some("deadbeef")
+  assert manifest.pr_url == Some("https://example.test/pr/1")
   let transcript = read_file(log)
   assert string.contains(transcript, "git diff --cached --quiet")
+  assert string.contains(transcript, "gh pr create")
   assert !string.contains(transcript, "git commit")
 }
 
@@ -319,6 +344,24 @@ pub fn publish_updates_existing_pr_when_one_matches_test() {
   let transcript = read_file(log)
   assert string.contains(transcript, "gh pr edit 42")
   assert !string.contains(transcript, "gh pr create")
+}
+
+pub fn publish_recovers_existing_pr_when_create_reports_duplicate_test() {
+  let root = "test/tmp/artifact-repository-github/pr-create-duplicate"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(input, root, pr_create_duplicate_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "unchanged"
+  assert manifest.pr_url == Some("https://example.test/pr/42")
+  let transcript = read_file(log)
+  assert string.contains(transcript, "gh pr create")
+  assert string.contains(transcript, "gh pr view")
+  assert string.contains(transcript, "gh pr edit 42")
 }
 
 pub fn publish_deletes_stale_owned_paths_from_previous_success_test() {
@@ -572,6 +615,7 @@ fn create_pr_runner(log: String, draft: Bool) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -602,6 +646,7 @@ fn reuse_checkout_runner(log: String) -> command_runner.Runner {
           "",
         ))
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -630,6 +675,7 @@ fn dirty_checkout_runner(log: String) -> command_runner.Runner {
           "",
         ))
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -648,6 +694,7 @@ fn git_add_failure_runner(log: String) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -667,6 +714,7 @@ fn ambiguous_pr_runner(log: String) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -696,6 +744,7 @@ fn malformed_pr_runner(log: String) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -721,6 +770,7 @@ fn pr_edit_failure_runner(log: String) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -766,6 +816,7 @@ fn failure_runner(log: String, stage: String) -> command_runner.Runner {
       "fetch", "git", ["fetch", ..] ->
         Ok(command_runner.CommandOutput(2, "", "fetch failed"))
       _, "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      _, "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       _, "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "checkout", "git", ["checkout", ..] ->
@@ -819,6 +870,7 @@ fn no_diff_runner(log: String) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -828,6 +880,8 @@ fn no_diff_runner(log: String) -> command_runner.Runner {
       "git", ["rev-parse", "HEAD"] ->
         Ok(command_runner.CommandOutput(0, "deadbeef", ""))
       "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] ->
+        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
       _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
@@ -841,6 +895,7 @@ fn pr_edit_success_runner(log: String) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -855,6 +910,38 @@ fn pr_edit_success_runner(log: String) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(
           0,
           "[{\"number\":42,\"url\":\"https://example.test/pr/42\",\"isDraft\":true,\"title\":\"existing\"}]",
+          "",
+        ))
+      "gh", ["pr", "edit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn pr_create_duplicate_runner(log: String) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, _) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] ->
+        Ok(command_runner.CommandOutput(1, "", "already exists"))
+      "gh", ["pr", "view", ..] ->
+        Ok(command_runner.CommandOutput(
+          0,
+          "{\"isDraft\":false,\"number\":42,\"state\":\"OPEN\",\"title\":\"existing\",\"url\":\"https://example.test/pr/42\"}",
           "",
         ))
       "gh", ["pr", "edit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -903,10 +990,36 @@ fn seed_latest_publication(root: String) -> Nil {
   ])
 }
 
+fn seed_latest_publication_without_pr(root: String) -> Nil {
+  let planned = dry_run_manifest(True)
+  seed_latest_publication_with_pr(
+    root,
+    planned.version_id,
+    [
+      "docs/plans/LIV-761.md",
+    ],
+    None,
+  )
+}
+
 fn seed_latest_publication_with(
   root: String,
   version_id: String,
   selected_paths: List(String),
+) -> Nil {
+  seed_latest_publication_with_pr(
+    root,
+    version_id,
+    selected_paths,
+    Some("https://example.test/pr/1"),
+  )
+}
+
+fn seed_latest_publication_with_pr(
+  root: String,
+  version_id: String,
+  selected_paths: List(String),
+  pr_url: Option(String),
 ) -> Nil {
   let planned = dry_run_manifest(True)
   let published =
@@ -918,7 +1031,7 @@ fn seed_latest_publication_with(
       version_id,
       100,
       "deadbeef",
-      Some("https://example.test/pr/1"),
+      pr_url,
       selected_paths,
       [],
     )

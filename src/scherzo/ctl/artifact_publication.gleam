@@ -200,10 +200,7 @@ type PublicationManifestDetails {
 }
 
 type RetryResolvedRoute {
-  RetryResolvedRoute(
-    route: artifact_publication_config.PublicationRoute,
-    latest: projection.PublicationAttempt,
-  )
+  RetryResolvedRoute(route: artifact_publication_config.PublicationRoute)
 }
 
 fn pair_error(code: String, message: String) -> #(String, String) {
@@ -325,7 +322,7 @@ fn retry_selected_publications(
     run_id,
   ))
   let retry_result =
-    artifact_publication_executor.execute_routes_for_work_with_state_root(
+    artifact_publication_executor.retry_routes_for_work_with_state_root(
       list.map(resolved, fn(entry) { entry.route }),
       bundle.orchestrator.artifact_repositories,
       bundle.orchestrator.config_dir,
@@ -335,6 +332,7 @@ fn retry_selected_publications(
       run_id,
       checkpoint,
       runner,
+      list.all(targets, fn(target) { target.latest.status != "unchanged" }),
     )
   use
     artifact_publication_recording.PublicationRecordingResult(
@@ -436,7 +434,7 @@ fn resolve_retry_routes_loop(
         work,
         run_id,
         body_templates,
-        [RetryResolvedRoute(route: route, latest: latest), ..acc],
+        [RetryResolvedRoute(route: route), ..acc],
       )
     }
   }
@@ -481,10 +479,18 @@ fn validate_retry_route(
       #(artifact_publication_planner.code(error), planner_error_message(error))
     }),
   )
-  case
-    planned.series_id == latest.series_id
-    && planned.version_id == option_or_empty(latest.version_id)
-  {
+  let legacy_series_id =
+    work.id
+    <> ":"
+    <> output_manifest.workflow_id
+    <> ":"
+    <> latest.publication_id
+  let matches = case latest.version_id {
+    Some(version_id) ->
+      planned.series_id == latest.series_id && planned.version_id == version_id
+    None -> latest.series_id == legacy_series_id
+  }
+  case matches {
     True -> Ok(Nil)
     False ->
       Error(#(
@@ -512,8 +518,11 @@ fn require_retryable_latest(
 }
 
 fn is_retryable_latest(latest: projection.PublicationAttempt) -> Bool {
+  let replayable = latest.retry_execution_available || latest.version_id == None
   latest.status == "failed"
   && latest.retryable
+  && replayable
+  || latest.status == "unchanged"
   && latest.retry_execution_available
 }
 
@@ -929,8 +938,10 @@ fn publication_workflow_identity(
           )
         }),
       )
-      let issue_identifier =
-        option_or(task_ref.task_key, task_ref.task_remote_id)
+      let issue_identifier = case task_ref.task_key {
+        Some(task_key) -> task_key
+        None -> task_ref.task_remote_id
+      }
       Ok(artifact_publication_planner.PublicationWork(
         kind: artifact_publication_planner.TaskWork,
         id: issue_id,
@@ -1051,17 +1062,6 @@ fn artifact_store_error_message(error: artifact_store.ArtifactError) -> String {
     artifact_store.ArtifactWriteFailed(write_error) ->
       artifact_store.artifact_write_error_to_string(write_error)
   }
-}
-
-fn option_or(value: Option(String), fallback: String) -> String {
-  case value {
-    Some(value) -> value
-    None -> fallback
-  }
-}
-
-fn option_or_empty(value: Option(String)) -> String {
-  option_or(value, "")
 }
 
 fn optional_string(value: Option(String)) -> String {

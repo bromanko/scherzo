@@ -7,6 +7,7 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/types
+import scherzo/path
 
 pub fn ensure_pull_request(
   manifest: artifact_publication_planner.DryRunPublicationManifest,
@@ -60,6 +61,26 @@ pub fn current_head(
   {
     Ok(stdout) -> url_option(stdout)
     Error(_) -> None
+  }
+}
+
+fn gh_command(
+  args: List(String),
+  checkout_dir: String,
+) -> command_runner.CommandSpec {
+  command_runner.sh("gh", args, checkout_dir)
+  |> command_runner.with_env(github_auth_env())
+}
+
+fn github_auth_env() -> List(#(String, String)) {
+  case path.env("GH_TOKEN"), path.env("GITHUB_TOKEN") {
+    Some(token), _ -> [#("GH_TOKEN", token)]
+    None, Some(token) -> [#("GH_TOKEN", token)]
+    None, None ->
+      case path.env("SCHERZO_AGENT_GITHUB_TOKEN") {
+        Some(token) -> [#("GH_TOKEN", token)]
+        None -> []
+      }
   }
 }
 
@@ -174,15 +195,69 @@ fn create_pr(
   case
     run_stdout(
       runner,
-      command_runner.with_input(
-        command_runner.sh("gh", args, checkout_dir),
-        body,
-      ),
+      command_runner.with_input(gh_command(args, checkout_dir), body),
       True,
     )
   {
     Ok(url) -> Ok(url_option(url))
-    Error(error) -> Error(error)
+    Error(error) ->
+      case view_open_pr_by_branch(manifest, checkout_dir, runner) {
+        Ok(Some(pr)) -> edit_pr(checkout_dir, runner, pr, title, body)
+        Ok(None) -> Error(error)
+        Error(view_error) -> {
+          let _ = view_error
+          Error(error)
+        }
+      }
+  }
+}
+
+fn view_open_pr_by_branch(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(
+  Option(types.GithubPullRequestMatch),
+  artifact_publication_manifest.PublicationErrorInfo,
+) {
+  use repo <- result.try(require_option(
+    manifest.github_repo,
+    artifact_publication_manifest.PublicationErrorInfo(
+      code: "missing_github_repo",
+      message: "planned github publication is missing github_repo",
+    ),
+  ))
+  let args = [
+    "pr",
+    "view",
+    manifest.branch,
+    "--repo",
+    repo,
+    "--json",
+    "number,url,isDraft,state,title",
+  ]
+  use output <- result.try(run(runner, gh_command(args, checkout_dir), True))
+  case output.exit_code == 0 {
+    True -> decode_pr_view(output.stdout)
+    False -> Ok(None)
+  }
+}
+
+fn decode_pr_view(
+  stdout: String,
+) -> Result(
+  Option(types.GithubPullRequestMatch),
+  artifact_publication_manifest.PublicationErrorInfo,
+) {
+  use state <- result.try(extract_json_string(stdout, "state"))
+  case state {
+    "OPEN" -> {
+      use number <- result.try(extract_json_int(stdout, "number"))
+      use url <- result.try(extract_json_string(stdout, "url"))
+      use draft <- result.try(extract_json_bool(stdout, "isDraft"))
+      Ok(Some(types.GithubPullRequestMatch(number, url, draft)))
+    }
+    _ -> Ok(None)
   }
 }
 
@@ -205,10 +280,7 @@ fn edit_pr(
   case
     run_ok(
       runner,
-      command_runner.with_input(
-        command_runner.sh("gh", args, checkout_dir),
-        body,
-      ),
+      command_runner.with_input(gh_command(args, checkout_dir), body),
       True,
     )
   {
@@ -259,7 +331,7 @@ fn lookup_open_pr(
   ]
   use stdout <- result.try(run_stdout(
     runner,
-    command_runner.sh("gh", args, checkout_dir),
+    gh_command(args, checkout_dir),
     True,
   ))
   decode_pr_list(stdout)

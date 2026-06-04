@@ -52,15 +52,16 @@ fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
       CommandError("spawn_failed:" <> port.port_error_to_string(error))
     }),
   )
-  let stdout = read_stdout(process, [])
-  let diagnostics = port.read_diagnostics(process) |> result.unwrap("")
+  let stdout = read_stdout(process, [], 200)
   case port.await_exit(process, 10_000) {
-    Ok(status) ->
+    Ok(status) -> {
+      let diagnostics = port.read_diagnostics(process) |> result.unwrap("")
       Ok(CommandOutput(
         exit_code: status,
         stdout: stdout,
         diagnostics: diagnostics,
       ))
+    }
     Error(error) ->
       Error(CommandError(
         "await_exit_failed:" <> port.port_error_to_string(error),
@@ -68,15 +69,25 @@ fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
   }
 }
 
-fn read_stdout(process: port.Process, acc: List(String)) -> String {
+fn read_stdout(
+  process: port.Process,
+  acc: List(String),
+  remaining_timeouts: Int,
+) -> String {
   case port.read_stdout_line(process, 50) {
-    Ok(line) -> read_stdout(process, [line, ..acc])
-    Error(port.ProcessExited(_)) | Error(port.Closed) ->
-      list.reverse(acc) |> string.join(with: "\n") |> string.trim
+    Ok(line) -> read_stdout(process, [line, ..acc], 200)
+    Error(port.ProcessExited(_)) | Error(port.Closed) -> joined_stdout(acc)
     Error(port.ReadTimeout) ->
-      list.reverse(acc) |> string.join(with: "\n") |> string.trim
-    Error(_) -> list.reverse(acc) |> string.join(with: "\n") |> string.trim
+      case remaining_timeouts <= 0 {
+        True -> joined_stdout(acc)
+        False -> read_stdout(process, acc, remaining_timeouts - 1)
+      }
+    Error(_) -> joined_stdout(acc)
   }
+}
+
+fn joined_stdout(acc: List(String)) -> String {
+  list.reverse(acc) |> string.join(with: "\n") |> string.trim
 }
 
 pub fn sh(executable: String, args: List(String), cwd: String) -> CommandSpec {
@@ -91,6 +102,14 @@ pub fn sh(executable: String, args: List(String), cwd: String) -> CommandSpec {
 
 pub fn with_input(spec: CommandSpec, stdin: String) -> CommandSpec {
   CommandSpec(..spec, stdin: Some(stdin))
+}
+
+pub fn with_env(
+  spec: CommandSpec,
+  env: List(#(String, String)),
+) -> CommandSpec {
+  let CommandSpec(env: existing, ..) = spec
+  CommandSpec(..spec, env: list.append(env, existing))
 }
 
 pub fn describe(spec: CommandSpec) -> String {

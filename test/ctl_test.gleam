@@ -1628,6 +1628,52 @@ pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test()
   assert string.contains(show_transcript, "\"status\":\"published\"")
 }
 
+pub fn artifact_publication_retry_replans_pre_execution_failure_test() {
+  let root = "test/tmp/ctl-artifact-publication-retry-replans/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-replans")
+  seed_pre_execution_failed_publication_state(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("execplan_review_doc"),
+      retry_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(transcript, "\"version_id\":\"")
+
+  let commands = drain_output(command_subject)
+  assert string.contains(commands, "git fetch origin main")
+  assert string.contains(commands, "git commit -m scherzo publication")
+}
+
+pub fn artifact_publication_retry_accepts_unchanged_missing_pr_attempt_test() {
+  let root = "test/tmp/ctl-artifact-publication-retry-missing-pr/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-missing-pr")
+  seed_unchanged_missing_pr_publication_state(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("execplan_review_doc"),
+      retry_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(transcript, "\"pr_url\":\"https://example.test/pr/1\"")
+}
+
 pub fn artifact_publication_retry_reports_failed_replay_as_error_test() {
   let root = "test/tmp/ctl-artifact-publication-retry-fails/workspaces"
   test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-fails")
@@ -2602,6 +2648,82 @@ fn seed_failed_retry_publication_state(root: String) -> Nil {
   Nil
 }
 
+fn seed_unchanged_missing_pr_publication_state(root: String) -> Nil {
+  let planned = seeded_publication_plan(root)
+  let ref = "runs/run-1/publications/execplan_review_doc/unchanged-1.json"
+  let manifest =
+    artifact_publication_manifest.unchanged_manifest(
+      planned,
+      "unchanged-1",
+      1020,
+      Some("deadbeef"),
+      None,
+      [],
+    )
+  let #(sha, bytes) = write_publication_manifest(root, ref, manifest)
+  append_publication_seed_records(root, [
+    publication_attempt_record(
+      planned,
+      "unchanged-1",
+      1020,
+      "unchanged",
+      False,
+      True,
+      Some(ref),
+      Some(sha),
+      Some(bytes),
+    ),
+  ])
+}
+
+fn seed_pre_execution_failed_publication_state(root: String) -> Nil {
+  let planned = seeded_publication_plan(root)
+  let series_id = "issue-1:execplan:" <> planned.publication_id
+  let failed_ref =
+    "runs/run-1/publications/execplan_review_doc/failed-preplan.json"
+  let error =
+    artifact_publication_manifest.PublicationErrorInfo(
+      code: "invalid_artifact_set_descriptor",
+      message: "artifact descriptor is missing required field: name",
+    )
+  let failed_manifest =
+    artifact_publication_manifest.failed_manifest(
+      "run-1",
+      "execplan",
+      planned.publication_id,
+      series_id,
+      planned.required,
+      "failed-preplan",
+      1020,
+      error,
+    )
+  let #(failed_sha, failed_bytes) =
+    write_publication_manifest(root, failed_ref, failed_manifest)
+  append_publication_seed_records(root, [
+    record.with_id(
+      "publication-preplan-failed",
+      1020,
+      record.PublicationAttemptRecorded(
+        run_id: "run-1",
+        workflow_id: "execplan",
+        publication_id: planned.publication_id,
+        series_id: series_id,
+        attempt_id: "failed-preplan",
+        status: "failed",
+        required: planned.required,
+        retryable: True,
+        retry_execution_available: False,
+        version_id: None,
+        manifest_ref: Some(failed_ref),
+        manifest_sha256: Some(failed_sha),
+        manifest_bytes: Some(failed_bytes),
+        error_code: Some(error.code),
+        error_message: Some(error.message),
+      ),
+    ),
+  ])
+}
+
 fn seed_failed_retry_publication_state_with_prior_success(root: String) -> Nil {
   let planned = seeded_publication_plan(root)
   let success_ref =
@@ -3082,6 +3204,7 @@ fn retry_runner(
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))

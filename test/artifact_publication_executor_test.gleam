@@ -2,6 +2,7 @@ import gleam/bit_array
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_executor
 import scherzo/artifact_repository/command_runner
@@ -169,32 +170,78 @@ pub fn execute_routes_dedupes_repeated_finalization_after_success_test() {
   assert list.length(attempts) == 1
 }
 
+pub fn execute_routes_with_state_root_uses_state_root_for_managed_checkout_test() {
+  let root = "test/tmp/artifact-publication-executor/separate-state-root"
+  let config_dir = root <> "/config"
+  let state_root = root <> "/state"
+  test_helpers.reset_dir(root)
+  write_template(config_dir)
+  write_artifact(state_root, plan_ref(), plan_contents())
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_recovered_routes_with_runner_and_state_root(
+      [route(True)],
+      repositories(),
+      config_dir,
+      state_root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      state_root_runner(state_root),
+    )
+
+  assert result.required_failures == []
+  let assert [attempt] = result.attempts
+  assert attempt.status == "published"
+}
+
 fn fake_runner() -> command_runner.Runner {
+  command_runner.Runner(run: fake_command)
+}
+
+fn state_root_runner(expected_root: String) -> command_runner.Runner {
   command_runner.Runner(run: fn(spec) {
-    let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
-    let _ = simplifile.create_directory_all(cwd)
-    case executable, args {
-      "git", ["clone", _, target] -> {
-        let _ = simplifile.create_directory_all(target)
-        Ok(command_runner.CommandOutput(0, "", ""))
-      }
-      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["rev-parse", "--verify", ..] ->
-        Ok(command_runner.CommandOutput(1, "", ""))
-      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
-      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["rev-parse", "HEAD"] ->
-        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
-      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
-      "gh", ["pr", "create", ..] ->
-        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
-      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    let command_runner.CommandSpec(_, _, cwd, _, _) = spec
+    case
+      string.starts_with(
+        path.absolute_or_original(cwd),
+        path.absolute_or_original(expected_root),
+      )
+    {
+      True -> fake_command(spec)
+      False -> Error(command_runner.command_error("wrong_workspace_root"))
     }
   })
+}
+
+fn fake_command(
+  spec: command_runner.CommandSpec,
+) -> Result(command_runner.CommandOutput, command_runner.CommandError) {
+  let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
+  let _ = simplifile.create_directory_all(cwd)
+  case executable, args {
+    "git", ["clone", _, target] -> {
+      let _ = simplifile.create_directory_all(target)
+      Ok(command_runner.CommandOutput(0, "", ""))
+    }
+    "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+    "git", ["rev-parse", "--verify", ..] ->
+      Ok(command_runner.CommandOutput(1, "", ""))
+    "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+    "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["rev-parse", "HEAD"] ->
+      Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+    "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+    "gh", ["pr", "create", ..] ->
+      Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+    _, _ -> Error(command_runner.command_error("unexpected_command"))
+  }
 }
 
 fn commit_failure_runner() -> command_runner.Runner {
@@ -207,6 +254,7 @@ fn commit_failure_runner() -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))

@@ -5408,6 +5408,7 @@ fn publication_commit_failure_runner() -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))

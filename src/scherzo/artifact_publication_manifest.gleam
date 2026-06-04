@@ -213,6 +213,17 @@ pub fn attempt_key_for_success(version_id: String) -> String {
   version_id
 }
 
+pub fn attempt_key_for_success_recovery(
+  publication_id: String,
+  version_id: String,
+  generated_at_ms: Int,
+) -> String {
+  "recovered-"
+  <> hash.sha256_hex(
+    publication_id <> "|" <> version_id <> "|" <> int.to_string(generated_at_ms),
+  )
+}
+
 pub fn attempt_key_for_failure(
   publication_id: String,
   error_code: String,
