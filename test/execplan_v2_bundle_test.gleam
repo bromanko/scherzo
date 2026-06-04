@@ -92,6 +92,8 @@ fn tmp_repo_path(path: String) -> String {
 fn write_valid_review_doc(path: String) -> Nil {
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let assert Ok(parent) = scherzo_path.dirname(path)
+  let assert Ok(Nil) = simplifile.create_directory_all(parent)
   let assert Ok(Nil) = simplifile.write(path, valid)
   Nil
 }
@@ -188,18 +190,18 @@ fn pack_submission_with_commands_and_testing(
   )
 }
 
-fn write_revision_bundle_with_surface(
+fn write_revision_bundle_from_fixture_with_surface(
   dir: String,
   review_path: String,
   branch: String,
   head_revision: String,
+  fixture_path: String,
 ) -> #(String, String) {
   let bundle_ref = "runs/run-prepare/outputs/exec_plan_bundle.json"
   let bundle_dir =
     dir <> "/repo/.scherzo-state/artifacts/runs/run-prepare/outputs"
   let assert Ok(Nil) = simplifile.create_directory_all(bundle_dir)
-  let assert Ok(source) =
-    simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+  let assert Ok(source) = simplifile.read(fixture_path)
   let with_path =
     string.replace(
       source,
@@ -221,11 +223,53 @@ fn write_revision_bundle_with_surface(
   #(bundle_ref, hash.sha256_hex(with_branch))
 }
 
+fn write_revision_bundle_with_surface(
+  dir: String,
+  review_path: String,
+  branch: String,
+  head_revision: String,
+) -> #(String, String) {
+  write_revision_bundle_from_fixture_with_surface(
+    dir,
+    review_path,
+    branch,
+    head_revision,
+    "test/fixtures/execplan_v2/exec-plan-bundle.valid.json",
+  )
+}
+
+fn write_revision_legacy_bundle_with_surface(
+  dir: String,
+  review_path: String,
+  branch: String,
+  head_revision: String,
+) -> #(String, String) {
+  write_revision_bundle_from_fixture_with_surface(
+    dir,
+    review_path,
+    branch,
+    head_revision,
+    "test/fixtures/execplan_v2/legacy/exec-plan-bundle.legacy.json",
+  )
+}
+
 fn write_revision_bundle(
   dir: String,
   review_path: String,
 ) -> #(String, String) {
   write_revision_bundle_with_surface(
+    dir,
+    review_path,
+    "execplan/liv-314-unmerged",
+    "ca667773c9a6d31bb64676c103b3f1f14c3bcced",
+  )
+}
+
+fn write_revision_legacy_bundle(
+  dir: String,
+  review_path: String,
+) -> #(String, String) {
+  write_revision_legacy_bundle_with_surface(
     dir,
     review_path,
     "execplan/liv-314-unmerged",
@@ -1015,11 +1059,81 @@ pub fn validate_bundle_rejects_missing_review_doc_test() {
   )
 }
 
+pub fn prepare_revision_seeds_stale_review_doc_from_retained_plan_artifact_test() {
+  let dir = "test/tmp/execplan-prepare-revision-seeded-plan"
+  test_helpers.reset_dir(dir)
+  let review_path = dir <> "/repo/docs/plans/seeded.md"
+  let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
+  let plan_dir = dir <> "/repo/.scherzo-state/artifacts/runs/run-1/outputs"
+  let assert Ok(Nil) = simplifile.create_directory_all(plan_dir)
+  write_valid_review_doc(plan_dir <> "/plan.md")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/repo/docs/plans")
+  let assert Ok(Nil) = simplifile.write(review_path, "# stale\n")
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> test_helpers.shell_quote(dir <> "/repo")
+      <> " SCHERZO_ISSUE_CONTEXT="
+      <> test_helpers.shell_quote(issue_context)
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> test_helpers.shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(review_doc) = simplifile.read(review_path)
+  assert string.contains(review_doc, "Purpose / Big Picture")
+  assert !string.contains(review_doc, "# stale")
+}
+
+pub fn prepare_revision_rejects_non_markdown_seed_destination_test() {
+  let dir = "test/tmp/execplan-prepare-revision-seeded-non-md"
+  test_helpers.reset_dir(dir)
+  let review_path = dir <> "/repo/docs/plans/seeded.txt"
+  let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
+  let plan_dir = dir <> "/repo/.scherzo-state/artifacts/runs/run-1/outputs"
+  let assert Ok(Nil) = simplifile.create_directory_all(plan_dir)
+  write_valid_review_doc(plan_dir <> "/plan.md")
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> test_helpers.shell_quote(dir <> "/repo")
+      <> " SCHERZO_ISSUE_CONTEXT="
+      <> test_helpers.shell_quote(issue_context)
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> test_helpers.shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_revision_base_missing",
+  )
+  assert string.contains(artifact.stderr, "review doc must be Markdown source")
+  let assert Error(_) = simplifile.read(review_path)
+}
+
 pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
   let dir = "test/tmp/execplan-prepare-revision-branch"
   test_helpers.reset_dir(dir)
   let review_path = dir <> "/docs/plans/unmerged.md"
-  let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
+  let #(bundle_ref, bundle_sha) = write_revision_legacy_bundle(dir, review_path)
   let driver = dir <> "/workspace-driver"
   let log = dir <> "/workspace-driver.log"
   let assert Ok(Nil) =
@@ -1093,7 +1207,7 @@ pub fn prepare_revision_reports_revision_base_missing_when_branch_unresolved_tes
   let dir = "test/tmp/execplan-prepare-revision-base-missing"
   test_helpers.reset_dir(dir)
   let review_path = dir <> "/docs/plans/unmerged.md"
-  let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
+  let #(bundle_ref, bundle_sha) = write_revision_legacy_bundle(dir, review_path)
   let driver = dir <> "/workspace-driver"
   let assert Ok(Nil) =
     simplifile.write(
@@ -1139,7 +1253,7 @@ pub fn prepare_revision_refresh_base_timeout_test() {
   let dir = "test/tmp/execplan-prepare-revision-refresh-timeout"
   test_helpers.reset_dir(dir)
   let review_path = dir <> "/docs/plans/unmerged.md"
-  let #(bundle_ref, bundle_sha) = write_revision_bundle(dir, review_path)
+  let #(bundle_ref, bundle_sha) = write_revision_legacy_bundle(dir, review_path)
   let driver = dir <> "/workspace-driver"
   let assert Ok(Nil) =
     simplifile.write(
@@ -1181,7 +1295,7 @@ pub fn prepare_revision_rejects_unsafe_review_surface_targets_before_refresh_tes
   test_helpers.reset_dir(dir)
   let review_path = dir <> "/docs/plans/unmerged.md"
   let #(bundle_ref, bundle_sha) =
-    write_revision_bundle_with_surface(
+    write_revision_legacy_bundle_with_surface(
       dir,
       review_path,
       "execplan/liv-314@unexpected-remote",
@@ -2311,6 +2425,66 @@ pub fn publish_review_doc_rejects_pack_source_issue_identifier_mismatch_test() {
     "SCHERZO_FAILURE_CODE=execplan_v2_source_issue_mismatch",
   )
   let assert Error(_) = simplifile.read(context_path)
+}
+
+pub fn materialize_bundle_without_publish_context_emits_destination_metadata_test() {
+  let dir = "test/tmp/execplan-v2-materialize-no-publish-context"
+  test_helpers.reset_dir(dir)
+  let path_file = dir <> "/review.path"
+  let output = dir <> "/bundle.json"
+  write_valid_review_doc(dir <> "/docs/custom/plan.md")
+  let assert Ok(Nil) =
+    simplifile.write(path_file, dir <> "/docs/custom/plan.md\n")
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-no-publish-context .scherzo/workflows/scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
+      <> test_helpers.shell_quote(path_file)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --output "
+      <> test_helpers.shell_quote(output),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(bundle) = simplifile.read(output)
+  assert string.contains(
+    bundle,
+    "\"destination_path\": \"test/tmp/execplan-v2-materialize-no-publish-context/docs/custom/plan.md\"",
+  )
+  assert string.contains(bundle, "\"status\": \"not_applicable\"")
+  assert string.contains(bundle, "\"pr_url\": null")
+  assert string.contains(bundle, "\"branch\": null")
+}
+
+pub fn materialize_revision_without_publish_context_emits_not_applicable_review_surface_test() {
+  let dir = "test/tmp/execplan-v2-revision-no-publish-context"
+  test_helpers.reset_dir(dir)
+  let path_file = dir <> "/review.path"
+  let output = dir <> "/bundle.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-revision-no-publish-context .scherzo/workflows/scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
+      <> test_helpers.shell_quote(path_file)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --status auto --output "
+      <> test_helpers.shell_quote(output),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(bundle) = simplifile.read(output)
+  assert string.contains(bundle, "\"status\": \"unchanged\"")
+  assert string.contains(bundle, "\"review_surface\": {")
+  assert string.contains(bundle, "\"status\": \"not_applicable\"")
+  assert string.contains(bundle, "\"pr_url\": null")
+  assert string.contains(bundle, "\"branch\": null")
+  assert string.contains(
+    bundle,
+    "\"destination_path\": \"test/fixtures/execplan_v2/review-doc.valid.md\"",
+  )
 }
 
 pub fn materialize_bundle_prefers_pack_source_issue_over_publish_context_test() {

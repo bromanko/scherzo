@@ -108,7 +108,7 @@ artifacts:
         pull_request:
           enabled: true
           strategy: update_existing
-          draft: true
+          draft: false
 ```
 
 Notes:

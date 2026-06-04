@@ -9,6 +9,7 @@ import scherzo/artifact_publication_config
 import scherzo/artifact_publication_planner_support as planner_support
 import scherzo/error
 import scherzo/hash
+import scherzo/json_value
 import scherzo/state/artifact_store
 import scherzo/template
 import scherzo/workflow_artifact_descriptor as artifact_descriptor
@@ -42,6 +43,7 @@ pub type SelectedArtifact {
     entry: Option(String),
     name: String,
     artifact_type: Option(String),
+    metadata: Option(json_value.JsonValue),
     ref: String,
     sha256: String,
     bytes: Int,
@@ -120,7 +122,17 @@ pub fn plan_publication(
       [],
     ),
   )
-  let files_markdown = render_files_markdown(files)
+  let files_markdown =
+    files
+    |> list.map(fn(file) {
+      let PlannedPublicationFile(source, destination_path) = file
+      let selector = case source.entry {
+        Some(entry) -> source.output <> "/" <> entry
+        None -> source.output
+      }
+      #(destination_path, selector, source.sha256)
+    })
+    |> planner_support.render_files_markdown
   use branch <- result.try(render_branch(
     repository,
     route.id,
@@ -452,6 +464,7 @@ fn descriptor_to_selected_artifact(
     entry: entry,
     name: descriptor.name,
     artifact_type: descriptor.artifact_type,
+    metadata: descriptor.metadata,
     ref: ref,
     sha256: sha256,
     bytes: bytes,
@@ -696,19 +709,25 @@ fn render_branch(
   run_id: String,
   work: PublicationWork,
 ) -> Result(String, PlannerError) {
-  use rendered <- result.try(render_template(
-    repository.branch_template,
-    base_template_locals(
-      publication_id,
-      series_id,
-      version_id,
-      workflow_id,
-      run_id,
-      work,
-      repository,
-    ),
-  ))
-  use Nil <- result.try(validate_branch(rendered))
+  use rendered <- result.try(
+    planner_support.render_template(
+      repository.branch_template,
+      base_template_locals(
+        publication_id,
+        series_id,
+        version_id,
+        workflow_id,
+        run_id,
+        work,
+        repository,
+      ),
+    )
+    |> result.map_error(template_error_to_planner_error),
+  )
+  use Nil <- result.try(
+    planner_support.validate_branch(rendered)
+    |> result.map_error(validation_error_to_planner_error),
+  )
   Ok(rendered)
 }
 
@@ -742,7 +761,9 @@ fn render_pull_request(
       use rendered_title <- result.try(
         case effective_title_template(route, repository) {
           Some(title_template) ->
-            render_template(title_template, locals) |> result.map(Some)
+            planner_support.render_template(title_template, locals)
+            |> result.map_error(template_error_to_planner_error)
+            |> result.map(Some)
           None -> Ok(None)
         },
       )
@@ -753,7 +774,9 @@ fn render_pull_request(
               template_path,
               body_templates,
             ))
-            render_template(body_template, locals) |> result.map(Some)
+            planner_support.render_template(body_template, locals)
+            |> result.map_error(template_error_to_planner_error)
+            |> result.map(Some)
           }
           None -> Ok(None)
         },
@@ -806,8 +829,14 @@ fn render_file_path(
       ),
       artifact_template_locals(selected),
     )
-  use rendered <- result.try(render_template(path_template, locals))
-  use Nil <- result.try(validate_relative_path(rendered))
+  use rendered <- result.try(
+    planner_support.render_template(path_template, locals)
+    |> result.map_error(template_error_to_planner_error),
+  )
+  use Nil <- result.try(
+    planner_support.validate_relative_path(rendered)
+    |> result.map_error(validation_error_to_planner_error),
+  )
   Ok(rendered)
 }
 
@@ -835,14 +864,6 @@ fn effective_body_template_path(
     )) -> Some(path)
     _ -> repository.pull_request_body_template
   }
-}
-
-fn render_template(
-  source: String,
-  locals: List(#(String, template.Value)),
-) -> Result(String, PlannerError) {
-  planner_support.render_template(source, locals)
-  |> result.map_error(template_error_to_planner_error)
 }
 
 fn template_error_to_planner_error(
@@ -883,29 +904,35 @@ fn base_template_locals(
 fn artifact_template_locals(
   selected: SelectedArtifact,
 ) -> List(#(String, template.Value)) {
-  [
-    #("artifact.output", template.VString(selected.output)),
-    #(
-      "artifact.entry",
-      planner_support.option_string_to_template_value(selected.entry),
+  list.append(
+    [
+      #("artifact.output", template.VString(selected.output)),
+      #(
+        "artifact.entry",
+        planner_support.option_string_to_template_value(selected.entry),
+      ),
+      #("artifact.name", template.VString(selected.name)),
+      #("artifact.ref", template.VString(selected.ref)),
+      #("artifact.media_type", template.VString(selected.media_type)),
+      #(
+        "artifact.artifact_type",
+        planner_support.option_string_to_template_value(selected.artifact_type),
+      ),
+      #("artifact.sha256", template.VString(selected.sha256)),
+      #(
+        "artifact.sha256_short",
+        template.VString(string.slice(selected.sha256, 0, 12)),
+      ),
+      #(
+        "artifact.default_extension",
+        template.VString(planner_support.default_extension(selected.media_type)),
+      ),
+    ],
+    planner_support.json_value_string_leaf_template_locals(
+      "artifact.metadata",
+      selected.metadata,
     ),
-    #("artifact.name", template.VString(selected.name)),
-    #("artifact.ref", template.VString(selected.ref)),
-    #("artifact.media_type", template.VString(selected.media_type)),
-    #(
-      "artifact.artifact_type",
-      planner_support.option_string_to_template_value(selected.artifact_type),
-    ),
-    #("artifact.sha256", template.VString(selected.sha256)),
-    #(
-      "artifact.sha256_short",
-      template.VString(string.slice(selected.sha256, 0, 12)),
-    ),
-    #(
-      "artifact.default_extension",
-      template.VString(planner_support.default_extension(selected.media_type)),
-    ),
-  ]
+  )
 }
 
 fn work_kind_to_string(kind: WorkKind) -> String {
@@ -913,29 +940,6 @@ fn work_kind_to_string(kind: WorkKind) -> String {
     TaskWork -> "task"
     ScheduledWork -> "scheduled"
   }
-}
-
-fn render_files_markdown(files: List(PlannedPublicationFile)) -> String {
-  files
-  |> list.map(fn(file) {
-    let PlannedPublicationFile(source, destination_path) = file
-    let selector = case source.entry {
-      Some(entry) -> source.output <> "/" <> entry
-      None -> source.output
-    }
-    #(destination_path, selector, source.sha256)
-  })
-  |> planner_support.render_files_markdown
-}
-
-fn validate_relative_path(path: String) -> Result(Nil, PlannerError) {
-  planner_support.validate_relative_path(path)
-  |> result.map_error(validation_error_to_planner_error)
-}
-
-fn validate_branch(branch: String) -> Result(Nil, PlannerError) {
-  planner_support.validate_branch(branch)
-  |> result.map_error(validation_error_to_planner_error)
 }
 
 fn validation_error_to_planner_error(pair: #(String, String)) -> PlannerError {
@@ -947,7 +951,10 @@ fn selected_for_version_json(selected: SelectedArtifact) -> json.Json {
   selected_to_json(selected, include_ref: False)
 }
 
-fn selected_to_json(selected: SelectedArtifact, include_ref include_ref: Bool) {
+fn selected_to_json(
+  selected: SelectedArtifact,
+  include_ref include_ref: Bool,
+) -> json.Json {
   let ref_field = case include_ref {
     True -> [#("ref", json.string(selected.ref))]
     False -> []
@@ -960,6 +967,10 @@ fn selected_to_json(selected: SelectedArtifact, include_ref include_ref: Bool) {
       "artifact_type",
       planner_support.option_string_to_json(selected.artifact_type),
     ),
+    #("metadata", case selected.metadata {
+      Some(metadata) -> json_value.to_json(metadata)
+      None -> json.null()
+    }),
     #("sha256", json.string(selected.sha256)),
     #("bytes", json.int(selected.bytes)),
     #("media_type", json.string(selected.media_type)),

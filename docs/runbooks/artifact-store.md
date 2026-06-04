@@ -90,7 +90,12 @@ Operators can inspect that state without a running daemon by using:
 
 - `scripts/scherzoctl artifact publication list --run <run-id> --root <workspace-root>`
 - `scripts/scherzoctl artifact publication show --run <run-id> --publication <publication-id> --root <workspace-root>`
+- `scripts/scherzoctl artifact publication retry --run <run-id> --publication <publication-id> --root <workspace-root>`
 
-`retryable` reports whether a failed planning attempt should eventually be retryable.
-This slice does not implement retry execution yet, so
-`retry_execution_available` remains `false`.
+ExecPlan authoring and revision now publish the retained `exec_plan_bundle` `plan`
+entry through the `execplan_review_doc` publication route, so the canonical bundle
+remains the implementation handoff while GitHub stays a derived review surface.
+
+`retryable` reports whether a failed planning or execution attempt can be replayed
+from retained artifacts. `retry_execution_available` becomes `true` once Scherzo has
+recorded the retained manifest and current publication config needed for replay.

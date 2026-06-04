@@ -52,7 +52,9 @@ pub fn record_routes_writes_manifest_and_is_idempotent_test() {
   assert attempt.retryable == False
   assert attempt.retry_execution_available == False
   assert attempt.manifest_ref
-    == "runs/run-1/publications/review_doc/" <> attempt.attempt_id <> ".json"
+    == "runs/run-1/publications/execplan_review_doc/"
+    <> attempt.attempt_id
+    <> ".json"
   let assert Ok(manifest) =
     simplifile.read(
       root <> "/.scherzo-state/artifacts/" <> attempt.manifest_ref,
@@ -249,7 +251,7 @@ fn repositories() -> artifact_publication_config.ArtifactRepositories {
 
 fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
   artifact_publication_config.PublicationRoute(
-    id: "review_doc",
+    id: "execplan_review_doc",
     repository: "github.docs",
     required: required,
     pull_request: Some(

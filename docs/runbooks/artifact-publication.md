@@ -20,6 +20,9 @@ Retry one failed retryable publication:
 
     direnv exec . gleam run -m scherzo ctl artifact publication retry --run <run-id> --publication <publication-id>
 
+For ExecPlan review docs, use `--publication execplan_review_doc` to replay the
+retained canonical plan artifact without rerunning the authoring or revision steps.
+
 Retry every latest failed retryable publication for the run:
 
     direnv exec . gleam run -m scherzo ctl artifact publication retry --run <run-id>
