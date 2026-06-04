@@ -83,6 +83,33 @@ pub fn parse(contents: String) -> Result(ArtifactDescriptor, DescriptorError) {
   from_json_value(value)
 }
 
+pub fn parse_retained_artifact_set(
+  contents: String,
+  descriptor: ArtifactDescriptor,
+) -> Result(ArtifactDescriptor, DescriptorError) {
+  use value <- result.try(case json_value.parse(contents) {
+    Ok(value) -> Ok(value)
+    Error(_) ->
+      Error(DescriptorError(
+        "artifact_descriptor_invalid_json",
+        "artifact_set payload must be valid JSON",
+      ))
+  })
+  case value {
+    json_value.JObject(entries) -> {
+      use child_entries <- result.try(parse_child_entries(entries))
+      let descriptor = ArtifactDescriptor(..descriptor, entries: child_entries)
+      use Nil <- result.try(validate(descriptor))
+      Ok(descriptor)
+    }
+    _ ->
+      error(
+        "artifact_descriptor_not_object",
+        "artifact_set payload must be a JSON object",
+      )
+  }
+}
+
 pub fn decoder() -> decode.Decoder(ArtifactDescriptor) {
   use value <- decode.then(json_value.decoder())
   case from_json_value(value) {

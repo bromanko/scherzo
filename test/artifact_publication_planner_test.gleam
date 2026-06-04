@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/dict
+import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/artifact_publication_config
@@ -116,6 +117,40 @@ pub fn plans_artifact_set_entry_can_render_destination_from_metadata_test() {
     json,
     "\"destination_path\":\"docs/review/custom/LIV-761-plan.md\"",
   )
+}
+
+pub fn plans_materialized_execplan_bundle_entry_publication_test() {
+  let bundle_contents =
+    materialized_execplan_bundle_contents(
+      plan_sha(),
+      plan_bytes(),
+      "docs/review/materialized/LIV-761-plan.md",
+    )
+  assert !string.contains(bundle_contents, "\"name\":\"exec_plan_bundle\"")
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_metadata_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  let assert [planned] = manifest.files
+  assert planned.destination_path == "docs/review/materialized/LIV-761-plan.md"
+  assert planned.source.output == "exec_plan_bundle"
+  assert planned.source.entry == Some("plan")
+  assert planned.source.ref == plan_ref()
 }
 
 pub fn metadata_bearing_manifest_round_trips_through_decoder_test() {
@@ -1081,6 +1116,158 @@ fn bundle_manifest(
     ],
     diagnostics: [],
   )
+}
+
+fn materialized_execplan_bundle_contents(
+  plan_sha256: String,
+  plan_size: Int,
+  destination_path: String,
+) -> String {
+  let plan_artifact_ref = plan_ref()
+  let pack_artifact_ref = pack_ref()
+  json.object([
+    #("schema_version", json.int(2)),
+    #("kind", json.string("artifact_set")),
+    #("media_type", json.string("application/json")),
+    #("artifact_type", json.string("scherzo.exec_plan_bundle.v2")),
+    #("bundle_id", json.string("bundle-liv-761-run-1")),
+    #(
+      "source_issue",
+      json.object([
+        #("identifier", json.string("LIV-761")),
+        #("title", json.string("Review artifact publication")),
+        #(
+          "url",
+          json.string(
+            "https://linear.app/living-systems/issue/LIV-761/review-artifact-publication",
+          ),
+        ),
+      ]),
+    ),
+    #(
+      "workflow",
+      json.object([
+        #("workflow_id", json.string("workflow.execplan")),
+        #("run_id", json.string("run-1")),
+        #("workflow_fingerprint", json.string("wf-1")),
+      ]),
+    ),
+    #(
+      "revision",
+      json.object([
+        #("status", json.string("created")),
+        #("number", json.int(1)),
+        #("supersedes", json.null()),
+      ]),
+    ),
+    #(
+      "plan",
+      json.object([
+        #("ref", json.string(plan_artifact_ref)),
+        #("sha256", json.string(plan_sha256)),
+        #("bytes", json.int(plan_size)),
+        #("media_type", json.string("text/markdown")),
+      ]),
+    ),
+    #(
+      "review_doc",
+      json.object([
+        #("path", json.string(destination_path)),
+        #("sha256", json.string(plan_sha256)),
+        #("bytes", json.int(plan_size)),
+      ]),
+    ),
+    #(
+      "implementation_pack",
+      json.object([
+        #("ref", json.string(pack_artifact_ref)),
+        #("sha256", json.string(pack_sha())),
+        #("bytes", json.int(pack_bytes())),
+        #(
+          "schema",
+          json.string(
+            ".scherzo/workflows/schemas/implementation-pack.v2.schema.json",
+          ),
+        ),
+        #("derived_from_review_doc_sha256", json.string(plan_sha256)),
+      ]),
+    ),
+    #(
+      "entries",
+      json.array(
+        [
+          json.object([
+            #("name", json.string("plan")),
+            #("kind", json.string("file")),
+            #("artifact_type", json.string("scherzo.exec_plan.v1")),
+            #("ref", json.string(plan_artifact_ref)),
+            #("sha256", json.string(plan_sha256)),
+            #("bytes", json.int(plan_size)),
+            #("media_type", json.string("text/markdown")),
+            #(
+              "metadata",
+              json.object([
+                #(
+                  "publication",
+                  json.object([
+                    #("destination_path", json.string(destination_path)),
+                  ]),
+                ),
+              ]),
+            ),
+          ]),
+          json.object([
+            #("name", json.string("implementation_pack")),
+            #("kind", json.string("file")),
+            #("artifact_type", json.string("scherzo.implementation_pack.v2")),
+            #("ref", json.string(pack_artifact_ref)),
+            #("sha256", json.string(pack_sha())),
+            #("bytes", json.int(pack_bytes())),
+            #("media_type", json.string("application/json")),
+          ]),
+        ],
+        of: fn(entry) { entry },
+      ),
+    ),
+    #(
+      "review_surface",
+      json.object([
+        #("status", json.string("not_applicable")),
+        #("pr_url", json.null()),
+        #("branch", json.null()),
+        #("source_bundle_ref", json.null()),
+        #("head_revision", json.null()),
+        #("review_doc_path", json.string(destination_path)),
+      ]),
+    ),
+    #(
+      "implementation_handoff",
+      json.object([
+        #("issue_identifier", json.string("LIV-762")),
+        #(
+          "issue_url",
+          json.string(
+            "https://linear.app/living-systems/issue/LIV-762/implement-review-artifact-publication",
+          ),
+        ),
+        #("workflow_label", json.string("workflow:execplan-implementation")),
+        #("bundle_ref", json.string(bundle_ref())),
+      ]),
+    ),
+    #(
+      "validation",
+      json.array(
+        [
+          json.object([
+            #("name", json.string("materialize-bundle")),
+            #("status", json.string("passed")),
+          ]),
+        ],
+        of: fn(entry) { entry },
+      ),
+    ),
+  ])
+  |> json.to_string
 }
 
 fn execplan_bundle_descriptor(

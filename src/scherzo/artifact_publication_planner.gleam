@@ -424,7 +424,7 @@ fn load_artifact_set_descriptor(
     expected_sha,
     expected_bytes,
   ))
-  case artifact_descriptor.parse(contents) {
+  case artifact_descriptor.parse_retained_artifact_set(contents, descriptor) {
     Ok(parsed) -> Ok(parsed)
     Error(parse_error) ->
       error("invalid_artifact_set_descriptor", parse_error.message)
