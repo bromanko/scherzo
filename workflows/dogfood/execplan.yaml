@@ -72,7 +72,7 @@ artifacts:
       required: true
       pull_request:
         title: "{{ work.identifier }} ExecPlan review doc"
-        body_template: prompts/execplan-pr-body.md
+        body_template: workflows/prompts/execplan-pr-body.md
       files:
         - select:
             output: exec_plan_bundle
