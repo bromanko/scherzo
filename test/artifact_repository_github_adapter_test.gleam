@@ -136,6 +136,71 @@ pub fn publish_recovers_pr_when_latest_version_matches_without_pr_test() {
   assert !string.contains(transcript, "git commit")
 }
 
+pub fn publish_recovers_commit_when_latest_version_matches_without_commit_test() {
+  let root = "test/tmp/artifact-repository-github/unchanged-missing-commit"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  seed_latest_publication_without_commit(root)
+  let input = prepared_input(root, True)
+
+  let manifest = github.publish(input, root, no_diff_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "unchanged"
+  assert string.starts_with(manifest.attempt_id, "recovered-")
+  assert manifest.commit_sha == Some("deadbeef")
+  assert manifest.pr_url == Some("https://example.test/pr/1")
+  assert string.contains(read_file(log), "git rev-parse HEAD")
+}
+
+pub fn publish_recovers_branch_when_latest_version_matches_without_branch_test() {
+  let root = "test/tmp/artifact-repository-github/unchanged-missing-branch"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  seed_latest_publication_without_branch(root)
+  let input = prepared_input(root, True)
+
+  let manifest = github.publish(input, root, no_diff_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "unchanged"
+  assert string.starts_with(manifest.attempt_id, "recovered-")
+  assert manifest.branch == Some("scherzo/workflow.execplan/LIV-761/review_doc")
+  assert manifest.commit_sha == Some("deadbeef")
+  assert manifest.pr_url == Some("https://example.test/pr/1")
+  assert string.contains(read_file(log), "git rev-parse HEAD")
+}
+
+pub fn publish_fails_when_pr_create_outputs_no_url_test() {
+  let root = "test/tmp/artifact-repository-github/pr-create-empty-url"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(input, root, pr_create_empty_url_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == "pr_create_missing_url"
+}
+
+pub fn publish_fails_when_unchanged_commit_metadata_is_missing_test() {
+  let root = "test/tmp/artifact-repository-github/no-diff-missing-head"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(input, root, no_diff_missing_head_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == "rev_parse_failed"
+}
+
 pub fn publish_fails_when_checkout_is_dirty_test() {
   let root = "test/tmp/artifact-repository-github/dirty-checkout"
   let log = root <> "/commands.log"
@@ -344,6 +409,61 @@ pub fn publish_updates_existing_pr_when_one_matches_test() {
   let transcript = read_file(log)
   assert string.contains(transcript, "gh pr edit 42")
   assert !string.contains(transcript, "gh pr create")
+}
+
+pub fn publish_decodes_reordered_escaped_pr_list_json_test() {
+  let root = "test/tmp/artifact-repository-github/pr-list-reordered-json"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest = github.publish(input, root, pr_list_reordered_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "published"
+  assert manifest.pr_url == Some("https://example.test/pr/42?label=\"review\"")
+  let transcript = read_file(log)
+  assert string.contains(transcript, "gh pr edit 42")
+  assert !string.contains(transcript, "gh pr create")
+}
+
+pub fn publish_maps_github_auth_env_and_pr_body_stdin_test() {
+  let first_root = "test/tmp/artifact-repository-github/auth-env-primary"
+  let first_log = first_root <> "/commands.log"
+  test_helpers.reset_dir(first_root)
+  let first_input = prepared_input(first_root, True)
+  let first =
+    with_github_env(
+      Some("primary-token"),
+      Some("github-token"),
+      Some("agent-token"),
+      fn() {
+        github.publish(
+          first_input,
+          first_root,
+          auth_env_runner(first_log, "primary-token"),
+          123,
+        )
+      },
+    )
+  assert artifact_publication_manifest.status_to_string(first.status)
+    == "published"
+
+  let second_root = "test/tmp/artifact-repository-github/auth-env-fallback"
+  let second_log = second_root <> "/commands.log"
+  test_helpers.reset_dir(second_root)
+  let second_input = prepared_input(second_root, True)
+  let second =
+    with_github_env(None, Some("github-token"), Some("agent-token"), fn() {
+      github.publish(
+        second_input,
+        second_root,
+        auth_env_runner(second_log, "github-token"),
+        123,
+      )
+    })
+  assert artifact_publication_manifest.status_to_string(second.status)
+    == "published"
 }
 
 pub fn publish_recovers_existing_pr_when_create_reports_duplicate_test() {
@@ -887,6 +1007,56 @@ fn no_diff_runner(log: String) -> command_runner.Runner {
   })
 }
 
+fn no_diff_missing_head_runner(log: String) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, _) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "", ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn pr_create_empty_url_runner(log: String) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, _) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] ->
+        Ok(command_runner.CommandOutput(0, "  \n", ""))
+      "gh", ["pr", "view", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
 fn pr_edit_success_runner(log: String) -> command_runner.Runner {
   runner(log, fn(executable, args, _, _) {
     case executable, args {
@@ -918,6 +1088,75 @@ fn pr_edit_success_runner(log: String) -> command_runner.Runner {
   })
 }
 
+fn pr_list_reordered_runner(log: String) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, _) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "list", ..] ->
+        Ok(command_runner.CommandOutput(
+          0,
+          "[\n  { \"title\": \"existing, \\\"quoted\\\"\", \"url\": \"https://example.test/pr/42?label=\\\"review\\\"\", \"isDraft\": null, \"number\": 42 }\n]",
+          "",
+        ))
+      "gh", ["pr", "edit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn auth_env_runner(
+  log: String,
+  expected_token: String,
+) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, spec) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "list", ..] -> {
+        assert gh_token(spec) == Some(expected_token)
+        assert gh_stdin(spec) == None
+        Ok(command_runner.CommandOutput(0, "[]", ""))
+      }
+      "gh", ["pr", "create", ..] -> {
+        assert gh_token(spec) == Some(expected_token)
+        let assert Some(body) = gh_stdin(spec)
+        assert string.contains(body, "Version")
+        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+      }
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
 fn pr_create_duplicate_runner(log: String) -> command_runner.Runner {
   runner(log, fn(executable, args, _, _) {
     case executable, args {
@@ -941,7 +1180,7 @@ fn pr_create_duplicate_runner(log: String) -> command_runner.Runner {
       "gh", ["pr", "view", ..] ->
         Ok(command_runner.CommandOutput(
           0,
-          "{\"isDraft\":false,\"number\":42,\"state\":\"OPEN\",\"title\":\"existing\",\"url\":\"https://example.test/pr/42\"}",
+          "{\n  \"title\": null,\n  \"url\": \"https://example.test/pr/42\",\n  \"state\": \"OPEN\",\n  \"number\": 42,\n  \"isDraft\": null\n}",
           "",
         ))
       "gh", ["pr", "edit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -954,6 +1193,56 @@ fn fail_if_called_runner() -> command_runner.Runner {
   command_runner.Runner(run: fn(_) {
     Error(command_runner.command_error("runner should not be called"))
   })
+}
+
+fn gh_token(spec: command_runner.CommandSpec) -> Option(String) {
+  let command_runner.CommandSpec(env: env, ..) = spec
+  case
+    list.find(env, fn(pair) {
+      let #(key, _) = pair
+      key == "GH_TOKEN"
+    })
+  {
+    Ok(#(_, token)) -> Some(token)
+    Error(_) -> None
+  }
+}
+
+fn gh_stdin(spec: command_runner.CommandSpec) -> Option(String) {
+  let command_runner.CommandSpec(stdin: stdin, ..) = spec
+  stdin
+}
+
+fn with_github_env(
+  gh_token: Option(String),
+  github_token: Option(String),
+  agent_token: Option(String),
+  run: fn() -> a,
+) -> a {
+  let previous_gh = path.env("GH_TOKEN")
+  let previous_github = path.env("GITHUB_TOKEN")
+  let previous_agent = path.env("SCHERZO_AGENT_GITHUB_TOKEN")
+  set_env_option("GH_TOKEN", gh_token)
+  set_env_option("GITHUB_TOKEN", github_token)
+  set_env_option("SCHERZO_AGENT_GITHUB_TOKEN", agent_token)
+  let result = run()
+  set_env_option("SCHERZO_AGENT_GITHUB_TOKEN", previous_agent)
+  set_env_option("GITHUB_TOKEN", previous_github)
+  set_env_option("GH_TOKEN", previous_gh)
+  result
+}
+
+fn set_env_option(key: String, value: Option(String)) -> Nil {
+  case value {
+    Some(value) -> {
+      let assert Ok(Nil) = path.set_env(key, value)
+      Nil
+    }
+    None -> {
+      let assert Ok(Nil) = path.unset_env(key)
+      Nil
+    }
+  }
 }
 
 fn runner(
@@ -999,6 +1288,49 @@ fn seed_latest_publication_without_pr(root: String) -> Nil {
       "docs/plans/LIV-761.md",
     ],
     None,
+  )
+}
+
+fn seed_latest_publication_without_commit(root: String) -> Nil {
+  let planned = dry_run_manifest(True)
+  let published =
+    artifact_publication_manifest.published_manifest(
+      planned,
+      planned.version_id,
+      100,
+      "deadbeef",
+      Some("https://example.test/pr/1"),
+      ["docs/plans/LIV-761.md"],
+      [],
+    )
+  seed_publication_attempt(
+    root,
+    artifact_publication_manifest.PublicationManifest(
+      ..published,
+      commit_sha: None,
+    ),
+    "latest-publication-missing-commit",
+    100,
+  )
+}
+
+fn seed_latest_publication_without_branch(root: String) -> Nil {
+  let planned = dry_run_manifest(True)
+  let published =
+    artifact_publication_manifest.published_manifest(
+      planned,
+      planned.version_id,
+      100,
+      "deadbeef",
+      Some("https://example.test/pr/1"),
+      ["docs/plans/LIV-761.md"],
+      [],
+    )
+  seed_publication_attempt(
+    root,
+    artifact_publication_manifest.PublicationManifest(..published, branch: None),
+    "latest-publication-missing-branch",
+    100,
   )
 }
 

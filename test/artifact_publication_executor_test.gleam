@@ -179,6 +179,33 @@ pub fn execute_routes_with_state_root_uses_state_root_for_managed_checkout_test(
   write_artifact(state_root, plan_ref(), plan_contents())
 
   let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root(
+      [route(True)],
+      repositories(),
+      config_dir,
+      state_root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      state_root_runner(state_root),
+    )
+
+  assert result.required_failures == []
+  let assert [attempt] = result.attempts
+  assert attempt.status == "published"
+}
+
+pub fn execute_recovered_routes_with_state_root_uses_state_root_for_managed_checkout_test() {
+  let root =
+    "test/tmp/artifact-publication-executor/separate-state-root-recovered"
+  let config_dir = root <> "/config"
+  let state_root = root <> "/state"
+  test_helpers.reset_dir(root)
+  write_template(config_dir)
+  write_artifact(state_root, plan_ref(), plan_contents())
+
+  let assert Ok(result) =
     artifact_publication_executor.execute_recovered_routes_with_runner_and_state_root(
       [route(True)],
       repositories(),
@@ -194,6 +221,51 @@ pub fn execute_routes_with_state_root_uses_state_root_for_managed_checkout_test(
   assert result.required_failures == []
   let assert [attempt] = result.attempts
   assert attempt.status == "published"
+}
+
+pub fn recovered_routes_preserve_failed_publication_attempt_test() {
+  let root = "test/tmp/artifact-publication-executor/recovered-failed"
+  test_helpers.reset_dir(root)
+  write_template(root)
+  write_artifact(root, plan_ref(), plan_contents())
+
+  let assert Ok(first) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [route(True)],
+      repositories(),
+      root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+      commit_failure_runner(),
+    )
+  let assert [first_failure] = first.required_failures
+  assert first_failure.code == "git_commit_failed"
+
+  let assert Ok(second) =
+    artifact_publication_executor.execute_recovered_routes_with_runner(
+      [route(True)],
+      repositories(),
+      root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 456 }),
+      fake_runner(),
+    )
+
+  let assert [second_failure] = second.required_failures
+  assert second_failure.code == "git_commit_failed"
+  let assert [attempt] = second.attempts
+  assert attempt.status == "failed"
+  let attempts =
+    projection.publication_attempts_for_run(
+      load_projection(root),
+      "run-1",
+      "execplan_review_doc",
+    )
+  assert list.length(attempts) == 1
 }
 
 fn fake_runner() -> command_runner.Runner {
@@ -226,6 +298,12 @@ fn fake_command(
       Ok(command_runner.CommandOutput(0, "", ""))
     }
     "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["remote", "get-url", "origin"] ->
+      Ok(command_runner.CommandOutput(
+        0,
+        "https://github.com/scherzo-systems/scherzo.git",
+        "",
+      ))
     "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
     "git", ["rev-parse", "--verify", ..] ->
       Ok(command_runner.CommandOutput(1, "", ""))

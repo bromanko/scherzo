@@ -105,6 +105,14 @@ pub fn await_exit(process: Process, timeout_ms: Int) -> Result(Int, PortError) {
   |> result.map_error(fn(error) { raw_error("await_exit", error) })
 }
 
+pub fn await_exit_with_stdout(
+  process: Process,
+  timeout_ms: Int,
+) -> Result(#(Int, String), PortError) {
+  ffi_await_exit_with_stdout(process, timeout_ms)
+  |> result.map_error(fn(error) { raw_error("await_exit_with_stdout", error) })
+}
+
 pub fn port_error_to_string(error: PortError) -> String {
   case error {
     CwdNotDirectory -> "working directory is not a directory"
@@ -246,6 +254,12 @@ fn ffi_terminate(process: Process) -> Result(Nil, String)
 
 @external(erlang, "scherzo_port_ffi", "await_exit")
 fn ffi_await_exit(process: Process, timeout_ms: Int) -> Result(Int, String)
+
+@external(erlang, "scherzo_port_ffi", "await_exit_with_stdout")
+fn ffi_await_exit_with_stdout(
+  process: Process,
+  timeout_ms: Int,
+) -> Result(#(Int, String), String)
 
 @external(erlang, "scherzo_port_ffi", "temp_dir_for_test")
 fn ffi_temp_dir_for_test(process: Process) -> Result(String, String)

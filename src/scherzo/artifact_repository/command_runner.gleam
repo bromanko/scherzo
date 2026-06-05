@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/path
 import scherzo/port
 
 pub type CommandSpec {
@@ -52,9 +53,10 @@ fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
       CommandError("spawn_failed:" <> port.port_error_to_string(error))
     }),
   )
-  let stdout = read_stdout(process, [], 200)
-  case port.await_exit(process, 10_000) {
-    Ok(status) -> {
+  let stdout = read_stdout(process, [], stdout_idle_timeouts())
+  case port.await_exit_with_stdout(process, 10_000) {
+    Ok(#(status, late_stdout)) -> {
+      let stdout = append_stdout(stdout, string.trim(late_stdout))
       let diagnostics = port.read_diagnostics(process) |> result.unwrap("")
       Ok(CommandOutput(
         exit_code: status,
@@ -66,6 +68,17 @@ fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
       Error(CommandError(
         "await_exit_failed:" <> port.port_error_to_string(error),
       ))
+  }
+}
+
+fn stdout_idle_timeouts() -> Int {
+  case path.env("SCHERZO_COMMAND_RUNNER_STDOUT_IDLE_TIMEOUTS") {
+    Some(value) ->
+      case int.parse(value) {
+        Ok(parsed) if parsed >= 0 -> parsed
+        _ -> 200
+      }
+    None -> 200
   }
 }
 
@@ -88,6 +101,14 @@ fn read_stdout(
 
 fn joined_stdout(acc: List(String)) -> String {
   list.reverse(acc) |> string.join(with: "\n") |> string.trim
+}
+
+fn append_stdout(before: String, after: String) -> String {
+  case before, after {
+    "", _ -> after
+    _, "" -> before
+    _, _ -> before <> "\n" <> after
+  }
 }
 
 pub fn sh(executable: String, args: List(String), cwd: String) -> CommandSpec {
