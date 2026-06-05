@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/error
+import scherzo/json_value
 import scherzo/state/artifact_store
 import scherzo/template
 import scherzo/workflow_contract
@@ -177,6 +178,32 @@ pub fn publication_file_route_to_version_json(
     #("entry", option_string_to_json(entry)),
     #("path_template", json.string(path)),
   ])
+}
+
+pub fn json_value_string_leaf_template_locals(
+  prefix: String,
+  metadata: Option(json_value.JsonValue),
+) -> List(#(String, template.Value)) {
+  case metadata {
+    Some(value) -> json_value_template_locals(prefix, value)
+    None -> []
+  }
+}
+
+fn json_value_template_locals(
+  prefix: String,
+  value: json_value.JsonValue,
+) -> List(#(String, template.Value)) {
+  case value {
+    json_value.JObject(entries) ->
+      entries
+      |> list.flat_map(fn(entry) {
+        let #(key, nested) = entry
+        json_value_template_locals(prefix <> "." <> key, nested)
+      })
+    json_value.JString(text) -> [#(prefix, template.VString(text))]
+    _ -> []
+  }
 }
 
 fn has_parent_segment(value: String) -> Bool {

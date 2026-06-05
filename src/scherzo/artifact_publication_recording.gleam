@@ -54,6 +54,7 @@ pub fn record_routes(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   issue: tracker_issue.Issue,
   run_id: String,
@@ -64,6 +65,7 @@ pub fn record_routes(
     routes,
     repositories,
     config_dir,
+    workflow_bundle_dir,
     output_manifest,
     work,
     run_id,
@@ -90,6 +92,7 @@ fn record_routes_loop(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
@@ -110,6 +113,7 @@ fn record_routes_loop(
         route,
         repositories,
         config_dir,
+        workflow_bundle_dir,
         output_manifest,
         work,
         run_id,
@@ -121,6 +125,7 @@ fn record_routes_loop(
             rest,
             repositories,
             config_dir,
+            workflow_bundle_dir,
             output_manifest,
             work,
             run_id,
@@ -136,6 +141,7 @@ fn record_routes_loop(
                 rest,
                 repositories,
                 config_dir,
+                workflow_bundle_dir,
                 output_manifest,
                 work,
                 run_id,
@@ -149,6 +155,7 @@ fn record_routes_loop(
                 rest,
                 repositories,
                 config_dir,
+                workflow_bundle_dir,
                 output_manifest,
                 work,
                 run_id,
@@ -172,12 +179,15 @@ fn record_route(
   route: artifact_publication_config.PublicationRoute,
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
 ) -> Result(RouteRecordingOutcome, String) {
-  case load_body_templates([route], repositories, config_dir) {
+  case
+    load_body_templates([route], repositories, config_dir, workflow_bundle_dir)
+  {
     Ok(body_templates) ->
       record_route_with_templates(
         route,
@@ -500,38 +510,102 @@ pub fn load_body_templates(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
 ) -> Result(dict.Dict(String, String), String) {
   let paths = body_template_paths(routes, repositories, [])
-  let root = path.absolute_or_original(config_dir)
-  load_body_template_paths(paths, root, dict.new())
+  let config_root = path.absolute_or_original(config_dir)
+  let workflow_root = case string.trim(workflow_bundle_dir) {
+    "" -> config_root
+    _ -> path.absolute_or_original(workflow_bundle_dir)
+  }
+  load_body_template_paths(paths, config_root, workflow_root, dict.new())
+  |> result.map(loaded_body_templates_to_dict)
+}
+
+type BodyTemplatePath {
+  RouteBodyTemplate(String)
+  RepositoryBodyTemplate(String)
+}
+
+type LoadedBodyTemplate {
+  LoadedBodyTemplate(root: String, contents: String)
+}
+
+fn loaded_body_templates_to_dict(
+  loaded: dict.Dict(String, LoadedBodyTemplate),
+) -> dict.Dict(String, String) {
+  loaded
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(template_path, LoadedBodyTemplate(contents: contents, ..)) = entry
+    #(template_path, contents)
+  })
+  |> dict.from_list
 }
 
 fn load_body_template_paths(
-  paths: List(String),
-  root: String,
-  loaded: dict.Dict(String, String),
-) -> Result(dict.Dict(String, String), String) {
+  paths: List(BodyTemplatePath),
+  config_root: String,
+  workflow_root: String,
+  loaded: dict.Dict(String, LoadedBodyTemplate),
+) -> Result(dict.Dict(String, LoadedBodyTemplate), String) {
   case paths {
     [] -> Ok(loaded)
-    [template_path, ..rest] ->
-      case dict.has_key(loaded, template_path) {
-        True -> load_body_template_paths(rest, root, loaded)
-        False -> {
-          use absolute <- result.try(resolve_template_path(root, template_path))
-          use contents <- result.try(
-            simplifile.read(absolute)
-            |> result.replace_error(
-              "publication_body_template_read_failed:" <> template_path,
-            ),
-          )
+    [body_template_path, ..rest] -> {
+      let #(template_path, root) = case body_template_path {
+        RouteBodyTemplate(template_path) -> #(template_path, workflow_root)
+        RepositoryBodyTemplate(template_path) -> #(template_path, config_root)
+      }
+      case dict.get(loaded, template_path) {
+        Ok(LoadedBodyTemplate(root: existing_root, contents: existing_contents)) ->
+          case existing_root == root {
+            True ->
+              load_body_template_paths(rest, config_root, workflow_root, loaded)
+            False -> {
+              use contents <- result.try(read_body_template(root, template_path))
+              case contents == existing_contents {
+                True ->
+                  load_body_template_paths(
+                    rest,
+                    config_root,
+                    workflow_root,
+                    loaded,
+                  )
+                False ->
+                  Error(
+                    "conflicting_publication_body_template_roots:"
+                    <> template_path,
+                  )
+              }
+            }
+          }
+        Error(Nil) -> {
+          use contents <- result.try(read_body_template(root, template_path))
           load_body_template_paths(
             rest,
-            root,
-            dict.insert(loaded, template_path, contents),
+            config_root,
+            workflow_root,
+            dict.insert(
+              loaded,
+              template_path,
+              LoadedBodyTemplate(root: root, contents: contents),
+            ),
           )
         }
       }
+    }
   }
+}
+
+fn read_body_template(
+  root: String,
+  template_path: String,
+) -> Result(String, String) {
+  use absolute <- result.try(resolve_template_path(root, template_path))
+  simplifile.read(absolute)
+  |> result.replace_error(
+    "publication_body_template_read_failed:" <> template_path,
+  )
 }
 
 fn resolve_template_path(
@@ -559,8 +633,8 @@ fn resolve_template_path(
 fn body_template_paths(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
-  acc: List(String),
-) -> List(String) {
+  acc: List(BodyTemplatePath),
+) -> List(BodyTemplatePath) {
   case routes {
     [] -> acc
     [route, ..rest] -> {
@@ -568,7 +642,7 @@ fn body_template_paths(
         Some(artifact_publication_config.PublicationPullRequestOverride(
           body_template: Some(body_template),
           ..,
-        )) -> [body_template, ..acc]
+        )) -> [RouteBodyTemplate(body_template), ..acc]
         _ -> repository_body_template(route.repository, repositories, acc)
       }
       body_template_paths(rest, repositories, next)
@@ -579,8 +653,8 @@ fn body_template_paths(
 fn repository_body_template(
   repository_ref: String,
   repositories: artifact_publication_config.ArtifactRepositories,
-  acc: List(String),
-) -> List(String) {
+  acc: List(BodyTemplatePath),
+) -> List(BodyTemplatePath) {
   case
     artifact_publication_config.repository_ref_parts(
       repository_ref,
@@ -591,7 +665,10 @@ fn repository_body_template(
       case dict.get(repositories.github, name) {
         Ok(target) ->
           case target.pull_request.body_template {
-            Some(body_template) -> [body_template, ..acc]
+            Some(body_template) -> [
+              RepositoryBodyTemplate(body_template),
+              ..acc
+            ]
             None -> acc
           }
         Error(_) -> acc

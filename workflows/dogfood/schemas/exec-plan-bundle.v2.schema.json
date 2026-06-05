@@ -283,13 +283,10 @@
     {
       "if": {
         "properties": {
-          "revision": {
+          "review_surface": {
             "properties": {
               "status": {
-                "enum": [
-                  "created",
-                  "changed"
-                ]
+                "const": "not_applicable"
               }
             }
           }
@@ -299,9 +296,49 @@
         "properties": {
           "review_surface": {
             "properties": {
+              "pr_url": {
+                "type": "null"
+              },
+              "branch": {
+                "type": "null"
+              },
+              "source_bundle_ref": {
+                "type": "null"
+              },
+              "head_revision": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "revision": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "created",
+                  "changed"
+                ]
+              }
+            }
+          },
+          "review_surface": {
+            "properties": {
               "status": {
                 "const": "published"
-              },
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "review_surface": {
+            "properties": {
               "pr_url": {
                 "type": "string",
                 "format": "uri"
@@ -326,6 +363,13 @@
                 "const": "unchanged"
               }
             }
+          },
+          "review_surface": {
+            "properties": {
+              "status": {
+                "const": "reused"
+              }
+            }
           }
         }
       },
@@ -340,9 +384,6 @@
           },
           "review_surface": {
             "properties": {
-              "status": {
-                "const": "reused"
-              },
               "pr_url": {
                 "type": "string",
                 "format": "uri"
@@ -495,6 +536,17 @@
         },
         "media_type": {
           "$ref": "#/$defs/non_empty_string"
+        },
+        "metadata": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "integer",
+            "boolean",
+            "null"
+          ]
         }
       }
     }

@@ -225,6 +225,7 @@ pub fn metrics_dto_uses_narrow_non_secret_source_test() {
   assert string.contains(encoded, "\"daemon_id\":\"daemon-1\"")
   assert string.contains(encoded, "\"schema_version\":1")
   assert string.contains(encoded, "\"active_sessions\":1")
+  assert string.contains(encoded, "\"scheduled_next_due_count\":0")
   assert string.contains(encoded, "\"total\":37")
   assert !string.contains(encoded, "local_control_token")
   assert !string.contains(encoded, "enrollment_token")

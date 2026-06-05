@@ -986,6 +986,7 @@ fn file_path_template_variables() -> List(String) {
     "artifact.sha256",
     "artifact.sha256_short",
     "artifact.default_extension",
+    "artifact.metadata.publication.destination_path",
   ])
 }
 

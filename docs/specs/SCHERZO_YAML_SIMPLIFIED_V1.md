@@ -461,7 +461,9 @@ aggregate-capable outputs such as
 repository-relative `path`. Branch names, PR titles, and destination paths may
 use the publication template variables from the artifact publication PRD,
 including `work.*`, `workflow.id`, `publication.*`, and artifact-scoped
-variables such as `artifact.output` and `artifact.entry` in file paths.
+variables such as `artifact.output`, `artifact.entry`, and the supported
+publication metadata leaf `artifact.metadata.publication.destination_path` in
+file paths.
 Templates support interpolation variables (`{{ ... }}`) only; control flow tags
 such as `{% if %}` are rejected. Unknown template variables, unsafe paths,
 unsupported selector keys, and unknown contract outputs are rejected during parsing

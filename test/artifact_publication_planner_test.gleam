@@ -1,9 +1,11 @@
 import gleam/bit_array
 import gleam/dict
+import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_planner
+import scherzo/artifact_publication_planner_decode
 import scherzo/hash
 import scherzo/json_value
 import scherzo/state/artifact_store
@@ -79,6 +81,157 @@ pub fn plans_artifact_set_entry_publication_test() {
   assert planned.source.output == "exec_plan_bundle"
   assert planned.source.entry == Some("plan")
   assert planned.source.ref == plan_ref()
+}
+
+pub fn plans_artifact_set_entry_can_render_destination_from_metadata_test() {
+  let bundle_descriptor =
+    execplan_bundle_descriptor_with_destination(
+      plan_sha(),
+      plan_bytes(),
+      "docs/review/custom/LIV-761-plan.md",
+    )
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_metadata_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  let assert [planned] = manifest.files
+  assert planned.destination_path == "docs/review/custom/LIV-761-plan.md"
+  let json = artifact_publication_planner.manifest_to_string(manifest)
+  assert string.contains(
+    json,
+    "\"destination_path\":\"docs/review/custom/LIV-761-plan.md\"",
+  )
+}
+
+pub fn plans_materialized_execplan_bundle_entry_publication_test() {
+  let bundle_contents =
+    materialized_execplan_bundle_contents(
+      plan_sha(),
+      plan_bytes(),
+      "docs/review/materialized/LIV-761-plan.md",
+    )
+  assert !string.contains(bundle_contents, "\"name\":\"exec_plan_bundle\"")
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_metadata_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  let assert [planned] = manifest.files
+  assert planned.destination_path == "docs/review/materialized/LIV-761-plan.md"
+  assert planned.source.output == "exec_plan_bundle"
+  assert planned.source.entry == Some("plan")
+  assert planned.source.ref == plan_ref()
+}
+
+pub fn metadata_bearing_manifest_round_trips_through_decoder_test() {
+  let bundle_descriptor =
+    execplan_bundle_descriptor_with_destination(
+      plan_sha(),
+      plan_bytes(),
+      "docs/review/custom/LIV-761-plan.md",
+    )
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_metadata_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  let json = artifact_publication_planner.manifest_to_string(manifest)
+  let assert Ok(decoded) =
+    artifact_publication_planner_decode.decode_manifest_json(json)
+  let assert [decoded_file] = decoded.files
+  assert decoded_file.destination_path == "docs/review/custom/LIV-761-plan.md"
+  assert metadata_destination_path(decoded_file.source.metadata)
+    == Some("docs/review/custom/LIV-761-plan.md")
+}
+
+pub fn stable_branch_template_can_share_execplan_pr_series_across_revision_workflows_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let body_templates =
+    dict.from_list([#("templates/publication.md", body_template())])
+  let repositories =
+    repositories_with_branch(
+      "scherzo/{{ work.identifier }}/{{ publication.id }}",
+    )
+  let assert Ok(authored) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest_with_workflow_id(
+        "workflow.execplan",
+        "run-1",
+        plan_ref(),
+        plan_sha(),
+        plan_bytes(),
+      ),
+      repositories,
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      body_templates,
+    )
+  let assert Ok(revised) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest_with_workflow_id(
+        "workflow.execplan-revision",
+        "run-2",
+        plan_ref(),
+        plan_sha(),
+        plan_bytes(),
+      ),
+      repositories,
+      leaf_route(),
+      store,
+      work(),
+      "run-2",
+      body_templates,
+    )
+
+  assert authored.branch == "scherzo/LIV-761/review_doc"
+  assert revised.branch == authored.branch
 }
 
 pub fn identical_inputs_keep_same_version_id_test() {
@@ -521,6 +674,113 @@ pub fn unavailable_template_variable_returns_error_test() {
   assert artifact_publication_planner.code(error) == "template_render_failure"
 }
 
+pub fn missing_artifact_metadata_variable_returns_error_test() {
+  let bundle_descriptor = execplan_bundle_descriptor(plan_sha(), plan_bytes())
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_metadata_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "template_render_failure"
+}
+
+pub fn artifact_metadata_absolute_path_returns_error_test() {
+  let bundle_descriptor =
+    execplan_bundle_descriptor_with_destination(
+      plan_sha(),
+      plan_bytes(),
+      "/tmp/absolute.md",
+    )
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_metadata_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "unsafe_rendered_path"
+}
+
+pub fn artifact_metadata_parent_traversal_returns_error_test() {
+  let bundle_descriptor =
+    execplan_bundle_descriptor_with_destination(
+      plan_sha(),
+      plan_bytes(),
+      "../outside.md",
+    )
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_metadata_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "unsafe_rendered_path"
+}
+
+pub fn artifact_metadata_empty_path_returns_error_test() {
+  let bundle_descriptor =
+    execplan_bundle_descriptor_with_destination(plan_sha(), plan_bytes(), "")
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(bundle_ref(), bundle_contents),
+      #(plan_ref(), plan_contents()),
+      #(pack_ref(), pack_contents()),
+    ])
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      bundle_entry_metadata_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+  assert artifact_publication_planner.code(error) == "unsafe_rendered_path"
+}
+
 fn repositories() -> artifact_publication_config.ArtifactRepositories {
   repositories_with_branch(
     "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}",
@@ -589,6 +849,29 @@ fn bundle_entry_route() -> artifact_publication_config.PublicationRoute {
           entry: Some("plan"),
         ),
         path: "docs/review/{{ work.identifier }}{{ artifact.default_extension }}",
+      ),
+    ],
+  )
+}
+
+fn bundle_entry_metadata_route() -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    id: "review_doc",
+    repository: "github.docs",
+    required: True,
+    pull_request: Some(
+      artifact_publication_config.PublicationPullRequestOverride(
+        title: Some("{{ work.identifier }} publication"),
+        body_template: Some("templates/publication.md"),
+      ),
+    ),
+    files: [
+      artifact_publication_config.PublicationFileRoute(
+        selector: artifact_publication_config.PublicationFileSelector(
+          output: "exec_plan_bundle",
+          entry: Some("plan"),
+        ),
+        path: "{{ artifact.metadata.publication.destination_path }}",
       ),
     ],
   )
@@ -688,9 +971,25 @@ fn leaf_manifest_with_ref(
   sha256: String,
   bytes: Int,
 ) -> workflow_contract_manifest.ContractOutputManifest {
+  leaf_manifest_with_workflow_id(
+    "workflow.execplan",
+    run_id,
+    ref,
+    sha256,
+    bytes,
+  )
+}
+
+fn leaf_manifest_with_workflow_id(
+  workflow_id: String,
+  run_id: String,
+  ref: String,
+  sha256: String,
+  bytes: Int,
+) -> workflow_contract_manifest.ContractOutputManifest {
   workflow_contract_manifest.ContractOutputManifest(
     run_id: run_id,
-    workflow_id: "workflow.execplan",
+    workflow_id: workflow_id,
     workflow_fingerprint: "wf-1",
     outputs: [
       workflow_contract_manifest.NamedManifestValue(
@@ -819,10 +1118,200 @@ fn bundle_manifest(
   )
 }
 
+fn materialized_execplan_bundle_contents(
+  plan_sha256: String,
+  plan_size: Int,
+  destination_path: String,
+) -> String {
+  let plan_artifact_ref = plan_ref()
+  let pack_artifact_ref = pack_ref()
+  json.object([
+    #("schema_version", json.int(2)),
+    #("kind", json.string("artifact_set")),
+    #("media_type", json.string("application/json")),
+    #("artifact_type", json.string("scherzo.exec_plan_bundle.v2")),
+    #("bundle_id", json.string("bundle-liv-761-run-1")),
+    #(
+      "source_issue",
+      json.object([
+        #("identifier", json.string("LIV-761")),
+        #("title", json.string("Review artifact publication")),
+        #(
+          "url",
+          json.string(
+            "https://linear.app/living-systems/issue/LIV-761/review-artifact-publication",
+          ),
+        ),
+      ]),
+    ),
+    #(
+      "workflow",
+      json.object([
+        #("workflow_id", json.string("workflow.execplan")),
+        #("run_id", json.string("run-1")),
+        #("workflow_fingerprint", json.string("wf-1")),
+      ]),
+    ),
+    #(
+      "revision",
+      json.object([
+        #("status", json.string("created")),
+        #("number", json.int(1)),
+        #("supersedes", json.null()),
+      ]),
+    ),
+    #(
+      "plan",
+      json.object([
+        #("ref", json.string(plan_artifact_ref)),
+        #("sha256", json.string(plan_sha256)),
+        #("bytes", json.int(plan_size)),
+        #("media_type", json.string("text/markdown")),
+      ]),
+    ),
+    #(
+      "review_doc",
+      json.object([
+        #("path", json.string(destination_path)),
+        #("sha256", json.string(plan_sha256)),
+        #("bytes", json.int(plan_size)),
+      ]),
+    ),
+    #(
+      "implementation_pack",
+      json.object([
+        #("ref", json.string(pack_artifact_ref)),
+        #("sha256", json.string(pack_sha())),
+        #("bytes", json.int(pack_bytes())),
+        #(
+          "schema",
+          json.string(
+            ".scherzo/workflows/schemas/implementation-pack.v2.schema.json",
+          ),
+        ),
+        #("derived_from_review_doc_sha256", json.string(plan_sha256)),
+      ]),
+    ),
+    #(
+      "entries",
+      json.array(
+        [
+          json.object([
+            #("name", json.string("plan")),
+            #("kind", json.string("file")),
+            #("artifact_type", json.string("scherzo.exec_plan.v1")),
+            #("ref", json.string(plan_artifact_ref)),
+            #("sha256", json.string(plan_sha256)),
+            #("bytes", json.int(plan_size)),
+            #("media_type", json.string("text/markdown")),
+            #(
+              "metadata",
+              json.object([
+                #(
+                  "publication",
+                  json.object([
+                    #("destination_path", json.string(destination_path)),
+                  ]),
+                ),
+              ]),
+            ),
+          ]),
+          json.object([
+            #("name", json.string("implementation_pack")),
+            #("kind", json.string("file")),
+            #("artifact_type", json.string("scherzo.implementation_pack.v2")),
+            #("ref", json.string(pack_artifact_ref)),
+            #("sha256", json.string(pack_sha())),
+            #("bytes", json.int(pack_bytes())),
+            #("media_type", json.string("application/json")),
+          ]),
+        ],
+        of: fn(entry) { entry },
+      ),
+    ),
+    #(
+      "review_surface",
+      json.object([
+        #("status", json.string("not_applicable")),
+        #("pr_url", json.null()),
+        #("branch", json.null()),
+        #("source_bundle_ref", json.null()),
+        #("head_revision", json.null()),
+        #("review_doc_path", json.string(destination_path)),
+      ]),
+    ),
+    #(
+      "implementation_handoff",
+      json.object([
+        #("issue_identifier", json.string("LIV-762")),
+        #(
+          "issue_url",
+          json.string(
+            "https://linear.app/living-systems/issue/LIV-762/implement-review-artifact-publication",
+          ),
+        ),
+        #("workflow_label", json.string("workflow:execplan-implementation")),
+        #("bundle_ref", json.string(bundle_ref())),
+      ]),
+    ),
+    #(
+      "validation",
+      json.array(
+        [
+          json.object([
+            #("name", json.string("materialize-bundle")),
+            #("status", json.string("passed")),
+          ]),
+        ],
+        of: fn(entry) { entry },
+      ),
+    ),
+  ])
+  |> json.to_string
+}
+
 fn execplan_bundle_descriptor(
   plan_sha256: String,
   plan_size: Int,
 ) -> artifact_descriptor.ArtifactDescriptor {
+  execplan_bundle_descriptor_with_optional_destination(
+    plan_sha256,
+    plan_size,
+    None,
+  )
+}
+
+fn execplan_bundle_descriptor_with_destination(
+  plan_sha256: String,
+  plan_size: Int,
+  destination_path: String,
+) -> artifact_descriptor.ArtifactDescriptor {
+  execplan_bundle_descriptor_with_optional_destination(
+    plan_sha256,
+    plan_size,
+    Some(destination_path),
+  )
+}
+
+fn execplan_bundle_descriptor_with_optional_destination(
+  plan_sha256: String,
+  plan_size: Int,
+  destination_path: Option(String),
+) -> artifact_descriptor.ArtifactDescriptor {
+  let plan_metadata = case destination_path {
+    Some(path) ->
+      Some(
+        json_value.JObject([
+          #(
+            "publication",
+            json_value.JObject([
+              #("destination_path", json_value.JString(path)),
+            ]),
+          ),
+        ]),
+      )
+    None -> None
+  }
   artifact_descriptor.ArtifactDescriptor(
     name: "exec_plan_bundle",
     kind: artifact_descriptor.ArtifactSetKind,
@@ -845,7 +1334,7 @@ fn execplan_bundle_descriptor(
         description: None,
         source: None,
         validation: None,
-        metadata: None,
+        metadata: plan_metadata,
         ref_type: None,
         ref: Some(plan_ref()),
         sha256: Some(plan_sha256),
@@ -872,6 +1361,20 @@ fn execplan_bundle_descriptor(
       ),
     ],
   )
+}
+
+fn metadata_destination_path(
+  metadata: Option(json_value.JsonValue),
+) -> Option(String) {
+  case metadata {
+    Some(json_value.JObject([
+      #(
+        "publication",
+        json_value.JObject([#("destination_path", json_value.JString(path))]),
+      ),
+    ])) -> Some(path)
+    _ -> None
+  }
 }
 
 fn source_metadata() -> json_value.JsonValue {

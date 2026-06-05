@@ -12,6 +12,7 @@ import scherzo/model_config
 import scherzo/path
 import scherzo/template
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_bundle
 import scherzo/workflow_completion_policy
 import scherzo/workflow_dag
 import scherzo/workflow_policy
@@ -57,6 +58,13 @@ pub fn workflow_by_id(
   id: String,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
   lookup_workflow(bundle.workflows, id)
+}
+
+pub fn workflow_bundle_dir(
+  bundle: RuntimeBundle,
+  workflow_id: String,
+) -> String {
+  workflow_bundle.dir(bundle.orchestrator, workflow_id)
 }
 
 pub fn normalized_workflows(

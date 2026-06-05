@@ -8,6 +8,7 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/github_cli
+import scherzo/artifact_repository/github_paths
 import scherzo/artifact_repository/types
 import scherzo/hash
 import scherzo/path
@@ -47,7 +48,7 @@ pub fn publish(
   now_ms: Int,
 ) -> artifact_publication_manifest.PublicationManifest {
   let types.PublicationExecutionInput(manifest, selected_files) = input
-  let success_attempt_id =
+  let base_success_attempt_id =
     artifact_publication_manifest.attempt_key_for_success(manifest.version_id)
   let latest = latest_success_details(workspace_root, manifest.series_id)
   case validate_selected_files(selected_files, []) {
@@ -65,11 +66,14 @@ pub fn publish(
       )
     Ok(Nil) -> {
       let removed_paths = stale_paths(latest, manifest.files)
-      case latest_version_id(latest) == Some(manifest.version_id) {
+      case
+        latest_version_id(latest) == Some(manifest.version_id)
+        && latest_success_is_complete(latest, manifest)
+      {
         True ->
           artifact_publication_manifest.unchanged_manifest(
             manifest,
-            success_attempt_id,
+            base_success_attempt_id,
             now_ms,
             latest_commit_sha(latest),
             latest_pr_url(latest),
@@ -83,10 +87,67 @@ pub fn publish(
             workspace_root,
             runner,
             now_ms,
-            success_attempt_id,
+            success_attempt_id_for_execution(latest, manifest, now_ms),
           )
       }
     }
+  }
+}
+
+fn latest_success_is_complete(
+  latest: Option(types.LatestPublicationDetails),
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+) -> Bool {
+  case latest {
+    Some(details) ->
+      option_present(details.branch)
+      && option_present(details.commit_sha)
+      && case manifest.pull_request.enabled {
+        True -> option_present(details.pr_url)
+        False -> True
+      }
+    None -> False
+  }
+}
+
+fn option_present(value: Option(a)) -> Bool {
+  case value {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+fn success_attempt_id_for_execution(
+  latest: Option(types.LatestPublicationDetails),
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  now_ms: Int,
+) -> String {
+  case
+    latest_version_id(latest) == Some(manifest.version_id),
+    latest_success_is_complete(latest, manifest)
+  {
+    True, False ->
+      artifact_publication_manifest.attempt_key_for_success_recovery(
+        manifest.publication_id,
+        manifest.version_id,
+        now_ms,
+      )
+    _, _ ->
+      artifact_publication_manifest.attempt_key_for_success(manifest.version_id)
+  }
+}
+
+fn current_head_or_error(
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
+  case github_cli.current_head(checkout_dir, runner) {
+    Some(commit_sha) -> Ok(commit_sha)
+    None ->
+      Error(artifact_publication_manifest.PublicationErrorInfo(
+        code: "rev_parse_failed",
+        message: "git rev-parse HEAD produced no commit sha",
+      ))
   }
 }
 
@@ -131,7 +192,7 @@ fn publish_with_checkout(
   now_ms: Int,
   attempt_id: String,
 ) -> artifact_publication_manifest.PublicationManifest {
-  let checkout_dir = checkout_dir(workspace_root, manifest)
+  let checkout_dir = github_paths.checkout_dir(workspace_root, manifest)
   case ensure_checkout(manifest, checkout_dir, runner) {
     Error(#(retryable, error)) ->
       failed_manifest(
@@ -183,19 +244,15 @@ fn publish_with_checkout(
                 removed_paths,
                 error,
               )
-            Ok(False) -> {
-              let commit_sha = github_cli.current_head(checkout_dir, runner)
-              let pr_url =
-                github_cli.existing_pr_url(manifest, checkout_dir, runner)
-              artifact_publication_manifest.unchanged_manifest(
+            Ok(False) ->
+              unchanged_after_no_diff(
                 manifest,
-                attempt_id,
+                checkout_dir,
+                runner,
                 now_ms,
-                commit_sha,
-                pr_url,
+                attempt_id,
                 removed_paths,
               )
-            }
             Ok(True) ->
               commit_push_and_pr(
                 manifest,
@@ -205,6 +262,66 @@ fn publish_with_checkout(
                 attempt_id,
                 changed_paths,
                 removed_paths,
+              )
+          }
+      }
+  }
+}
+
+fn unchanged_after_no_diff(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+  now_ms: Int,
+  attempt_id: String,
+  removed_paths: List(String),
+) -> artifact_publication_manifest.PublicationManifest {
+  case current_head_or_error(checkout_dir, runner) {
+    Error(error) ->
+      failed_manifest(
+        manifest,
+        now_ms,
+        True,
+        Some(manifest.branch),
+        None,
+        None,
+        [],
+        removed_paths,
+        error,
+      )
+    Ok(commit_sha) ->
+      case manifest.pull_request.enabled {
+        False ->
+          artifact_publication_manifest.unchanged_manifest(
+            manifest,
+            attempt_id,
+            now_ms,
+            Some(commit_sha),
+            None,
+            removed_paths,
+          )
+        True ->
+          case github_cli.ensure_pull_request(manifest, checkout_dir, runner) {
+            Ok(pr_url) ->
+              artifact_publication_manifest.unchanged_manifest(
+                manifest,
+                attempt_id,
+                now_ms,
+                Some(commit_sha),
+                pr_url,
+                removed_paths,
+              )
+            Error(error) ->
+              failed_manifest(
+                manifest,
+                now_ms,
+                True,
+                Some(manifest.branch),
+                Some(commit_sha),
+                None,
+                [],
+                removed_paths,
+                error,
               )
           }
       }
@@ -241,8 +358,8 @@ fn commit_push_and_pr(
         error,
       )
     Ok(_) ->
-      case github_cli.current_head(checkout_dir, runner) {
-        None ->
+      case current_head_or_error(checkout_dir, runner) {
+        Error(error) ->
           failed_manifest(
             manifest,
             now_ms,
@@ -252,12 +369,9 @@ fn commit_push_and_pr(
             None,
             changed_paths,
             removed_paths,
-            artifact_publication_manifest.PublicationErrorInfo(
-              code: "rev_parse_failed",
-              message: "git rev-parse HEAD produced no commit sha",
-            ),
+            error,
           )
-        Some(commit_sha) ->
+        Ok(commit_sha) ->
           case
             github_cli.run_ok(
               runner,
@@ -329,13 +443,13 @@ fn ensure_checkout(
     )
     |> result.map_error(fn(error) { #(False, error) }),
   )
-  let remote_url = github_remote_url(repo)
+  let remote_url = github_paths.remote_url(repo)
   let exists = simplifile.is_directory(checkout_dir) |> result.unwrap(False)
   case exists {
     False -> {
       let _ =
         simplifile.create_directory_all(path.join(
-          workspace_root_for(checkout_dir),
+          github_paths.workspace_root_for(checkout_dir),
           ".scherzo-state/artifact-repositories/github",
         ))
       case
@@ -344,7 +458,7 @@ fn ensure_checkout(
           command_runner.sh(
             "git",
             ["clone", remote_url, checkout_dir],
-            workspace_root_for(checkout_dir),
+            github_paths.workspace_root_for(checkout_dir),
           ),
           True,
         )
@@ -370,7 +484,7 @@ fn ensure_checkout(
       {
         Error(error) -> Error(#(True, error))
         Ok(origin) ->
-          case same_remote(origin, remote_url, repo) {
+          case github_paths.same_remote(origin, remote_url, repo) {
             True -> sync_checkout(manifest, checkout_dir, runner)
             False ->
               Error(#(
@@ -383,6 +497,62 @@ fn ensure_checkout(
           }
       }
     }
+  }
+}
+
+fn remote_branch_exists(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(Bool, #(Bool, artifact_publication_manifest.PublicationErrorInfo)) {
+  case
+    github_cli.run(
+      runner,
+      command_runner.sh(
+        "git",
+        ["ls-remote", "--exit-code", "--heads", "origin", manifest.branch],
+        checkout_dir,
+      ),
+      True,
+    )
+  {
+    Error(error) -> Error(#(True, error))
+    Ok(output) ->
+      case output.exit_code {
+        0 -> Ok(True)
+        2 -> Ok(False)
+        _ ->
+          Error(#(
+            True,
+            artifact_publication_manifest.PublicationErrorInfo(
+              code: "git_ls_remote_failed",
+              message: command_runner.summarize(output),
+            ),
+          ))
+      }
+  }
+}
+
+fn fetch_publication_branch(
+  branch_exists: Bool,
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(Nil, #(Bool, artifact_publication_manifest.PublicationErrorInfo)) {
+  case branch_exists {
+    False -> Ok(Nil)
+    True ->
+      github_cli.run_ok(
+        runner,
+        command_runner.sh(
+          "git",
+          ["fetch", "origin", manifest.branch],
+          checkout_dir,
+        ),
+        True,
+      )
+      |> result.map(fn(_) { Nil })
+      |> result.map_error(fn(error) { #(True, error) })
   }
 }
 
@@ -404,29 +574,22 @@ fn sync_checkout(
   use _ <- result.try(
     github_cli.run_ok(
       runner,
-      command_runner.sh(
-        "git",
-        ["fetch", "origin", base, manifest.branch],
-        checkout_dir,
-      ),
+      command_runner.sh("git", ["fetch", "origin", base], checkout_dir),
       True,
     )
     |> result.map_error(fn(error) { #(True, error) }),
   )
-  let branch_exists = case
-    github_cli.run_ok(
-      runner,
-      command_runner.sh(
-        "git",
-        ["rev-parse", "--verify", "origin/" <> manifest.branch],
-        checkout_dir,
-      ),
-      True,
-    )
-  {
-    Ok(_) -> True
-    Error(_) -> False
-  }
+  use branch_exists <- result.try(remote_branch_exists(
+    manifest,
+    checkout_dir,
+    runner,
+  ))
+  use _ <- result.try(fetch_publication_branch(
+    branch_exists,
+    manifest,
+    checkout_dir,
+    runner,
+  ))
   let checkout_args = case branch_exists {
     True -> ["checkout", "-B", manifest.branch, "origin/" <> manifest.branch]
     False -> ["checkout", "-B", manifest.branch, "origin/" <> base]
@@ -803,54 +966,6 @@ fn latest_pr_url(
   case latest {
     Some(details) -> details.pr_url
     None -> None
-  }
-}
-
-fn github_remote_url(repo: String) -> String {
-  "https://github.com/" <> repo <> ".git"
-}
-
-fn same_remote(origin: String, remote_url: String, repo: String) -> Bool {
-  let normalized = normalize_remote(origin)
-  normalized == normalize_remote(remote_url) || normalized == repo
-}
-
-fn normalize_remote(remote: String) -> String {
-  remote
-  |> string.replace(each: "https://github.com/", with: "")
-  |> string.replace(each: "git@github.com:", with: "")
-  |> string.replace(each: ".git", with: "")
-  |> string.trim
-}
-
-fn checkout_dir(
-  workspace_root: String,
-  manifest: artifact_publication_planner.DryRunPublicationManifest,
-) -> String {
-  let key =
-    hash.sha256_hex(
-      manifest.repository_id
-      <> "|"
-      <> option_or_empty(manifest.github_base)
-      <> "|"
-      <> manifest.series_id,
-    )
-  path.join(
-    path.absolute_or_original(workspace_root),
-    ".scherzo-state/artifact-repositories/github/" <> key,
-  )
-}
-
-fn workspace_root_for(checkout_dir: String) -> String {
-  string.split(checkout_dir, on: "/.scherzo-state/")
-  |> list.first
-  |> result.unwrap(".")
-}
-
-fn option_or_empty(value: Option(String)) -> String {
-  case value {
-    Some(value) -> value
-    None -> ""
   }
 }
 

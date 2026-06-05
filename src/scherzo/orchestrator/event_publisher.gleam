@@ -34,7 +34,7 @@ fn worker_pi_update(
       hub.update_pi_session(event_hub, session_id, pi_session_id)
     None -> Nil
   }
-  case tokens_are_nonzero(update.tokens) {
+  case session_tokens.nonzero(update.tokens) {
     True -> hub.update_tokens(event_hub, session_id, update.tokens)
     False -> Nil
   }
@@ -206,9 +206,5 @@ pub fn is_blocking_ui_method(method: Option(String)) -> Bool {
 }
 
 pub fn tokens_are_nonzero(tokens: session_tokens.TokenTotals) -> Bool {
-  tokens.input > 0
-  || tokens.output > 0
-  || tokens.cache_read > 0
-  || tokens.cache_write > 0
-  || tokens.total > 0
+  session_tokens.nonzero(tokens)
 }

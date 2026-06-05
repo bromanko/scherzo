@@ -5408,6 +5408,7 @@ fn publication_commit_failure_runner() -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -6517,6 +6518,7 @@ pub fn resumed_publication_finalization_preserves_terminal_required_failure_test
     artifact_publication_executor.execute_routes_with_runner_and_state_root(
       dag.publication_routes,
       publication_repositories(),
+      config_root,
       config_root,
       state_root,
       publication_output_manifest(),

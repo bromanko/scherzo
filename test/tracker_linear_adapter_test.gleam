@@ -19,6 +19,7 @@ import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
+import simplifile
 import test_async
 
 type CapturedRequest {
@@ -285,11 +286,15 @@ pub fn linear_adapter_task_detail_lookup_by_identifier_and_remote_id_test() {
   let linear_tracker =
     linear_adapter.from_tracker_config(tracker_config(), fn(request) {
       case string.contains(request.body, "ScherzoTaskDetailByIdentifier") {
-        True ->
+        True -> {
+          assert string.contains(request.body, "issue(id: $issueId)")
+          assert string.contains(request.body, "\"issueId\":\"LIV-770\"")
+          assert !string.contains(request.body, "identifier: { eq:")
           Ok(linear.Response(
             status: 200,
             body: task_detail_by_identifier_response(),
           ))
+        }
         False -> {
           assert string.contains(request.body, "ScherzoTaskDetailById")
           assert string.contains(request.body, "\"projectSlug\":\"PROJ\"")
@@ -302,7 +307,7 @@ pub fn linear_adapter_task_detail_lookup_by_identifier_and_remote_id_test() {
 
   let assert Ok(Some(by_identifier)) =
     linear_tracker.task_source.lookup_task_detail(
-      tracker_adapter.TaskLookupByDisplayId("LIV-770"),
+      tracker_adapter.TaskLookupByDisplayId(" LIV-770 "),
     )
   assert by_identifier.ref.remote_id == "issue-ready-1"
   assert by_identifier.description == Some("Detail body from identifier")
@@ -327,17 +332,147 @@ pub fn linear_adapter_task_detail_lookup_by_identifier_and_remote_id_test() {
     == Ok(None)
 }
 
-pub fn linear_adapter_task_detail_reports_duplicate_identifier_test() {
+pub fn linear_adapter_task_detail_display_id_contract_fixture_decodes_test() {
+  // This fixture is a captured read-only Linear issue(id: "LIV-864") response.
+  // Linear returns project.slugId as the normalized suffix, while configured
+  // project filters may include a human-readable prefix.
+  let assert Ok(body) =
+    simplifile.read(
+      "test/fixtures/linear/display_id_issue_lookup_response.json",
+    )
   let linear_tracker =
-    linear_adapter.from_tracker_config(tracker_config(), fn(_) {
-      Ok(linear.Response(status: 200, body: task_detail_duplicate_response()))
+    linear_adapter.from_tracker_config(
+      config_types.TrackerConfig(
+        ..tracker_config(),
+        project_slug: Some("scherzo-f6f4bc92d6d7"),
+      ),
+      fn(request) {
+        assert string.contains(request.body, "ScherzoTaskDetailByIdentifier")
+        assert string.contains(request.body, "issue(id: $issueId)")
+        assert string.contains(request.body, "\"issueId\":\"LIV-864\"")
+        assert !string.contains(request.body, "identifier: { eq:")
+        Ok(linear.Response(status: 200, body: body))
+      },
+    )
+
+  let assert Ok(Some(found)) =
+    linear_tracker.task_source.lookup_task_detail(
+      tracker_adapter.TaskLookupByDisplayId("LIV-864"),
+    )
+  assert found.ref.remote_id == "ff2bd557-36a1-4753-986e-d9a1c3afa330"
+  assert found.ref.key == Some("LIV-864")
+  assert found.title
+    == "Fix scherzoctl task query display IDs and unfiltered list timeouts"
+  assert found.state.category == task.Active
+}
+
+pub fn linear_adapter_task_detail_identifier_not_found_or_wrong_project_test() {
+  let missing_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoTaskDetailByIdentifier")
+      Ok(linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_not_found_response(),
+      ))
+    })
+
+  assert missing_tracker.task_source.lookup_task_detail(
+      tracker_adapter.TaskLookupByDisplayId("LIV-999"),
+    )
+    == Ok(None)
+
+  let wrong_project_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoTaskDetailByIdentifier")
+      Ok(linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_wrong_project_response(),
+      ))
+    })
+
+  assert wrong_project_tracker.task_source.lookup_task_detail(
+      tracker_adapter.TaskLookupByDisplayId("LIV-770"),
+    )
+    == Ok(None)
+
+  let missing_error_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoTaskDetailByIdentifier")
+      Ok(linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_not_found_error_response(),
+      ))
+    })
+
+  assert missing_error_tracker.task_source.lookup_task_detail(
+      tracker_adapter.TaskLookupByDisplayId("LIV-999"),
+    )
+    == Ok(None)
+
+  let mismatched_identifier_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoTaskDetailByIdentifier")
+      Ok(linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_mismatched_identifier_response(),
+      ))
+    })
+
+  assert mismatched_identifier_tracker.task_source.lookup_task_detail(
+      tracker_adapter.TaskLookupByDisplayId("LIV-770"),
+    )
+    == Ok(None)
+}
+
+pub fn linear_adapter_task_detail_blank_display_id_returns_none_without_transport_test() {
+  let captured = process.new_subject()
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      process.send(captured, CapturedRequest(request.body))
+      Ok(linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_response(),
+      ))
+    })
+
+  assert linear_tracker.task_source.lookup_task_detail(
+      tracker_adapter.TaskLookupByDisplayId("   "),
+    )
+    == Ok(None)
+  test_async.assert_no_extra_message_within(captured, 20)
+}
+
+pub fn linear_adapter_task_detail_identifier_backend_errors_stay_backend_errors_test() {
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoTaskDetailByIdentifier")
+      Ok(linear.Response(status: 200, body: task_query_graphql_error_response()))
     })
 
   let assert Error(tracker_adapter.Permanent(message)) =
     linear_tracker.task_source.lookup_task_detail(
       tracker_adapter.TaskLookupByDisplayId("LIV-770"),
     )
-  assert string.contains(message, "task identifier is not unique")
+  assert string.contains(message, "Linear GraphQL errors: denied")
+}
+
+pub fn linear_adapter_task_list_rejects_unfiltered_requests_without_transport_test() {
+  let captured = process.new_subject()
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      process.send(captured, CapturedRequest(request.body))
+      Ok(linear.Response(status: 200, body: task_query_list_response()))
+    })
+
+  let assert Error(tracker_adapter.UnsupportedCapability(capability)) =
+    linear_tracker.task_source.list_tasks(tracker_adapter.TaskListRequest(
+      state_categories: [],
+      limit: 5,
+      offset: 0,
+    ))
+  assert string.contains(capability, "unfiltered Linear task list")
+  assert string.contains(capability, "--state")
+  test_async.assert_no_extra_message_within(captured, 20)
 }
 
 pub fn linear_adapter_task_list_maps_graphql_and_json_errors_test() {
@@ -684,15 +819,27 @@ fn task_query_list_response() -> String {
 }
 
 fn task_detail_by_identifier_response() -> String {
-  "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-ready-1\",\"identifier\":\"LIV-770\",\"title\":\"Implement task queries\",\"description\":\"Detail body from identifier\",\"priority\":2,\"branchName\":\"liv-770-task-queries\",\"url\":\"https://linear.app/living-systems/issue/LIV-770\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-workflow\",\"name\":\"workflow:implementation\"}]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  "{\"data\":{\"issue\":{\"id\":\"issue-ready-1\",\"identifier\":\"LIV-770\",\"title\":\"Implement task queries\",\"description\":\"Detail body from identifier\",\"priority\":2,\"branchName\":\"liv-770-task-queries\",\"url\":\"https://linear.app/living-systems/issue/LIV-770\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"project\":{\"slugId\":\"PROJ\"},\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-workflow\",\"name\":\"workflow:implementation\"}]}}}}"
+}
+
+fn task_detail_by_identifier_not_found_response() -> String {
+  "{\"data\":{\"issue\":null}}"
+}
+
+fn task_detail_by_identifier_not_found_error_response() -> String {
+  "{\"errors\":[{\"message\":\"Issue not found\"}],\"data\":{\"issue\":null}}"
+}
+
+fn task_detail_by_identifier_wrong_project_response() -> String {
+  "{\"data\":{\"issue\":{\"id\":\"issue-ready-1\",\"identifier\":\"LIV-770\",\"title\":\"Implement task queries\",\"description\":\"Detail body from identifier\",\"priority\":2,\"branchName\":\"liv-770-task-queries\",\"url\":\"https://linear.app/living-systems/issue/LIV-770\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"project\":{\"slugId\":\"OTHER\"},\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[]}}}}"
+}
+
+fn task_detail_by_identifier_mismatched_identifier_response() -> String {
+  "{\"data\":{\"issue\":{\"id\":\"issue-ready-1\",\"identifier\":\"LIV-771\",\"title\":\"Implement task queries\",\"description\":\"Detail body from identifier\",\"priority\":2,\"branchName\":\"liv-770-task-queries\",\"url\":\"https://linear.app/living-systems/issue/LIV-771\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"project\":{\"slugId\":\"PROJ\"},\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[]}}}}"
 }
 
 fn task_detail_by_id_response() -> String {
   "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-ready-1\",\"identifier\":\"LIV-770\",\"title\":\"Implement task queries\",\"description\":\"Detail body from id\",\"priority\":2,\"branchName\":\"liv-770-task-queries\",\"url\":\"https://linear.app/living-systems/issue/LIV-770\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-workflow\",\"name\":\"workflow:implementation\"}]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
-}
-
-fn task_detail_duplicate_response() -> String {
-  "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-ready-1\",\"identifier\":\"LIV-770\",\"title\":\"Implement task queries\",\"description\":\"First detail\",\"priority\":2,\"branchName\":\"liv-770-task-queries\",\"url\":\"https://linear.app/living-systems/issue/LIV-770\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[]}},{\"id\":\"issue-ready-2\",\"identifier\":\"LIV-770\",\"title\":\"Duplicate task\",\"description\":\"Second detail\",\"priority\":2,\"branchName\":\"liv-770-task-queries-2\",\"url\":\"https://linear.app/living-systems/issue/LIV-770-2\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
 }
 
 fn task_query_graphql_error_response() -> String {

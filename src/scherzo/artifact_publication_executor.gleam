@@ -1,5 +1,4 @@
 import gleam/bit_array
-import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -32,6 +31,7 @@ pub fn execute_routes(
     repositories,
     config_dir,
     config_dir,
+    config_dir,
     output_manifest,
     issue,
     run_id,
@@ -43,6 +43,7 @@ pub fn execute_routes_with_state_root(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   state_root: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   issue: tracker_issue.Issue,
@@ -53,6 +54,7 @@ pub fn execute_routes_with_state_root(
     routes,
     repositories,
     config_dir,
+    workflow_bundle_dir,
     state_root,
     output_manifest,
     issue,
@@ -76,6 +78,7 @@ pub fn execute_recovered_routes(
     repositories,
     config_dir,
     config_dir,
+    config_dir,
     output_manifest,
     issue,
     run_id,
@@ -87,6 +90,7 @@ pub fn execute_recovered_routes_with_state_root(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   state_root: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   issue: tracker_issue.Issue,
@@ -97,6 +101,7 @@ pub fn execute_recovered_routes_with_state_root(
     routes,
     repositories,
     config_dir,
+    workflow_bundle_dir,
     state_root,
     output_manifest,
     issue,
@@ -121,6 +126,7 @@ pub fn execute_routes_for_work(
     repositories,
     config_dir,
     config_dir,
+    config_dir,
     output_manifest,
     work,
     run_id,
@@ -133,6 +139,7 @@ pub fn execute_routes_for_work_with_state_root(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   state_root: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   work: artifact_publication_planner.PublicationWork,
@@ -144,6 +151,7 @@ pub fn execute_routes_for_work_with_state_root(
     routes,
     repositories,
     config_dir,
+    workflow_bundle_dir,
     state_root,
     output_manifest,
     work,
@@ -151,6 +159,36 @@ pub fn execute_routes_for_work_with_state_root(
     checkpoint,
     runner,
     False,
+    True,
+  )
+}
+
+pub fn retry_routes_for_work_with_state_root(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  workflow_bundle_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+  reuse_terminal_attempts: Bool,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_routes_for_work_with_mode(
+    routes,
+    repositories,
+    config_dir,
+    workflow_bundle_dir,
+    state_root,
+    output_manifest,
+    work,
+    run_id,
+    checkpoint,
+    runner,
+    False,
+    reuse_terminal_attempts,
   )
 }
 
@@ -169,6 +207,7 @@ pub fn execute_recovered_routes_with_runner(
     repositories,
     config_dir,
     config_dir,
+    config_dir,
     output_manifest,
     issue,
     run_id,
@@ -181,6 +220,7 @@ pub fn execute_recovered_routes_with_runner_and_state_root(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   state_root: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   issue: tracker_issue.Issue,
@@ -193,12 +233,14 @@ pub fn execute_recovered_routes_with_runner_and_state_root(
     routes,
     repositories,
     config_dir,
+    workflow_bundle_dir,
     state_root,
     output_manifest,
     work,
     run_id,
     checkpoint,
     runner,
+    True,
     True,
   )
 }
@@ -207,6 +249,7 @@ fn execute_routes_for_work_with_mode(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   state_root: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   work: artifact_publication_planner.PublicationWork,
@@ -214,19 +257,21 @@ fn execute_routes_for_work_with_mode(
   checkpoint: workflow_checkpoint.Writer,
   runner: command_runner.Runner,
   recovered_execution: Bool,
+  reuse_terminal_attempts: Bool,
 ) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
   execute_routes_loop(
     routes,
     repositories,
     output_manifest,
     config_dir,
+    workflow_bundle_dir,
     state_root,
     work,
     run_id,
     checkpoint,
-    dict.new(),
     runner,
     recovered_execution,
+    reuse_terminal_attempts,
     [],
     [],
     [],
@@ -260,6 +305,7 @@ pub fn execute_routes_with_runner(
     repositories,
     config_dir,
     config_dir,
+    config_dir,
     output_manifest,
     issue,
     run_id,
@@ -272,6 +318,7 @@ pub fn execute_routes_with_runner_and_state_root(
   routes: List(artifact_publication_config.PublicationRoute),
   repositories: artifact_publication_config.ArtifactRepositories,
   config_dir: String,
+  workflow_bundle_dir: String,
   state_root: String,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   issue: tracker_issue.Issue,
@@ -284,6 +331,7 @@ pub fn execute_routes_with_runner_and_state_root(
     routes,
     repositories,
     config_dir,
+    workflow_bundle_dir,
     state_root,
     output_manifest,
     work,
@@ -291,6 +339,7 @@ pub fn execute_routes_with_runner_and_state_root(
     checkpoint,
     runner,
     False,
+    True,
   )
 }
 
@@ -299,13 +348,14 @@ fn execute_routes_loop(
   repositories: artifact_publication_config.ArtifactRepositories,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   config_dir: String,
+  workflow_bundle_dir: String,
   state_root: String,
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
-  body_templates: dict.Dict(String, String),
   runner: command_runner.Runner,
   recovered_execution: Bool,
+  reuse_terminal_attempts: Bool,
   required_failures: List(artifact_publication_recording.PublicationFailure),
   optional_failures: List(artifact_publication_recording.PublicationFailure),
   attempts: List(artifact_publication_recording.PublicationAttemptSummary),
@@ -323,13 +373,14 @@ fn execute_routes_loop(
         repositories,
         output_manifest,
         config_dir,
+        workflow_bundle_dir,
         state_root,
         work,
         run_id,
         checkpoint,
-        body_templates,
         runner,
         recovered_execution,
+        reuse_terminal_attempts,
       ))
       let #(next_required, next_optional) = case outcome.failure {
         Some(failure) ->
@@ -344,13 +395,14 @@ fn execute_routes_loop(
         repositories,
         output_manifest,
         config_dir,
+        workflow_bundle_dir,
         state_root,
         work,
         run_id,
         checkpoint,
-        body_templates,
         runner,
         recovered_execution,
+        reuse_terminal_attempts,
         next_required,
         next_optional,
         [outcome.attempt, ..attempts],
@@ -371,19 +423,21 @@ fn execute_route(
   repositories: artifact_publication_config.ArtifactRepositories,
   output_manifest: workflow_contract_manifest.ContractOutputManifest,
   config_dir: String,
+  workflow_bundle_dir: String,
   state_root: String,
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
-  _body_templates: dict.Dict(String, String),
   runner: command_runner.Runner,
   recovered_execution: Bool,
+  reuse_terminal_attempts: Bool,
 ) -> Result(RouteExecutionOutcome, String) {
   case
     artifact_publication_recording.load_body_templates(
       [route],
       repositories,
       config_dir,
+      workflow_bundle_dir,
     )
   {
     Error(reason) ->
@@ -408,16 +462,21 @@ fn execute_route(
           body_templates,
         )
       {
-        Ok(planned) ->
-          case
-            existing_terminal_attempt(
-              state_root,
-              run_id,
-              route.id,
-              planned.version_id,
-              recovered_execution,
-            )
-          {
+        Ok(planned) -> {
+          let existing_attempt = case reuse_terminal_attempts {
+            True ->
+              existing_terminal_attempt(
+                state_root,
+                run_id,
+                route.id,
+                planned.version_id,
+                recovered_execution,
+                planned.pull_request.enabled,
+                planned.repository_kind == "github",
+              )
+            False -> None
+          }
+          case existing_attempt {
             Some(attempt) ->
               Ok(RouteExecutionOutcome(attempt, failure_from_attempt(attempt)))
             None ->
@@ -428,7 +487,7 @@ fn execute_route(
                   let manifest =
                     github_repository.publish(
                       prepared,
-                      config_dir,
+                      state_root,
                       runner,
                       checkpoint.now_ms(),
                     )
@@ -472,6 +531,7 @@ fn execute_route(
                   )
               }
           }
+        }
         Error(planner_error) -> {
           let artifact_publication_planner.PlannerError(message: message, ..) =
             planner_error
@@ -509,20 +569,127 @@ fn existing_terminal_attempt(
   publication_id: String,
   version_id: String,
   recovered_execution: Bool,
+  requires_pr: Bool,
+  requires_branch_metadata: Bool,
 ) -> Option(artifact_publication_recording.PublicationAttemptSummary) {
   case ledger.path_for_workspace_root(workspace_root) {
     Error(_) -> None
     Ok(ledger_path) ->
       case ledger.load_projection(ledger_path) {
         Error(_) -> None
-        Ok(projected) ->
-          projection.publication_attempts_for_run(
-            projected,
-            run_id,
-            publication_id,
-          )
-          |> latest_matching_terminal(version_id, recovered_execution, None)
+        Ok(projected) -> {
+          let attempt =
+            projection.publication_attempts_for_run(
+              projected,
+              run_id,
+              publication_id,
+            )
+            |> latest_matching_terminal(version_id, recovered_execution, None)
+          case attempt {
+            Some(attempt) ->
+              case
+                terminal_attempt_is_complete(
+                  workspace_root,
+                  attempt,
+                  requires_pr,
+                  requires_branch_metadata,
+                )
+              {
+                True -> Some(attempt)
+                False -> None
+              }
+            None -> None
+          }
+        }
       }
+  }
+}
+
+fn terminal_attempt_is_complete(
+  workspace_root: String,
+  attempt: artifact_publication_recording.PublicationAttemptSummary,
+  requires_pr: Bool,
+  requires_branch_metadata: Bool,
+) -> Bool {
+  case attempt.status {
+    "failed" -> True
+    _ ->
+      terminal_success_is_complete(
+        workspace_root,
+        attempt,
+        requires_pr,
+        requires_branch_metadata,
+      )
+  }
+}
+
+fn terminal_success_is_complete(
+  workspace_root: String,
+  attempt: artifact_publication_recording.PublicationAttemptSummary,
+  requires_pr: Bool,
+  requires_branch_metadata: Bool,
+) -> Bool {
+  case load_attempt_details(workspace_root, attempt.manifest_ref) {
+    Some(#(attempt_requires_pr, branch, commit_sha, pr_url)) ->
+      terminal_pr_complete(requires_pr || attempt_requires_pr, pr_url)
+      && terminal_branch_complete(requires_branch_metadata, branch, commit_sha)
+    None -> !requires_pr && !requires_branch_metadata
+  }
+}
+
+fn terminal_pr_complete(requires_pr: Bool, pr_url: Option(String)) -> Bool {
+  case requires_pr, pr_url {
+    False, _ -> True
+    True, Some(_) -> True
+    True, None -> False
+  }
+}
+
+fn terminal_branch_complete(
+  requires_branch_metadata: Bool,
+  branch: Option(String),
+  commit_sha: Option(String),
+) -> Bool {
+  case requires_branch_metadata, branch, commit_sha {
+    False, _, _ -> True
+    True, Some(_), Some(_) -> True
+    True, _, _ -> False
+  }
+}
+
+fn load_attempt_details(
+  workspace_root: String,
+  ref: String,
+) -> Option(#(Bool, Option(String), Option(String), Option(String))) {
+  let store = artifact_store.new(workspace_root)
+  case artifact_store.read_artifact_unverified(store, ref) {
+    Ok(contents) ->
+      case artifact_publication_manifest.decode_manifest_json(contents) {
+        Ok(manifest) ->
+          Some(#(
+            manifest_requires_pr(manifest),
+            manifest.branch,
+            manifest.commit_sha,
+            manifest.pr_url,
+          ))
+        Error(decode_error) -> {
+          let _ = decode_error
+          None
+        }
+      }
+    Error(read_error) -> {
+      let _ = read_error
+      None
+    }
+  }
+}
+
+fn manifest_requires_pr(
+  manifest: artifact_publication_manifest.PublicationManifest,
+) -> Bool {
+  case manifest.dry_run_manifest {
+    Some(planned) -> planned.pull_request.enabled
+    None -> False
   }
 }
 

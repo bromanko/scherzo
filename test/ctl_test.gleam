@@ -185,6 +185,7 @@ fn query_metrics_response() -> query_types.QueryResponse {
     retry_timer_count: 11,
     retry_refresh_in_flight_count: 12,
     scheduled_due_count: 13,
+    scheduled_next_due_count: 19,
     scheduled_pending_count: 14,
     scheduled_retry_count: 15,
     scheduled_report_retry_count: 16,
@@ -381,6 +382,7 @@ pub fn query_metrics_human_executes_query_and_formats_metrics_test() {
   assert string.contains(transcript, "daemon_id: daemon-query")
   assert string.contains(transcript, "active_sessions: 3")
   assert string.contains(transcript, "running_workers: 2")
+  assert string.contains(transcript, "scheduled_next_due_count: 19")
   assert string.contains(transcript, "token_total: 42")
 }
 
@@ -1545,7 +1547,7 @@ pub fn artifact_publication_list_and_show_offline_state_test() {
     == Ok(Nil)
   let transcript = drain_output(subject)
   assert string.contains(transcript, "run_id: run-1")
-  assert string.contains(transcript, "review_doc")
+  assert string.contains(transcript, "execplan_review_doc")
   assert string.contains(transcript, "failed")
   assert string.contains(transcript, "branch:")
   assert string.contains(transcript, "commit_sha:")
@@ -1553,18 +1555,27 @@ pub fn artifact_publication_list_and_show_offline_state_test() {
 
   let json_subject = process.new_subject()
   assert ctl.run_with_deps(
-      ctl.ArtifactPublicationShow(None, Some(root), True, "run-1", "review_doc"),
+      ctl.ArtifactPublicationShow(
+        None,
+        Some(root),
+        True,
+        "run-1",
+        "execplan_review_doc",
+      ),
       ps_deps([], ps_now_ms, ""),
       output(json_subject),
     )
     == Ok(Nil)
   let json_transcript = drain_output(json_subject)
-  assert string.contains(json_transcript, "\"publication_id\":\"review_doc\"")
+  assert string.contains(
+    json_transcript,
+    "\"publication_id\":\"execplan_review_doc\"",
+  )
   assert string.contains(json_transcript, "\"attempt_count\":2")
   assert string.contains(json_transcript, "\"retry_execution_available\":true")
   assert string.contains(
     json_transcript,
-    "\"branch\":\"scherzo/workflow.execplan/LIV-739/review_doc\"",
+    "\"branch\":\"scherzo/workflow.execplan/LIV-739/execplan_review_doc\"",
   )
   assert string.contains(json_transcript, "\"commit_sha\":\"deadbeef\"")
   assert string.contains(
@@ -1584,18 +1595,21 @@ pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test()
       root,
       True,
       "run-1",
-      Some("review_doc"),
+      Some("execplan_review_doc"),
       retry_publish_runner(command_subject),
       subject_line(subject),
     )
     == Ok(Nil)
   let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"publication_id\":\"review_doc\"")
+  assert string.contains(
+    transcript,
+    "\"publication_id\":\"execplan_review_doc\"",
+  )
   assert string.contains(transcript, "\"status\":\"published\"")
   assert string.contains(transcript, "\"commit_sha\":\"deadbeef\"")
   assert string.contains(
     transcript,
-    "\"branch\":\"scherzo/workflow.execplan/LIV-739/review_doc\"",
+    "\"branch\":\"scherzo/workflow.execplan/LIV-739/execplan_review_doc\"",
   )
   let commands = drain_output(command_subject)
   assert string.contains(commands, "git fetch origin main")
@@ -1607,13 +1621,59 @@ pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test()
       root,
       True,
       "run-1",
-      "review_doc",
+      "execplan_review_doc",
       subject_line(show_subject),
     )
     == Ok(Nil)
   let show_transcript = drain_output(show_subject)
   assert string.contains(show_transcript, "\"attempt_count\":2")
   assert string.contains(show_transcript, "\"status\":\"published\"")
+}
+
+pub fn artifact_publication_retry_replans_pre_execution_failure_test() {
+  let root = "test/tmp/ctl-artifact-publication-retry-replans/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-replans")
+  seed_pre_execution_failed_publication_state(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("execplan_review_doc"),
+      retry_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(transcript, "\"version_id\":\"")
+
+  let commands = drain_output(command_subject)
+  assert string.contains(commands, "git fetch origin main")
+  assert string.contains(commands, "git commit -m scherzo publication")
+}
+
+pub fn artifact_publication_retry_accepts_unchanged_missing_pr_attempt_test() {
+  let root = "test/tmp/ctl-artifact-publication-retry-missing-pr/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-missing-pr")
+  seed_unchanged_missing_pr_publication_state(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("execplan_review_doc"),
+      retry_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(transcript, "\"pr_url\":\"https://example.test/pr/1\"")
 }
 
 pub fn artifact_publication_retry_reports_failed_replay_as_error_test() {
@@ -1627,12 +1687,12 @@ pub fn artifact_publication_retry_reports_failed_replay_as_error_test() {
       root,
       False,
       "run-1",
-      Some("review_doc"),
+      Some("execplan_review_doc"),
       retry_push_failure_runner(command_subject),
       subject_line(process.new_subject()),
     )
   assert code == "publication_retry_attempt_failed"
-  assert string.contains(message, "review_doc")
+  assert string.contains(message, "execplan_review_doc")
   assert string.contains(message, "git_push_failed")
 
   let show_subject = process.new_subject()
@@ -1640,7 +1700,7 @@ pub fn artifact_publication_retry_reports_failed_replay_as_error_test() {
       root,
       True,
       "run-1",
-      "review_doc",
+      "execplan_review_doc",
       subject_line(show_subject),
     )
     == Ok(Nil)
@@ -1694,7 +1754,7 @@ pub fn artifact_publication_retry_uses_workspace_state_root_for_terminal_attempt
       root,
       True,
       "run-1",
-      Some("review_doc"),
+      Some("execplan_review_doc"),
       retry_publish_runner(command_subject),
       subject_line(subject),
     )
@@ -1702,6 +1762,30 @@ pub fn artifact_publication_retry_uses_workspace_state_root_for_terminal_attempt
   let transcript = drain_output(subject)
   assert string.contains(transcript, "\"status\":\"published\"")
   assert drain_output(command_subject) == ""
+}
+
+pub fn artifact_publication_retry_does_not_reuse_success_missing_pr_test() {
+  let root = "test/tmp/ctl-artifact-publication-retry-stale-success/workspaces"
+  test_helpers.reset_dir(
+    "test/tmp/ctl-artifact-publication-retry-stale-success",
+  )
+  seed_failed_retry_publication_state_with_prior_success_missing_pr(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("execplan_review_doc"),
+      retry_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(transcript, "\"pr_url\":\"https://example.test/pr/1\"")
+  assert string.contains(drain_output(command_subject), "gh pr create")
 }
 
 pub fn artifact_publication_retry_without_publication_retries_all_failed_targets_test() {
@@ -1723,7 +1807,10 @@ pub fn artifact_publication_retry_without_publication_retries_all_failed_targets
   let transcript = drain_output(subject)
   assert string.contains(transcript, "\"publication_id\":null")
   assert string.contains(transcript, "\"attempts\":[")
-  assert string.contains(transcript, "\"publication_id\":\"review_doc\"")
+  assert string.contains(
+    transcript,
+    "\"publication_id\":\"execplan_review_doc\"",
+  )
   assert string.contains(transcript, "\"status\":\"published\"")
 
   let commands = drain_output(command_subject)
@@ -1749,14 +1836,17 @@ pub fn artifact_publication_retry_all_selects_multiple_failed_and_skips_nonretry
     == Ok(Nil)
   let transcript = drain_output(subject)
   assert string.contains(transcript, "\"publication_id\":null")
-  assert string.contains(transcript, "\"publication_id\":\"review_doc\"")
+  assert string.contains(
+    transcript,
+    "\"publication_id\":\"execplan_review_doc\"",
+  )
   assert string.contains(transcript, "\"publication_id\":\"release_notes\"")
   assert !string.contains(transcript, "\"publication_id\":\"skipped_doc\"")
   assert !string.contains(transcript, "\"publication_id\":\"published_doc\"")
   let commands = drain_output(command_subject)
   assert string.contains(
     commands,
-    "scherzo/workflow.execplan/LIV-739/review_doc",
+    "scherzo/workflow.execplan/LIV-739/execplan_review_doc",
   )
   assert string.contains(
     commands,
@@ -1776,7 +1866,7 @@ pub fn artifact_publication_retry_requires_output_manifest_test() {
       root,
       False,
       "run-1",
-      Some("review_doc"),
+      Some("execplan_review_doc"),
       retry_publish_runner(process.new_subject()),
       subject_line(process.new_subject()),
     )
@@ -1804,12 +1894,12 @@ pub fn artifact_publication_retry_rejects_config_drift_test() {
       root,
       False,
       "run-1",
-      Some("review_doc"),
+      Some("execplan_review_doc"),
       retry_publish_runner(process.new_subject()),
       subject_line(process.new_subject()),
     )
   assert code == "publication_retry_config_drift"
-  assert string.contains(message, "review_doc")
+  assert string.contains(message, "execplan_review_doc")
 }
 
 pub fn artifact_publication_uses_control_file_root_and_reports_not_found_test() {
@@ -1880,7 +1970,7 @@ pub fn artifact_publication_retry_without_root_uses_discovered_daemon_test() {
           None,
           False,
           "run-1",
-          Some("review_doc"),
+          Some("execplan_review_doc"),
         ),
         deps,
         output(subject),
@@ -1892,7 +1982,7 @@ pub fn artifact_publication_retry_without_root_uses_discovered_daemon_test() {
     process.receive(apply_calls, within: 1000)
   assert called_control_file.workspace_root == root
   assert called_command
-    == command.RetryArtifactPublication("run-1", Some("review_doc"))
+    == command.RetryArtifactPublication("run-1", Some("execplan_review_doc"))
   assert string.contains(drain_output(subject), "applied")
 }
 
@@ -2281,8 +2371,8 @@ pub fn ambiguous_display_ref_returns_clear_error_test() {
 
 fn seed_publication_state(root: String) -> Nil {
   let planned = seeded_publication_plan(root)
-  let planned_ref = "runs/run-1/publications/review_doc/version-1.json"
-  let failed_ref = "runs/run-1/publications/review_doc/failed-1.json"
+  let planned_ref = "runs/run-1/publications/execplan_review_doc/version-1.json"
+  let failed_ref = "runs/run-1/publications/execplan_review_doc/failed-1.json"
   let planned_manifest =
     artifact_publication_manifest.planned_manifest(planned, "version-1", 1010)
   let failed_manifest =
@@ -2331,7 +2421,7 @@ fn seed_publication_state(root: String) -> Nil {
           record.PublicationAttemptRecorded(
             run_id: "run-1",
             workflow_id: "execplan",
-            publication_id: "review_doc",
+            publication_id: "execplan_review_doc",
             series_id: planned.series_id,
             attempt_id: "version-1",
             status: "planned",
@@ -2352,7 +2442,7 @@ fn seed_publication_state(root: String) -> Nil {
           record.PublicationAttemptRecorded(
             run_id: "run-1",
             workflow_id: "execplan",
-            publication_id: "review_doc",
+            publication_id: "execplan_review_doc",
             series_id: planned.series_id,
             attempt_id: "failed-1",
             status: "failed",
@@ -2395,12 +2485,12 @@ fn assert_retry_rejects_latest_status(
       root,
       False,
       "run-1",
-      Some("review_doc"),
+      Some("execplan_review_doc"),
       retry_publish_runner(command_subject),
       subject_line(process.new_subject()),
     )
   assert code == "publication_not_retryable"
-  assert string.contains(message, "review_doc")
+  assert string.contains(message, "execplan_review_doc")
   assert string.contains(message, "status=" <> status)
   assert drain_output(command_subject) == ""
 }
@@ -2432,7 +2522,7 @@ fn seed_latest_publication_state(
 fn seed_mixed_retry_publication_state(root: String) -> Nil {
   let config_path = write_multi_retry_publication_config(root)
   let plans = seeded_publication_plans_from_config(root, config_path)
-  let review_doc = planned_publication_by_id(plans, "review_doc")
+  let review_doc = planned_publication_by_id(plans, "execplan_review_doc")
   let release_notes = planned_publication_by_id(plans, "release_notes")
   let skipped_doc = planned_publication_by_id(plans, "skipped_doc")
   let published_doc = planned_publication_by_id(plans, "published_doc")
@@ -2518,7 +2608,7 @@ fn seed_mixed_retry_publication_state(root: String) -> Nil {
 
 fn seed_failed_retry_publication_state(root: String) -> Nil {
   let planned = seeded_publication_plan(root)
-  let failed_ref = "runs/run-1/publications/review_doc/failed-1.json"
+  let failed_ref = "runs/run-1/publications/execplan_review_doc/failed-1.json"
   let failed_manifest =
     artifact_publication_manifest.failed_from_planned_manifest(
       planned,
@@ -2563,7 +2653,7 @@ fn seed_failed_retry_publication_state(root: String) -> Nil {
           record.PublicationAttemptRecorded(
             run_id: "run-1",
             workflow_id: "execplan",
-            publication_id: "review_doc",
+            publication_id: "execplan_review_doc",
             series_id: planned.series_id,
             attempt_id: "failed-1",
             status: "failed",
@@ -2584,22 +2674,115 @@ fn seed_failed_retry_publication_state(root: String) -> Nil {
   Nil
 }
 
-fn seed_failed_retry_publication_state_with_prior_success(root: String) -> Nil {
+fn seed_unchanged_missing_pr_publication_state(root: String) -> Nil {
   let planned = seeded_publication_plan(root)
-  let success_ref = "runs/run-1/publications/review_doc/published-1.json"
+  let ref = "runs/run-1/publications/execplan_review_doc/unchanged-1.json"
+  let manifest =
+    artifact_publication_manifest.unchanged_manifest(
+      planned,
+      "unchanged-1",
+      1020,
+      Some("deadbeef"),
+      None,
+      [],
+    )
+  let #(sha, bytes) = write_publication_manifest(root, ref, manifest)
+  append_publication_seed_records(root, [
+    publication_attempt_record(
+      planned,
+      "unchanged-1",
+      1020,
+      "unchanged",
+      False,
+      True,
+      Some(ref),
+      Some(sha),
+      Some(bytes),
+    ),
+  ])
+}
+
+fn seed_pre_execution_failed_publication_state(root: String) -> Nil {
+  let planned = seeded_publication_plan(root)
+  let series_id = "issue-1:execplan:" <> planned.publication_id
+  let failed_ref =
+    "runs/run-1/publications/execplan_review_doc/failed-preplan.json"
+  let error =
+    artifact_publication_manifest.PublicationErrorInfo(
+      code: "invalid_artifact_set_descriptor",
+      message: "artifact descriptor is missing required field: name",
+    )
+  let failed_manifest =
+    artifact_publication_manifest.failed_manifest(
+      "run-1",
+      "execplan",
+      planned.publication_id,
+      series_id,
+      planned.required,
+      "failed-preplan",
+      1020,
+      error,
+    )
+  let #(failed_sha, failed_bytes) =
+    write_publication_manifest(root, failed_ref, failed_manifest)
+  append_publication_seed_records(root, [
+    record.with_id(
+      "publication-preplan-failed",
+      1020,
+      record.PublicationAttemptRecorded(
+        run_id: "run-1",
+        workflow_id: "execplan",
+        publication_id: planned.publication_id,
+        series_id: series_id,
+        attempt_id: "failed-preplan",
+        status: "failed",
+        required: planned.required,
+        retryable: True,
+        retry_execution_available: False,
+        version_id: None,
+        manifest_ref: Some(failed_ref),
+        manifest_sha256: Some(failed_sha),
+        manifest_bytes: Some(failed_bytes),
+        error_code: Some(error.code),
+        error_message: Some(error.message),
+      ),
+    ),
+  ])
+}
+
+fn seed_failed_retry_publication_state_with_prior_success(root: String) -> Nil {
+  seed_failed_retry_publication_state_with_prior_success_pr(
+    root,
+    Some("https://example.test/pr/1"),
+  )
+}
+
+fn seed_failed_retry_publication_state_with_prior_success_missing_pr(
+  root: String,
+) -> Nil {
+  seed_failed_retry_publication_state_with_prior_success_pr(root, None)
+}
+
+fn seed_failed_retry_publication_state_with_prior_success_pr(
+  root: String,
+  pr_url: Option(String),
+) -> Nil {
+  let planned = seeded_publication_plan(root)
+  let success_ref =
+    "runs/run-1/publications/execplan_review_doc/published-1.json"
   let success_manifest =
     artifact_publication_manifest.published_manifest(
       planned,
       "published-1",
       1010,
       "deadbeef",
-      Some("https://example.test/pr/1"),
+      pr_url,
       ["docs/plans/LIV-739.md"],
       [],
     )
   let #(success_sha, success_bytes) =
     write_publication_manifest(root, success_ref, success_manifest)
-  let failed_ref = "runs/run-1/publications/review_doc/failed-1.json"
+  let failed_ref = "runs/run-1/publications/execplan_review_doc/failed-1.json"
   let failed_manifest =
     artifact_publication_manifest.failed_from_planned_manifest(
       planned,
@@ -2644,7 +2827,7 @@ fn seed_failed_retry_publication_state_with_prior_success(root: String) -> Nil {
           record.PublicationAttemptRecorded(
             run_id: "run-1",
             workflow_id: "execplan",
-            publication_id: "review_doc",
+            publication_id: "execplan_review_doc",
             series_id: planned.series_id,
             attempt_id: "published-1",
             status: "published",
@@ -2665,7 +2848,7 @@ fn seed_failed_retry_publication_state_with_prior_success(root: String) -> Nil {
           record.PublicationAttemptRecorded(
             run_id: "run-1",
             workflow_id: "execplan",
-            publication_id: "review_doc",
+            publication_id: "execplan_review_doc",
             series_id: planned.series_id,
             attempt_id: "failed-1",
             status: "failed",
@@ -2690,7 +2873,7 @@ fn seed_failed_retry_publication_state_without_output_manifest(
   root: String,
 ) -> Nil {
   let planned = seeded_publication_plan(root)
-  let failed_ref = "runs/run-1/publications/review_doc/failed-1.json"
+  let failed_ref = "runs/run-1/publications/execplan_review_doc/failed-1.json"
   let failed_manifest =
     artifact_publication_manifest.failed_from_planned_manifest(
       planned,
@@ -2734,7 +2917,7 @@ fn seed_failed_retry_publication_state_without_output_manifest(
           record.PublicationAttemptRecorded(
             run_id: "run-1",
             workflow_id: "execplan",
-            publication_id: "review_doc",
+            publication_id: "execplan_review_doc",
             series_id: planned.series_id,
             attempt_id: "failed-1",
             status: "failed",
@@ -2895,6 +3078,7 @@ fn seeded_publication_plans_from_config(
       workflow.publication_routes,
       bundle.orchestrator.artifact_repositories,
       bundle.orchestrator.config_dir,
+      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
     )
   workflow.publication_routes
   |> list.map(fn(route) {
@@ -2976,14 +3160,14 @@ fn seeded_output_manifest_record(root: String) -> record.LedgerRecord {
 fn write_retry_publication_config(root: String) -> String {
   write_retry_publication_config_with_workflow(
     root,
-    "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}{{ artifact.default_extension }}\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+    "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nartifacts:\n  publications:\n    - id: execplan_review_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}{{ artifact.default_extension }}\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
   )
 }
 
 fn write_multi_retry_publication_config(root: String) -> String {
   write_retry_publication_config_with_workflow(
     root,
-    "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} review publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: release_notes\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} release notes publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: skipped_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} skipped publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: published_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} already published'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+    "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nartifacts:\n  publications:\n    - id: execplan_review_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} review publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: release_notes\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} release notes publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: skipped_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} skipped publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: published_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} already published'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
   )
 }
 
@@ -2993,14 +3177,17 @@ fn write_retry_publication_config_with_workflow(
 ) -> String {
   let assert Ok(base) = path.dirname(root)
   let workflow_dir = base <> "/workflows"
-  let template_dir = base <> "/templates"
+  let workflow_template_dir = workflow_dir <> "/templates"
   let config_path = base <> "/scherzo.yaml"
   let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(template_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_template_dir)
   let assert Ok(Nil) =
     simplifile.write(workflow_dir <> "/execplan.yaml", workflow_yaml)
   let assert Ok(Nil) =
-    simplifile.write(template_dir <> "/publication.md", "Published by Scherzo.")
+    simplifile.write(
+      workflow_template_dir <> "/publication.md",
+      "Published by Scherzo.",
+    )
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
@@ -3063,6 +3250,7 @@ fn retry_runner(
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))

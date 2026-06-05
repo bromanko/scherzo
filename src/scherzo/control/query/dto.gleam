@@ -57,6 +57,7 @@ pub fn operational_metrics_from_source(
     retry_timer_count: retry_timer_count,
     retry_refresh_in_flight_count: retry_refresh_in_flight_count,
     scheduled_due_count: scheduled_due_count,
+    scheduled_next_due_count: scheduled_next_due_count,
     scheduled_pending_count: scheduled_pending_count,
     scheduled_retry_count: scheduled_retry_count,
     scheduled_report_retry_count: scheduled_report_retry_count,
@@ -90,6 +91,7 @@ pub fn operational_metrics_from_source(
     retry_timer_count: retry_timer_count,
     retry_refresh_in_flight_count: retry_refresh_in_flight_count,
     scheduled_due_count: scheduled_due_count,
+    scheduled_next_due_count: scheduled_next_due_count,
     scheduled_pending_count: scheduled_pending_count,
     scheduled_retry_count: scheduled_retry_count,
     scheduled_report_retry_count: scheduled_report_retry_count,
@@ -157,6 +159,7 @@ pub fn operational_metrics_to_json(
       json.int(metrics.retry_refresh_in_flight_count),
     ),
     #("scheduled_due_count", json.int(metrics.scheduled_due_count)),
+    #("scheduled_next_due_count", json.int(metrics.scheduled_next_due_count)),
     #("scheduled_pending_count", json.int(metrics.scheduled_pending_count)),
     #("scheduled_retry_count", json.int(metrics.scheduled_retry_count)),
     #(
@@ -256,6 +259,11 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
     decode.int,
   )
   use scheduled_due_count <- decode.field("scheduled_due_count", decode.int)
+  use scheduled_next_due_count <- decode.optional_field(
+    "scheduled_next_due_count",
+    scheduled_due_count,
+    decode.int,
+  )
   use scheduled_pending_count <- decode.field(
     "scheduled_pending_count",
     decode.int,
@@ -299,6 +307,7 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
     retry_timer_count: retry_timer_count,
     retry_refresh_in_flight_count: retry_refresh_in_flight_count,
     scheduled_due_count: scheduled_due_count,
+    scheduled_next_due_count: scheduled_next_due_count,
     scheduled_pending_count: scheduled_pending_count,
     scheduled_retry_count: scheduled_retry_count,
     scheduled_report_retry_count: scheduled_report_retry_count,

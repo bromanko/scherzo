@@ -33,10 +33,12 @@ import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/operator_runtime
 import scherzo/orchestrator/poll_scheduler
+import scherzo/orchestrator/read_model
 import scherzo/orchestrator/remote_command_runtime
 import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
+import scherzo/orchestrator/session_metrics
 import scherzo/orchestrator/startup_recovery
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_lifecycle
@@ -99,7 +101,7 @@ pub type Message {
   YamlStepStarted(String, String)
   YamlStepUpdate(String, agent_types.RunnerUpdate)
   YamlStepCommandReady(String, process.Subject(worker_command.Command))
-  YamlStepFinished(String)
+  YamlStepFinished(String, session_tokens.TokenTotals)
   AbortWorkerCommandTimedOut(
     command.OperatorCommand,
     String,
@@ -110,7 +112,7 @@ pub type Message {
   SideEffectCompleted(effect_runner.Completion)
   Shutdown(process.Subject(Nil))
   GetSnapshot(process.Subject(orchestrator_state.RuntimeState))
-  GetMetricsSnapshot(process.Subject(query_metrics.RuntimeMetrics))
+  GetReadModelSnapshot(process.Subject(read_model.Snapshot))
   GetRemoteDispatchPaused(process.Subject(Bool))
   StartRemoteClient
   ApplyOperatorCommand(
@@ -183,6 +185,7 @@ type State {
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
+    yaml_step_tokens: session_metrics.StepTokenEntries,
     pending_claims: Dict(identity.TaskIdentity, transition_types.PendingClaim),
     pending_dispatch_validations: Dict(
       identity.TaskIdentity,
@@ -196,6 +199,7 @@ type State {
     control_server: ControlServerHandle,
     control_file_path: Option(String),
     query_service: query_service.Handle,
+    read_model: read_model.ReadModel,
     remote_client: Option(remote_command_runtime.Handle),
     remote_client_monitor: Option(process.Monitor),
     operator_paused: Bool,
@@ -372,7 +376,7 @@ fn start_query_service(
   effective: config_types.EffectiveConfig,
   daemon_subject: process.Subject(Message),
   identity: daemon_identity.DaemonIdentity,
-  now_ms: fn() -> Int,
+  _now_ms: fn() -> Int,
   tracker_adapter: adapter.TrackerAdapter,
 ) -> Result(query_service.Handle, StartupError) {
   query_service.start(
@@ -381,22 +385,17 @@ fn start_query_service(
       let get_dispatch_paused = fn(timeout_ms) {
         get_remote_dispatch_paused(daemon_subject, timeout_ms)
       }
+      let request_read_model_snapshot = fn(timeout_ms) {
+        get_read_model_snapshot(daemon_subject, timeout_ms)
+      }
       case query {
         query_types.Status ->
           query_metrics.execute_status(
-            ui_server_enabled: effective.ui_server.enabled,
-            identity: identity,
-            get_dispatch_paused: get_dispatch_paused,
+            get_snapshot: request_read_model_snapshot,
           )
         query_types.Metrics ->
           query_metrics.execute_metrics(
-            ui_server_enabled: effective.ui_server.enabled,
-            identity: identity,
-            sampled_at_ms: now_ms(),
-            get_dispatch_paused: get_dispatch_paused,
-            get_runtime_metrics: fn(timeout_ms) {
-              get_metrics_snapshot(daemon_subject, timeout_ms)
-            },
+            get_snapshot: request_read_model_snapshot,
           )
         query_types.TaskList(_) | query_types.TaskShow(_) ->
           query_backend.run(
@@ -415,17 +414,20 @@ fn start_query_service(
   })
 }
 
-fn metrics_snapshot_from_state(state: State) -> query_metrics.RuntimeMetrics {
-  query_metrics.RuntimeMetrics(
+fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
+  let running_workers = dict.size(state.runtime.running)
+  let running_scheduled_workers =
+    worker_registry.scheduled_worker_count(state.registry)
+  read_model.RuntimeCounts(
     workflow_count: dict.size(state.workflow.bundle.workflows),
     scheduled_job_count: list.length(
       state.workflow.bundle.orchestrator.scheduled_jobs,
     ),
-    active_sessions: dict.size(state.runtime.running),
-    running_workers: dict.size(state.runtime.running),
-    running_scheduled_workers: worker_registry.scheduled_worker_count(
-      state.registry,
-    ),
+    active_sessions: running_workers
+      + running_scheduled_workers
+      + worker_registry.active_yaml_step_session_count(state.registry),
+    running_workers: running_workers,
+    running_scheduled_workers: running_scheduled_workers,
     queued_claims: dict.size(state.pending_claims),
     pending_dispatch_validations: dict.size(state.pending_dispatch_validations),
     claimed_tasks: dict.size(state.runtime.claimed),
@@ -439,7 +441,13 @@ fn metrics_snapshot_from_state(state: State) -> query_metrics.RuntimeMetrics {
     retry_refresh_in_flight_count: retry_scheduler.refresh_in_flight_count(
       state.retry,
     ),
-    scheduled_due_count: dict.size(state.scheduled_runtime.next_due),
+    scheduled_due_count: scheduled_runtime.due_count(
+      state.scheduled_runtime,
+      state.dependencies.now_ms(),
+    ),
+    scheduled_next_due_count: scheduled_runtime.next_due_count(
+      state.scheduled_runtime,
+    ),
     scheduled_pending_count: dict.size(state.scheduled_runtime.pending_starts),
     scheduled_retry_count: dict.size(state.scheduled_runtime.scheduled_retries),
     scheduled_report_retry_count: dict.size(
@@ -449,7 +457,30 @@ fn metrics_snapshot_from_state(state: State) -> query_metrics.RuntimeMetrics {
     scheduled_report_retry_timer_count: dict.size(
       state.scheduled_report_retry_timers,
     ),
-    aggregate_tokens: state.runtime.aggregate_pi_totals,
+  )
+}
+
+fn metrics_token_totals(state: State) -> session_tokens.TokenTotals {
+  session_tokens.add(
+    state.runtime.aggregate_pi_totals,
+    session_metrics.total(state.yaml_step_tokens),
+  )
+}
+
+fn refresh_read_model(state: State) -> State {
+  let refreshed =
+    state.read_model
+    |> read_model.update_counts(runtime_counts_from_state(state))
+    |> read_model.update_dispatch_paused(dispatch_paused: state.operator_paused)
+    |> read_model.update_token_totals(metrics_token_totals(state))
+
+  State(..state, read_model: refreshed)
+}
+
+fn read_model_snapshot_from_state(state: State) -> read_model.Snapshot {
+  read_model.snapshot(
+    state.read_model,
+    sampled_at_ms: state.dependencies.now_ms(),
   )
 }
 
@@ -523,9 +554,24 @@ fn start_remote_client_now(state: State) -> State {
   }
 }
 
+fn update_read_model_remote_client_status(
+  state: State,
+  status: read_model.RemoteClientStatus,
+) -> State {
+  State(
+    ..state,
+    read_model: read_model.update_remote_client_status(state.read_model, status),
+  )
+}
+
 fn restart_remote_client_if_enabled(state: State) -> State {
   case state.workflow.effective.ui_server.enabled {
-    False -> State(..state, remote_client: None, remote_client_monitor: None)
+    False ->
+      state
+      |> update_read_model_remote_client_status(read_model.Disabled)
+      |> fn(state) {
+        State(..state, remote_client: None, remote_client_monitor: None)
+      }
     True ->
       case
         state.dependencies.start_remote_client(
@@ -537,19 +583,27 @@ fn restart_remote_client_if_enabled(state: State) -> State {
         )
       {
         Ok(handle) ->
-          State(
-            ..state,
-            remote_client: Some(handle),
-            remote_client_monitor: Some(
-              state.dependencies.monitor_remote_client(handle),
-            ),
-          )
+          state
+          |> update_read_model_remote_client_status(read_model.Connected)
+          |> fn(state) {
+            State(
+              ..state,
+              remote_client: Some(handle),
+              remote_client_monitor: Some(
+                state.dependencies.monitor_remote_client(handle),
+              ),
+            )
+          }
         Error(StartupError(code, message)) -> {
           log_state(state, "warn", "remote_client_restart_failed", [
             #("code", code),
             #("message", message),
           ])
-          State(..state, remote_client: None, remote_client_monitor: None)
+          state
+          |> update_read_model_remote_client_status(read_model.Retrying(code))
+          |> fn(state) {
+            State(..state, remote_client: None, remote_client_monitor: None)
+          }
         }
       }
   }
@@ -732,6 +786,7 @@ pub fn start(
                           poll: poll,
                           retry: retry_scheduler.new(),
                           registry: worker_registry.new(),
+                          yaml_step_tokens: session_metrics.new(),
                           pending_claims: dict.new(),
                           pending_dispatch_validations: dict.new(),
                           next_dispatch_validation_generation: 1,
@@ -742,6 +797,11 @@ pub fn start(
                           control_server: control_plane.handle,
                           control_file_path: control_plane.control_file_path,
                           query_service: query_handle,
+                          read_model: read_model.new(
+                            daemon_id: daemon_identity.daemon_id,
+                            boot_id: daemon_identity.boot_id,
+                            ui_server_enabled: effective.ui_server.enabled,
+                          ),
                           remote_client: None,
                           remote_client_monitor: None,
                           operator_paused: False,
@@ -756,6 +816,7 @@ pub fn start(
                         |> spawn_recovered_workflow_resumptions(
                           startup_recovery.workflow_resumptions,
                         )
+                        |> refresh_read_model
                       process.send(subject, StartRemoteClient)
                       let selector =
                         process.new_selector()
@@ -813,12 +874,12 @@ pub fn get_snapshot(
   process.receive(reply, within: timeout_ms)
 }
 
-fn get_metrics_snapshot(
+pub fn get_read_model_snapshot(
   subject: process.Subject(Message),
   timeout_ms: Int,
-) -> Result(query_metrics.RuntimeMetrics, Nil) {
+) -> Result(read_model.Snapshot, Nil) {
   let reply = process.new_subject()
-  process.send(subject, GetMetricsSnapshot(reply))
+  process.send(subject, GetReadModelSnapshot(reply))
   process.receive(reply, within: timeout_ms)
 }
 
@@ -1146,6 +1207,7 @@ fn run_recovered_workflow_worker(
                     workflow_dependencies,
                     recovered.issue,
                     recovered.run_id,
+                    session_id,
                     daemon_subject,
                     event_hub,
                     now_ms,
@@ -1241,14 +1303,114 @@ fn map_startup_recovery_error(
   }
 }
 
+fn continue_with_refreshed_state(state: State) -> actor.Next(State, Message) {
+  actor.continue(refresh_read_model(state))
+}
+
+fn handle_issue_worker_finished(
+  state: State,
+  issue_id: String,
+  run_id: String,
+  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+) -> State {
+  let state =
+    worker_lifecycle.worker_finished_to_transition(
+      worker_finished_context(state, run_id, result),
+      issue_id,
+      run_id,
+      result,
+    )
+  finalize_yaml_step_tokens_for_issue_result(state, run_id, result)
+}
+
+fn handle_scheduled_worker_finished(
+  state: State,
+  run_id: String,
+  result: Result(
+    workflow_run.WorkflowRunSuccess,
+    workflow_run.WorkflowRunFailure,
+  ),
+) -> State {
+  let state =
+    worker_lifecycle.handle_scheduled_worker_finished(
+      scheduled_worker_finished_context(state),
+      run_id,
+      result,
+    )
+  finalize_yaml_step_tokens_for_scheduled_result(state, run_id, result)
+}
+
+fn finalize_yaml_step_tokens_for_issue_result(
+  state: State,
+  run_id: String,
+  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+) -> State {
+  let direct_tokens = session_metrics.worker_result_tokens(result)
+  let child_tokens =
+    session_metrics.total_for_run(state.yaml_step_tokens, run_id)
+  let state = case session_tokens.nonzero(direct_tokens) {
+    True -> state
+    False -> add_runtime_aggregate_tokens(state, child_tokens)
+  }
+  remove_yaml_step_tokens_for_run(state, run_id)
+}
+
+fn finalize_yaml_step_tokens_for_scheduled_result(
+  state: State,
+  run_id: String,
+  result: Result(
+    workflow_run.WorkflowRunSuccess,
+    workflow_run.WorkflowRunFailure,
+  ),
+) -> State {
+  let direct_tokens = session_metrics.workflow_run_result_tokens(result)
+  let child_tokens =
+    session_metrics.total_for_run(state.yaml_step_tokens, run_id)
+  let tokens = case session_tokens.nonzero(direct_tokens) {
+    True -> direct_tokens
+    False -> child_tokens
+  }
+  state
+  |> add_runtime_aggregate_tokens(tokens)
+  |> remove_yaml_step_tokens_for_run(run_id)
+}
+
+fn add_runtime_aggregate_tokens(
+  state: State,
+  tokens: session_tokens.TokenTotals,
+) -> State {
+  case session_tokens.nonzero(tokens) {
+    False -> state
+    True ->
+      State(
+        ..state,
+        runtime: orchestrator_state.RuntimeState(
+          ..state.runtime,
+          aggregate_pi_totals: session_tokens.add(
+            state.runtime.aggregate_pi_totals,
+            tokens,
+          ),
+        ),
+      )
+  }
+}
+
+fn remove_yaml_step_tokens_for_run(state: State, run_id: String) -> State {
+  State(
+    ..state,
+    yaml_step_tokens: session_metrics.remove_run(state.yaml_step_tokens, run_id),
+  )
+}
+
 fn handle_message(
   state: State,
   message: Message,
 ) -> actor.Next(State, Message) {
   case message {
-    PollTick(generation) -> actor.continue(poll_tick_shell(state, generation))
+    PollTick(generation) ->
+      continue_with_refreshed_state(poll_tick_shell(state, generation))
     RetryTick(issue_id, generation) ->
-      actor.continue(
+      continue_with_refreshed_state(
         run_transition_messages(state, [
           transition_types.RetryTick(
             issue_id,
@@ -1258,54 +1420,77 @@ fn handle_message(
         ]),
       )
     WorkerFinished(issue_id, run_id, result) ->
-      actor.continue(worker_lifecycle.worker_finished_to_transition(
-        worker_finished_context(state, run_id, result),
+      continue_with_refreshed_state(handle_issue_worker_finished(
+        state,
         issue_id,
         run_id,
         result,
       ))
     ScheduledWorkerFinished(run_id, result) ->
-      actor.continue(worker_lifecycle.handle_scheduled_worker_finished(
-        scheduled_worker_finished_context(state),
+      continue_with_refreshed_state(handle_scheduled_worker_finished(
+        state,
         run_id,
         result,
       ))
     ScheduledRetryTick(run_id, generation) ->
-      actor.continue(handle_scheduled_retry_tick(state, run_id, generation))
+      continue_with_refreshed_state(handle_scheduled_retry_tick(
+        state,
+        run_id,
+        generation,
+      ))
     ScheduledReportRetryTick(run_id, generation) ->
-      actor.continue(handle_scheduled_report_retry_tick(
+      continue_with_refreshed_state(handle_scheduled_report_retry_tick(
         state,
         run_id,
         generation,
       ))
     WorkerUpdate(issue_id, update) ->
-      actor.continue(worker_lifecycle.handle_worker_update(
+      continue_with_refreshed_state(worker_lifecycle.handle_worker_update(
         worker_update_context(state),
         issue_id,
         update,
       ))
     WorkerCommandReady(issue_id, run_id, command_subject) ->
-      actor.continue(worker_lifecycle.handle_worker_command_ready(
-        worker_command_ready_context(state),
-        issue_id,
-        run_id,
-        command_subject,
-      ))
+      continue_with_refreshed_state(
+        worker_lifecycle.handle_worker_command_ready(
+          worker_command_ready_context(state),
+          issue_id,
+          run_id,
+          command_subject,
+        ),
+      )
     YamlStepStarted(session_id, run_id) ->
-      actor.continue(handle_yaml_step_started(state, session_id, run_id))
+      continue_with_refreshed_state(handle_yaml_step_started(
+        state,
+        session_id,
+        run_id,
+      ))
     YamlStepUpdate(session_id, update) -> {
       event_publisher.worker_update(state.event_hub, session_id, update)
       log_yaml_step_update(state, session_id, update)
-      actor.continue(state)
+      actor.continue(
+        State(
+          ..state,
+          yaml_step_tokens: session_metrics.update_from_runner(
+            state.yaml_step_tokens,
+            session_id,
+            update,
+          ),
+        ),
+      )
     }
     YamlStepCommandReady(session_id, command_subject) ->
-      actor.continue(handle_yaml_step_command_ready(
+      continue_with_refreshed_state(handle_yaml_step_command_ready(
         state,
         session_id,
         command_subject,
       ))
-    YamlStepFinished(session_id) ->
-      actor.continue(handle_yaml_step_finished(state, session_id))
+    YamlStepFinished(session_id, tokens) ->
+      continue_with_refreshed_state(handle_yaml_step_finished(
+        state,
+        session_id,
+        tokens,
+      ))
     AbortWorkerCommandTimedOut(operator_command, session_id, reply) -> {
       let #(state, result) =
         stop_session_for_operator(
@@ -1315,10 +1500,10 @@ fn handle_message(
           session_reason.OperatorAbort,
         )
       process.send(reply, result)
-      actor.continue(state)
+      continue_with_refreshed_state(state)
     }
     WorkerDown(down) ->
-      actor.continue(worker_lifecycle.worker_down_to_transition(
+      continue_with_refreshed_state(worker_lifecycle.worker_down_to_transition(
         worker_down_context(state),
         down,
       ))
@@ -1327,22 +1512,27 @@ fn handle_message(
       actor.stop_abnormal("effect_runner_down")
     }
     SideEffectCompleted(completion) ->
-      actor.continue(handle_side_effect_completed(state, completion))
+      continue_with_refreshed_state(handle_side_effect_completed(
+        state,
+        completion,
+      ))
     GetSnapshot(reply) -> {
       effect_runner.reply_snapshot(state.runtime, reply)
       actor.continue(state)
     }
-    GetMetricsSnapshot(reply) -> {
-      process.send(reply, metrics_snapshot_from_state(state))
-      actor.continue(state)
+    GetReadModelSnapshot(reply) -> {
+      let refreshed = refresh_read_model(state)
+      process.send(reply, read_model_snapshot_from_state(refreshed))
+      actor.continue(refreshed)
     }
     GetRemoteDispatchPaused(reply) -> {
       process.send(reply, state.operator_paused)
       actor.continue(state)
     }
-    StartRemoteClient -> actor.continue(start_remote_client_now(state))
+    StartRemoteClient ->
+      continue_with_refreshed_state(start_remote_client_now(state))
     ApplyOperatorCommand(operator_command, timeout_ms, reply) ->
-      actor.continue(operator_command_reply(
+      continue_with_refreshed_state(operator_command_reply(
         state,
         operator_command,
         timeout_ms,
@@ -1401,6 +1591,22 @@ fn handle_yaml_step_started(
   session_id: String,
   run_id: String,
 ) -> State {
+  let parent_session_id = parent_session_id_for_run(state, run_id)
+  let state =
+    State(
+      ..state,
+      registry: worker_registry.register_active_yaml_step_started(
+        state.registry,
+        session_id,
+        run_id,
+      ),
+      yaml_step_tokens: session_metrics.register_step(
+        state.yaml_step_tokens,
+        session_id,
+        run_id,
+        parent_session_id,
+      ),
+    )
   run_transition_messages(state, [
     transition_types.YamlStepStarted(
       identity.session_id_from_string(session_id),
@@ -1409,12 +1615,36 @@ fn handle_yaml_step_started(
   ])
 }
 
-fn handle_yaml_step_finished(state: State, session_id: String) -> State {
+fn handle_yaml_step_finished(
+  state: State,
+  session_id: String,
+  tokens: session_tokens.TokenTotals,
+) -> State {
+  let state =
+    State(
+      ..state,
+      yaml_step_tokens: session_metrics.update_tokens(
+        state.yaml_step_tokens,
+        session_id,
+        tokens,
+      ),
+    )
   run_transition_messages(state, [
     transition_types.YamlStepFinished(identity.session_id_from_string(
       session_id,
     )),
   ])
+}
+
+fn parent_session_id_for_run(state: State, run_id: String) -> String {
+  case worker_registry.worker_for_run(state.registry, run_id) {
+    Ok(handle) -> handle.session_id
+    Error(Nil) ->
+      case worker_registry.scheduled_worker_for_run(state.registry, run_id) {
+        Ok(handle) -> handle.session_id
+        Error(Nil) -> run_id
+      }
+  }
 }
 
 fn finish_yaml_step_sessions_for_run(
@@ -4731,6 +4961,7 @@ fn run_workflow_worker(
             workflow_dependencies,
             issue,
             run_id,
+            session_id,
             daemon_subject,
             event_hub,
             now_ms,
@@ -4767,8 +4998,8 @@ fn yaml_step_callbacks(
         YamlStepCommandReady(session_id, command_subject),
       )
     },
-    step_finished: fn(session_id) {
-      process.send(daemon_subject, YamlStepFinished(session_id))
+    step_finished: fn(session_id, tokens) {
+      process.send(daemon_subject, YamlStepFinished(session_id, tokens))
     },
   )
 }
@@ -4793,6 +5024,7 @@ fn yaml_workflow_dependencies(
   base: workflow_run.Dependencies,
   issue: tracker_issue.Issue,
   run_id: String,
+  parent_session_id: String,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
@@ -4801,6 +5033,7 @@ fn yaml_workflow_dependencies(
     base,
     issue,
     run_id,
+    parent_session_id,
     yaml_step_callbacks(daemon_subject),
     event_hub,
     now_ms,
@@ -5585,7 +5818,11 @@ fn worker_down_context(
       ])
     },
     clear_remote_client: fn(state) {
-      State(..state, remote_client: None, remote_client_monitor: None)
+      state
+      |> update_read_model_remote_client_status(read_model.Stopped)
+      |> fn(state) {
+        State(..state, remote_client: None, remote_client_monitor: None)
+      }
     },
     restart_remote_client_if_enabled: restart_remote_client_if_enabled,
     resolve_down: fn(state, monitor) {

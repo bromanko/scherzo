@@ -2,6 +2,7 @@ import gleam/bit_array
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_executor
 import scherzo/artifact_repository/command_runner
@@ -42,7 +43,11 @@ pub fn execute_routes_prepares_artifact_bytes_and_records_published_attempt_test
   assert attempt.status == "published"
   let projected = load_projection(root)
   let assert Ok(latest) =
-    projection.latest_publication_for_run(projected, "run-1", "review_doc")
+    projection.latest_publication_for_run(
+      projected,
+      "run-1",
+      "execplan_review_doc",
+    )
   assert latest.status == "published"
   assert latest.retry_execution_available == True
 }
@@ -157,36 +162,194 @@ pub fn execute_routes_dedupes_repeated_finalization_after_success_test() {
 
   let projected = load_projection(root)
   let attempts =
-    projection.publication_attempts_for_run(projected, "run-1", "review_doc")
+    projection.publication_attempts_for_run(
+      projected,
+      "run-1",
+      "execplan_review_doc",
+    )
   assert list.length(attempts) == 1
 }
 
+pub fn execute_routes_with_state_root_uses_state_root_for_managed_checkout_test() {
+  let root = "test/tmp/artifact-publication-executor/separate-state-root"
+  let config_dir = root <> "/config"
+  let state_root = root <> "/state"
+  test_helpers.reset_dir(root)
+  write_template(config_dir)
+  write_artifact(state_root, plan_ref(), plan_contents())
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root(
+      [route(True)],
+      repositories(),
+      config_dir,
+      config_dir,
+      state_root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      state_root_runner(state_root),
+    )
+
+  assert result.required_failures == []
+  let assert [attempt] = result.attempts
+  assert attempt.status == "published"
+}
+
+pub fn execute_recovered_routes_with_state_root_uses_state_root_for_managed_checkout_test() {
+  let root =
+    "test/tmp/artifact-publication-executor/separate-state-root-recovered"
+  let config_dir = root <> "/config"
+  let state_root = root <> "/state"
+  test_helpers.reset_dir(root)
+  write_template(config_dir)
+  write_artifact(state_root, plan_ref(), plan_contents())
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_recovered_routes_with_runner_and_state_root(
+      [route(True)],
+      repositories(),
+      config_dir,
+      config_dir,
+      state_root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      state_root_runner(state_root),
+    )
+
+  assert result.required_failures == []
+  let assert [attempt] = result.attempts
+  assert attempt.status == "published"
+}
+
+pub fn recovered_routes_preserve_failed_publication_attempt_test() {
+  let root = "test/tmp/artifact-publication-executor/recovered-failed"
+  test_helpers.reset_dir(root)
+  write_template(root)
+  write_artifact(root, plan_ref(), plan_contents())
+
+  let assert Ok(first) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [route(True)],
+      repositories(),
+      root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+      commit_failure_runner(),
+    )
+  let assert [first_failure] = first.required_failures
+  assert first_failure.code == "git_commit_failed"
+
+  let assert Ok(second) =
+    artifact_publication_executor.execute_recovered_routes_with_runner(
+      [route(True)],
+      repositories(),
+      root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 456 }),
+      fake_runner(),
+    )
+
+  let assert [second_failure] = second.required_failures
+  assert second_failure.code == "git_commit_failed"
+  let assert [attempt] = second.attempts
+  assert attempt.status == "failed"
+  let attempts =
+    projection.publication_attempts_for_run(
+      load_projection(root),
+      "run-1",
+      "execplan_review_doc",
+    )
+  assert list.length(attempts) == 1
+}
+
+pub fn execute_routes_resolves_route_template_from_workflow_bundle_dir_test() {
+  let root = "test/tmp/artifact-publication-executor/workflow-template-root"
+  let config_dir = root <> "/config"
+  let workflow_bundle_dir = root <> "/workflows/execplan"
+  let state_root = root <> "/state"
+  test_helpers.reset_dir(root)
+  write_template(workflow_bundle_dir)
+  write_artifact(state_root, plan_ref(), plan_contents())
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root(
+      [route(True)],
+      repositories(),
+      config_dir,
+      workflow_bundle_dir,
+      state_root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      fake_runner(),
+    )
+
+  assert result.required_failures == []
+  let assert [attempt] = result.attempts
+  assert attempt.status == "published"
+}
+
 fn fake_runner() -> command_runner.Runner {
+  command_runner.Runner(run: fake_command)
+}
+
+fn state_root_runner(expected_root: String) -> command_runner.Runner {
   command_runner.Runner(run: fn(spec) {
-    let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
-    let _ = simplifile.create_directory_all(cwd)
-    case executable, args {
-      "git", ["clone", _, target] -> {
-        let _ = simplifile.create_directory_all(target)
-        Ok(command_runner.CommandOutput(0, "", ""))
-      }
-      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["rev-parse", "--verify", ..] ->
-        Ok(command_runner.CommandOutput(1, "", ""))
-      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
-      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["rev-parse", "HEAD"] ->
-        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
-      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
-      "gh", ["pr", "create", ..] ->
-        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
-      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    let command_runner.CommandSpec(_, _, cwd, _, _) = spec
+    case
+      string.starts_with(
+        path.absolute_or_original(cwd),
+        path.absolute_or_original(expected_root),
+      )
+    {
+      True -> fake_command(spec)
+      False -> Error(command_runner.command_error("wrong_workspace_root"))
     }
   })
+}
+
+fn fake_command(
+  spec: command_runner.CommandSpec,
+) -> Result(command_runner.CommandOutput, command_runner.CommandError) {
+  let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
+  let _ = simplifile.create_directory_all(cwd)
+  case executable, args {
+    "git", ["clone", _, target] -> {
+      let _ = simplifile.create_directory_all(target)
+      Ok(command_runner.CommandOutput(0, "", ""))
+    }
+    "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["remote", "get-url", "origin"] ->
+      Ok(command_runner.CommandOutput(
+        0,
+        "https://github.com/scherzo-systems/scherzo.git",
+        "",
+      ))
+    "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+    "git", ["rev-parse", "--verify", ..] ->
+      Ok(command_runner.CommandOutput(1, "", ""))
+    "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+    "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "git", ["rev-parse", "HEAD"] ->
+      Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+    "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+    "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+    "gh", ["pr", "create", ..] ->
+      Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+    _, _ -> Error(command_runner.command_error("unexpected_command"))
+  }
 }
 
 fn commit_failure_runner() -> command_runner.Runner {
@@ -199,6 +362,7 @@ fn commit_failure_runner() -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
@@ -302,7 +466,7 @@ fn repositories() -> artifact_publication_config.ArtifactRepositories {
 
 fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
   artifact_publication_config.PublicationRoute(
-    id: "review_doc",
+    id: "execplan_review_doc",
     repository: "github.docs",
     required: required,
     pull_request: Some(

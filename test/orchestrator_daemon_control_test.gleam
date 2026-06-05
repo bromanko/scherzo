@@ -1,19 +1,23 @@
 import gleam/dict
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types
 import scherzo/control/client
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/query/dto
 import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
 import scherzo/error
 import scherzo/handoff
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/read_model
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event
 import scherzo/session/hub
@@ -27,6 +31,7 @@ import scherzo/tracker/adapter
 import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/turn_telemetry
 import scherzo/workflow_attempt
 import scherzo/workflow_run
 import simplifile
@@ -43,14 +48,15 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
 }
 
 fn workflow_text(root: String) -> String {
-  workflow_text_with_limits(root, 0, 1, 1)
+  workflow_text_with_extra_config(root, 0, 1, 1, "")
 }
 
-fn workflow_text_with_limits(
+fn workflow_text_with_extra_config(
   root: String,
   max_concurrent_agents: Int,
   max_retry_attempts: Int,
   max_sessions_per_issue: Int,
+  extra_config: String,
 ) -> String {
   "version: 1
 tracker:
@@ -72,7 +78,7 @@ agents:
     type: pi
     pi:
       executable: fake
-task_routing:
+" <> extra_config <> "task_routing:
   labels:
     require_exactly_one: false
     default_workflow: implementation
@@ -93,16 +99,33 @@ fn write_workflow_with_limits(
   max_retry_attempts: Int,
   max_sessions_per_issue: Int,
 ) -> #(String, String) {
+  write_workflow_with_extra_config(
+    dir,
+    max_concurrent_agents,
+    max_retry_attempts,
+    max_sessions_per_issue,
+    "",
+  )
+}
+
+fn write_workflow_with_extra_config(
+  dir: String,
+  max_concurrent_agents: Int,
+  max_retry_attempts: Int,
+  max_sessions_per_issue: Int,
+  extra_config: String,
+) -> #(String, String) {
   test_helpers.reset_dir(dir)
   let root = dir <> "/workspaces"
   #(
     write_workflow_files(
       dir,
-      workflow_text_with_limits(
+      workflow_text_with_extra_config(
         root,
         max_concurrent_agents,
         max_retry_attempts,
         max_sessions_per_issue,
+        extra_config,
       ),
     ),
     root,
@@ -381,6 +404,58 @@ fn long_running_agent(
   }
 }
 
+fn token_reporting_blocking_agent(
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+) -> fn(
+  tracker_issue.Issue,
+  Option(Int),
+  String,
+  config_types.EffectiveConfig,
+  tracker.Client,
+  fn(String, agent_types.RunnerUpdate) -> Nil,
+  process.Subject(worker_command.Command),
+  fn() -> Nil,
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
+  fn(issue: tracker_issue.Issue, _, _, _, _, emit_update, _, ready) {
+    ready()
+    let tokens =
+      session_tokens.TokenTotals(
+        input: 2,
+        output: 3,
+        cache_read: 1,
+        cache_write: 3,
+        total: 9,
+      )
+    emit_update(
+      issue.id,
+      agent_types.RunnerTurnUpdate(turn_telemetry.TurnLifecycleUpdate(
+        name: turn_telemetry.EventStarted,
+        turn: 1,
+        tokens: session_tokens.zero_token_totals(),
+        reason: None,
+      )),
+    )
+    emit_update(
+      issue.id,
+      agent_types.RunnerTurnUpdate(turn_telemetry.TurnLifecycleUpdate(
+        name: turn_telemetry.EventFinished,
+        turn: 1,
+        tokens: tokens,
+        reason: None,
+      )),
+    )
+    process.send(log_subject, "agent_tokens_emitted")
+    test_async.block_until_released(barrier)
+    Error(agent_types.WorkerFailure(
+      reason: error.PiFailed(error.PiProtocolError("stopped")),
+      workspace_path: None,
+      tokens: session_tokens.zero_token_totals(),
+      final_issue: None,
+    ))
+  }
+}
+
 fn failing_agent(
   log_subject: process.Subject(String),
 ) -> fn(
@@ -515,9 +590,30 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
   let assert Ok(paused) =
     daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
   assert command.status_to_string(paused.status) == "applied"
-  let assert Ok(query_types.MetricsResponse(metrics)) =
-    daemon.execute_query(started.data, query_types.Metrics, 1000)
-
+  let assert Ok(metrics) =
+    wait_for_metrics(started.data, 20, fn(metrics) {
+      metrics.dispatch_paused
+      && metrics.running_workers == 1
+      && metrics.active_sessions == 2
+    })
+  let assert Ok(read_snapshot) =
+    daemon.get_read_model_snapshot(started.data, 1000)
+  let read_model.Snapshot(
+    dispatch_paused: read_dispatch_paused,
+    remote_client_status: remote_client_status,
+    counts: read_model.RuntimeCounts(
+      workflow_count: workflow_count,
+      active_sessions: active_sessions,
+      running_workers: running_workers,
+      ..,
+    ),
+    ..,
+  ) = read_snapshot
+  assert read_dispatch_paused
+  assert remote_client_status == read_model.Disabled
+  assert workflow_count == 1
+  assert active_sessions == 2
+  assert running_workers == 1
   assert metrics.schema_version
     == query_types.operational_metrics_schema_version
   assert metrics.daemon_id != ""
@@ -526,13 +622,148 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
   assert metrics.dispatch_paused
   assert metrics.workflow_count == 1
   assert metrics.scheduled_job_count == 0
-  assert metrics.active_sessions == 1
+  assert metrics.active_sessions == 2
   assert metrics.running_workers == 1
   assert metrics.running_scheduled_workers == 0
   assert metrics.queued_claims == 0
   assert metrics.token_totals.total == 0
 
   test_async.release_barrier(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_metrics_count_active_yaml_child_steps_and_child_tokens_test() {
+  let candidate = issue("yaml-metrics-issue", "ABC-YAML", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let #(workflow_path, _root) =
+    write_workflow_with_limits("test/tmp/daemon-control-yaml-metrics", 1, 3, 3)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      disabled_handoff(),
+      hub_subject,
+      token_reporting_blocking_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "agent_tokens_emitted", 20)
+
+  let assert Ok(query_types.MetricsResponse(active_metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  assert active_metrics.running_workers == 1
+  assert active_metrics.running_scheduled_workers == 0
+  assert active_metrics.active_sessions == 2
+  assert active_metrics.token_totals.total == 9
+
+  let assert Ok(parent_summary) =
+    wait_for_session(hub_subject, "ABC-YAML-42-1", 20)
+  assert parent_summary.current_turn == 1
+  assert parent_summary.current_turn_status
+    == Some(turn_telemetry.StatusFinished)
+  assert parent_summary.last_turn_token_delta.total == 9
+  assert parent_summary.token_totals.total == 9
+
+  test_async.release_barrier(worker_barrier)
+  assert wait_for_log(log_subject, "worker_exited", 20)
+  let assert Ok(query_types.MetricsResponse(final_metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  assert final_metrics.active_sessions == 0
+  assert final_metrics.token_totals.total == 9
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_status_and_metrics_queries_do_not_call_tracker_adapter_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-control-query-probe")
+  let log_subject = process.new_subject()
+  let tracker_probe = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      make_tracker_adapter: fn(_) { probed_tracker_adapter(tracker_probe) },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(query_types.StatusResponse(status)) =
+    daemon.execute_query(started.data, query_types.Status, 1000)
+  let assert Ok(query_types.MetricsResponse(metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+
+  assert status.supported_queries == query_types.supported_queries()
+  assert metrics.remote_client_status == "disabled"
+  test_async.assert_no_extra_message_within(tracker_probe, 50)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_status_and_metrics_queries_stay_bounded_with_large_retained_history_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-control-large-history")
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  populate_retained_session_history(hub_subject, 80, 50)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      start_event_hub: fn() { Ok(hub_subject) },
+      start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+      stop_control_server: fn(_) { Nil },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(query_types.StatusResponse(status)) =
+    daemon.execute_query(started.data, query_types.Status, 1000)
+  let assert Ok(query_types.MetricsResponse(metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  let encoded_status = status |> dto.status_to_json |> json.to_string
+  let encoded_metrics =
+    metrics |> dto.operational_metrics_to_json |> json.to_string
+
+  assert metrics.active_sessions == 0
+  assert metrics.running_workers == 0
+  assert string.length(encoded_status) < 300
+  assert string.length(encoded_metrics) < 900
+  assert !string.contains(encoded_status, large_history_marker())
+  assert !string.contains(encoded_metrics, large_history_marker())
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_read_model_reports_remote_client_retrying_when_start_fails_test() {
+  let #(workflow_path, _root) =
+    write_workflow_with_extra_config(
+      "test/tmp/daemon-control-remote-client-retrying",
+      0,
+      1,
+      1,
+      "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n",
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      start_event_hub: fn() { Ok(hub_subject) },
+      start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+      stop_control_server: fn(_) { Nil },
+      start_remote_client: fn(_, _, _, _, _) {
+        Error(daemon.StartupError("dial_failed", "boom"))
+      },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  assert wait_for_log(log_subject, "remote_client_restart_failed", 20)
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert snapshot.remote_client_status == read_model.Retrying("dial_failed")
+
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -597,7 +828,10 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
   assert command.status_to_string(parked.status) == "applied"
   let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot_after_park) = daemon.get_snapshot(started.data, 1000)
+  let assert Ok(read_snapshot_after_park) =
+    daemon.get_read_model_snapshot(started.data, 1000)
   assert dict.has_key(snapshot_after_park.parked, identity)
+  assert read_snapshot_after_park.counts.parked_tasks == 1
   let assert Ok(parked_entry) = dict.get(snapshot_after_park.parked, identity)
   assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
   assert process.receive(park_subject, within: 1000)
@@ -610,7 +844,10 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
     )
   assert command.status_to_string(unparked.status) == "applied"
   let assert Ok(snapshot_after_unpark) = daemon.get_snapshot(started.data, 1000)
+  let assert Ok(read_snapshot_after_unpark) =
+    daemon.get_read_model_snapshot(started.data, 1000)
   assert !dict.has_key(snapshot_after_unpark.parked, identity)
+  assert read_snapshot_after_unpark.counts.parked_tasks == 0
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
@@ -823,8 +1060,12 @@ pub fn park_rejects_claimed_issues_test() {
   assert command.status_to_string(parked.status) == "rejected"
   let claimed_identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  let assert Ok(read_snapshot) =
+    daemon.get_read_model_snapshot(started.data, 1000)
   assert dict.has_key(snapshot.claimed, claimed_identity)
   assert !dict.has_key(snapshot.parked, claimed_identity)
+  assert read_snapshot.counts.retry_tasks == 1
+  assert read_snapshot.counts.claimed_tasks == 1
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -917,10 +1158,13 @@ pub fn startup_recovery_of_parked_issue_does_not_repost_park_comment_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  let assert Ok(read_snapshot) =
+    daemon.get_read_model_snapshot(started.data, 1000)
   assert dict.has_key(
     snapshot.parked,
     orchestrator_state.linear_issue_id_identity("recovered-park"),
   )
+  assert read_snapshot.counts.parked_tasks == 1
   assert process.receive(park_subject, within: 100) == Error(Nil)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -1216,6 +1460,107 @@ fn assert_session_stop_command(
   hub.stop(hub_subject)
 }
 
+fn populate_retained_session_history(
+  hub_subject: process.Subject(hub.Message),
+  session_count: Int,
+  events_per_session: Int,
+) -> Nil {
+  populate_retained_session_history_loop(
+    hub_subject,
+    session_count,
+    events_per_session,
+    1,
+  )
+}
+
+fn populate_retained_session_history_loop(
+  hub_subject: process.Subject(hub.Message),
+  session_count: Int,
+  events_per_session: Int,
+  index: Int,
+) -> Nil {
+  case index > session_count {
+    True -> Nil
+    False -> {
+      let session_id = "history-" <> int_to_string(index)
+      hub.register_session(
+        hub_subject,
+        retained_session_summary(session_id, index),
+      )
+      publish_retained_events(hub_subject, session_id, events_per_session, 1)
+      hub.finish_session(hub_subject, session_id, session_reason.Normal)
+      populate_retained_session_history_loop(
+        hub_subject,
+        session_count,
+        events_per_session,
+        index + 1,
+      )
+    }
+  }
+}
+
+fn publish_retained_events(
+  hub_subject: process.Subject(hub.Message),
+  session_id: String,
+  event_count: Int,
+  index: Int,
+) -> Nil {
+  case index > event_count {
+    True -> Nil
+    False -> {
+      hub.publish(
+        hub_subject,
+        session_id,
+        event.EventPayload(
+          ..event.empty_payload(
+            event.Lifecycle,
+            event.LifecycleName(event.DispatchStarted),
+          ),
+          message: Some(large_history_marker() <> "-" <> int_to_string(index)),
+        ),
+      )
+      publish_retained_events(hub_subject, session_id, event_count, index + 1)
+    }
+  }
+}
+
+fn retained_session_summary(
+  session_id: String,
+  index: Int,
+) -> event.SessionSummary {
+  event.SessionSummary(
+    session_id: session_id,
+    display_name: "History " <> int_to_string(index),
+    issue_id: "issue-" <> int_to_string(index),
+    issue_identifier: "ABC-HISTORY-" <> int_to_string(index),
+    issue_title: large_history_marker() <> " title " <> int_to_string(index),
+    workspace_path: "test/tmp/history-" <> int_to_string(index),
+    pi_session_id: None,
+    status: event.Exited(session_reason.Normal),
+    recovery: None,
+    current_turn: 0,
+    current_turn_status: None,
+    current_turn_started_at_ms: None,
+    last_turn_finished_at_ms: None,
+    last_turn_duration_ms: None,
+    last_turn_token_delta: session_tokens.zero_token_totals(),
+    last_turn_reason: None,
+    started_at_ms: index,
+    last_event_at_ms: index,
+    token_totals: session_tokens.TokenTotals(
+      input: index,
+      output: index,
+      cache_read: index,
+      cache_write: index,
+      total: index * 4,
+    ),
+  )
+}
+
+fn large_history_marker() -> String {
+  "raw-history-marker-should-not-leak"
+}
+
 fn tracker_with(candidate: tracker_issue.Issue) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },
@@ -1303,6 +1648,52 @@ fn empty_tracker() -> tracker.Client {
   )
 }
 
+fn probed_tracker_adapter(
+  probe: process.Subject(String),
+) -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    kind: "probe",
+    display_name: "Probe tracker",
+    task_source: adapter.TaskSourceCapability(
+      fetch_candidates: fn(_) {
+        process.send(probe, "fetch_candidates")
+        Ok([])
+      },
+      refresh_by_refs: fn(_) {
+        process.send(probe, "refresh_by_refs")
+        Ok([])
+      },
+      lookup_by_operator_ref: fn(_) {
+        process.send(probe, "lookup_by_operator_ref")
+        Ok(None)
+      },
+      list_tasks: fn(_) {
+        process.send(probe, "list_tasks")
+        Ok(adapter.TaskPage(items: [], has_more: False))
+      },
+      lookup_task_detail: fn(_) {
+        process.send(probe, "lookup_task_detail")
+        Ok(None)
+      },
+    ),
+    comments: None,
+    remote_commands: None,
+    state_transitions: None,
+    routing_metadata: Some(
+      adapter.RoutingMetadataCapability(
+        workflow_labels: fn(value) { task.label_names(value) },
+        blocker_refs: fn(value) { value.blockers },
+      ),
+    ),
+    links: None,
+    handoff: None,
+    scheduled_failures: None,
+    readiness: None,
+    smoke: None,
+    attachments: None,
+  )
+}
+
 fn wait_for_log(
   subject: process.Subject(String),
   expected: String,
@@ -1318,6 +1709,46 @@ fn wait_for_log(
             False -> wait_for_log(subject, expected, attempts - 1)
           }
         Error(_) -> wait_for_log(subject, expected, attempts - 1)
+      }
+  }
+}
+
+fn wait_for_metrics(
+  daemon_subject: process.Subject(daemon.Message),
+  attempts: Int,
+  predicate: fn(query_types.OperationalMetricsDto) -> Bool,
+) -> Result(query_types.OperationalMetricsDto, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case daemon.execute_query(daemon_subject, query_types.Metrics, 1000) {
+        Ok(query_types.MetricsResponse(metrics)) ->
+          case predicate(metrics) {
+            True -> Ok(metrics)
+            False -> {
+              process.sleep(50)
+              wait_for_metrics(daemon_subject, attempts - 1, predicate)
+            }
+          }
+        _ -> {
+          process.sleep(50)
+          wait_for_metrics(daemon_subject, attempts - 1, predicate)
+        }
+      }
+  }
+}
+
+fn wait_for_session(
+  subject: process.Subject(hub.Message),
+  session_id: String,
+  attempts: Int,
+) -> Result(event.SessionSummary, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case hub.get_session(subject, session_id, 100) {
+        Ok(Some(summary)) -> Ok(summary)
+        _ -> wait_for_session(subject, session_id, attempts - 1)
       }
   }
 }

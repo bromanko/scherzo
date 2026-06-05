@@ -12,6 +12,7 @@
     read_diagnostics/1,
     terminate/1,
     await_exit/2,
+    await_exit_with_stdout/2,
     temp_dir_for_test/1
 ]).
 
@@ -486,6 +487,25 @@ await_exit(Process, TimeoutMs) ->
         error -> {error, <<"closed">>}
     end.
 
+await_exit_with_stdout(Process, TimeoutMs) ->
+    case process_port_result(Process) of
+        {ok, Port} ->
+            try
+                OsPid = process_os_pid(Process),
+                ChildPidPath = process_child_pid_path(Process),
+                StatusPath = process_status_path(Process),
+                Timeout = normalize_timeout(TimeoutMs),
+                Deadline = now_ms() + Timeout,
+                Key = {scherzo_port_stdout_state, Port},
+                State = get_stdout_state(Key),
+                _ = erlang:erase(Key),
+                await_exit_collect_loop(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline, State)
+            catch
+                Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
+            end;
+        error -> {error, <<"closed">>}
+    end.
+
 await_exit_loop(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline) ->
     case read_exit_status(StatusPath) of
         {ok, Status} -> await_status_file_exit(Process, Port, Status, OsPid, ChildPidPath, Deadline);
@@ -531,6 +551,62 @@ await_os_exit(Process, Port, Status, OsPid, ChildPidPath, Timeout) ->
     case wait_for_launched_process_gone(OsPid, ChildPidPath, Timeout) of
         ok -> _ = drain_port_stdout_and_exit(Port), finish_process_exit(Process, Status);
         timeout -> {error, <<"timeout">>}
+    end.
+
+await_exit_collect_loop(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline, State) ->
+    case read_exit_status(StatusPath) of
+        {ok, Status} -> await_status_file_exit_collect(Process, Port, Status, OsPid, ChildPidPath, Deadline, State);
+        none ->
+            Timeout = min_int(?POLL_MS, remaining_ms(Deadline)),
+            case Timeout =< 0 of
+                true -> await_exit_collect_deadline(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline, State);
+                false ->
+                    receive
+                        {Port, {data, Bytes}} ->
+                            await_exit_collect_loop(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline, append_stdout_buffer(State, Bytes));
+                        {Port, {exit_status, Status}} ->
+                            await_os_exit_collect(Process, Port, Status, OsPid, ChildPidPath, remaining_ms(Deadline), State);
+                        {'EXIT', Port, _Reason} ->
+                            await_os_exit_collect(Process, Port, exit_status_or_default(StatusPath, 0), OsPid, ChildPidPath, remaining_ms(Deadline), State)
+                    after Timeout ->
+                        await_exit_collect_loop(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline, State)
+                    end
+            end
+    end.
+
+await_exit_collect_deadline(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline, State) ->
+    case read_exit_status(StatusPath) of
+        {ok, Status} -> await_status_file_exit_collect(Process, Port, Status, OsPid, ChildPidPath, Deadline, State);
+        none ->
+            case erlang:port_info(Port) of
+                undefined -> await_os_exit_collect(Process, Port, 0, OsPid, ChildPidPath, 0, State);
+                _ -> {error, <<"timeout">>}
+            end
+    end.
+
+await_status_file_exit_collect(Process, Port, Status, OsPid, ChildPidPath, Deadline, State) ->
+    case terminate_residual_launched_process_until(ChildPidPath, Deadline) of
+        ok ->
+            case wait_for_launched_process_gone(OsPid, ChildPidPath, remaining_ms(Deadline)) of
+                ok -> finish_process_exit_with_stdout(Process, Port, Status, State);
+                timeout -> {error, <<"timeout">>}
+            end;
+        timeout -> {error, <<"timeout">>}
+    end.
+
+await_os_exit_collect(Process, Port, Status, OsPid, ChildPidPath, Timeout, State) ->
+    case wait_for_launched_process_gone(OsPid, ChildPidPath, Timeout) of
+        ok -> finish_process_exit_with_stdout(Process, Port, Status, State);
+        timeout -> {error, <<"timeout">>}
+    end.
+
+finish_process_exit_with_stdout(Process, Port, Status, State) ->
+    Drained = drain_port_stdout_state(Port, State),
+    Stdout = maps:get(buffer, Drained, <<>>),
+    _ = erlang:erase({scherzo_port_stdout_state, Port}),
+    case finish_process_exit(Process, Status) of
+        {ok, Status} -> {ok, {Status, Stdout}};
+        Error -> Error
     end.
 
 finish_process_exit(Process, Status) ->
@@ -808,12 +884,27 @@ exit_status_or_default(StatusPath, Default) ->
         none -> Default
     end.
 
+append_stdout_buffer(State, Bytes) ->
+    Buffer = maps:get(buffer, State, <<>>),
+    State#{buffer => <<Buffer/binary, Bytes/binary>>}.
+
 drain_port_stdout_and_exit(Port) ->
     receive
         {Port, {data, _Bytes}} -> drain_port_stdout_and_exit(Port);
         {Port, {exit_status, _Status}} -> drain_port_stdout_and_exit(Port);
         {'EXIT', Port, _Reason} -> drain_port_stdout_and_exit(Port)
     after 0 -> ok
+    end.
+
+drain_port_stdout_state(Port, State) ->
+    receive
+        {Port, {data, Bytes}} ->
+            drain_port_stdout_state(Port, append_stdout_buffer(State, Bytes));
+        {Port, {exit_status, Status}} ->
+            drain_port_stdout_state(Port, State#{status => {exit_status, Status}});
+        {'EXIT', Port, _Reason} ->
+            drain_port_stdout_state(Port, State#{status => closed})
+    after 0 -> State
     end.
 
 sleep_until_next_poll(Deadline) ->

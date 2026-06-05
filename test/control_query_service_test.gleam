@@ -200,6 +200,7 @@ fn metrics_response() -> types.QueryResponse {
     retry_timer_count: 0,
     retry_refresh_in_flight_count: 0,
     scheduled_due_count: 0,
+    scheduled_next_due_count: 0,
     scheduled_pending_count: 0,
     scheduled_retry_count: 0,
     scheduled_report_retry_count: 0,

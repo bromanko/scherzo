@@ -3,6 +3,7 @@ import gleam/json
 import gleam/option.{type Option}
 import gleam/result
 import scherzo/artifact_publication_planner
+import scherzo/json_value
 
 pub fn decode_manifest_json(
   payload_json: String,
@@ -69,6 +70,10 @@ fn selected_artifact_decoder() -> decode.Decoder(
     "artifact_type",
     decode.optional(decode.string),
   )
+  use metadata <- decode.field(
+    "metadata",
+    decode.optional(json_value.decoder()),
+  )
   use ref <- decode.field("ref", decode.string)
   use sha256 <- decode.field("sha256", decode.string)
   use bytes <- decode.field("bytes", decode.int)
@@ -78,6 +83,7 @@ fn selected_artifact_decoder() -> decode.Decoder(
     entry: entry,
     name: name,
     artifact_type: artifact_type,
+    metadata: metadata,
     ref: ref,
     sha256: sha256,
     bytes: bytes,
