@@ -1,6 +1,6 @@
 # Portable research workflow
 
-The portable research workflow lets an operator run a Scherzo research task in any repository that can provide one workspace-driver capability: `assert-only`. The workflow asks the agent to write exactly one file, `research-findings.md`, then a command step asks the configured workspace driver to prove that this file is the only produced artifact before Scherzo streams the file as the workflow result.
+The portable research workflow lets an operator run a Scherzo research task in any repository that can provide one workspace-driver capability: `assert-only`. The workflow asks the agent to write exactly one file, `research-findings.md`, then a command step asks the configured workspace driver to prove that this file is the only produced artifact before Scherzo retains the exact findings as a local workflow output artifact and streams the file as the workflow result.
 
 ## Terms
 
@@ -99,6 +99,6 @@ Before routing real tasks to the workflow, run a small manual check in a disposa
 1. Run `"$driver" describe --json`; expect version `1` metadata that includes `assert-only`.
 2. Create only `research-findings.md` and run `"$driver" assert-only --path research-findings.md`; expect exit code 0.
 3. Add `unexpected-artifact.txt` and run the same command; expect a nonzero exit and a diagnostic naming the unexpected artifact or changed-file set.
-4. Remove the unexpected file and run the workflow against a low-risk task; expect the terminal result to be the contents of `research-findings.md`.
+4. Remove the unexpected file and run the workflow against a low-risk task; expect the terminal result and retained `findings` workflow output to be the contents of `research-findings.md`.
 
 This workflow is safe to roll back by reverting the workflow YAML, prompt, and driver config changes. It does not change stored tracker state or repository data beyond the temporary workflow workspace.

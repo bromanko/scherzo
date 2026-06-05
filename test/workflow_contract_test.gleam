@@ -1,7 +1,13 @@
+import gleam/dict
 import gleam/json
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
+import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
+import scherzo/workflow_contract_manifest
+import scherzo/workflow_dag
+import scherzo/workflow_run/contract_io
+import support/test_helpers
 import yay
 
 fn root(source: String) -> yay.Node {
@@ -22,6 +28,14 @@ fn error_code(source: String) -> String {
 
 fn minimal_contract(body: String) -> String {
   "contract:\n  version: 1\n" <> body
+}
+
+fn static_ref_descriptor_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: static-ref-output\ncontract:\n  version: 1\n  outputs:\n    review_link:\n      kind: ref\n      ref_type: url\n      artifact_type: scherzo.review_link.v1\n      required: true\n      source:\n        type: url\n        value: https://example.invalid/review\n    branch_ref:\n      kind: ref\n      ref_type: git_ref\n      artifact_type: scherzo.branch_ref.v1\n      required: true\n      source:\n        type: git_ref\n        value: feature/liv-869\nsteps:\n  - id: noop\n    kind: command\n    run: echo ok\n",
+    )
+  dag
 }
 
 pub fn parses_contract_type_strings_test() {
@@ -104,6 +118,10 @@ pub fn rejects_invalid_contract_shapes_test() {
     ))
     == "duplicate_contract_output"
   assert error_code(minimal_contract(
+      "  outputs:\n    findings:\n      type: document.markdown\n      media_type: application/xml\n      required: false\n",
+    ))
+    == "unsupported_contract_descriptor_media_type"
+  assert error_code(minimal_contract(
       "  outputs:\n    plan:\n      kind: file\n      media_type: application/xml\n      artifact_type: scherzo.exec_plan.v1\n      required: true\n      source:\n        step: draft\n        path: tmp/plan.md\n",
     ))
     == "unknown_contract_descriptor_type"
@@ -151,8 +169,64 @@ pub fn parses_descriptor_contract_entries_test() {
   assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
   let assert [plan, implementation_pack, code_change_bundle] = contract.outputs
   assert plan.type_ == workflow_contract.ExecPlan
+  let assert Some(plan_descriptor) = plan.descriptor
+  assert plan_descriptor.kind == Some("file")
+  assert plan_descriptor.media_type == Some("text/markdown")
+  assert plan_descriptor.artifact_type == Some("scherzo.exec_plan.v1")
   assert implementation_pack.type_ == workflow_contract.ImplementationPack
   assert code_change_bundle.type_ == workflow_contract.CodeChangeBundle
+}
+
+pub fn parses_custom_markdown_file_descriptor_test() {
+  let contract =
+    parse_contract(minimal_contract(
+      "  outputs:\n    findings:\n      kind: file\n      media_type: text/markdown\n      artifact_type: scherzo.research_findings.v1\n      required: true\n      source:\n        step: collect_findings\n        field: stdout\n",
+    ))
+
+  let assert [findings] = contract.outputs
+  assert findings.type_ == workflow_contract.DocumentMarkdown
+  let assert Some(descriptor) = findings.descriptor
+  assert descriptor.kind == Some("file")
+  assert descriptor.media_type == Some("text/markdown")
+  assert descriptor.artifact_type == Some("scherzo.research_findings.v1")
+}
+
+pub fn static_ref_outputs_preserve_contract_artifact_types_test() {
+  let root = "test/tmp/workflow-contract/static-ref-descriptor"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(result) =
+    contract_io.record_outputs_if_contracted(
+      static_ref_descriptor_dag(),
+      "run-1",
+      "fp",
+      None,
+      checkpoint,
+      dict.new(),
+      dict.new(),
+    )
+
+  assert result.missing == []
+  let assert Some(manifest) = result.manifest
+  let assert [review_link, branch_ref] = manifest.outputs
+  let assert Some(review_link_descriptor) =
+    workflow_contract_manifest.descriptor_for_named_value(
+      "review_link",
+      review_link.value,
+    )
+  assert review_link_descriptor.artifact_type == Some("scherzo.review_link.v1")
+  assert review_link_descriptor.ref_type == Some("url")
+  assert review_link_descriptor.ref == Some("https://example.invalid/review")
+
+  let assert Some(branch_ref_descriptor) =
+    workflow_contract_manifest.descriptor_for_named_value(
+      "branch_ref",
+      branch_ref.value,
+    )
+  assert branch_ref_descriptor.artifact_type == Some("scherzo.branch_ref.v1")
+  assert branch_ref_descriptor.ref_type == Some("git_ref")
+  assert branch_ref_descriptor.ref == Some("feature/liv-869")
 }
 
 pub fn parses_output_sources_test() {

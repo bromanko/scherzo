@@ -12,6 +12,7 @@ import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest as contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_run/contract_io_error as contract_error
+import scherzo/workflow_run/output_contract_descriptor
 import scherzo/workspace_profile
 import scherzo/workspace_run
 import simplifile
@@ -613,11 +614,19 @@ fn output_value_from_source(
         True,
       )
     workflow_contract.StaticUrl(url) -> #(
-      contract_manifest.present_url(spec.type_, url),
+      contract_manifest.present_url_with_source(
+        spec.type_,
+        url,
+        output_contract_descriptor.source_for_descriptor(spec),
+      ),
       [],
     )
     workflow_contract.StaticGitRef(ref) -> #(
-      contract_manifest.present_git_ref(spec.type_, ref),
+      contract_manifest.present_git_ref_with_source(
+        spec.type_,
+        ref,
+        output_contract_descriptor.source_for_descriptor(spec),
+      ),
       [],
     )
   }
@@ -729,7 +738,8 @@ fn write_contract_output_blob(
   case validate_output_contents(spec, contents, truncated) {
     Error(error) -> output_absent(spec, output_validation_diagnostic(error))
     Ok(Nil) -> {
-      let #(extension, media_type) = output_extension_and_media(spec.type_)
+      let #(extension, media_type) =
+        output_contract_descriptor.extension_and_media(spec)
       let write =
         workflow_checkpoint.WorkflowOutputBlobWrite(
           run_id: run_id,
@@ -753,7 +763,7 @@ fn write_contract_output_blob(
               bytes: written.bytes,
             ),
             media_type,
-            Some(source),
+            Some(output_contract_descriptor.source_with_descriptor(spec, source)),
           ),
           [],
         )
@@ -827,7 +837,10 @@ fn output_value_from_structured_output(
                       bytes: metadata.bytes,
                     ),
                     "application/json",
-                    Some(structured_source_json(step_id, artifact_name)),
+                    Some(output_contract_descriptor.source_with_descriptor(
+                      spec,
+                      structured_source_json(step_id, artifact_name),
+                    )),
                   ),
                   [],
                 )
@@ -864,7 +877,10 @@ fn inline_structured_output_value(
             contract_manifest.present_inline_json(
               spec.type_,
               value,
-              Some(structured_source_json(step_id, metadata.artifact_name)),
+              Some(output_contract_descriptor.source_with_descriptor(
+                spec,
+                structured_source_json(step_id, metadata.artifact_name),
+              )),
             ),
             [],
           )
@@ -910,26 +926,6 @@ fn output_type_is_json(type_: workflow_contract.ContractType) -> Bool {
     | workflow_contract.Text
     | workflow_contract.Url
     | workflow_contract.GitRef -> False
-  }
-}
-
-fn output_extension_and_media(
-  type_: workflow_contract.ContractType,
-) -> #(String, String) {
-  case type_ {
-    workflow_contract.DocumentMarkdown | workflow_contract.ExecPlan -> #(
-      ".md",
-      "text/markdown",
-    )
-    workflow_contract.Text | workflow_contract.Url | workflow_contract.GitRef -> #(
-      ".txt",
-      "text/plain",
-    )
-    workflow_contract.CodeChange
-    | workflow_contract.ExecPlanBundle
-    | workflow_contract.ImplementationPack
-    | workflow_contract.CodeChangeBundle
-    | workflow_contract.ArtifactList -> #(".json", "application/json")
   }
 }
 

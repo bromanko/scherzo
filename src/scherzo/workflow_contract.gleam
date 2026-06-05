@@ -49,6 +49,15 @@ pub type ContextSpec {
   )
 }
 
+pub type OutputDescriptorSpec {
+  OutputDescriptorSpec(
+    kind: Option(String),
+    ref_type: Option(String),
+    media_type: Option(String),
+    artifact_type: Option(String),
+  )
+}
+
 pub type OutputSpec {
   OutputSpec(
     name: String,
@@ -56,6 +65,7 @@ pub type OutputSpec {
     required: Bool,
     description: Option(String),
     source: Option(OutputSource),
+    descriptor: Option(OutputDescriptorSpec),
   )
 }
 
@@ -623,7 +633,7 @@ fn read_output_spec(
   case node {
     yay.NodeStr(raw_type) -> {
       use type_ <- result.try(type_from_string(raw_type))
-      Ok(OutputSpec(name, type_, False, None, None))
+      Ok(OutputSpec(name, type_, False, None, None, None))
     }
     yay.NodeMap(_) -> {
       use entries <- result.try(read_map_entries(
@@ -644,7 +654,12 @@ fn read_output_spec(
         name,
       ))
       use source <- result.try(read_output_source_option(entries, name))
-      Ok(OutputSpec(name, type_, required, description, source))
+      use descriptor <- result.try(read_output_descriptor(
+        entries,
+        "output",
+        name,
+      ))
+      Ok(OutputSpec(name, type_, required, description, source, descriptor))
     }
     _ ->
       error(
@@ -794,6 +809,98 @@ fn read_entry_description(
       error(
         "contract_entry_description_not_string",
         "contract " <> kind <> " " <> name <> " description must be a string",
+      )
+  }
+}
+
+fn read_output_descriptor(
+  entries: List(#(String, yay.Node)),
+  kind: String,
+  name: String,
+) -> Result(Option(OutputDescriptorSpec), ContractError) {
+  case
+    get_entry(entries, "kind"),
+    get_entry(entries, "ref_type"),
+    get_entry(entries, "media_type"),
+    get_entry(entries, "artifact_type")
+  {
+    None, None, None, None -> Ok(None)
+    _, _, _, _ -> {
+      use descriptor_kind <- result.try(read_optional_descriptor_string(
+        entries,
+        "kind",
+        kind,
+        name,
+      ))
+      use ref_type <- result.try(read_optional_descriptor_string(
+        entries,
+        "ref_type",
+        kind,
+        name,
+      ))
+      use media_type <- result.try(read_optional_descriptor_string(
+        entries,
+        "media_type",
+        kind,
+        name,
+      ))
+      use artifact_type <- result.try(read_optional_descriptor_string(
+        entries,
+        "artifact_type",
+        kind,
+        name,
+      ))
+      use Nil <- result.try(validate_descriptor_media_type(
+        media_type,
+        kind,
+        name,
+      ))
+      Ok(
+        Some(OutputDescriptorSpec(
+          kind: descriptor_kind,
+          ref_type: ref_type,
+          media_type: media_type,
+          artifact_type: artifact_type,
+        )),
+      )
+    }
+  }
+}
+
+fn read_optional_descriptor_string(
+  entries: List(#(String, yay.Node)),
+  key: String,
+  kind: String,
+  name: String,
+) -> Result(Option(String), ContractError) {
+  case get_entry(entries, key) {
+    None -> Ok(None)
+    Some(yay.NodeStr(value)) -> Ok(Some(string.trim(value) |> string.lowercase))
+    Some(_) ->
+      error(
+        "contract_descriptor_field_not_string",
+        "contract " <> kind <> " " <> name <> " " <> key <> " must be a string",
+      )
+  }
+}
+
+fn validate_descriptor_media_type(
+  media_type: Option(String),
+  kind: String,
+  name: String,
+) -> Result(Nil, ContractError) {
+  case media_type {
+    None -> Ok(Nil)
+    Some("application/json") | Some("text/markdown") | Some("text/plain") ->
+      Ok(Nil)
+    Some(_) ->
+      error(
+        "unsupported_contract_descriptor_media_type",
+        "contract "
+          <> kind
+          <> " "
+          <> name
+          <> " media_type must be one of application/json, text/markdown, or text/plain",
       )
   }
 }
@@ -1147,12 +1254,29 @@ fn context_to_json(context: ContextSpec) -> json.Json {
 }
 
 fn output_to_json(output: OutputSpec) -> json.Json {
-  json.object([
+  let fields = [
     #("name", json.string(output.name)),
     #("type", json.string(type_to_string(output.type_))),
     #("required", json.bool(output.required)),
     #("description", option_string_to_json(output.description)),
     #("source", option_output_source_to_json(output.source)),
+  ]
+  let fields = case output.descriptor {
+    Some(descriptor) -> [
+      #("descriptor", output_descriptor_to_json(descriptor)),
+      ..fields
+    ]
+    None -> fields
+  }
+  json.object(fields)
+}
+
+fn output_descriptor_to_json(descriptor: OutputDescriptorSpec) -> json.Json {
+  json.object([
+    #("kind", option_string_to_json(descriptor.kind)),
+    #("ref_type", option_string_to_json(descriptor.ref_type)),
+    #("media_type", option_string_to_json(descriptor.media_type)),
+    #("artifact_type", option_string_to_json(descriptor.artifact_type)),
   ])
 }
 

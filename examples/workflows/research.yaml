@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: research
-description: Investigate a task, write one Markdown findings artifact, verify it through the workspace driver, and stream it as the workflow result.
+description: Investigate a task, write one Markdown findings artifact, verify it through the workspace driver, retain it as a local workflow output, and stream it as the workflow result.
 workspace:
   driver: noop
   requires: [assert-only]
@@ -18,7 +18,9 @@ contract:
       required: false
   outputs:
     findings:
-      type: document.markdown
+      kind: file
+      media_type: text/markdown
+      artifact_type: scherzo.research_findings.v1
       required: true
       source:
         step: collect_findings
