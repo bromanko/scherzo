@@ -1732,20 +1732,17 @@ fn handle_known_worker_down(
   handle: worker_registry.WorkerHandle,
 ) -> State {
   let state = State(..state, registry: registry)
-  append_workflow_interrupted_terminal(state, handle, "worker_down")
-  event_publisher.lifecycle(
-    state.event_hub,
-    handle.session_id,
-    session_event.WorkerDown,
-    None,
-  )
+  case worker_lifecycle.worker_down_matches(state.workers, issue_id, handle) {
+    False -> Nil
+    True -> {
+      append_workflow_interrupted_terminal(state, handle, "worker_down")
+      worker_lifecycle.publish_worker_down(state.event_hub, handle.session_id)
+    }
+  }
   run_transition_messages(state, [
-    transition_types.WorkerDown(
-      transition_types.KnownWorkerDown(
-        identity.issue_id_from_string(issue_id),
-        identity.run_id_from_string(handle.run_id),
-        identity.session_id_from_string(handle.session_id),
-      ),
+    worker_lifecycle.worker_down_message(
+      issue_id,
+      handle,
       transition_lifecycle_context(state),
     ),
   ])
