@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import orchestrator_transition_invariant_helpers as invariant_helpers
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
@@ -193,7 +194,7 @@ pub fn retry_refresh_failure_logs_error_before_reschedule_test() {
   let state = transition_types.State(..fixture_state(), runtime: runtime)
 
   let outcome =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.RetryRefreshCompleted(
         issue.id,
         7,

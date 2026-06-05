@@ -3,6 +3,7 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import orchestrator_transition_invariant_helpers as invariant_helpers
 import orchestrator_transition_test
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
@@ -33,7 +34,7 @@ pub fn transition_runner_applies_effects_and_follow_ups_in_order_test() {
     shell: shell,
     exhausted: exhausted,
   ) =
-    transition_runner.run(
+    invariant_helpers.run_and_assert(
       state: state,
       shell: shell,
       messages: [claim_ledger_append_requested()],
@@ -185,7 +186,7 @@ pub fn running_refresh_releases_stale_context_slot_before_candidate_fetch_test()
     shell: shell,
     exhausted: exhausted,
   ) =
-    transition_runner.run(
+    invariant_helpers.run_and_assert(
       state: state_with_running_worker(issue),
       shell: event_shell(),
       messages: [
@@ -321,7 +322,7 @@ pub fn worker_finish_removes_running_and_reports_success_test() {
     shell: shell,
     exhausted: exhausted,
   ) =
-    transition_runner.run(
+    invariant_helpers.run_and_assert(
       state: state,
       shell: event_shell(),
       messages: [
@@ -437,7 +438,7 @@ pub fn worker_down_known_removes_worker_and_reports_failure_test() {
     shell: shell,
     exhausted: exhausted,
   ) =
-    transition_runner.run(
+    invariant_helpers.run_and_assert(
       state: state,
       shell: event_shell(),
       messages: [
@@ -487,7 +488,7 @@ pub fn worker_down_stale_is_safe_test() {
     shell: shell,
     exhausted: exhausted,
   ) =
-    transition_runner.run(
+    invariant_helpers.run_and_assert(
       state: state,
       shell: event_shell(),
       messages: [

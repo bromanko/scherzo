@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import orchestrator_transition_invariant_helpers as invariant_helpers
 import orchestrator_transition_test
 import scherzo/config/types as config_types
 import scherzo/control/command
@@ -118,7 +119,7 @@ pub fn automatic_retry_dispatch_state_dispatches_test() {
   let issue = orchestrator_transition_test.fixture_issue()
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.RetryRefreshCompleted(
         issue.id,
         1,
@@ -231,7 +232,7 @@ pub fn explicit_retry_auto_unparks_changed_issue_test() {
     )
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.OperatorCommandSubmitted(
         request: request,
         context: context_with_failure_state("Triage"),
@@ -279,7 +280,7 @@ pub fn explicit_retry_preserves_parked_safety_test() {
     )
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.OperatorCommandSubmitted(
         request: request,
         context: orchestrator_transition_test.fixture_context(),
@@ -422,7 +423,7 @@ pub fn review_lane_preflight_blocks_claim_before_tracker_claim_test() {
   let state = state_with_pending_dispatch_validation(candidate)
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.DispatchValidationCompleted(
         candidate.id,
         1,
@@ -463,7 +464,7 @@ pub fn review_lane_preflight_park_off_blocks_without_tracker_mutation_test() {
   let state = state_with_pending_dispatch_validation(candidate)
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.DispatchValidationCompleted(
         candidate.id,
         1,
@@ -504,7 +505,7 @@ pub fn review_lane_preflight_off_mode_allows_claim_test() {
   let state = state_with_pending_dispatch_validation(candidate)
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.DispatchValidationCompleted(
         candidate.id,
         1,
@@ -543,7 +544,7 @@ pub fn review_lane_preflight_nonblocking_warning_allows_claim_test() {
   let state = state_with_pending_dispatch_validation(candidate)
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.DispatchValidationCompleted(
         candidate.id,
         1,
@@ -582,7 +583,7 @@ pub fn review_lane_preflight_required_live_missing_credentials_blocks_claim_test
   let state = state_with_pending_dispatch_validation(candidate)
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.DispatchValidationCompleted(
         candidate.id,
         1,
@@ -619,7 +620,7 @@ pub fn review_lane_preflight_cached_blocking_failure_blocks_claim_test() {
   let state = state_with_pending_dispatch_validation(candidate)
 
   let transition_types.Outcome(effects: effects, ..) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.DispatchValidationCompleted(
         candidate.id,
         1,
@@ -682,11 +683,12 @@ pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
       pending_dispatch_validations: dict.from_list([
         #(orchestrator_state.task_ref_identity(task_ref), pending),
       ]),
+      next_dispatch_validation_generation: 2,
       next_session_sequence: 3,
     )
 
   let transition_types.Outcome(state: next, effects: effects) =
-    transition.handle(
+    invariant_helpers.handle_and_assert(
       transition_types.DispatchValidationCompleted(
         candidate.id,
         1,
@@ -730,6 +732,7 @@ fn state_with_pending_dispatch_validation(
         ),
       ),
     ]),
+    next_dispatch_validation_generation: 2,
   )
 }
 
