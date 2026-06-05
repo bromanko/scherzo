@@ -1104,13 +1104,16 @@ fn record_publications_if_configured(
   dependencies: Dependencies,
 ) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
   case outputs.manifest {
-    Some(output_manifest) ->
+    Some(output_manifest) -> {
+      let workflow_bundle_dir =
+        workflow_identity.workflow_bundle_dir(orchestrator, dag.id)
       case recovered_execution {
         True ->
           artifact_publication_executor.execute_recovered_routes_with_state_root(
             dag.publication_routes,
             orchestrator.artifact_repositories,
             orchestrator.config_dir,
+            workflow_bundle_dir,
             orchestrator.effective.workspace.root,
             output_manifest,
             issue,
@@ -1122,6 +1125,7 @@ fn record_publications_if_configured(
             dag.publication_routes,
             orchestrator.artifact_repositories,
             orchestrator.config_dir,
+            workflow_bundle_dir,
             orchestrator.effective.workspace.root,
             output_manifest,
             issue,
@@ -1129,6 +1133,7 @@ fn record_publications_if_configured(
             dependencies.checkpoint,
           )
       }
+    }
     None ->
       Ok(
         artifact_publication_recording.PublicationRecordingResult(

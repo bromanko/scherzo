@@ -313,6 +313,10 @@ pub fn scheduled_worker_count(registry: Registry) -> Int {
   dict.size(registry.scheduled_workers)
 }
 
+pub fn active_yaml_step_session_count(registry: Registry) -> Int {
+  dict.size(registry.yaml_step_runs)
+}
+
 pub fn worker_issue_ids(registry: Registry) -> List(String) {
   registry.workers |> dict.values |> list.map(fn(handle) { handle.issue_id })
 }
@@ -468,6 +472,25 @@ pub fn register_yaml_step_started(
     ..registry,
     yaml_step_runs: dict.insert(registry.yaml_step_runs, session_id, run_id),
   )
+}
+
+pub fn register_active_yaml_step_started(
+  registry: Registry,
+  session_id: String,
+  run_id: String,
+) -> Registry {
+  case stopped_yaml_run_reason(registry, run_id) {
+    Ok(_) -> registry
+    Error(Nil) ->
+      case worker_for_run(registry, run_id) {
+        Ok(_) -> register_yaml_step_started(registry, session_id, run_id)
+        Error(Nil) ->
+          case scheduled_worker_for_run(registry, run_id) {
+            Ok(_) -> register_yaml_step_started(registry, session_id, run_id)
+            Error(Nil) -> registry
+          }
+      }
+  }
 }
 
 pub fn finish_yaml_step(registry: Registry, session_id: String) -> Registry {

@@ -106,6 +106,8 @@ scherzoctl schedules history github-pr-conflict-scout
 scherzoctl schedules doctor github-pr-conflict-scout
 ```
 
+`scherzoctl query metrics` distinguishes scheduled configuration from due work: `scheduled_job_count` is the configured job count, `scheduled_next_due_count` is the number of jobs with a remembered next due timestamp, and `scheduled_due_count` is only the number whose next due timestamp is currently due. During a healthy terminal-success interval, expect `scheduled_next_due_count` to remain non-zero while `scheduled_due_count` and `running_scheduled_workers` are zero.
+
 Force a safe manual run only when dispatch is not paused and the same job is not already pending, active, or retrying:
 
 ```sh

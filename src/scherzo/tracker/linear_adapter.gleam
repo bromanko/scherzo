@@ -202,17 +202,24 @@ fn list_tasks(
 ) -> Result(adapter.TaskPage, adapter.TrackerError) {
   let state_names =
     linear_state_names_for_query(config, request.state_categories)
-  fetch_task_page_from_offset(
-    config,
-    transport,
-    state_names,
-    request.state_categories,
-    request.offset,
-    request.limit,
-    None,
-    0,
-    [],
-  )
+  case state_names {
+    [] ->
+      Error(adapter.UnsupportedCapability(
+        "unfiltered Linear task list; pass at least one configured --state filter",
+      ))
+    state_names ->
+      fetch_task_page_from_offset(
+        config,
+        transport,
+        state_names,
+        request.state_categories,
+        request.offset,
+        request.limit,
+        None,
+        0,
+        [],
+      )
+  }
 }
 
 fn fetch_task_page_from_offset(
@@ -275,12 +282,18 @@ fn lookup_task_detail(
 ) -> Result(Option(task.Task), adapter.TrackerError) {
   case ref {
     adapter.TaskLookupByDisplayId(display_id) -> {
-      use found <- try_adapter(linear_task_query.fetch_detail_by_identifier(
-        config,
-        string.trim(display_id),
-        transport,
-      ))
-      Ok(option_map(found, fn(item) { categorize_task(config, item) }))
+      let display_id = string.trim(display_id)
+      case display_id == "" {
+        True -> Ok(None)
+        False -> {
+          use found <- try_adapter(linear_task_query.fetch_detail_by_identifier(
+            config,
+            display_id,
+            transport,
+          ))
+          Ok(option_map(found, fn(item) { categorize_task(config, item) }))
+        }
+      }
     }
     adapter.TaskLookupByRemoteId(provider: provider, id: id) ->
       case provider_allowed(provider) {

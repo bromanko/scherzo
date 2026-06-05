@@ -29,6 +29,7 @@ pub fn record_routes_writes_manifest_and_is_idempotent_test() {
       [route(True)],
       repositories(),
       root,
+      root,
       output_manifest(),
       issue(),
       "run-1",
@@ -38,6 +39,7 @@ pub fn record_routes_writes_manifest_and_is_idempotent_test() {
     artifact_publication_recording.record_routes(
       [route(True)],
       repositories(),
+      root,
       root,
       output_manifest(),
       issue(),
@@ -77,6 +79,7 @@ pub fn record_routes_records_optional_failures_in_ledger_projection_test() {
     artifact_publication_recording.record_routes(
       [missing_output_route(False)],
       repositories(),
+      root,
       root,
       output_manifest(),
       issue(),
@@ -124,6 +127,7 @@ pub fn record_routes_records_missing_body_template_as_failed_attempt_test() {
       [missing_template_route(False)],
       repositories(),
       root,
+      root,
       output_manifest(),
       issue(),
       "run-1",
@@ -151,6 +155,7 @@ pub fn record_routes_records_hash_mismatch_as_failed_attempt_test() {
     artifact_publication_recording.record_routes(
       [route(True)],
       repositories(),
+      root,
       root,
       output_manifest(),
       issue(),
@@ -180,6 +185,7 @@ pub fn record_routes_keeps_config_dir_and_checkpoint_state_root_separate_test() 
       [route(True)],
       repositories(),
       config_dir,
+      config_dir,
       output_manifest(),
       issue(),
       "run-1",
@@ -194,6 +200,95 @@ pub fn record_routes_keeps_config_dir_and_checkpoint_state_root_separate_test() 
     simplifile.read(
       state_root <> "/.scherzo-state/artifacts/" <> attempt.manifest_ref,
     )
+}
+
+pub fn load_body_templates_uses_workflow_dir_for_route_overrides_test() {
+  let root = "test/tmp/artifact-publication-recording/workflow-template-root"
+  let config_dir = root <> "/config"
+  let workflow_bundle_dir = root <> "/bundles/execplan"
+  test_helpers.reset_dir(root)
+  write_template_contents(config_dir, "Config template")
+  write_template_contents(workflow_bundle_dir, "Workflow template")
+
+  let assert Ok(templates) =
+    artifact_publication_recording.load_body_templates(
+      [route(True)],
+      repositories(),
+      config_dir,
+      workflow_bundle_dir,
+    )
+  let assert Ok(contents) = dict.get(templates, "templates/publication.md")
+  assert contents == "Workflow template"
+}
+
+pub fn load_body_templates_keeps_repository_defaults_config_relative_test() {
+  let root = "test/tmp/artifact-publication-recording/config-template-root"
+  let config_dir = root <> "/config"
+  let workflow_bundle_dir = root <> "/bundles/execplan"
+  test_helpers.reset_dir(root)
+  write_template_contents(config_dir, "Config template")
+  write_template_contents(workflow_bundle_dir, "Workflow template")
+
+  let assert Ok(templates) =
+    artifact_publication_recording.load_body_templates(
+      [repository_default_route(True)],
+      repositories(),
+      config_dir,
+      workflow_bundle_dir,
+    )
+  let assert Ok(contents) = dict.get(templates, "templates/publication.md")
+  assert contents == "Config template"
+}
+
+pub fn load_body_templates_rejects_conflicting_mixed_roots_test() {
+  let root = "test/tmp/artifact-publication-recording/mixed-template-load"
+  let config_dir = root <> "/config"
+  let workflow_bundle_dir = root <> "/bundles/execplan"
+  test_helpers.reset_dir(root)
+  write_template_contents(config_dir, "Config template")
+  write_template_contents(workflow_bundle_dir, "Workflow template")
+
+  let assert Error(message) =
+    artifact_publication_recording.load_body_templates(
+      [route(True), repository_default_route(True)],
+      repositories(),
+      config_dir,
+      workflow_bundle_dir,
+    )
+  assert message
+    == "conflicting_publication_body_template_roots:templates/publication.md"
+}
+
+pub fn record_routes_distinguishes_mixed_template_roots_test() {
+  let root = "test/tmp/artifact-publication-recording/mixed-template-record"
+  let config_dir = root <> "/config"
+  let workflow_bundle_dir = root <> "/bundles/execplan"
+  test_helpers.reset_dir(root)
+  write_template_contents(config_dir, "Config body")
+  write_template_contents(workflow_bundle_dir, "Workflow body")
+  write_artifact(root, plan_ref(), plan_contents())
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(result) =
+    artifact_publication_recording.record_routes(
+      [
+        route_with_id("workflow_doc", True),
+        repository_default_route_with_id("config_doc", True),
+      ],
+      repositories(),
+      config_dir,
+      workflow_bundle_dir,
+      output_manifest(),
+      issue(),
+      "run-1",
+      checkpoint,
+    )
+
+  assert result.required_failures == []
+  assert result.optional_failures == []
+  let assert [workflow_attempt, config_attempt] = result.attempts
+  assert_manifest_contains(root, workflow_attempt.manifest_ref, "Workflow body")
+  assert_manifest_contains(root, config_attempt.manifest_ref, "Config body")
 }
 
 fn publication_attempt_records(root: String) -> Int {
@@ -213,14 +308,27 @@ fn load_projection(root: String) -> projection.Projection {
   projected
 }
 
+fn assert_manifest_contains(
+  root: String,
+  manifest_ref: String,
+  expected: String,
+) -> Nil {
+  let assert Ok(manifest) =
+    simplifile.read(root <> "/.scherzo-state/artifacts/" <> manifest_ref)
+  assert string.contains(manifest, expected)
+}
+
 fn write_template(root: String) -> Nil {
+  write_template_contents(
+    root,
+    "Version {{ publication.version_id }}\n{{ publication.files_markdown }}",
+  )
+}
+
+fn write_template_contents(root: String, contents: String) -> Nil {
   let template = root <> "/templates/publication.md"
   let assert Ok(Nil) = simplifile.create_directory_all(root <> "/templates")
-  let assert Ok(Nil) =
-    simplifile.write(
-      template,
-      "Version {{ publication.version_id }}\n{{ publication.files_markdown }}",
-    )
+  let assert Ok(Nil) = simplifile.write(template, contents)
   Nil
 }
 
@@ -280,8 +388,15 @@ fn repositories() -> artifact_publication_config.ArtifactRepositories {
 }
 
 fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
+  route_with_id("execplan_review_doc", required)
+}
+
+fn route_with_id(
+  id: String,
+  required: Bool,
+) -> artifact_publication_config.PublicationRoute {
   artifact_publication_config.PublicationRoute(
-    id: "execplan_review_doc",
+    id: id,
     repository: "github.docs",
     required: required,
     pull_request: Some(
@@ -299,6 +414,22 @@ fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
     ],
+  )
+}
+
+fn repository_default_route(
+  required: Bool,
+) -> artifact_publication_config.PublicationRoute {
+  repository_default_route_with_id("execplan_review_doc", required)
+}
+
+fn repository_default_route_with_id(
+  id: String,
+  required: Bool,
+) -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    ..route_with_id(id, required),
+    pull_request: None,
   )
 }
 

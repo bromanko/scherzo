@@ -27,7 +27,7 @@ scripts/scherzoctl ps
 scripts/scherzoctl ps --json
 ```
 
-The human table has a `RECOVERY` column. A dash means no recovery fact is attached to that summary. JSON includes `recovery: null` or a recovery object.
+The human table has a `RECOVERY` column. A dash means no recovery fact is attached to that summary. JSON includes `recovery: null` or a recovery object. For YAML workflow runs, the top-level run session reflects child-step last-event, turn, and token progress so operators can see that the run is moving; child step sessions still remain separate rows and JSON summaries for step-specific details.
 
 For a session with `RECOVERY` set, inspect detail:
 

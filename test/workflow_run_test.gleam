@@ -6519,6 +6519,7 @@ pub fn resumed_publication_finalization_preserves_terminal_required_failure_test
       dag.publication_routes,
       publication_repositories(),
       config_root,
+      config_root,
       state_root,
       publication_output_manifest(),
       issue(),

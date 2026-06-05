@@ -13,6 +13,7 @@ import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/reason as session_reason
+import scherzo/session/recovery as session_recovery
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker
@@ -27,7 +28,7 @@ pub type LifecycleCallbacks {
     step_update: fn(String, agent_types.RunnerUpdate) -> Nil,
     step_command_ready: fn(String, process.Subject(worker_command.Command)) ->
       Nil,
-    step_finished: fn(String) -> Nil,
+    step_finished: fn(String, session_tokens.TokenTotals) -> Nil,
   )
 }
 
@@ -42,6 +43,7 @@ pub fn scheduled_workflow_dependencies(
     base,
     scheduled_session_issue(scheduled),
     scheduled.run_id,
+    scheduled_session_id(scheduled.run_id, scheduled.attempt),
     callbacks,
     event_hub,
     now_ms,
@@ -52,6 +54,7 @@ pub fn workflow_dependencies(
   base: workflow_run.Dependencies,
   issue: tracker_issue.Issue,
   run_id: String,
+  parent_session_id: String,
   callbacks: LifecycleCallbacks,
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
@@ -63,6 +66,7 @@ pub fn workflow_dependencies(
         base,
         issue,
         run_id,
+        parent_session_id,
         context,
         command,
         timeout_ms,
@@ -88,6 +92,7 @@ pub fn workflow_dependencies(
         base,
         issue,
         run_id,
+        parent_session_id,
         context,
         prompt_mode,
         attempt_context,
@@ -120,6 +125,36 @@ pub fn register_step_session(
     attempt_index,
     now_ms,
     recovery: None,
+  )
+}
+
+fn register_workflow_step_session(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  issue: tracker_issue.Issue,
+  workspace_path: String,
+  run_id: String,
+  parent_session_id: String,
+  recovery_step_id: String,
+  display_step_id: String,
+  attempt_index: Int,
+  now_ms: fn() -> Int,
+) -> Nil {
+  register_step_session_with_recovery(
+    event_hub,
+    session_id,
+    issue,
+    workspace_path,
+    display_step_id,
+    attempt_index,
+    now_ms,
+    recovery: Some(workflow_child_session_info(
+      run_id,
+      parent_session_id,
+      recovery_step_id,
+      attempt_index,
+      Some(issue_state.to_string(issue.state)),
+    )),
   )
 }
 
@@ -172,10 +207,34 @@ fn register_step_session_with_recovery(
   )
 }
 
+fn workflow_child_session_info(
+  run_id: String,
+  parent_session_id: String,
+  step_id: String,
+  attempt_index: Int,
+  issue_state_name: Option(String),
+) -> session_event.RecoveryInfo {
+  session_event.RecoveryInfo(
+    ..session_recovery.base_info(
+      session_event.Resumed,
+      "workflow.yaml_step_child",
+      Some("active workflow child step is linked to parent workflow run"),
+      [],
+    ),
+    workflow_run_id: Some(run_id),
+    workflow_step_id: Some(step_id),
+    workflow_attempt_index: Some(attempt_index),
+    parent_session_id: Some(parent_session_id),
+    issue_state: issue_state_name,
+    recommended_action: Some("inspect_parent_run"),
+  )
+}
+
 pub fn run_command_step(
   base: workflow_run.Dependencies,
   issue: tracker_issue.Issue,
   run_id: String,
+  parent_session_id: String,
   context: workflow_run.StepContext,
   command: String,
   timeout_ms: Int,
@@ -187,11 +246,14 @@ pub fn run_command_step(
 ) -> step_artifact.StepArtifact {
   let session_id =
     yaml_step_session.id(run_id, context.step_id, context.attempt_index)
-  register_step_session(
+  register_workflow_step_session(
     event_hub,
     session_id,
     issue,
     context.workspace_path,
+    run_id,
+    parent_session_id,
+    context.step_id,
     context.step_id,
     context.attempt_index,
     now_ms,
@@ -208,7 +270,7 @@ pub fn run_command_step(
     False -> session_reason.Failed
   }
   hub.finish_session(event_hub, session_id, reason)
-  callbacks.step_finished(session_id)
+  callbacks.step_finished(session_id, session_tokens.zero_token_totals())
   artifact
 }
 
@@ -242,6 +304,7 @@ pub fn run_agent_step(
   base: workflow_run.Dependencies,
   issue: tracker_issue.Issue,
   run_id: String,
+  parent_session_id: String,
   context: workflow_run.StepContext,
   prompt_mode: workflow_attempt.AgentPromptMode,
   attempt_context: workflow_attempt.StepAttemptContext,
@@ -259,11 +322,14 @@ pub fn run_agent_step(
   }
   let session_id =
     yaml_step_session.id(run_id, session_step_id, context.attempt_index)
-  register_step_session(
+  register_workflow_step_session(
     event_hub,
     session_id,
     issue,
     context.workspace_path,
+    run_id,
+    parent_session_id,
+    session_step_id,
     context.step_id,
     context.attempt_index,
     now_ms,
@@ -296,8 +362,17 @@ pub fn run_agent_step(
       hub.finish_session(event_hub, session_id, session_reason.Failed)
     }
   }
-  callbacks.step_finished(session_id)
+  callbacks.step_finished(session_id, tokens_for_agent_step_result(result))
   result
+}
+
+fn tokens_for_agent_step_result(
+  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+) -> session_tokens.TokenTotals {
+  case result {
+    Ok(success) -> success.tokens
+    Error(failure) -> failure.tokens
+  }
 }
 
 pub fn worker_failure(
@@ -342,6 +417,10 @@ pub fn workflow_failure(
         None -> worker_failure(report, failure.run_root, issue)
       }
   }
+}
+
+fn scheduled_session_id(run_id: String, attempt: Int) -> String {
+  run_id <> "-a" <> int.to_string(attempt)
 }
 
 fn scheduled_session_issue(

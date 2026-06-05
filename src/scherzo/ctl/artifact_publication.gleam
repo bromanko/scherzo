@@ -1,4 +1,3 @@
-import gleam/dict
 import gleam/int
 import gleam/json
 import gleam/list
@@ -326,6 +325,7 @@ fn retry_selected_publications(
       list.map(resolved, fn(entry) { entry.route }),
       bundle.orchestrator.artifact_repositories,
       bundle.orchestrator.config_dir,
+      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
       root,
       output_manifest,
       work,
@@ -377,16 +377,6 @@ fn resolve_retry_routes(
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
 ) -> Result(List(RetryResolvedRoute), #(String, String)) {
-  use body_templates <- result.try(
-    artifact_publication_recording.load_body_templates(
-      workflow.publication_routes,
-      bundle.orchestrator.artifact_repositories,
-      bundle.orchestrator.config_dir,
-    )
-    |> result.map_error(fn(message) {
-      #("publication_retry_config_invalid", message)
-    }),
-  )
   resolve_retry_routes_loop(
     targets,
     workflow.publication_routes,
@@ -395,7 +385,6 @@ fn resolve_retry_routes(
     root,
     work,
     run_id,
-    body_templates,
     [],
   )
 }
@@ -408,7 +397,6 @@ fn resolve_retry_routes_loop(
   root: String,
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
-  body_templates: dict.Dict(String, String),
   acc: List(RetryResolvedRoute),
 ) -> Result(List(RetryResolvedRoute), #(String, String)) {
   case targets {
@@ -423,7 +411,6 @@ fn resolve_retry_routes_loop(
         root,
         work,
         run_id,
-        body_templates,
       ))
       resolve_retry_routes_loop(
         rest,
@@ -433,7 +420,6 @@ fn resolve_retry_routes_loop(
         root,
         work,
         run_id,
-        body_templates,
         [RetryResolvedRoute(route: route), ..acc],
       )
     }
@@ -463,8 +449,18 @@ fn validate_retry_route(
   root: String,
   work: artifact_publication_planner.PublicationWork,
   run_id: String,
-  body_templates: dict.Dict(String, String),
 ) -> Result(Nil, #(String, String)) {
+  use body_templates <- result.try(
+    artifact_publication_recording.load_body_templates(
+      [route],
+      bundle.orchestrator.artifact_repositories,
+      bundle.orchestrator.config_dir,
+      runtime_bundle.workflow_bundle_dir(bundle, output_manifest.workflow_id),
+    )
+    |> result.map_error(fn(message) {
+      #("publication_retry_config_invalid", message)
+    }),
+  )
   use planned <- result.try(
     artifact_publication_planner.plan_publication(
       output_manifest,

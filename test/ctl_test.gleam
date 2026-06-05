@@ -185,6 +185,7 @@ fn query_metrics_response() -> query_types.QueryResponse {
     retry_timer_count: 11,
     retry_refresh_in_flight_count: 12,
     scheduled_due_count: 13,
+    scheduled_next_due_count: 19,
     scheduled_pending_count: 14,
     scheduled_retry_count: 15,
     scheduled_report_retry_count: 16,
@@ -381,6 +382,7 @@ pub fn query_metrics_human_executes_query_and_formats_metrics_test() {
   assert string.contains(transcript, "daemon_id: daemon-query")
   assert string.contains(transcript, "active_sessions: 3")
   assert string.contains(transcript, "running_workers: 2")
+  assert string.contains(transcript, "scheduled_next_due_count: 19")
   assert string.contains(transcript, "token_total: 42")
 }
 
@@ -3076,6 +3078,7 @@ fn seeded_publication_plans_from_config(
       workflow.publication_routes,
       bundle.orchestrator.artifact_repositories,
       bundle.orchestrator.config_dir,
+      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
     )
   workflow.publication_routes
   |> list.map(fn(route) {
@@ -3174,14 +3177,17 @@ fn write_retry_publication_config_with_workflow(
 ) -> String {
   let assert Ok(base) = path.dirname(root)
   let workflow_dir = base <> "/workflows"
-  let template_dir = base <> "/templates"
+  let workflow_template_dir = workflow_dir <> "/templates"
   let config_path = base <> "/scherzo.yaml"
   let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(template_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_template_dir)
   let assert Ok(Nil) =
     simplifile.write(workflow_dir <> "/execplan.yaml", workflow_yaml)
   let assert Ok(Nil) =
-    simplifile.write(template_dir <> "/publication.md", "Published by Scherzo.")
+    simplifile.write(
+      workflow_template_dir <> "/publication.md",
+      "Published by Scherzo.",
+    )
   let assert Ok(Nil) =
     simplifile.write(
       config_path,

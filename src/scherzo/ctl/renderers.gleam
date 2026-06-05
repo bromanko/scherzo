@@ -71,6 +71,7 @@ pub fn print_session(
     output_line,
   )
   print_token_delta(summary, output_line)
+  print_token_total(summary, output_line)
   print_optional_reason(summary.last_turn_reason, output_line)
   output_line("workspace: " <> summary.workspace_path)
   output_line("last_event_at_ms: " <> int.to_string(summary.last_event_at_ms))
@@ -148,6 +149,11 @@ pub fn print_query_metrics(
     output_line,
   )
   print_int("scheduled_due_count", metrics.scheduled_due_count, output_line)
+  print_int(
+    "scheduled_next_due_count",
+    metrics.scheduled_next_due_count,
+    output_line,
+  )
   print_int(
     "scheduled_pending_count",
     metrics.scheduled_pending_count,
@@ -255,6 +261,17 @@ fn print_token_delta(
         "last_turn_token_delta: "
         <> int.to_string(summary.last_turn_token_delta.total),
       )
+    False -> Nil
+  }
+}
+
+fn print_token_total(
+  summary: event.SessionSummary,
+  output_line: fn(String) -> Nil,
+) -> Nil {
+  case summary.token_totals.total > 0 {
+    True ->
+      output_line("token_total: " <> int.to_string(summary.token_totals.total))
     False -> Nil
   }
 }

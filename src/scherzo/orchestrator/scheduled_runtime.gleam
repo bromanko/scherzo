@@ -110,6 +110,17 @@ pub fn from_next_due(entries: List(#(String, Int))) -> Runtime {
   Runtime(..new(), next_due: dict.from_list(entries))
 }
 
+pub fn due_count(runtime: Runtime, now_ms: Int) -> Int {
+  runtime.next_due
+  |> dict.values
+  |> list.filter(fn(due_at_ms) { due_at_ms <= now_ms })
+  |> list.length
+}
+
+pub fn next_due_count(runtime: Runtime) -> Int {
+  dict.size(runtime.next_due)
+}
+
 pub fn pending_starts(runtime: Runtime) -> List(PendingStart) {
   dict.values(runtime.pending_starts)
 }
