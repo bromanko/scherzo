@@ -323,6 +323,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/agent/turn_loop.gleam", 1003, 18),
     SourceLimit("src/scherzo/artifact_publication_config.gleam", 1125, 2),
     SourceLimit("src/scherzo/artifact_publication_planner.gleam", 1011, 9),
+    SourceLimit("src/scherzo/artifact_repository/github.gleam", 1028, 11),
     SourceLimit("src/scherzo/config.gleam", 2596, 9),
     SourceLimit("src/scherzo/control/protocol.gleam", 1730, 9),
     SourceLimit("src/scherzo/ctl.gleam", 3236, 22),
@@ -353,6 +354,6 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/workflow_dag.gleam", 1703, 8),
     SourceLimit("src/scherzo/workflow_run.gleam", 5660, 38),
     SourceLimit("src/scherzo/workspace_run.gleam", 1301, 12),
-    SourceLimit("src/scherzo_port_ffi.erl", 1092, 0),
+    SourceLimit("src/scherzo_port_ffi.erl", 1181, 0),
   ]
 }

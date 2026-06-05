@@ -1,5 +1,6 @@
+import gleam/dynamic/decode
 import gleam/int
-import gleam/list
+import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -21,8 +22,12 @@ pub fn ensure_pull_request(
       let body = default_pr_body(manifest)
       case lookup_open_pr(manifest, checkout_dir, runner) {
         Error(error) -> Error(error)
-        Ok([]) -> create_pr(manifest, checkout_dir, runner, title, body)
-        Ok([pr]) -> edit_pr(checkout_dir, runner, pr, title, body)
+        Ok([]) ->
+          create_pr(manifest, checkout_dir, runner, title, body)
+          |> result.map(Some)
+        Ok([pr]) ->
+          edit_pr(checkout_dir, runner, pr, title, body)
+          |> result.map(Some)
         Ok(_) ->
           Error(artifact_publication_manifest.PublicationErrorInfo(
             code: "pr_ambiguous",
@@ -146,7 +151,7 @@ fn create_pr(
   runner: command_runner.Runner,
   title: String,
   body: String,
-) -> Result(Option(String), artifact_publication_manifest.PublicationErrorInfo) {
+) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
   use repo <- result.try(require_option(
     manifest.github_repo,
     artifact_publication_manifest.PublicationErrorInfo(
@@ -199,7 +204,20 @@ fn create_pr(
       True,
     )
   {
-    Ok(url) -> Ok(url_option(url))
+    Ok(url) ->
+      case url_option(url) {
+        Some(url) -> Ok(url)
+        None ->
+          case view_open_pr_by_branch(manifest, checkout_dir, runner) {
+            Ok(Some(pr)) -> edit_pr(checkout_dir, runner, pr, title, body)
+            Ok(None) ->
+              Error(artifact_publication_manifest.PublicationErrorInfo(
+                code: "pr_create_missing_url",
+                message: "gh pr create produced no pull request url",
+              ))
+            Error(error) -> Error(error)
+          }
+      }
     Error(error) ->
       case view_open_pr_by_branch(manifest, checkout_dir, runner) {
         Ok(Some(pr)) -> edit_pr(checkout_dir, runner, pr, title, body)
@@ -249,16 +267,8 @@ fn decode_pr_view(
   Option(types.GithubPullRequestMatch),
   artifact_publication_manifest.PublicationErrorInfo,
 ) {
-  use state <- result.try(extract_json_string(stdout, "state"))
-  case state {
-    "OPEN" -> {
-      use number <- result.try(extract_json_int(stdout, "number"))
-      use url <- result.try(extract_json_string(stdout, "url"))
-      use draft <- result.try(extract_json_bool(stdout, "isDraft"))
-      Ok(Some(types.GithubPullRequestMatch(number, url, draft)))
-    }
-    _ -> Ok(None)
-  }
+  json.parse(stdout, pr_view_decoder())
+  |> result.map_error(fn(_) { malformed_pr_json_error() })
 }
 
 fn edit_pr(
@@ -267,7 +277,7 @@ fn edit_pr(
   pr: types.GithubPullRequestMatch,
   title: String,
   body: String,
-) -> Result(Option(String), artifact_publication_manifest.PublicationErrorInfo) {
+) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
   let args = [
     "pr",
     "edit",
@@ -284,7 +294,7 @@ fn edit_pr(
       True,
     )
   {
-    Ok(_) -> Ok(Some(pr.url))
+    Ok(_) -> Ok(pr.url)
     Error(error) ->
       Error(artifact_publication_manifest.PublicationErrorInfo(
         code: "pr_edit_failed",
@@ -345,107 +355,44 @@ fn decode_pr_list(
 ) {
   case string.trim(stdout) {
     "" -> Ok([])
-    text -> {
-      let json = string.replace(text, each: " ", with: "")
-      case json {
-        "[]" -> Ok([])
-        _ ->
-          decode_pr_segments(
-            stdout
-              |> string.replace(each: "[{", with: "")
-              |> string.replace(each: "}]", with: "")
-              |> string.split(on: "},{")
-              |> list.filter(fn(segment) { string.trim(segment) != "" }),
-            [],
-          )
-      }
-    }
+    _ ->
+      json.parse(stdout, decode.list(pr_match_decoder()))
+      |> result.map_error(fn(_) { malformed_pr_json_error() })
   }
 }
 
-fn decode_pr_segments(
-  segments: List(String),
-  acc: List(types.GithubPullRequestMatch),
-) -> Result(
-  List(types.GithubPullRequestMatch),
-  artifact_publication_manifest.PublicationErrorInfo,
-) {
-  case segments {
-    [] -> Ok(list.reverse(acc))
-    [segment, ..rest] -> {
-      use number <- result.try(extract_json_int(segment, "number"))
-      use url <- result.try(extract_json_string(segment, "url"))
-      let draft = extract_json_bool(segment, "isDraft") |> result.unwrap(False)
-      decode_pr_segments(rest, [
-        types.GithubPullRequestMatch(number, url, draft),
-        ..acc
-      ])
-    }
+fn pr_view_decoder() -> decode.Decoder(Option(types.GithubPullRequestMatch)) {
+  use state <- decode.optional_field(
+    "state",
+    None,
+    decode.optional(decode.string),
+  )
+  case state {
+    Some("OPEN") -> pr_match_decoder() |> decode.map(Some)
+    _ -> decode.success(None)
   }
 }
 
-fn extract_json_string(
-  body: String,
-  key: String,
-) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
-  let prefix = "\"" <> key <> "\":\""
-  case string.split_once(body, on: prefix) {
-    Ok(#(_, rest)) ->
-      case string.split_once(rest, on: "\"") {
-        Ok(#(value, _)) -> Ok(value)
-        Error(_) -> malformed_pr_json()
-      }
-    Error(_) -> malformed_pr_json()
+fn pr_match_decoder() -> decode.Decoder(types.GithubPullRequestMatch) {
+  use number <- decode.field("number", decode.int)
+  use url <- decode.field("url", decode.string)
+  use is_draft <- decode.optional_field(
+    "isDraft",
+    None,
+    decode.optional(decode.bool),
+  )
+  let draft = case is_draft {
+    Some(value) -> value
+    None -> False
   }
+  decode.success(types.GithubPullRequestMatch(number, url, draft))
 }
 
-fn extract_json_int(
-  body: String,
-  key: String,
-) -> Result(Int, artifact_publication_manifest.PublicationErrorInfo) {
-  let prefix = "\"" <> key <> "\":"
-  case string.split_once(body, on: prefix) {
-    Ok(#(_, rest)) ->
-      case int.parse(take_until_delimiter(rest)) {
-        Ok(value) -> Ok(value)
-        Error(_) -> malformed_pr_json()
-      }
-    Error(_) -> malformed_pr_json()
-  }
-}
-
-fn extract_json_bool(
-  body: String,
-  key: String,
-) -> Result(Bool, artifact_publication_manifest.PublicationErrorInfo) {
-  let prefix = "\"" <> key <> "\":"
-  case string.split_once(body, on: prefix) {
-    Ok(#(_, rest)) ->
-      case take_until_delimiter(rest) {
-        "true" -> Ok(True)
-        "false" -> Ok(False)
-        _ -> malformed_pr_json()
-      }
-    Error(_) -> malformed_pr_json()
-  }
-}
-
-fn take_until_delimiter(value: String) -> String {
-  value
-  |> string.split(on: ",")
-  |> list.first
-  |> result.unwrap(value)
-  |> string.trim
-}
-
-fn malformed_pr_json() -> Result(
-  a,
-  artifact_publication_manifest.PublicationErrorInfo,
-) {
-  Error(artifact_publication_manifest.PublicationErrorInfo(
+fn malformed_pr_json_error() -> artifact_publication_manifest.PublicationErrorInfo {
+  artifact_publication_manifest.PublicationErrorInfo(
     code: "pr_json_malformed",
-    message: "gh pr list returned malformed json",
-  ))
+    message: "gh pr command returned malformed json",
+  )
 }
 
 fn default_pr_title(

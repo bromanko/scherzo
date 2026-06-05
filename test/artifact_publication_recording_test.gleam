@@ -171,6 +171,37 @@ pub fn record_routes_records_hash_mismatch_as_failed_attempt_test() {
   assert publication_attempt_records(root) == 1
 }
 
+pub fn record_routes_keeps_config_dir_and_checkpoint_state_root_separate_test() {
+  let root = "test/tmp/artifact-publication-recording/separate-roots"
+  let config_dir = root <> "/config"
+  let state_root = root <> "/state"
+  test_helpers.reset_dir(root)
+  write_template(config_dir)
+  write_artifact(state_root, plan_ref(), plan_contents())
+  let checkpoint = workflow_checkpoint.ledger_writer(state_root, fn() { 123 })
+
+  let assert Ok(result) =
+    artifact_publication_recording.record_routes(
+      [route(True)],
+      repositories(),
+      config_dir,
+      config_dir,
+      output_manifest(),
+      issue(),
+      "run-1",
+      checkpoint,
+    )
+
+  assert result.required_failures == []
+  let assert [attempt] = result.attempts
+  assert attempt.status == "planned"
+  assert publication_attempt_records(state_root) == 1
+  let assert Ok(_) =
+    simplifile.read(
+      state_root <> "/.scherzo-state/artifacts/" <> attempt.manifest_ref,
+    )
+}
+
 pub fn load_body_templates_uses_workflow_dir_for_route_overrides_test() {
   let root = "test/tmp/artifact-publication-recording/workflow-template-root"
   let config_dir = root <> "/config"

@@ -472,6 +472,7 @@ fn execute_route(
                 planned.version_id,
                 recovered_execution,
                 planned.pull_request.enabled,
+                planned.repository_kind == "github",
               )
             False -> None
           }
@@ -569,6 +570,7 @@ fn existing_terminal_attempt(
   version_id: String,
   recovered_execution: Bool,
   requires_pr: Bool,
+  requires_branch_metadata: Bool,
 ) -> Option(artifact_publication_recording.PublicationAttemptSummary) {
   case ledger.path_for_workspace_root(workspace_root) {
     Error(_) -> None
@@ -586,10 +588,11 @@ fn existing_terminal_attempt(
           case attempt {
             Some(attempt) ->
               case
-                terminal_attempt_has_required_pr(
+                terminal_attempt_is_complete(
                   workspace_root,
                   attempt,
                   requires_pr,
+                  requires_branch_metadata,
                 )
               {
                 True -> Some(attempt)
@@ -602,35 +605,73 @@ fn existing_terminal_attempt(
   }
 }
 
-fn terminal_attempt_has_required_pr(
+fn terminal_attempt_is_complete(
   workspace_root: String,
   attempt: artifact_publication_recording.PublicationAttemptSummary,
   requires_pr: Bool,
+  requires_branch_metadata: Bool,
 ) -> Bool {
   case attempt.status {
     "failed" -> True
     _ ->
-      case load_attempt_pr_details(workspace_root, attempt.manifest_ref) {
-        Some(#(attempt_requires_pr, pr_url)) ->
-          case requires_pr || attempt_requires_pr, pr_url {
-            False, _ -> True
-            True, Some(_) -> True
-            True, None -> False
-          }
-        None -> !requires_pr
-      }
+      terminal_success_is_complete(
+        workspace_root,
+        attempt,
+        requires_pr,
+        requires_branch_metadata,
+      )
   }
 }
 
-fn load_attempt_pr_details(
+fn terminal_success_is_complete(
+  workspace_root: String,
+  attempt: artifact_publication_recording.PublicationAttemptSummary,
+  requires_pr: Bool,
+  requires_branch_metadata: Bool,
+) -> Bool {
+  case load_attempt_details(workspace_root, attempt.manifest_ref) {
+    Some(#(attempt_requires_pr, branch, commit_sha, pr_url)) ->
+      terminal_pr_complete(requires_pr || attempt_requires_pr, pr_url)
+      && terminal_branch_complete(requires_branch_metadata, branch, commit_sha)
+    None -> !requires_pr && !requires_branch_metadata
+  }
+}
+
+fn terminal_pr_complete(requires_pr: Bool, pr_url: Option(String)) -> Bool {
+  case requires_pr, pr_url {
+    False, _ -> True
+    True, Some(_) -> True
+    True, None -> False
+  }
+}
+
+fn terminal_branch_complete(
+  requires_branch_metadata: Bool,
+  branch: Option(String),
+  commit_sha: Option(String),
+) -> Bool {
+  case requires_branch_metadata, branch, commit_sha {
+    False, _, _ -> True
+    True, Some(_), Some(_) -> True
+    True, _, _ -> False
+  }
+}
+
+fn load_attempt_details(
   workspace_root: String,
   ref: String,
-) -> Option(#(Bool, Option(String))) {
+) -> Option(#(Bool, Option(String), Option(String), Option(String))) {
   let store = artifact_store.new(workspace_root)
   case artifact_store.read_artifact_unverified(store, ref) {
     Ok(contents) ->
       case artifact_publication_manifest.decode_manifest_json(contents) {
-        Ok(manifest) -> Some(#(manifest_requires_pr(manifest), manifest.pr_url))
+        Ok(manifest) ->
+          Some(#(
+            manifest_requires_pr(manifest),
+            manifest.branch,
+            manifest.commit_sha,
+            manifest.pr_url,
+          ))
         Error(decode_error) -> {
           let _ = decode_error
           None
@@ -663,6 +704,7 @@ fn latest_matching_terminal(
     [attempt, ..rest] -> {
       let terminal =
         attempt.status == "published"
+        || attempt.status == "unchanged"
         || { recovered_execution && attempt.status == "failed" }
       let next_best = case
         attempt.version_id == Some(version_id),

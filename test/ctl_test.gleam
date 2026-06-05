@@ -1764,6 +1764,30 @@ pub fn artifact_publication_retry_uses_workspace_state_root_for_terminal_attempt
   assert drain_output(command_subject) == ""
 }
 
+pub fn artifact_publication_retry_does_not_reuse_success_missing_pr_test() {
+  let root = "test/tmp/ctl-artifact-publication-retry-stale-success/workspaces"
+  test_helpers.reset_dir(
+    "test/tmp/ctl-artifact-publication-retry-stale-success",
+  )
+  seed_failed_retry_publication_state_with_prior_success_missing_pr(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("execplan_review_doc"),
+      retry_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(transcript, "\"pr_url\":\"https://example.test/pr/1\"")
+  assert string.contains(drain_output(command_subject), "gh pr create")
+}
+
 pub fn artifact_publication_retry_without_publication_retries_all_failed_targets_test() {
   let root = "test/tmp/ctl-artifact-publication-retry-all/workspaces"
   test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-all")
@@ -2727,6 +2751,22 @@ fn seed_pre_execution_failed_publication_state(root: String) -> Nil {
 }
 
 fn seed_failed_retry_publication_state_with_prior_success(root: String) -> Nil {
+  seed_failed_retry_publication_state_with_prior_success_pr(
+    root,
+    Some("https://example.test/pr/1"),
+  )
+}
+
+fn seed_failed_retry_publication_state_with_prior_success_missing_pr(
+  root: String,
+) -> Nil {
+  seed_failed_retry_publication_state_with_prior_success_pr(root, None)
+}
+
+fn seed_failed_retry_publication_state_with_prior_success_pr(
+  root: String,
+  pr_url: Option(String),
+) -> Nil {
   let planned = seeded_publication_plan(root)
   let success_ref =
     "runs/run-1/publications/execplan_review_doc/published-1.json"
@@ -2736,7 +2776,7 @@ fn seed_failed_retry_publication_state_with_prior_success(root: String) -> Nil {
       "published-1",
       1010,
       "deadbeef",
-      Some("https://example.test/pr/1"),
+      pr_url,
       ["docs/plans/LIV-739.md"],
       [],
     )

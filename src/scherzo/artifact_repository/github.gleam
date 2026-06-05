@@ -68,7 +68,7 @@ pub fn publish(
       let removed_paths = stale_paths(latest, manifest.files)
       case
         latest_version_id(latest) == Some(manifest.version_id)
-        && latest_has_required_pr(latest, manifest)
+        && latest_success_is_complete(latest, manifest)
       {
         True ->
           artifact_publication_manifest.unchanged_manifest(
@@ -94,17 +94,26 @@ pub fn publish(
   }
 }
 
-fn latest_has_required_pr(
+fn latest_success_is_complete(
   latest: Option(types.LatestPublicationDetails),
   manifest: artifact_publication_planner.DryRunPublicationManifest,
 ) -> Bool {
-  case manifest.pull_request.enabled {
-    False -> True
-    True ->
-      case latest_pr_url(latest) {
-        Some(_) -> True
-        None -> False
+  case latest {
+    Some(details) ->
+      option_present(details.branch)
+      && option_present(details.commit_sha)
+      && case manifest.pull_request.enabled {
+        True -> option_present(details.pr_url)
+        False -> True
       }
+    None -> False
+  }
+}
+
+fn option_present(value: Option(a)) -> Bool {
+  case value {
+    Some(_) -> True
+    None -> False
   }
 }
 
@@ -114,18 +123,31 @@ fn success_attempt_id_for_execution(
   now_ms: Int,
 ) -> String {
   case
-    manifest.pull_request.enabled,
     latest_version_id(latest) == Some(manifest.version_id),
-    latest_pr_url(latest)
+    latest_success_is_complete(latest, manifest)
   {
-    True, True, None ->
+    True, False ->
       artifact_publication_manifest.attempt_key_for_success_recovery(
         manifest.publication_id,
         manifest.version_id,
         now_ms,
       )
-    _, _, _ ->
+    _, _ ->
       artifact_publication_manifest.attempt_key_for_success(manifest.version_id)
+  }
+}
+
+fn current_head_or_error(
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
+  case github_cli.current_head(checkout_dir, runner) {
+    Some(commit_sha) -> Ok(commit_sha)
+    None ->
+      Error(artifact_publication_manifest.PublicationErrorInfo(
+        code: "rev_parse_failed",
+        message: "git rev-parse HEAD produced no commit sha",
+      ))
   }
 }
 
@@ -254,40 +276,54 @@ fn unchanged_after_no_diff(
   attempt_id: String,
   removed_paths: List(String),
 ) -> artifact_publication_manifest.PublicationManifest {
-  let commit_sha = github_cli.current_head(checkout_dir, runner)
-  case manifest.pull_request.enabled {
-    False ->
-      artifact_publication_manifest.unchanged_manifest(
+  case current_head_or_error(checkout_dir, runner) {
+    Error(error) ->
+      failed_manifest(
         manifest,
-        attempt_id,
         now_ms,
-        commit_sha,
+        True,
+        Some(manifest.branch),
         None,
+        None,
+        [],
         removed_paths,
+        error,
       )
-    True ->
-      case github_cli.ensure_pull_request(manifest, checkout_dir, runner) {
-        Ok(pr_url) ->
+    Ok(commit_sha) ->
+      case manifest.pull_request.enabled {
+        False ->
           artifact_publication_manifest.unchanged_manifest(
             manifest,
             attempt_id,
             now_ms,
-            commit_sha,
-            pr_url,
-            removed_paths,
-          )
-        Error(error) ->
-          failed_manifest(
-            manifest,
-            now_ms,
-            True,
-            Some(manifest.branch),
-            commit_sha,
+            Some(commit_sha),
             None,
-            [],
             removed_paths,
-            error,
           )
+        True ->
+          case github_cli.ensure_pull_request(manifest, checkout_dir, runner) {
+            Ok(pr_url) ->
+              artifact_publication_manifest.unchanged_manifest(
+                manifest,
+                attempt_id,
+                now_ms,
+                Some(commit_sha),
+                pr_url,
+                removed_paths,
+              )
+            Error(error) ->
+              failed_manifest(
+                manifest,
+                now_ms,
+                True,
+                Some(manifest.branch),
+                Some(commit_sha),
+                None,
+                [],
+                removed_paths,
+                error,
+              )
+          }
       }
   }
 }
@@ -322,8 +358,8 @@ fn commit_push_and_pr(
         error,
       )
     Ok(_) ->
-      case github_cli.current_head(checkout_dir, runner) {
-        None ->
+      case current_head_or_error(checkout_dir, runner) {
+        Error(error) ->
           failed_manifest(
             manifest,
             now_ms,
@@ -333,12 +369,9 @@ fn commit_push_and_pr(
             None,
             changed_paths,
             removed_paths,
-            artifact_publication_manifest.PublicationErrorInfo(
-              code: "rev_parse_failed",
-              message: "git rev-parse HEAD produced no commit sha",
-            ),
+            error,
           )
-        Some(commit_sha) ->
+        Ok(commit_sha) ->
           case
             github_cli.run_ok(
               runner,
