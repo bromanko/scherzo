@@ -53,6 +53,8 @@ pub fn parses_contract_type_strings_test() {
     == Ok(workflow_contract.ImplementationPack)
   assert workflow_contract.type_from_string("code_change_bundle")
     == Ok(workflow_contract.CodeChangeBundle)
+  assert workflow_contract.type_from_string("commit_stack")
+    == Ok(workflow_contract.CommitStack)
   assert workflow_contract.type_from_string("git_ref")
     == Ok(workflow_contract.GitRef)
   assert workflow_contract.type_from_string("url") == Ok(workflow_contract.Url)
@@ -162,12 +164,13 @@ pub fn rejects_invalid_input_context_sources_test() {
 pub fn parses_descriptor_contract_entries_test() {
   let contract =
     parse_contract(minimal_contract(
-      "  inputs:\n    exec_plan_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.exec_plan_bundle.v2\n      required: true\n      source: mapped_output\n  outputs:\n    plan:\n      kind: file\n      media_type: text/markdown\n      artifact_type: scherzo.exec_plan.v1\n      required: true\n      source:\n        step: materialize_bundle\n        path: tmp/execplan-review-doc.md\n    implementation_pack:\n      kind: file\n      media_type: application/json\n      artifact_type: scherzo.implementation_pack.v2\n      required: true\n      source:\n        step: materialize_pack\n        path: tmp/execplan-implementation-pack.json\n    code_change_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.code_change_bundle.v2\n      required: true\n      source:\n        step: materialize_code_change_bundle\n        path: tmp/execplan-code-change-bundle.json\n",
+      "  inputs:\n    exec_plan_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.exec_plan_bundle.v2\n      required: true\n      source: mapped_output\n  outputs:\n    plan:\n      kind: file\n      media_type: text/markdown\n      artifact_type: scherzo.exec_plan.v1\n      required: true\n      source:\n        step: materialize_bundle\n        path: tmp/execplan-review-doc.md\n    implementation_pack:\n      kind: file\n      media_type: application/json\n      artifact_type: scherzo.implementation_pack.v2\n      required: true\n      source:\n        step: materialize_pack\n        path: tmp/execplan-implementation-pack.json\n    code_change_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.code_change_bundle.v2\n      required: true\n      source:\n        step: materialize_code_change_bundle\n        path: tmp/execplan-code-change-bundle.json\n    commit_stack:\n      kind: commit_stack\n      media_type: application/vnd.scherzo.git-commit-stack+json\n      artifact_type: scherzo.git_commit_stack.v1\n      required: true\n      source:\n        step: export_commit_stack\n        path: tmp/commit-stack.json\n",
     ))
 
   let assert [exec_plan_bundle] = contract.inputs
   assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
-  let assert [plan, implementation_pack, code_change_bundle] = contract.outputs
+  let assert [plan, implementation_pack, code_change_bundle, commit_stack] =
+    contract.outputs
   assert plan.type_ == workflow_contract.ExecPlan
   let assert Some(plan_descriptor) = plan.descriptor
   assert plan_descriptor.kind == Some("file")
@@ -175,6 +178,7 @@ pub fn parses_descriptor_contract_entries_test() {
   assert plan_descriptor.artifact_type == Some("scherzo.exec_plan.v1")
   assert implementation_pack.type_ == workflow_contract.ImplementationPack
   assert code_change_bundle.type_ == workflow_contract.CodeChangeBundle
+  assert commit_stack.type_ == workflow_contract.CommitStack
 }
 
 pub fn parses_custom_markdown_file_descriptor_test() {

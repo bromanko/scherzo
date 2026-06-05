@@ -463,18 +463,21 @@ fn execute_route(
         )
       {
         Ok(planned) -> {
-          let existing_attempt = case reuse_terminal_attempts {
-            True ->
+          let existing_attempt = case
+            reuse_terminal_attempts,
+            terminal_attempt_reuse_allowed(planned)
+          {
+            True, True ->
               existing_terminal_attempt(
                 state_root,
                 run_id,
                 route.id,
                 planned.version_id,
                 recovered_execution,
-                planned.pull_request.enabled,
+                planned_requires_pr(planned),
                 planned.repository_kind == "github",
               )
-            False -> None
+            _, _ -> None
           }
           case existing_attempt {
             Some(attempt) ->
@@ -688,8 +691,27 @@ fn manifest_requires_pr(
   manifest: artifact_publication_manifest.PublicationManifest,
 ) -> Bool {
   case manifest.dry_run_manifest {
-    Some(planned) -> planned.pull_request.enabled
+    Some(planned) -> planned_requires_pr(planned)
     None -> False
+  }
+}
+
+fn planned_requires_pr(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+) -> Bool {
+  case planned.target {
+    artifact_publication_planner.ExistingPrBranchTargetPlan(_) -> True
+    artifact_publication_planner.StableBranchTargetPlan ->
+      planned.pull_request.enabled
+  }
+}
+
+fn terminal_attempt_reuse_allowed(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+) -> Bool {
+  case planned.target {
+    artifact_publication_planner.ExistingPrBranchTargetPlan(_) -> False
+    artifact_publication_planner.StableBranchTargetPlan -> True
   }
 }
 
@@ -811,6 +833,32 @@ fn record_route_failure(
   })
 }
 
+fn read_checkpoint_artifact_bytes(
+  checkpoint: workflow_checkpoint.Writer,
+  ref: String,
+) -> Result(BitArray, artifact_store.ArtifactError) {
+  case checkpoint.artifact_location(ref) {
+    Ok(artifact_store.ArtifactLocation(local_path: Some(local_path), ..)) ->
+      artifact_store.read_file_bytes(local_path)
+    Ok(_) -> read_checkpoint_artifact_text_as_bytes(checkpoint, ref)
+    Error(error) ->
+      Error(
+        artifact_store.ArtifactIo(workflow_checkpoint.describe_error(error)),
+      )
+  }
+}
+
+fn read_checkpoint_artifact_text_as_bytes(
+  checkpoint: workflow_checkpoint.Writer,
+  ref: String,
+) -> Result(BitArray, artifact_store.ArtifactError) {
+  checkpoint.read_artifact(ref)
+  |> result.map(bit_array.from_string)
+  |> result.map_error(fn(error) {
+    artifact_store.ArtifactIo(workflow_checkpoint.describe_error(error))
+  })
+}
+
 fn checkpoint_store(
   checkpoint: workflow_checkpoint.Writer,
 ) -> artifact_store.Store {
@@ -833,13 +881,7 @@ fn checkpoint_store(
           "publication_executor_write_unsupported",
         ))
       },
-      read_bytes: fn(ref) {
-        checkpoint.read_artifact(ref)
-        |> result.map(bit_array.from_string)
-        |> result.map_error(fn(error) {
-          artifact_store.ArtifactIo(workflow_checkpoint.describe_error(error))
-        })
-      },
+      read_bytes: fn(ref) { read_checkpoint_artifact_bytes(checkpoint, ref) },
       locate: fn(ref) {
         checkpoint.artifact_location(ref)
         |> result.map_error(fn(error) {

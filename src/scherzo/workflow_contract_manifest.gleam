@@ -950,7 +950,7 @@ fn run_artifact_descriptor(
     _ ->
       artifact_descriptor.ArtifactDescriptor(
         name: name,
-        kind: artifact_descriptor.FileKind,
+        kind: artifact_kind_for_run_artifact(value.type_),
         artifact_type: descriptor_artifact_type_for_value(value),
         description: None,
         source: value.source,
@@ -967,6 +967,15 @@ fn run_artifact_descriptor(
   }
 }
 
+fn artifact_kind_for_run_artifact(
+  type_: workflow_contract.ContractType,
+) -> artifact_descriptor.ArtifactKind {
+  case type_ {
+    workflow_contract.CommitStack -> artifact_descriptor.CommitStackKind
+    _ -> artifact_descriptor.FileKind
+  }
+}
+
 fn legacy_descriptor_artifact_type(
   type_: workflow_contract.ContractType,
 ) -> Option(String) {
@@ -976,6 +985,7 @@ fn legacy_descriptor_artifact_type(
     workflow_contract.ImplementationPack ->
       Some("scherzo.implementation_pack.v2")
     workflow_contract.CodeChangeBundle -> Some("scherzo.code_change_bundle.v2")
+    workflow_contract.CommitStack -> Some("scherzo.git_commit_stack.v1")
     workflow_contract.CodeChange -> Some("code_change")
     workflow_contract.ArtifactList -> Some("artifact[]")
     workflow_contract.DocumentMarkdown -> Some("document.markdown")

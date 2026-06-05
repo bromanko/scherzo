@@ -598,6 +598,7 @@ fn output_value_from_source(
     workflow_contract.StructuredOutput(step_id, artifact_name) ->
       output_value_from_structured_output(
         spec,
+        run_id,
         step_id,
         artifact_name,
         artifacts,
@@ -607,6 +608,7 @@ fn output_value_from_source(
     workflow_contract.InlineJson(step_id, artifact_name) ->
       output_value_from_structured_output(
         spec,
+        run_id,
         step_id,
         artifact_name,
         artifacts,
@@ -802,6 +804,7 @@ fn output_validation_diagnostic(error: OutputValidationError) -> String {
 
 fn output_value_from_structured_output(
   spec: workflow_contract.OutputSpec,
+  run_id: String,
   step_id: String,
   artifact_name: String,
   artifacts: Dict(String, step_artifact.StepArtifact),
@@ -828,26 +831,78 @@ fn output_value_from_structured_output(
                     metadata,
                     checkpoint,
                   )
-                False -> #(
-                  contract_manifest.present_run_artifact(
-                    spec.type_,
-                    contract_manifest.ArtifactWritten(
-                      ref: metadata.ref,
-                      sha256: metadata.sha256,
-                      bytes: metadata.bytes,
-                    ),
-                    "application/json",
-                    Some(output_contract_descriptor.source_with_descriptor(
-                      spec,
-                      structured_source_json(step_id, artifact_name),
-                    )),
-                  ),
-                  [],
-                )
+                False ->
+                  case spec.type_ {
+                    workflow_contract.CommitStack ->
+                      structured_output_payload_blob(
+                        spec,
+                        run_id,
+                        step_id,
+                        metadata,
+                        checkpoint,
+                      )
+                    _ -> #(
+                      contract_manifest.present_run_artifact(
+                        spec.type_,
+                        contract_manifest.ArtifactWritten(
+                          ref: metadata.ref,
+                          sha256: metadata.sha256,
+                          bytes: metadata.bytes,
+                        ),
+                        "application/json",
+                        Some(output_contract_descriptor.source_with_descriptor(
+                          spec,
+                          structured_source_json(step_id, artifact_name),
+                        )),
+                      ),
+                      [],
+                    )
+                  }
               }
             False -> output_absent(spec, missing_diagnostic)
           }
         _ -> output_absent(spec, missing_diagnostic)
+      }
+  }
+}
+
+fn structured_output_payload_blob(
+  spec: workflow_contract.OutputSpec,
+  run_id: String,
+  step_id: String,
+  metadata: step_artifact.StructuredOutputMetadata,
+  checkpoint: workflow_checkpoint.Writer,
+) -> #(contract_manifest.ManifestValue, List(String)) {
+  case checkpoint.read_artifact(metadata.ref) {
+    Error(_error) ->
+      output_absent(
+        spec,
+        "workflow_output_structured_payload_read_failed:" <> spec.name,
+      )
+    Ok(contents) ->
+      case json_value.parse(contents) {
+        Error(Nil) ->
+          output_absent(
+            spec,
+            "workflow_output_structured_payload_decode_failed:" <> spec.name,
+          )
+        Ok(parsed) ->
+          case object_field(parsed, "payload") {
+            None ->
+              output_absent(
+                spec,
+                "workflow_output_structured_payload_missing:" <> spec.name,
+              )
+            Some(payload) ->
+              write_contract_output_blob(
+                spec,
+                run_id,
+                json_value.to_string(payload),
+                False,
+                checkpoint,
+                structured_source_json(step_id, metadata.artifact_name),
+              )
+          }
       }
   }
 }
@@ -920,6 +975,7 @@ fn output_type_is_json(type_: workflow_contract.ContractType) -> Bool {
     | workflow_contract.ExecPlanBundle
     | workflow_contract.ImplementationPack
     | workflow_contract.CodeChangeBundle
+    | workflow_contract.CommitStack
     | workflow_contract.ArtifactList -> True
     workflow_contract.DocumentMarkdown
     | workflow_contract.ExecPlan

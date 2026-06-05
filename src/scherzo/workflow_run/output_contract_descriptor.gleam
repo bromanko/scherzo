@@ -60,6 +60,10 @@ fn default_extension_and_media(
       ".txt",
       "text/plain",
     )
+    workflow_contract.CommitStack -> #(
+      ".json",
+      "application/vnd.scherzo.git-commit-stack+json",
+    )
     workflow_contract.CodeChange
     | workflow_contract.ExecPlanBundle
     | workflow_contract.ImplementationPack

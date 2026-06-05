@@ -24,6 +24,7 @@ pub type ContractType {
   ExecPlanBundle
   ImplementationPack
   CodeChangeBundle
+  CommitStack
   GitRef
   Url
   CodeChange
@@ -133,6 +134,7 @@ pub fn type_to_string(type_: ContractType) -> String {
     ExecPlanBundle -> "exec_plan_bundle"
     ImplementationPack -> "implementation_pack"
     CodeChangeBundle -> "code_change_bundle"
+    CommitStack -> "commit_stack"
     GitRef -> "git_ref"
     Url -> "url"
     CodeChange -> "code_change"
@@ -148,6 +150,7 @@ pub fn type_from_string(raw: String) -> Result(ContractType, ContractError) {
     "exec_plan_bundle" -> Ok(ExecPlanBundle)
     "implementation_pack" -> Ok(ImplementationPack)
     "code_change_bundle" -> Ok(CodeChangeBundle)
+    "commit_stack" -> Ok(CommitStack)
     "git_ref" -> Ok(GitRef)
     "url" -> Ok(Url)
     "code_change" -> Ok(CodeChange)
@@ -891,8 +894,10 @@ fn validate_descriptor_media_type(
 ) -> Result(Nil, ContractError) {
   case media_type {
     None -> Ok(Nil)
-    Some("application/json") | Some("text/markdown") | Some("text/plain") ->
-      Ok(Nil)
+    Some("application/json")
+    | Some("application/vnd.scherzo.git-commit-stack+json")
+    | Some("text/markdown")
+    | Some("text/plain") -> Ok(Nil)
     Some(_) ->
       error(
         "unsupported_contract_descriptor_media_type",
@@ -900,7 +905,9 @@ fn validate_descriptor_media_type(
           <> kind
           <> " "
           <> name
-          <> " media_type must be one of application/json, text/markdown, or text/plain",
+          <> " media_type must be one of application/json, "
+          <> "application/vnd.scherzo.git-commit-stack+json, "
+          <> "text/markdown, or text/plain",
       )
   }
 }
@@ -1333,6 +1340,7 @@ fn appendable_source(source: ContractType) -> Bool {
     | ExecPlanBundle
     | ImplementationPack
     | CodeChangeBundle
+    | CommitStack
     | Text
     | Url
     | GitRef

@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option.{None, Some}
+import scherzo/commit_stack_artifact
 import scherzo/json_value
 import scherzo/workflow_artifact_descriptor as descriptor
 import simplifile
@@ -66,6 +67,34 @@ pub fn value_descriptor_accepts_json_null_test() {
 
   let reparsed = parse_ok(descriptor.to_string(parsed))
   assert reparsed.value == Some(json_value.JNull)
+}
+
+pub fn round_trips_commit_stack_descriptor_kind_test() {
+  let retained =
+    descriptor.ArtifactDescriptor(
+      name: "commit_stack",
+      kind: descriptor.CommitStackKind,
+      artifact_type: Some(commit_stack_artifact.commit_stack_artifact_type),
+      description: None,
+      source: None,
+      validation: None,
+      metadata: None,
+      ref_type: None,
+      ref: Some("runs/run-1/outputs/commit_stack.json"),
+      sha256: Some(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      ),
+      bytes: Some(12),
+      media_type: Some(commit_stack_artifact.commit_stack_media_type),
+      value: None,
+      entries: [],
+    )
+
+  let encoded = descriptor.to_string(retained)
+  let decoded = parse_ok(encoded)
+  assert decoded.kind == descriptor.CommitStackKind
+  assert descriptor.kind_from_string("commit_stack")
+    == Ok(descriptor.CommitStackKind)
 }
 
 pub fn round_trips_file_value_ref_and_artifact_set_descriptors_test() {

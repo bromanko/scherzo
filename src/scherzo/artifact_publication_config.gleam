@@ -76,8 +76,16 @@ pub type PublicationRoute {
     repository: String,
     required: Bool,
     pull_request: Option(PublicationPullRequestOverride),
+    mode: PublicationMode,
     files: List(PublicationFileRoute),
+    commit_stack: Option(PublicationCommitStackRoute),
+    target: PublicationTarget,
   )
+}
+
+pub type PublicationMode {
+  FilePublication
+  CommitStackPublication
 }
 
 pub type PublicationPullRequestOverride {
@@ -89,6 +97,23 @@ pub type PublicationPullRequestOverride {
 
 pub type PublicationFileRoute {
   PublicationFileRoute(selector: PublicationFileSelector, path: String)
+}
+
+pub type PublicationCommitStackRoute {
+  PublicationCommitStackRoute(selector: PublicationCommitStackSelector)
+}
+
+pub type PublicationCommitStackSelector {
+  PublicationCommitStackSelector(output: String)
+}
+
+pub type PublicationTarget {
+  StableBranchTarget
+  ExistingPrBranchTarget(source: PublicationTargetSource)
+}
+
+pub type PublicationTargetSource {
+  PublicationTargetSource(output: String)
 }
 
 pub type PublicationFileSelector {
@@ -436,7 +461,16 @@ fn parse_publication_route(
   use entries <- result.try(read_map_entries(node, "artifacts.publications[]"))
   use _ <- result.try(require_only_keys(
     entries,
-    ["id", "repository", "required", "pull_request", "files"],
+    [
+      "id",
+      "repository",
+      "required",
+      "pull_request",
+      "mode",
+      "files",
+      "commit_stack",
+      "target",
+    ],
     "artifacts.publications[]",
   ))
   use id <- result.try(required_string_entry(
@@ -468,20 +502,342 @@ fn parse_publication_route(
     "required",
     "artifacts.publications[].required",
   ))
+  use mode <- result.try(parse_publication_mode(
+    get_entry(entries, "mode"),
+    "artifacts.publications[].mode",
+  ))
   let pull_request_node = get_entry(entries, "pull_request")
+  use _ <- result.try(validate_pull_request_for_mode(
+    pull_request_node,
+    mode,
+    id,
+  ))
   use pull_request <- result.try(parse_route_pull_request_override(
     pull_request_node,
     "artifacts.publications[].pull_request",
   ))
-  let files_node = get_entry(entries, "files")
-  use files <- result.try(parse_publication_files(files_node, contract, id))
+  use files <- result.try(parse_files_for_mode(
+    get_entry(entries, "files"),
+    mode,
+    contract,
+    id,
+  ))
+  use commit_stack <- result.try(parse_commit_stack_for_mode(
+    get_entry(entries, "commit_stack"),
+    mode,
+    contract,
+    id,
+  ))
+  use target <- result.try(parse_publication_target(
+    get_entry(entries, "target"),
+    mode,
+    contract,
+    id,
+  ))
   Ok(PublicationRoute(
     id: id,
     repository: repository,
     required: unwrap_bool(required, True),
     pull_request: pull_request,
+    mode: mode,
     files: files,
+    commit_stack: commit_stack,
+    target: target,
   ))
+}
+
+fn parse_publication_mode(
+  node: Option(yay.Node),
+  path: String,
+) -> Result(PublicationMode, PublicationConfigError) {
+  case node {
+    None -> Ok(FilePublication)
+    Some(yay.NodeStr("files")) | Some(yay.NodeStr("file")) ->
+      Ok(FilePublication)
+    Some(yay.NodeStr("commit_stack")) -> Ok(CommitStackPublication)
+    Some(yay.NodeStr(other)) ->
+      error(
+        "invalid_publication_mode",
+        path <> " must be files or commit_stack, got " <> other,
+      )
+    Some(_) -> error("publication_mode_not_string", path <> " must be a string")
+  }
+}
+
+fn validate_pull_request_for_mode(
+  node: Option(yay.Node),
+  mode: PublicationMode,
+  publication_id: String,
+) -> Result(Nil, PublicationConfigError) {
+  case mode, node {
+    CommitStackPublication, Some(_) ->
+      error(
+        "commit_stack_pull_request_unsupported",
+        "publication "
+          <> publication_id
+          <> " uses mode commit_stack and must not declare pull_request; existing PR metadata comes from target.source",
+      )
+    _, _ -> Ok(Nil)
+  }
+}
+
+fn parse_files_for_mode(
+  node: Option(yay.Node),
+  mode: PublicationMode,
+  contract: Option(workflow_contract.Contract),
+  publication_id: String,
+) -> Result(List(PublicationFileRoute), PublicationConfigError) {
+  case mode {
+    FilePublication -> parse_publication_files(node, contract, publication_id)
+    CommitStackPublication ->
+      case node {
+        None -> Ok([])
+        Some(_) ->
+          error(
+            "commit_stack_publication_files_unsupported",
+            "publication "
+              <> publication_id
+              <> " uses mode commit_stack and must not declare files",
+          )
+      }
+  }
+}
+
+fn parse_commit_stack_for_mode(
+  node: Option(yay.Node),
+  mode: PublicationMode,
+  contract: Option(workflow_contract.Contract),
+  publication_id: String,
+) -> Result(Option(PublicationCommitStackRoute), PublicationConfigError) {
+  case mode {
+    FilePublication ->
+      case node {
+        None -> Ok(None)
+        Some(_) ->
+          error(
+            "file_publication_commit_stack_unsupported",
+            "publication "
+              <> publication_id
+              <> " must use mode commit_stack to declare commit_stack",
+          )
+      }
+    CommitStackPublication ->
+      case node {
+        None ->
+          error(
+            "missing_publication_commit_stack",
+            "artifacts.publications[].commit_stack is required for mode commit_stack",
+          )
+        Some(node) -> {
+          use route <- result.try(parse_publication_commit_stack(
+            node,
+            contract,
+            publication_id,
+          ))
+          Ok(Some(route))
+        }
+      }
+  }
+}
+
+fn parse_publication_commit_stack(
+  node: yay.Node,
+  contract: Option(workflow_contract.Contract),
+  publication_id: String,
+) -> Result(PublicationCommitStackRoute, PublicationConfigError) {
+  use entries <- result.try(read_map_entries(
+    node,
+    "artifacts.publications[].commit_stack",
+  ))
+  use _ <- result.try(require_only_keys(
+    entries,
+    ["select"],
+    "artifacts.publications[].commit_stack",
+  ))
+  use selector <- result.try(parse_commit_stack_selector(
+    get_entry(entries, "select"),
+    contract,
+    publication_id,
+  ))
+  Ok(PublicationCommitStackRoute(selector: selector))
+}
+
+fn parse_commit_stack_selector(
+  node: Option(yay.Node),
+  contract: Option(workflow_contract.Contract),
+  publication_id: String,
+) -> Result(PublicationCommitStackSelector, PublicationConfigError) {
+  case node {
+    None ->
+      error(
+        "missing_publication_commit_stack_selector",
+        "artifacts.publications[].commit_stack.select is required",
+      )
+    Some(node) -> {
+      use entries <- result.try(read_map_entries(
+        node,
+        "artifacts.publications[].commit_stack.select",
+      ))
+      use _ <- result.try(require_only_keys(
+        entries,
+        ["output"],
+        "artifacts.publications[].commit_stack.select",
+      ))
+      use output <- result.try(required_string_entry(
+        entries,
+        "output",
+        "artifacts.publications[].commit_stack.select.output",
+      ))
+      use _ <- result.try(validate_contract_name(
+        output,
+        "artifacts.publications[].commit_stack.select.output",
+      ))
+      use _ <- result.try(validate_commit_stack_selector_against_contract(
+        contract,
+        output,
+        publication_id,
+      ))
+      Ok(PublicationCommitStackSelector(output: output))
+    }
+  }
+}
+
+fn parse_publication_target(
+  node: Option(yay.Node),
+  mode: PublicationMode,
+  contract: Option(workflow_contract.Contract),
+  publication_id: String,
+) -> Result(PublicationTarget, PublicationConfigError) {
+  case node {
+    None -> default_publication_target(mode, publication_id)
+    Some(node) -> {
+      use entries <- result.try(read_map_entries(
+        node,
+        "artifacts.publications[].target",
+      ))
+      use _ <- result.try(require_only_keys(
+        entries,
+        ["kind", "source"],
+        "artifacts.publications[].target",
+      ))
+      case get_entry(entries, "kind") {
+        Some(yay.NodeStr("existing_pr_branch")) -> {
+          use _ <- result.try(require_commit_stack_target(mode, publication_id))
+          use source <- result.try(parse_publication_target_source(
+            get_entry(entries, "source"),
+            contract,
+            publication_id,
+          ))
+          Ok(ExistingPrBranchTarget(source))
+        }
+        Some(yay.NodeStr("stable_branch")) ->
+          require_stable_branch_target(mode, publication_id)
+        Some(yay.NodeStr(other)) ->
+          error(
+            "invalid_publication_target_kind",
+            "artifacts.publications[].target.kind is unsupported: " <> other,
+          )
+        Some(_) ->
+          error(
+            "publication_target_kind_not_string",
+            "artifacts.publications[].target.kind must be a string",
+          )
+        None ->
+          error(
+            "missing_publication_target_kind",
+            "artifacts.publications[].target.kind is required",
+          )
+      }
+    }
+  }
+}
+
+fn default_publication_target(
+  mode: PublicationMode,
+  publication_id: String,
+) -> Result(PublicationTarget, PublicationConfigError) {
+  case mode {
+    FilePublication -> Ok(StableBranchTarget)
+    CommitStackPublication ->
+      error(
+        "missing_commit_stack_publication_target",
+        "publication "
+          <> publication_id
+          <> " uses mode commit_stack and must declare target.kind existing_pr_branch",
+      )
+  }
+}
+
+fn require_stable_branch_target(
+  mode: PublicationMode,
+  publication_id: String,
+) -> Result(PublicationTarget, PublicationConfigError) {
+  case mode {
+    FilePublication -> Ok(StableBranchTarget)
+    CommitStackPublication ->
+      error(
+        "commit_stack_stable_branch_target_unsupported",
+        "publication "
+          <> publication_id
+          <> " uses mode commit_stack and cannot target stable_branch yet; use target.kind existing_pr_branch",
+      )
+  }
+}
+
+fn require_commit_stack_target(
+  mode: PublicationMode,
+  publication_id: String,
+) -> Result(Nil, PublicationConfigError) {
+  case mode {
+    CommitStackPublication -> Ok(Nil)
+    FilePublication ->
+      error(
+        "existing_pr_branch_requires_commit_stack",
+        "publication "
+          <> publication_id
+          <> " target existing_pr_branch is supported only for commit_stack mode",
+      )
+  }
+}
+
+fn parse_publication_target_source(
+  node: Option(yay.Node),
+  contract: Option(workflow_contract.Contract),
+  publication_id: String,
+) -> Result(PublicationTargetSource, PublicationConfigError) {
+  case node {
+    None ->
+      error(
+        "missing_publication_target_source",
+        "artifacts.publications[].target.source is required",
+      )
+    Some(node) -> {
+      use entries <- result.try(read_map_entries(
+        node,
+        "artifacts.publications[].target.source",
+      ))
+      use _ <- result.try(require_only_keys(
+        entries,
+        ["output"],
+        "artifacts.publications[].target.source",
+      ))
+      use output <- result.try(required_string_entry(
+        entries,
+        "output",
+        "artifacts.publications[].target.source.output",
+      ))
+      use _ <- result.try(validate_contract_name(
+        output,
+        "artifacts.publications[].target.source.output",
+      ))
+      use _ <- result.try(validate_target_source_against_contract(
+        contract,
+        output,
+        publication_id,
+      ))
+      Ok(PublicationTargetSource(output: output))
+    }
+  }
 }
 
 fn parse_route_pull_request_override(
@@ -667,6 +1023,90 @@ fn parse_file_selector(
       ))
       Ok(PublicationFileSelector(output:, entry:))
     }
+  }
+}
+
+fn validate_commit_stack_selector_against_contract(
+  contract: Option(workflow_contract.Contract),
+  output: String,
+  publication_id: String,
+) -> Result(Nil, PublicationConfigError) {
+  case contract {
+    None ->
+      error(
+        "missing_publication_contract",
+        "publication "
+          <> publication_id
+          <> " cannot select commit_stack output "
+          <> output
+          <> " because the workflow has no contract",
+      )
+    Some(contract) ->
+      case find_output(contract.outputs, output) {
+        None ->
+          error(
+            "unknown_publication_output",
+            "publication "
+              <> publication_id
+              <> " references unknown contract output "
+              <> output,
+          )
+        Some(spec) ->
+          case spec.type_ {
+            workflow_contract.CommitStack -> Ok(Nil)
+            _ ->
+              error(
+                "publication_commit_stack_output_type_mismatch",
+                "publication "
+                  <> publication_id
+                  <> " output "
+                  <> output
+                  <> " must have contract type commit_stack",
+              )
+          }
+      }
+  }
+}
+
+fn validate_target_source_against_contract(
+  contract: Option(workflow_contract.Contract),
+  output: String,
+  publication_id: String,
+) -> Result(Nil, PublicationConfigError) {
+  case contract {
+    None ->
+      error(
+        "missing_publication_contract",
+        "publication "
+          <> publication_id
+          <> " cannot select target output "
+          <> output
+          <> " because the workflow has no contract",
+      )
+    Some(contract) ->
+      case find_output(contract.outputs, output) {
+        None ->
+          error(
+            "unknown_publication_target_output",
+            "publication "
+              <> publication_id
+              <> " references unknown target output "
+              <> output,
+          )
+        Some(spec) ->
+          case spec.type_ {
+            workflow_contract.CodeChange -> Ok(Nil)
+            _ ->
+              error(
+                "publication_target_output_type_mismatch",
+                "publication "
+                  <> publication_id
+                  <> " target output "
+                  <> output
+                  <> " must have contract type code_change",
+              )
+          }
+      }
   }
 }
 

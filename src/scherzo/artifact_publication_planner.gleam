@@ -7,6 +7,7 @@ import gleam/result
 import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_planner_support as planner_support
+import scherzo/commit_stack_artifact
 import scherzo/error
 import scherzo/hash
 import scherzo/json_value
@@ -64,6 +65,21 @@ pub type PlannedPullRequest {
   )
 }
 
+pub type PlannedPublicationTarget {
+  StableBranchTargetPlan
+  ExistingPrBranchTargetPlan(commit_stack_artifact.ExistingPrBranchTarget)
+}
+
+pub type PlannedCommitStack {
+  PlannedCommitStack(
+    output: String,
+    manifest_ref: String,
+    manifest_sha256: String,
+    manifest_bytes: Int,
+    stack: commit_stack_artifact.CommitStackArtifact,
+  )
+}
+
 pub type DryRunPublicationManifest {
   DryRunPublicationManifest(
     run_id: String,
@@ -78,8 +94,10 @@ pub type DryRunPublicationManifest {
     github_repo: Option(String),
     github_base: Option(String),
     branch: String,
+    target: PlannedPublicationTarget,
     pull_request: PlannedPullRequest,
     files: List(PlannedPublicationFile),
+    commit_stack: Option(PlannedCommitStack),
   )
 }
 
@@ -96,10 +114,43 @@ pub fn plan_publication(
     repositories,
     route.repository,
   ))
+  case route.mode {
+    artifact_publication_config.FilePublication ->
+      plan_file_publication(
+        manifest,
+        route,
+        repository,
+        store,
+        work,
+        run_id,
+        body_templates,
+      )
+    artifact_publication_config.CommitStackPublication ->
+      plan_commit_stack_publication(
+        manifest,
+        route,
+        repository,
+        store,
+        work,
+        run_id,
+        body_templates,
+      )
+  }
+}
+
+fn plan_file_publication(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  route: artifact_publication_config.PublicationRoute,
+  repository: ResolvedGithubRepository,
+  store: artifact_store.Store,
+  work: PublicationWork,
+  run_id: String,
+  body_templates: Dict(String, String),
+) -> Result(DryRunPublicationManifest, PlannerError) {
   let series_id =
     planner_support.make_series_id(work.id, manifest.workflow_id, route.id)
   use selected <- result.try(select_files(manifest, route.files, store, []))
-  use version_id <- result.try(compute_version_id(
+  use version_id <- result.try(compute_file_version_id(
     manifest.workflow_id,
     route,
     repository,
@@ -122,17 +173,7 @@ pub fn plan_publication(
       [],
     ),
   )
-  let files_markdown =
-    files
-    |> list.map(fn(file) {
-      let PlannedPublicationFile(source, destination_path) = file
-      let selector = case source.entry {
-        Some(entry) -> source.output <> "/" <> entry
-        None -> source.output
-      }
-      #(destination_path, selector, source.sha256)
-    })
-    |> planner_support.render_files_markdown
+  let files_markdown = render_files_markdown(files)
   use branch <- result.try(render_branch(
     repository,
     route.id,
@@ -166,9 +207,89 @@ pub fn plan_publication(
     github_repo: Some(repository.repo),
     github_base: Some(repository.base),
     branch: branch,
+    target: StableBranchTargetPlan,
     pull_request: pull_request,
     files: files,
+    commit_stack: None,
   ))
+}
+
+fn plan_commit_stack_publication(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  route: artifact_publication_config.PublicationRoute,
+  repository: ResolvedGithubRepository,
+  store: artifact_store.Store,
+  work: PublicationWork,
+  run_id: String,
+  _body_templates: Dict(String, String),
+) -> Result(DryRunPublicationManifest, PlannerError) {
+  use stack_route <- result.try(require_commit_stack_route(route))
+  let artifact_publication_config.PublicationCommitStackRoute(selector:) =
+    stack_route
+  use stack <- result.try(select_commit_stack(manifest, selector, store))
+  use target <- result.try(plan_target(
+    manifest,
+    route.target,
+    repository,
+    store,
+  ))
+  use _ <- result.try(validate_commit_stack_target(
+    stack.stack,
+    target,
+    repository,
+  ))
+  let series_id =
+    planner_support.make_series_id(work.id, manifest.workflow_id, route.id)
+  use version_id <- result.try(compute_commit_stack_version_id(
+    manifest.workflow_id,
+    route,
+    repository,
+    work,
+    stack,
+    target,
+  ))
+  use branch <- result.try(branch_for_target(
+    target,
+    repository,
+    route.id,
+    series_id,
+    version_id,
+    manifest.workflow_id,
+    run_id,
+    work,
+  ))
+  let pull_request = pull_request_for_target(repository, target)
+  Ok(DryRunPublicationManifest(
+    run_id: run_id,
+    workflow_id: manifest.workflow_id,
+    publication_id: route.id,
+    series_id: series_id,
+    version_id: version_id,
+    required: route.required,
+    dry_run: True,
+    repository_kind: "github",
+    repository_id: route.repository,
+    github_repo: Some(repository.repo),
+    github_base: Some(repository.base),
+    branch: branch,
+    target: target,
+    pull_request: pull_request,
+    files: [],
+    commit_stack: Some(stack),
+  ))
+}
+
+fn render_files_markdown(files: List(PlannedPublicationFile)) -> String {
+  files
+  |> list.map(fn(file) {
+    let PlannedPublicationFile(source, destination_path) = file
+    let selector = case source.entry {
+      Some(entry) -> source.output <> "/" <> entry
+      None -> source.output
+    }
+    #(destination_path, selector, source.sha256)
+  })
+  |> planner_support.render_files_markdown
 }
 
 pub fn manifest_to_json(manifest: DryRunPublicationManifest) -> json.Json {
@@ -192,8 +313,10 @@ pub fn manifest_to_json(manifest: DryRunPublicationManifest) -> json.Json {
       ),
     ),
     #("branch", json.string(manifest.branch)),
+    #("target", target_to_json(manifest.target)),
     #("pull_request", pull_request_to_json(manifest.pull_request)),
     #("files", json.array(manifest.files, of: planned_file_to_json)),
+    #("commit_stack", option_commit_stack_to_json(manifest.commit_stack)),
   ])
 }
 
@@ -295,6 +418,82 @@ fn select_artifact(
 ) -> Result(SelectedArtifact, PlannerError) {
   let artifact_publication_config.PublicationFileSelector(output:, entry:) =
     selector
+  select_artifact_descriptor(manifest, output, entry, store)
+}
+
+fn select_commit_stack(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  selector: artifact_publication_config.PublicationCommitStackSelector,
+  store: artifact_store.Store,
+) -> Result(PlannedCommitStack, PlannerError) {
+  let artifact_publication_config.PublicationCommitStackSelector(output:) =
+    selector
+  use selected <- result.try(select_artifact_descriptor(
+    manifest,
+    output,
+    None,
+    store,
+  ))
+  case selected.artifact_type, selected.media_type {
+    Some("scherzo.git_commit_stack.v1"),
+      "application/vnd.scherzo.git-commit-stack+json"
+    -> {
+      use contents <- result.try(read_artifact_text(selected.ref, store))
+      use _ <- result.try(verify_text_contents(
+        selected.ref,
+        contents,
+        selected.sha256,
+        selected.bytes,
+      ))
+      use stack <- result.try(
+        commit_stack_artifact.parse_commit_stack(contents)
+        |> result.map_error(commit_stack_parse_error_to_planner_error),
+      )
+      Ok(PlannedCommitStack(
+        output: output,
+        manifest_ref: selected.ref,
+        manifest_sha256: selected.sha256,
+        manifest_bytes: selected.bytes,
+        stack: stack,
+      ))
+    }
+    _, _ ->
+      error(
+        "non_commit_stack_descriptor",
+        "publication selector resolved to a non-commit_stack artifact: "
+          <> output,
+      )
+  }
+}
+
+fn select_target_artifact(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  output: String,
+  store: artifact_store.Store,
+) -> Result(commit_stack_artifact.ExistingPrBranchTarget, PlannerError) {
+  use selected <- result.try(select_artifact_descriptor(
+    manifest,
+    output,
+    None,
+    store,
+  ))
+  use contents <- result.try(read_artifact_text(selected.ref, store))
+  use _ <- result.try(verify_text_contents(
+    selected.ref,
+    contents,
+    selected.sha256,
+    selected.bytes,
+  ))
+  commit_stack_artifact.parse_existing_pr_branch_target(contents)
+  |> result.map_error(commit_stack_parse_error_to_planner_error)
+}
+
+fn select_artifact_descriptor(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  output: String,
+  entry: Option(String),
+  store: artifact_store.Store,
+) -> Result(SelectedArtifact, PlannerError) {
   use named <- result.try(find_named_output(manifest.outputs, output))
   case named.value.status {
     workflow_contract_manifest.Absent ->
@@ -306,6 +505,168 @@ fn select_artifact(
           select_output_entry(output, entry_name, named.value, store)
       }
   }
+}
+
+fn plan_target(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  target: artifact_publication_config.PublicationTarget,
+  _repository: ResolvedGithubRepository,
+  store: artifact_store.Store,
+) -> Result(PlannedPublicationTarget, PlannerError) {
+  case target {
+    artifact_publication_config.StableBranchTarget -> Ok(StableBranchTargetPlan)
+    artifact_publication_config.ExistingPrBranchTarget(source) -> {
+      let artifact_publication_config.PublicationTargetSource(output:) = source
+      use existing <- result.try(select_target_artifact(manifest, output, store))
+      Ok(ExistingPrBranchTargetPlan(existing))
+    }
+  }
+}
+
+fn validate_commit_stack_target(
+  stack: commit_stack_artifact.CommitStackArtifact,
+  target: PlannedPublicationTarget,
+  repository: ResolvedGithubRepository,
+) -> Result(Nil, PlannerError) {
+  use _ <- result.try(require_same_repo(
+    stack.repository,
+    repository.repo,
+    "commit_stack_repository_mismatch",
+    "commit stack repository does not match publication repository",
+  ))
+  case target {
+    StableBranchTargetPlan ->
+      error(
+        "unsupported_commit_stack_target",
+        "commit_stack publication currently requires target existing_pr_branch",
+      )
+    ExistingPrBranchTargetPlan(existing) -> {
+      use _ <- result.try(require_same_repo(
+        existing.repository,
+        repository.repo,
+        "existing_target_repository_mismatch",
+        "existing PR branch target repository does not match publication repository",
+      ))
+      use _ <- result.try(require_same_repo(
+        existing.head_repo,
+        repository.repo,
+        "existing_target_head_repository_mismatch",
+        "existing PR branch target head repository does not match publication repository",
+      ))
+      use _ <- result.try(require_equal(
+        existing.base_branch,
+        repository.base,
+        "existing_target_base_branch_mismatch",
+        "existing PR branch target base branch does not match publication repository base",
+      ))
+      require_equal(
+        stack.base_sha,
+        existing.expected_head_sha,
+        "commit_stack_base_mismatch",
+        "commit stack base sha does not match expected existing branch head",
+      )
+    }
+  }
+}
+
+fn branch_for_target(
+  target: PlannedPublicationTarget,
+  repository: ResolvedGithubRepository,
+  publication_id: String,
+  series_id: String,
+  version_id: String,
+  workflow_id: String,
+  run_id: String,
+  work: PublicationWork,
+) -> Result(String, PlannerError) {
+  case target {
+    StableBranchTargetPlan ->
+      render_branch(
+        repository,
+        publication_id,
+        series_id,
+        version_id,
+        workflow_id,
+        run_id,
+        work,
+      )
+    ExistingPrBranchTargetPlan(existing) -> {
+      use _ <- result.try(
+        planner_support.validate_branch(existing.head_branch)
+        |> result.map_error(validation_error_to_planner_error),
+      )
+      Ok(existing.head_branch)
+    }
+  }
+}
+
+fn pull_request_for_target(
+  repository: ResolvedGithubRepository,
+  target: PlannedPublicationTarget,
+) -> PlannedPullRequest {
+  case target {
+    StableBranchTargetPlan ->
+      PlannedPullRequest(
+        repository.pull_request_enabled,
+        repository.pull_request_draft,
+        None,
+        None,
+      )
+    ExistingPrBranchTargetPlan(_) ->
+      PlannedPullRequest(False, False, None, None)
+  }
+}
+
+fn require_commit_stack_route(
+  route: artifact_publication_config.PublicationRoute,
+) -> Result(
+  artifact_publication_config.PublicationCommitStackRoute,
+  PlannerError,
+) {
+  case route.commit_stack {
+    Some(commit_stack) -> Ok(commit_stack)
+    None ->
+      error(
+        "missing_publication_commit_stack",
+        "commit_stack publication is missing commit_stack selector",
+      )
+  }
+}
+
+fn require_same_repo(
+  actual: String,
+  expected: String,
+  code: String,
+  message: String,
+) -> Result(Nil, PlannerError) {
+  case
+    string.lowercase(string.trim(actual))
+    == string.lowercase(string.trim(expected))
+  {
+    True -> Ok(Nil)
+    False -> error(code, message)
+  }
+}
+
+fn require_equal(
+  actual: String,
+  expected: String,
+  code: String,
+  message: String,
+) -> Result(Nil, PlannerError) {
+  case actual == expected {
+    True -> Ok(Nil)
+    False -> error(code, message)
+  }
+}
+
+fn commit_stack_parse_error_to_planner_error(
+  parse_error: commit_stack_artifact.ArtifactParseError,
+) -> PlannerError {
+  PlannerError(
+    commit_stack_artifact.error_code(parse_error),
+    commit_stack_artifact.error_message(parse_error),
+  )
 }
 
 fn find_named_output(
@@ -329,7 +690,7 @@ fn select_output_file(
 ) -> Result(SelectedArtifact, PlannerError) {
   use descriptor <- result.try(required_descriptor(output, value))
   case descriptor.kind {
-    artifact_descriptor.FileKind ->
+    artifact_descriptor.FileKind | artifact_descriptor.CommitStackKind ->
       descriptor_to_selected_artifact(output, None, descriptor, store)
     _ ->
       error(
@@ -577,7 +938,7 @@ fn find_entry_descriptor(
   }
 }
 
-fn compute_version_id(
+fn compute_file_version_id(
   workflow_id: String,
   route: artifact_publication_config.PublicationRoute,
   repository: ResolvedGithubRepository,
@@ -635,6 +996,38 @@ fn compute_version_id(
         ),
       ),
       #("selected", json.array(selected, of: selected_for_version_json)),
+    ])
+    |> json.to_string
+  Ok(hash.sha256_hex(payload))
+}
+
+fn compute_commit_stack_version_id(
+  workflow_id: String,
+  route: artifact_publication_config.PublicationRoute,
+  repository: ResolvedGithubRepository,
+  work: PublicationWork,
+  stack: PlannedCommitStack,
+  target: PlannedPublicationTarget,
+) -> Result(String, PlannerError) {
+  let payload =
+    json.object([
+      #("workflow_id", json.string(workflow_id)),
+      #("publication_id", json.string(route.id)),
+      #("repository_id", json.string(repository.id)),
+      #("github_repo", json.string(repository.repo)),
+      #("github_base", json.string(repository.base)),
+      #("mode", json.string("commit_stack")),
+      #("target", target_to_json(target)),
+      #(
+        "work",
+        planner_support.work_identity_to_json(
+          work_kind_to_string(work.kind),
+          work.id,
+          work.identifier,
+          work.slug,
+        ),
+      ),
+      #("commit_stack", commit_stack_to_json(stack)),
     ])
     |> json.to_string
   Ok(hash.sha256_hex(payload))
@@ -976,6 +1369,38 @@ fn selected_to_json(
     #("media_type", json.string(selected.media_type)),
   ])
   |> json.object
+}
+
+fn target_to_json(target: PlannedPublicationTarget) -> json.Json {
+  case target {
+    StableBranchTargetPlan ->
+      json.object([#("kind", json.string("stable_branch"))])
+    ExistingPrBranchTargetPlan(existing) ->
+      json.object([
+        #("kind", json.string("existing_pr_branch")),
+        #(
+          "existing_pr_branch",
+          commit_stack_artifact.existing_target_identity_json(existing),
+        ),
+      ])
+  }
+}
+
+fn option_commit_stack_to_json(value: Option(PlannedCommitStack)) -> json.Json {
+  case value {
+    None -> json.null()
+    Some(stack) -> commit_stack_to_json(stack)
+  }
+}
+
+fn commit_stack_to_json(stack: PlannedCommitStack) -> json.Json {
+  json.object([
+    #("output", json.string(stack.output)),
+    #("manifest_ref", json.string(stack.manifest_ref)),
+    #("manifest_sha256", json.string(stack.manifest_sha256)),
+    #("manifest_bytes", json.int(stack.manifest_bytes)),
+    #("stack", commit_stack_artifact.commit_stack_identity_json(stack.stack)),
+  ])
 }
 
 fn planned_file_to_json(file: PlannedPublicationFile) -> json.Json {

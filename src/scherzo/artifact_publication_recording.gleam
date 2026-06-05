@@ -638,12 +638,16 @@ fn body_template_paths(
   case routes {
     [] -> acc
     [route, ..rest] -> {
-      let next = case route.pull_request {
-        Some(artifact_publication_config.PublicationPullRequestOverride(
-          body_template: Some(body_template),
-          ..,
-        )) -> [RouteBodyTemplate(body_template), ..acc]
-        _ -> repository_body_template(route.repository, repositories, acc)
+      let next = case route.target {
+        artifact_publication_config.ExistingPrBranchTarget(_) -> acc
+        artifact_publication_config.StableBranchTarget ->
+          case route.pull_request {
+            Some(artifact_publication_config.PublicationPullRequestOverride(
+              body_template: Some(body_template),
+              ..,
+            )) -> [RouteBodyTemplate(body_template), ..acc]
+            _ -> repository_body_template(route.repository, repositories, acc)
+          }
       }
       body_template_paths(rest, repositories, next)
     }
@@ -685,6 +689,32 @@ fn make_series_id(
   work_id <> ":" <> workflow_id <> ":" <> publication_id
 }
 
+fn read_checkpoint_artifact_bytes(
+  checkpoint: workflow_checkpoint.Writer,
+  ref: String,
+) -> Result(BitArray, artifact_store.ArtifactError) {
+  case checkpoint.artifact_location(ref) {
+    Ok(artifact_store.ArtifactLocation(local_path: Some(local_path), ..)) ->
+      artifact_store.read_file_bytes(local_path)
+    Ok(_) -> read_checkpoint_artifact_text_as_bytes(checkpoint, ref)
+    Error(error) ->
+      Error(
+        artifact_store.ArtifactIo(workflow_checkpoint.describe_error(error)),
+      )
+  }
+}
+
+fn read_checkpoint_artifact_text_as_bytes(
+  checkpoint: workflow_checkpoint.Writer,
+  ref: String,
+) -> Result(BitArray, artifact_store.ArtifactError) {
+  checkpoint.read_artifact(ref)
+  |> result.map(bit_array.from_string)
+  |> result.map_error(fn(error) {
+    artifact_store.ArtifactIo(workflow_checkpoint.describe_error(error))
+  })
+}
+
 fn checkpoint_store(
   checkpoint: workflow_checkpoint.Writer,
 ) -> artifact_store.Store {
@@ -707,13 +737,7 @@ fn checkpoint_store(
           "publication_recording_write_unsupported",
         ))
       },
-      read_bytes: fn(ref) {
-        checkpoint.read_artifact(ref)
-        |> result.map(bit_array.from_string)
-        |> result.map_error(fn(error) {
-          artifact_store.ArtifactIo(workflow_checkpoint.describe_error(error))
-        })
-      },
+      read_bytes: fn(ref) { read_checkpoint_artifact_bytes(checkpoint, ref) },
       locate: fn(ref) {
         checkpoint.artifact_location(ref)
         |> result.map_error(fn(error) {

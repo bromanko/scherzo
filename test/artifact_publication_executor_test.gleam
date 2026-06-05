@@ -1,11 +1,13 @@
 import gleam/bit_array
 import gleam/dict
+import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_executor
 import scherzo/artifact_repository/command_runner
+import scherzo/commit_stack_artifact
 import scherzo/hash
 import scherzo/path
 import scherzo/state/ledger
@@ -50,6 +52,141 @@ pub fn execute_routes_prepares_artifact_bytes_and_records_published_attempt_test
     )
   assert latest.status == "published"
   assert latest.retry_execution_available == True
+}
+
+pub fn execute_routes_prepares_commit_stack_carrier_bytes_test() {
+  let root = "test/tmp/artifact-publication-executor/commit-stack-published"
+  test_helpers.reset_dir(root)
+  write_commit_stack_artifacts(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      checkpoint,
+      commit_stack_runner(),
+    )
+
+  assert result.required_failures == []
+  let assert [attempt] = result.attempts
+  assert attempt.status == "published"
+  let projected = load_projection(root)
+  let assert Ok(latest) =
+    projection.latest_publication_for_run(
+      projected,
+      "run-1",
+      "conflict_resolution",
+    )
+  assert latest.status == "published"
+  assert latest.retry_execution_available == True
+}
+
+pub fn execute_routes_rechecks_commit_stack_existing_branch_after_success_test() {
+  let root =
+    "test/tmp/artifact-publication-executor/commit-stack-stale-after-success"
+  test_helpers.reset_dir(root)
+  write_commit_stack_artifacts(root)
+
+  let assert Ok(first) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+      commit_stack_runner(),
+    )
+  let assert [first_attempt] = first.attempts
+  assert first_attempt.status == "published"
+
+  let assert Ok(second) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 456 }),
+      commit_stack_stale_runner(),
+    )
+
+  let assert [failure] = second.required_failures
+  assert failure.code == "stale_existing_branch"
+  let assert [second_attempt] = second.attempts
+  assert second_attempt.status == "failed"
+  assert second_attempt.error_code == Some("stale_existing_branch")
+}
+
+pub fn execute_routes_records_verified_commit_stack_unchanged_after_success_test() {
+  let root =
+    "test/tmp/artifact-publication-executor/commit-stack-unchanged-after-success"
+  test_helpers.reset_dir(root)
+  write_commit_stack_artifacts(root)
+
+  let assert Ok(first) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+      commit_stack_runner(),
+    )
+  let assert [first_attempt] = first.attempts
+  assert first_attempt.status == "published"
+
+  let assert Ok(second) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 456 }),
+      commit_stack_already_published_runner(),
+    )
+
+  assert second.required_failures == []
+  let assert [second_attempt] = second.attempts
+  assert second_attempt.status == "unchanged"
+  assert string.starts_with(second_attempt.attempt_id, "recovered-")
+}
+
+pub fn execute_routes_fails_when_commit_stack_carrier_bytes_disappear_test() {
+  let root = "test/tmp/artifact-publication-executor/commit-stack-missing"
+  test_helpers.reset_dir(root)
+  write_artifact(root, commit_stack_ref(), commit_stack_manifest_contents())
+  write_artifact(root, existing_target_ref(), existing_target_contents())
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      checkpoint,
+      fail_if_called_runner(),
+    )
+
+  let assert [failure] = result.required_failures
+  assert failure.code == "artifact_read_failed"
+  let assert [attempt] = result.attempts
+  assert attempt.status == "failed"
+  assert attempt.error_code == Some("artifact_read_failed")
 }
 
 pub fn execute_routes_fails_when_planned_artifact_bytes_disappear_test() {
@@ -352,6 +489,78 @@ fn fake_command(
   }
 }
 
+fn commit_stack_runner() -> command_runner.Runner {
+  commit_stack_runner_with_remote_head(expected_existing_head_sha())
+}
+
+fn commit_stack_stale_runner() -> command_runner.Runner {
+  commit_stack_runner_with_remote_head(
+    "9999999999999999999999999999999999999999",
+  )
+}
+
+fn commit_stack_already_published_runner() -> command_runner.Runner {
+  commit_stack_runner_with_remote_head(commit_stack_head_sha())
+}
+
+fn commit_stack_runner_with_remote_head(
+  remote_head: String,
+) -> command_runner.Runner {
+  command_runner.Runner(run: fn(spec) {
+    let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
+    let _ = simplifile.create_directory_all(cwd)
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["remote", "get-url", "origin"] ->
+        Ok(command_runner.CommandOutput(
+          0,
+          "https://github.com/scherzo-systems/scherzo.git",
+          "",
+        ))
+      "git", ["fetch", "origin", _] ->
+        Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["bundle", "verify", bundle_path] ->
+        case simplifile.read(bundle_path) {
+          Ok(contents) ->
+            case contents == commit_stack_carrier() {
+              True -> Ok(command_runner.CommandOutput(0, "", ""))
+              False -> Error(command_runner.command_error("wrong_bundle_bytes"))
+            }
+          Error(_) -> Error(command_runner.command_error("missing_bundle"))
+        }
+      "git", ["fetch", _, head] ->
+        case head == commit_stack_head_sha() {
+          True -> Ok(command_runner.CommandOutput(0, "", ""))
+          False ->
+            Error(command_runner.command_error("unexpected_bundle_fetch"))
+        }
+      "git", ["rev-parse", value] ->
+        case value == commit_stack_head_sha() <> "^{tree}" {
+          True ->
+            Ok(command_runner.CommandOutput(0, commit_stack_head_tree(), ""))
+          False ->
+            case value == "origin/" <> existing_branch() {
+              True -> Ok(command_runner.CommandOutput(0, remote_head, ""))
+              False ->
+                Error(command_runner.command_error("unexpected_rev_parse"))
+            }
+        }
+      "git", ["merge-base", "--is-ancestor", _, _] ->
+        Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "view", "42", ..] ->
+        Ok(command_runner.CommandOutput(0, existing_pr_view_json(), ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
 fn commit_failure_runner() -> command_runner.Runner {
   command_runner.Runner(run: fn(spec) {
     let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
@@ -384,12 +593,21 @@ fn fail_if_called_runner() -> command_runner.Runner {
 
 fn disappearing_checkpoint(root: String) -> workflow_checkpoint.Writer {
   let base = workflow_checkpoint.ledger_writer(root, fn() { 123 })
-  workflow_checkpoint.Writer(..base, read_artifact: fn(ref) {
-    case ref == plan_ref() {
-      True -> Error(workflow_checkpoint.CheckpointArtifactFailed("missing"))
-      False -> base.read_artifact(ref)
-    }
-  })
+  workflow_checkpoint.Writer(
+    ..base,
+    read_artifact: fn(ref) {
+      case ref == plan_ref() {
+        True -> Error(workflow_checkpoint.CheckpointArtifactFailed("missing"))
+        False -> base.read_artifact(ref)
+      }
+    },
+    artifact_location: fn(ref) {
+      case ref == plan_ref() {
+        True -> Error(workflow_checkpoint.CheckpointArtifactFailed("missing"))
+        False -> base.artifact_location(ref)
+      }
+    },
+  )
 }
 
 fn load_projection(root: String) -> projection.Projection {
@@ -475,6 +693,9 @@ fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
         body_template: Some("templates/publication.md"),
       ),
     ),
+    mode: artifact_publication_config.FilePublication,
+    commit_stack: None,
+    target: artifact_publication_config.StableBranchTarget,
     files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
@@ -484,6 +705,31 @@ fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
     ],
+  )
+}
+
+fn commit_stack_route(
+  required: Bool,
+) -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    id: "conflict_resolution",
+    repository: "github.docs",
+    required: required,
+    pull_request: None,
+    mode: artifact_publication_config.CommitStackPublication,
+    files: [],
+    commit_stack: Some(
+      artifact_publication_config.PublicationCommitStackRoute(
+        selector: artifact_publication_config.PublicationCommitStackSelector(
+          output: "commit_stack",
+        ),
+      ),
+    ),
+    target: artifact_publication_config.ExistingPrBranchTarget(
+      artifact_publication_config.PublicationTargetSource(
+        output: "merge_conflict_target",
+      ),
+    ),
   )
 }
 
@@ -511,6 +757,45 @@ fn output_manifest() -> workflow_contract_manifest.ContractOutputManifest {
   )
 }
 
+fn commit_stack_output_manifest() -> workflow_contract_manifest.ContractOutputManifest {
+  let stack_contents = commit_stack_manifest_contents()
+  let target_contents = existing_target_contents()
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "workflow.implementation",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "commit_stack",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.CommitStack,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: commit_stack_ref(),
+            sha256: hash.sha256_hex(stack_contents),
+            bytes: bytes_of(stack_contents),
+          ),
+          commit_stack_artifact.commit_stack_media_type,
+          None,
+        ),
+      ),
+      workflow_contract_manifest.NamedManifestValue(
+        name: "merge_conflict_target",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.CodeChange,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: existing_target_ref(),
+            sha256: hash.sha256_hex(target_contents),
+            bytes: bytes_of(target_contents),
+          ),
+          "application/json",
+          None,
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
 fn plan_ref() -> String {
   "runs/run-1/outputs/review_doc.md"
 }
@@ -524,5 +809,140 @@ fn plan_sha() -> String {
 }
 
 fn plan_bytes() -> Int {
-  bit_array.byte_size(bit_array.from_string(plan_contents()))
+  bytes_of(plan_contents())
+}
+
+fn write_commit_stack_artifacts(root: String) -> Nil {
+  write_artifact(root, commit_stack_ref(), commit_stack_manifest_contents())
+  write_artifact(root, existing_target_ref(), existing_target_contents())
+  write_artifact(root, commit_stack_carrier_ref(), commit_stack_carrier())
+}
+
+fn commit_stack_manifest_contents() -> String {
+  json.object([
+    #("schema_version", json.int(1)),
+    #(
+      "artifact_type",
+      json.string(commit_stack_artifact.commit_stack_artifact_type),
+    ),
+    #(
+      "repository",
+      json.object([#("repo", json.string("scherzo-systems/scherzo"))]),
+    ),
+    #(
+      "base",
+      json.object([
+        #("ref", json.string(existing_branch())),
+        #("sha", json.string(expected_existing_head_sha())),
+      ]),
+    ),
+    #(
+      "head",
+      json.object([
+        #("sha", json.string(commit_stack_head_sha())),
+        #("tree", json.string(commit_stack_head_tree())),
+      ]),
+    ),
+    #(
+      "carrier",
+      json.object([
+        #("ref", json.string(commit_stack_carrier_ref())),
+        #("sha256", json.string(hash.sha256_hex(commit_stack_carrier()))),
+        #("bytes", json.int(bytes_of(commit_stack_carrier()))),
+        #("media_type", json.string(commit_stack_artifact.bundle_media_type)),
+      ]),
+    ),
+  ])
+  |> json.to_string
+}
+
+fn existing_target_contents() -> String {
+  json.object([
+    #("schema_version", json.int(1)),
+    #(
+      "artifact_type",
+      json.string("scherzo.github_existing_pr_branch_target.v1"),
+    ),
+    #(
+      "repository",
+      json.object([#("repo", json.string("scherzo-systems/scherzo"))]),
+    ),
+    #(
+      "head",
+      json.object([
+        #("repo", json.string("scherzo-systems/scherzo")),
+        #("branch", json.string(existing_branch())),
+        #("sha", json.string(expected_existing_head_sha())),
+      ]),
+    ),
+    #(
+      "base",
+      json.object([
+        #("branch", json.string("main")),
+        #("sha", json.string(expected_base_sha())),
+      ]),
+    ),
+    #(
+      "pull_request",
+      json.object([
+        #("number", json.int(42)),
+        #("url", json.string(existing_pr_url())),
+      ]),
+    ),
+  ])
+  |> json.to_string
+}
+
+fn existing_pr_view_json() -> String {
+  "{\"number\":42,\"url\":\""
+  <> existing_pr_url()
+  <> "\",\"state\":\"OPEN\",\"headRefName\":\""
+  <> existing_branch()
+  <> "\",\"headRefOid\":\""
+  <> expected_existing_head_sha()
+  <> "\",\"baseRefName\":\"main\",\"isCrossRepository\":false}"
+}
+
+fn bytes_of(contents: String) -> Int {
+  bit_array.byte_size(bit_array.from_string(contents))
+}
+
+fn commit_stack_ref() -> String {
+  "runs/run-1/outputs/commit_stack.json"
+}
+
+fn existing_target_ref() -> String {
+  "runs/run-1/outputs/merge_conflict_target.json"
+}
+
+fn commit_stack_carrier_ref() -> String {
+  "runs/run-1/outputs/commit_stack.bundle"
+}
+
+fn existing_branch() -> String {
+  "feature/conflict-resolution"
+}
+
+fn existing_pr_url() -> String {
+  "https://example.test/pr/42"
+}
+
+fn expected_existing_head_sha() -> String {
+  "1111111111111111111111111111111111111111"
+}
+
+fn expected_base_sha() -> String {
+  "2222222222222222222222222222222222222222"
+}
+
+fn commit_stack_head_sha() -> String {
+  "3333333333333333333333333333333333333333"
+}
+
+fn commit_stack_head_tree() -> String {
+  "4444444444444444444444444444444444444444"
+}
+
+fn commit_stack_carrier() -> String {
+  "bundle bytes"
 }

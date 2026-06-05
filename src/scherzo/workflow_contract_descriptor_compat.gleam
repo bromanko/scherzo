@@ -66,6 +66,12 @@ fn infer_descriptor_type(
       Ok("exec_plan_bundle")
     "artifact_set", Some("application/json"), Some("code_change_bundle"), _ ->
       Ok("code_change_bundle")
+    "commit_stack", _, _, _ -> Ok("commit_stack")
+    "file",
+      Some("application/vnd.scherzo.git-commit-stack+json"),
+      Some("git_commit_stack"),
+      _
+    -> Ok("commit_stack")
     "ref", _, _, Some("url") -> Ok("url")
     "ref", _, _, Some("git_ref") -> Ok("git_ref")
     _, _, _, _ ->
@@ -104,6 +110,7 @@ pub fn legacy_artifact_type_name(artifact_type: String) -> String {
     "scherzo.implementation_pack.v1" -> "implementation_pack"
     "scherzo.implementation_pack.v2" -> "implementation_pack"
     "scherzo.code_change_bundle.v2" -> "code_change_bundle"
+    "scherzo.git_commit_stack.v1" -> "git_commit_stack"
     other -> other
   }
 }

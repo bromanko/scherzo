@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_planner_decode
+import scherzo/commit_stack_artifact
 import scherzo/hash
 import scherzo/json_value
 import scherzo/state/artifact_store
@@ -356,6 +357,287 @@ pub fn changed_bytes_change_version_id_test() {
     )
 
   assert first.version_id != second.version_id
+}
+
+pub fn commit_stack_existing_pr_branch_plans_retained_target_test() {
+  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+  let target_contents = existing_target_contents("scherzo-systems/scherzo")
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert manifest.branch == existing_branch()
+  assert manifest.files == []
+  assert manifest.pull_request.enabled == False
+  let assert Some(_) = manifest.commit_stack
+  let assert artifact_publication_planner.ExistingPrBranchTargetPlan(target) =
+    manifest.target
+  assert target.pr_number == 42
+  assert target.pr_url == "https://example.test/pr/42"
+}
+
+pub fn commit_stack_manifest_round_trips_through_decoder_test() {
+  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+  let target_contents = existing_target_contents("scherzo-systems/scherzo")
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  let json = artifact_publication_planner.manifest_to_string(manifest)
+  let assert Ok(decoded) =
+    artifact_publication_planner_decode.decode_manifest_json(json)
+  assert decoded.branch == existing_branch()
+  assert decoded.files == []
+  let assert Some(decoded_stack) = decoded.commit_stack
+  assert decoded_stack.output == "commit_stack"
+  assert decoded_stack.manifest_ref == commit_stack_ref()
+  assert decoded_stack.stack.head_sha == commit_stack_head_sha()
+  assert decoded_stack.stack.carrier.ref == commit_stack_carrier_ref()
+  let assert artifact_publication_planner.ExistingPrBranchTargetPlan(target) =
+    decoded.target
+  assert target.pr_number == 42
+  assert target.pr_url == "https://example.test/pr/42"
+}
+
+pub fn commit_stack_stable_branch_target_returns_planner_error_test() {
+  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+  let target_contents = existing_target_contents("scherzo-systems/scherzo")
+  let store = store_with_contents([#(commit_stack_ref(), stack_contents)])
+
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_stable_branch_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert artifact_publication_planner.code(error)
+    == "unsupported_commit_stack_target"
+}
+
+pub fn commit_stack_artifact_rejects_malformed_payloads_test() {
+  let assert Error(json_error) =
+    commit_stack_artifact.parse_commit_stack("{not-json")
+  assert commit_stack_artifact.error_code(json_error)
+    == "commit_stack_json_invalid"
+
+  let assert Error(type_error) =
+    commit_stack_artifact.parse_commit_stack(
+      commit_stack_manifest_contents_with(
+        "scherzo-systems/scherzo",
+        "scherzo.not_a_commit_stack.v1",
+        expected_existing_head_sha(),
+        commit_stack_head_sha(),
+        commit_stack_head_tree(),
+        commit_stack_artifact.bundle_media_type,
+      ),
+    )
+  assert commit_stack_artifact.error_code(type_error)
+    == "commit_stack_artifact_type_mismatch"
+
+  let assert Error(media_error) =
+    commit_stack_artifact.parse_commit_stack(
+      commit_stack_manifest_contents_with(
+        "scherzo-systems/scherzo",
+        commit_stack_artifact.commit_stack_artifact_type,
+        expected_existing_head_sha(),
+        commit_stack_head_sha(),
+        commit_stack_head_tree(),
+        "application/octet-stream",
+      ),
+    )
+  assert commit_stack_artifact.error_code(media_error)
+    == "commit_stack_carrier_media_type_mismatch"
+}
+
+pub fn commit_stack_artifact_rejects_non_oid_revisions_test() {
+  let assert Error(stack_error) =
+    commit_stack_artifact.parse_commit_stack(
+      commit_stack_manifest_contents_with(
+        "scherzo-systems/scherzo",
+        commit_stack_artifact.commit_stack_artifact_type,
+        "refs/heads/main",
+        commit_stack_head_sha(),
+        commit_stack_head_tree(),
+        commit_stack_artifact.bundle_media_type,
+      ),
+    )
+  assert commit_stack_artifact.error_code(stack_error)
+    == "artifact_git_oid_invalid"
+
+  let assert Error(target_error) =
+    commit_stack_artifact.parse_existing_pr_branch_target(
+      existing_target_contents_with(
+        "scherzo-systems/scherzo",
+        "HEAD",
+        expected_base_sha(),
+      ),
+    )
+  assert commit_stack_artifact.error_code(target_error)
+    == "artifact_git_oid_invalid"
+}
+
+pub fn commit_stack_existing_pr_branch_rejects_cross_repo_head_test() {
+  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+  let target_contents = existing_target_contents("fork/scherzo")
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert artifact_publication_planner.code(error)
+    == "existing_target_head_repository_mismatch"
+}
+
+pub fn commit_stack_existing_pr_branch_rejects_stack_repo_mismatch_test() {
+  let stack_contents = commit_stack_manifest_contents("other/repo")
+  let target_contents = existing_target_contents("scherzo-systems/scherzo")
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert artifact_publication_planner.code(error)
+    == "commit_stack_repository_mismatch"
+}
+
+pub fn commit_stack_existing_pr_branch_rejects_base_branch_mismatch_test() {
+  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+  let target_contents =
+    existing_target_contents_with_base_branch(
+      "scherzo-systems/scherzo",
+      expected_existing_head_sha(),
+      "develop",
+      expected_base_sha(),
+    )
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert artifact_publication_planner.code(error)
+    == "existing_target_base_branch_mismatch"
+}
+
+pub fn commit_stack_existing_pr_branch_rejects_stack_base_sha_mismatch_test() {
+  let stack_contents =
+    commit_stack_manifest_contents_with(
+      "scherzo-systems/scherzo",
+      commit_stack_artifact.commit_stack_artifact_type,
+      "5555555555555555555555555555555555555555",
+      commit_stack_head_sha(),
+      commit_stack_head_tree(),
+      commit_stack_artifact.bundle_media_type,
+    )
+  let target_contents = existing_target_contents("scherzo-systems/scherzo")
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert artifact_publication_planner.code(error)
+    == "commit_stack_base_mismatch"
+}
+
+pub fn commit_stack_selector_rejects_non_commit_stack_descriptor_test() {
+  let target_contents = existing_target_contents("scherzo-systems/scherzo")
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), plan_contents()),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      non_commit_stack_output_manifest(target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert artifact_publication_planner.code(error)
+    == "non_commit_stack_descriptor"
 }
 
 pub fn changed_target_mapping_changes_version_id_test() {
@@ -831,6 +1113,41 @@ fn leaf_route() -> artifact_publication_config.PublicationRoute {
   leaf_route_with_selector("review_doc", None)
 }
 
+fn commit_stack_existing_route() -> artifact_publication_config.PublicationRoute {
+  commit_stack_route_with_target(
+    artifact_publication_config.ExistingPrBranchTarget(
+      artifact_publication_config.PublicationTargetSource(
+        output: "merge_conflict_target",
+      ),
+    ),
+  )
+}
+
+fn commit_stack_stable_branch_route() -> artifact_publication_config.PublicationRoute {
+  commit_stack_route_with_target(artifact_publication_config.StableBranchTarget)
+}
+
+fn commit_stack_route_with_target(
+  target: artifact_publication_config.PublicationTarget,
+) -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    id: "conflict_resolution",
+    repository: "github.docs",
+    required: True,
+    pull_request: None,
+    mode: artifact_publication_config.CommitStackPublication,
+    files: [],
+    commit_stack: Some(
+      artifact_publication_config.PublicationCommitStackRoute(
+        selector: artifact_publication_config.PublicationCommitStackSelector(
+          output: "commit_stack",
+        ),
+      ),
+    ),
+    target: target,
+  )
+}
+
 fn bundle_entry_route() -> artifact_publication_config.PublicationRoute {
   artifact_publication_config.PublicationRoute(
     id: "review_doc",
@@ -842,6 +1159,9 @@ fn bundle_entry_route() -> artifact_publication_config.PublicationRoute {
         body_template: Some("templates/publication.md"),
       ),
     ),
+    mode: artifact_publication_config.FilePublication,
+    commit_stack: None,
+    target: artifact_publication_config.StableBranchTarget,
     files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
@@ -865,6 +1185,9 @@ fn bundle_entry_metadata_route() -> artifact_publication_config.PublicationRoute
         body_template: Some("templates/publication.md"),
       ),
     ),
+    mode: artifact_publication_config.FilePublication,
+    commit_stack: None,
+    target: artifact_publication_config.StableBranchTarget,
     files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
@@ -890,6 +1213,9 @@ fn leaf_route_with_path(
         body_template: Some("templates/publication.md"),
       ),
     ),
+    mode: artifact_publication_config.FilePublication,
+    commit_stack: None,
+    target: artifact_publication_config.StableBranchTarget,
     files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
@@ -916,6 +1242,9 @@ fn leaf_route_with_selector(
         body_template: Some("templates/publication.md"),
       ),
     ),
+    mode: artifact_publication_config.FilePublication,
+    commit_stack: None,
+    target: artifact_publication_config.StableBranchTarget,
     files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
@@ -939,6 +1268,9 @@ fn duplicate_path_route() -> artifact_publication_config.PublicationRoute {
         body_template: Some("templates/publication.md"),
       ),
     ),
+    mode: artifact_publication_config.FilePublication,
+    commit_stack: None,
+    target: artifact_publication_config.StableBranchTarget,
     files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
@@ -1088,6 +1420,79 @@ fn missing_ref_manifest() -> workflow_contract_manifest.ContractOutputManifest {
       ),
     ],
     diagnostics: [],
+  )
+}
+
+fn commit_stack_output_manifest(
+  stack_contents: String,
+  target_contents: String,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "workflow.implementation",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "commit_stack",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.CommitStack,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: commit_stack_ref(),
+            sha256: hash.sha256_hex(stack_contents),
+            bytes: bytes_of(stack_contents),
+          ),
+          "application/vnd.scherzo.git-commit-stack+json",
+          None,
+        ),
+      ),
+      target_output(target_contents),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn non_commit_stack_output_manifest(
+  target_contents: String,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "workflow.implementation",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "commit_stack",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.Text,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: commit_stack_ref(),
+            sha256: hash.sha256_hex(plan_contents()),
+            bytes: bytes_of(plan_contents()),
+          ),
+          "text/plain",
+          None,
+        ),
+      ),
+      target_output(target_contents),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn target_output(
+  target_contents: String,
+) -> workflow_contract_manifest.NamedManifestValue {
+  workflow_contract_manifest.NamedManifestValue(
+    name: "merge_conflict_target",
+    value: workflow_contract_manifest.present_run_artifact(
+      workflow_contract.CodeChange,
+      workflow_contract_manifest.ArtifactWritten(
+        ref: existing_target_ref(),
+        sha256: hash.sha256_hex(target_contents),
+        bytes: bytes_of(target_contents),
+      ),
+      "application/json",
+      None,
+    ),
   )
 }
 
@@ -1389,6 +1794,119 @@ fn pack_contents() -> String {
   "{\"artifact_type\":\"implementation_pack\"}"
 }
 
+fn commit_stack_manifest_contents(repo: String) -> String {
+  commit_stack_manifest_contents_with(
+    repo,
+    commit_stack_artifact.commit_stack_artifact_type,
+    expected_existing_head_sha(),
+    commit_stack_head_sha(),
+    commit_stack_head_tree(),
+    commit_stack_artifact.bundle_media_type,
+  )
+}
+
+fn commit_stack_manifest_contents_with(
+  repo: String,
+  artifact_type: String,
+  base_sha: String,
+  head_sha: String,
+  head_tree: String,
+  carrier_media_type: String,
+) -> String {
+  json.object([
+    #("schema_version", json.int(1)),
+    #("artifact_type", json.string(artifact_type)),
+    #("repository", json.object([#("repo", json.string(repo))])),
+    #(
+      "base",
+      json.object([
+        #("ref", json.string(existing_branch())),
+        #("sha", json.string(base_sha)),
+      ]),
+    ),
+    #(
+      "head",
+      json.object([
+        #("sha", json.string(head_sha)),
+        #("tree", json.string(head_tree)),
+      ]),
+    ),
+    #(
+      "carrier",
+      json.object([
+        #("ref", json.string(commit_stack_carrier_ref())),
+        #("sha256", json.string(hash.sha256_hex(commit_stack_carrier()))),
+        #("bytes", json.int(bytes_of(commit_stack_carrier()))),
+        #("media_type", json.string(carrier_media_type)),
+      ]),
+    ),
+  ])
+  |> json.to_string
+}
+
+fn existing_target_contents(head_repo: String) -> String {
+  existing_target_contents_with(
+    head_repo,
+    expected_existing_head_sha(),
+    expected_base_sha(),
+  )
+}
+
+fn existing_target_contents_with(
+  head_repo: String,
+  expected_head_sha: String,
+  base_sha: String,
+) -> String {
+  existing_target_contents_with_base_branch(
+    head_repo,
+    expected_head_sha,
+    "main",
+    base_sha,
+  )
+}
+
+fn existing_target_contents_with_base_branch(
+  head_repo: String,
+  expected_head_sha: String,
+  base_branch: String,
+  base_sha: String,
+) -> String {
+  json.object([
+    #("schema_version", json.int(1)),
+    #(
+      "artifact_type",
+      json.string("scherzo.github_existing_pr_branch_target.v1"),
+    ),
+    #(
+      "repository",
+      json.object([#("repo", json.string("scherzo-systems/scherzo"))]),
+    ),
+    #(
+      "head",
+      json.object([
+        #("repo", json.string(head_repo)),
+        #("branch", json.string(existing_branch())),
+        #("sha", json.string(expected_head_sha)),
+      ]),
+    ),
+    #(
+      "base",
+      json.object([
+        #("branch", json.string(base_branch)),
+        #("sha", json.string(base_sha)),
+      ]),
+    ),
+    #(
+      "pull_request",
+      json.object([
+        #("number", json.int(42)),
+        #("url", json.string("https://example.test/pr/42")),
+      ]),
+    ),
+  ])
+  |> json.to_string
+}
+
 fn plan_ref() -> String {
   plan_ref_for_run("run-1")
 }
@@ -1403,6 +1921,42 @@ fn pack_ref() -> String {
 
 fn bundle_ref() -> String {
   "runs/run-1/outputs/exec_plan_bundle.json"
+}
+
+fn commit_stack_ref() -> String {
+  "runs/run-1/outputs/commit_stack.json"
+}
+
+fn existing_target_ref() -> String {
+  "runs/run-1/outputs/merge_conflict_target.json"
+}
+
+fn commit_stack_carrier_ref() -> String {
+  "runs/run-1/outputs/commit_stack.bundle"
+}
+
+fn existing_branch() -> String {
+  "feature/conflict-resolution"
+}
+
+fn expected_existing_head_sha() -> String {
+  "1111111111111111111111111111111111111111"
+}
+
+fn expected_base_sha() -> String {
+  "2222222222222222222222222222222222222222"
+}
+
+fn commit_stack_head_sha() -> String {
+  "3333333333333333333333333333333333333333"
+}
+
+fn commit_stack_head_tree() -> String {
+  "4444444444444444444444444444444444444444"
+}
+
+fn commit_stack_carrier() -> String {
+  "bundle bytes"
 }
 
 fn plan_sha() -> String {
