@@ -248,7 +248,11 @@ pub fn fake_non_linear_retry_survives_startup_recovery_and_refreshes_test() {
     )
   let assert Ok(first) = daemon.start(Some(workflow_path), first_deps)
   process.send(first.data, daemon.PollTick(1))
-  let _ = process.receive(first_handoff_subject, within: 1000)
+  let assert Ok(adapter.HandoffClaim(task: first_claimed_task, ..)) =
+    process.receive(first_handoff_subject, within: 1000)
+  assert first_claimed_task.ref == fake_tracker_adapter.task_ref()
+  assert wait_for_log(first_log_subject, "agent_refresh:card-1", 20)
+  assert wait_for_log(first_log_subject, "agent_run:card-1", 20)
   assert wait_for_log(first_log_subject, "retry_scheduled", 20)
   let assert Ok(first_snapshot) = daemon.get_snapshot(first.data, 1000)
   let assert [first_retry] = dict.values(first_snapshot.retry_attempts)

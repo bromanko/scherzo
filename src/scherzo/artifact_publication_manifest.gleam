@@ -24,6 +24,44 @@ pub type PublicationErrorInfo {
   PublicationErrorInfo(code: String, message: String)
 }
 
+pub type RetryEligibility {
+  RetryAllowed
+  RetryNotRetryable
+  RetryCannotReplan(reason: String)
+}
+
+pub fn retry_eligibility_for_attempt(
+  status: String,
+  retryable retryable: Bool,
+  retry_execution_available retry_execution_available: Bool,
+  version_id version_id: Option(String),
+) -> RetryEligibility {
+  case status, retryable, retry_execution_available, version_id {
+    "failed", True, True, _ -> RetryAllowed
+    "failed", True, False, None -> RetryAllowed
+    "failed", True, False, Some(_) ->
+      RetryCannotReplan(
+        "failed attempt has a version_id but no retry execution metadata",
+      )
+    "unchanged", _, True, _ -> RetryAllowed
+    _, _, _, _ -> RetryNotRetryable
+  }
+}
+
+pub fn retry_replan_unavailable_error(
+  publication_id: String,
+  reason: String,
+) -> #(String, String) {
+  #(
+    "publication_retry_replan_unavailable",
+    "latest publication attempt is marked retryable but cannot be safely re-planned from retained outputs: "
+      <> publication_id
+      <> " ("
+      <> reason
+      <> ")",
+  )
+}
+
 pub type PublicationManifest {
   PublicationManifest(
     run_id: String,
