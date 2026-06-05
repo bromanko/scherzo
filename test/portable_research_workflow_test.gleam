@@ -7,7 +7,11 @@ import scherzo/config/types as config_types
 import scherzo/path
 import scherzo/runtime_bundle
 import scherzo/step_artifact
+import scherzo/workflow_checkpoint
+import scherzo/workflow_contract
+import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
+import scherzo/workflow_run/contract_io
 import simplifile
 import support/test_helpers
 
@@ -31,6 +35,13 @@ fn example_research_dag() -> workflow_dag.WorkflowDag {
   dag
 }
 
+fn dogfood_research_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    read_file("workflows/dogfood/research.yaml")
+    |> workflow_dag.parse
+  dag
+}
+
 fn collect_findings_step() -> workflow_dag.WorkflowStep {
   let assert Ok(step) =
     workflow_dag.step_by_id(example_research_dag(), "collect_findings")
@@ -39,6 +50,13 @@ fn collect_findings_step() -> workflow_dag.WorkflowStep {
 
 fn collect_findings_run() -> String {
   let step = collect_findings_step()
+  let assert workflow_dag.CommandStep(run, _) = step.kind
+  run
+}
+
+fn dogfood_collect_findings_run() -> String {
+  let assert Ok(step) =
+    workflow_dag.step_by_id(dogfood_research_dag(), "collect_findings")
   let assert workflow_dag.CommandStep(run, _) = step.kind
   run
 }
@@ -159,6 +177,108 @@ pub fn example_research_workflow_is_driver_portable_test() {
   assert_not_contains(run, "jj")
   assert_not_contains(run, "git diff")
   assert_not_contains(run, "Linear")
+
+  let assert Some(contract) = dag.contract
+  let assert [findings] = contract.outputs
+  assert findings.name == "findings"
+  assert findings.type_ == workflow_contract.DocumentMarkdown
+  let assert Some(descriptor) = findings.descriptor
+  assert descriptor.kind == Some("file")
+  assert descriptor.media_type == Some("text/markdown")
+  assert descriptor.artifact_type == Some("scherzo.research_findings.v1")
+}
+
+pub fn dogfood_research_workflow_exposes_retained_findings_output_test() {
+  let dag = dogfood_research_dag()
+  assert dag.id == "research"
+  assert dag.publication_routes == []
+
+  let assert Some(contract) = dag.contract
+  let assert [findings] = contract.outputs
+  assert findings.name == "findings"
+  assert findings.type_ == workflow_contract.DocumentMarkdown
+  assert findings.required
+  assert findings.source
+    == Some(workflow_contract.StepField(
+      "collect_findings",
+      workflow_contract.Stdout,
+    ))
+  let assert Some(descriptor) = findings.descriptor
+  assert descriptor.kind == Some("file")
+  assert descriptor.media_type == Some("text/markdown")
+  assert descriptor.artifact_type == Some("scherzo.research_findings.v1")
+}
+
+pub fn dogfood_research_contract_records_exact_markdown_findings_test() {
+  let root = "test/tmp/portable-research-workflow/dogfood-retention"
+  test_helpers.reset_dir(root)
+  let report = "# Research findings\n\nExact Markdown body.\n"
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let artifacts =
+    dict.from_list([
+      #(
+        "collect_findings",
+        step_artifact.from_command_result(
+          "collect_findings",
+          0,
+          report,
+          "",
+          False,
+          [],
+          test_helpers.default_artifact_limits(),
+        ),
+      ),
+    ])
+
+  let assert Ok(result) =
+    contract_io.record_outputs_if_contracted(
+      dogfood_research_dag(),
+      "run-1",
+      "fp",
+      None,
+      checkpoint,
+      artifacts,
+      dict.new(),
+    )
+
+  assert result.missing == []
+  let assert Some(manifest) = result.manifest
+  let assert [findings] = manifest.outputs
+  assert findings.name == "findings"
+  assert findings.value.status == workflow_contract_manifest.Present
+  assert findings.value.ref == Some("runs/run-1/outputs/findings.md")
+  let assert Some(descriptor) =
+    workflow_contract_manifest.descriptor_for_named_value(
+      "findings",
+      findings.value,
+    )
+  assert descriptor.artifact_type == Some("scherzo.research_findings.v1")
+  assert descriptor.media_type == Some("text/markdown")
+  let assert Ok(retained) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/run-1/outputs/findings.md",
+    )
+  assert retained == report
+}
+
+pub fn dogfood_collect_findings_command_requires_findings_file_test() {
+  let dir = "test/tmp/portable-research-workflow/dogfood-missing-findings"
+  test_helpers.reset_dir(dir)
+
+  let artifact =
+    command_step.run_with_env(
+      "collect_findings",
+      dogfood_collect_findings_run(),
+      dir,
+      5000,
+      [],
+      [],
+      test_helpers.default_artifact_limits(),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.stdout == ""
 }
 
 pub fn example_research_prompt_is_tracker_and_vcs_neutral_test() {

@@ -112,6 +112,14 @@ pub fn present_url(
   type_: workflow_contract.ContractType,
   url: String,
 ) -> ManifestValue {
+  present_url_with_source(type_, url, None)
+}
+
+pub fn present_url_with_source(
+  type_: workflow_contract.ContractType,
+  url: String,
+  source: Option(json_value.JsonValue),
+) -> ManifestValue {
   ManifestValue(
     type_: type_,
     status: Present,
@@ -121,7 +129,7 @@ pub fn present_url(
     bytes: None,
     media_type: None,
     value: None,
-    source: None,
+    source: source,
     diagnostic: None,
   )
 }
@@ -129,6 +137,14 @@ pub fn present_url(
 pub fn present_git_ref(
   type_: workflow_contract.ContractType,
   ref: String,
+) -> ManifestValue {
+  present_git_ref_with_source(type_, ref, None)
+}
+
+pub fn present_git_ref_with_source(
+  type_: workflow_contract.ContractType,
+  ref: String,
+  source: Option(json_value.JsonValue),
 ) -> ManifestValue {
   ManifestValue(
     type_: type_,
@@ -139,7 +155,7 @@ pub fn present_git_ref(
     bytes: None,
     media_type: None,
     value: None,
-    source: None,
+    source: source,
     diagnostic: None,
   )
 }
@@ -210,6 +226,21 @@ pub fn source_artifact_type(value: ManifestValue) -> Option(String) {
     Some(json_value.JObject(entries)) ->
       source_string_field(entries, "artifact_type")
     _ -> None
+  }
+}
+
+fn source_contract_artifact_type(value: ManifestValue) -> Option(String) {
+  case value.source {
+    Some(json_value.JObject(entries)) ->
+      source_string_field(entries, "contract_artifact_type")
+    _ -> None
+  }
+}
+
+fn descriptor_artifact_type_for_value(value: ManifestValue) -> Option(String) {
+  case source_contract_artifact_type(value) {
+    Some(artifact_type) -> Some(artifact_type)
+    None -> legacy_descriptor_artifact_type(value.type_)
   }
 }
 
@@ -754,7 +785,7 @@ fn manifest_value_descriptor(
         artifact_descriptor.ArtifactDescriptor(
           name: name,
           kind: artifact_descriptor.RefKind,
-          artifact_type: legacy_descriptor_artifact_type(value.type_),
+          artifact_type: descriptor_artifact_type_for_value(value),
           description: None,
           source: value.source,
           validation: None,
@@ -773,7 +804,7 @@ fn manifest_value_descriptor(
         artifact_descriptor.ArtifactDescriptor(
           name: name,
           kind: artifact_descriptor.RefKind,
-          artifact_type: legacy_descriptor_artifact_type(value.type_),
+          artifact_type: descriptor_artifact_type_for_value(value),
           description: None,
           source: value.source,
           validation: None,
@@ -792,7 +823,7 @@ fn manifest_value_descriptor(
         artifact_descriptor.ArtifactDescriptor(
           name: name,
           kind: artifact_descriptor.ValueKind,
-          artifact_type: legacy_descriptor_artifact_type(value.type_),
+          artifact_type: descriptor_artifact_type_for_value(value),
           description: None,
           source: value.source,
           validation: None,
@@ -821,7 +852,7 @@ fn run_artifact_descriptor(
       artifact_descriptor.ArtifactDescriptor(
         name: name,
         kind: artifact_descriptor.ArtifactSetKind,
-        artifact_type: legacy_descriptor_artifact_type(value.type_),
+        artifact_type: descriptor_artifact_type_for_value(value),
         description: None,
         source: value.source,
         validation: None,
@@ -838,7 +869,7 @@ fn run_artifact_descriptor(
       artifact_descriptor.ArtifactDescriptor(
         name: name,
         kind: artifact_descriptor.FileKind,
-        artifact_type: legacy_descriptor_artifact_type(value.type_),
+        artifact_type: descriptor_artifact_type_for_value(value),
         description: None,
         source: value.source,
         validation: None,

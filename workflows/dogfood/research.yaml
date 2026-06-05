@@ -1,10 +1,21 @@
 # yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: research
-description: Investigate a task, write Markdown findings, verify the findings file, and use it as the Linear result artifact.
+description: Investigate a task, write Markdown findings, verify the findings file, retain it as a local workflow output, and stream it as the Linear result.
 workspace:
   driver: dogfood-jj
 concurrency: 1
+contract:
+  version: 1
+  outputs:
+    findings:
+      kind: file
+      media_type: text/markdown
+      artifact_type: scherzo.research_findings.v1
+      required: true
+      source:
+        step: collect_findings
+        field: stdout
 steps:
   - id: research
     kind: agent
