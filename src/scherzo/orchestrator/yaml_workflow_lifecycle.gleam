@@ -13,7 +13,6 @@ import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/reason as session_reason
-import scherzo/session/recovery as session_recovery
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker
@@ -124,36 +123,6 @@ pub fn register_step_session(
   )
 }
 
-fn register_workflow_step_session(
-  event_hub: process.Subject(hub.Message),
-  session_id: String,
-  issue: tracker_issue.Issue,
-  workspace_path: String,
-  run_id: String,
-  recovery_step_id: String,
-  display_step_id: String,
-  attempt_index: Int,
-  now_ms: fn() -> Int,
-) -> Nil {
-  register_step_session_with_recovery(
-    event_hub,
-    session_id,
-    issue,
-    workspace_path,
-    display_step_id,
-    attempt_index,
-    now_ms,
-    recovery: Some(yaml_child_recovery_info(
-      run_id,
-      recovery_step_id,
-      attempt_index,
-      Some(issue_state.to_string(issue.state)),
-      orphan_status: None,
-      recommended_action: Some("inspect_parent_run"),
-    )),
-  )
-}
-
 fn register_step_session_with_recovery(
   event_hub: process.Subject(hub.Message),
   session_id: String,
@@ -203,31 +172,6 @@ fn register_step_session_with_recovery(
   )
 }
 
-fn yaml_child_recovery_info(
-  run_id: String,
-  step_id: String,
-  attempt_index: Int,
-  issue_state_name: Option(String),
-  orphan_status orphan_status: Option(String),
-  recommended_action recommended_action: Option(String),
-) -> session_event.RecoveryInfo {
-  session_event.RecoveryInfo(
-    ..session_recovery.base_info(
-      session_event.Cleanup,
-      "workflow.yaml_step_orphan_cleanup",
-      Some("parent workflow run stopped before child step completed"),
-      [],
-    ),
-    workflow_run_id: Some(run_id),
-    workflow_step_id: Some(step_id),
-    workflow_attempt_index: Some(attempt_index),
-    parent_session_id: Some(run_id),
-    orphan_status: orphan_status,
-    issue_state: issue_state_name,
-    recommended_action: recommended_action,
-  )
-}
-
 pub fn run_command_step(
   base: workflow_run.Dependencies,
   issue: tracker_issue.Issue,
@@ -243,13 +187,11 @@ pub fn run_command_step(
 ) -> step_artifact.StepArtifact {
   let session_id =
     yaml_step_session.id(run_id, context.step_id, context.attempt_index)
-  register_workflow_step_session(
+  register_step_session(
     event_hub,
     session_id,
     issue,
     context.workspace_path,
-    run_id,
-    context.step_id,
     context.step_id,
     context.attempt_index,
     now_ms,
@@ -317,13 +259,11 @@ pub fn run_agent_step(
   }
   let session_id =
     yaml_step_session.id(run_id, session_step_id, context.attempt_index)
-  register_workflow_step_session(
+  register_step_session(
     event_hub,
     session_id,
     issue,
     context.workspace_path,
-    run_id,
-    session_step_id,
     context.step_id,
     context.attempt_index,
     now_ms,

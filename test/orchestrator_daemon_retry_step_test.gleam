@@ -10,6 +10,7 @@ import scherzo/error
 import scherzo/handoff
 import scherzo/hash
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/yaml_step_session
 import scherzo/path
 import scherzo/result_artifact
 import scherzo/session/event
@@ -698,6 +699,14 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
     ],
     20,
   )
+  let assert Ok(active_code_review_session) =
+    wait_for_active_step_session(hub_subject, "run-1", "code_review", 1, 20)
+  let assert Ok(active_security_review_session) =
+    wait_for_active_step_session(hub_subject, "run-1", "security_review", 1, 20)
+  assert_active_child_has_no_orphan_cleanup_recovery(active_code_review_session)
+  assert_active_child_has_no_orphan_cleanup_recovery(
+    active_security_review_session,
+  )
 
   let assert Ok(active_parent_result) =
     daemon.apply_operator_command(
@@ -825,6 +834,94 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
   hub.stop(retained_hub_subject)
 }
 
+pub fn retry_step_active_command_session_has_no_orphan_cleanup_recovery_test() {
+  let dir = "test/tmp/daemon-retry-step-active-command"
+  let active_issue = issue("issue-5", "LIV-515", "Todo")
+  let #(active_workflow_path, active_root) =
+    write_retry_command_step_workflow(dir)
+  seed_interrupted_retry_step_run(
+    active_root,
+    active_issue,
+    include_parked: False,
+  )
+  let log_subject = process.new_subject()
+  let command_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let base_deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(active_issue),
+      hub_subject,
+      fn(_, context, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError(
+            "unexpected agent step: " <> context.step_id,
+          )),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_deps,
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..base_deps.workflow_run_dependencies,
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _command: String,
+          _timeout_ms: Int,
+          _secrets: List(String),
+          limits: config_types.ArtifactLimits,
+        ) {
+          process.send(
+            log_subject,
+            "active_command_started:" <> context.step_id,
+          )
+          test_async.block_until_released(command_barrier)
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "done",
+            "",
+            False,
+            [],
+            limits,
+          )
+        },
+      ),
+    )
+  let assert Ok(active_started) = daemon.start(Some(active_workflow_path), deps)
+
+  let assert Ok(retry_result) =
+    daemon.apply_operator_command(
+      active_started.data,
+      command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
+      1000,
+    )
+  assert command.status_to_string(retry_result.status) == "applied"
+  assert wait_for_log(log_subject, "active_command_started:apply_feedback", 20)
+
+  let assert Ok(active_command_session) =
+    wait_for_active_step_session(hub_subject, "run-1", "apply_feedback", 2, 20)
+  assert_active_child_has_no_orphan_cleanup_recovery(active_command_session)
+
+  let assert Ok(active_parent_result) =
+    daemon.apply_operator_command(
+      active_started.data,
+      command.CleanupOrphanSteps("run-1", True),
+      1000,
+    )
+  assert command.status_to_string(active_parent_result.status) == "rejected"
+  assert command.status_reason(active_parent_result.status)
+    == Some("parent_run_active")
+
+  test_async.release_barrier_if_waiting(command_barrier)
+  assert daemon.shutdown(active_started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn retry_step_rejects_terminal_issue_state_for_retained_run_test() {
   let dir = "test/tmp/daemon-retry-step-terminal"
   let issue = issue("issue-1", "LIV-511", "Done")
@@ -916,6 +1013,61 @@ steps:
   - id: apply_feedback
     kind: agent
     prompt: prompts/task.md
+    depends_on: [seed]
+    run_in:
+      name: derived
+      from: seed
+",
+    )
+  #(config_path, root)
+}
+
+fn write_retry_command_step_workflow(dir: String) -> #(String, String) {
+  test_helpers.reset_dir(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(Nil) = simplifile.write(config_path, "version: 1
+tracker:
+  linear:
+    api_key_env: HOME
+    project: TEST
+  states:
+    ready: [Todo]
+    active: [Todo]
+    terminal: [Done]
+workspace:
+  root: " <> root <> "
+agents:
+  concurrency: 1
+  sessions_per_task: 3
+  retries:
+    attempts: 3
+  runtime:
+    type: pi
+    pi:
+      executable: fake
+task_routing:
+  labels:
+    require_exactly_one: false
+    default_workflow: implementation
+workflows:
+  implementation: workflows/implementation.yaml
+")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: seed
+    kind: command
+    run: seed
+    run_in: seed
+  - id: apply_feedback
+    kind: command
+    run: apply_feedback
     depends_on: [seed]
     run_in:
       name: derived
@@ -2049,6 +2201,52 @@ fn wait_for_parent_session(
   }
 }
 
+fn wait_for_active_step_session(
+  subject: process.Subject(hub.Message),
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  attempts: Int,
+) -> Result(event.SessionSummary, Nil) {
+  let expected_session_id = yaml_step_session.id(run_id, step_id, attempt_index)
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case hub.list_sessions(subject, 250) {
+        Ok(sessions) -> {
+          let session =
+            list.find(sessions, fn(summary) {
+              summary.status == event.Running
+              && summary.session_id == expected_session_id
+            })
+          case session {
+            Ok(summary) -> Ok(summary)
+            Error(Nil) -> {
+              process.sleep(50)
+              wait_for_active_step_session(
+                subject,
+                run_id,
+                step_id,
+                attempt_index,
+                attempts - 1,
+              )
+            }
+          }
+        }
+        Error(_) -> {
+          process.sleep(50)
+          wait_for_active_step_session(
+            subject,
+            run_id,
+            step_id,
+            attempt_index,
+            attempts - 1,
+          )
+        }
+      }
+  }
+}
+
 fn wait_for_step_session(
   subject: process.Subject(hub.Message),
   step_id: String,
@@ -2082,11 +2280,25 @@ fn wait_for_step_session(
   }
 }
 
+fn assert_active_child_has_no_orphan_cleanup_recovery(
+  summary: event.SessionSummary,
+) -> Nil {
+  case summary.recovery {
+    None -> Nil
+    Some(recovery) -> {
+      assert recovery.status != event.Cleanup
+      assert recovery.source != "workflow.yaml_step_orphan_cleanup"
+    }
+  }
+}
+
 fn assert_child_orphan_recovery(
   summary: event.SessionSummary,
   step_id: String,
 ) -> Nil {
   let assert Some(recovery) = summary.recovery
+  assert recovery.status == event.Cleanup
+  assert recovery.source == "workflow.yaml_step_orphan_cleanup"
   assert recovery.workflow_run_id == Some("run-1")
   assert recovery.workflow_step_id == Some(step_id)
   assert recovery.workflow_attempt_index == Some(1)
