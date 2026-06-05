@@ -38,6 +38,7 @@ import scherzo/orchestrator/remote_command_runtime
 import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
+import scherzo/orchestrator/session_metrics
 import scherzo/orchestrator/startup_recovery
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_lifecycle
@@ -100,7 +101,7 @@ pub type Message {
   YamlStepStarted(String, String)
   YamlStepUpdate(String, agent_types.RunnerUpdate)
   YamlStepCommandReady(String, process.Subject(worker_command.Command))
-  YamlStepFinished(String)
+  YamlStepFinished(String, session_tokens.TokenTotals)
   AbortWorkerCommandTimedOut(
     command.OperatorCommand,
     String,
@@ -184,6 +185,7 @@ type State {
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
+    yaml_step_tokens: session_metrics.StepTokenEntries,
     pending_claims: Dict(identity.TaskIdentity, transition_types.PendingClaim),
     pending_dispatch_validations: Dict(
       identity.TaskIdentity,
@@ -413,16 +415,19 @@ fn start_query_service(
 }
 
 fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
+  let running_workers = dict.size(state.runtime.running)
+  let running_scheduled_workers =
+    worker_registry.scheduled_worker_count(state.registry)
   read_model.RuntimeCounts(
     workflow_count: dict.size(state.workflow.bundle.workflows),
     scheduled_job_count: list.length(
       state.workflow.bundle.orchestrator.scheduled_jobs,
     ),
-    active_sessions: dict.size(state.runtime.running),
-    running_workers: dict.size(state.runtime.running),
-    running_scheduled_workers: worker_registry.scheduled_worker_count(
-      state.registry,
-    ),
+    active_sessions: running_workers
+      + running_scheduled_workers
+      + worker_registry.active_yaml_step_session_count(state.registry),
+    running_workers: running_workers,
+    running_scheduled_workers: running_scheduled_workers,
     queued_claims: dict.size(state.pending_claims),
     pending_dispatch_validations: dict.size(state.pending_dispatch_validations),
     claimed_tasks: dict.size(state.runtime.claimed),
@@ -436,7 +441,13 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
     retry_refresh_in_flight_count: retry_scheduler.refresh_in_flight_count(
       state.retry,
     ),
-    scheduled_due_count: dict.size(state.scheduled_runtime.next_due),
+    scheduled_due_count: scheduled_runtime.due_count(
+      state.scheduled_runtime,
+      state.dependencies.now_ms(),
+    ),
+    scheduled_next_due_count: scheduled_runtime.next_due_count(
+      state.scheduled_runtime,
+    ),
     scheduled_pending_count: dict.size(state.scheduled_runtime.pending_starts),
     scheduled_retry_count: dict.size(state.scheduled_runtime.scheduled_retries),
     scheduled_report_retry_count: dict.size(
@@ -449,12 +460,19 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
   )
 }
 
+fn metrics_token_totals(state: State) -> session_tokens.TokenTotals {
+  session_tokens.add(
+    state.runtime.aggregate_pi_totals,
+    session_metrics.total(state.yaml_step_tokens),
+  )
+}
+
 fn refresh_read_model(state: State) -> State {
   let refreshed =
     state.read_model
     |> read_model.update_counts(runtime_counts_from_state(state))
     |> read_model.update_dispatch_paused(dispatch_paused: state.operator_paused)
-    |> read_model.update_token_totals(state.runtime.aggregate_pi_totals)
+    |> read_model.update_token_totals(metrics_token_totals(state))
 
   State(..state, read_model: refreshed)
 }
@@ -768,6 +786,7 @@ pub fn start(
                           poll: poll,
                           retry: retry_scheduler.new(),
                           registry: worker_registry.new(),
+                          yaml_step_tokens: session_metrics.new(),
                           pending_claims: dict.new(),
                           pending_dispatch_validations: dict.new(),
                           next_dispatch_validation_generation: 1,
@@ -1188,6 +1207,7 @@ fn run_recovered_workflow_worker(
                     workflow_dependencies,
                     recovered.issue,
                     recovered.run_id,
+                    session_id,
                     daemon_subject,
                     event_hub,
                     now_ms,
@@ -1287,6 +1307,101 @@ fn continue_with_refreshed_state(state: State) -> actor.Next(State, Message) {
   actor.continue(refresh_read_model(state))
 }
 
+fn handle_issue_worker_finished(
+  state: State,
+  issue_id: String,
+  run_id: String,
+  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+) -> State {
+  let state =
+    worker_lifecycle.worker_finished_to_transition(
+      worker_finished_context(state, run_id, result),
+      issue_id,
+      run_id,
+      result,
+    )
+  finalize_yaml_step_tokens_for_issue_result(state, run_id, result)
+}
+
+fn handle_scheduled_worker_finished(
+  state: State,
+  run_id: String,
+  result: Result(
+    workflow_run.WorkflowRunSuccess,
+    workflow_run.WorkflowRunFailure,
+  ),
+) -> State {
+  let state =
+    worker_lifecycle.handle_scheduled_worker_finished(
+      scheduled_worker_finished_context(state),
+      run_id,
+      result,
+    )
+  finalize_yaml_step_tokens_for_scheduled_result(state, run_id, result)
+}
+
+fn finalize_yaml_step_tokens_for_issue_result(
+  state: State,
+  run_id: String,
+  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+) -> State {
+  let direct_tokens = session_metrics.worker_result_tokens(result)
+  let child_tokens =
+    session_metrics.total_for_run(state.yaml_step_tokens, run_id)
+  let state = case session_tokens.nonzero(direct_tokens) {
+    True -> state
+    False -> add_runtime_aggregate_tokens(state, child_tokens)
+  }
+  remove_yaml_step_tokens_for_run(state, run_id)
+}
+
+fn finalize_yaml_step_tokens_for_scheduled_result(
+  state: State,
+  run_id: String,
+  result: Result(
+    workflow_run.WorkflowRunSuccess,
+    workflow_run.WorkflowRunFailure,
+  ),
+) -> State {
+  let direct_tokens = session_metrics.workflow_run_result_tokens(result)
+  let child_tokens =
+    session_metrics.total_for_run(state.yaml_step_tokens, run_id)
+  let tokens = case session_tokens.nonzero(direct_tokens) {
+    True -> direct_tokens
+    False -> child_tokens
+  }
+  state
+  |> add_runtime_aggregate_tokens(tokens)
+  |> remove_yaml_step_tokens_for_run(run_id)
+}
+
+fn add_runtime_aggregate_tokens(
+  state: State,
+  tokens: session_tokens.TokenTotals,
+) -> State {
+  case session_tokens.nonzero(tokens) {
+    False -> state
+    True ->
+      State(
+        ..state,
+        runtime: orchestrator_state.RuntimeState(
+          ..state.runtime,
+          aggregate_pi_totals: session_tokens.add(
+            state.runtime.aggregate_pi_totals,
+            tokens,
+          ),
+        ),
+      )
+  }
+}
+
+fn remove_yaml_step_tokens_for_run(state: State, run_id: String) -> State {
+  State(
+    ..state,
+    yaml_step_tokens: session_metrics.remove_run(state.yaml_step_tokens, run_id),
+  )
+}
+
 fn handle_message(
   state: State,
   message: Message,
@@ -1305,22 +1420,18 @@ fn handle_message(
         ]),
       )
     WorkerFinished(issue_id, run_id, result) ->
-      continue_with_refreshed_state(
-        worker_lifecycle.worker_finished_to_transition(
-          worker_finished_context(state, run_id, result),
-          issue_id,
-          run_id,
-          result,
-        ),
-      )
+      continue_with_refreshed_state(handle_issue_worker_finished(
+        state,
+        issue_id,
+        run_id,
+        result,
+      ))
     ScheduledWorkerFinished(run_id, result) ->
-      continue_with_refreshed_state(
-        worker_lifecycle.handle_scheduled_worker_finished(
-          scheduled_worker_finished_context(state),
-          run_id,
-          result,
-        ),
-      )
+      continue_with_refreshed_state(handle_scheduled_worker_finished(
+        state,
+        run_id,
+        result,
+      ))
     ScheduledRetryTick(run_id, generation) ->
       continue_with_refreshed_state(handle_scheduled_retry_tick(
         state,
@@ -1357,7 +1468,16 @@ fn handle_message(
     YamlStepUpdate(session_id, update) -> {
       event_publisher.worker_update(state.event_hub, session_id, update)
       log_yaml_step_update(state, session_id, update)
-      actor.continue(state)
+      actor.continue(
+        State(
+          ..state,
+          yaml_step_tokens: session_metrics.update_from_runner(
+            state.yaml_step_tokens,
+            session_id,
+            update,
+          ),
+        ),
+      )
     }
     YamlStepCommandReady(session_id, command_subject) ->
       continue_with_refreshed_state(handle_yaml_step_command_ready(
@@ -1365,8 +1485,12 @@ fn handle_message(
         session_id,
         command_subject,
       ))
-    YamlStepFinished(session_id) ->
-      continue_with_refreshed_state(handle_yaml_step_finished(state, session_id))
+    YamlStepFinished(session_id, tokens) ->
+      continue_with_refreshed_state(handle_yaml_step_finished(
+        state,
+        session_id,
+        tokens,
+      ))
     AbortWorkerCommandTimedOut(operator_command, session_id, reply) -> {
       let #(state, result) =
         stop_session_for_operator(
@@ -1467,6 +1591,22 @@ fn handle_yaml_step_started(
   session_id: String,
   run_id: String,
 ) -> State {
+  let parent_session_id = parent_session_id_for_run(state, run_id)
+  let state =
+    State(
+      ..state,
+      registry: worker_registry.register_active_yaml_step_started(
+        state.registry,
+        session_id,
+        run_id,
+      ),
+      yaml_step_tokens: session_metrics.register_step(
+        state.yaml_step_tokens,
+        session_id,
+        run_id,
+        parent_session_id,
+      ),
+    )
   run_transition_messages(state, [
     transition_types.YamlStepStarted(
       identity.session_id_from_string(session_id),
@@ -1475,12 +1615,36 @@ fn handle_yaml_step_started(
   ])
 }
 
-fn handle_yaml_step_finished(state: State, session_id: String) -> State {
+fn handle_yaml_step_finished(
+  state: State,
+  session_id: String,
+  tokens: session_tokens.TokenTotals,
+) -> State {
+  let state =
+    State(
+      ..state,
+      yaml_step_tokens: session_metrics.update_tokens(
+        state.yaml_step_tokens,
+        session_id,
+        tokens,
+      ),
+    )
   run_transition_messages(state, [
     transition_types.YamlStepFinished(identity.session_id_from_string(
       session_id,
     )),
   ])
+}
+
+fn parent_session_id_for_run(state: State, run_id: String) -> String {
+  case worker_registry.worker_for_run(state.registry, run_id) {
+    Ok(handle) -> handle.session_id
+    Error(Nil) ->
+      case worker_registry.scheduled_worker_for_run(state.registry, run_id) {
+        Ok(handle) -> handle.session_id
+        Error(Nil) -> run_id
+      }
+  }
 }
 
 fn finish_yaml_step_sessions_for_run(
@@ -4797,6 +4961,7 @@ fn run_workflow_worker(
             workflow_dependencies,
             issue,
             run_id,
+            session_id,
             daemon_subject,
             event_hub,
             now_ms,
@@ -4833,8 +4998,8 @@ fn yaml_step_callbacks(
         YamlStepCommandReady(session_id, command_subject),
       )
     },
-    step_finished: fn(session_id) {
-      process.send(daemon_subject, YamlStepFinished(session_id))
+    step_finished: fn(session_id, tokens) {
+      process.send(daemon_subject, YamlStepFinished(session_id, tokens))
     },
   )
 }
@@ -4859,6 +5024,7 @@ fn yaml_workflow_dependencies(
   base: workflow_run.Dependencies,
   issue: tracker_issue.Issue,
   run_id: String,
+  parent_session_id: String,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
@@ -4867,6 +5033,7 @@ fn yaml_workflow_dependencies(
     base,
     issue,
     run_id,
+    parent_session_id,
     yaml_step_callbacks(daemon_subject),
     event_hub,
     now_ms,

@@ -31,6 +31,7 @@ import scherzo/tracker/adapter
 import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/turn_telemetry
 import scherzo/workflow_attempt
 import scherzo/workflow_run
 import simplifile
@@ -403,6 +404,58 @@ fn long_running_agent(
   }
 }
 
+fn token_reporting_blocking_agent(
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+) -> fn(
+  tracker_issue.Issue,
+  Option(Int),
+  String,
+  config_types.EffectiveConfig,
+  tracker.Client,
+  fn(String, agent_types.RunnerUpdate) -> Nil,
+  process.Subject(worker_command.Command),
+  fn() -> Nil,
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
+  fn(issue: tracker_issue.Issue, _, _, _, _, emit_update, _, ready) {
+    ready()
+    let tokens =
+      session_tokens.TokenTotals(
+        input: 2,
+        output: 3,
+        cache_read: 1,
+        cache_write: 3,
+        total: 9,
+      )
+    emit_update(
+      issue.id,
+      agent_types.RunnerTurnUpdate(turn_telemetry.TurnLifecycleUpdate(
+        name: turn_telemetry.EventStarted,
+        turn: 1,
+        tokens: session_tokens.zero_token_totals(),
+        reason: None,
+      )),
+    )
+    emit_update(
+      issue.id,
+      agent_types.RunnerTurnUpdate(turn_telemetry.TurnLifecycleUpdate(
+        name: turn_telemetry.EventFinished,
+        turn: 1,
+        tokens: tokens,
+        reason: None,
+      )),
+    )
+    process.send(log_subject, "agent_tokens_emitted")
+    test_async.block_until_released(barrier)
+    Error(agent_types.WorkerFailure(
+      reason: error.PiFailed(error.PiProtocolError("stopped")),
+      workspace_path: None,
+      tokens: session_tokens.zero_token_totals(),
+      final_issue: None,
+    ))
+  }
+}
+
 fn failing_agent(
   log_subject: process.Subject(String),
 ) -> fn(
@@ -537,6 +590,12 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
   let assert Ok(paused) =
     daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
   assert command.status_to_string(paused.status) == "applied"
+  let assert Ok(metrics) =
+    wait_for_metrics(started.data, 20, fn(metrics) {
+      metrics.dispatch_paused
+      && metrics.running_workers == 1
+      && metrics.active_sessions == 2
+    })
   let assert Ok(read_snapshot) =
     daemon.get_read_model_snapshot(started.data, 1000)
   let read_model.Snapshot(
@@ -550,13 +609,10 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
     ),
     ..,
   ) = read_snapshot
-  let assert Ok(query_types.MetricsResponse(metrics)) =
-    daemon.execute_query(started.data, query_types.Metrics, 1000)
-
   assert read_dispatch_paused
   assert remote_client_status == read_model.Disabled
   assert workflow_count == 1
-  assert active_sessions == 1
+  assert active_sessions == 2
   assert running_workers == 1
   assert metrics.schema_version
     == query_types.operational_metrics_schema_version
@@ -566,13 +622,59 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
   assert metrics.dispatch_paused
   assert metrics.workflow_count == 1
   assert metrics.scheduled_job_count == 0
-  assert metrics.active_sessions == 1
+  assert metrics.active_sessions == 2
   assert metrics.running_workers == 1
   assert metrics.running_scheduled_workers == 0
   assert metrics.queued_claims == 0
   assert metrics.token_totals.total == 0
 
   test_async.release_barrier(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_metrics_count_active_yaml_child_steps_and_child_tokens_test() {
+  let candidate = issue("yaml-metrics-issue", "ABC-YAML", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let #(workflow_path, _root) =
+    write_workflow_with_limits("test/tmp/daemon-control-yaml-metrics", 1, 3, 3)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      disabled_handoff(),
+      hub_subject,
+      token_reporting_blocking_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "agent_tokens_emitted", 20)
+
+  let assert Ok(query_types.MetricsResponse(active_metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  assert active_metrics.running_workers == 1
+  assert active_metrics.running_scheduled_workers == 0
+  assert active_metrics.active_sessions == 2
+  assert active_metrics.token_totals.total == 9
+
+  let assert Ok(parent_summary) =
+    wait_for_session(hub_subject, "ABC-YAML-42-1", 20)
+  assert parent_summary.current_turn == 1
+  assert parent_summary.current_turn_status
+    == Some(turn_telemetry.StatusFinished)
+  assert parent_summary.last_turn_token_delta.total == 9
+  assert parent_summary.token_totals.total == 9
+
+  test_async.release_barrier(worker_barrier)
+  assert wait_for_log(log_subject, "worker_exited", 20)
+  let assert Ok(query_types.MetricsResponse(final_metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  assert final_metrics.active_sessions == 0
+  assert final_metrics.token_totals.total == 9
+
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -1607,6 +1709,46 @@ fn wait_for_log(
             False -> wait_for_log(subject, expected, attempts - 1)
           }
         Error(_) -> wait_for_log(subject, expected, attempts - 1)
+      }
+  }
+}
+
+fn wait_for_metrics(
+  daemon_subject: process.Subject(daemon.Message),
+  attempts: Int,
+  predicate: fn(query_types.OperationalMetricsDto) -> Bool,
+) -> Result(query_types.OperationalMetricsDto, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case daemon.execute_query(daemon_subject, query_types.Metrics, 1000) {
+        Ok(query_types.MetricsResponse(metrics)) ->
+          case predicate(metrics) {
+            True -> Ok(metrics)
+            False -> {
+              process.sleep(50)
+              wait_for_metrics(daemon_subject, attempts - 1, predicate)
+            }
+          }
+        _ -> {
+          process.sleep(50)
+          wait_for_metrics(daemon_subject, attempts - 1, predicate)
+        }
+      }
+  }
+}
+
+fn wait_for_session(
+  subject: process.Subject(hub.Message),
+  session_id: String,
+  attempts: Int,
+) -> Result(event.SessionSummary, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case hub.get_session(subject, session_id, 100) {
+        Ok(Some(summary)) -> Ok(summary)
+        _ -> wait_for_session(subject, session_id, attempts - 1)
       }
   }
 }

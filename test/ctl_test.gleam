@@ -185,6 +185,7 @@ fn query_metrics_response() -> query_types.QueryResponse {
     retry_timer_count: 11,
     retry_refresh_in_flight_count: 12,
     scheduled_due_count: 13,
+    scheduled_next_due_count: 19,
     scheduled_pending_count: 14,
     scheduled_retry_count: 15,
     scheduled_report_retry_count: 16,
@@ -381,6 +382,7 @@ pub fn query_metrics_human_executes_query_and_formats_metrics_test() {
   assert string.contains(transcript, "daemon_id: daemon-query")
   assert string.contains(transcript, "active_sessions: 3")
   assert string.contains(transcript, "running_workers: 2")
+  assert string.contains(transcript, "scheduled_next_due_count: 19")
   assert string.contains(transcript, "token_total: 42")
 }
 
