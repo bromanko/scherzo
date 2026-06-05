@@ -183,12 +183,41 @@ pub fn execute_routes_with_state_root_uses_state_root_for_managed_checkout_test(
       [route(True)],
       repositories(),
       config_dir,
+      config_dir,
       state_root,
       output_manifest(),
       issue(),
       "run-1",
       workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
       state_root_runner(state_root),
+    )
+
+  assert result.required_failures == []
+  let assert [attempt] = result.attempts
+  assert attempt.status == "published"
+}
+
+pub fn execute_routes_resolves_route_template_from_workflow_bundle_dir_test() {
+  let root = "test/tmp/artifact-publication-executor/workflow-template-root"
+  let config_dir = root <> "/config"
+  let workflow_bundle_dir = root <> "/workflows/execplan"
+  let state_root = root <> "/state"
+  test_helpers.reset_dir(root)
+  write_template(workflow_bundle_dir)
+  write_artifact(state_root, plan_ref(), plan_contents())
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root(
+      [route(True)],
+      repositories(),
+      config_dir,
+      workflow_bundle_dir,
+      state_root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      fake_runner(),
     )
 
   assert result.required_failures == []
