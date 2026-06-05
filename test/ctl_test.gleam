@@ -3038,6 +3038,7 @@ fn seeded_publication_plans_from_config(
       workflow.publication_routes,
       bundle.orchestrator.artifact_repositories,
       bundle.orchestrator.config_dir,
+      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
     )
   workflow.publication_routes
   |> list.map(fn(route) {
@@ -3136,14 +3137,17 @@ fn write_retry_publication_config_with_workflow(
 ) -> String {
   let assert Ok(base) = path.dirname(root)
   let workflow_dir = base <> "/workflows"
-  let template_dir = base <> "/templates"
+  let workflow_template_dir = workflow_dir <> "/templates"
   let config_path = base <> "/scherzo.yaml"
   let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(template_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_template_dir)
   let assert Ok(Nil) =
     simplifile.write(workflow_dir <> "/execplan.yaml", workflow_yaml)
   let assert Ok(Nil) =
-    simplifile.write(template_dir <> "/publication.md", "Published by Scherzo.")
+    simplifile.write(
+      workflow_template_dir <> "/publication.md",
+      "Published by Scherzo.",
+    )
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
