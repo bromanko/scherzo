@@ -291,7 +291,7 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
   let workflow_expectations = [
     #(
       ".scherzo/workflows/implementation.yaml",
-      "  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+      "  requires: [status, diff, changed-files, baseline, refresh-base, export-commit-stack]",
     ),
     #(
       ".scherzo/workflows/execplan.yaml",
@@ -303,7 +303,7 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
     ),
     #(
       ".scherzo/workflows/execplan-implementation.yaml",
-      "  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+      "  requires: [status, diff, changed-files, baseline, refresh-base, export-commit-stack]",
     ),
     #(
       ".scherzo/workflows/merge-conflict-resolution.yaml",

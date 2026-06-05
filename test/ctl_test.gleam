@@ -1615,6 +1615,7 @@ pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test()
   assert string.contains(commands, "git fetch origin main")
   assert string.contains(commands, "git commit -m scherzo publication")
   assert string.contains(commands, "gh pr create")
+  assert string.contains(commands, "--title LIV-739: Publication retry")
 
   let show_subject = process.new_subject()
   assert ctl_artifact_publication.show(
@@ -3281,6 +3282,7 @@ fn seeded_publication_plans_from_config(
           id: "issue-1",
           identifier: "LIV-739",
           slug: "LIV-739",
+          title: Some("Publication retry"),
         ),
         "run-1",
         body_templates,
@@ -3358,7 +3360,7 @@ fn write_retry_publication_config_with_body_template(
 ) -> String {
   write_retry_publication_config_with_workflow(
     root,
-    "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nartifacts:\n  publications:\n    - id: execplan_review_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} publication'\n        body_template: "
+    "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nartifacts:\n  publications:\n    - id: execplan_review_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }}: {{ issue.title }}'\n        body_template: "
       <> body_template
       <> "\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}{{ artifact.default_extension }}\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
   )

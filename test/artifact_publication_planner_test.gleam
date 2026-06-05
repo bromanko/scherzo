@@ -386,6 +386,43 @@ pub fn changed_target_mapping_changes_version_id_test() {
   assert first.version_id != second.version_id
 }
 
+pub fn changed_issue_title_changes_pr_title_and_version_id_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let body_templates =
+    dict.from_list([#("templates/publication.md", body_template())])
+  let route = leaf_route_with_title("{{ work.identifier }}: {{ issue.title }}")
+  let assert Ok(first) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      route,
+      store,
+      work_with_title("First title"),
+      "run-1",
+      body_templates,
+    )
+  let assert Ok(second) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      route,
+      store,
+      work_with_title("Second title"),
+      "run-1",
+      body_templates,
+    )
+
+  assert first.pull_request.title == Some("LIV-761: First title")
+  assert second.pull_request.title == Some("LIV-761: Second title")
+  assert first.work_title == Some("First title")
+  assert first.version_id != second.version_id
+  let manifest_json = artifact_publication_planner.manifest_to_string(first)
+  assert string.contains(manifest_json, "\"work_title\":\"First title\"")
+  let assert Ok(decoded) =
+    artifact_publication_planner_decode.decode_manifest_json(manifest_json)
+  assert decoded.work_title == Some("First title")
+}
+
 pub fn unknown_output_returns_error_test() {
   let store = store_with_contents([#(plan_ref(), plan_contents())])
   let assert Error(error) =
@@ -819,11 +856,18 @@ fn repositories_with_branch(
 }
 
 fn work() -> artifact_publication_planner.PublicationWork {
+  work_with_title("Publication test")
+}
+
+fn work_with_title(
+  title: String,
+) -> artifact_publication_planner.PublicationWork {
   artifact_publication_planner.PublicationWork(
     kind: artifact_publication_planner.TaskWork,
     id: "task-1",
     identifier: "LIV-761",
     slug: "LIV-761",
+    title: Some(title),
   )
 }
 
@@ -836,6 +880,7 @@ fn bundle_entry_route() -> artifact_publication_config.PublicationRoute {
     id: "review_doc",
     repository: "github.docs",
     required: True,
+    mode: artifact_publication_config.FilesPublication,
     pull_request: Some(
       artifact_publication_config.PublicationPullRequestOverride(
         title: Some("{{ work.identifier }} publication"),
@@ -851,6 +896,7 @@ fn bundle_entry_route() -> artifact_publication_config.PublicationRoute {
         path: "docs/review/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
     ],
+    commit_stack: None,
   )
 }
 
@@ -859,6 +905,7 @@ fn bundle_entry_metadata_route() -> artifact_publication_config.PublicationRoute
     id: "review_doc",
     repository: "github.docs",
     required: True,
+    mode: artifact_publication_config.FilesPublication,
     pull_request: Some(
       artifact_publication_config.PublicationPullRequestOverride(
         title: Some("{{ work.identifier }} publication"),
@@ -874,6 +921,7 @@ fn bundle_entry_metadata_route() -> artifact_publication_config.PublicationRoute
         path: "{{ artifact.metadata.publication.destination_path }}",
       ),
     ],
+    commit_stack: None,
   )
 }
 
@@ -884,6 +932,7 @@ fn leaf_route_with_path(
     id: "review_doc",
     repository: "github.docs",
     required: True,
+    mode: artifact_publication_config.FilesPublication,
     pull_request: Some(
       artifact_publication_config.PublicationPullRequestOverride(
         title: Some("{{ work.identifier }} publication"),
@@ -899,6 +948,22 @@ fn leaf_route_with_path(
         path: path,
       ),
     ],
+    commit_stack: None,
+  )
+}
+
+fn leaf_route_with_title(
+  title: String,
+) -> artifact_publication_config.PublicationRoute {
+  let route = leaf_route()
+  artifact_publication_config.PublicationRoute(
+    ..route,
+    pull_request: Some(
+      artifact_publication_config.PublicationPullRequestOverride(
+        title: Some(title),
+        body_template: Some("templates/publication.md"),
+      ),
+    ),
   )
 }
 
@@ -910,6 +975,7 @@ fn leaf_route_with_selector(
     id: "review_doc",
     repository: "github.docs",
     required: True,
+    mode: artifact_publication_config.FilesPublication,
     pull_request: Some(
       artifact_publication_config.PublicationPullRequestOverride(
         title: Some("{{ work.identifier }} publication"),
@@ -925,6 +991,7 @@ fn leaf_route_with_selector(
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
     ],
+    commit_stack: None,
   )
 }
 
@@ -933,6 +1000,7 @@ fn duplicate_path_route() -> artifact_publication_config.PublicationRoute {
     id: "review_doc",
     repository: "github.docs",
     required: True,
+    mode: artifact_publication_config.FilesPublication,
     pull_request: Some(
       artifact_publication_config.PublicationPullRequestOverride(
         title: Some("{{ work.identifier }} publication"),
@@ -955,6 +1023,7 @@ fn duplicate_path_route() -> artifact_publication_config.PublicationRoute {
         path: "docs/dup.md",
       ),
     ],
+    commit_stack: None,
   )
 }
 

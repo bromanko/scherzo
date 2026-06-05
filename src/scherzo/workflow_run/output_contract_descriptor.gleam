@@ -64,6 +64,7 @@ fn default_extension_and_media(
     | workflow_contract.ExecPlanBundle
     | workflow_contract.ImplementationPack
     | workflow_contract.CodeChangeBundle
+    | workflow_contract.CommitStack
     | workflow_contract.ArtifactList -> #(".json", "application/json")
   }
 }

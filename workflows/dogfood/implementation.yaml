@@ -1,14 +1,22 @@
 # yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: implementation
-description: Implement a focused Scherzo task from Linear-fetched context, review it, validate it, publish a PR, and report the PR URL.
+description: Implement a focused Scherzo task from Linear-fetched context, review it, validate it, retain a commit stack, publish a PR, and report the PR URL.
 workspace:
   driver: dogfood-jj
-  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]
+  requires: [status, diff, changed-files, baseline, refresh-base, export-commit-stack]
 concurrency: 4
 recovery:
   attempts: 1
   prompt: prompts/implementation-recover-failed-step.md
+contract:
+  version: 1
+  outputs:
+    commit_stack:
+      type: commit_stack
+      source:
+        step: export_commit_stack
+        path: tmp/scherzo-commit-stack.json
 steps:
   - id: prepare_context
     kind: command
@@ -405,11 +413,24 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$bundle_dir/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact tmp/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
     run_in: main
 
-  - id: publish_pr
+  - id: export_commit_stack
     kind: command
     depends_on: [finalize_review_dispositions]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
+    run: 'base=${SCHERZO_JJ_WORKSPACE_BASE:-}; if [ -z "$base" ]; then branch=${SCHERZO_JJ_WORKSPACE_BASE_BRANCH:-main}; remote=${SCHERZO_JJ_WORKSPACE_REMOTE:-origin}; base="$branch@$remote"; fi; "$SCHERZO_WORKSPACE_DRIVER" export-commit-stack --base "$base" --output tmp/scherzo-commit-stack.json --json'
     timeout: 5m
     run_in: main
     recovery:
       enabled: false
+
+artifacts:
+  publications:
+    - id: implementation_pr
+      repository: github.code
+      required: true
+      mode: commit_stack
+      commit_stack:
+        select:
+          output: commit_stack
+      pull_request:
+        title: "{{ work.identifier }}: {{ issue.title }}"
+        body_template: prompts/implementation-pr-body.md

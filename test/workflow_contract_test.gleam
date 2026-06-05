@@ -53,6 +53,8 @@ pub fn parses_contract_type_strings_test() {
     == Ok(workflow_contract.ImplementationPack)
   assert workflow_contract.type_from_string("code_change_bundle")
     == Ok(workflow_contract.CodeChangeBundle)
+  assert workflow_contract.type_from_string("commit_stack")
+    == Ok(workflow_contract.CommitStack)
   assert workflow_contract.type_from_string("git_ref")
     == Ok(workflow_contract.GitRef)
   assert workflow_contract.type_from_string("url") == Ok(workflow_contract.Url)

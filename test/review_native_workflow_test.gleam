@@ -1,9 +1,11 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/result_artifact
 import scherzo/structured_output
 import scherzo/structured_output_source
+import scherzo/workflow_contract
 import scherzo/workflow_dag
 import simplifile
 
@@ -25,6 +27,43 @@ fn execplan_implementation_dag() -> workflow_dag.WorkflowDag {
     simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
   let assert Ok(dag) = workflow_dag.parse(contents)
   dag
+}
+
+fn assert_commit_stack_publication(dag: workflow_dag.WorkflowDag) -> Nil {
+  let assert Some(contract) = dag.contract
+  let assert Ok(commit_stack_output) =
+    list.find(contract.outputs, fn(output) { output.name == "commit_stack" })
+  assert commit_stack_output.type_ == workflow_contract.CommitStack
+  let assert Some(workflow_contract.StepFile(step_id, path)) =
+    commit_stack_output.source
+  assert step_id == "export_commit_stack"
+  assert path == "tmp/scherzo-commit-stack.json"
+
+  let assert [route] = dag.publication_routes
+  assert route.id == "implementation_pr"
+  assert route.required == True
+  assert route.mode == artifact_publication_config.CommitStackPublication
+  assert route.files == []
+  let assert Some(commit_stack) = route.commit_stack
+  let artifact_publication_config.PublicationCommitStackRoute(selector) =
+    commit_stack
+  assert selector.output == "commit_stack"
+  assert selector.entry == None
+}
+
+fn assert_execplan_provenance_contract(dag: workflow_dag.WorkflowDag) -> Nil {
+  let assert Some(contract) = dag.contract
+  let assert Ok(exec_plan_bundle) =
+    list.find(contract.inputs, fn(input) { input.name == "exec_plan_bundle" })
+  assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
+  let assert Ok(code_change_bundle) =
+    list.find(contract.outputs, fn(output) {
+      output.name == "code_change_bundle"
+    })
+  assert code_change_bundle.type_ == workflow_contract.CodeChangeBundle
+  let assert Ok(materialize_code_change_bundle) =
+    workflow_dag.step_by_id(dag, "materialize_code_change_bundle")
+  assert materialize_code_change_bundle.depends_on == ["export_commit_stack"]
 }
 
 fn lane_spec(
@@ -475,8 +514,10 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   let assert Ok(finalize_dispositions) =
     workflow_dag.step_by_id(dag, "finalize_review_dispositions")
   assert finalize_dispositions.depends_on == ["final_validate"]
-  let assert Ok(publish_pr) = workflow_dag.step_by_id(dag, "publish_pr")
-  assert publish_pr.depends_on == ["finalize_review_dispositions"]
+  let assert Ok(export_commit_stack) =
+    workflow_dag.step_by_id(dag, "export_commit_stack")
+  assert export_commit_stack.depends_on == ["finalize_review_dispositions"]
+  assert_commit_stack_publication(dag)
 }
 
 pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_test() {
@@ -493,12 +534,18 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
   let assert Ok(finalize_dispositions) =
     workflow_dag.step_by_id(dag, "finalize_review_dispositions")
   assert finalize_dispositions.depends_on == ["final_validate"]
-  let assert Ok(publish_pr) = workflow_dag.step_by_id(dag, "publish_pr")
+  let assert Ok(export_commit_stack) =
+    workflow_dag.step_by_id(dag, "export_commit_stack")
   assert_list_contains(
-    publish_pr.depends_on,
+    export_commit_stack.depends_on,
     "finalize_final_plan_completion_gate",
   )
-  assert_list_contains(publish_pr.depends_on, "finalize_review_dispositions")
+  assert_list_contains(
+    export_commit_stack.depends_on,
+    "finalize_review_dispositions",
+  )
+  assert_commit_stack_publication(dag)
+  assert_execplan_provenance_contract(dag)
 
   let feedback_prompt_paths = [
     ".scherzo/workflows/prompts/apply-feedback.md",

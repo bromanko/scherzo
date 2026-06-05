@@ -1,15 +1,18 @@
 import gleam/bit_array
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/github_cli
 import scherzo/artifact_repository/github_paths
 import scherzo/artifact_repository/types
+import scherzo/commit_stack
 import scherzo/hash
 import scherzo/path
 import scherzo/state/artifact_store
@@ -35,10 +38,25 @@ pub fn prepare_publication_input(
   manifest: artifact_publication_planner.DryRunPublicationManifest,
   store: artifact_store.Store,
 ) -> Result(types.PublicationExecutionInput, PublishError) {
-  use selected_files <- result.try(
-    load_selected_files(manifest.files, store, []),
-  )
-  Ok(types.PublicationExecutionInput(manifest, list.reverse(selected_files)))
+  case manifest.mode {
+    artifact_publication_config.FilesPublication -> {
+      use selected_files <- result.try(
+        load_selected_files(manifest.files, store, []),
+      )
+      Ok(types.PublicationExecutionInput(
+        manifest,
+        list.reverse(selected_files),
+        None,
+      ))
+    }
+    artifact_publication_config.CommitStackPublication -> {
+      use commit_stack <- result.try(load_selected_commit_stack(
+        manifest.commit_stack,
+        store,
+      ))
+      Ok(types.PublicationExecutionInput(manifest, [], Some(commit_stack)))
+    }
+  }
 }
 
 pub fn publish(
@@ -47,7 +65,29 @@ pub fn publish(
   runner: command_runner.Runner,
   now_ms: Int,
 ) -> artifact_publication_manifest.PublicationManifest {
-  let types.PublicationExecutionInput(manifest, selected_files) = input
+  let types.PublicationExecutionInput(manifest, selected_files, commit_stack) =
+    input
+  case manifest.mode {
+    artifact_publication_config.FilesPublication ->
+      publish_files(manifest, selected_files, workspace_root, runner, now_ms)
+    artifact_publication_config.CommitStackPublication ->
+      publish_commit_stack(
+        manifest,
+        commit_stack,
+        workspace_root,
+        runner,
+        now_ms,
+      )
+  }
+}
+
+fn publish_files(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  selected_files: List(types.SelectedArtifactBytes),
+  workspace_root: String,
+  runner: command_runner.Runner,
+  now_ms: Int,
+) -> artifact_publication_manifest.PublicationManifest {
   let base_success_attempt_id =
     artifact_publication_manifest.attempt_key_for_success(manifest.version_id)
   let latest = latest_success_details(workspace_root, manifest.series_id)
@@ -91,6 +131,117 @@ pub fn publish(
           )
       }
     }
+  }
+}
+
+fn publish_commit_stack(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  selected: Option(types.SelectedCommitStackBytes),
+  workspace_root: String,
+  runner: command_runner.Runner,
+  now_ms: Int,
+) -> artifact_publication_manifest.PublicationManifest {
+  let latest = latest_success_details(workspace_root, manifest.series_id)
+  let base_success_attempt_id =
+    artifact_publication_manifest.attempt_key_for_success(manifest.version_id)
+  case
+    latest_version_id(latest) == Some(manifest.version_id)
+    && latest_success_is_complete(latest, manifest)
+  {
+    True ->
+      artifact_publication_manifest.unchanged_manifest(
+        manifest,
+        base_success_attempt_id,
+        now_ms,
+        latest_commit_sha(latest),
+        latest_pr_url(latest),
+        [],
+      )
+    False ->
+      case selected {
+        None ->
+          failed_manifest(
+            manifest,
+            now_ms,
+            False,
+            Some(manifest.branch),
+            None,
+            latest_pr_url(latest),
+            [],
+            [],
+            artifact_publication_manifest.PublicationErrorInfo(
+              code: "missing_commit_stack",
+              message: "commit_stack publication is missing prepared artifact bytes",
+            ),
+          )
+        Some(types.SelectedCommitStackBytes(_, bytes)) ->
+          case bit_array.to_string(bytes) {
+            Error(_) ->
+              failed_manifest(
+                manifest,
+                now_ms,
+                False,
+                Some(manifest.branch),
+                None,
+                latest_pr_url(latest),
+                [],
+                [],
+                artifact_publication_manifest.PublicationErrorInfo(
+                  code: "commit_stack_not_utf8",
+                  message: "commit_stack artifact bytes are not valid UTF-8 JSON",
+                ),
+              )
+            Ok(contents) ->
+              case commit_stack.decode_json(contents) {
+                Error(error) ->
+                  failed_manifest(
+                    manifest,
+                    now_ms,
+                    False,
+                    Some(manifest.branch),
+                    None,
+                    latest_pr_url(latest),
+                    [],
+                    [],
+                    artifact_publication_manifest.PublicationErrorInfo(
+                      code: commit_stack.code(error),
+                      message: commit_stack.message(error),
+                    ),
+                  )
+                Ok(stack) ->
+                  case stack.commits {
+                    [] ->
+                      failed_manifest(
+                        manifest,
+                        now_ms,
+                        False,
+                        Some(manifest.branch),
+                        None,
+                        latest_pr_url(latest),
+                        [],
+                        [],
+                        artifact_publication_manifest.PublicationErrorInfo(
+                          code: "empty_commit_stack",
+                          message: "commit_stack publication requires at least one commit",
+                        ),
+                      )
+                    _ ->
+                      publish_commit_stack_with_checkout(
+                        manifest,
+                        stack,
+                        workspace_root,
+                        runner,
+                        now_ms,
+                        success_attempt_id_for_execution(
+                          latest,
+                          manifest,
+                          now_ms,
+                        ),
+                      )
+                  }
+              }
+          }
+      }
   }
 }
 
@@ -193,7 +344,7 @@ fn publish_with_checkout(
   attempt_id: String,
 ) -> artifact_publication_manifest.PublicationManifest {
   let checkout_dir = github_paths.checkout_dir(workspace_root, manifest)
-  case ensure_checkout(manifest, checkout_dir, runner) {
+  case ensure_checkout(manifest, checkout_dir, runner, False) {
     Error(#(retryable, error)) ->
       failed_manifest(
         manifest,
@@ -262,6 +413,142 @@ fn publish_with_checkout(
                 attempt_id,
                 changed_paths,
                 removed_paths,
+              )
+          }
+      }
+  }
+}
+
+fn publish_commit_stack_with_checkout(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  stack: commit_stack.CommitStack,
+  workspace_root: String,
+  runner: command_runner.Runner,
+  now_ms: Int,
+  attempt_id: String,
+) -> artifact_publication_manifest.PublicationManifest {
+  let checkout_dir = github_paths.checkout_dir(workspace_root, manifest)
+  case ensure_checkout(manifest, checkout_dir, runner, True) {
+    Error(#(retryable, error)) ->
+      failed_manifest(
+        manifest,
+        now_ms,
+        retryable,
+        Some(manifest.branch),
+        None,
+        None,
+        [],
+        [],
+        error,
+      )
+    Ok(Nil) ->
+      case reset_commit_stack_branch(manifest, checkout_dir, runner) {
+        Error(#(retryable, error)) ->
+          failed_manifest(
+            manifest,
+            now_ms,
+            retryable,
+            Some(manifest.branch),
+            None,
+            None,
+            [],
+            [],
+            error,
+          )
+        Ok(Nil) ->
+          case apply_commit_stack(stack.commits, checkout_dir, runner, 1) {
+            Error(error) ->
+              failed_manifest(
+                manifest,
+                now_ms,
+                True,
+                Some(manifest.branch),
+                None,
+                None,
+                [],
+                [],
+                error,
+              )
+            Ok(Nil) ->
+              publish_commit_stack_head(
+                manifest,
+                checkout_dir,
+                runner,
+                now_ms,
+                attempt_id,
+              )
+          }
+      }
+  }
+}
+
+fn publish_commit_stack_head(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+  now_ms: Int,
+  attempt_id: String,
+) -> artifact_publication_manifest.PublicationManifest {
+  case current_head_or_error(checkout_dir, runner) {
+    Error(error) ->
+      failed_manifest(
+        manifest,
+        now_ms,
+        True,
+        Some(manifest.branch),
+        None,
+        None,
+        [],
+        [],
+        error,
+      )
+    Ok(commit_sha) ->
+      case
+        github_cli.run_ok(
+          runner,
+          command_runner.sh(
+            "git",
+            ["push", "--force-with-lease", "origin", manifest.branch],
+            checkout_dir,
+          ),
+          True,
+        )
+      {
+        Error(error) ->
+          failed_manifest(
+            manifest,
+            now_ms,
+            True,
+            Some(manifest.branch),
+            Some(commit_sha),
+            None,
+            [],
+            [],
+            error,
+          )
+        Ok(_) ->
+          case github_cli.ensure_pull_request(manifest, checkout_dir, runner) {
+            Error(error) ->
+              failed_manifest(
+                manifest,
+                now_ms,
+                True,
+                Some(manifest.branch),
+                Some(commit_sha),
+                None,
+                [],
+                [],
+                error,
+              )
+            Ok(pr_url) ->
+              artifact_publication_manifest.published_manifest(
+                manifest,
+                attempt_id,
+                now_ms,
+                commit_sha,
+                pr_url,
+                [],
+                [],
               )
           }
       }
@@ -428,10 +715,175 @@ fn commit_push_and_pr(
   }
 }
 
+fn reset_commit_stack_branch(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(Nil, #(Bool, artifact_publication_manifest.PublicationErrorInfo)) {
+  use base <- result.try(
+    require_option(
+      manifest.github_base,
+      artifact_publication_manifest.PublicationErrorInfo(
+        code: "missing_github_base",
+        message: "planned github publication is missing github_base",
+      ),
+    )
+    |> result.map_error(fn(error) { #(False, error) }),
+  )
+  use _ <- result.try(clean_commit_stack_checkout(checkout_dir, runner))
+  use _ <- result.try(
+    github_cli.run_ok(
+      runner,
+      command_runner.sh(
+        "git",
+        ["checkout", "-B", manifest.branch, "origin/" <> base],
+        checkout_dir,
+      ),
+      True,
+    )
+    |> result.map_error(fn(error) { #(True, error) }),
+  )
+  use _ <- result.try(clean_commit_stack_checkout(checkout_dir, runner))
+  case
+    github_cli.run_stdout(
+      runner,
+      command_runner.sh("git", ["status", "--porcelain"], checkout_dir),
+      True,
+    )
+  {
+    Error(error) -> Error(#(True, error))
+    Ok(output) ->
+      case string.trim(output) == "" {
+        True -> Ok(Nil)
+        False ->
+          Error(#(
+            False,
+            artifact_publication_manifest.PublicationErrorInfo(
+              code: "dirty_checkout",
+              message: "managed checkout is dirty before commit_stack import",
+            ),
+          ))
+      }
+  }
+}
+
+fn clean_checkout_before_sync(
+  clean: Bool,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(Nil, #(Bool, artifact_publication_manifest.PublicationErrorInfo)) {
+  case clean {
+    True -> clean_commit_stack_checkout(checkout_dir, runner)
+    False -> Ok(Nil)
+  }
+}
+
+fn clean_commit_stack_checkout(
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(Nil, #(Bool, artifact_publication_manifest.PublicationErrorInfo)) {
+  use _ <- result.try(
+    github_cli.run_ok(
+      runner,
+      command_runner.sh("git", ["reset", "--hard"], checkout_dir),
+      True,
+    )
+    |> result.map_error(fn(error) { #(True, error) }),
+  )
+  github_cli.run_ok(
+    runner,
+    command_runner.sh(
+      "git",
+      ["clean", "-f", "--", ".scherzo-commit-stack-*.patch"],
+      checkout_dir,
+    ),
+    True,
+  )
+  |> result.map(fn(_) { Nil })
+  |> result.map_error(fn(error) { #(True, error) })
+}
+
+fn apply_commit_stack(
+  commits: List(commit_stack.CommitStackCommit),
+  checkout_dir: String,
+  runner: command_runner.Runner,
+  index: Int,
+) -> Result(Nil, artifact_publication_manifest.PublicationErrorInfo) {
+  case commits {
+    [] -> Ok(Nil)
+    [commit, ..rest] -> {
+      use _ <- result.try(apply_commit_stack_commit(
+        commit,
+        checkout_dir,
+        runner,
+        index,
+      ))
+      apply_commit_stack(rest, checkout_dir, runner, index + 1)
+    }
+  }
+}
+
+fn apply_commit_stack_commit(
+  commit: commit_stack.CommitStackCommit,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+  index: Int,
+) -> Result(Nil, artifact_publication_manifest.PublicationErrorInfo) {
+  let commit_stack.CommitStackCommit(message: message, patch: patch, ..) =
+    commit
+  let patch_dir = commit_stack_patch_dir(checkout_dir)
+  let patch_path =
+    path.join(patch_dir, "commit-stack-" <> int.to_string(index) <> ".patch")
+  use _ <- result.try(
+    simplifile.create_directory_all(patch_dir)
+    |> result.map_error(fn(_) {
+      artifact_publication_manifest.PublicationErrorInfo(
+        code: "commit_stack_patch_write_failed",
+        message: "could not prepare retained commit_stack patch directory",
+      )
+    }),
+  )
+  use _ <- result.try(
+    simplifile.write(patch_path, patch)
+    |> result.map_error(fn(_) {
+      artifact_publication_manifest.PublicationErrorInfo(
+        code: "commit_stack_patch_write_failed",
+        message: "could not write retained commit_stack patch",
+      )
+    }),
+  )
+  let apply_result =
+    github_cli.run_ok(
+      runner,
+      command_runner.sh(
+        "git",
+        ["apply", "--index", "--whitespace=nowarn", patch_path],
+        checkout_dir,
+      ),
+      True,
+    )
+  let _ = simplifile.delete_file(at: patch_path)
+  use _ <- result.try(apply_result)
+  use _ <- result.try(github_cli.run_ok(
+    runner,
+    command_runner.sh("git", ["commit", "-m", message], checkout_dir),
+    True,
+  ))
+  Ok(Nil)
+}
+
+fn commit_stack_patch_dir(checkout_dir: String) -> String {
+  path.join(
+    github_paths.workspace_root_for(checkout_dir),
+    ".scherzo-state/artifact-repositories/tmp",
+  )
+}
+
 fn ensure_checkout(
   manifest: artifact_publication_planner.DryRunPublicationManifest,
   checkout_dir: String,
   runner: command_runner.Runner,
+  clean_before_sync: Bool,
 ) -> Result(Nil, #(Bool, artifact_publication_manifest.PublicationErrorInfo)) {
   use repo <- result.try(
     require_option(
@@ -485,7 +937,14 @@ fn ensure_checkout(
         Error(error) -> Error(#(True, error))
         Ok(origin) ->
           case github_paths.same_remote(origin, remote_url, repo) {
-            True -> sync_checkout(manifest, checkout_dir, runner)
+            True -> {
+              use _ <- result.try(clean_checkout_before_sync(
+                clean_before_sync,
+                checkout_dir,
+                runner,
+              ))
+              sync_checkout(manifest, checkout_dir, runner)
+            }
             False ->
               Error(#(
                 False,
@@ -969,6 +1428,64 @@ fn latest_pr_url(
   }
 }
 
+fn load_selected_commit_stack(
+  selected: Option(artifact_publication_planner.SelectedArtifact),
+  store: artifact_store.Store,
+) -> Result(types.SelectedCommitStackBytes, PublishError) {
+  case selected {
+    None ->
+      Error(PublishError(
+        code: "missing_commit_stack",
+        message: "commit_stack publication is missing planned commit_stack artifact",
+      ))
+    Some(source) ->
+      case source.bytes > commit_stack.max_artifact_bytes {
+        True ->
+          Error(PublishError(
+            code: "commit_stack_too_large",
+            message: "commit_stack artifact exceeds maximum byte size",
+          ))
+        False -> {
+          use bytes <- result.try(read_selected_artifact_bytes(source, store))
+          Ok(types.SelectedCommitStackBytes(source, bytes))
+        }
+      }
+  }
+}
+
+fn read_selected_artifact_bytes(
+  source: artifact_publication_planner.SelectedArtifact,
+  store: artifact_store.Store,
+) -> Result(BitArray, PublishError) {
+  use bytes <- result.try(
+    artifact_store.read_artifact_bytes_unverified(store, source.ref)
+    |> result.map_error(fn(error) {
+      PublishError(
+        code: "artifact_read_failed",
+        message: describe_artifact_error(error),
+      )
+    }),
+  )
+  let actual_sha256 = hash.sha256_hex_bytes(bytes)
+  case
+    actual_sha256 == source.sha256,
+    bit_array.byte_size(bytes) == source.bytes
+  {
+    True, True -> Ok(bytes)
+    False, _ ->
+      Error(PublishError(
+        code: "hash_mismatch",
+        message: "artifact bytes changed after planning for ref " <> source.ref,
+      ))
+    _, False ->
+      Error(PublishError(
+        code: "bytes_mismatch",
+        message: "artifact byte count changed after planning for ref "
+          <> source.ref,
+      ))
+  }
+}
+
 fn load_selected_files(
   files: List(artifact_publication_planner.PlannedPublicationFile),
   store: artifact_store.Store,
@@ -978,38 +1495,11 @@ fn load_selected_files(
     [] -> Ok(acc)
     [file, ..rest] -> {
       let artifact_publication_planner.PlannedPublicationFile(source, _) = file
-      use bytes <- result.try(
-        artifact_store.read_artifact_bytes_unverified(store, source.ref)
-        |> result.map_error(fn(error) {
-          PublishError(
-            code: "artifact_read_failed",
-            message: describe_artifact_error(error),
-          )
-        }),
-      )
-      let actual_sha256 = hash.sha256_hex_bytes(bytes)
-      case
-        actual_sha256 == source.sha256,
-        bit_array.byte_size(bytes) == source.bytes
-      {
-        True, True ->
-          load_selected_files(rest, store, [
-            types.SelectedArtifactBytes(file, bytes),
-            ..acc
-          ])
-        False, _ ->
-          Error(PublishError(
-            code: "hash_mismatch",
-            message: "artifact bytes changed after planning for ref "
-              <> source.ref,
-          ))
-        _, False ->
-          Error(PublishError(
-            code: "bytes_mismatch",
-            message: "artifact byte count changed after planning for ref "
-              <> source.ref,
-          ))
-      }
+      use bytes <- result.try(read_selected_artifact_bytes(source, store))
+      load_selected_files(rest, store, [
+        types.SelectedArtifactBytes(file, bytes),
+        ..acc
+      ])
     }
   }
 }

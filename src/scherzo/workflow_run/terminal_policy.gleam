@@ -1,11 +1,14 @@
 import gleam/dict.{type Dict}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/artifact_publication_executor
+import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_recording
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
@@ -183,6 +186,13 @@ pub fn finish_success(input: SuccessInput) -> Result(Success, Failure) {
                 )
               {
                 Ok(Nil) -> {
+                  let result =
+                    result_with_publications(
+                      result,
+                      publication_result,
+                      input.runtime.checkpoint,
+                      input.orchestrator.artifact_limits.workflow_summary_max_chars,
+                    )
                   use Nil <- result_try_checkpoint(
                     input.runtime.checkpoint.workflow_finished(
                       workflow_checkpoint.WorkflowFinished(
@@ -617,6 +627,73 @@ pub fn ignore_secondary_checkpoint_result(
 
 fn note_ignored_checkpoint_error(_message: String) -> Nil {
   Nil
+}
+
+fn result_with_publications(
+  result: result_artifact.ResultArtifact,
+  publication_result: artifact_publication_recording.PublicationRecordingResult,
+  checkpoint: workflow_checkpoint.Writer,
+  max_chars: Int,
+) -> result_artifact.ResultArtifact {
+  let artifact_publication_recording.PublicationRecordingResult(attempts:, ..) =
+    publication_result
+  case publication_summary(attempts, checkpoint, []) {
+    "" -> result
+    summary ->
+      result_artifact.append(
+        result,
+        result_artifact.from_final_response(
+          Some("## Publications\n\n" <> summary),
+          False,
+          "artifact_publication",
+        ),
+        max_chars,
+      )
+  }
+}
+
+fn publication_summary(
+  attempts: List(artifact_publication_recording.PublicationAttemptSummary),
+  checkpoint: workflow_checkpoint.Writer,
+  acc: List(String),
+) -> String {
+  case attempts {
+    [] -> string.join(list.reverse(acc), with: "\n")
+    [attempt, ..rest] -> {
+      let details = publication_attempt_details(attempt, checkpoint)
+      let line =
+        "- `"
+        <> attempt.publication_id
+        <> "`: `"
+        <> attempt.status
+        <> "`"
+        <> details
+      publication_summary(rest, checkpoint, [line, ..acc])
+    }
+  }
+}
+
+fn publication_attempt_details(
+  attempt: artifact_publication_recording.PublicationAttemptSummary,
+  checkpoint: workflow_checkpoint.Writer,
+) -> String {
+  case checkpoint.read_artifact(attempt.manifest_ref) {
+    Error(_) -> ""
+    Ok(contents) ->
+      case artifact_publication_manifest.decode_manifest_json(contents) {
+        Error(_) -> ""
+        Ok(manifest) ->
+          publication_manifest_detail("branch", manifest.branch)
+          <> publication_manifest_detail("pr", manifest.pr_url)
+      }
+  }
+}
+
+fn publication_manifest_detail(label: String, value: Option(String)) -> String {
+  case value {
+    Some(value) -> " " <> label <> "=" <> value
+    None -> ""
+  }
 }
 
 fn record_publications_if_configured(

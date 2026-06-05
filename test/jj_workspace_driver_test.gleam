@@ -74,9 +74,11 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
         <> "if [ \"$1\" = log ]; then\n"
         <> "  revision=\n"
+        <> "  template=\n"
         <> "  while [ $# -gt 0 ]; do\n"
         <> "    case \"$1\" in\n"
         <> "      -r) revision=$2; shift 2 ;;\n"
+        <> "      -T) template=$2; shift 2 ;;\n"
         <> "      *) shift ;;\n"
         <> "    esac\n"
         <> "  done\n"
@@ -84,6 +86,23 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  for missing in ${SCHERZO_FAKE_JJ_MISSING_REVISIONS:-}; do\n"
         <> "    if [ \"$revision\" = \"$missing\" ]; then exit 1; fi\n"
         <> "  done\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_EXPORT_STACK:-}\" = 1 ]; then\n"
+        <> "    if [ \"$revision\" = \"ancestors(@) ~ ancestors(${SCHERZO_FAKE_JJ_EXPORT_BASE:-main@origin})\" ]; then printf '%s\\n' \"${SCHERZO_FAKE_JJ_STACK_REVISIONS:-commit-one}\"; exit 0; fi\n"
+        <> "    if [ \"$template\" = commit_id ]; then\n"
+        <> "      case \"$revision\" in\n"
+        <> "        main@origin) printf '%s\\n' \"${SCHERZO_FAKE_JJ_BASE_COMMIT:-base-sha}\"; exit 0 ;;\n"
+        <> "        @) printf '%s\\n' \"${SCHERZO_FAKE_JJ_HEAD_COMMIT:-head-sha}\"; exit 0 ;;\n"
+        <> "        *) printf '%s\\n' \"$revision\"; exit 0 ;;\n"
+        <> "      esac\n"
+        <> "    fi\n"
+        <> "    if [ \"$template\" = description ]; then\n"
+        <> "      case \"$revision\" in\n"
+        <> "        commit-one) printf '%s\\n' \"${SCHERZO_FAKE_JJ_DESCRIPTION_COMMIT_ONE:-first commit}\"; exit 0 ;;\n"
+        <> "        commit-two) printf '%s\\n' \"${SCHERZO_FAKE_JJ_DESCRIPTION_COMMIT_TWO:-second commit}\"; exit 0 ;;\n"
+        <> "        *) printf '%s\\n' \"${SCHERZO_FAKE_JJ_DESCRIPTION_DEFAULT:-Scherzo implementation change}\"; exit 0 ;;\n"
+        <> "      esac\n"
+        <> "    fi\n"
+        <> "  fi\n"
         <> "  printf '%s\\n' \"${SCHERZO_FAKE_JJ_LOG_OUTPUT:-commit}\"\n"
         <> "  exit 0\n"
         <> "fi\n"
@@ -119,9 +138,20 @@ fn write_fake_jj(path: String) -> Nil {
         <> "    for arg in \"$@\"; do if [ \"$arg\" = @- ]; then echo 'ambiguous @-' >&2; exit 1; fi; done\n"
         <> "  fi\n"
         <> "  name_only=0\n"
-        <> "  for arg in \"$@\"; do if [ \"$arg\" = --name-only ]; then name_only=1; fi; done\n"
+        <> "  revision=\n"
+        <> "  while [ $# -gt 0 ]; do\n"
+        <> "    case \"$1\" in\n"
+        <> "      --name-only) name_only=1; shift ;;\n"
+        <> "      -r) revision=$2; shift 2 ;;\n"
+        <> "      *) shift ;;\n"
+        <> "    esac\n"
+        <> "  done\n"
         <> "  if [ \"$name_only\" = 1 ]; then\n"
         <> "    printf '%s' \"${SCHERZO_FAKE_JJ_CHANGED_FILES:-}\"\n"
+        <> "  elif [ \"${SCHERZO_FAKE_JJ_EXPORT_STACK:-}\" = 1 ] && [ \"$revision\" = commit-one ]; then\n"
+        <> "    printf '%s' \"${SCHERZO_FAKE_JJ_DIFF_COMMIT_ONE:-diff --git a/one.txt b/one.txt\\n}\"\n"
+        <> "  elif [ \"${SCHERZO_FAKE_JJ_EXPORT_STACK:-}\" = 1 ] && [ \"$revision\" = commit-two ]; then\n"
+        <> "    printf '%s' \"${SCHERZO_FAKE_JJ_DIFF_COMMIT_TWO:-diff --git a/two.txt b/two.txt\\n}\"\n"
         <> "  else\n"
         <> "    printf '%s' \"${SCHERZO_FAKE_JJ_DIFF:-}\"\n"
         <> "  fi\n"
@@ -400,9 +430,51 @@ fn decode_paths(value: String) -> List(String) {
   paths
 }
 
+type ExportedCommitStack {
+  ExportedCommitStack(
+    base_ref: String,
+    base_revision: String,
+    head_revision: String,
+    commits: List(ExportedCommit),
+  )
+}
+
+type ExportedCommit {
+  ExportedCommit(commit_id: String, message: String, patch: String)
+}
+
 fn decode_driver_description(value: String) -> #(Int, List(String)) {
   let assert Ok(description) = json.parse(value, driver_description_decoder())
   description
+}
+
+fn exported_commit_stack_decoder() -> decode.Decoder(ExportedCommitStack) {
+  use base_ref <- decode.field("base_ref", decode.string)
+  use base_revision <- decode.field("base_revision", decode.string)
+  use head_revision <- decode.field("head_revision", decode.string)
+  use commits <- decode.field("commits", decode.list(exported_commit_decoder()))
+  decode.success(ExportedCommitStack(
+    base_ref: base_ref,
+    base_revision: base_revision,
+    head_revision: head_revision,
+    commits: commits,
+  ))
+}
+
+fn exported_commit_decoder() -> decode.Decoder(ExportedCommit) {
+  use commit_id <- decode.field("commit_id", decode.string)
+  use message <- decode.field("message", decode.string)
+  use patch <- decode.field("patch", decode.string)
+  decode.success(ExportedCommit(
+    commit_id: commit_id,
+    message: message,
+    patch: patch,
+  ))
+}
+
+fn decode_exported_commit_stack(value: String) -> ExportedCommitStack {
+  let assert Ok(stack) = json.parse(value, exported_commit_stack_decoder())
+  stack
 }
 
 pub fn jj_driver_describe_json_is_static_and_workspace_free_test() {
@@ -426,6 +498,7 @@ pub fn jj_driver_describe_json_is_static_and_workspace_free_test() {
       "baseline",
       "refresh-base",
       "publish-change",
+      "export-commit-stack",
     ])
   assert log_lines(log) == []
 
@@ -438,6 +511,80 @@ pub fn jj_driver_describe_json_is_static_and_workspace_free_test() {
   assert_exit(unsupported, 2)
   assert string.contains(unsupported.stderr, "describe requires --json")
   assert log_lines(log) == []
+}
+
+pub fn jj_driver_export_commit_stack_writes_ordered_artifact_test() {
+  let dir = "test/tmp/jj-workspace-driver-export-commit-stack"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let patch_one =
+    "diff --git a/one.txt b/one.txt\n--- /dev/null\n+++ b/one.txt\n@@ -0,0 +1 @@\n+one\n"
+  let patch_two =
+    "diff --git a/two.txt b/two.txt\n--- /dev/null\n+++ b/two.txt\n@@ -0,0 +1 @@\n+two\n"
+
+  let artifact =
+    run_jj(
+      "jj_driver_export_commit_stack",
+      "export-commit-stack --base main@origin --output tmp/scherzo-commit-stack.json --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_EXPORT_STACK", "1"),
+        #("SCHERZO_FAKE_JJ_STACK_REVISIONS", "commit-one\ncommit-two"),
+        #("SCHERZO_FAKE_JJ_BASE_COMMIT", "base-sha"),
+        #("SCHERZO_FAKE_JJ_HEAD_COMMIT", "head-sha"),
+        #("SCHERZO_FAKE_JJ_DESCRIPTION_COMMIT_ONE", "first message"),
+        #("SCHERZO_FAKE_JJ_DESCRIPTION_COMMIT_TWO", "second message"),
+        #("SCHERZO_FAKE_JJ_DIFF_COMMIT_ONE", patch_one),
+        #("SCHERZO_FAKE_JJ_DIFF_COMMIT_TWO", patch_two),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert artifact.stderr == ""
+  assert string.contains(artifact.stdout, "\"status\":\"exported\"")
+  assert string.contains(artifact.stdout, "\"commit_count\":2")
+  let assert Ok(contents) =
+    simplifile.read(workspace <> "/tmp/scherzo-commit-stack.json")
+  let stack = decode_exported_commit_stack(contents)
+  assert stack.base_ref == "main@origin"
+  assert stack.base_revision == "base-sha"
+  assert stack.head_revision == "head-sha"
+  let assert [one, two] = stack.commits
+  assert one.commit_id == "commit-one"
+  assert one.message == "first message"
+  assert string.contains(one.patch, "one.txt")
+  assert two.commit_id == "commit-two"
+  assert two.message == "second message"
+  assert string.contains(two.patch, "two.txt")
+
+  let logged = log_text(log)
+  assert string.contains(logged, "log -r ancestors(@) ~ ancestors(main@origin)")
+  assert string.contains(logged, "diff --git -r commit-one --color=never")
+  assert string.contains(logged, "diff --git -r commit-two --color=never")
+}
+
+pub fn jj_driver_export_commit_stack_rejects_empty_stack_test() {
+  let dir = "test/tmp/jj-workspace-driver-export-commit-stack-empty"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_export_commit_stack_empty",
+      "export-commit-stack --base main@origin --output tmp/scherzo-commit-stack.json --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_EXPORT_STACK", "1"),
+        #("SCHERZO_FAKE_JJ_STACK_REVISIONS", "commit-one"),
+        #("SCHERZO_FAKE_JJ_DIFF_COMMIT_ONE", "  \n"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"empty_commit_stack\"",
+  )
+  assert simplifile.is_file(workspace <> "/tmp/scherzo-commit-stack.json")
+    == Ok(False)
 }
 
 pub fn jj_driver_lifecycle_create_implements_root_workspace_creation_test() {

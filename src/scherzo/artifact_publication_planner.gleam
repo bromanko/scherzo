@@ -34,7 +34,13 @@ pub type WorkKind {
 }
 
 pub type PublicationWork {
-  PublicationWork(kind: WorkKind, id: String, identifier: String, slug: String)
+  PublicationWork(
+    kind: WorkKind,
+    id: String,
+    identifier: String,
+    slug: String,
+    title: Option(String),
+  )
 }
 
 pub type SelectedArtifact {
@@ -67,12 +73,14 @@ pub type PlannedPullRequest {
 pub type DryRunPublicationManifest {
   DryRunPublicationManifest(
     run_id: String,
+    work_title: Option(String),
     workflow_id: String,
     publication_id: String,
     series_id: String,
     version_id: String,
     required: Bool,
     dry_run: Bool,
+    mode: artifact_publication_config.PublicationMode,
     repository_kind: String,
     repository_id: String,
     github_repo: Option(String),
@@ -80,6 +88,7 @@ pub type DryRunPublicationManifest {
     branch: String,
     pull_request: PlannedPullRequest,
     files: List(PlannedPublicationFile),
+    commit_stack: Option(SelectedArtifact),
   )
 }
 
@@ -98,13 +107,18 @@ pub fn plan_publication(
   ))
   let series_id =
     planner_support.make_series_id(work.id, manifest.workflow_id, route.id)
-  use selected <- result.try(select_files(manifest, route.files, store, []))
+  use #(selected, commit_stack) <- result.try(select_publication_artifacts(
+    manifest,
+    route,
+    store,
+  ))
   use version_id <- result.try(compute_version_id(
     manifest.workflow_id,
     route,
     repository,
     work,
     selected,
+    commit_stack,
     body_templates,
   ))
   use files <- result.try(
@@ -122,17 +136,7 @@ pub fn plan_publication(
       [],
     ),
   )
-  let files_markdown =
-    files
-    |> list.map(fn(file) {
-      let PlannedPublicationFile(source, destination_path) = file
-      let selector = case source.entry {
-        Some(entry) -> source.output <> "/" <> entry
-        None -> source.output
-      }
-      #(destination_path, selector, source.sha256)
-    })
-    |> planner_support.render_files_markdown
+  let files_markdown = render_publication_markdown(files, commit_stack)
   use branch <- result.try(render_branch(
     repository,
     route.id,
@@ -155,12 +159,14 @@ pub fn plan_publication(
   ))
   Ok(DryRunPublicationManifest(
     run_id: run_id,
+    work_title: work.title,
     workflow_id: manifest.workflow_id,
     publication_id: route.id,
     series_id: series_id,
     version_id: version_id,
     required: route.required,
     dry_run: True,
+    mode: route.mode,
     repository_kind: "github",
     repository_id: route.repository,
     github_repo: Some(repository.repo),
@@ -168,6 +174,7 @@ pub fn plan_publication(
     branch: branch,
     pull_request: pull_request,
     files: files,
+    commit_stack: commit_stack,
   ))
 }
 
@@ -176,12 +183,14 @@ pub fn manifest_to_json(manifest: DryRunPublicationManifest) -> json.Json {
     #("schema_version", json.int(schema_version)),
     #("artifact_type", json.string(dry_run_artifact_type)),
     #("run_id", json.string(manifest.run_id)),
+    #("work_title", planner_support.option_string_to_json(manifest.work_title)),
     #("workflow_id", json.string(manifest.workflow_id)),
     #("publication_id", json.string(manifest.publication_id)),
     #("series_id", json.string(manifest.series_id)),
     #("version_id", json.string(manifest.version_id)),
     #("required", json.bool(manifest.required)),
     #("dry_run", json.bool(manifest.dry_run)),
+    #("mode", json.string(publication_mode_to_string(manifest.mode))),
     #(
       "repository",
       planner_support.repository_to_json(
@@ -194,6 +203,7 @@ pub fn manifest_to_json(manifest: DryRunPublicationManifest) -> json.Json {
     #("branch", json.string(manifest.branch)),
     #("pull_request", pull_request_to_json(manifest.pull_request)),
     #("files", json.array(manifest.files, of: planned_file_to_json)),
+    #("commit_stack", option_selected_artifact_to_json(manifest.commit_stack)),
   ])
 }
 
@@ -269,6 +279,43 @@ fn resolve_repository(
       error(
         artifact_publication_config.error_code(config_error),
         artifact_publication_config.error_message(config_error),
+      )
+  }
+}
+
+fn select_publication_artifacts(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  route: artifact_publication_config.PublicationRoute,
+  store: artifact_store.Store,
+) -> Result(#(List(SelectedArtifact), Option(SelectedArtifact)), PlannerError) {
+  case route.mode {
+    artifact_publication_config.FilesPublication -> {
+      use selected <- result.try(select_files(manifest, route.files, store, []))
+      Ok(#(selected, None))
+    }
+    artifact_publication_config.CommitStackPublication -> {
+      use commit_stack <- result.try(select_commit_stack(
+        manifest,
+        route.commit_stack,
+        store,
+      ))
+      Ok(#([], Some(commit_stack)))
+    }
+  }
+}
+
+fn select_commit_stack(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  route: Option(artifact_publication_config.PublicationCommitStackRoute),
+  store: artifact_store.Store,
+) -> Result(SelectedArtifact, PlannerError) {
+  case route {
+    Some(artifact_publication_config.PublicationCommitStackRoute(selector)) ->
+      select_artifact(manifest, selector, store)
+    None ->
+      error(
+        "missing_commit_stack_route",
+        "commit_stack publication is missing commit_stack selector",
       )
   }
 }
@@ -577,12 +624,36 @@ fn find_entry_descriptor(
   }
 }
 
+fn render_publication_markdown(
+  files: List(PlannedPublicationFile),
+  commit_stack: Option(SelectedArtifact),
+) -> String {
+  case commit_stack {
+    Some(stack) ->
+      planner_support.render_files_markdown([
+        #("commit stack", stack.output, stack.sha256),
+      ])
+    None ->
+      files
+      |> list.map(fn(file) {
+        let PlannedPublicationFile(source, destination_path) = file
+        let selector = case source.entry {
+          Some(entry) -> source.output <> "/" <> entry
+          None -> source.output
+        }
+        #(destination_path, selector, source.sha256)
+      })
+      |> planner_support.render_files_markdown
+  }
+}
+
 fn compute_version_id(
   workflow_id: String,
   route: artifact_publication_config.PublicationRoute,
   repository: ResolvedGithubRepository,
   work: PublicationWork,
   selected: List(SelectedArtifact),
+  commit_stack: Option(SelectedArtifact),
   body_templates: Dict(String, String),
 ) -> Result(String, PlannerError) {
   let body_template = effective_body_template_path(route, repository)
@@ -604,6 +675,7 @@ fn compute_version_id(
       #("workflow_id", json.string(workflow_id)),
       #("publication_id", json.string(route.id)),
       #("repository_id", json.string(repository.id)),
+      #("mode", json.string(publication_mode_to_string(route.mode))),
       #("github_repo", json.string(repository.repo)),
       #("github_base", json.string(repository.base)),
       #("branch_template", json.string(repository.branch_template)),
@@ -625,6 +697,7 @@ fn compute_version_id(
           work.id,
           work.identifier,
           work.slug,
+          work.title,
         ),
       ),
       #(
@@ -635,6 +708,7 @@ fn compute_version_id(
         ),
       ),
       #("selected", json.array(selected, of: selected_for_version_json)),
+      #("commit_stack", option_selected_for_version_json(commit_stack)),
     ])
     |> json.to_string
   Ok(hash.sha256_hex(payload))
@@ -889,6 +963,11 @@ fn base_template_locals(
     #("work.id", template.VString(work.id)),
     #("work.identifier", template.VString(work.identifier)),
     #("work.slug", template.VString(work.slug)),
+    #("work.title", planner_support.option_string_to_template_value(work.title)),
+    #(
+      "issue.title",
+      planner_support.option_string_to_template_value(work.title),
+    ),
     #("workflow.id", template.VString(workflow_id)),
     #("run.id", template.VString(run_id)),
     #("publication.id", template.VString(publication_id)),
@@ -947,6 +1026,24 @@ fn validation_error_to_planner_error(pair: #(String, String)) -> PlannerError {
   PlannerError(code, message)
 }
 
+fn publication_mode_to_string(
+  mode: artifact_publication_config.PublicationMode,
+) -> String {
+  case mode {
+    artifact_publication_config.FilesPublication -> "files"
+    artifact_publication_config.CommitStackPublication -> "commit_stack"
+  }
+}
+
+fn option_selected_for_version_json(
+  selected: Option(SelectedArtifact),
+) -> json.Json {
+  case selected {
+    Some(selected) -> selected_for_version_json(selected)
+    None -> json.null()
+  }
+}
+
 fn selected_for_version_json(selected: SelectedArtifact) -> json.Json {
   selected_to_json(selected, include_ref: False)
 }
@@ -976,6 +1073,15 @@ fn selected_to_json(
     #("media_type", json.string(selected.media_type)),
   ])
   |> json.object
+}
+
+fn option_selected_artifact_to_json(
+  selected: Option(SelectedArtifact),
+) -> json.Json {
+  case selected {
+    Some(selected) -> selected_to_json(selected, include_ref: True)
+    None -> json.null()
+  }
 }
 
 fn planned_file_to_json(file: PlannedPublicationFile) -> json.Json {

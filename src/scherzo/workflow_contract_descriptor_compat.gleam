@@ -61,6 +61,8 @@ fn infer_descriptor_type(
     "file", Some("text/markdown"), _, _ -> Ok("document.markdown")
     "file", Some("application/json"), Some("implementation_pack"), _ ->
       Ok("implementation_pack")
+    "file", Some("application/json"), Some("commit_stack"), _ ->
+      Ok("commit_stack")
     "artifact_set", _, Some("artifact[]"), _ -> Ok("artifact[]")
     "artifact_set", Some("application/json"), Some("exec_plan_bundle"), _ ->
       Ok("exec_plan_bundle")
@@ -104,6 +106,7 @@ pub fn legacy_artifact_type_name(artifact_type: String) -> String {
     "scherzo.implementation_pack.v1" -> "implementation_pack"
     "scherzo.implementation_pack.v2" -> "implementation_pack"
     "scherzo.code_change_bundle.v2" -> "code_change_bundle"
+    "scherzo.commit_stack.v1" -> "commit_stack"
     other -> other
   }
 }

@@ -8,10 +8,18 @@ pub type SelectedArtifactBytes {
   )
 }
 
+pub type SelectedCommitStackBytes {
+  SelectedCommitStackBytes(
+    source: artifact_publication_planner.SelectedArtifact,
+    bytes: BitArray,
+  )
+}
+
 pub type PublicationExecutionInput {
   PublicationExecutionInput(
     manifest: artifact_publication_planner.DryRunPublicationManifest,
     selected_files: List(SelectedArtifactBytes),
+    commit_stack: Option(SelectedCommitStackBytes),
   )
 }
 

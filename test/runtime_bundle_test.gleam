@@ -575,6 +575,7 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
       config_types.WorkspaceBaseline,
       config_types.WorkspaceRefreshBase,
       config_types.WorkspacePublishChange,
+      config_types.WorkspaceExportCommitStack,
     ]
 
   assert_dogfood_workflows_select_profile(
@@ -610,7 +611,7 @@ fn assert_dogfood_workflows_select_profile(
           config_types.WorkspaceChangedFiles,
           config_types.WorkspaceBaseline,
           config_types.WorkspaceRefreshBase,
-          config_types.WorkspacePublishChange,
+          config_types.WorkspaceExportCommitStack,
         ]
         "execplan" -> [
           config_types.WorkspaceStatus,
@@ -871,6 +872,7 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
       config_types.WorkspaceBaseline,
       config_types.WorkspaceRefreshBase,
       config_types.WorkspacePublishChange,
+      config_types.WorkspaceExportCommitStack,
     ]
   assert driver.timeout_ms == 60_000
   assert driver.env

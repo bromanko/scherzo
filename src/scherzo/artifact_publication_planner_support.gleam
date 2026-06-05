@@ -143,12 +143,14 @@ pub fn work_identity_to_json(
   id: String,
   identifier: String,
   slug: String,
+  title: Option(String),
 ) -> json.Json {
   json.object([
     #("kind", json.string(kind)),
     #("id", json.string(id)),
     #("identifier", json.string(identifier)),
     #("slug", json.string(slug)),
+    #("title", option_string_to_json(title)),
   ])
 }
 

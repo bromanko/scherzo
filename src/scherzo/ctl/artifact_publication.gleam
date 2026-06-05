@@ -323,6 +323,8 @@ fn retry_selected_publications(
     projected,
     run_id,
     workflow_status,
+    root,
+    targets,
   ))
   use resolved <- result.try(resolve_retry_routes(
     targets,
@@ -908,7 +910,10 @@ fn publication_workflow_identity(
   projected: projection.Projection,
   run_id: String,
   workflow_status: projection.WorkflowRunStatus,
+  root: String,
+  targets: List(RetrySelection),
 ) -> Result(artifact_publication_planner.PublicationWork, #(String, String)) {
+  let work_title = retained_retry_work_title(root, targets)
   case workflow_status {
     projection.WorkflowRunActive(
       issue_id: issue_id,
@@ -920,6 +925,7 @@ fn publication_workflow_identity(
         id: issue_id,
         identifier: issue_identifier,
         slug: issue_identifier,
+        title: work_title,
       ))
     projection.WorkflowRunFinished(issue_id: issue_id, ..)
     | projection.WorkflowRunInterrupted(issue_id: issue_id, ..)
@@ -943,8 +949,41 @@ fn publication_workflow_identity(
         id: issue_id,
         identifier: issue_identifier,
         slug: issue_identifier,
+        title: work_title,
       ))
     }
+  }
+}
+
+fn retained_retry_work_title(
+  root: String,
+  targets: List(RetrySelection),
+) -> Option(String) {
+  case targets {
+    [] -> None
+    [RetrySelection(latest: latest), ..rest] ->
+      case publication_attempt_work_title(root, latest) {
+        Some(title) -> Some(title)
+        None -> retained_retry_work_title(root, rest)
+      }
+  }
+}
+
+fn publication_attempt_work_title(
+  root: String,
+  latest: projection.PublicationAttempt,
+) -> Option(String) {
+  case latest.manifest_ref {
+    None -> None
+    Some(ref) ->
+      case load_publication_manifest(root, ref) {
+        Error(_) -> None
+        Ok(manifest) ->
+          case manifest.dry_run_manifest {
+            Some(planned) -> planned.work_title
+            None -> None
+          }
+      }
   }
 }
 

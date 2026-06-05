@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -10,6 +11,7 @@ import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/github
 import scherzo/artifact_repository/types as repository_types
+import scherzo/commit_stack
 import scherzo/hash
 import scherzo/path
 import scherzo/state/artifact_store
@@ -39,6 +41,139 @@ pub fn prepare_publication_input_fails_when_artifact_bytes_are_missing_test() {
     github.prepare_publication_input(manifest, execution_store)
 
   assert github.code(error) == "artifact_read_failed"
+}
+
+pub fn publish_commit_stack_applies_each_commit_pushes_and_creates_pr_test() {
+  let root = "test/tmp/artifact-repository-github/commit-stack-create"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_commit_stack_input(root)
+
+  let manifest = github.publish(input, root, commit_stack_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "published"
+  assert manifest.commit_sha == Some("deadbeef")
+  assert manifest.pr_url == Some("https://example.test/pr/1")
+  let transcript = read_file(log)
+  assert string.contains(transcript, "commit-stack-1.patch")
+  assert string.contains(transcript, "commit-stack-2.patch")
+  assert string.contains(transcript, "git commit -m first commit")
+  assert string.contains(transcript, "git commit -m second commit")
+  assert string.contains(
+    transcript,
+    "git push --force-with-lease origin scherzo/workflow.implementation/LIV-761/implementation_pr",
+  )
+  assert string.contains(transcript, "gh pr create")
+  assert !string.contains(transcript, "git add --")
+  let assert Ok(False) =
+    simplifile.is_file(commit_stack_temp_patch_path(root, 1))
+  let assert Ok(False) =
+    simplifile.is_file(commit_stack_temp_patch_path(root, 2))
+}
+
+pub fn publish_commit_stack_cleans_temp_patch_on_apply_failure_test() {
+  let root = "test/tmp/artifact-repository-github/commit-stack-apply-failure"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_commit_stack_input(root)
+
+  let manifest =
+    github.publish(input, root, commit_stack_apply_failure_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == "git_apply_failed"
+  let assert Ok(False) =
+    simplifile.is_file(commit_stack_temp_patch_path(root, 1))
+  let transcript = read_file(log)
+  assert string.contains(transcript, "git apply --index --whitespace=nowarn")
+  assert !string.contains(transcript, "git commit -m first commit")
+}
+
+pub fn publish_commit_stack_rejects_empty_stack_before_commands_test() {
+  let root = "test/tmp/artifact-repository-github/commit-stack-empty"
+  test_helpers.reset_dir(root)
+  let input =
+    prepared_commit_stack_input_with_contents(
+      root,
+      empty_commit_stack_contents(),
+    )
+
+  let manifest = github.publish(input, root, fail_if_called_runner(), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == "empty_commit_stack"
+}
+
+pub fn publish_commit_stack_rejects_too_many_commits_before_commands_test() {
+  let root = "test/tmp/artifact-repository-github/commit-stack-too-many"
+  test_helpers.reset_dir(root)
+  let input =
+    prepared_commit_stack_input_with_contents(
+      root,
+      too_many_commit_stack_contents(),
+    )
+
+  let manifest = github.publish(input, root, fail_if_called_runner(), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == "commit_stack_too_many_commits"
+}
+
+pub fn prepare_commit_stack_input_rejects_oversized_artifact_before_read_test() {
+  let root = "test/tmp/artifact-repository-github/commit-stack-oversized"
+  test_helpers.reset_dir(root)
+  let manifest = commit_stack_dry_run_manifest()
+  let assert Some(source) = manifest.commit_stack
+  let oversized_manifest =
+    artifact_publication_planner.DryRunPublicationManifest(
+      ..manifest,
+      commit_stack: Some(
+        artifact_publication_planner.SelectedArtifact(
+          ..source,
+          bytes: commit_stack.max_artifact_bytes + 1,
+        ),
+      ),
+    )
+
+  let assert Error(error) =
+    github.prepare_publication_input(
+      oversized_manifest,
+      artifact_store.new(root),
+    )
+
+  assert github.code(error) == "commit_stack_too_large"
+}
+
+pub fn publish_commit_stack_returns_unchanged_from_latest_success_test() {
+  let root = "test/tmp/artifact-repository-github/commit-stack-unchanged"
+  test_helpers.reset_dir(root)
+  let planned = commit_stack_dry_run_manifest()
+  let published =
+    artifact_publication_manifest.published_manifest(
+      planned,
+      planned.version_id,
+      100,
+      "deadbeef",
+      Some("https://example.test/pr/1"),
+      [],
+      [],
+    )
+  seed_publication_attempt(root, published, "latest-commit-stack", 100)
+  let input = prepared_commit_stack_input(root)
+
+  let manifest = github.publish(input, root, fail_if_called_runner(), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "unchanged"
+  assert manifest.commit_sha == Some("deadbeef")
+  assert manifest.pr_url == Some("https://example.test/pr/1")
 }
 
 pub fn publish_clones_materializes_commits_pushes_and_creates_draft_pr_test() {
@@ -610,11 +745,142 @@ fn prepared_binary_input(
   prepared
 }
 
+fn prepared_commit_stack_input(
+  root: String,
+) -> repository_types.PublicationExecutionInput {
+  prepared_commit_stack_input_with_contents(root, commit_stack_contents())
+}
+
+fn prepared_commit_stack_input_with_contents(
+  root: String,
+  contents: String,
+) -> repository_types.PublicationExecutionInput {
+  write_artifact(root, commit_stack_ref(), contents)
+  let assert Ok(prepared) =
+    github.prepare_publication_input(
+      commit_stack_dry_run_manifest_with_contents(contents),
+      artifact_store.new(root),
+    )
+  prepared
+}
+
+fn commit_stack_dry_run_manifest() -> artifact_publication_planner.DryRunPublicationManifest {
+  commit_stack_dry_run_manifest_with_contents(commit_stack_contents())
+}
+
+fn commit_stack_dry_run_manifest_with_contents(
+  contents: String,
+) -> artifact_publication_planner.DryRunPublicationManifest {
+  artifact_publication_planner.DryRunPublicationManifest(
+    run_id: "run-1",
+    work_title: Some("Publication test"),
+    workflow_id: "workflow.implementation",
+    publication_id: "implementation_pr",
+    series_id: "work/task-1/workflow/workflow.implementation/publication/implementation_pr",
+    version_id: "commit-stack-version",
+    required: True,
+    dry_run: True,
+    mode: artifact_publication_config.CommitStackPublication,
+    repository_kind: "github",
+    repository_id: "github.docs",
+    github_repo: Some("scherzo-systems/scherzo"),
+    github_base: Some("main"),
+    branch: "scherzo/workflow.implementation/LIV-761/implementation_pr",
+    pull_request: artifact_publication_planner.PlannedPullRequest(
+      enabled: True,
+      draft: True,
+      title: Some("LIV-761 publication"),
+      body: Some("Commit stack publication."),
+    ),
+    files: [],
+    commit_stack: Some(artifact_publication_planner.SelectedArtifact(
+      output: "commit_stack",
+      entry: None,
+      name: "commit_stack",
+      artifact_type: Some("scherzo.commit_stack.v1"),
+      metadata: None,
+      ref: commit_stack_ref(),
+      sha256: hash.sha256_hex(contents),
+      bytes: bit_array.byte_size(bit_array.from_string(contents)),
+      media_type: "application/json",
+    )),
+  )
+}
+
+fn commit_stack_ref() -> String {
+  "runs/run-1/outputs/commit_stack.json"
+}
+
+fn commit_stack_contents() -> String {
+  "{\"schema_version\":1"
+  <> ",\"artifact_type\":\"scherzo.commit_stack.v1\""
+  <> ",\"base_ref\":\"main@origin\""
+  <> ",\"base_revision\":\"base\""
+  <> ",\"head_revision\":\"head\""
+  <> ",\"commits\":["
+  <> "{\"commit_id\":\"one\",\"message\":\"first commit\",\"patch\":\"diff --git a/one.txt b/one.txt\\n--- /dev/null\\n+++ b/one.txt\\n@@ -0,0 +1 @@\\n+one\\n\"}"
+  <> ","
+  <> "{\"commit_id\":\"two\",\"message\":\"second commit\",\"patch\":\"diff --git a/two.txt b/two.txt\\n--- /dev/null\\n+++ b/two.txt\\n@@ -0,0 +1 @@\\n+two\\n\"}"
+  <> "]}"
+}
+
+fn empty_commit_stack_contents() -> String {
+  "{\"schema_version\":1"
+  <> ",\"artifact_type\":\"scherzo.commit_stack.v1\""
+  <> ",\"base_ref\":\"main@origin\""
+  <> ",\"base_revision\":\"base\""
+  <> ",\"head_revision\":\"base\""
+  <> ",\"commits\":[]}"
+}
+
+fn too_many_commit_stack_contents() -> String {
+  "{\"schema_version\":1"
+  <> ",\"artifact_type\":\"scherzo.commit_stack.v1\""
+  <> ",\"base_ref\":\"main@origin\""
+  <> ",\"base_revision\":\"base\""
+  <> ",\"head_revision\":\"head\""
+  <> ",\"commits\":["
+  <> commit_stack_entries(commit_stack.max_commits + 1, [])
+  <> "]}"
+}
+
+fn commit_stack_entries(remaining: Int, acc: List(String)) -> String {
+  case remaining <= 0 {
+    True -> string.join(list.reverse(acc), with: ",")
+    False -> {
+      let index = commit_stack.max_commits + 2 - remaining
+      let entry =
+        "{\"commit_id\":\"commit-"
+        <> int.to_string(index)
+        <> "\",\"message\":\"commit "
+        <> int.to_string(index)
+        <> "\",\"patch\":\"diff --git a/file"
+        <> int.to_string(index)
+        <> ".txt b/file"
+        <> int.to_string(index)
+        <> ".txt\\n--- /dev/null\\n+++ b/file"
+        <> int.to_string(index)
+        <> ".txt\\n@@ -0,0 +1 @@\\n+file\\n\"}"
+      commit_stack_entries(remaining - 1, [entry, ..acc])
+    }
+  }
+}
+
+fn commit_stack_temp_patch_path(root: String, index: Int) -> String {
+  path.join(
+    path.absolute_or_original(root),
+    ".scherzo-state/artifact-repositories/tmp/commit-stack-"
+      <> int.to_string(index)
+      <> ".patch",
+  )
+}
+
 fn route() -> artifact_publication_config.PublicationRoute {
   artifact_publication_config.PublicationRoute(
     id: "review_doc",
     repository: "github.docs",
     required: True,
+    mode: artifact_publication_config.FilesPublication,
     pull_request: Some(
       artifact_publication_config.PublicationPullRequestOverride(
         title: Some("{{ work.identifier }} publication"),
@@ -630,6 +896,7 @@ fn route() -> artifact_publication_config.PublicationRoute {
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
     ],
+    commit_stack: None,
   )
 }
 
@@ -751,6 +1018,58 @@ fn create_pr_runner(log: String, draft: Bool) -> command_runner.Runner {
         assert list.contains(args, "--draft") == draft
         Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
       }
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn commit_stack_runner(log: String) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, _) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["reset", "--hard"] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["clean", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["apply", "--index", "--whitespace=nowarn", ..] ->
+        Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["commit", "-m", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", "--force-with-lease", "origin", _] ->
+        Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] ->
+        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn commit_stack_apply_failure_runner(log: String) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, _) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["reset", "--hard"] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["clean", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["apply", "--index", "--whitespace=nowarn", ..] ->
+        Ok(command_runner.CommandOutput(1, "", "apply failed"))
       _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
@@ -1534,6 +1853,7 @@ fn work() -> artifact_publication_planner.PublicationWork {
     id: "task-1",
     identifier: "LIV-761",
     slug: "LIV-761",
+    title: Some("Publication test"),
   )
 }
 

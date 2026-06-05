@@ -2523,7 +2523,8 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
     workflow,
     "- id: apply_final_plan_completion_feedback",
   )
-  assert string.contains(workflow, "- id: publish_pr")
+  assert string.contains(workflow, "- id: export_commit_stack")
+  assert string.contains(workflow, "export-commit-stack --base")
   assert string.contains(
     workflow,
     "depends_on: [finalize_final_plan_completion_gate, finalize_review_dispositions]",
@@ -2563,7 +2564,7 @@ fn assert_workflow_refresh_ordering(
     workflow,
     "depends_on: [" <> final_validate_dependency <> "]",
   )
-  assert string.contains(workflow, "- id: publish_pr")
+  assert string.contains(workflow, "- id: export_commit_stack")
   assert string.contains(workflow, "depends_on: [" <> publish_dependency <> "]")
 }
 

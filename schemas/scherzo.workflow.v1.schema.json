@@ -102,7 +102,8 @@
               "assert-only",
               "baseline",
               "refresh-base",
-              "publish-change"
+              "publish-change",
+              "export-commit-stack"
             ]
           }
         }
@@ -404,6 +405,7 @@
             "exec_plan_bundle",
             "implementation_pack",
             "code_change_bundle",
+            "commit_stack",
             "git_ref",
             "url",
             "code_change"
@@ -545,6 +547,14 @@
         "entry": { "$ref": "#/$defs/ContractName" }
       }
     },
+    "PublicationCommitStack": {
+      "type": "object",
+      "required": ["select"],
+      "additionalProperties": false,
+      "properties": {
+        "select": { "$ref": "#/$defs/PublicationSelector" }
+      }
+    },
     "PublicationFile": {
       "type": "object",
       "required": ["select", "path"],
@@ -564,7 +574,7 @@
     },
     "PublicationRoute": {
       "type": "object",
-      "required": ["id", "repository", "files"],
+      "required": ["id", "repository"],
       "additionalProperties": false,
       "properties": {
         "id": { "$ref": "#/$defs/ContractName" },
@@ -573,13 +583,31 @@
           "pattern": "^[a-z0-9][a-z0-9_-]*\\.[a-z0-9][a-z0-9_-]*$"
         },
         "required": { "type": "boolean" },
+        "mode": { "enum": ["files", "commit_stack"] },
         "pull_request": { "$ref": "#/$defs/PublicationPullRequest" },
         "files": {
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/PublicationFile" }
+        },
+        "commit_stack": { "$ref": "#/$defs/PublicationCommitStack" }
+      },
+      "oneOf": [
+        {
+          "required": ["files"],
+          "not": {
+            "anyOf": [
+              { "properties": { "mode": { "const": "commit_stack" } }, "required": ["mode"] },
+              { "required": ["commit_stack"] }
+            ]
+          }
+        },
+        {
+          "required": ["mode", "commit_stack"],
+          "properties": { "mode": { "const": "commit_stack" } },
+          "not": { "required": ["files"] }
         }
-      }
+      ]
     },
     "WorkflowArtifacts": {
       "type": "object",

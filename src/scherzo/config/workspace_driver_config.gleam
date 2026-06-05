@@ -640,6 +640,7 @@ fn jj_capabilities() -> List(config_types.WorkspaceCapability) {
     config_types.WorkspaceBaseline,
     config_types.WorkspaceRefreshBase,
     config_types.WorkspacePublishChange,
+    config_types.WorkspaceExportCommitStack,
   ]
 }
 

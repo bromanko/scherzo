@@ -1,22 +1,22 @@
-{ lib
-, stdenvNoCC
-, gleam
-, erlang
-, rebar3
-, cacert
-, coreutils
-, bash
-, python3
-, jujutsu
-, gh
-, direnv
-, makeWrapper
-, pi
-, src
-, sourceRevision ? "unknown"
-, sourceDate ? "unknown"
-, sourceDirty ? "unknown"
-,
+{
+  lib,
+  stdenvNoCC,
+  gleam,
+  erlang,
+  rebar3,
+  cacert,
+  coreutils,
+  bash,
+  python3,
+  jujutsu,
+  gh,
+  direnv,
+  makeWrapper,
+  pi,
+  src,
+  sourceRevision ? "unknown",
+  sourceDate ? "unknown",
+  sourceDirty ? "unknown",
 }:
 
 let
@@ -255,7 +255,7 @@ stdenvNoCC.mkDerivation {
 
         env -i PATH="$jj_no_path" HOME="$TMPDIR/jj-install-check-home" \
           "$out/bin/scherzo-workspace-jj" describe --json > jj-describe
-        test "$(cat jj-describe)" = '{"version":1,"capabilities":["status","diff","changed-files","assert-only","baseline","refresh-base","publish-change"]}'
+        test "$(cat jj-describe)" = '{"version":1,"capabilities":["status","diff","changed-files","assert-only","baseline","refresh-base","publish-change","export-commit-stack"]}'
 
         (
           cd "$jj_source"

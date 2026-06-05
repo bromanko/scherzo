@@ -920,6 +920,7 @@ fn output_type_is_json(type_: workflow_contract.ContractType) -> Bool {
     | workflow_contract.ExecPlanBundle
     | workflow_contract.ImplementationPack
     | workflow_contract.CodeChangeBundle
+    | workflow_contract.CommitStack
     | workflow_contract.ArtifactList -> True
     workflow_contract.DocumentMarkdown
     | workflow_contract.ExecPlan

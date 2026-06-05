@@ -70,14 +70,25 @@ pub type GithubPullRequestStrategy {
   UpdateExisting
 }
 
+pub type PublicationMode {
+  FilesPublication
+  CommitStackPublication
+}
+
 pub type PublicationRoute {
   PublicationRoute(
     id: String,
     repository: String,
     required: Bool,
+    mode: PublicationMode,
     pull_request: Option(PublicationPullRequestOverride),
     files: List(PublicationFileRoute),
+    commit_stack: Option(PublicationCommitStackRoute),
   )
+}
+
+pub type PublicationCommitStackRoute {
+  PublicationCommitStackRoute(selector: PublicationFileSelector)
 }
 
 pub type PublicationPullRequestOverride {
@@ -436,7 +447,15 @@ fn parse_publication_route(
   use entries <- result.try(read_map_entries(node, "artifacts.publications[]"))
   use _ <- result.try(require_only_keys(
     entries,
-    ["id", "repository", "required", "pull_request", "files"],
+    [
+      "id",
+      "repository",
+      "required",
+      "mode",
+      "pull_request",
+      "files",
+      "commit_stack",
+    ],
     "artifacts.publications[]",
   ))
   use id <- result.try(required_string_entry(
@@ -468,20 +487,135 @@ fn parse_publication_route(
     "required",
     "artifacts.publications[].required",
   ))
+  use mode <- result.try(parse_publication_mode(
+    get_entry(entries, "mode"),
+    "artifacts.publications[].mode",
+  ))
   let pull_request_node = get_entry(entries, "pull_request")
   use pull_request <- result.try(parse_route_pull_request_override(
     pull_request_node,
     "artifacts.publications[].pull_request",
   ))
   let files_node = get_entry(entries, "files")
-  use files <- result.try(parse_publication_files(files_node, contract, id))
+  let commit_stack_node = get_entry(entries, "commit_stack")
+  use #(files, commit_stack) <- result.try(parse_publication_payload(
+    mode,
+    files_node,
+    commit_stack_node,
+    contract,
+    id,
+  ))
   Ok(PublicationRoute(
     id: id,
     repository: repository,
     required: unwrap_bool(required, True),
+    mode: mode,
     pull_request: pull_request,
     files: files,
+    commit_stack: commit_stack,
   ))
+}
+
+fn parse_publication_mode(
+  node: Option(yay.Node),
+  path: String,
+) -> Result(PublicationMode, PublicationConfigError) {
+  case node {
+    None -> Ok(FilesPublication)
+    Some(yay.NodeStr("files")) -> Ok(FilesPublication)
+    Some(yay.NodeStr("commit_stack")) -> Ok(CommitStackPublication)
+    Some(yay.NodeStr(other)) ->
+      error(
+        "invalid_publication_mode",
+        path <> " must be files or commit_stack, got " <> other,
+      )
+    Some(_) -> error("publication_mode_not_string", path <> " must be a string")
+  }
+}
+
+fn parse_publication_payload(
+  mode: PublicationMode,
+  files_node: Option(yay.Node),
+  commit_stack_node: Option(yay.Node),
+  contract: Option(workflow_contract.Contract),
+  publication_id: String,
+) -> Result(
+  #(List(PublicationFileRoute), Option(PublicationCommitStackRoute)),
+  PublicationConfigError,
+) {
+  case mode {
+    FilesPublication -> {
+      case commit_stack_node {
+        Some(_) ->
+          error(
+            "publication_commit_stack_unexpected",
+            "artifacts.publications[].commit_stack is only valid when mode is commit_stack",
+          )
+        None -> {
+          use files <- result.try(parse_publication_files(
+            files_node,
+            contract,
+            publication_id,
+          ))
+          Ok(#(files, None))
+        }
+      }
+    }
+    CommitStackPublication -> {
+      case files_node {
+        Some(_) ->
+          error(
+            "publication_files_unexpected",
+            "artifacts.publications[].files is not valid when mode is commit_stack",
+          )
+        None -> {
+          use commit_stack <- result.try(parse_publication_commit_stack(
+            commit_stack_node,
+            contract,
+            publication_id,
+          ))
+          Ok(#([], Some(commit_stack)))
+        }
+      }
+    }
+  }
+}
+
+fn parse_publication_commit_stack(
+  node: Option(yay.Node),
+  contract: Option(workflow_contract.Contract),
+  publication_id: String,
+) -> Result(PublicationCommitStackRoute, PublicationConfigError) {
+  case node {
+    None ->
+      error(
+        "missing_publication_commit_stack",
+        "artifacts.publications[].commit_stack is required when mode is commit_stack",
+      )
+    Some(node) -> {
+      use entries <- result.try(read_map_entries(
+        node,
+        "artifacts.publications[].commit_stack",
+      ))
+      use _ <- result.try(require_only_keys(
+        entries,
+        ["select"],
+        "artifacts.publications[].commit_stack",
+      ))
+      use selector <- result.try(parse_file_selector(
+        get_entry(entries, "select"),
+        contract,
+        publication_id,
+      ))
+      use _ <- result.try(validate_commit_stack_selector(
+        contract,
+        selector.output,
+        selector.entry,
+        publication_id,
+      ))
+      Ok(PublicationCommitStackRoute(selector: selector))
+    }
+  }
 }
 
 fn parse_route_pull_request_override(
@@ -713,6 +847,59 @@ fn validate_selector_against_contract(
                       <> entry_name,
                   )
               }
+          }
+      }
+  }
+}
+
+fn validate_commit_stack_selector(
+  contract: Option(workflow_contract.Contract),
+  output: String,
+  entry: Option(String),
+  publication_id: String,
+) -> Result(Nil, PublicationConfigError) {
+  case entry {
+    Some(_) ->
+      error(
+        "publication_commit_stack_entry_not_supported",
+        "publication "
+          <> publication_id
+          <> " commit_stack selector must not include select.entry",
+      )
+    None ->
+      case contract {
+        None ->
+          error(
+            "missing_publication_contract",
+            "publication "
+              <> publication_id
+              <> " cannot select commit_stack output "
+              <> output
+              <> " because the workflow has no contract",
+          )
+        Some(contract) ->
+          case find_output(contract.outputs, output) {
+            Some(workflow_contract.OutputSpec(
+              type_: workflow_contract.CommitStack,
+              ..,
+            )) -> Ok(Nil)
+            Some(_) ->
+              error(
+                "publication_commit_stack_output_type_mismatch",
+                "publication "
+                  <> publication_id
+                  <> " commit_stack selector output "
+                  <> output
+                  <> " must have contract type commit_stack",
+              )
+            None ->
+              error(
+                "unknown_publication_output",
+                "publication "
+                  <> publication_id
+                  <> " references unknown contract output "
+                  <> output,
+              )
           }
       }
   }
@@ -963,6 +1150,8 @@ fn publication_template_variables() -> List(String) {
     "work.id",
     "work.identifier",
     "work.slug",
+    "work.title",
+    "issue.title",
     "workflow.id",
     "run.id",
     "publication.id",

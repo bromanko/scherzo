@@ -976,6 +976,7 @@ fn legacy_descriptor_artifact_type(
     workflow_contract.ImplementationPack ->
       Some("scherzo.implementation_pack.v2")
     workflow_contract.CodeChangeBundle -> Some("scherzo.code_change_bundle.v2")
+    workflow_contract.CommitStack -> Some("scherzo.commit_stack.v1")
     workflow_contract.CodeChange -> Some("code_change")
     workflow_contract.ArtifactList -> Some("artifact[]")
     workflow_contract.DocumentMarkdown -> Some("document.markdown")

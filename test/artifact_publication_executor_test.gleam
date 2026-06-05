@@ -469,6 +469,7 @@ fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
     id: "execplan_review_doc",
     repository: "github.docs",
     required: required,
+    mode: artifact_publication_config.FilesPublication,
     pull_request: Some(
       artifact_publication_config.PublicationPullRequestOverride(
         title: Some("{{ work.identifier }} publication"),
@@ -484,6 +485,7 @@ fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
     ],
+    commit_stack: None,
   )
 }
 

@@ -24,6 +24,7 @@ USAGE = """Usage:
   scherzo-workspace-jj changed-files --json
   scherzo-workspace-jj baseline --json
   scherzo-workspace-jj refresh-base --stage <stage> [--target <driver-ref>] --json
+  scherzo-workspace-jj export-commit-stack [--base <driver-ref>] --output <path> --json
   scherzo-workspace-jj publish-change --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--allow-no-changes <true|false>] --json
   scherzo-workspace-jj assert-only --path <relative-file>
 """
@@ -43,6 +44,10 @@ PORTABLE_SCHERZO_LINKS = [
     ("scripts", "scripts"),
     (".scherzo/workflows", ".scherzo/workflows"),
 ]
+COMMIT_STACK_MAX_ARTIFACT_BYTES = 50_000_000
+COMMIT_STACK_MAX_COMMITS = 100
+COMMIT_STACK_MAX_MESSAGE_CHARS = 10_000
+COMMIT_STACK_MAX_PATCH_BYTES = 5_000_000
 
 
 def usage_error(message: str | None = None) -> None:
@@ -72,6 +77,7 @@ def describe_json() -> None:
             "baseline",
             "refresh-base",
             "publish-change",
+            "export-commit-stack",
         ],
     })
 
@@ -1269,6 +1275,165 @@ def refresh_base(root: Path, args: list[str]) -> None:
     })
 
 
+def parse_export_commit_stack_args(args: list[str]) -> tuple[str | None, str]:
+    base: str | None = None
+    output: str | None = None
+    saw_json = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--base" and index + 1 < len(args):
+            base = args[index + 1]
+            index += 2
+        elif arg == "--output" and index + 1 < len(args):
+            output = validate_relative_path(args[index + 1], usage_label="export-commit-stack output")
+            index += 2
+        elif arg == "--json":
+            saw_json = True
+            index += 1
+        else:
+            usage_error(f"unsupported export-commit-stack argument: {arg}")
+    if not saw_json:
+        usage_error("export-commit-stack requires --json")
+    if not output:
+        usage_error("export-commit-stack requires --output <path>")
+    if base is not None and not base.strip():
+        usage_error("export-commit-stack --base must not be empty")
+    return base, output
+
+
+def commit_stack_base(root: Path, explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    configured = env_value("SCHERZO_JJ_WORKSPACE_BASE")
+    if configured:
+        return configured
+    base, remote, remote_base = configured_base_ref()
+    if revision_commit_ids(root, remote_base) is not None:
+        return remote_base
+    if revision_commit_ids(root, base) is not None:
+        return base
+    return "@-"
+
+
+def commit_stack_revisions(root: Path, base: str) -> list[str]:
+    revset = f"ancestors(@) ~ ancestors({base})"
+    proc = run_jj_proc(
+        root,
+        [
+            "log",
+            "-r",
+            revset,
+            "--no-graph",
+            "--reversed",
+            "-T",
+            "commit_id ++ \"\\n\"",
+            "--color=never",
+        ],
+    )
+    if proc.returncode != 0:
+        json_failure(
+            status="export_failed",
+            failure_code="commit_stack_revset_failed",
+            message=(proc.stderr or proc.stdout or "could not enumerate commit stack").strip()[:4000],
+        )
+    return clean_lines(proc.stdout)
+
+
+def commit_description(root: Path, revision: str) -> str:
+    description = revision_value(root, revision, "description", default="")
+    return description.strip() or "Scherzo implementation change"
+
+
+def commit_patch(root: Path, revision: str) -> str:
+    return run_jj_capture_json(
+        root,
+        ["diff", "--git", "-r", revision, "--color=never"],
+        "commit_stack_patch_failed",
+    )
+
+
+def enforce_commit_stack_commit_limits(revision: str, message: str, patch: str, commit_count: int) -> None:
+    if commit_count >= COMMIT_STACK_MAX_COMMITS:
+        json_failure(
+            status="export_failed",
+            failure_code="commit_stack_too_many_commits",
+            message=f"commit_stack export exceeds {COMMIT_STACK_MAX_COMMITS} commits",
+        )
+    if len(message) > COMMIT_STACK_MAX_MESSAGE_CHARS:
+        json_failure(
+            status="export_failed",
+            failure_code="commit_stack_message_too_large",
+            message=f"commit_stack commit {revision} message exceeds maximum length",
+        )
+    if len(patch.encode("utf-8")) > COMMIT_STACK_MAX_PATCH_BYTES:
+        json_failure(
+            status="export_failed",
+            failure_code="commit_stack_patch_too_large",
+            message=f"commit_stack commit {revision} patch exceeds maximum byte size",
+        )
+
+
+def export_commit_stack(root: Path, args: list[str]) -> None:
+    explicit_base, output = parse_export_commit_stack_args(args)
+    base = commit_stack_base(root, explicit_base)
+    base_revision = revision_value(root, base, "commit_id", default=base)
+    head_revision = revision_value(root, "@", "commit_id", default="")
+    commits: list[dict[str, str]] = []
+    for revision in commit_stack_revisions(root, base):
+        patch = commit_patch(root, revision)
+        if not patch.strip():
+            continue
+        message = commit_description(root, revision)
+        enforce_commit_stack_commit_limits(revision, message, patch, len(commits))
+        commits.append({
+            "commit_id": revision,
+            "message": message,
+            "patch": patch,
+        })
+    if not commits:
+        json_failure(
+            status="export_failed",
+            failure_code="empty_commit_stack",
+            message="commit_stack export requires at least one non-empty commit patch",
+        )
+    payload = {
+        "schema_version": 1,
+        "artifact_type": "scherzo.commit_stack.v1",
+        "base_ref": base,
+        "base_revision": base_revision,
+        "head_revision": head_revision,
+        "commits": commits,
+    }
+    payload_json = json.dumps(payload, separators=(",", ":")) + "\n"
+    if len(payload_json.encode("utf-8")) > COMMIT_STACK_MAX_ARTIFACT_BYTES:
+        json_failure(
+            status="export_failed",
+            failure_code="commit_stack_too_large",
+            message="commit_stack artifact exceeds maximum byte size",
+        )
+    output_path = capability_root() / output
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(payload_json, encoding="utf-8")
+    except OSError as exc:
+        json_failure(
+            status="export_failed",
+            failure_code="commit_stack_write_failed",
+            message=f"could not write commit_stack artifact: {exc}",
+        )
+    json_dump({
+        "version": 1,
+        "status": "exported",
+        "artifact_type": "scherzo.commit_stack.v1",
+        "output": output,
+        "base_ref": base,
+        "base_revision": base_revision,
+        "head_revision": head_revision,
+        "commit_count": len(commits),
+    })
+
+
 def parse_publish_args(args: list[str]) -> dict[str, str]:
     values: dict[str, str] = {"allow-no-changes": "false"}
     saw_json = False
@@ -1573,6 +1738,10 @@ def main(argv: list[str]) -> None:
 
     if command == "refresh-base":
         refresh_base(root, rest)
+        return
+
+    if command == "export-commit-stack":
+        export_commit_stack(root, rest)
         return
 
     if command == "publish-change":

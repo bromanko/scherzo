@@ -399,6 +399,7 @@ fn route_with_id(
     id: id,
     repository: "github.docs",
     required: required,
+    mode: artifact_publication_config.FilesPublication,
     pull_request: Some(
       artifact_publication_config.PublicationPullRequestOverride(
         title: Some("{{ work.identifier }} publication"),
@@ -414,6 +415,7 @@ fn route_with_id(
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
     ],
+    commit_stack: None,
   )
 }
 
@@ -448,6 +450,7 @@ fn missing_output_route(
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
     ],
+    commit_stack: None,
   )
 }
 
