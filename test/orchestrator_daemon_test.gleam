@@ -8,6 +8,7 @@ import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/error
 import scherzo/handoff_format
 import scherzo/orchestrator/core
@@ -1316,6 +1317,31 @@ fn wait_for_event(
   case wait_for_event_result(subject, event, quiet_attempts) {
     Ok(_) -> True
     Error(_) -> False
+  }
+}
+
+fn wait_for_metrics(
+  daemon_subject: process.Subject(daemon.Message),
+  attempts: Int,
+  predicate: fn(query_types.OperationalMetricsDto) -> Bool,
+) -> Result(query_types.OperationalMetricsDto, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case daemon.execute_query(daemon_subject, query_types.Metrics, 1000) {
+        Ok(query_types.MetricsResponse(metrics)) ->
+          case predicate(metrics) {
+            True -> Ok(metrics)
+            False -> {
+              process.sleep(50)
+              wait_for_metrics(daemon_subject, attempts - 1, predicate)
+            }
+          }
+        _ -> {
+          process.sleep(50)
+          wait_for_metrics(daemon_subject, attempts - 1, predicate)
+        }
+      }
   }
 }
 
@@ -2751,6 +2777,13 @@ pub fn daemon_scheduled_due_tick_runs_command_workflow_test() {
     projection.scheduled_status_for(projected, "scheduled-job")
   assert status.state == projection.ScheduledTerminalSuccess
   assert status.last_success_run_id == Some(run_id)
+  let assert Ok(query_types.MetricsResponse(metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  assert metrics.scheduled_job_count == 1
+  assert metrics.scheduled_due_count == 0
+  assert metrics.scheduled_next_due_count == 1
+  assert metrics.running_scheduled_workers == 0
+  assert metrics.active_sessions == 0
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
@@ -2832,6 +2865,17 @@ pub fn daemon_scheduled_overlap_records_skip_without_second_start_test() {
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
+  let assert Ok(active_metrics) =
+    wait_for_metrics(started.data, 20, fn(metrics) {
+      metrics.running_scheduled_workers == 1
+      && metrics.running_workers == 0
+      && metrics.active_sessions == 2
+    })
+  assert active_metrics.running_scheduled_workers == 1
+  assert active_metrics.running_workers == 0
+  assert active_metrics.active_sessions == 2
+  assert active_metrics.scheduled_due_count == 0
+  assert active_metrics.scheduled_next_due_count == 1
   let _ = test_async.drain_subject(command_subject)
   let _ = test_async.drain_subject(log_subject)
 

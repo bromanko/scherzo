@@ -467,12 +467,101 @@ fn update_summary(
 ) -> State {
   case dict.get(state.summaries, session_id) {
     Error(Nil) -> state
-    Ok(summary) ->
+    Ok(summary) -> {
+      let updated = change(summary)
       State(
         ..state,
-        summaries: dict.insert(state.summaries, session_id, change(summary)),
+        summaries: dict.insert(state.summaries, session_id, updated),
         session_order: touch_session_order(state.session_order, session_id),
       )
+      |> update_parent_summary_after_child_change(summary, updated)
+    }
+  }
+}
+
+fn update_parent_summary_after_child_change(
+  state: State,
+  previous: event.SessionSummary,
+  updated: event.SessionSummary,
+) -> State {
+  case child_parent_session_id(updated) {
+    None -> state
+    Some(parent_session_id) ->
+      case parent_session_id == updated.session_id {
+        True -> state
+        False ->
+          case dict.get(state.summaries, parent_session_id) {
+            Error(Nil) -> state
+            Ok(parent) ->
+              case parent.status {
+                event.Exited(_) -> state
+                _ ->
+                  State(
+                    ..state,
+                    summaries: dict.insert(
+                      state.summaries,
+                      parent_session_id,
+                      aggregate_child_summary(parent, previous, updated),
+                    ),
+                    session_order: touch_session_order(
+                      state.session_order,
+                      parent_session_id,
+                    ),
+                  )
+              }
+          }
+      }
+  }
+}
+
+fn child_parent_session_id(summary: event.SessionSummary) -> Option(String) {
+  case summary.recovery {
+    Some(recovery) -> recovery.parent_session_id
+    None -> None
+  }
+}
+
+fn aggregate_child_summary(
+  parent: event.SessionSummary,
+  previous: event.SessionSummary,
+  child: event.SessionSummary,
+) -> event.SessionSummary {
+  case parent.status {
+    event.Exited(_) -> parent
+    _ -> {
+      let token_delta =
+        session_tokens.positive_delta(child.token_totals, previous.token_totals)
+      let token_totals = case session_tokens.nonzero(token_delta) {
+        True -> session_tokens.add(parent.token_totals, token_delta)
+        False -> parent.token_totals
+      }
+      event.SessionSummary(
+        ..parent,
+        pi_session_id: latest_pi_session(
+          parent.pi_session_id,
+          child.pi_session_id,
+        ),
+        current_turn: child.current_turn,
+        current_turn_status: child.current_turn_status,
+        current_turn_started_at_ms: child.current_turn_started_at_ms,
+        last_turn_finished_at_ms: child.last_turn_finished_at_ms,
+        last_turn_duration_ms: child.last_turn_duration_ms,
+        last_turn_token_delta: child.last_turn_token_delta,
+        last_turn_reason: child.last_turn_reason,
+        last_event_at_ms: child.last_event_at_ms,
+        token_totals: token_totals,
+      )
+    }
+  }
+}
+
+fn latest_pi_session(
+  parent: Option(String),
+  child: Option(String),
+) -> Option(String) {
+  case child {
+    Some(_) -> child
+    None -> parent
   }
 }
 
@@ -483,9 +572,10 @@ fn publish_payload(
 ) -> State {
   case dict.get(state.summaries, session_id) {
     Error(Nil) -> state
-    Ok(summary) -> {
+    Ok(previous_summary) -> {
       let now = state.now_ms()
-      let #(summary, payload) = apply_publish_payload(summary, payload, now)
+      let #(summary, payload) =
+        apply_publish_payload(previous_summary, payload, now)
       let retention_limit = max_events_for_summary(state, summary)
       let stored_event =
         event.SessionEvent(
@@ -518,6 +608,7 @@ fn publish_payload(
         ),
         next_cursor: state.next_cursor + 1,
       )
+      |> update_parent_summary_after_child_change(previous_summary, summary)
     }
   }
 }

@@ -81,6 +81,49 @@ pub fn hub_registers_lists_and_finishes_session_test() {
   hub.stop(subject)
 }
 
+pub fn hub_aggregates_child_step_progress_into_parent_summary_test() {
+  let assert Ok(subject) = hub.start(10, fn() { 2000 })
+  hub.register_session(subject, summary("parent-run"))
+  hub.register_session(
+    subject,
+    event.SessionSummary(
+      ..summary("child-step"),
+      recovery: Some(
+        event.RecoveryInfo(
+          ..interrupted_recovery("parent-run"),
+          parent_session_id: Some("parent-run"),
+          workflow_step_id: Some("implement"),
+        ),
+      ),
+    ),
+  )
+
+  hub.publish(
+    subject,
+    "child-step",
+    turn_payload(turn_telemetry.EventStarted, 1),
+  )
+  hub.publish(
+    subject,
+    "child-step",
+    event.EventPayload(
+      ..turn_payload(turn_telemetry.EventFinished, 1),
+      tokens: token_totals(3, 4, 5, 6, 18),
+    ),
+  )
+
+  let assert Ok(Some(parent)) = hub.get_session(subject, "parent-run", 1000)
+  assert parent.current_turn == 1
+  assert parent.current_turn_status == Some(turn_telemetry.StatusFinished)
+  assert parent.last_turn_token_delta.total == 18
+  assert parent.token_totals.total == 18
+  assert parent.last_event_at_ms == 2000
+  let assert Ok([child, listed_parent]) = hub.list_sessions(subject, 1000)
+  assert child.session_id == "child-step"
+  assert listed_parent.session_id == "parent-run"
+  hub.stop(subject)
+}
+
 pub fn hub_finish_session_finalizes_running_turn_summary_test() {
   let assert Ok(subject) = hub.start(10, fn() { 2500 })
   hub.register_session(

@@ -94,11 +94,12 @@ pub fn snapshot_preserves_scheduler_counts_test() {
       read_model.RuntimeCounts(
         ..read_model.empty_runtime_counts(),
         scheduled_due_count: 5,
-        scheduled_pending_count: 6,
-        scheduled_retry_count: 7,
-        scheduled_report_retry_count: 8,
-        scheduled_retry_timer_count: 9,
-        scheduled_report_retry_timer_count: 10,
+        scheduled_next_due_count: 6,
+        scheduled_pending_count: 7,
+        scheduled_retry_count: 8,
+        scheduled_report_retry_count: 9,
+        scheduled_retry_timer_count: 10,
+        scheduled_report_retry_timer_count: 11,
       ),
     )
     |> read_model.snapshot(sampled_at_ms: 321)
@@ -106,11 +107,12 @@ pub fn snapshot_preserves_scheduler_counts_test() {
     |> dto.operational_metrics_from_source
 
   assert metrics.scheduled_due_count == 5
-  assert metrics.scheduled_pending_count == 6
-  assert metrics.scheduled_retry_count == 7
-  assert metrics.scheduled_report_retry_count == 8
-  assert metrics.scheduled_retry_timer_count == 9
-  assert metrics.scheduled_report_retry_timer_count == 10
+  assert metrics.scheduled_next_due_count == 6
+  assert metrics.scheduled_pending_count == 7
+  assert metrics.scheduled_retry_count == 8
+  assert metrics.scheduled_report_retry_count == 9
+  assert metrics.scheduled_retry_timer_count == 10
+  assert metrics.scheduled_report_retry_timer_count == 11
 }
 
 pub fn snapshot_exposes_full_remote_client_status_vocabulary_test() {
