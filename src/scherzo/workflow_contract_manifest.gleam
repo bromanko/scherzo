@@ -1,10 +1,13 @@
+import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import scherzo/hash
 import scherzo/json_value
+import scherzo/state/artifact_store
 import scherzo/workflow_artifact_descriptor as artifact_descriptor
 import scherzo/workflow_contract
 
@@ -273,6 +276,85 @@ pub fn input_manifest_to_string(manifest: ContractInputManifest) -> String {
 
 pub fn output_manifest_to_string(manifest: ContractOutputManifest) -> String {
   output_manifest_to_json(manifest) |> json.to_string
+}
+
+pub fn load_retained_output_manifest(
+  root: String,
+  manifest_ref: String,
+  expected_sha256: String,
+  expected_bytes: Int,
+) -> Result(ContractOutputManifest, #(String, String)) {
+  use contents <- result.try(
+    artifact_store.read_artifact_unverified(
+      artifact_store.new(root),
+      manifest_ref,
+    )
+    |> result.map_error(fn(error) {
+      #(
+        "publication_retry_output_manifest_read_failed",
+        "retained output manifest could not be read for ref: "
+          <> manifest_ref
+          <> " ("
+          <> artifact_error_message(error)
+          <> ")",
+      )
+    }),
+  )
+  use Nil <- result.try(verify_output_manifest_contents(
+    manifest_ref,
+    contents,
+    expected_sha256,
+    expected_bytes,
+  ))
+  case decode_output_manifest(contents) {
+    Ok(manifest) -> Ok(manifest)
+    Error(Nil) ->
+      Error(#(
+        "publication_retry_output_manifest_decode_failed",
+        "retained output manifest is invalid JSON",
+      ))
+  }
+}
+
+fn artifact_error_message(error: artifact_store.ArtifactError) -> String {
+  case error {
+    artifact_store.ArtifactIo(message)
+    | artifact_store.CorruptStepArtifact(message)
+    | artifact_store.InvalidArtifactRef(message)
+    | artifact_store.DecodeArtifactFailed(message)
+    | artifact_store.DirectorySyncUnsupported(message) -> message
+    artifact_store.MissingStepArtifact(ref) -> "missing artifact: " <> ref
+    artifact_store.ArtifactWriteFailed(write_error) ->
+      artifact_store.artifact_write_error_to_string(write_error)
+  }
+}
+
+fn verify_output_manifest_contents(
+  manifest_ref: String,
+  contents: String,
+  expected_sha256: String,
+  expected_bytes: Int,
+) -> Result(Nil, #(String, String)) {
+  let actual_sha256 = hash.sha256_hex(contents)
+  let actual_bytes = bit_array.byte_size(bit_array.from_string(contents))
+  case actual_sha256 == expected_sha256 {
+    False ->
+      Error(#(
+        "publication_retry_output_manifest_hash_mismatch",
+        "retained output manifest sha256 did not match for ref: "
+          <> manifest_ref,
+      ))
+    True ->
+      case actual_bytes == expected_bytes {
+        True -> Ok(Nil)
+        False ->
+          Error(#(
+            "publication_retry_output_manifest_byte_count_mismatch",
+            "retained output manifest byte count did not match for ref: "
+              <> manifest_ref,
+          ))
+      }
+  }
 }
 
 pub fn decode_manifest_value(contents: String) -> Result(ManifestValue, Nil) {
