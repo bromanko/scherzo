@@ -43,9 +43,9 @@ workspace:
         SCHERZO_ORIGIN_SYNC_REMOTE: scherzo-agent
         SCHERZO_ORIGIN_SYNC_BRANCH: main
 agents:
-  # Allow up to four dogfood agents to run in parallel. Set to 0 to pause new
+  # Allow up to six dogfood agents to run in parallel. Set to 0 to pause new
   # dispatch while preserving workflow reload and running-worker reconciliation.
-  concurrency: 4
+  concurrency: 6
   # One pi turn is a full agent loop with tool calls. Keep this at 1 unless a
   # workflow explicitly needs same-session continuation turns before handoff.
   max_turns: 1
