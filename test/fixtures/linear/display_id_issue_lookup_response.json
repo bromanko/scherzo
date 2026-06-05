@@ -1,0 +1,15 @@
+{
+  "data": {
+    "issue": {
+      "id": "ff2bd557-36a1-4753-986e-d9a1c3afa330",
+      "identifier": "LIV-864",
+      "title": "Fix scherzoctl task query display IDs and unfiltered list timeouts",
+      "project": { "slugId": "f6f4bc92d6d7" },
+      "state": {
+        "id": "2e245854-2a96-4ebf-9b67-cbef92ca9a1f",
+        "name": "In Progress",
+        "type": "started"
+      }
+    }
+  }
+}

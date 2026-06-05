@@ -5,6 +5,7 @@ import scherzo/control/query/backend
 import scherzo/control/query/types
 import scherzo/daemon_identity
 import scherzo/task
+import scherzo/tracker/adapter
 import support/fake_tracker_adapter
 
 fn effective_config() -> config_types.EffectiveConfig {
@@ -115,6 +116,36 @@ pub fn backend_task_show_resolves_display_and_remote_refs_test() {
       ),
     )
   assert by_remote_id.summary.source.display_id == Some("CARD-1")
+}
+
+pub fn backend_task_list_maps_unsupported_tracker_request_test() {
+  let base = fake_tracker_adapter.read_only_adapter()
+  let task_source = base.task_source
+  let tracker_adapter =
+    adapter.TrackerAdapter(
+      ..base,
+      task_source: adapter.TaskSourceCapability(
+        ..task_source,
+        list_tasks: fn(_) {
+          Error(adapter.UnsupportedCapability(
+            "unfiltered Linear task list; pass --state",
+          ))
+        },
+      ),
+    )
+
+  let assert Error(types.QueryError(code: code, message: message)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.TaskList(types.TaskListQuery(states: [], limit: 5, cursor: None)),
+    )
+
+  assert code == types.UnsupportedQuery
+  assert message
+    == "tracker adapter does not support unfiltered Linear task list; pass --state"
 }
 
 pub fn backend_rejects_invalid_task_cursor_before_querying_adapter_test() {
