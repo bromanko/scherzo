@@ -118,14 +118,6 @@ pub fn iso_utc(at_ms: Int) -> String {
   |> string.replace("+00:00", "Z")
 }
 
-pub fn retry_delay(attempt: Int, max_backoff_ms: Int) -> Int {
-  backoff_delay_loop(10_000, attempt - 1, max_backoff_ms)
-}
-
-pub fn retry_exhausted(next_attempt: Int, max_attempts: Int) -> Bool {
-  next_attempt > max_attempts
-}
-
 pub fn admit_due_boundaries(
   state: ScheduleState,
   now_ms: Int,
@@ -205,19 +197,4 @@ fn utc_basic(at_ms: Int) -> String {
   iso_utc(at_ms)
   |> string.replace("-", "")
   |> string.replace(":", "")
-}
-
-fn backoff_delay_loop(
-  delay_ms: Int,
-  remaining_doubles: Int,
-  max_ms: Int,
-) -> Int {
-  case delay_ms >= max_ms {
-    True -> max_ms
-    False ->
-      case remaining_doubles <= 0 {
-        True -> delay_ms
-        False -> backoff_delay_loop(delay_ms * 2, remaining_doubles - 1, max_ms)
-      }
-  }
 }

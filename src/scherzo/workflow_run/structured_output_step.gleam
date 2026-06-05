@@ -5,6 +5,7 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/result_artifact
+import scherzo/retry_policy
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/structured_output
@@ -383,10 +384,14 @@ fn structured_output_retry_diagnostic(
 ) -> Option(step_artifact.StructuredOutputRetryDiagnostic) {
   case
     spec.required
-    && spec.validation_retries > 0
+    && retry_policy.retry_budget_remaining(0, spec.validation_retries)
     && structured_output_artifact_retryable(artifact)
   {
-    True -> structured_output_attempt_diagnostic(1, artifact)
+    True ->
+      structured_output_attempt_diagnostic(
+        retry_policy.first_attempt_index(),
+        artifact,
+      )
     False -> None
   }
 }
@@ -525,12 +530,17 @@ fn finish_structured_output_retry_success(
       checkpoint,
     )
   let retry_diagnostic = case
-    structured_output_attempt_diagnostic(2, retry_artifact)
+    structured_output_attempt_diagnostic(
+      retry_policy.next_attempt_index(retry_policy.first_attempt_index()),
+      retry_artifact,
+    )
   {
     Some(diagnostic) -> diagnostic
     None ->
       step_artifact.StructuredOutputRetryDiagnostic(
-        attempt: 2,
+        attempt: retry_policy.next_attempt_index(
+          retry_policy.first_attempt_index(),
+        ),
         status: step_artifact.status_to_string(retry_artifact.status),
         failure_code: retry_artifact.failure_code,
         message: "structured output retry completed",
@@ -565,7 +575,9 @@ fn finish_structured_output_retry_failure(
 ) -> AgentResult {
   let retry_diagnostic =
     step_artifact.StructuredOutputRetryDiagnostic(
-      attempt: 2,
+      attempt: retry_policy.next_attempt_index(
+        retry_policy.first_attempt_index(),
+      ),
       status: "agent_failure",
       failure_code: Some(error.agent_code(retry_failure.reason)),
       message: workflow_structured_retry.failure_message(retry_failure, secrets),

@@ -5,6 +5,7 @@ import scherzo/agent/types as agent_types
 import scherzo/error
 import scherzo/log
 import scherzo/result_artifact
+import scherzo/retry_policy
 import scherzo/step_artifact
 import scherzo/structured_output_source
 import scherzo/workflow_dag
@@ -23,14 +24,14 @@ pub fn transient_agent_failure_diagnostic(
     Some(spec) ->
       case
         spec.required
-        && spec.validation_retries > 0
+        && retry_policy.retry_budget_remaining(0, spec.validation_retries)
         && is_transient_pi_termination(failure.reason)
       {
         True ->
           Some(#(
             spec,
             step_artifact.StructuredOutputRetryDiagnostic(
-              attempt: 1,
+              attempt: retry_policy.first_attempt_index(),
               status: "agent_failure",
               failure_code: Some(error.agent_code(failure.reason)),
               message: failure_message(failure, secrets),

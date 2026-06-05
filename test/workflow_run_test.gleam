@@ -800,7 +800,7 @@ pub fn default_command_step_receives_profile_driver_env_test() {
   let artifact =
     dependencies.command_step(
       context,
-      "printf '%s\\n' \"$SCHERZO_JJ_WORKSPACE_BASE\"; if command -v ls >/dev/null 2>&1; then echo unexpected-system-path; exit 1; fi; profile-helper",
+      "printf '%s\\n' \"$SCHERZO_JJ_WORKSPACE_BASE\"; if command -v ls >/dev/null 2>&1; then echo unexpected-system-path; exit 1; fi; if command -v profile-helper >/dev/null 2>&1; then echo helper-found; else exit 1; fi",
       1000,
       [],
       test_helpers.default_artifact_limits(),
@@ -6558,7 +6558,6 @@ pub fn workflow_publication_optional_failure_remains_non_blocking_test() {
   test_helpers.reset_dir(
     "test/tmp/workflow-run/workspaces/implementation/ABC-123",
   )
-  write_publication_template(root)
   let assert Ok(dag) = workflow_dag.parse(publication_workflow_yaml(False))
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let dependencies =

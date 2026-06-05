@@ -735,15 +735,8 @@ fn starts_with_drive_path(value: String) -> Bool {
 }
 
 fn is_letter(ch: String) -> Bool {
-  is_lower(ch) || is_upper(ch)
-}
-
-fn is_lower(ch: String) -> Bool {
-  string.compare(ch, "a") != Lt && string.compare(ch, "z") != Gt
-}
-
-fn is_upper(ch: String) -> Bool {
-  string.compare(ch, "A") != Lt && string.compare(ch, "Z") != Gt
+  { string.compare(ch, "a") != Lt && string.compare(ch, "z") != Gt }
+  || { string.compare(ch, "A") != Lt && string.compare(ch, "Z") != Gt }
 }
 
 fn valid_http_url(value: String) -> Bool {
