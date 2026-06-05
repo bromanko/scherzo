@@ -1,6 +1,7 @@
 import birl
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config/types as config_types
@@ -39,12 +40,13 @@ pub fn fetch_detail_by_identifier(
   identifier: String,
   transport: linear.Transport,
 ) -> Result(Option(task.Task), error.TrackerError) {
+  use project_slug <- try_tracker(require_project_slug(config))
   use request <- try_tracker(build_detail_by_identifier_request(
     config,
     identifier,
   ))
   use response <- try_tracker(transport(request))
-  parse_detail_by_identifier_response(response)
+  parse_detail_by_identifier_response(response, project_slug, identifier)
 }
 
 pub fn build_list_request(
@@ -108,17 +110,10 @@ pub fn build_detail_by_identifier_request(
 ) -> Result(linear.Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
-  use project_slug <- try_tracker(require_project_slug(config))
   let body =
     json.object([
       #("query", json.string(detail_by_identifier_query())),
-      #(
-        "variables",
-        json.object([
-          #("projectSlug", json.string(project_slug)),
-          #("identifier", json.string(identifier)),
-        ]),
-      ),
+      #("variables", json.object([#("issueId", json.string(identifier))])),
     ])
     |> json.to_string
   Ok(graphql_request(endpoint, api_key, body))
@@ -138,7 +133,11 @@ pub fn detail_by_id_query() -> String {
 }
 
 pub fn detail_by_identifier_query() -> String {
-  "query ScherzoTaskDetailByIdentifier($projectSlug: String!, $identifier: String!) { issues(first: 2, filter: { project: { slugId: { eq: $projectSlug } }, identifier: { eq: $identifier } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
+  // Linear's root issue(id:) lookup accepts either a Linear UUID or the
+  // display identifier that operators type at the CLI, such as LIV-864. Keep the
+  // remote-id path on its existing project-filtered query; this path verifies
+  // the returned identifier and project before exposing the task.
+  "query ScherzoTaskDetailByIdentifier($issueId: String!) { issue(id: $issueId) { id identifier title description priority branchName url createdAt updatedAt project { slugId } state { id name type } labels { nodes { id name } } } }"
 }
 
 pub fn parse_page_response(
@@ -163,8 +162,16 @@ pub fn parse_detail_by_id_response(
 
 pub fn parse_detail_by_identifier_response(
   response: linear.Response,
+  expected_project_slug: String,
+  expected_identifier: String,
 ) -> Result(Option(task.Task), error.TrackerError) {
-  parse_optional_task_response(response, detail_by_identifier_graphql_decoder())
+  parse_optional_task_response(
+    response,
+    detail_by_identifier_graphql_decoder(
+      expected_project_slug,
+      expected_identifier,
+    ),
+  )
 }
 
 fn parse_optional_task_response(
@@ -218,20 +225,83 @@ fn detail_by_id_graphql_decoder() -> decode.Decoder(
   }
 }
 
-fn detail_by_identifier_graphql_decoder() -> decode.Decoder(
-  Result(Option(task.Task), String),
-) {
+fn detail_by_identifier_graphql_decoder(
+  expected_project_slug: String,
+  expected_identifier: String,
+) -> decode.Decoder(Result(Option(task.Task), String)) {
   use errors <- decode.optional_field(
     "errors",
     [],
     decode.list(error_message_decoder()),
   )
   case errors {
-    [] ->
-      decode.at(["data", "issues"], connection_decoder())
-      |> decode.map(page_to_unique_task)
-    errors -> decode.success(Error(string.join(errors, with: "; ")))
+    [] -> {
+      use issue <- decode.then(decode.at(
+        ["data", "issue"],
+        decode.optional(issue_detail_decoder()),
+      ))
+      let found = case issue {
+        None -> Ok(None)
+        Some(IssueDetail(task: item, project_slug: Some(project_slug))) ->
+          case
+            project_slug_matches(expected_project_slug, project_slug),
+            identifier_matches(expected_identifier, task.display_key(item.ref))
+          {
+            True, True -> Ok(Some(item))
+            _, _ -> Ok(None)
+          }
+        Some(IssueDetail(project_slug: None, ..)) -> Ok(None)
+      }
+      decode.success(found)
+    }
+    errors ->
+      case graphql_errors_indicate_missing_issue(errors) {
+        True -> decode.success(Ok(None))
+        False -> decode.success(Error(string.join(errors, with: "; ")))
+      }
   }
+}
+
+fn graphql_errors_indicate_missing_issue(errors: List(String)) -> Bool {
+  list.any(errors, fn(message) {
+    let message = string.lowercase(message)
+    string.contains(message, "not found")
+    || string.contains(message, "could not find")
+  })
+}
+
+fn project_slug_matches(expected: String, returned: String) -> Bool {
+  let expected = string.trim(expected) |> string.lowercase
+  let returned = string.trim(returned) |> string.lowercase
+  case expected == "" || returned == "" {
+    True -> False
+    False -> expected == returned || string.ends_with(expected, "-" <> returned)
+  }
+}
+
+fn identifier_matches(expected: String, returned: String) -> Bool {
+  let expected = string.trim(expected) |> string.lowercase
+  let returned = string.trim(returned) |> string.lowercase
+  expected != "" && expected == returned
+}
+
+type IssueDetail {
+  IssueDetail(task: task.Task, project_slug: Option(String))
+}
+
+fn issue_detail_decoder() -> decode.Decoder(IssueDetail) {
+  use item <- decode.then(task_decoder())
+  use project_slug <- decode.optional_field(
+    "project",
+    None,
+    decode.optional(project_slug_decoder()),
+  )
+  decode.success(IssueDetail(task: item, project_slug: project_slug))
+}
+
+fn project_slug_decoder() -> decode.Decoder(String) {
+  use slug <- decode.field("slugId", decode.string)
+  decode.success(slug)
 }
 
 fn page_to_unique_task(page: Page) -> Result(Option(task.Task), String) {
