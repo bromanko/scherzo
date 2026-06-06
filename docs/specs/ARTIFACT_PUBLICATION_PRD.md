@@ -210,13 +210,13 @@ If file publication fails, the retained file artifacts remain available and the 
 
 ## 10. Migration from workspace `publish-change`
 
-This PRD names the future same-repo capability `publish-commit-stack`. Existing runtime driver contracts still advertise and accept `publish-change`; docs-only LIV-913 does not change that public capability vocabulary. LIV-908 or later runtime migration must either add `publish-commit-stack` as an alias or replacement with matching docs/schema updates, or keep compatibility text explicit until the rename lands.
+This PRD names the same-repo capability `publish-commit-stack`. Existing bundled runtime drivers still advertise and accept `publish-change`; LIV-915 adds `publish-commit-stack` to the accepted capability vocabulary for custom or future drivers while keeping `publish-change` as the migration-compatible alias.
 
 Migration direction:
 
 1. Keep file publication on the artifact-repository path.
 2. Preserve same-repo repository-change publication as workspace-driver-backed.
-3. Rename or replace same-repo publication references from `publish-change` to `publish-commit-stack` only when the runtime driver contract, workflow requirements, and operator docs are migrated together; before then, describe `publish-commit-stack` as the target operation and `publish-change` as current compatibility vocabulary.
+3. Rename or replace same-repo publication invocations from `publish-change` to `publish-commit-stack` only when the bundled driver command, workflow requirements, and operator docs are migrated together; before then, accept `publish-commit-stack` as a capability name and `publish-change` as current bundled-driver compatibility vocabulary.
 4. Update doctor/preflight to reject same-repo `commit_stack` publication when the chosen driver cannot publish commit stacks under either the target name or the documented compatibility alias.
 5. Keep `.scherzo-state/artifact-repositories/github/<hash>` and retained bundle import deferred to future external/cross-repo or recovery work.
 

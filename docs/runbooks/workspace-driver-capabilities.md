@@ -88,7 +88,7 @@ result/bin/scherzo-workspace-noop describe --json
 result/bin/scherzo-workspace-jj describe --json
 ```
 
-The no-op driver should report `status`, `changed-files`, and `assert-only`. The jj driver should report `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. Neither command should require `SCHERZO_WORKSPACE_PATH` or a prepared workflow workspace.
+The no-op driver should report `status`, `changed-files`, and `assert-only`. The current jj driver should report `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`; custom same-repo commit-stack drivers may report `publish-commit-stack` instead. Neither command should require `SCHERZO_WORKSPACE_PATH` or a prepared workflow workspace.
 
 Then rerun the relevant validation:
 

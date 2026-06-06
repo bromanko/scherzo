@@ -45,7 +45,7 @@ A third risk is underspecifying failure handling. Counter this by requiring same
 
 ## Scope Boundaries
 
-In scope are the same-repo default, the `publish-commit-stack` target operation name, the retained workflow workspace as the authoritative same-repo carrier, current `publish-change` compatibility vocabulary until runtime migration, `commit_stack` workflow/artifact semantics, ExecPlan's separately retained singular Markdown plan artifact, retry and `unchanged` rules, failure-closed behavior, and explicit abandonment/retention semantics.
+In scope are the same-repo default, the `publish-commit-stack` target operation name, the retained workflow workspace as the authoritative same-repo carrier, current bundled-driver `publish-change` compatibility until command migration, `commit_stack` workflow/artifact semantics, ExecPlan's separately retained singular Markdown plan artifact, retry and `unchanged` rules, failure-closed behavior, and explicit abandonment/retention semantics.
 
 Also in scope is the future external/cross-repo boundary: retained Git bundles, managed artifact repositories, and `.scherzo-state/artifact-repositories/github/<hash>` remain deferred capabilities only.
 

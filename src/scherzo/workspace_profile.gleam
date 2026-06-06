@@ -177,11 +177,35 @@ fn missing_capabilities(
     [] -> config_types.canonical_workspace_capabilities(acc)
     [capability, ..rest] ->
       case
-        list.contains(provided, capability) || list.contains(acc, capability)
+        capability_is_provided(capability, provided)
+        || list.contains(acc, capability)
       {
         True -> missing_capabilities(rest, provided, acc)
         False -> missing_capabilities(rest, provided, [capability, ..acc])
       }
+  }
+}
+
+fn capability_is_provided(
+  capability: config_types.WorkspaceCapability,
+  provided: List(config_types.WorkspaceCapability),
+) -> Bool {
+  case list.contains(provided, capability) {
+    True -> True
+    False -> capability_alias_is_provided(capability, provided)
+  }
+}
+
+fn capability_alias_is_provided(
+  capability: config_types.WorkspaceCapability,
+  provided: List(config_types.WorkspaceCapability),
+) -> Bool {
+  case capability {
+    config_types.WorkspacePublishChange ->
+      list.contains(provided, config_types.WorkspacePublishCommitStack)
+    config_types.WorkspacePublishCommitStack ->
+      list.contains(provided, config_types.WorkspacePublishChange)
+    _ -> False
   }
 }
 
