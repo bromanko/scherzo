@@ -1,13 +1,16 @@
+import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
+import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_registry
 import scherzo/runtime/identity
 import scherzo/session/event as session_event
+import scherzo/session/hub
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 import scherzo/task
@@ -522,6 +525,51 @@ pub fn handle_registry_down_resolution(
     worker_registry.ScheduledWorkerDownStale(registry, run_id) ->
       context.scheduled_worker_down_stale(context.state, registry, run_id)
   }
+}
+
+pub fn worker_down_matches(
+  workers: transition_types.WorkerDirectory,
+  issue_id: String,
+  handle: worker_registry.WorkerHandle,
+) -> Bool {
+  case dict.get(workers.by_session, handle.session_id) {
+    Ok(worker_identity) ->
+      case dict.get(workers.by_issue, worker_identity) {
+        Ok(entry) ->
+          entry.issue_id == issue_id
+          && entry.run_id == handle.run_id
+          && entry.session_id == handle.session_id
+        Error(Nil) -> False
+      }
+    Error(Nil) -> False
+  }
+}
+
+pub fn worker_down_message(
+  issue_id: String,
+  handle: worker_registry.WorkerHandle,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Message {
+  transition_types.WorkerDown(
+    transition_types.KnownWorkerDown(
+      identity.issue_id_from_string(issue_id),
+      identity.run_id_from_string(handle.run_id),
+      identity.session_id_from_string(handle.session_id),
+    ),
+    context,
+  )
+}
+
+pub fn publish_worker_down(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+) -> Nil {
+  event_publisher.lifecycle(
+    event_hub,
+    session_id,
+    session_event.WorkerDown,
+    None,
+  )
 }
 
 pub type ScheduledWorkerDownContext(state) {

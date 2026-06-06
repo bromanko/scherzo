@@ -2288,29 +2288,57 @@ fn handle_worker_down(
           #("issue_id", identity.issue_id_to_string(issue_id)),
         ]),
       ])
-    transition_types.KnownWorkerDown(issue_id, run_id, _session_id) -> {
+    transition_types.KnownWorkerDown(issue_id, run_id, session_id) -> {
       let issue_id_text = identity.issue_id_to_string(issue_id)
       let run_id_text = identity.run_id_to_string(run_id)
-      let failure = worker_down_failure(state, issue_id_text, run_id_text)
-      let result =
-        transition_types.WorkerFailed(
-          failure,
-          transition_types.WorkerDownFailure,
-        )
-      let transition_types.Outcome(state: state, effects: effects) =
-        handle_worker_finished_result(
-          state,
-          issue_id_text,
-          run_id_text,
-          result,
-          context,
-        )
-      transition_types.Outcome(state: state, effects: [
-        effects_types.Log("warn", "worker_down", [#("issue_id", issue_id_text)]),
-        ..effects
-      ])
+      let session_id_text = identity.session_id_to_string(session_id)
+      case worker_entry_for_issue(state, issue_id_text, run_id_text) {
+        Ok(entry) ->
+          case entry.session_id == session_id_text {
+            False ->
+              transition_types.Outcome(state: state, effects: [
+                effects_types.Log("warn", "worker_down_stale", [
+                  #("issue_id", issue_id_text),
+                  #("run_id", run_id_text),
+                  #("session_id", session_id_text),
+                ]),
+              ])
+            True ->
+              finish_known_worker_down(
+                state,
+                issue_id_text,
+                run_id_text,
+                context,
+              )
+          }
+        Error(Nil) ->
+          finish_known_worker_down(state, issue_id_text, run_id_text, context)
+      }
     }
   }
+}
+
+fn finish_known_worker_down(
+  state: transition_types.State,
+  issue_id_text: String,
+  run_id_text: String,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  let failure = worker_down_failure(state, issue_id_text, run_id_text)
+  let result =
+    transition_types.WorkerFailed(failure, transition_types.WorkerDownFailure)
+  let transition_types.Outcome(state: state, effects: effects) =
+    handle_worker_finished_result(
+      state,
+      issue_id_text,
+      run_id_text,
+      result,
+      context,
+    )
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("warn", "worker_down", [#("issue_id", issue_id_text)]),
+    ..effects
+  ])
 }
 
 fn handle_worker_stop_requested(
