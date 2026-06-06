@@ -462,6 +462,19 @@ fn with_fake_publication_tools(root: String, action: fn() -> a) -> a {
 }
 
 fn write_fake_publication_tools(root: String) -> String {
+  write_publication_tools(root, "exit 0")
+}
+
+fn with_publication_commit_failure_tools(root: String, action: fn() -> a) -> a {
+  let bin = write_publication_tools(root, "echo commit failed >&2; exit 2")
+  let original_path = path.env("PATH")
+  let assert Ok(Nil) = setenv("PATH", path_with_prefix(bin, original_path))
+  let result = action()
+  restore_path(original_path)
+  result
+}
+
+fn write_publication_tools(root: String, commit_command: String) -> String {
   let bin = root <> "/publication-bin"
   let git_path = bin <> "/git"
   let gh_path = bin <> "/gh"
@@ -479,7 +492,9 @@ fn write_fake_publication_tools(root: String) -> String {
         <> "  status) exit 0 ;;\n"
         <> "  add) exit 0 ;;\n"
         <> "  diff) exit 1 ;;\n"
-        <> "  commit) exit 0 ;;\n"
+        <> "  commit) "
+        <> commit_command
+        <> " ;;\n"
         <> "  push) exit 0 ;;\n"
         <> "  rev-parse) if [ \"$2\" = \"HEAD\" ]; then echo deadbeef; exit 0; else exit 1; fi ;;\n"
         <> "  *) exit 2 ;;\n"
@@ -6570,15 +6585,17 @@ pub fn workflow_publication_optional_failure_remains_non_blocking_test() {
   let orchestrator = publication_orchestrator(root)
 
   let assert Ok(_) =
-    workflow_run.execute(
-      issue(),
-      dag,
-      orchestrator,
-      empty_tracker(),
-      [],
-      "run-1",
-      dependencies,
-    )
+    with_publication_commit_failure_tools(root, fn() {
+      workflow_run.execute(
+        issue(),
+        dag,
+        orchestrator,
+        empty_tracker(),
+        [],
+        "run-1",
+        dependencies,
+      )
+    })
 
   let attempts = publication_attempt_records(root, "review_doc")
   assert list.length(attempts) == 1
