@@ -6,92 +6,118 @@ Related: [`WORKFLOW_ARTIFACT_TAXONOMY.md`](./WORKFLOW_ARTIFACT_TAXONOMY.md)
 
 ## 1. Problem
 
-Scherzo workflows can produce durable output artifacts described by the workflow artifact taxonomy. Today, publishing a reviewable change is tied to the workspace-driver `publish-change` capability. That is the wrong seam for workflow artifacts: a workspace driver should manage workspaces, diffs, baselines, and related VCS mechanics, while artifact publication should route canonical workflow outputs to configured external artifact repositories.
+Scherzo workflows produce canonical retained artifacts. Publication must copy selected artifacts to useful review surfaces without changing which system is authoritative for the workflow output.
 
-Workflows such as ExecPlan generation produce multiple artifacts with different audiences. For example, an ExecPlan bundle may contain a human-consumable Markdown plan and machine-consumable JSON files for later agents. Some teams may want the Markdown plan checked into a GitHub branch and surfaced through a pull request, while storing JSON artifacts only in Scherzo's internal artifact store or a different external repository in the future.
+The publication model needs an explicit split:
 
-Scherzo needs an opt-in publication layer that can persist selected workflow artifacts to configured repositories, record publication state, and support retry after publication failures without rerunning artifact-producing steps.
+- File artifacts for external/cross-repo review can be copied into a managed artifact repository.
+- same-repo repository changes must remain workspace-driver-backed and must publish from the retained workflow workspace, not from a hidden managed clone.
+
+Today the docs overstate the artifact-repository path and make it sound like same-repo repository changes should move away from workspace drivers. That is the wrong boundary for same-repo publication. For same-repo changes, the selected workspace driver already owns repository identity, baseline normalization, diff semantics, and publication safety. Scherzo should keep using that boundary through a named driver capability, `publish-commit-stack`, while making `commit_stack` a first-class workflow output and publication concept.
+
+ExecPlan workflows also have dual outputs with different audiences. An ExecPlan workflow can publish a checked-in `commit_stack` for repository changes while separately retaining the singular Markdown plan document as a file artifact for internal review surfaces. The docs must make that split explicit.
 
 ## 2. Goals
 
 - Keep Scherzo's internal artifact store as the canonical source of workflow artifacts.
-- Treat all external artifact repositories as derived copies of canonical Scherzo artifacts.
-- Allow workflows to opt in to artifact publication.
-- Configure named artifact repositories at the orchestrator level.
-- Configure workflow-level publication routes from output descriptors to repository targets.
-- Support GitHub pull-request publication as the MVP repository backend.
-- Have Scherzo create and update GitHub branches and PRs for published artifacts.
-- Record publication state in durable Scherzo state, likely the existing daemon ledger or a related ledger.
-- Make publication retryable by the operator after transient failures.
-- Defer generalized review/approval state while leaving the model compatible with future review providers.
+- Keep same-repo repository-change publication workspace-driver-backed.
+- Define `publish-commit-stack` as the same-repo publication capability.
+- Define `commit_stack` as the workflow-level repository-change output for same-repo publication.
+- Allow file artifacts to publish to external/cross-repo managed repositories.
+- Support deterministic doctor/preflight checks before remote mutation.
+- Make same-repo publication retryable from the retained workflow workspace.
+- Preserve unchanged retry idempotence and explicit abandonment semantics.
+- Keep the model compatible with future external/cross-repo managed publication.
 
 ## 3. Non-goals for MVP
 
-- Generalized human review state tracking.
-- Tracking GitHub approval, requested changes, comments, or checks as normalized review state.
-- Non-GitHub external repository backends such as S3, Artifactory, or custom services.
+- Reconstructing same-repo repository changes from retained Git bundles by default.
+- Making `.scherzo-state/artifact-repositories/github/<hash>` part of the same-repo default path.
+- Generalized review-state tracking.
+- Non-GitHub managed repository backends beyond the current artifact-repository framing.
 - Step-level publication configuration.
-- Making external repositories canonical.
-- Security policy beyond the target repository/provider's existing permissions and failures.
+- Runtime migration of existing workflows in this PRD alone.
 
 ## 4. Concepts
 
 ### Canonical artifact
 
-A workflow output artifact retained by Scherzo's internal artifact store. Canonical retained artifacts are addressed by backend-neutral Scherzo refs such as `runs/<run-id>/outputs/<name>` and carry integrity metadata such as `sha256`, `bytes`, and `media_type`.
-
-### Artifact descriptor
-
-The generic descriptor shape from the workflow artifact taxonomy. Publication consumes descriptors with carrier kinds such as `file`, `value`, `ref`, and `artifact_set`. Publication must not require Scherzo core to understand workflow-owned semantic `artifact_type` strings.
-
-### Artifact set
-
-An aggregate descriptor that contains child artifact descriptors. For publication, an artifact set is metadata/a retained manifest plus a collection of selectable entries. Repository backends do not need native artifact-set semantics.
+A workflow output artifact retained by Scherzo's internal artifact store. Canonical retained artifacts are addressed by Scherzo refs such as `runs/<run-id>/outputs/<name>` and carry integrity metadata such as `sha256`, `bytes`, and `media_type`.
 
 ### Artifact repository
 
-A named, operator-configured external target that can receive derived artifact copies. The MVP repository backend is GitHub.
+A named, operator-configured external target that can receive derived copies of file artifacts. For MVP, the repository backend is GitHub. This concept is for external/cross-repo publication and does not replace the same-repo publication boundary.
 
-### Publication
+### same-repo publication
 
-A workflow-level route that selects one or more canonical artifacts and materializes them into a configured artifact repository.
+Publication of repository changes back into the repository already represented by the workflow workspace driver. same-repo publication is workspace-driver-backed, uses the retained workflow workspace as the authoritative carrier, and publishes through `publish-commit-stack`.
+
+### external/cross-repo publication
+
+Publication into a different configured repository or a managed copy owned by Scherzo. This path may use managed checkouts, retained bundle import, or `.scherzo-state/artifact-repositories/github/<hash>` in future implementations. It is not the default or fallback for same-repo publication.
 
 ### Publication series
 
-A stable logical publication target across runs, such as one ExecPlan publication for one work item and workflow. A series may have multiple versions as reruns produce changed artifacts.
+A stable logical publication target across runs, such as one workflow publication for one work item and workflow.
 
 ### Publication version
 
-A concrete published version derived from a workflow run's selected artifacts and target paths. If the selected artifact bytes and target mapping are unchanged, no new external version should be created.
+A concrete published version derived from selected canonical artifacts, publication mode, and destination mapping. If the selected identity is unchanged, the result is `unchanged`.
 
-## 5. Artifact identity and addressing
+## 5. Publication modes
 
-The canonical source identity should be based on workflow run outputs rather than workspace paths.
+Scherzo needs two distinct publication modes.
 
-Candidate URI shape:
+### File publication
 
-```text
-scherzo://runs/<run-id>/outputs/<output-name>
-scherzo://runs/<run-id>/outputs/<output-name>/entries/<entry-name>
+File publication selects retained file artifacts and materializes them into an external/cross-repo artifact repository.
+
+Example:
+
+```yaml
+artifacts:
+  publications:
+    - id: execplan_review_doc
+      repository: github.docs
+      required: true
+      files:
+        - select:
+            output: exec_plan_bundle
+            entry: plan
+          path: docs/plans/{{ work.identifier }}.md
 ```
 
-Output names are unique within a workflow contract. Artifact-set entries are addressed beneath the output that owns the set.
+### `commit_stack` publication
 
-Publication series identity should be stable across reruns. Candidate logical shape:
+`commit_stack` publication selects a workflow-owned repository-change output and publishes it through the workspace driver that owns the same repository.
 
-```text
-work/<work-id>/workflow/<workflow-id>/publication/<publication-id>
+Example:
+
+```yaml
+artifacts:
+  publications:
+    - id: implementation_commit_stack
+      repository: github.code
+      mode: commit_stack
+      required: true
+      commit_stack:
+        select:
+          output: commit_stack
+      target:
+        kind: existing_pr_branch
+        source:
+          output: merge_conflict_target
 ```
 
-Publication version identity should include the selected canonical artifact digests, repository target, and destination paths. If that version identity matches the previous successful publication for the series, the publication result is `unchanged`.
+Until the runtime/schema migration for LIV-908 lands, `repository` and `target.kind: existing_pr_branch` are the current executable schema shape for `commit_stack` routes. The `target.source.output` value names a `code_change` output that identifies the existing same-repo PR branch target; it does not make a hidden managed clone authoritative. A later migration may replace or alias this shape with a cleaner driver-owned route, but examples in this PRD should stay explicit about current validator requirements.
+
+For same-repo publication, Scherzo must not redirect to `.scherzo-state/artifact-repositories/github/<hash>`, must not fall back to a hidden managed clone, and must not require retained Git bundle import as the default path.
 
 ## 6. Configuration model
 
 ### Orchestrator-level repository targets
 
-Repository targets should live under the existing top-level `artifacts` configuration.
-
-Proposed MVP shape:
+Repository targets remain useful for file publication and future external/cross-repo flows.
 
 ```yaml
 artifacts:
@@ -111,224 +137,114 @@ artifacts:
           draft: false
 ```
 
-Notes:
-
-- `artifacts.repositories.github.<name>` defines a named GitHub repository target.
-- `repo` is the GitHub `owner/repo`.
-- `base` is the target branch for PRs and branch creation.
-- `checkout.strategy: managed_git` means Scherzo owns a publication checkout separate from workflow step workspaces. The checkout can live under `.scherzo-state` and is an implementation detail of the repository adapter.
-- `branch` config controls materialization/versioning behavior and provides defaults for publications that target this repository.
-- `pull_request` config controls optional PR behavior and provides defaults for publications that target this repository.
-- `pull_request.draft`, not repository-level `draft_pr`, controls draft PR creation.
-- Content-specific PR titles and body templates belong on workflow publication routes. Repository targets may provide defaults, and workflow routes may override them.
+This configuration continues to describe managed artifact-repository publication for files. It does not redefine same-repo publication.
 
 ### Workflow-level publication routes
 
-Publication should initially be configured at the workflow level, not the step level. If a step artifact needs publication, the workflow should expose it as a contract output first.
+Workflow-level publication remains the selection point for both modes.
 
-Proposed shape:
+- File routes reference a named repository target.
+- same-repo `commit_stack` routes reference the retained workflow workspace and selected workspace driver.
+- In the current schema, same-repo `commit_stack` routes also declare `target.kind: existing_pr_branch` and its `source` output so validators know which existing PR branch is being updated until the LIV-908 migration changes or aliases that route shape.
 
-```yaml
-artifacts:
-  publications:
-    - id: execplan_review_doc
-      repository: github.docs
-      required: true
-      pull_request:
-        title: "{{ work.identifier }} ExecPlan"
-        body_template: prompts/execplan-pr-body.md
-      files:
-        - select:
-            output: exec_plan_bundle
-            entry: plan
-          path: docs/plans/{{ work.identifier }}.md
-```
-
-Notes:
-
-- `id` identifies the publication within the workflow and participates in publication series identity.
-- `repository` references a named orchestrator target.
-- `required` defaults to `true`. A required publication failure prevents the workflow from completing successfully and moves the task/run into a triage/recovery state. `required: false` records failures as non-blocking publication warnings.
-- `pull_request` fields on the publication route override repository-level PR defaults. Titles and body templates are content-specific, so they normally belong here.
-- `files` selects retained `file` artifacts and maps them to repository-relative paths.
-- For MVP, publication should select workflow outputs or artifact-set entries. Step-level selectors are deferred.
+A same-repo `commit_stack` route must fail doctor/preflight before remote mutation when the selected workspace driver does not expose `publish-commit-stack` or a documented migration-compatible `publish-change` alias that implements the same semantics before the rename is implemented.
 
 ## 7. GitHub MVP behavior
 
-For each configured GitHub publication, Scherzo should:
+### File publication behavior
+
+For each configured file publication, Scherzo should:
 
 1. Resolve the workflow output manifest.
-2. Select the configured artifact descriptors.
+2. Select the configured file descriptors.
 3. Read selected canonical artifact bytes from the internal artifact store.
 4. Materialize those bytes into configured repository-relative paths in a Scherzo-managed publication checkout.
 5. Create or update a GitHub branch according to `branch.strategy`.
 6. Create or update a pull request when `pull_request.enabled` is true.
 7. Record publication metadata and final status in durable state.
 
-The GitHub backend may use local `git` plus `gh` internally for the MVP, but it should be exposed as an artifact repository adapter, not as a workspace-driver capability. It should not require publishing from the workflow step workspace.
+### same-repo `commit_stack` behavior
 
-The MVP default should be:
+For each configured same-repo `commit_stack` publication, Scherzo should:
 
-```yaml
-branch:
-  strategy: stable_per_work
-pull_request:
-  strategy: update_existing
-```
+1. Resolve the selected `commit_stack` output.
+2. Resolve the retained workflow workspace that produced that output.
+3. Run doctor/preflight checks and fail before remote mutation when the workspace is missing, stale, points at the wrong repository, or the selected driver lacks `publish-commit-stack` or a documented migration-compatible `publish-change` alias that implements the same semantics before the rename is implemented.
+4. Verify the retained workflow workspace still exactly matches the selected `commit_stack`: repository identity, clean/no-drift status, base ref and base commit, ordered commits, head commit and head tree, and validation metadata. Fail closed if local Git config, hooks, workspace drift, or branch/ref policy could change what gets published.
+5. Ask the selected workspace driver to run `publish-commit-stack` from the retained workflow workspace using branch/ref allowlisting and lease-protected remote updates.
+6. Record whether the result was `published`, `unchanged`, or `failed`.
+7. Retain the unpublished workspace until explicit abandonment or configured cleanup.
 
-This means a new run for the same work item, workflow, and publication id updates the same external branch/PR when artifacts changed. GitHub commit history provides version history without creating PR spam.
-
-Future strategies should remain possible, such as:
-
-- `new_pr_per_run`
-- `new_pr_per_changed_version`
-- `commit_only`
-- repository-specific single-head publication
-
-The implementation should avoid hard-coding the MVP strategy into durable state shape.
+same-repo publication is workspace-driver-backed. It must not use `.scherzo-state/artifact-repositories/github/<hash>` as a default path or fallback path. Managed artifact repositories remain available only for file publication or future external/cross-repo publication.
 
 ## 8. Publication states
 
-MVP publication state should avoid review terminology.
-
 Candidate states:
 
-- `planned`: publication was selected and queued.
-- `publishing`: publication is in progress.
-- `published`: external repository received a new version.
-- `unchanged`: selected artifacts matched the previous external version; no new external version was created.
-- `failed`: publication did not complete.
-- `retry_scheduled`: an operator or scheduler has queued retry after failure.
-- `superseded`: a newer successful version exists for the same publication series.
+- `planned`
+- `publishing`
+- `published`
+- `unchanged`
+- `failed`
+- `retry_scheduled`
+- `abandoned`
+- `superseded`
 
-`planned` and `publishing` may be represented as ledger events rather than durable terminal states.
+`abandoned` means the retained workflow workspace was intentionally retired without publication. It is not an implicit cleanup result.
 
-## 9. Failure and retry behavior
+## 9. Failure, retry, and retention behavior
 
-Artifact publication happens after canonical artifacts have already been written. If publication fails:
+Publication happens after canonical artifacts already exist.
 
-1. Canonical artifacts and output manifests remain available.
-2. The publication failure is recorded durably.
-3. If the publication is required, the workflow/task enters a triage or recoverable failure state.
-4. An operator can retry publication without rerunning artifact-producing steps.
+If same-repo `commit_stack` publication fails:
 
-The preferred operator command shape is:
+1. Canonical artifacts remain available.
+2. The retained workflow workspace remains the authoritative same-repo carrier.
+3. Failure is recorded durably.
+4. Retry reuses the retained workflow workspace.
+5. Unchanged retry is idempotent and records `unchanged` instead of creating duplicate remote state.
+6. Missing or stale retained workspaces fail closed.
+7. Cleanup does not silently abandon publishable workspaces; abandonment must be explicit and auditable.
 
-```sh
-scherzoctl artifact publication list --run <run-id>
-scherzoctl artifact publication show --run <run-id> --publication <publication-id>
-scherzoctl artifact publication retry --run <run-id> [--publication <publication-id>]
-```
-
-Retry should be idempotent. If a retry discovers that the target already contains the selected version, it should record `unchanged` or `published` according to backend-specific semantics rather than creating duplicate external state. A retry appends a new publication attempt record; it does not rerun producing workflow steps.
+If file publication fails, the retained file artifacts remain available and the managed artifact-repository retry path can be used without rerunning artifact-producing steps.
 
 ## 10. Migration from workspace `publish-change`
 
-The existing workspace-driver `publish-change` capability should be treated as a legacy seam for publishing workspace changes. Artifact publication should move this responsibility out of workspace drivers.
+This PRD names the future same-repo capability `publish-commit-stack`. Existing runtime driver contracts still advertise and accept `publish-change`; docs-only LIV-913 does not change that public capability vocabulary. LIV-908 or later runtime migration must either add `publish-commit-stack` as an alias or replacement with matching docs/schema updates, or keep compatibility text explicit until the rename lands.
 
 Migration direction:
 
-1. Keep current behavior until artifact publication is implemented.
-2. Add artifact publication config and durable publication state alongside existing workflows.
-3. Implement GitHub publication as an artifact repository backend.
-4. Migrate ExecPlan-style workflows from explicit publish steps / `publish-change` requirements to workflow-level artifact publications.
-5. Deprecate `WorkspacePublishChange` for artifact publication use cases.
+1. Keep file publication on the artifact-repository path.
+2. Preserve same-repo repository-change publication as workspace-driver-backed.
+3. Rename or replace same-repo publication references from `publish-change` to `publish-commit-stack` only when the runtime driver contract, workflow requirements, and operator docs are migrated together; before then, describe `publish-commit-stack` as the target operation and `publish-change` as current compatibility vocabulary.
+4. Update doctor/preflight to reject same-repo `commit_stack` publication when the chosen driver cannot publish commit stacks under either the target name or the documented compatibility alias.
+5. Keep `.scherzo-state/artifact-repositories/github/<hash>` and retained bundle import deferred to future external/cross-repo or recovery work.
 
-Workspace drivers should continue to own workspace setup, status, diff, changed-files, baseline, and refresh-base behavior.
+The key migration rule is that artifact publication does not move same-repo repository changes away from workspace drivers.
 
 ## 11. Resolved design decisions
 
-### 11.1 Template variables
+### 11.1 ExecPlan dual outputs
 
-Template rendering should be deterministic, side-effect-free, and limited to a known context. Missing variables are configuration/runtime errors before remote mutation.
+An ExecPlan workflow may produce both:
 
-Publication-scoped templates such as branch names, PR titles, and PR bodies may use:
+- a checked-in `commit_stack` for repository changes; and
+- a separately retained singular Markdown plan document for internal review surfaces.
 
-- `work.kind`: `task` or `scheduled`.
-- `work.id`: backend-owned work id.
-- `work.identifier`: human-readable work key, such as `LIV-123`; scheduled runs may use the scheduled job id.
-- `work.slug`: branch/path-safe slug derived from `work.identifier`.
-- `workflow.id`.
-- `run.id`.
-- `publication.id`.
-- `publication.series_id`.
-- `publication.version_id`.
-- `repository.kind`, for example `github`.
-- `repository.id`, for example `github.docs`.
-- `github.repo` and `github.base` for GitHub repository targets.
+The Markdown plan remains a file artifact even when the implementation result is published as a same-repo `commit_stack`.
 
-File path templates also get artifact-scoped variables:
+### 11.2 same-repo boundary
 
-- `artifact.output`: output name that selected the artifact.
-- `artifact.entry`: artifact-set entry name when applicable.
-- `artifact.name`: descriptor name.
-- `artifact.ref`: canonical Scherzo artifact-store ref.
-- `artifact.media_type`.
-- `artifact.artifact_type` when present.
-- `artifact.sha256` and `artifact.sha256_short`.
-- `artifact.default_extension`, derived from media type when known.
+same-repo publication is workspace-driver-backed because the driver already owns repository identity, workspace normalization, and safe publication behavior for that repository.
 
-PR body templates should additionally receive a generated publication summary, such as `publication.files_markdown`, so simple templates do not need loops in the MVP.
+### 11.3 external/cross-repo boundary
 
-Rendered branch names and paths must still pass backend-specific validation. Templates should provide slug variables for safe components rather than silently sanitizing arbitrary rendered output.
+Managed artifact repositories, retained Git bundle import, and `.scherzo-state/artifact-repositories/github/<hash>` remain valid future ideas for external/cross-repo or recovery flows. They are not the same-repo default and must not be used as the same-repo fallback path.
 
-### 11.2 Selectors
+### 11.4 Retry semantics
 
-MVP publication routes should select artifacts explicitly by output name and optional artifact-set entry name. Selecting by `artifact_type`, `media_type`, or metadata tags is deferred.
+Retry must be idempotent. The same retained workflow workspace, base boundary, selected `commit_stack`, branch policy, and verified head commit/tree should produce the same publication result or `unchanged`. Every retry must repeat the workspace-to-`commit_stack` identity checks before remote mutation.
 
-Reasoning:
+### 11.5 Scope notes
 
-- Output and entry names are stable contract keys.
-- `artifact_type` and `media_type` are useful metadata but may not be unique within a bundle.
-- The taxonomy's `metadata` field is intentionally not a domain-critical routing mechanism.
-
-A future selector extension may add `match` filters over `artifact_type`, `media_type`, or explicit publication tags, but ambiguous matches must be rejected.
-
-### 11.3 Durable state and ledger shape
-
-Use the existing Scherzo state ledger for publication summary events and projections. Store full publication manifests as retained artifacts to avoid making ledger records large.
-
-The publication manifest should include:
-
-- schema version and artifact type, for example `scherzo.artifact_publication.v1`;
-- run id, workflow id, publication id, series id, version id, and required flag;
-- repository target id and backend kind;
-- selected source artifact descriptors and canonical refs;
-- destination paths;
-- backend result fields such as branch, PR URL, commit SHA, and changed-file list;
-- final publication status and bounded diagnostics.
-
-The first implementation slice should emit a dry-run publication manifest only. That manifest should set `dry_run: true`, include repository metadata, branch, rendered pull-request title/body text, and selected file destinations, and deliberately omit remote mutation results such as PR URL, commit SHA, push status, durable ledger ids, or retry metadata until the GitHub publisher lands.
-
-Ledger records should append attempt-level events with deterministic idempotency keys, including attempt start and attempt finish/failure. The projection can compute the latest status per run, publication id, and publication series. If publication volume later warrants a side ledger, the main ledger should still keep summary records and manifest refs.
-
-### 11.4 Optional publication failures
-
-Optional publications are allowed. `required` defaults to `true`; `required: false` means publication failure is recorded as a non-blocking warning and the workflow may still complete if all required work succeeded.
-
-Operators may retry failed optional publications after completion. The publication status remains `failed` with `required: false` until a retry records `published` or `unchanged`.
-
-### 11.5 Operator display
-
-Operator-facing views should show latest publication status by default and expose attempt history on demand.
-
-At minimum, Scherzo should expose:
-
-- publication id;
-- required/optional flag;
-- status;
-- repository target;
-- series id and version id;
-- selected source artifacts;
-- external branch, PR URL, and commit SHA when available;
-- failure diagnostics and retryability.
-
-Successful task/result comments should include a compact publication table for externally useful refs. `scherzoctl artifact publication show` should point operators to the retained publication manifest for full details.
-
-### 11.6 Migration and code sharing with `publish-change`
-
-The GitHub artifact publisher may reuse or extract implementation techniques from the current `publish-change` path, especially branch naming, push, and PR creation behavior. It should not invoke `workspace-driver publish-change` as the artifact-publication API.
-
-The target seam is a Scherzo-owned artifact repository adapter. During migration, `publish-change` can remain for legacy workspace-change workflows while artifact-producing workflows move to `artifacts.publications`. After those workflows migrate, `WorkspacePublishChange` can be deprecated for artifact publication use cases.
-
-For the dry-run planner slice, workflow helper scripts under `workflows/dogfood/scripts`, workflow schemas under `workflows/dogfood/schemas`, provider-live/cache behavior, and installed `.scherzo/workflows` workflow migrations remain explicitly out of scope. If those surfaces are untouched, the implementation should record that no helper migration or provider/cache validation was applicable.
+Workflow helper migration, provider-live behavior, provider-cache behavior, and runtime rollout are separate implementation concerns. This PRD defines the boundary and acceptance semantics they must follow.
