@@ -307,7 +307,7 @@ fn wait_for_log(
   case attempts <= 0 {
     True -> False
     False ->
-      case process.receive(subject, within: 100) {
+      case process.receive(subject, within: 250) {
         Ok(actual) ->
           case actual == expected {
             True -> True

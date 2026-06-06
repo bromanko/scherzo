@@ -1,7 +1,8 @@
 import gleam/dict.{type Dict}
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, Some}
 import scherzo/orchestrator/schedule_core
+import scherzo/retry_policy
 
 pub type Runtime {
   Runtime(
@@ -241,12 +242,11 @@ pub fn block_pending_start(
 }
 
 pub fn insert_retry(runtime: Runtime, retry: RetryStart) -> Runtime {
-  let next_generation = case
-    runtime.next_scheduled_retry_generation > retry.generation
-  {
-    True -> runtime.next_scheduled_retry_generation
-    False -> retry.generation + 1
-  }
+  let next_generation =
+    retry_policy.next_generation_after_reserved(
+      runtime.next_scheduled_retry_generation,
+      retry.generation,
+    )
   Runtime(
     ..runtime,
     scheduled_retries: dict.insert(
@@ -270,7 +270,7 @@ pub fn schedule_retry(
   max_backoff_ms: Int,
 ) -> #(Runtime, List(Action)) {
   let generation = runtime.next_scheduled_retry_generation
-  let delay_ms = schedule_core.retry_delay(current_attempt, max_backoff_ms)
+  let delay_ms = retry_policy.backoff_delay(current_attempt, max_backoff_ms)
   let runtime =
     insert_retry(
       runtime,
@@ -311,8 +311,8 @@ pub fn worker_failure_follow_up(
   max_retry_attempts: Int,
   max_backoff_ms: Int,
 ) -> #(Runtime, WorkerFailureFollowUp) {
-  let next_attempt = attempt + 1
-  case schedule_core.retry_exhausted(next_attempt, max_retry_attempts) {
+  let next_attempt = retry_policy.next_attempt_index(attempt)
+  case retry_policy.next_attempt_exhausted(next_attempt, max_retry_attempts) {
     True -> #(
       runtime,
       WorkerFailureReport(FailureReportRequest(
@@ -376,11 +376,20 @@ pub fn handle_retry_tick(
   case dict.get(runtime.scheduled_retries, run_id) {
     Error(Nil) -> #(runtime, [])
     Ok(entry) ->
-      case entry.generation != generation {
-        True -> #(runtime, [])
-        False ->
+      case
+        retry_policy.classify_timer_tick(Some(entry.generation), generation)
+      {
+        retry_policy.TimerMissing
+        | retry_policy.TimerGenerationMismatch(_, _) -> #(runtime, [])
+        retry_policy.TimerAccepted(_) ->
           case operator_paused || !slot_available {
-            True -> #(runtime, [ScheduleRetryTimer(run_id, generation, 1000)])
+            True -> #(runtime, [
+              ScheduleRetryTimer(
+                run_id,
+                generation,
+                retry_policy.defer_delay_ms(),
+              ),
+            ])
             False -> {
               let pending =
                 PendingStart(
@@ -417,12 +426,11 @@ pub fn insert_report_retry(
   runtime: Runtime,
   report_retry: ReportRetryStart,
 ) -> Runtime {
-  let next_generation = case
-    runtime.next_scheduled_report_generation > report_retry.generation
-  {
-    True -> runtime.next_scheduled_report_generation
-    False -> report_retry.generation + 1
-  }
+  let next_generation =
+    retry_policy.next_generation_after_reserved(
+      runtime.next_scheduled_report_generation,
+      report_retry.generation,
+    )
   Runtime(
     ..runtime,
     scheduled_report_retries: dict.insert(
@@ -438,8 +446,9 @@ pub fn reserve_report_generation(runtime: Runtime) -> #(Runtime, Int) {
   #(
     Runtime(
       ..runtime,
-      next_scheduled_report_generation: runtime.next_scheduled_report_generation
-        + 1,
+      next_scheduled_report_generation: retry_policy.next_generation(Some(
+        runtime.next_scheduled_report_generation,
+      )),
     ),
     runtime.next_scheduled_report_generation,
   )
@@ -474,7 +483,7 @@ pub fn schedule_report_retry_after_failure(
   generation: Int,
   max_backoff_ms: Int,
 ) -> #(Runtime, Int, List(Action)) {
-  let delay_ms = schedule_core.retry_delay(generation, max_backoff_ms)
+  let delay_ms = retry_policy.backoff_delay(generation, max_backoff_ms)
   let runtime =
     insert_report_retry(
       runtime,
@@ -493,9 +502,12 @@ pub fn handle_report_retry_tick(
   case dict.get(runtime.scheduled_report_retries, run_id) {
     Error(Nil) -> #(runtime, [])
     Ok(entry) ->
-      case entry.generation != generation {
-        True -> #(runtime, [])
-        False -> {
+      case
+        retry_policy.classify_timer_tick(Some(entry.generation), generation)
+      {
+        retry_policy.TimerMissing
+        | retry_policy.TimerGenerationMismatch(_, _) -> #(runtime, [])
+        retry_policy.TimerAccepted(_) -> {
           let runtime = clear_report_retry(runtime, run_id)
           #(runtime, [RetryReport(entry.job_id, entry.run_id)])
         }

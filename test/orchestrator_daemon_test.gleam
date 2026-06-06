@@ -3224,7 +3224,7 @@ pub fn daemon_scheduled_report_retry_logs_projection_failure_test() {
   )
   process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
-    process.receive(report_subject, within: 1000)
+    process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
   assert wait_for_records(

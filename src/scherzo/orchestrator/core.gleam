@@ -545,7 +545,12 @@ pub fn apply_task_worker_failure(
   let counter =
     orchestrator_state.IssueCounter(..counter, failure_attempts: failures)
   let state = put_task_counter(state, ref, counter)
-  case failures >= config.agent.max_retry_attempts {
+  case
+    recovery_policy.completed_attempts_exhausted(
+      failures,
+      config.agent.max_retry_attempts,
+    )
+  {
     True ->
       park_task(state, ref, baseline_issue, reason.ParkMaxRetryAttempts, now_ms)
     False ->
@@ -647,10 +652,11 @@ pub fn schedule_task_retry(
   reason: reason.RetryReason,
 ) -> Transition {
   let identity = orchestrator_state.task_ref_identity(ref)
-  let generation = case dict.get(state.retry_attempts, identity) {
-    Ok(entry) -> entry.timer_generation + 1
-    Error(Nil) -> 1
+  let current_generation = case dict.get(state.retry_attempts, identity) {
+    Ok(entry) -> Some(entry.timer_generation)
+    Error(Nil) -> None
   }
+  let generation = recovery_policy.next_generation(current_generation)
   let retry =
     orchestrator_state.RetryEntry(
       task_ref: ref,
@@ -764,10 +770,10 @@ fn retry_backoff_delay(
 ) -> Int {
   let identity = orchestrator_state.linear_issue_id_identity(issue_id)
   let attempt = case dict.get(state.retry_attempts, identity) {
-    Ok(entry) -> entry.timer_generation + 1
-    Error(Nil) -> 1
+    Ok(entry) -> recovery_policy.next_attempt_index(entry.timer_generation)
+    Error(Nil) -> recovery_policy.first_attempt_index()
   }
-  backoff_delay(attempt, config.agent.max_retry_backoff_ms)
+  recovery_policy.backoff_delay(attempt, config.agent.max_retry_backoff_ms)
 }
 
 pub fn reconcile_issue(
