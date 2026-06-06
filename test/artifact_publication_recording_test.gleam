@@ -405,6 +405,9 @@ fn route_with_id(
         body_template: Some("templates/publication.md"),
       ),
     ),
+    mode: artifact_publication_config.FilePublication,
+    commit_stack: None,
+    target: artifact_publication_config.StableBranchTarget,
     files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
@@ -439,6 +442,9 @@ fn missing_output_route(
   artifact_publication_config.PublicationRoute(
     ..route(required),
     id: "missing_review_doc",
+    mode: artifact_publication_config.FilePublication,
+    commit_stack: None,
+    target: artifact_publication_config.StableBranchTarget,
     files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(

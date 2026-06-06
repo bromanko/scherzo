@@ -12,6 +12,7 @@ import scherzo/agent/worker_command
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_executor
 import scherzo/artifact_repository/command_runner
+import scherzo/commit_stack_artifact
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
@@ -28,6 +29,7 @@ import scherzo/state/artifact_store
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/step_artifact
+import scherzo/structured_output_metadata
 import scherzo/structured_output_tool_spec
 import scherzo/template
 import scherzo/tracker
@@ -41,6 +43,7 @@ import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_outcome
 import scherzo/workflow_run
+import scherzo/workflow_run/contract_io
 import scherzo/workflow_scheduler
 import scherzo/workspace_driver_context
 import scherzo/workspace_driver_discovery
@@ -4510,6 +4513,99 @@ pub fn contracted_command_run_records_inputs_before_steps_and_outputs_test() {
   assert findings.name == "findings"
   assert findings.value.status == workflow_contract_manifest.Present
   assert findings.value.ref == Some("runs/run-1/outputs/findings.md")
+}
+
+pub fn commit_stack_structured_output_materializes_raw_payload_test() {
+  let root = "test/tmp/workflow-run/commit-stack-structured-output"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let payload_json = commit_stack_payload_json()
+  let assert Ok(written) =
+    checkpoint.write_structured_output_artifact(
+      workflow_checkpoint.StructuredOutputWrite(
+        run_id: "run-1",
+        workflow_id: "implementation",
+        step_id: "produce_stack",
+        attempt_index: 1,
+        artifact_name: "commit_stack_artifact",
+        format: "json",
+        schema_required_keys: [],
+        validation: structured_output_metadata.baseline_only([]),
+        payload_json: payload_json,
+      ),
+    )
+  let metadata =
+    step_artifact.StructuredOutputMetadata(
+      artifact_name: "commit_stack_artifact",
+      format: "json",
+      ref: written.ref,
+      path: written.path,
+      uri: written.uri,
+      display_path: written.display_path,
+      local_path: written.local_path,
+      sha256: written.sha256,
+      bytes: written.bytes,
+      schema_status: "valid",
+      source_type: "pi_tool_call",
+      source_tool_name: Some("submit_commit_stack"),
+      source_parameters_schema_path: None,
+      source_parameters_schema_sha256: None,
+      source_receipt_json: None,
+      baseline_required_keys: [],
+      validators: [],
+      retry: None,
+    )
+  let artifact =
+    step_artifact.StepArtifact(
+      step_id: "produce_stack",
+      status: step_artifact.StepSucceeded,
+      final_response: None,
+      exit_code: None,
+      command: None,
+      duration_ms: None,
+      diagnostic_path: None,
+      failure_code: None,
+      stdout: "",
+      stderr: "",
+      timed_out: False,
+      final_response_truncated: False,
+      stdout_truncated: False,
+      stderr_truncated: False,
+      summary_text: "produce_stack success agent",
+      structured_output: Some(step_artifact.StructuredOutputValid(metadata)),
+    )
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: produce_stack\n        structured_output: commit_stack_artifact\nsteps:\n  - id: produce_stack\n    kind: agent\n    prompt: prompts/produce_stack.md\n    structured_output:\n      artifact_name: commit_stack_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_commit_stack\n",
+    )
+
+  let assert Ok(result) =
+    contract_io.record_outputs_if_contracted(
+      dag,
+      "run-1",
+      "wf-1",
+      None,
+      checkpoint,
+      dict.from_list([#("produce_stack", artifact)]),
+      dict.new(),
+    )
+
+  let assert Some(manifest) = result.manifest
+  let assert [output] = manifest.outputs
+  assert output.value.status == workflow_contract_manifest.Present
+  assert output.value.ref == Some("runs/run-1/outputs/commit_stack.json")
+  assert output.value.media_type
+    == Some(commit_stack_artifact.commit_stack_media_type)
+  let assert Some(output_ref) = output.value.ref
+  let assert Ok(output_contents) = checkpoint.read_artifact(output_ref)
+  assert string.contains(
+    output_contents,
+    "\"artifact_type\":\"scherzo.git_commit_stack.v1\"",
+  )
+  assert !string.contains(
+    output_contents,
+    "\"artifact_type\":\"structured_output\"",
+  )
 }
 
 pub fn contracted_output_manifest_write_failure_is_reported_test() {
@@ -9154,4 +9250,10 @@ pub fn exhausted_step_recovery_budget_preserves_original_failure_test() {
       "workflow_step_recovery_started",
       "workflow_step_recovery_finished",
     ]
+}
+
+fn commit_stack_payload_json() -> String {
+  "{\"schema_version\":1,\"artifact_type\":\"scherzo.git_commit_stack.v1\",\"repository\":{\"repo\":\"scherzo-systems/scherzo\"},\"base\":{\"ref\":\"feature/conflict-resolution\",\"sha\":\"1111111111111111111111111111111111111111\"},\"head\":{\"sha\":\"3333333333333333333333333333333333333333\",\"tree\":\"4444444444444444444444444444444444444444\"},\"carrier\":{\"ref\":\"runs/run-1/outputs/commit_stack.bundle\",\"sha256\":\""
+  <> hash.sha256_hex("bundle bytes")
+  <> "\",\"bytes\":12,\"media_type\":\"application/vnd.git.bundle\"}}"
 }

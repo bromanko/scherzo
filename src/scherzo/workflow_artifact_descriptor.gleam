@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import scherzo/commit_stack_artifact
 import scherzo/json_value
 import scherzo/workflow_contract
 
@@ -13,6 +14,7 @@ pub type ArtifactKind {
   ValueKind
   RefKind
   ArtifactSetKind
+  CommitStackKind
 }
 
 pub type ArtifactDescriptor {
@@ -44,6 +46,7 @@ pub fn kind_to_string(kind: ArtifactKind) -> String {
     ValueKind -> "value"
     RefKind -> "ref"
     ArtifactSetKind -> "artifact_set"
+    CommitStackKind -> "commit_stack"
   }
 }
 
@@ -53,6 +56,7 @@ pub fn kind_from_string(raw: String) -> Result(ArtifactKind, DescriptorError) {
     "value" -> Ok(ValueKind)
     "ref" -> Ok(RefKind)
     "artifact_set" -> Ok(ArtifactSetKind)
+    "commit_stack" -> Ok(CommitStackKind)
     other ->
       error(
         "artifact_descriptor_unknown_kind",
@@ -128,6 +132,7 @@ pub fn validate(
     ValueKind -> validate_value_descriptor(descriptor)
     RefKind -> validate_ref_descriptor(descriptor)
     ArtifactSetKind -> validate_artifact_set(descriptor)
+    CommitStackKind -> validate_commit_stack_descriptor(descriptor)
   }
 }
 
@@ -192,7 +197,7 @@ fn descriptor_fields(
   let base = put_optional_json_value(base, "validation", descriptor.validation)
   let base = put_optional_json_value(base, "metadata", descriptor.metadata)
   case descriptor.kind {
-    FileKind ->
+    FileKind | CommitStackKind ->
       base
       |> put_optional_string("ref", descriptor.ref)
       |> put_optional_string("sha256", descriptor.sha256)
@@ -275,6 +280,69 @@ fn validate_file(
   use Nil <- result.try(validate_sha256(sha256, descriptor.name))
   use Nil <- result.try(validate_non_negative_bytes(bytes, descriptor.name))
   validate_media_type(media_type, descriptor.name)
+}
+
+fn validate_commit_stack_descriptor(
+  descriptor: ArtifactDescriptor,
+) -> Result(Nil, DescriptorError) {
+  use artifact_type <- result.try(require_field(
+    descriptor.artifact_type,
+    "artifact_descriptor_commit_stack_missing_artifact_type",
+    descriptor.name <> " commit_stack descriptor is missing artifact_type",
+  ))
+  use ref <- result.try(require_field(
+    descriptor.ref,
+    "artifact_descriptor_commit_stack_missing_ref",
+    descriptor.name <> " commit_stack descriptor is missing ref",
+  ))
+  use sha256 <- result.try(require_field(
+    descriptor.sha256,
+    "artifact_descriptor_commit_stack_missing_sha256",
+    descriptor.name <> " commit_stack descriptor is missing sha256",
+  ))
+  use bytes <- result.try(require_field(
+    descriptor.bytes,
+    "artifact_descriptor_commit_stack_missing_bytes",
+    descriptor.name <> " commit_stack descriptor is missing bytes",
+  ))
+  use media_type <- result.try(require_field(
+    descriptor.media_type,
+    "artifact_descriptor_commit_stack_missing_media_type",
+    descriptor.name <> " commit_stack descriptor is missing media_type",
+  ))
+  use Nil <- result.try(forbid_field(
+    descriptor.ref_type,
+    "artifact_descriptor_commit_stack_unexpected_ref_type",
+    descriptor.name <> " commit_stack descriptor must not include ref_type",
+  ))
+  use Nil <- result.try(forbid_field(
+    descriptor.value,
+    "artifact_descriptor_commit_stack_unexpected_value",
+    descriptor.name <> " commit_stack descriptor must not include value",
+  ))
+  use Nil <- result.try(forbid_non_empty_entries(
+    descriptor,
+    "artifact_descriptor_commit_stack_unexpected_entries",
+  ))
+  use Nil <- result.try(validate_run_ref(ref, descriptor.name))
+  use Nil <- result.try(validate_sha256(sha256, descriptor.name))
+  use Nil <- result.try(validate_non_negative_bytes(bytes, descriptor.name))
+  use Nil <- result.try(require_field_equals(
+    artifact_type,
+    commit_stack_artifact.commit_stack_artifact_type,
+    "artifact_descriptor_commit_stack_artifact_type_mismatch",
+    descriptor.name
+      <> " commit_stack descriptor artifact_type must be "
+      <> commit_stack_artifact.commit_stack_artifact_type,
+  ))
+  require_field_equals(
+    media_type,
+    commit_stack_artifact.commit_stack_media_type,
+    "artifact_descriptor_commit_stack_media_type_mismatch",
+    descriptor.name
+      <> " commit_stack descriptor media_type must be "
+      <> commit_stack_artifact.commit_stack_media_type,
+  )
 }
 
 fn validate_value_descriptor(
@@ -568,6 +636,18 @@ fn require_field(
   case value {
     Some(value) -> Ok(value)
     None -> error(code, message)
+  }
+}
+
+fn require_field_equals(
+  actual: String,
+  expected: String,
+  code: String,
+  message: String,
+) -> Result(Nil, DescriptorError) {
+  case actual == expected {
+    True -> Ok(Nil)
+    False -> error(code, message)
   }
 }
 

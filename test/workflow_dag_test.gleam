@@ -74,6 +74,57 @@ pub fn parses_artifact_publications_test() {
   assert path == "docs/plans/{{ work.identifier }}.md"
 }
 
+pub fn parses_commit_stack_existing_pr_branch_publication_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
+    )
+
+  let assert [route] = dag.publication_routes
+  assert route.mode == artifact_publication_config.CommitStackPublication
+  let assert Some(commit_stack) = route.commit_stack
+  let artifact_publication_config.PublicationCommitStackRoute(selector:) =
+    commit_stack
+  assert selector
+    == artifact_publication_config.PublicationCommitStackSelector(
+      output: "commit_stack",
+    )
+  let assert artifact_publication_config.ExistingPrBranchTarget(source) =
+    route.target
+  assert source
+    == artifact_publication_config.PublicationTargetSource(
+      output: "merge_conflict_target",
+    )
+}
+
+pub fn rejects_commit_stack_publication_pull_request_override_test() {
+  assert error_code(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: Should not be used\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
+    )
+    == "commit_stack_pull_request_unsupported"
+}
+
+pub fn rejects_commit_stack_existing_pr_branch_non_code_change_target_test() {
+  assert error_code(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: text\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
+    )
+    == "publication_target_output_type_mismatch"
+}
+
+pub fn rejects_commit_stack_publication_without_existing_target_test() {
+  assert error_code(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n",
+    )
+    == "missing_commit_stack_publication_target"
+}
+
+pub fn rejects_commit_stack_stable_branch_target_test() {
+  assert error_code(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\n",
+    )
+    == "commit_stack_stable_branch_target_unsupported"
+}
+
 pub fn rejects_invalid_publication_route_shapes_test() {
   assert error_code(
       "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review.md\n    - id: review_doc\n      repository: github.docs\n      files:\n        - select:\n            output: exec_plan_bundle\n          path: docs/review-2.md\n",

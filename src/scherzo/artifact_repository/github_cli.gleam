@@ -8,6 +8,7 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/types
+import scherzo/commit_stack_artifact
 import scherzo/path
 
 pub fn ensure_pull_request(
@@ -67,6 +68,52 @@ pub fn current_head(
     Ok(stdout) -> url_option(stdout)
     Error(_) -> None
   }
+}
+
+pub fn verify_existing_pr_branch(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  target: commit_stack_artifact.ExistingPrBranchTarget,
+  desired_head_sha: String,
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
+  use repo <- result.try(require_option(
+    manifest.github_repo,
+    artifact_publication_manifest.PublicationErrorInfo(
+      code: "missing_github_repo",
+      message: "planned github publication is missing github_repo",
+    ),
+  ))
+  use stdout <- result.try(run_stdout(
+    runner,
+    gh_command(
+      [
+        "pr",
+        "view",
+        int.to_string(target.pr_number),
+        "--repo",
+        repo,
+        "--json",
+        "number,url,state,headRefName,headRefOid,baseRefName,isCrossRepository",
+      ],
+      checkout_dir,
+    ),
+    True,
+  ))
+  use pr <- result.try(decode_existing_pr_branch_view(stdout))
+  validate_existing_pr_branch(pr, target, desired_head_sha)
+}
+
+type ExistingPrBranchView {
+  ExistingPrBranchView(
+    number: Int,
+    url: String,
+    state: String,
+    head_ref_name: String,
+    head_ref_oid: String,
+    base_ref_name: String,
+    is_cross_repository: Bool,
+  )
 }
 
 fn gh_command(
@@ -373,6 +420,89 @@ fn pr_view_decoder() -> decode.Decoder(Option(types.GithubPullRequestMatch)) {
   }
 }
 
+fn decode_existing_pr_branch_view(
+  stdout: String,
+) -> Result(
+  ExistingPrBranchView,
+  artifact_publication_manifest.PublicationErrorInfo,
+) {
+  json.parse(stdout, existing_pr_branch_view_decoder())
+  |> result.map_error(fn(_) { malformed_pr_json_error() })
+}
+
+fn existing_pr_branch_view_decoder() -> decode.Decoder(ExistingPrBranchView) {
+  use number <- decode.field("number", decode.int)
+  use url <- decode.field("url", decode.string)
+  use state <- decode.field("state", decode.string)
+  use head_ref_name <- decode.field("headRefName", decode.string)
+  use head_ref_oid <- decode.field("headRefOid", decode.string)
+  use base_ref_name <- decode.field("baseRefName", decode.string)
+  use is_cross_repository <- decode.field("isCrossRepository", decode.bool)
+  decode.success(ExistingPrBranchView(
+    number: number,
+    url: url,
+    state: state,
+    head_ref_name: head_ref_name,
+    head_ref_oid: head_ref_oid,
+    base_ref_name: base_ref_name,
+    is_cross_repository: is_cross_repository,
+  ))
+}
+
+fn validate_existing_pr_branch(
+  pr: ExistingPrBranchView,
+  target: commit_stack_artifact.ExistingPrBranchTarget,
+  desired_head_sha: String,
+) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
+  use _ <- result.try(require_pr_condition(
+    pr.number == target.pr_number,
+    "existing_pr_number_mismatch",
+    "GitHub PR number does not match retained existing branch target",
+  ))
+  use _ <- result.try(require_pr_condition(
+    pr.state == "OPEN",
+    "existing_pr_not_open",
+    "existing PR branch target is not an open GitHub pull request",
+  ))
+  use _ <- result.try(require_pr_condition(
+    !pr.is_cross_repository,
+    "existing_pr_cross_repository",
+    "existing PR branch target must be a same-repository pull request",
+  ))
+  use _ <- result.try(require_pr_condition(
+    pr.head_ref_name == target.head_branch,
+    "existing_pr_branch_mismatch",
+    "GitHub PR head branch does not match retained existing branch target",
+  ))
+  use _ <- result.try(require_pr_condition(
+    pr.base_ref_name == target.base_branch,
+    "existing_pr_base_branch_mismatch",
+    "GitHub PR base branch does not match retained existing branch target",
+  ))
+  use _ <- result.try(require_pr_condition(
+    pr.head_ref_oid == target.expected_head_sha
+      || pr.head_ref_oid == desired_head_sha,
+    "stale_existing_pr_branch",
+    "GitHub PR head is no longer at the retained expected or desired commit",
+  ))
+  Ok(pr.url)
+}
+
+fn require_pr_condition(
+  condition: Bool,
+  code: String,
+  message: String,
+) -> Result(Nil, artifact_publication_manifest.PublicationErrorInfo) {
+  case condition {
+    True -> Ok(Nil)
+    False ->
+      Error(artifact_publication_manifest.PublicationErrorInfo(
+        code: code,
+        message: message,
+      ))
+  }
+}
+
 fn pr_match_decoder() -> decode.Decoder(types.GithubPullRequestMatch) {
   use number <- decode.field("number", decode.int)
   use url <- decode.field("url", decode.string)
@@ -457,7 +587,11 @@ fn failed_code(executable: String, args: List(String)) -> String {
     "git", ["checkout", ..] -> "git_checkout_failed"
     "git", ["status", ..] -> "git_status_failed"
     "git", ["remote", ..] -> "git_remote_failed"
+    "git", ["bundle", ..] -> "git_bundle_failed"
+    "git", ["rev-parse", ..] -> "git_rev_parse_failed"
+    "git", ["merge-base", ..] -> "git_merge_base_failed"
     "gh", ["pr", "list", ..] -> "pr_list_failed"
+    "gh", ["pr", "view", ..] -> "pr_view_failed"
     "gh", ["pr", "create", ..] -> "pr_create_failed"
     "gh", ["pr", "edit", ..] -> "pr_edit_failed"
     _, _ -> executable <> "_failed"

@@ -78,6 +78,7 @@ pub type PublicationManifest {
     branch: Option(String),
     commit_sha: Option(String),
     pr_url: Option(String),
+    pr_number: Option(Int),
     selected_paths: List(String),
     changed_paths: List(String),
     removed_paths: List(String),
@@ -108,6 +109,7 @@ pub fn planned_manifest(
     branch: Some(planned.branch),
     commit_sha: None,
     pr_url: None,
+    pr_number: planned_pr_number(planned),
     selected_paths: destination_paths(planned.files),
     changed_paths: [],
     removed_paths: [],
@@ -140,6 +142,7 @@ pub fn published_manifest(
     branch: Some(planned.branch),
     commit_sha: Some(commit_sha),
     pr_url: pr_url,
+    pr_number: planned_pr_number(planned),
     selected_paths: destination_paths(planned.files),
     changed_paths: changed_paths,
     removed_paths: removed_paths,
@@ -171,6 +174,7 @@ pub fn unchanged_manifest(
     branch: Some(planned.branch),
     commit_sha: commit_sha,
     pr_url: pr_url,
+    pr_number: planned_pr_number(planned),
     selected_paths: destination_paths(planned.files),
     changed_paths: [],
     removed_paths: removed_paths,
@@ -204,6 +208,7 @@ pub fn failed_manifest(
     branch: None,
     commit_sha: None,
     pr_url: None,
+    pr_number: None,
     selected_paths: [],
     changed_paths: [],
     removed_paths: [],
@@ -239,6 +244,7 @@ pub fn failed_from_planned_manifest(
     branch: branch,
     commit_sha: commit_sha,
     pr_url: pr_url,
+    pr_number: planned_pr_number(planned),
     selected_paths: destination_paths(planned.files),
     changed_paths: changed_paths,
     removed_paths: removed_paths,
@@ -331,6 +337,7 @@ pub fn to_json(manifest: PublicationManifest) -> json.Json {
     #("branch", option_string_to_json(manifest.branch)),
     #("commit_sha", option_string_to_json(manifest.commit_sha)),
     #("pr_url", option_string_to_json(manifest.pr_url)),
+    #("pr_number", option_int_to_json(manifest.pr_number)),
     #("selected_paths", json.array(manifest.selected_paths, json.string)),
     #("changed_paths", json.array(manifest.changed_paths, json.string)),
     #("removed_paths", json.array(manifest.removed_paths, json.string)),
@@ -358,6 +365,23 @@ fn option_string_to_json(value: Option(String)) -> json.Json {
   case value {
     Some(value) -> json.string(value)
     None -> json.null()
+  }
+}
+
+fn option_int_to_json(value: Option(Int)) -> json.Json {
+  case value {
+    Some(value) -> json.int(value)
+    None -> json.null()
+  }
+}
+
+fn planned_pr_number(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+) -> Option(Int) {
+  case planned.target {
+    artifact_publication_planner.ExistingPrBranchTargetPlan(target) ->
+      Some(target.pr_number)
+    artifact_publication_planner.StableBranchTargetPlan -> None
   }
 }
 
@@ -408,6 +432,11 @@ fn manifest_decoder() -> decode.Decoder(PublicationManifest) {
   use branch <- decode.field("branch", decode.optional(decode.string))
   use commit_sha <- decode.field("commit_sha", decode.optional(decode.string))
   use pr_url <- decode.field("pr_url", decode.optional(decode.string))
+  use pr_number <- decode.optional_field(
+    "pr_number",
+    None,
+    decode.optional(decode.int),
+  )
   use selected_paths <- decode.field(
     "selected_paths",
     decode.list(decode.string),
@@ -447,6 +476,7 @@ fn manifest_decoder() -> decode.Decoder(PublicationManifest) {
     branch: branch,
     commit_sha: commit_sha,
     pr_url: pr_url,
+    pr_number: pr_number,
     selected_paths: selected_paths,
     changed_paths: changed_paths,
     removed_paths: removed_paths,
