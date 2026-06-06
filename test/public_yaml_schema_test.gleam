@@ -240,6 +240,7 @@ pub fn workflow_examples_validate_and_parse_test() {
   let workflow_paths = [
     "examples/workflows/research.yaml",
     "examples/workflows/implementation.yaml",
+    "examples/workflows/commit-stack-publication.yaml",
     "examples/workflows/github-pr-conflict-scout.yaml",
     "examples/workflows/merge-conflict-resolution.yaml",
     "workflows/dogfood/execplan.yaml",
@@ -275,6 +276,7 @@ pub fn yaml_schema_modeline_comments_are_checked_in_test() {
   let workflow_paths = [
     "examples/workflows/research.yaml",
     "examples/workflows/implementation.yaml",
+    "examples/workflows/commit-stack-publication.yaml",
     "examples/workflows/github-pr-conflict-scout.yaml",
     "examples/workflows/merge-conflict-resolution.yaml",
     "workflows/dogfood/execplan.yaml",
@@ -650,6 +652,38 @@ pub fn workflow_removed_keys_and_invalid_shapes_are_rejected_test() {
       ),
     ),
     #(
+      "commit_stack publication rejects files selectors",
+      commit_stack_publication_workflow_source(
+        "      mode: commit_stack\n"
+        <> "      files:\n"
+        <> "        - select:\n"
+        <> "            output: commit_stack\n"
+        <> "          path: tmp/commit-stack.json\n"
+        <> "      commit_stack:\n"
+        <> "        select:\n"
+        <> "          output: commit_stack\n"
+        <> "      target:\n"
+        <> "        kind: existing_pr_branch\n"
+        <> "        source:\n"
+        <> "          output: merge_conflict_target\n",
+      ),
+    ),
+    #(
+      "commit_stack publication rejects pull request overrides",
+      commit_stack_publication_workflow_source(
+        "      mode: commit_stack\n"
+        <> "      pull_request:\n"
+        <> "        title: Should not be used\n"
+        <> "      commit_stack:\n"
+        <> "        select:\n"
+        <> "          output: commit_stack\n"
+        <> "      target:\n"
+        <> "        kind: existing_pr_branch\n"
+        <> "        source:\n"
+        <> "          output: merge_conflict_target\n",
+      ),
+    ),
+    #(
       "invalid next action state",
       minimal_workflow()
         <> "workstream_phase:\n"
@@ -739,6 +773,34 @@ fn publication_workflow_source(publication_fields: String) -> String {
   <> "  publications:\n"
   <> "    - id: review_doc\n"
   <> "      repository: github.docs\n"
+  <> publication_fields
+}
+
+fn commit_stack_publication_workflow_source(
+  publication_fields: String,
+) -> String {
+  "version: 1\n"
+  <> "id: sample\n"
+  <> "contract:\n"
+  <> "  version: 1\n"
+  <> "  outputs:\n"
+  <> "    commit_stack:\n"
+  <> "      type: commit_stack\n"
+  <> "      source:\n"
+  <> "        step: draft\n"
+  <> "        field: final_response\n"
+  <> "    merge_conflict_target:\n"
+  <> "      type: code_change\n"
+  <> "      source:\n"
+  <> "        step: draft\n"
+  <> "        field: final_response\n"
+  <> "steps:\n"
+  <> "  - id: draft\n"
+  <> "    prompt: prompts/draft.md\n"
+  <> "artifacts:\n"
+  <> "  publications:\n"
+  <> "    - id: implementation_commit_stack\n"
+  <> "      repository: github.code\n"
   <> publication_fields
 }
 

@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
+version: 1
+id: commit-stack-publication
+description: Example same-repo commit_stack publication route shape.
+workspace:
+  driver: isolated
+  requires: [status, baseline, publish-change]
+contract:
+  version: 1
+  outputs:
+    commit_stack:
+      type: commit_stack
+      required: true
+      media_type: application/vnd.scherzo.git-commit-stack+json
+      artifact_type: scherzo.git_commit_stack.v1
+      source:
+        step: materialize_commit_stack
+        path: tmp/commit-stack.json
+    merge_conflict_target:
+      type: code_change
+      required: true
+      media_type: application/json
+      artifact_type: scherzo.github_existing_pr_branch_target.v1
+      source:
+        step: prepare_existing_pr_target
+        path: tmp/existing-pr-branch-target.json
+steps:
+  - id: prepare_existing_pr_target
+    kind: command
+    run: |
+      set -eu
+      # Replace this with a helper that writes a
+      # scherzo.github_existing_pr_branch_target.v1 artifact for the existing
+      # same-repo PR branch to tmp/existing-pr-branch-target.json.
+      test -f tmp/existing-pr-branch-target.json
+    run_in: main
+
+  - id: implement
+    kind: agent
+    depends_on: [prepare_existing_pr_target]
+    prompt: prompts/implementation.md
+    run_in: main
+
+  - id: materialize_commit_stack
+    kind: command
+    depends_on: [implement]
+    run: |
+      set -eu
+      # Replace this with a helper that writes a scherzo.git_commit_stack.v1
+      # artifact describing the retained workflow workspace commit stack.
+      test -f tmp/commit-stack.json
+    run_in: main
+artifacts:
+  publications:
+    - id: implementation_commit_stack
+      repository: github.code
+      required: true
+      mode: commit_stack
+      commit_stack:
+        select:
+          output: commit_stack
+      target:
+        kind: existing_pr_branch
+        source:
+          output: merge_conflict_target

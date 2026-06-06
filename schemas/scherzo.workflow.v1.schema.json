@@ -404,6 +404,7 @@
             "exec_plan_bundle",
             "implementation_pack",
             "code_change_bundle",
+            "commit_stack",
             "git_ref",
             "url",
             "code_change"
@@ -545,6 +546,14 @@
         "entry": { "$ref": "#/$defs/ContractName" }
       }
     },
+    "PublicationCommitStackSelector": {
+      "type": "object",
+      "required": ["output"],
+      "additionalProperties": false,
+      "properties": {
+        "output": { "$ref": "#/$defs/ContractName" }
+      }
+    },
     "PublicationFile": {
       "type": "object",
       "required": ["select", "path"],
@@ -552,6 +561,14 @@
       "properties": {
         "select": { "$ref": "#/$defs/PublicationSelector" },
         "path": { "$ref": "#/$defs/RepositoryRelativePath" }
+      }
+    },
+    "PublicationCommitStack": {
+      "type": "object",
+      "required": ["select"],
+      "additionalProperties": false,
+      "properties": {
+        "select": { "$ref": "#/$defs/PublicationCommitStackSelector" }
       }
     },
     "PublicationPullRequest": {
@@ -562,7 +579,32 @@
         "body_template": { "$ref": "#/$defs/RepositoryRelativePath" }
       }
     },
-    "PublicationRoute": {
+    "PublicationTargetSource": {
+      "type": "object",
+      "required": ["output"],
+      "additionalProperties": false,
+      "properties": {
+        "output": { "$ref": "#/$defs/ContractName" }
+      }
+    },
+    "PublicationStableBranchTarget": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "stable_branch" }
+      }
+    },
+    "PublicationExistingPrBranchTarget": {
+      "type": "object",
+      "required": ["kind", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "existing_pr_branch" },
+        "source": { "$ref": "#/$defs/PublicationTargetSource" }
+      }
+    },
+    "FilePublicationRoute": {
       "type": "object",
       "required": ["id", "repository", "files"],
       "additionalProperties": false,
@@ -573,13 +615,37 @@
           "pattern": "^[a-z0-9][a-z0-9_-]*\\.[a-z0-9][a-z0-9_-]*$"
         },
         "required": { "type": "boolean" },
+        "mode": { "enum": ["files", "file"] },
         "pull_request": { "$ref": "#/$defs/PublicationPullRequest" },
         "files": {
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/PublicationFile" }
-        }
+        },
+        "target": { "$ref": "#/$defs/PublicationStableBranchTarget" }
       }
+    },
+    "CommitStackPublicationRoute": {
+      "type": "object",
+      "required": ["id", "repository", "mode", "commit_stack", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/ContractName" },
+        "repository": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*\\.[a-z0-9][a-z0-9_-]*$"
+        },
+        "required": { "type": "boolean" },
+        "mode": { "const": "commit_stack" },
+        "commit_stack": { "$ref": "#/$defs/PublicationCommitStack" },
+        "target": { "$ref": "#/$defs/PublicationExistingPrBranchTarget" }
+      }
+    },
+    "PublicationRoute": {
+      "oneOf": [
+        { "$ref": "#/$defs/FilePublicationRoute" },
+        { "$ref": "#/$defs/CommitStackPublicationRoute" }
+      ]
     },
     "WorkflowArtifacts": {
       "type": "object",
