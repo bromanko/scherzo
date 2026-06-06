@@ -602,6 +602,11 @@
           "type": "string",
           "pattern": "^[A-Za-z0-9._-]+$"
         },
+        "daemon_label": {
+          "description": "Non-secret friendly UI daemon label. Trimmed by the CLI/config loader; use 1-80 non-control characters after trimming. Spaces and punctuation are allowed; whitespace-only labels, newlines, and control characters are not.",
+          "type": "string",
+          "pattern": "^(?=\\s*\\S)(?=\\s*[^\\u0000-\\u001F\\u007F-\\u009F]{1,80}\\s*$)[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+        },
         "command_bridge_enabled": { "type": "boolean" },
         "heartbeat_interval_ms": { "type": "integer", "minimum": 1 },
         "state_interval_ms": { "type": "integer", "minimum": 1 },

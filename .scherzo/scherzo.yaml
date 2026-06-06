@@ -160,3 +160,4 @@ ui_server:
   enabled: false
   # endpoint: https://ui.example.test
   # credential_ref: work-laptop
+  # daemon_label: Project Foo

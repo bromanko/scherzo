@@ -9,7 +9,7 @@ import scherzo/artifact_publication_config
 import scherzo/config/duration_config
 import scherzo/config/tracker_config
 import scherzo/config/types as config_types
-import scherzo/control/remote/credential_store
+import scherzo/control/remote/config_validation as remote_config_validation
 import scherzo/error
 import scherzo/model_config
 import scherzo/tracker/state as issue_state
@@ -135,6 +135,7 @@ pub fn default_ui_server_config() -> config_types.UiServerConfig {
     enabled: False,
     endpoint: None,
     credential_ref: None,
+    daemon_label: None,
     command_bridge_enabled: False,
     heartbeat_interval_ms: 5000,
     state_interval_ms: 5000,
@@ -1115,6 +1116,7 @@ fn resolve_ui_server(
               "enabled",
               "endpoint",
               "credential_ref",
+              "daemon_label",
               "command_bridge_enabled",
               "heartbeat_interval_ms",
               "state_interval_ms",
@@ -1136,6 +1138,11 @@ fn resolve_ui_server(
             node,
             "credential_ref",
             "ui_server.credential_ref",
+          ))
+          use daemon_label_option <- result.try(get_optional_string_strict(
+            node,
+            "daemon_label",
+            "ui_server.daemon_label",
           ))
           use command_bridge_enabled_option <- result.try(get_bool_strict(
             node,
@@ -1190,12 +1197,18 @@ fn resolve_ui_server(
             |> option.map(normalize_ui_server_credential_ref)
             |> collapse_result_option,
           )
+          use daemon_label <- result.try(
+            daemon_label_option
+            |> option.map(normalize_ui_server_daemon_label)
+            |> collapse_result_option,
+          )
           case enabled {
             False ->
               Ok(config_types.UiServerConfig(
                 enabled: False,
                 endpoint: endpoint,
                 credential_ref: credential_ref,
+                daemon_label: daemon_label,
                 command_bridge_enabled: command_bridge_enabled,
                 heartbeat_interval_ms: heartbeat_interval_ms,
                 state_interval_ms: state_interval_ms,
@@ -1220,6 +1233,7 @@ fn resolve_ui_server(
                 enabled: True,
                 endpoint: Some(endpoint),
                 credential_ref: Some(credential_ref),
+                daemon_label: daemon_label,
                 command_bridge_enabled: command_bridge_enabled,
                 heartbeat_interval_ms: heartbeat_interval_ms,
                 state_interval_ms: state_interval_ms,
@@ -1355,9 +1369,29 @@ fn trim_trailing_slashes(value: String) -> String {
 fn normalize_ui_server_credential_ref(
   value: String,
 ) -> Result(String, error.ConfigError) {
-  case credential_store.normalize_credential_ref(value) {
-    Ok(credential_store.CredentialRef(profile: profile)) -> Ok(profile)
-    Error(message) -> Error(error.InvalidConfig(message))
+  case remote_config_validation.normalize_credential_ref(value) {
+    Ok(profile) -> Ok(profile)
+    Error(validation_error) ->
+      Error(
+        error.InvalidConfig(
+          remote_config_validation.credential_ref_error_message(
+            validation_error,
+          ),
+        ),
+      )
+  }
+}
+
+fn normalize_ui_server_daemon_label(
+  value: String,
+) -> Result(String, error.ConfigError) {
+  case remote_config_validation.normalize_daemon_label(value) {
+    Ok(label) -> Ok(label)
+    Error(validation_error) ->
+      Error(error.InvalidConfig(
+        "ui_server.daemon_label "
+        <> remote_config_validation.daemon_label_error_message(validation_error),
+      ))
   }
 }
 

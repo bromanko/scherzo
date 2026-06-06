@@ -14,6 +14,7 @@ pub type Settings {
     websocket_url: String,
     daemon_id: String,
     boot_id: String,
+    daemon_label: Option(String),
     credential: String,
     heartbeat_interval_ms: Int,
     state_interval_ms: Int,
@@ -347,8 +348,11 @@ fn send_hello(
   connection: connection,
   state: State(connection, timer),
 ) -> Result(Nil, String) {
-  ui_protocol.DaemonHello(state.settings.daemon_id, state.settings.boot_id)
-  |> ui_protocol.encode_client_message
+  ui_protocol.encode_daemon_hello(
+    state.settings.daemon_id,
+    state.settings.boot_id,
+    state.settings.daemon_label,
+  )
   |> state.dependencies.send_text(
     connection,
     _,
@@ -360,8 +364,10 @@ fn send_heartbeat(
   connection: connection,
   state: State(connection, timer),
 ) -> Result(Nil, String) {
-  ui_protocol.Heartbeat(state.dependencies.now_ms())
-  |> ui_protocol.encode_client_message
+  ui_protocol.encode_heartbeat(
+    state.dependencies.now_ms(),
+    state.settings.daemon_label,
+  )
   |> state.dependencies.send_text(
     connection,
     _,
@@ -381,12 +387,12 @@ fn send_state_snapshot(
   }
   use sessions <- result.try(state.dependencies.list_sessions())
   let snapshots = sessions |> list.map(ui_protocol.session_from_summary)
-  ui_protocol.DaemonState(
+  ui_protocol.encode_daemon_state(
     state.dependencies.now_ms(),
     dispatch_paused,
+    state.settings.daemon_label,
     snapshots,
   )
-  |> ui_protocol.encode_client_message
   |> state.dependencies.send_text(
     connection,
     _,

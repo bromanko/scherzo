@@ -40,6 +40,7 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
         pairing_token: "pair_secret_1",
         server_url: server_url,
         credential_ref: "work-laptop",
+        daemon_label: Some("project-foo"),
         replace_credential: False,
         json: False,
         allow_loopback_url: True,
@@ -52,12 +53,14 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
           server_url,
           pairing_token,
           daemon_id,
+          daemon_label,
           allow_loopback_url,
         ) {
-          pairing_client.exchange_pairing_token(
+          pairing_client.exchange_pairing_token_with_label(
             server_url,
             pairing_token,
             daemon_id,
+            daemon_label,
             allow_loopback_url,
             pairing_client.default_dependencies(),
           )
@@ -116,6 +119,7 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
 
   assert string.contains(connect_line, "Connected daemon")
   assert string.contains(sanitized, "pairing_exchange_body=")
+  assert string.contains(sanitized, "\"daemonLabel\":\"project-foo\"")
   assert string.contains(sanitized, "authorization=Bearer [REDACTED]")
   assert string.contains(sanitized, "daemon_hello")
   assert string.contains(sanitized, "heartbeat")
@@ -179,6 +183,7 @@ fn effective_config(
       enabled: True,
       endpoint: Some(server_url),
       credential_ref: Some("work-laptop"),
+      daemon_label: Some("project-foo"),
       command_bridge_enabled: False,
       heartbeat_interval_ms: 25,
       state_interval_ms: 25,

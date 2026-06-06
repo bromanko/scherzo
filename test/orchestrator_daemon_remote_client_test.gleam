@@ -1,4 +1,4 @@
-import gleam/option.{type Option, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
@@ -101,6 +101,7 @@ fn effective_config(
       enabled: True,
       endpoint: endpoint,
       credential_ref: credential_ref,
+      daemon_label: None,
       command_bridge_enabled: False,
       heartbeat_interval_ms: 1000,
       state_interval_ms: 1000,

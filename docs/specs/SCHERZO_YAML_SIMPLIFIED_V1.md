@@ -168,6 +168,12 @@ agents:
     ui_request_timeout: 10m
     compatibility_check: true
 
+ui_server:
+  enabled: false
+  endpoint: https://ui.example.test
+  credential_ref: work-laptop
+  daemon_label: Project Foo
+
 task_updates:
   enabled: true
   states:
@@ -296,6 +302,15 @@ Runtime timeouts use duration strings: `turn_timeout`, `read_timeout`,
 `stall_timeout`, and `ui_request_timeout`. `ui_requests` is one of `cancel`, `fail`,
 `ignore`, or `operator`. `compatibility_check` controls whether Scherzo probes pi
 compatibility at startup.
+
+### `ui_server`
+
+Disabled by default. `endpoint` is the remote UI server base URL and `credential_ref`
+selects the owner-only durable daemon credential created by `scherzo connect`.
+`daemon_label` is an optional non-secret friendly daemon name for UI display; it is
+trimmed to 1-80 printable characters, allows spaces and punctuation, and rejects
+newlines/control characters. `scherzo connect --name <friendly-name>` overrides the
+config label for the pairing exchange.
 
 ### `task_updates`
 

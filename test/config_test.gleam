@@ -103,6 +103,7 @@ pub fn default_values_test() {
   assert ui_server.enabled == False
   assert ui_server.endpoint == None
   assert ui_server.credential_ref == None
+  assert ui_server.daemon_label == None
   assert ui_server.command_bridge_enabled == False
   assert ui_server.heartbeat_interval_ms == 5000
   assert ui_server.state_interval_ms == 5000
@@ -264,7 +265,7 @@ pub fn ui_server_default_and_disabled_config_test() {
 
   let disabled_front =
     minimal_front()
-    <> "ui_server:\n  enabled: false\n  endpoint: https://ui.example.test/\n  credential_ref: work-laptop\n  command_bridge_enabled: true\n  heartbeat_interval_ms: 6000\n  state_interval_ms: 7000\n  retry_initial_ms: 800\n  retry_max_ms: 9000\n"
+    <> "ui_server:\n  enabled: false\n  endpoint: https://ui.example.test/\n  credential_ref: work-laptop\n  daemon_label: Project Foo / MacBook\n  command_bridge_enabled: true\n  heartbeat_interval_ms: 6000\n  state_interval_ms: 7000\n  retry_initial_ms: 800\n  retry_max_ms: 9000\n"
   let assert Ok(disabled) =
     config.resolve_with_env(
       definition(disabled_front),
@@ -274,6 +275,7 @@ pub fn ui_server_default_and_disabled_config_test() {
   assert disabled.ui_server.enabled == False
   assert disabled.ui_server.endpoint == Some("https://ui.example.test")
   assert disabled.ui_server.credential_ref == Some("work-laptop")
+  assert disabled.ui_server.daemon_label == Some("Project Foo / MacBook")
   assert disabled.ui_server.command_bridge_enabled == True
   assert disabled.ui_server.heartbeat_interval_ms == 6000
   assert disabled.ui_server.state_interval_ms == 7000
@@ -333,6 +335,30 @@ pub fn ui_server_enabled_validation_and_secret_resolution_test() {
     )
   assert string.contains(invalid_credential_ref, "ui_server.credential_ref")
 
+  let invalid_daemon_label =
+    invalid_config_message(
+      minimal_front() <> "ui_server:\n  daemon_label: \"   \"\n",
+    )
+  assert string.contains(invalid_daemon_label, "ui_server.daemon_label")
+  assert string.contains(invalid_daemon_label, "non-empty")
+
+  let overlong_daemon_label =
+    invalid_config_message(
+      minimal_front()
+      <> "ui_server:\n  daemon_label: "
+      <> string.repeat("x", times: 81)
+      <> "\n",
+    )
+  assert string.contains(overlong_daemon_label, "ui_server.daemon_label")
+  assert string.contains(overlong_daemon_label, "at most 80")
+
+  let control_daemon_label =
+    invalid_config_message(
+      minimal_front() <> "ui_server:\n  daemon_label: |\n    Project\n    Foo\n",
+    )
+  assert string.contains(control_daemon_label, "ui_server.daemon_label")
+  assert string.contains(control_daemon_label, "control characters")
+
   let removed_enrollment_token_env =
     invalid_config_message(
       minimal_front()
@@ -369,6 +395,7 @@ pub fn ui_server_enabled_validation_and_secret_resolution_test() {
   assert enabled.ui_server.enabled == True
   assert enabled.ui_server.endpoint == Some("https://ui.example.test")
   assert enabled.ui_server.credential_ref == Some("work-laptop")
+  assert enabled.ui_server.daemon_label == None
   assert enabled.ui_server.command_bridge_enabled == False
   assert config.resolved_secrets(enabled) == ["linearkey"]
 }
@@ -378,7 +405,7 @@ pub fn ui_server_redaction_and_local_control_separation_test() {
 
   let enabled_front =
     minimal_front()
-    <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n"
+    <> "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n  daemon_label: Project Foo\n"
   let assert Ok(enabled) =
     config.resolve_with_env(
       definition(enabled_front),
@@ -393,6 +420,7 @@ pub fn ui_server_redaction_and_local_control_separation_test() {
         #("enabled", "true"),
         #("endpoint", option.unwrap(enabled.ui_server.endpoint, "")),
         #("credential_ref", option.unwrap(enabled.ui_server.credential_ref, "")),
+        #("daemon_label", option.unwrap(enabled.ui_server.daemon_label, "")),
         #("pairing_preview", "pair_preview_token"),
         #("credential_preview", "dcred_live_secret"),
       ],
@@ -400,6 +428,7 @@ pub fn ui_server_redaction_and_local_control_separation_test() {
     )
 
   assert string.contains(summary, "event=ui_server_config")
+  assert string.contains(summary, "Project Foo")
   assert string.contains(summary, "[REDACTED]")
   assert !string.contains(summary, "pair_preview_token")
   assert !string.contains(summary, "dcred_live_secret")

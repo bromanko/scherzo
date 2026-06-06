@@ -4,7 +4,7 @@ import gleam/http/request as http_request
 import gleam/httpc
 import gleam/int
 import gleam/json
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/control/remote/credential_store
 import scherzo/control/remote/url
@@ -50,16 +50,29 @@ pub fn exchange_pairing_token(
   allow_loopback: Bool,
   deps: Dependencies,
 ) -> Result(PairingSuccess, PairingError) {
+  exchange_pairing_token_with_label(
+    server_url_value,
+    pairing_token,
+    daemon_id,
+    None,
+    allow_loopback,
+    deps,
+  )
+}
+
+pub fn exchange_pairing_token_with_label(
+  server_url_value: String,
+  pairing_token: String,
+  daemon_id: String,
+  daemon_label: Option(String),
+  allow_loopback: Bool,
+  deps: Dependencies,
+) -> Result(PairingSuccess, PairingError) {
   use validated <- result.try(
     url.validate_server_url(server_url_value, allow_loopback: allow_loopback)
     |> result.map_error(InvalidUrl),
   )
-  let body =
-    json.object([
-      #("pairingToken", json.string(pairing_token)),
-      #("daemonId", json.string(daemon_id)),
-    ])
-    |> json.to_string
+  let body = pairing_request_body(pairing_token, daemon_id, daemon_label)
   let request =
     HttpRequest(
       url: validated.base_url <> "/api/daemons/pairing-exchanges",
@@ -76,6 +89,22 @@ pub fn exchange_pairing_token(
     409 -> Error(PairingTokenAlreadyConsumed)
     status -> Error(UnexpectedStatus(status))
   }
+}
+
+fn pairing_request_body(
+  pairing_token: String,
+  daemon_id: String,
+  daemon_label: Option(String),
+) -> String {
+  let base_fields = [
+    #("pairingToken", json.string(pairing_token)),
+    #("daemonId", json.string(daemon_id)),
+  ]
+  let fields = case daemon_label {
+    Some(label) -> [#("daemonLabel", json.string(label)), ..base_fields]
+    None -> base_fields
+  }
+  fields |> json.object |> json.to_string
 }
 
 pub fn error_code(error: PairingError) -> String {
