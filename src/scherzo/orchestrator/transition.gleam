@@ -33,7 +33,7 @@ pub fn handle(
   message: transition_types.Message,
   state: transition_types.State,
 ) -> transition_types.Outcome {
-  case message {
+  let outcome = case message {
     transition_types.SnapshotRequested ->
       transition_types.Outcome(state: state, effects: [
         effects_types.ReplySnapshot(state.runtime),
@@ -170,6 +170,13 @@ pub fn handle(
     transition_types.ShutdownRequested(stop_effect_runner) ->
       handle_shutdown_requested(state, stop_effect_runner)
   }
+  normalize_outcome(outcome)
+}
+
+fn normalize_outcome(
+  outcome: transition_types.Outcome,
+) -> transition_types.Outcome {
+  claims.sync_outcome(outcome)
 }
 
 pub fn snapshot(
@@ -311,6 +318,8 @@ fn handle_shutdown_requested(
       workers: transition_types.new_worker_directory(),
       pending_claims: dict.new(),
       pending_dispatch_validations: dict.new(),
+      lifecycle: transition_types.empty_lifecycle(),
+      retry_refresh_generations: dict.new(),
     ),
     effects: [effects_types.ShutdownRuntime(stop_effect_runner)],
   )
@@ -631,14 +640,11 @@ fn begin_dispatch_validation(
           requested_at_ms: context.now_ms,
         )
       transition_types.Outcome(
-        state: transition_types.State(
-          ..state,
-          pending_dispatch_validations: dict.insert(
-            state.pending_dispatch_validations,
-            identity,
-            pending,
-          ),
-          next_dispatch_validation_generation: generation + 1,
+        state: claims.add_pending_dispatch_validation(
+          state,
+          identity,
+          pending,
+          generation + 1,
         ),
         effects: [
           effects_types.Log(
@@ -675,14 +681,7 @@ fn handle_dispatch_validation_completed(
       case pending.generation != generation {
         True -> stale_dispatch_validation(state, issue_id, generation)
         False -> {
-          let state =
-            transition_types.State(
-              ..state,
-              pending_dispatch_validations: dict.delete(
-                state.pending_dispatch_validations,
-                identity,
-              ),
-            )
+          let state = claims.remove_pending_dispatch_validation(state, identity)
           case result {
             Error(err) -> {
               let outcome =
@@ -984,7 +983,14 @@ fn handle_retry_tick(
               )
             True ->
               transition_types.Outcome(
-                state: state,
+                state: transition_types.State(
+                  ..state,
+                  retry_refresh_generations: dict.insert(
+                    state.retry_refresh_generations,
+                    identity,
+                    generation,
+                  ),
+                ),
                 effects: list.append(accepted_effects, [
                   effects_types.BeginRetryRefresh(issue_id, generation),
                 ]),
@@ -1035,6 +1041,14 @@ fn handle_retry_refresh_completed(
       context.tracker_backend_kind,
     )
   let finish_effect = effects_types.FinishRetryRefresh(issue_id)
+  let state =
+    transition_types.State(
+      ..state,
+      retry_refresh_generations: dict.delete(
+        state.retry_refresh_generations,
+        identity,
+      ),
+    )
   let outcome = case dict.get(state.runtime.retry_attempts, identity) {
     Error(Nil) -> retry_timer_stale(state, issue_id, generation, False)
     Ok(entry) ->
@@ -1212,13 +1226,17 @@ fn release_retry_claim(
       context.tracker_backend_kind,
     )
   transition_types.Outcome(
-    state: transition_types.State(
-      ..state,
-      runtime: release_claim(
-        clear_retry(state.runtime, issue_id, context.tracker_backend_kind),
-        issue_id,
-        context.tracker_backend_kind,
+    state: clear_retry_refresh_generation(
+      transition_types.State(
+        ..state,
+        runtime: release_claim(
+          clear_retry(state.runtime, issue_id, context.tracker_backend_kind),
+          issue_id,
+          context.tracker_backend_kind,
+        ),
       ),
+      issue_id,
+      context.tracker_backend_kind,
     ),
     effects: list.append(
       cancel_retry_effects(issue_id, generation, cancel_reason),
@@ -1240,13 +1258,17 @@ fn dispatch_retry_claim(
       context.tracker_backend_kind,
     )
   let state =
-    transition_types.State(
-      ..state,
-      runtime: clear_retry(
-        state.runtime,
-        issue_id,
-        context.tracker_backend_kind,
+    clear_retry_refresh_generation(
+      transition_types.State(
+        ..state,
+        runtime: clear_retry(
+          state.runtime,
+          issue_id,
+          context.tracker_backend_kind,
+        ),
       ),
+      issue_id,
+      context.tracker_backend_kind,
     )
   let outcome =
     claims.begin_for_issue(state, issue, [], context, claim_callbacks())
@@ -1307,7 +1329,11 @@ fn schedule_retry_with_backoff(
       retry_reason,
     )
   map_lifecycle_core_effects(
-    transition_types.State(..state, runtime: runtime),
+    clear_retry_refresh_generation(
+      transition_types.State(..state, runtime: runtime),
+      issue_id,
+      context.tracker_backend_kind,
+    ),
     core_effects,
     None,
     Some(task_ref),
@@ -1355,7 +1381,11 @@ fn stop_retry_for_issue(
       backend_kind,
     )
   transition_types.Outcome(
-    state: transition_types.State(..state, runtime: runtime),
+    state: clear_retry_refresh_generation(
+      transition_types.State(..state, runtime: runtime),
+      issue_id,
+      backend_kind,
+    ),
     effects: list.append(
       cancel_retry_effects(issue_id, generation, cancel_reason),
       [
@@ -2213,21 +2243,13 @@ fn finish_operator_worker_failure_entry(
   let reason_text = session_reason.to_string(reason)
   let final_issue = baseline_issue_for_failure(entry, failure)
   let runtime_identity = entry_identity(entry)
-  let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      running: dict.delete(state.runtime.running, runtime_identity),
-      completed: dict.insert(
-        state.runtime.completed,
-        runtime_identity,
-        final_issue,
-      ),
-      aggregate_pi_totals: session_tokens_add(
-        state.runtime.aggregate_pi_totals,
-        failure.tokens,
-      ),
+  let state =
+    claims.complete_runtime_failure(
+      state,
+      runtime_identity,
+      final_issue,
+      failure.tokens,
     )
-  let state = transition_types.State(..state, runtime: runtime)
   let state =
     park_runtime(
       state,
@@ -2685,39 +2707,7 @@ fn park_runtime(
   reason: orchestrator_reason.ParkReason,
   now_ms: Int,
 ) -> transition_types.State {
-  let parked =
-    orchestrator_state.ParkedEntry(
-      task_ref: ref,
-      issue_id: issue.id,
-      identifier: issue.identifier,
-      reason: reason,
-      release_policy: orchestrator_state.ExplicitUnparkOnly,
-      parked_at_ms: now_ms,
-    )
-  let identity = orchestrator_state.task_ref_identity(ref)
-  let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      running: dict.delete(state.runtime.running, identity),
-      claimed: dict.delete(state.runtime.claimed, identity),
-      retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
-      issue_counters: dict.delete(state.runtime.issue_counters, identity),
-      parked: dict.insert(state.runtime.parked, identity, parked),
-    )
-  transition_types.State(..state, runtime: runtime)
-}
-
-fn session_tokens_add(
-  a: session_tokens.TokenTotals,
-  b: session_tokens.TokenTotals,
-) -> session_tokens.TokenTotals {
-  session_tokens.TokenTotals(
-    input: a.input + b.input,
-    output: a.output + b.output,
-    cache_read: a.cache_read + b.cache_read,
-    cache_write: a.cache_write + b.cache_write,
-    total: a.total + b.total,
-  )
+  claims.park_runtime(state, ref, issue, reason, now_ms)
 }
 
 fn worker_down_failure(
@@ -2881,8 +2871,7 @@ fn dispatch_preconditions_without_slot(
     context.effective,
     issue,
   )
-  && !dict.has_key(state.pending_claims, identity)
-  && !dict.has_key(state.pending_dispatch_validations, identity)
+  && !claims.has_dispatch_blocker(state, identity)
   && !list.contains(active_issue_ids(state, context), issue.id)
 }
 
@@ -2909,10 +2898,7 @@ fn dispatch_validation_precondition_failure(
                 True -> Some("already_running")
                 False -> {
                   let identity = orchestrator_state.issue_identity(issue)
-                  case
-                    dict.has_key(state.runtime.claimed, identity)
-                    || dict.has_key(state.pending_claims, identity)
-                  {
+                  case claims.has_tracker_claim(state, identity) {
                     True -> Some("already_claimed")
                     False ->
                       case
@@ -2944,10 +2930,8 @@ fn issue_is_running_claimed_or_pending(
       context.tracker_backend_kind,
     )
   list.contains(active_issue_ids(state, context), issue_id)
-  || dict.has_key(state.runtime.running, identity)
-  || dict.has_key(state.runtime.claimed, identity)
-  || dict.has_key(state.pending_claims, identity)
-  || dict.has_key(state.pending_dispatch_validations, identity)
+  || claims.has_dispatch_blocker(state, identity)
+  || claims.has_tracker_claim(state, identity)
 }
 
 fn can_reserve_dispatch_slot(
@@ -2957,8 +2941,7 @@ fn can_reserve_dispatch_slot(
 ) -> Bool {
   let identity = orchestrator_state.issue_identity(issue)
   !list.contains(active_issue_ids(state, context), issue.id)
-  && !dict.has_key(state.pending_claims, identity)
-  && !dict.has_key(state.pending_dispatch_validations, identity)
+  && !claims.has_dispatch_blocker(state, identity)
   && slots_remain(state, context)
   && per_state_dispatch_slot_available(state, context, issue.state)
 }
@@ -3000,7 +2983,7 @@ fn dispatch_count_for_state(
   normalized_state: issue_state.IssueStateKey,
 ) -> Int {
   running_count_for_state(state, context, normalized_state)
-  + pending_claim_count_for_state(state, normalized_state)
+  + claims.pending_count_for_state(state, normalized_state)
 }
 
 fn running_count_for_state(
@@ -3010,18 +2993,6 @@ fn running_count_for_state(
 ) -> Int {
   active_issues(state, context)
   |> list.filter(fn(issue) { issue_state.key(issue.state) == normalized_state })
-  |> list.length
-}
-
-fn pending_claim_count_for_state(
-  state: transition_types.State,
-  normalized_state: issue_state.IssueStateKey,
-) -> Int {
-  state.pending_claims
-  |> dict.values
-  |> list.filter(fn(pending) {
-    issue_state.key(pending.issue.state) == normalized_state
-  })
   |> list.length
 }
 
@@ -3092,6 +3063,22 @@ fn append_unique_issues(
       False -> list.append(acc, [issue])
     }
   })
+}
+
+fn clear_retry_refresh_generation(
+  state: transition_types.State,
+  issue_id: String,
+  backend_kind: String,
+) -> transition_types.State {
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
+  transition_types.State(
+    ..state,
+    retry_refresh_generations: dict.delete(
+      state.retry_refresh_generations,
+      identity,
+    ),
+  )
 }
 
 fn clear_retry(

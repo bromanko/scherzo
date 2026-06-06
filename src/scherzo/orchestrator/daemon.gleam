@@ -339,15 +339,11 @@ fn handoff_comments_enabled(handoff: config_types.HandoffConfig) -> Bool {
 fn handoff_state_moves_enabled(handoff: config_types.HandoffConfig) -> Bool {
   handoff.enabled
   && {
-    option_is_some(handoff.claim_state_id)
-    || option_is_some(handoff.success_state_id)
-    || option_is_some(handoff.failure_state_id)
-    || option_is_some(handoff.completion_states)
+    handoff.claim_state_id != None
+    || handoff.success_state_id != None
+    || handoff.failure_state_id != None
+    || handoff.completion_states != None
   }
-}
-
-fn option_is_some(value: Option(a)) -> Bool {
-  value != None
 }
 
 fn workflow_label_paths(routing: config_types.RoutingConfig) -> List(String) {
@@ -435,8 +431,8 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
     parked_tasks: dict.size(state.runtime.parked),
     completed_tasks: dict.size(state.runtime.completed),
     poll_generation: poll_scheduler.generation(state.poll),
-    poll_in_flight: option_is_some(poll_scheduler.in_flight(state.poll)),
-    poll_timer_active: option_is_some(poll_scheduler.timer(state.poll)),
+    poll_in_flight: poll_scheduler.in_flight(state.poll) != None,
+    poll_timer_active: poll_scheduler.timer(state.poll) != None,
     retry_timer_count: retry_scheduler.timer_count(state.retry),
     retry_refresh_in_flight_count: retry_scheduler.refresh_in_flight_count(
       state.retry,
@@ -1951,31 +1947,31 @@ fn retry_step_issue_preflight(
   target: command.RetryWorkflowStepTarget,
   issue_id: String,
 ) -> Result(tracker_issue.Issue, command.CommandResult) {
-  case issue_is_active_or_pending(state, issue_id) {
-    True ->
+  case
+    dict.get(
+      state.runtime.parked,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
+    Ok(parked) ->
       Error(command.rejected(
         operator_command,
-        "issue_already_active",
-        Some("issue already has an active or pending workflow"),
+        "issue_parked",
+        Some(
+          "issue is parked for "
+          <> orchestrator_reason.park_to_string(parked.reason)
+          <> "; unpark before retry-step",
+        ),
       ))
-    False ->
-      case
-        dict.get(
-          state.runtime.parked,
-          orchestrator_state.linear_issue_id_identity(issue_id),
-        )
-      {
-        Ok(parked) ->
+    Error(Nil) ->
+      case issue_is_active_or_pending(state, issue_id) {
+        True ->
           Error(command.rejected(
             operator_command,
-            "issue_parked",
-            Some(
-              "issue is parked for "
-              <> orchestrator_reason.park_to_string(parked.reason)
-              <> "; unpark before retry-step",
-            ),
+            "issue_already_active",
+            Some("issue already has an active or pending workflow"),
           ))
-        Error(Nil) ->
+        False ->
           case fetch_issue_by_id(state, issue_id) {
             Error(status) ->
               Error(command.result_for(operator_command, status, None))
@@ -2422,9 +2418,11 @@ fn issue_is_active_or_pending(state: State, issue_id: String) -> Bool {
       state.tracker_adapter.kind,
     )
   has_active_run(state, issue_id)
-  || dict.has_key(state.runtime.running, identity)
   || dict.has_key(state.pending_claims, identity)
   || dict.has_key(state.pending_dispatch_validations, identity)
+  || dict.has_key(state.runtime.claimed, identity)
+  || dict.has_key(state.runtime.retry_attempts, identity)
+  || dict.has_key(state.runtime.parked, identity)
 }
 
 fn ledger_record_bodies(
@@ -3340,6 +3338,10 @@ fn transition_state_from_daemon(state: State) -> transition_types.State {
     workers: state.workers,
     pending_claims: state.pending_claims,
     pending_dispatch_validations: state.pending_dispatch_validations,
+    lifecycle: transition_types.empty_lifecycle(),
+    retry_refresh_generations: dict.from_list(
+      retry_scheduler.refresh_generations(state.retry),
+    ),
     next_dispatch_validation_generation: state.next_dispatch_validation_generation,
     next_session_sequence: worker_registry.next_session_sequence(state.registry),
   )
@@ -4458,12 +4460,9 @@ fn pending_issue_retry_headroom(state: State) -> Int {
 
 fn has_pending_issue_retry(state: State) -> Bool {
   state.runtime.retry_attempts
-  |> dict.to_list
-  |> list.any(fn(entry) {
-    let #(identity, retry) = entry
+  |> dict.values
+  |> list.any(fn(retry) {
     !list.contains(active_run_issue_ids(state), retry.issue_id)
-    && !dict.has_key(state.pending_claims, identity)
-    && !dict.has_key(state.pending_dispatch_validations, identity)
   })
 }
 

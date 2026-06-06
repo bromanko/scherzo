@@ -4,6 +4,7 @@ import gleam/string
 import orchestrator_transition_invariant_helpers as invariant_helpers
 import orchestrator_transition_test
 import scherzo/orchestrator/effects/interpreter
+import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/transition_invariants
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
@@ -251,6 +252,18 @@ fn state_with_pending_dispatch_validation(
         ),
       ),
     ]),
+    lifecycle: {
+      let assert Ok(directory) =
+        task_lifecycle.put(
+          task_lifecycle.new(),
+          task_lifecycle.Validating(
+            task_ref: task_ref,
+            issue: issue,
+            generation: generation,
+          ),
+        )
+      directory
+    },
     next_dispatch_validation_generation: next_generation,
   )
 }

@@ -6,6 +6,7 @@ import orchestrator_transition_test
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight
@@ -718,13 +719,14 @@ pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
 fn state_with_pending_dispatch_validation(
   candidate: tracker_issue.Issue,
 ) -> transition_types.State {
+  let task_ref = task.from_legacy_issue(candidate).ref
   transition_types.State(
     ..orchestrator_transition_test.fixture_state(),
     pending_dispatch_validations: dict.from_list([
       #(
         orchestrator_state.issue_identity(candidate),
         transition_types.PendingDispatchValidation(
-          task_ref: task.from_legacy_issue(candidate).ref,
+          task_ref: task_ref,
           issue: candidate,
           remaining_candidates: [],
           generation: 1,
@@ -732,6 +734,18 @@ fn state_with_pending_dispatch_validation(
         ),
       ),
     ]),
+    lifecycle: {
+      let assert Ok(directory) =
+        task_lifecycle.put(
+          task_lifecycle.new(),
+          task_lifecycle.Validating(
+            task_ref: task_ref,
+            issue: candidate,
+            generation: 1,
+          ),
+        )
+      directory
+    },
     next_dispatch_validation_generation: 2,
   )
 }
@@ -758,6 +772,19 @@ fn state_with_retry(issue: tracker_issue.Issue) -> transition_types.State {
   transition_types.State(
     ..orchestrator_transition_test.fixture_state(),
     runtime: runtime,
+    lifecycle: {
+      let assert Ok(directory) =
+        task_lifecycle.put(
+          task_lifecycle.new(),
+          task_lifecycle.RetryWaiting(
+            task_ref: task.from_legacy_issue(issue).ref,
+            issue_id: issue.id,
+            generation: 1,
+            delay_ms: 1000,
+          ),
+        )
+      directory
+    },
   )
 }
 
