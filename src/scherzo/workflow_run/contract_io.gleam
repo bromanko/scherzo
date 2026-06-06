@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -5,8 +6,10 @@ import gleam/result
 import scherzo/config/types as config_types
 import scherzo/json_value
 import scherzo/path
+import scherzo/state/artifact_store
 import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_artifact_descriptor
 import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest as contract_manifest
@@ -15,7 +18,6 @@ import scherzo/workflow_run/contract_io_error as contract_error
 import scherzo/workflow_run/output_contract_descriptor
 import scherzo/workspace_profile
 import scherzo/workspace_run
-import simplifile
 
 pub type ContractRunValues {
   ContractRunValues(
@@ -335,6 +337,7 @@ fn resolve_contract_input(
       mapped_contract_value(
         spec.name,
         spec.type_,
+        spec.descriptor,
         spec.required,
         invocation.supplied_contract_values.inputs,
         InputValue,
@@ -361,6 +364,7 @@ fn resolve_contract_context_value(
       mapped_contract_value(
         spec.name,
         spec.type_,
+        spec.descriptor,
         spec.required,
         invocation.supplied_contract_values.context,
         ContextValue,
@@ -372,19 +376,19 @@ fn resolve_contract_context_value(
 fn mapped_contract_value(
   name: String,
   expected_type: workflow_contract.ContractType,
+  expected_descriptor: Option(workflow_contract.ContractDescriptorSpec),
   required: Bool,
   values: Dict(String, contract_manifest.ManifestValue),
   kind: ContractValueKind,
 ) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
   case dict.get(values, name) {
     Ok(value) ->
-      case contract_manifest.type_matches(value, expected_type) {
-        False -> Error(contract_error.ContractTypeMismatch(name))
-        True ->
-          case contract_manifest.artifact_type_matches(value, expected_type) {
-            True -> Ok(value)
-            False -> Error(contract_error.ContractArtifactTypeMismatch(name))
-          }
+      case
+        descriptor_compatible(value, name, expected_type, expected_descriptor)
+      {
+        Ok(True) -> Ok(value)
+        Ok(False) -> Error(contract_error.ContractArtifactTypeMismatch(name))
+        Error(Nil) -> Error(contract_error.ContractTypeMismatch(name))
       }
     Error(Nil) ->
       case required {
@@ -435,6 +439,80 @@ fn inline_value(
   value: json_value.JsonValue,
 ) -> contract_manifest.ManifestValue {
   contract_manifest.present_inline_json(type_, value, None)
+}
+
+fn descriptor_compatible(
+  value: contract_manifest.ManifestValue,
+  name: String,
+  expected_type: workflow_contract.ContractType,
+  expected_descriptor: Option(workflow_contract.ContractDescriptorSpec),
+) -> Result(Bool, Nil) {
+  case
+    expected_descriptor,
+    contract_manifest.descriptor_for_named_value(name, value)
+  {
+    Some(expected), Some(actual) ->
+      Ok(descriptor_fields_match(expected, actual))
+    Some(expected), None ->
+      legacy_descriptor_value_matches(expected, value, expected_type)
+    None, _ -> Ok(contract_manifest.type_matches(value, expected_type))
+  }
+}
+
+fn legacy_descriptor_value_matches(
+  expected: workflow_contract.ContractDescriptorSpec,
+  value: contract_manifest.ManifestValue,
+  expected_type: workflow_contract.ContractType,
+) -> Result(Bool, Nil) {
+  case
+    expected == workflow_contract.descriptor_for_type(expected_type),
+    contract_manifest.type_matches(value, expected_type)
+  {
+    True, True -> Ok(True)
+    _, _ -> Error(Nil)
+  }
+}
+
+fn descriptor_fields_match(
+  expected: workflow_contract.ContractDescriptorSpec,
+  actual: workflow_artifact_descriptor.ArtifactDescriptor,
+) -> Bool {
+  descriptor_kind_matches(expected.kind, actual.kind)
+  && option_field_matches(expected.ref_type, actual.ref_type)
+  && option_field_matches(expected.media_type, actual.media_type)
+  && option_field_matches(expected.artifact_type, actual.artifact_type)
+}
+
+fn descriptor_kind_matches(
+  expected: Option(String),
+  actual: workflow_artifact_descriptor.ArtifactKind,
+) -> Bool {
+  case expected {
+    Some(expected) -> expected == artifact_descriptor_kind_string(actual)
+    None -> True
+  }
+}
+
+fn artifact_descriptor_kind_string(
+  kind: workflow_artifact_descriptor.ArtifactKind,
+) -> String {
+  case kind {
+    workflow_artifact_descriptor.FileKind -> "file"
+    workflow_artifact_descriptor.ValueKind -> "value"
+    workflow_artifact_descriptor.RefKind -> "ref"
+    workflow_artifact_descriptor.ArtifactSetKind -> "artifact_set"
+    workflow_artifact_descriptor.CommitStackKind -> "commit_stack"
+  }
+}
+
+fn option_field_matches(
+  expected: Option(String),
+  actual: Option(String),
+) -> Bool {
+  case expected {
+    Some(value) -> actual == Some(value)
+    None -> True
+  }
 }
 
 fn issue_context_text(issue: tracker_issue.Issue) -> String {
@@ -662,7 +740,7 @@ fn output_value_from_step_field(
           write_contract_output_blob(
             spec,
             run_id,
-            contents,
+            bit_array.from_string(contents),
             truncated,
             checkpoint,
             step_field_source_json(step_id, field),
@@ -699,15 +777,14 @@ fn output_value_from_step_file(
               )
             Ok(workspace) -> {
               let source_path = path.join(workspace.path, file_path)
-              case simplifile.read(source_path) {
-                Error(error) ->
-                  output_absent(
-                    spec,
-                    "workflow_output_source_file_missing:"
-                      <> spec.name
-                      <> ":"
-                      <> simplifile.describe_error(error),
-                  )
+              case
+                safe_workspace_file_bytes(
+                  workspace.path,
+                  source_path,
+                  file_path,
+                )
+              {
+                Error(diagnostic) -> output_absent(spec, diagnostic)
                 Ok(contents) ->
                   write_contract_output_blob(
                     spec,
@@ -732,7 +809,7 @@ type OutputValidationError {
 fn write_contract_output_blob(
   spec: workflow_contract.OutputSpec,
   run_id: String,
-  contents: String,
+  contents: BitArray,
   truncated: Bool,
   checkpoint: workflow_checkpoint.Writer,
   source: json_value.JsonValue,
@@ -756,19 +833,28 @@ fn write_contract_output_blob(
             "workflow_output_blob_failed:"
               <> workflow_checkpoint.describe_error(error),
           )
-        Ok(written) -> #(
-          contract_manifest.present_run_artifact(
-            spec.type_,
-            contract_manifest.ArtifactWritten(
-              ref: written.ref,
-              sha256: written.sha256,
-              bytes: written.bytes,
-            ),
-            media_type,
-            Some(output_contract_descriptor.source_with_descriptor(spec, source)),
-          ),
-          [],
-        )
+        Ok(written) -> {
+          let retained_value =
+            contract_manifest.present_run_artifact(
+              spec.type_,
+              contract_manifest.ArtifactWritten(
+                ref: written.ref,
+                sha256: written.sha256,
+                bytes: written.bytes,
+              ),
+              media_type,
+              Some(output_contract_descriptor.source_with_descriptor(
+                spec,
+                source,
+              )),
+            )
+          case
+            validate_retained_output_descriptor(spec, retained_value, contents)
+          {
+            Ok(Nil) -> #(retained_value, [])
+            Error(diagnostic) -> output_absent(spec, diagnostic)
+          }
+        }
       }
     }
   }
@@ -776,21 +862,37 @@ fn write_contract_output_blob(
 
 fn validate_output_contents(
   spec: workflow_contract.OutputSpec,
-  contents: String,
+  contents: BitArray,
   truncated: Bool,
 ) -> Result(Nil, OutputValidationError) {
-  case output_type_is_json(spec.type_) {
+  case output_type_is_json(spec) {
     False -> Ok(Nil)
     True ->
       case truncated {
         True -> Error(OutputJsonSourceTruncated(spec.name))
         False ->
-          case json_value.parse(contents) {
-            Ok(_) -> Ok(Nil)
-            Error(Nil) -> Error(OutputJsonInvalid(spec.name))
+          case bit_array.to_string(contents) {
+            Ok(text) ->
+              case json_value.parse(text) {
+                Ok(_) -> Ok(Nil)
+                Error(Nil) -> Error(OutputJsonInvalid(spec.name))
+              }
+            Error(_) -> Error(OutputJsonInvalid(spec.name))
           }
       }
   }
+}
+
+fn validate_retained_output_descriptor(
+  spec: workflow_contract.OutputSpec,
+  value: contract_manifest.ManifestValue,
+  contents: BitArray,
+) -> Result(Nil, String) {
+  output_contract_descriptor.validate_retained_output_descriptor(
+    spec,
+    value,
+    contents,
+  )
 }
 
 fn output_validation_diagnostic(error: OutputValidationError) -> String {
@@ -799,6 +901,47 @@ fn output_validation_diagnostic(error: OutputValidationError) -> String {
       "workflow_output_json_source_truncated:" <> output_name
     OutputJsonInvalid(output_name) ->
       "workflow_output_json_invalid:" <> output_name
+  }
+}
+
+fn safe_workspace_file_bytes(
+  workspace_root: String,
+  source_path: String,
+  original_path: String,
+) -> Result(BitArray, String) {
+  case path.realpath(workspace_root), path.realpath(source_path) {
+    Ok(workspace_root_abs), Ok(source_path_abs) ->
+      case path.contains(workspace_root_abs, source_path_abs) {
+        False ->
+          Error(
+            "workflow_output_source_path_escaped_workspace:" <> original_path,
+          )
+        True ->
+          artifact_store.read_file_bytes(source_path_abs)
+          |> result.map_error(fn(error) {
+            "workflow_output_source_file_missing:"
+            <> original_path
+            <> ":"
+            <> artifact_store_error_summary(error)
+          })
+      }
+    _, Error(_) ->
+      Error("workflow_output_source_file_missing:" <> original_path)
+    Error(_), _ ->
+      Error("workflow_output_source_workspace_missing:" <> original_path)
+  }
+}
+
+fn artifact_store_error_summary(error: artifact_store.ArtifactError) -> String {
+  case error {
+    artifact_store.ArtifactIo(message)
+    | artifact_store.CorruptStepArtifact(message)
+    | artifact_store.InvalidArtifactRef(message)
+    | artifact_store.DecodeArtifactFailed(message)
+    | artifact_store.DirectorySyncUnsupported(message) -> message
+    artifact_store.MissingStepArtifact(path) -> path
+    artifact_store.ArtifactWriteFailed(write_error) ->
+      artifact_store.artifact_write_error_to_string(write_error)
   }
 }
 
@@ -897,7 +1040,7 @@ fn structured_output_payload_blob(
               write_contract_output_blob(
                 spec,
                 run_id,
-                json_value.to_string(payload),
+                bit_array.from_string(json_value.to_string(payload)),
                 False,
                 checkpoint,
                 structured_source_json(step_id, metadata.artifact_name),
@@ -969,19 +1112,34 @@ fn artifact_field_text(
   }
 }
 
-fn output_type_is_json(type_: workflow_contract.ContractType) -> Bool {
-  case type_ {
-    workflow_contract.CodeChange
-    | workflow_contract.ExecPlanBundle
-    | workflow_contract.ImplementationPack
-    | workflow_contract.CodeChangeBundle
-    | workflow_contract.CommitStack
-    | workflow_contract.ArtifactList -> True
-    workflow_contract.DocumentMarkdown
-    | workflow_contract.ExecPlan
-    | workflow_contract.Text
-    | workflow_contract.Url
-    | workflow_contract.GitRef -> False
+fn output_type_is_json(spec: workflow_contract.OutputSpec) -> Bool {
+  case spec.descriptor {
+    Some(workflow_contract.ContractDescriptorSpec(
+      media_type: Some("application/json"),
+      ..,
+    )) -> True
+    Some(workflow_contract.ContractDescriptorSpec(
+      media_type: Some(media_type),
+      ..,
+    )) -> media_type == "application/vnd.scherzo.git-commit-stack+json"
+    _ ->
+      case spec.type_ {
+        workflow_contract.CodeChange
+        | workflow_contract.ExecPlanBundle
+        | workflow_contract.ImplementationPack
+        | workflow_contract.CodeChangeBundle
+        | workflow_contract.CommitStack
+        | workflow_contract.ArtifactList -> True
+        workflow_contract.DocumentMarkdown
+        | workflow_contract.ExecPlan
+        | workflow_contract.Text
+        | workflow_contract.Url
+        | workflow_contract.GitRef
+        | workflow_contract.GenericFile
+        | workflow_contract.GenericRef -> False
+        workflow_contract.GenericArtifactSet | workflow_contract.GenericValue ->
+          True
+      }
   }
 }
 

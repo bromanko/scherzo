@@ -780,6 +780,54 @@ pub fn workflow_schema_only_invalid_shapes_are_rejected_test() {
   })
 }
 
+pub fn workflow_schema_accepts_generic_descriptor_contract_entries_test() {
+  let yaml =
+    "version: 1\n"
+    <> "id: sample\n"
+    <> "contract:\n"
+    <> "  version: 1\n"
+    <> "  outputs:\n"
+    <> "    screenshot:\n"
+    <> "      kind: file\n"
+    <> "      media_type: image/png\n"
+    <> "      artifact_type: scherzo_ui.screenshot.v1\n"
+    <> "      source:\n"
+    <> "        step: draft\n"
+    <> "        path: tmp/final.png\n"
+    <> "steps:\n"
+    <> "  - id: draft\n"
+    <> "    prompt: prompts/draft.md\n"
+  validate_yaml_source_against_schema(
+    "public_workflow_schema",
+    "schemas/scherzo.workflow.v1.schema.json",
+    yaml,
+  )
+}
+
+pub fn workflow_schema_rejects_invalid_descriptor_contract_entries_test() {
+  let yaml =
+    "version: 1\n"
+    <> "id: sample\n"
+    <> "contract:\n"
+    <> "  version: 1\n"
+    <> "  outputs:\n"
+    <> "    screenshot:\n"
+    <> "      kind: file\n"
+    <> "      media_type: image\n"
+    <> "      artifact_type: scherzo/ui.screenshot.v1\n"
+    <> "      source:\n"
+    <> "        step: draft\n"
+    <> "        path: tmp/final.png\n"
+    <> "steps:\n"
+    <> "  - id: draft\n"
+    <> "    prompt: prompts/draft.md\n"
+  reject_yaml_against_schema(
+    "public_workflow_schema",
+    "schemas/scherzo.workflow.v1.schema.json",
+    yaml,
+  )
+}
+
 fn publication_workflow_source(publication_fields: String) -> String {
   "version: 1\n"
   <> "id: sample\n"

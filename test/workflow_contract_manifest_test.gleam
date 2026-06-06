@@ -110,7 +110,7 @@ pub fn code_change_accepts_all_legacy_reference_aliases_test() {
 
 pub fn manifest_decoders_reject_wrong_header_test() {
   let wrong_input_version =
-    "{\"schema_version\":2,\"artifact_type\":\"workflow_contract_inputs\",\"run_id\":\"run-1\",\"workflow_id\":\"research\",\"workflow_fingerprint\":\"fp\",\"inputs\":[],\"context\":[] }"
+    "{\"schema_version\":3,\"artifact_type\":\"workflow_contract_inputs\",\"run_id\":\"run-1\",\"workflow_id\":\"research\",\"workflow_fingerprint\":\"fp\",\"inputs\":[],\"context\":[] }"
   assert manifest.decode_input_manifest(wrong_input_version) == Error(Nil)
 
   let wrong_output_type =
@@ -118,7 +118,7 @@ pub fn manifest_decoders_reject_wrong_header_test() {
   assert manifest.decode_output_manifest(wrong_output_type) == Error(Nil)
 }
 
-pub fn descriptor_is_emitted_additively_with_legacy_fields_test() {
+pub fn descriptor_first_manifest_entries_are_emitted_without_legacy_present_type_fields_test() {
   let manifest_document =
     manifest.ContractOutputManifest(
       run_id: "run-1",
@@ -184,9 +184,10 @@ pub fn descriptor_is_emitted_additively_with_legacy_fields_test() {
   let text = manifest.output_manifest_to_string(manifest_document)
   let assert Ok(decoded) = manifest.decode_output_manifest(text)
   assert decoded.outputs != []
+  assert json_text_contains(text, "\"schema_version\":2")
   assert json_text_contains(text, "\"descriptor\":{")
-  assert json_text_contains(text, "\"type\":\"exec_plan_bundle\"")
-  assert json_text_contains(text, "\"ref_kind\":\"run_artifact\"")
+  assert !json_text_contains(text, "\"type\":\"exec_plan_bundle\"")
+  assert !json_text_contains(text, "\"ref_kind\":\"run_artifact\"")
   assert json_text_contains(text, "\"kind\":\"artifact_set\"")
   assert json_text_contains(
     text,
@@ -329,6 +330,46 @@ pub fn descriptor_helper_maps_legacy_contract_types_test() {
   let assert Some(git_ref) = git_ref
   assert git_ref.kind == artifact_descriptor.RefKind
   assert git_ref.artifact_type == Some("git_ref")
+}
+
+pub fn generic_artifact_set_manifest_descriptor_preserves_contract_descriptor_test() {
+  let value =
+    manifest.present_run_artifact(
+      workflow_contract.GenericArtifactSet,
+      manifest.ArtifactWritten(
+        "runs/run-1/outputs/visual_artifacts.json",
+        valid_sha256(),
+        3,
+      ),
+      "application/json",
+      Some(
+        json_value.JObject([
+          #(
+            "contract_artifact_type",
+            json_value.JString("scherzo_ui.visual_artifact_bundle.v1"),
+          ),
+          #(
+            "contract_descriptor",
+            json_value.JObject([
+              #("kind", json_value.JString("artifact_set")),
+              #("media_type", json_value.JString("application/json")),
+              #(
+                "artifact_type",
+                json_value.JString("scherzo_ui.visual_artifact_bundle.v1"),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+    )
+
+  let descriptor =
+    manifest.descriptor_for_named_value("visual_artifacts", value)
+  let assert Some(descriptor) = descriptor
+  assert descriptor.kind == artifact_descriptor.ArtifactSetKind
+  assert descriptor.artifact_type
+    == Some("scherzo_ui.visual_artifact_bundle.v1")
+  assert descriptor.media_type == Some("application/json")
 }
 
 pub fn historical_manifest_without_descriptor_still_decodes_test() {

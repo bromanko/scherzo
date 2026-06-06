@@ -4,7 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
-import scherzo/workflow_contract_descriptor_compat.{DescriptorCompatError}
+import scherzo/media_type
 import yay
 
 pub type Contract {
@@ -28,6 +28,19 @@ pub type ContractType {
   GitRef
   Url
   CodeChange
+  GenericFile
+  GenericArtifactSet
+  GenericValue
+  GenericRef
+}
+
+pub type ContractDescriptorSpec {
+  ContractDescriptorSpec(
+    kind: Option(String),
+    ref_type: Option(String),
+    media_type: Option(String),
+    artifact_type: Option(String),
+  )
 }
 
 pub type InputSpec {
@@ -37,6 +50,7 @@ pub type InputSpec {
     required: Bool,
     description: Option(String),
     source: Option(InputSource),
+    descriptor: Option(ContractDescriptorSpec),
   )
 }
 
@@ -47,15 +61,7 @@ pub type ContextSpec {
     required: Bool,
     description: Option(String),
     source: Option(ContextSource),
-  )
-}
-
-pub type OutputDescriptorSpec {
-  OutputDescriptorSpec(
-    kind: Option(String),
-    ref_type: Option(String),
-    media_type: Option(String),
-    artifact_type: Option(String),
+    descriptor: Option(ContractDescriptorSpec),
   )
 }
 
@@ -66,7 +72,7 @@ pub type OutputSpec {
     required: Bool,
     description: Option(String),
     source: Option(OutputSource),
-    descriptor: Option(OutputDescriptorSpec),
+    descriptor: Option(ContractDescriptorSpec),
   )
 }
 
@@ -138,6 +144,10 @@ pub fn type_to_string(type_: ContractType) -> String {
     GitRef -> "git_ref"
     Url -> "url"
     CodeChange -> "code_change"
+    GenericFile -> "file"
+    GenericArtifactSet -> "artifact_set"
+    GenericValue -> "value"
+    GenericRef -> "ref"
   }
 }
 
@@ -156,6 +166,19 @@ pub fn type_from_string(raw: String) -> Result(ContractType, ContractError) {
     "code_change" -> Ok(CodeChange)
     other -> error("unknown_contract_type", "unknown contract type: " <> other)
   }
+}
+
+pub fn descriptor_for_type(type_: ContractType) -> ContractDescriptorSpec {
+  legacy_alias_to_descriptor(type_)
+}
+
+pub fn infer_type_from_descriptor(
+  descriptor: ContractDescriptorSpec,
+  kind: String,
+  name: String,
+) -> Result(ContractType, ContractError) {
+  use Nil <- result.try(validate_contract_descriptor(descriptor, kind, name))
+  type_from_descriptor(descriptor, kind, name)
 }
 
 pub fn valid_contract_name(value: String) -> Bool {
@@ -560,7 +583,8 @@ fn read_input_spec(
   case node {
     yay.NodeStr(raw_type) -> {
       use type_ <- result.try(type_from_string(raw_type))
-      Ok(InputSpec(name, type_, False, None, None))
+      let descriptor = Some(legacy_alias_to_descriptor(type_))
+      Ok(InputSpec(name, type_, False, None, None, descriptor))
     }
     yay.NodeMap(_) -> {
       use entries <- result.try(read_map_entries(
@@ -568,7 +592,11 @@ fn read_input_spec(
         "contract input " <> name,
       ))
       use Nil <- result.try(validate_entry_keys(entries, "input", name))
-      use type_ <- result.try(read_entry_type(entries, "input", name))
+      use #(type_, descriptor) <- result.try(read_entry_contract(
+        entries,
+        "input",
+        name,
+      ))
       use required <- result.try(read_entry_required(
         entries,
         True,
@@ -581,7 +609,7 @@ fn read_input_spec(
         name,
       ))
       use source <- result.try(read_input_source_option(entries, name))
-      Ok(InputSpec(name, type_, required, description, source))
+      Ok(InputSpec(name, type_, required, description, source, descriptor))
     }
     _ ->
       error(
@@ -598,7 +626,8 @@ fn read_context_spec(
   case node {
     yay.NodeStr(raw_type) -> {
       use type_ <- result.try(type_from_string(raw_type))
-      Ok(ContextSpec(name, type_, False, None, None))
+      let descriptor = Some(legacy_alias_to_descriptor(type_))
+      Ok(ContextSpec(name, type_, False, None, None, descriptor))
     }
     yay.NodeMap(_) -> {
       use entries <- result.try(read_map_entries(
@@ -606,7 +635,11 @@ fn read_context_spec(
         "contract context " <> name,
       ))
       use Nil <- result.try(validate_entry_keys(entries, "context", name))
-      use type_ <- result.try(read_entry_type(entries, "context", name))
+      use #(type_, descriptor) <- result.try(read_entry_contract(
+        entries,
+        "context",
+        name,
+      ))
       use required <- result.try(read_entry_required(
         entries,
         False,
@@ -619,7 +652,7 @@ fn read_context_spec(
         name,
       ))
       use source <- result.try(read_context_source_option(entries, name))
-      Ok(ContextSpec(name, type_, required, description, source))
+      Ok(ContextSpec(name, type_, required, description, source, descriptor))
     }
     _ ->
       error(
@@ -636,7 +669,14 @@ fn read_output_spec(
   case node {
     yay.NodeStr(raw_type) -> {
       use type_ <- result.try(type_from_string(raw_type))
-      Ok(OutputSpec(name, type_, False, None, None, None))
+      Ok(OutputSpec(
+        name,
+        type_,
+        False,
+        None,
+        None,
+        Some(legacy_alias_to_descriptor(type_)),
+      ))
     }
     yay.NodeMap(_) -> {
       use entries <- result.try(read_map_entries(
@@ -644,7 +684,11 @@ fn read_output_spec(
         "contract output " <> name,
       ))
       use Nil <- result.try(validate_entry_keys(entries, "output", name))
-      use type_ <- result.try(read_entry_type(entries, "output", name))
+      use #(type_, descriptor) <- result.try(read_entry_contract(
+        entries,
+        "output",
+        name,
+      ))
       use required <- result.try(read_entry_required(
         entries,
         True,
@@ -657,11 +701,6 @@ fn read_output_spec(
         name,
       ))
       use source <- result.try(read_output_source_option(entries, name))
-      use descriptor <- result.try(read_output_descriptor(
-        entries,
-        "output",
-        name,
-      ))
       Ok(OutputSpec(name, type_, required, description, source, descriptor))
     }
     _ ->
@@ -718,18 +757,28 @@ fn validate_entry_keys(
   }
 }
 
-fn read_entry_type(
+fn read_entry_contract(
   entries: List(#(String, yay.Node)),
   kind: String,
   name: String,
-) -> Result(ContractType, ContractError) {
-  case get_entry(entries, "type"), get_entry(entries, "kind") {
-    Some(yay.NodeStr(raw)), None -> type_from_string(raw)
-    Some(yay.NodeStr(raw)), Some(yay.NodeStr(_)) -> {
+) -> Result(#(ContractType, Option(ContractDescriptorSpec)), ContractError) {
+  let descriptor_result = read_contract_descriptor(entries, kind, name)
+  case get_entry(entries, "type"), descriptor_result {
+    Some(yay.NodeStr(raw)), Ok(None) -> {
+      use type_ <- result.try(type_from_string(raw))
+      Ok(#(type_, Some(legacy_alias_to_descriptor(type_))))
+    }
+    Some(yay.NodeStr(raw)), Ok(Some(descriptor_override)) -> {
       use explicit <- result.try(type_from_string(raw))
-      use inferred <- result.try(type_from_descriptor(entries, kind, name))
+      let descriptor =
+        merge_descriptor(
+          legacy_alias_to_descriptor(explicit),
+          descriptor_override,
+        )
+      use Nil <- result.try(validate_contract_descriptor(descriptor, kind, name))
+      use inferred <- result.try(type_from_descriptor(descriptor, kind, name))
       case explicit == inferred {
-        True -> Ok(explicit)
+        True -> Ok(#(explicit, Some(descriptor)))
         False ->
           error(
             "contract_descriptor_type_mismatch",
@@ -741,18 +790,90 @@ fn read_entry_type(
           )
       }
     }
+    Some(yay.NodeStr(_)), Error(error_value) -> Error(error_value)
     Some(_), _ ->
       error(
         "contract_entry_type_not_string",
         "contract " <> kind <> " " <> name <> " type must be a string",
       )
-    None, Some(yay.NodeStr(_)) -> type_from_descriptor(entries, kind, name)
-    None, Some(_) ->
+    None, Ok(Some(descriptor)) -> {
+      use Nil <- result.try(validate_contract_descriptor(descriptor, kind, name))
+      use type_ <- result.try(type_from_descriptor(descriptor, kind, name))
+      Ok(#(type_, Some(descriptor)))
+    }
+    None, Ok(None) ->
       error(
-        "contract_descriptor_kind_not_string",
-        "contract " <> kind <> " " <> name <> " kind must be a string",
+        "missing_contract_entry_type",
+        "contract "
+          <> kind
+          <> " "
+          <> name
+          <> " type or descriptor kind is required",
       )
-    None, None ->
+    None, Error(error_value) -> Error(error_value)
+  }
+}
+
+fn type_from_descriptor(
+  descriptor: ContractDescriptorSpec,
+  kind: String,
+  name: String,
+) -> Result(ContractType, ContractError) {
+  case
+    descriptor.kind,
+    descriptor.media_type,
+    descriptor.artifact_type,
+    descriptor.ref_type
+  {
+    Some("file"), Some("text/plain"), _, _ -> Ok(Text)
+    Some("file"), Some("text/markdown"), Some("scherzo.exec_plan.v1"), _ ->
+      Ok(ExecPlan)
+    Some("file"), Some("text/markdown"), _, _ -> Ok(DocumentMarkdown)
+    Some("file"),
+      Some("application/json"),
+      Some("scherzo.implementation_pack.v1"),
+      _
+    -> Ok(ImplementationPack)
+    Some("file"),
+      Some("application/json"),
+      Some("scherzo.implementation_pack.v2"),
+      _
+    -> Ok(ImplementationPack)
+    Some("artifact_set"),
+      Some("application/json"),
+      Some("scherzo.exec_plan_bundle.v2"),
+      _
+    -> Ok(ExecPlanBundle)
+    Some("artifact_set"),
+      Some("application/json"),
+      Some("scherzo.code_change_bundle.v2"),
+      _
+    -> Ok(CodeChangeBundle)
+    Some("artifact_set"), _, Some("artifact[]"), _ -> Ok(ArtifactList)
+    Some("commit_stack"), _, _, _ -> Ok(CommitStack)
+    Some("file"),
+      Some("application/vnd.scherzo.git-commit-stack+json"),
+      Some("scherzo.git_commit_stack.v1"),
+      _
+    -> Ok(CommitStack)
+    Some("ref"), _, _, Some("url") -> Ok(Url)
+    Some("ref"), _, _, Some("git_ref") -> Ok(GitRef)
+    Some("value"), Some("application/json"), _, _ -> Ok(CodeChange)
+    Some("file"), _, _, _ -> Ok(GenericFile)
+    Some("artifact_set"), _, _, _ -> Ok(GenericArtifactSet)
+    Some("value"), _, _, _ -> Ok(GenericValue)
+    Some("ref"), _, _, _ -> Ok(GenericRef)
+    Some(other), _, _, _ ->
+      error(
+        "unknown_contract_descriptor_kind",
+        "contract "
+          <> kind
+          <> " "
+          <> name
+          <> " has unknown descriptor kind: "
+          <> other,
+      )
+    None, _, _, _ ->
       error(
         "missing_contract_entry_type",
         "contract "
@@ -762,25 +883,6 @@ fn read_entry_type(
           <> " type or descriptor kind is required",
       )
   }
-}
-
-fn type_from_descriptor(
-  entries: List(#(String, yay.Node)),
-  kind: String,
-  name: String,
-) -> Result(ContractType, ContractError) {
-  use type_name <- result.try(
-    workflow_contract_descriptor_compat.type_name_from_entries(
-      entries,
-      kind,
-      name,
-    )
-    |> result.map_error(fn(error_value) {
-      let DescriptorCompatError(code, message) = error_value
-      ContractError(code, message)
-    }),
-  )
-  type_from_string(type_name)
 }
 
 fn read_entry_required(
@@ -816,11 +918,11 @@ fn read_entry_description(
   }
 }
 
-fn read_output_descriptor(
+fn read_contract_descriptor(
   entries: List(#(String, yay.Node)),
   kind: String,
   name: String,
-) -> Result(Option(OutputDescriptorSpec), ContractError) {
+) -> Result(Option(ContractDescriptorSpec), ContractError) {
   case
     get_entry(entries, "kind"),
     get_entry(entries, "ref_type"),
@@ -853,19 +955,19 @@ fn read_output_descriptor(
         kind,
         name,
       ))
-      use Nil <- result.try(validate_descriptor_media_type(
-        media_type,
-        kind,
-        name,
-      ))
-      Ok(
-        Some(OutputDescriptorSpec(
+      let descriptor =
+        ContractDescriptorSpec(
           kind: descriptor_kind,
           ref_type: ref_type,
           media_type: media_type,
           artifact_type: artifact_type,
-        )),
-      )
+        )
+      use Nil <- result.try(validate_partial_contract_descriptor(
+        descriptor,
+        kind,
+        name,
+      ))
+      Ok(Some(descriptor))
     }
   }
 }
@@ -887,28 +989,154 @@ fn read_optional_descriptor_string(
   }
 }
 
-fn validate_descriptor_media_type(
-  media_type: Option(String),
+fn validate_partial_contract_descriptor(
+  descriptor: ContractDescriptorSpec,
   kind: String,
   name: String,
 ) -> Result(Nil, ContractError) {
-  case media_type {
+  use Nil <- result.try(validate_descriptor_media_type(
+    descriptor.media_type,
+    kind,
+    name,
+  ))
+  use Nil <- result.try(validate_descriptor_identifier(
+    descriptor.artifact_type,
+    "artifact_type",
+    kind,
+    name,
+  ))
+  use Nil <- result.try(validate_descriptor_identifier(
+    descriptor.ref_type,
+    "ref_type",
+    kind,
+    name,
+  ))
+  case descriptor.kind {
     None -> Ok(Nil)
-    Some("application/json")
-    | Some("application/vnd.scherzo.git-commit-stack+json")
-    | Some("text/markdown")
-    | Some("text/plain") -> Ok(Nil)
-    Some(_) ->
+    Some("file")
+    | Some("artifact_set")
+    | Some("value")
+    | Some("ref")
+    | Some("commit_stack") -> Ok(Nil)
+    Some(other) ->
       error(
-        "unsupported_contract_descriptor_media_type",
+        "unknown_contract_descriptor_kind",
         "contract "
           <> kind
           <> " "
           <> name
-          <> " media_type must be one of application/json, "
-          <> "application/vnd.scherzo.git-commit-stack+json, "
-          <> "text/markdown, or text/plain",
+          <> " has unknown descriptor kind: "
+          <> other,
       )
+  }
+}
+
+fn validate_contract_descriptor(
+  descriptor: ContractDescriptorSpec,
+  kind: String,
+  name: String,
+) -> Result(Nil, ContractError) {
+  use descriptor_kind <- result.try(require_descriptor_kind(
+    descriptor.kind,
+    kind,
+    name,
+  ))
+  use Nil <- result.try(validate_partial_contract_descriptor(
+    descriptor,
+    kind,
+    name,
+  ))
+  case descriptor_kind {
+    "file" | "artifact_set" | "value" | "ref" | "commit_stack" -> Ok(Nil)
+    other ->
+      error(
+        "unknown_contract_descriptor_kind",
+        "contract "
+          <> kind
+          <> " "
+          <> name
+          <> " has unknown descriptor kind: "
+          <> other,
+      )
+  }
+}
+
+fn merge_descriptor(
+  base: ContractDescriptorSpec,
+  override: ContractDescriptorSpec,
+) -> ContractDescriptorSpec {
+  ContractDescriptorSpec(
+    kind: option.or(override.kind, base.kind),
+    ref_type: option.or(override.ref_type, base.ref_type),
+    media_type: option.or(override.media_type, base.media_type),
+    artifact_type: option.or(override.artifact_type, base.artifact_type),
+  )
+}
+
+fn require_descriptor_kind(
+  value: Option(String),
+  kind: String,
+  name: String,
+) -> Result(String, ContractError) {
+  case value {
+    Some(value) -> Ok(value)
+    None ->
+      error(
+        "missing_contract_entry_type",
+        "contract "
+          <> kind
+          <> " "
+          <> name
+          <> " type or descriptor kind is required",
+      )
+  }
+}
+
+fn validate_descriptor_media_type(
+  media_type_value: Option(String),
+  kind: String,
+  name: String,
+) -> Result(Nil, ContractError) {
+  case media_type_value {
+    None -> Ok(Nil)
+    Some(value) ->
+      media_type.validate(value)
+      |> result.map_error(fn(_) {
+        ContractError(
+          "invalid_contract_descriptor_media_type",
+          "contract "
+            <> kind
+            <> " "
+            <> name
+            <> " media_type must be a syntactically valid MIME type",
+        )
+      })
+  }
+}
+
+fn validate_descriptor_identifier(
+  value: Option(String),
+  field_name: String,
+  kind: String,
+  name: String,
+) -> Result(Nil, ContractError) {
+  case value {
+    None -> Ok(Nil)
+    Some(value) ->
+      case valid_descriptor_identifier(value) {
+        True -> Ok(Nil)
+        False ->
+          error(
+            "invalid_contract_descriptor_" <> field_name,
+            "contract "
+              <> kind
+              <> " "
+              <> name
+              <> " "
+              <> field_name
+              <> " must be non-empty, safe metadata without slashes or control characters",
+          )
+      }
   }
 }
 
@@ -1241,23 +1469,27 @@ fn validate_required_outputs(
 }
 
 fn input_to_json(input: InputSpec) -> json.Json {
-  json.object([
+  let fields = [
     #("name", json.string(input.name)),
     #("type", json.string(type_to_string(input.type_))),
     #("required", json.bool(input.required)),
     #("description", option_string_to_json(input.description)),
     #("source", option_input_source_to_json(input.source)),
-  ])
+  ]
+  let fields = put_descriptor_fields(fields, input.descriptor)
+  json.object(fields)
 }
 
 fn context_to_json(context: ContextSpec) -> json.Json {
-  json.object([
+  let fields = [
     #("name", json.string(context.name)),
     #("type", json.string(type_to_string(context.type_))),
     #("required", json.bool(context.required)),
     #("description", option_string_to_json(context.description)),
     #("source", option_context_source_to_json(context.source)),
-  ])
+  ]
+  let fields = put_descriptor_fields(fields, context.descriptor)
+  json.object(fields)
 }
 
 fn output_to_json(output: OutputSpec) -> json.Json {
@@ -1268,23 +1500,24 @@ fn output_to_json(output: OutputSpec) -> json.Json {
     #("description", option_string_to_json(output.description)),
     #("source", option_output_source_to_json(output.source)),
   ]
-  let fields = case output.descriptor {
+  let fields = put_descriptor_fields(fields, output.descriptor)
+  json.object(fields)
+}
+
+fn put_descriptor_fields(
+  fields: List(#(String, json.Json)),
+  descriptor: Option(ContractDescriptorSpec),
+) -> List(#(String, json.Json)) {
+  case descriptor {
     Some(descriptor) -> [
-      #("descriptor", output_descriptor_to_json(descriptor)),
+      #("kind", option_string_to_json(descriptor.kind)),
+      #("ref_type", option_string_to_json(descriptor.ref_type)),
+      #("media_type", option_string_to_json(descriptor.media_type)),
+      #("artifact_type", option_string_to_json(descriptor.artifact_type)),
       ..fields
     ]
     None -> fields
   }
-  json.object(fields)
-}
-
-fn output_descriptor_to_json(descriptor: OutputDescriptorSpec) -> json.Json {
-  json.object([
-    #("kind", option_string_to_json(descriptor.kind)),
-    #("ref_type", option_string_to_json(descriptor.ref_type)),
-    #("media_type", option_string_to_json(descriptor.media_type)),
-    #("artifact_type", option_string_to_json(descriptor.artifact_type)),
-  ])
 }
 
 fn option_input_source_to_json(value: Option(InputSource)) -> json.Json {
@@ -1333,6 +1566,116 @@ fn option_string_to_json(value: Option(String)) -> json.Json {
   }
 }
 
+fn legacy_alias_to_descriptor(type_: ContractType) -> ContractDescriptorSpec {
+  case type_ {
+    Text ->
+      ContractDescriptorSpec(
+        kind: Some("file"),
+        ref_type: None,
+        media_type: Some("text/plain"),
+        artifact_type: None,
+      )
+    ArtifactList ->
+      ContractDescriptorSpec(
+        kind: Some("artifact_set"),
+        ref_type: None,
+        media_type: Some("application/json"),
+        artifact_type: Some("artifact[]"),
+      )
+    DocumentMarkdown ->
+      ContractDescriptorSpec(
+        kind: Some("file"),
+        ref_type: None,
+        media_type: Some("text/markdown"),
+        artifact_type: None,
+      )
+    ExecPlan ->
+      ContractDescriptorSpec(
+        kind: Some("file"),
+        ref_type: None,
+        media_type: Some("text/markdown"),
+        artifact_type: Some("scherzo.exec_plan.v1"),
+      )
+    ExecPlanBundle ->
+      ContractDescriptorSpec(
+        kind: Some("artifact_set"),
+        ref_type: None,
+        media_type: Some("application/json"),
+        artifact_type: Some("scherzo.exec_plan_bundle.v2"),
+      )
+    ImplementationPack ->
+      ContractDescriptorSpec(
+        kind: Some("file"),
+        ref_type: None,
+        media_type: Some("application/json"),
+        artifact_type: Some("scherzo.implementation_pack.v2"),
+      )
+    CodeChangeBundle ->
+      ContractDescriptorSpec(
+        kind: Some("artifact_set"),
+        ref_type: None,
+        media_type: Some("application/json"),
+        artifact_type: Some("scherzo.code_change_bundle.v2"),
+      )
+    CommitStack ->
+      ContractDescriptorSpec(
+        kind: Some("commit_stack"),
+        ref_type: None,
+        media_type: Some("application/vnd.scherzo.git-commit-stack+json"),
+        artifact_type: Some("scherzo.git_commit_stack.v1"),
+      )
+    GitRef ->
+      ContractDescriptorSpec(
+        kind: Some("ref"),
+        ref_type: Some("git_ref"),
+        media_type: None,
+        artifact_type: None,
+      )
+    Url ->
+      ContractDescriptorSpec(
+        kind: Some("ref"),
+        ref_type: Some("url"),
+        media_type: None,
+        artifact_type: None,
+      )
+    CodeChange ->
+      ContractDescriptorSpec(
+        kind: Some("value"),
+        ref_type: None,
+        media_type: Some("application/json"),
+        artifact_type: Some("code_change"),
+      )
+    GenericFile ->
+      ContractDescriptorSpec(
+        kind: Some("file"),
+        ref_type: None,
+        media_type: None,
+        artifact_type: None,
+      )
+    GenericArtifactSet ->
+      ContractDescriptorSpec(
+        kind: Some("artifact_set"),
+        ref_type: None,
+        media_type: None,
+        artifact_type: None,
+      )
+    GenericValue ->
+      ContractDescriptorSpec(
+        kind: Some("value"),
+        ref_type: None,
+        media_type: Some("application/json"),
+        artifact_type: None,
+      )
+    GenericRef ->
+      ContractDescriptorSpec(
+        kind: Some("ref"),
+        ref_type: None,
+        media_type: None,
+        artifact_type: None,
+      )
+  }
+}
+
 fn appendable_source(source: ContractType) -> Bool {
   case source {
     DocumentMarkdown
@@ -1344,9 +1687,22 @@ fn appendable_source(source: ContractType) -> Bool {
     | Text
     | Url
     | GitRef
-    | CodeChange -> True
+    | CodeChange
+    | GenericFile
+    | GenericArtifactSet
+    | GenericValue
+    | GenericRef -> True
     ArtifactList -> True
   }
+}
+
+fn valid_descriptor_identifier(value: String) -> Bool {
+  let trimmed = string.trim(value)
+  trimmed != ""
+  && !has_control_character(trimmed)
+  && !string.contains(trimmed, "/")
+  && !string.contains(trimmed, "\\")
+  && !string.starts_with(trimmed, "<absolute-local-path>")
 }
 
 fn valid_http_url(value: String) -> Bool {

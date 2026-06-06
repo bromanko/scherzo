@@ -15,6 +15,11 @@
         "media_type": "application/json",
         "original_path": "artifacts/review/handoff.json",
         "contract_type": "code_change_bundle",
+        "descriptor": {
+          "kind": "artifact_set",
+          "media_type": "application/json",
+          "artifact_type": "scherzo.code_change_bundle.v2"
+        },
         "producer": {
           "workflow_id": "execplan-implementation",
           "run_id": "run-1",

@@ -411,10 +411,35 @@
             "code_change"
           ]
         },
-        "kind": { "type": "string", "minLength": 1 },
-        "ref_type": { "type": "string", "minLength": 1 },
-        "media_type": { "type": "string", "minLength": 1 },
-        "artifact_type": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": ["file", "artifact_set", "value", "ref", "commit_stack"]
+        },
+        "ref_type": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              { "pattern": "[/\\\\]" },
+              { "pattern": "^<absolute-local-path>" },
+              { "pattern": "[\\n\\r\\t]" }
+            ]
+          }
+        },
+        "media_type": {
+          "type": "string",
+          "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+/[!#$%&'*+.^_`|~0-9A-Za-z-]+(\\s*;\\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+=[^\\r\\n\\t;]+)*$"
+        },
+        "artifact_type": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              { "pattern": "[/\\\\]" },
+              { "pattern": "^<absolute-local-path>" },
+              { "pattern": "[\\n\\r\\t]" }
+            ]
+          }
+        },
         "description": { "type": "string" },
         "required": { "type": "boolean" },
         "source": { "$ref": "#/$defs/ContractSource" }

@@ -918,6 +918,9 @@ fn store_with_contents(
         |> dict.get(ref)
         |> result.replace_error(artifact_store.MissingStepArtifact(ref))
       },
+      write_bytes: fn(_, _) {
+        Error(artifact_store.ArtifactIo("write_unsupported"))
+      },
       write_immutable_bytes: fn(_, _) {
         Error(artifact_store.ArtifactIo("write_unsupported"))
       },
@@ -951,6 +954,9 @@ fn store_with_bytes(
             })
           Error(_) -> Error(artifact_store.MissingStepArtifact(ref))
         }
+      },
+      write_bytes: fn(_, _) {
+        Error(artifact_store.ArtifactIo("write_unsupported"))
       },
       write_immutable_bytes: fn(_, _) {
         Error(artifact_store.ArtifactIo("write_unsupported"))

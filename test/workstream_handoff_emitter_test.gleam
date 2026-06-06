@@ -50,8 +50,9 @@ pub fn handoff_emitter_snapshots_output_handoff_and_next_action_test() {
   let assert [handoff_output] = decoded_handoff.outputs
   assert handoff_output.name == "exec_plan_bundle"
   assert handoff_output.snapshot.ref == output.snapshot.ref
-  assert handoff_output.snapshot.contract_type == "exec_plan_bundle"
-  assert handoff_output.snapshot.artifact_type
+  assert handoff_output.snapshot.contract_type == None
+  assert handoff_output.snapshot.descriptor.kind == "artifact_set"
+  assert handoff_output.snapshot.descriptor.artifact_type
     == Some("scherzo.exec_plan_bundle.v2")
   assert handoff_output.snapshot.producer.workflow_id == "execplan"
   assert handoff_output.snapshot.producer.run_id == "run-1"

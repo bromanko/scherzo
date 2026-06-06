@@ -3,9 +3,11 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
+import gleam/result
 import gleam/string
 import scherzo/state/artifact_store as state_artifact_store
 import scherzo/state/projection as state_projection
+import scherzo/workflow_contract
 import scherzo/workstream/artifacts
 import scherzo/workstream/playbook as playbook_def
 import scherzo/workstream/projection_snapshot as snapshot
@@ -143,8 +145,27 @@ fn available_input(
     ref: output.snapshot.ref,
     sha256: output.snapshot.sha256,
     bytes: output.snapshot.bytes,
-    contract_type: output.snapshot.contract_type,
+    contract_type: snapshot_contract_type(output.snapshot),
   )
+}
+
+fn snapshot_contract_type(snapshot: types.ArtifactSnapshot) -> String {
+  case snapshot.contract_type {
+    Some(contract_type) -> contract_type
+    None ->
+      workflow_contract.infer_type_from_descriptor(
+        workflow_contract.ContractDescriptorSpec(
+          kind: Some(snapshot.descriptor.kind),
+          ref_type: snapshot.descriptor.ref_type,
+          media_type: snapshot.descriptor.media_type,
+          artifact_type: snapshot.descriptor.artifact_type,
+        ),
+        "playbook",
+        snapshot.summary,
+      )
+      |> result.unwrap(workflow_contract.Text)
+      |> workflow_contract.type_to_string
+  }
 }
 
 fn loaded_decisions(

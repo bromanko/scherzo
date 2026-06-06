@@ -222,7 +222,8 @@ pub fn start_from_handoff_queues_input_bundle_from_snapshot_refs_test() {
   assert input_bundle.source_kind == Some("handoff")
   let assert [binding] = input_bundle.inputs
   assert binding.name == "exec_plan_bundle"
-  assert binding.contract_type == "exec_plan_bundle"
+  assert binding.contract_type == None
+  assert binding.descriptor.kind == "artifact_set"
   assert binding.value_ref != ""
   assert binding.sha256 != None
 
@@ -261,8 +262,8 @@ pub fn start_from_handoff_accepts_legacy_snapshot_without_artifact_type_test() {
     checkpoint.read_artifact(outcome.input_bundle_ref)
   let assert Ok(input_bundle) = artifacts.decode_input_bundle(input_bundle_json)
   let assert [binding] = input_bundle.inputs
-  assert binding.contract_type == "exec_plan_bundle"
-  assert binding.artifact_type == None
+  assert binding.contract_type == None
+  assert binding.descriptor.artifact_type == None
 }
 
 pub fn start_from_handoff_rejects_descriptor_artifact_type_mismatch_test() {
@@ -1170,6 +1171,20 @@ pub fn stale_projection_conflicting_manual_start_is_rejected_at_append_test() {
   assert dict.size(workstream.queued_phase_runs) == 1
 }
 
+fn exec_plan_bundle_descriptor(
+  artifact_type: Option(String),
+) -> types.ContractDescriptorRecord {
+  types.ContractDescriptorRecord(
+    kind: "artifact_set",
+    ref_type: None,
+    media_type: Some("application/json"),
+    artifact_type: artifact_type,
+    source: None,
+    validation: None,
+    metadata: None,
+  )
+}
+
 fn write_recorded_handoff(
   checkpoint: workflow_checkpoint.Writer,
 ) -> Result(
@@ -1254,8 +1269,8 @@ fn write_recorded_handoff_payload_with_next_actions_and_artifact_type(
       bytes: output_snapshot.bytes,
       media_type: output_snapshot.media_type,
       original_path: output_snapshot.original_path,
-      contract_type: "exec_plan_bundle",
-      artifact_type: artifact_type,
+      descriptor: exec_plan_bundle_descriptor(artifact_type),
+      contract_type: None,
       producer: types.ProducerRef(
         workflow_id: "execplan",
         run_id: "run-1",
@@ -1614,6 +1629,12 @@ fn exec_plan_bundle_contract() -> workflow_contract.Contract {
         required: True,
         description: None,
         source: Some(workflow_contract.MappedOutputSource),
+        descriptor: Some(workflow_contract.ContractDescriptorSpec(
+          kind: Some("artifact_set"),
+          ref_type: None,
+          media_type: Some("application/json"),
+          artifact_type: Some("scherzo.exec_plan_bundle.v2"),
+        )),
       ),
     ],
     context: [],

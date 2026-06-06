@@ -332,9 +332,9 @@ pub fn input_bundle_metadata_fields_reject_invalid_values_test() {
     "workstream_original_path_invalid",
   )
   assert_inline_error_code(
-    input_bundle_with_binding_field("\"artifact_type\": false"),
+    input_bundle_with_descriptor_field("\"artifact_type\": false"),
     artifacts.decode_input_bundle,
-    "workstream_artifact_type_invalid",
+    "workstream_descriptor_artifact_type_invalid",
   )
   assert_inline_error_code(
     input_bundle_with_binding_field("\"source_kind\": false"),
@@ -367,6 +367,14 @@ fn input_bundle_with_binding_field(field: String) -> String {
     each: "\"value_ref\": \"workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json\"",
     with: "\"value_ref\": \"workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json\",\n      "
       <> field,
+  )
+}
+
+fn input_bundle_with_descriptor_field(field: String) -> String {
+  fixture_text("test/fixtures/workstream/specs/input_bundle_valid.json")
+  |> string.replace(
+    each: "\"artifact_type\": \"scherzo.exec_plan_bundle.v2\"",
+    with: field,
   )
 }
 

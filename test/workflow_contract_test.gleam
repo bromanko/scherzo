@@ -122,11 +122,17 @@ pub fn rejects_invalid_contract_shapes_test() {
   assert error_code(minimal_contract(
       "  outputs:\n    findings:\n      type: document.markdown\n      media_type: application/xml\n      required: false\n",
     ))
-    == "unsupported_contract_descriptor_media_type"
-  assert error_code(minimal_contract(
+    == "contract_descriptor_type_mismatch"
+  let custom_file_contract =
+    parse_contract(minimal_contract(
       "  outputs:\n    plan:\n      kind: file\n      media_type: application/xml\n      artifact_type: scherzo.exec_plan.v1\n      required: true\n      source:\n        step: draft\n        path: tmp/plan.md\n",
     ))
-    == "unknown_contract_descriptor_type"
+  let assert [generic_plan] = custom_file_contract.outputs
+  assert generic_plan.type_ == workflow_contract.GenericFile
+  assert error_code(minimal_contract(
+      "  outputs:\n    screenshot:\n      kind: file\n      media_type: image/png\n      artifact_type: scherzo/ui.screenshot.v1\n      required: true\n      source:\n        step: draft\n        path: tmp/final.png\n",
+    ))
+    == "invalid_contract_descriptor_artifact_type"
   assert error_code(minimal_contract(
       "  outputs:\n    plan:\n      type: exec_plan\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.exec_plan_bundle.v2\n      required: true\n      source:\n        step: draft\n        path: tmp/plan.md\n",
     ))
@@ -179,6 +185,20 @@ pub fn parses_descriptor_contract_entries_test() {
   assert implementation_pack.type_ == workflow_contract.ImplementationPack
   assert code_change_bundle.type_ == workflow_contract.CodeChangeBundle
   assert commit_stack.type_ == workflow_contract.CommitStack
+}
+
+pub fn parses_generic_descriptor_contract_entries_test() {
+  let contract =
+    parse_contract(minimal_contract(
+      "  outputs:\n    screenshot:\n      kind: file\n      media_type: image/png\n      artifact_type: scherzo_ui.screenshot.v1\n      required: true\n      source:\n        step: collect_findings\n        path: tmp/final.png\n    visual_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo_ui.visual_artifact_bundle.v1\n      required: true\n      source:\n        step: collect_findings\n        path: tmp/visual-bundle.json\n    custom_value:\n      kind: value\n      media_type: application/vnd.scherzo.custom+json; charset=utf-8\n      artifact_type: scherzo.custom_value.v1\n      required: true\n      source:\n        step: collect_findings\n        inline_json: findings\n    custom_ref:\n      kind: ref\n      ref_type: workflow_run_handle\n      artifact_type: scherzo.ref_handle.v1\n      required: true\n      source:\n        type: url\n        value: https://example.invalid/review\n",
+    ))
+
+  let assert [screenshot, visual_bundle, custom_value, custom_ref] =
+    contract.outputs
+  assert screenshot.type_ == workflow_contract.GenericFile
+  assert visual_bundle.type_ == workflow_contract.GenericArtifactSet
+  assert custom_value.type_ == workflow_contract.GenericValue
+  assert custom_ref.type_ == workflow_contract.GenericRef
 }
 
 pub fn parses_custom_markdown_file_descriptor_test() {

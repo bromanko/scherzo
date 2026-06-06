@@ -84,6 +84,39 @@ pub fn plans_artifact_set_entry_publication_test() {
   assert planned.source.ref == plan_ref()
 }
 
+pub fn plans_generic_artifact_set_entry_publication_test() {
+  let screenshot_contents = "fake png bytes"
+  let bundle_descriptor =
+    visual_bundle_descriptor(
+      hash.sha256_hex(screenshot_contents),
+      bytes_of(screenshot_contents),
+    )
+  let bundle_contents = artifact_descriptor.to_string(bundle_descriptor)
+  let bundle_sha = hash.sha256_hex(bundle_contents)
+  let bundle_bytes = bit_array.byte_size(bit_array.from_string(bundle_contents))
+  let store =
+    store_with_contents([
+      #(visual_bundle_ref(), bundle_contents),
+      #(visual_screenshot_ref(), screenshot_contents),
+    ])
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      visual_bundle_manifest(bundle_sha, bundle_bytes),
+      repositories(),
+      leaf_route_with_selector("visual_artifacts", Some("screenshot")),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  let assert [planned] = manifest.files
+  assert planned.destination_path == "docs/plans/LIV-761.png"
+  assert planned.source.output == "visual_artifacts"
+  assert planned.source.entry == Some("screenshot")
+  assert planned.source.ref == visual_screenshot_ref()
+}
+
 pub fn plans_artifact_set_entry_can_render_destination_from_metadata_test() {
   let bundle_descriptor =
     execplan_bundle_descriptor_with_destination(
@@ -1523,6 +1556,33 @@ fn bundle_manifest(
   )
 }
 
+fn visual_bundle_manifest(
+  sha256: String,
+  bytes: Int,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "workflow.visual-review",
+    workflow_fingerprint: "wf-visual",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "visual_artifacts",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.GenericArtifactSet,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: visual_bundle_ref(),
+            sha256: sha256,
+            bytes: bytes,
+          ),
+          "application/json",
+          Some(visual_bundle_source_metadata()),
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
 fn materialized_execplan_bundle_contents(
   plan_sha256: String,
   plan_size: Int,
@@ -1768,6 +1828,45 @@ fn execplan_bundle_descriptor_with_optional_destination(
   )
 }
 
+fn visual_bundle_descriptor(
+  screenshot_sha256: String,
+  screenshot_size: Int,
+) -> artifact_descriptor.ArtifactDescriptor {
+  artifact_descriptor.ArtifactDescriptor(
+    name: "visual_artifacts",
+    kind: artifact_descriptor.ArtifactSetKind,
+    artifact_type: Some("scherzo_ui.visual_artifact_bundle.v1"),
+    description: None,
+    source: None,
+    validation: None,
+    metadata: None,
+    ref_type: None,
+    ref: None,
+    sha256: None,
+    bytes: None,
+    media_type: Some("application/json"),
+    value: None,
+    entries: [
+      artifact_descriptor.ArtifactDescriptor(
+        name: "screenshot",
+        kind: artifact_descriptor.FileKind,
+        artifact_type: Some("scherzo_ui.screenshot.v1"),
+        description: None,
+        source: None,
+        validation: None,
+        metadata: None,
+        ref_type: None,
+        ref: Some(visual_screenshot_ref()),
+        sha256: Some(screenshot_sha256),
+        bytes: Some(screenshot_size),
+        media_type: Some("image/png"),
+        value: None,
+        entries: [],
+      ),
+    ],
+  )
+}
+
 fn metadata_destination_path(
   metadata: Option(json_value.JsonValue),
 ) -> Option(String) {
@@ -1784,6 +1883,27 @@ fn metadata_destination_path(
 
 fn source_metadata() -> json_value.JsonValue {
   json_value.JObject([#("step_id", json_value.JString("publish_review_doc"))])
+}
+
+fn visual_bundle_source_metadata() -> json_value.JsonValue {
+  json_value.JObject([
+    #("step_id", json_value.JString("capture_visuals")),
+    #(
+      "contract_artifact_type",
+      json_value.JString("scherzo_ui.visual_artifact_bundle.v1"),
+    ),
+    #(
+      "contract_descriptor",
+      json_value.JObject([
+        #("kind", json_value.JString("artifact_set")),
+        #("media_type", json_value.JString("application/json")),
+        #(
+          "artifact_type",
+          json_value.JString("scherzo_ui.visual_artifact_bundle.v1"),
+        ),
+      ]),
+    ),
+  ])
 }
 
 fn plan_contents() -> String {
@@ -1923,6 +2043,14 @@ fn bundle_ref() -> String {
   "runs/run-1/outputs/exec_plan_bundle.json"
 }
 
+fn visual_bundle_ref() -> String {
+  "runs/run-1/outputs/visual_artifacts.json"
+}
+
+fn visual_screenshot_ref() -> String {
+  "runs/run-1/outputs/screenshot.png"
+}
+
 fn commit_stack_ref() -> String {
   "runs/run-1/outputs/commit_stack.json"
 }
@@ -1997,6 +2125,7 @@ fn store_with_contents(
           Error(Nil) -> Error(artifact_store.MissingStepArtifact(ref))
         }
       },
+      write_bytes: fn(_, _) { Ok(Nil) },
       write_immutable_bytes: fn(_, _) { Ok(artifact_store.ImmutableWritten) },
       read_bytes: fn(ref) {
         case dict.get(refs, ref) {

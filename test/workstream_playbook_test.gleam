@@ -742,6 +742,18 @@ fn write_snapshot(
   snapshot
 }
 
+fn exec_plan_bundle_descriptor() -> types.ContractDescriptorRecord {
+  types.ContractDescriptorRecord(
+    kind: "artifact_set",
+    ref_type: None,
+    media_type: Some("application/json"),
+    artifact_type: Some("scherzo.exec_plan_bundle.v2"),
+    source: None,
+    validation: None,
+    metadata: None,
+  )
+}
+
 fn handoff_json() -> String {
   handoff_json_for(
     phase_id: "execplan",
@@ -776,8 +788,8 @@ fn handoff_json_for(
             bytes: 123,
             media_type: "application/json",
             original_path: "tmp/" <> output_name <> ".json",
-            contract_type: contract_type,
-            artifact_type: Some("scherzo.exec_plan_bundle.v2"),
+            descriptor: exec_plan_bundle_descriptor(),
+            contract_type: Some(contract_type),
             producer: types.ProducerRef(
               workflow_id: producer_workflow_id,
               run_id: "run-1",

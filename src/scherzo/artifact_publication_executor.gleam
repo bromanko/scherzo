@@ -876,6 +876,11 @@ fn checkpoint_store(
           artifact_store.ArtifactIo(workflow_checkpoint.describe_error(error))
         })
       },
+      write_bytes: fn(_, _) {
+        Error(artifact_store.ArtifactIo(
+          "publication_executor_write_unsupported",
+        ))
+      },
       write_immutable_bytes: fn(_, _) {
         Error(artifact_store.ArtifactIo(
           "publication_executor_write_unsupported",
