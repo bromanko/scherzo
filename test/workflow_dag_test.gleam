@@ -97,6 +97,13 @@ pub fn parses_commit_stack_existing_pr_branch_publication_test() {
     )
 }
 
+pub fn rejects_commit_stack_publication_files_selector_test() {
+  assert error_code(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      files:\n        - select:\n            output: commit_stack\n          path: tmp/commit-stack.json\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
+    )
+    == "commit_stack_publication_files_unsupported"
+}
+
 pub fn rejects_commit_stack_publication_pull_request_override_test() {
   assert error_code(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: Should not be used\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",

@@ -260,9 +260,9 @@ fn env_value(env: List(#(String, String)), key: String) -> Option(String) {
 fn command_with_stdout_capture(command: String, stdout_path: String) -> String {
   "(\n"
   <> command
-  <> "\n) > >(command -p tee "
+  <> "\n) | command -p tee "
   <> shell_quote(stdout_path)
-  <> ")"
+  <> "\nstatus=${PIPESTATUS[0]}\nexit \"$status\""
 }
 
 fn finish_command(
@@ -341,8 +341,28 @@ fn captured_stdout(
   case diagnostics {
     None -> fallback
     Some(DiagnosticsCapture(stdout_path: stdout_path, ..)) ->
-      simplifile.read(stdout_path) |> result.unwrap(fallback)
+      case simplifile.read(stdout_path) {
+        Ok(stdout) -> captured_or_fallback_stdout(stdout, fallback)
+        Error(read_error) -> {
+          let _diagnostics_stdout_read_best_effort_error = read_error
+          fallback
+        }
+      }
   }
+}
+
+fn captured_or_fallback_stdout(captured: String, fallback: String) -> String {
+  let fallback = remove_shell_title_noise(fallback)
+  case string.length(captured) == 0 && string.length(fallback) > 0 {
+    True -> fallback
+    False -> captured
+  }
+}
+
+fn remove_shell_title_noise(stdout: String) -> String {
+  stdout
+  |> string.replace(each: "\u{001B}]0;\u{0007}\n", with: "")
+  |> string.replace(each: "\u{001B}]0;\u{0007}", with: "")
 }
 
 fn cleanup_stdout_capture(diagnostics: Option(DiagnosticsCapture)) -> Nil {
