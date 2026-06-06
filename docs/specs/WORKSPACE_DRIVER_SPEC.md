@@ -206,9 +206,9 @@ Required fields:
 | Field | Contract |
 | --- | --- |
 | `version` | Integer `1`. |
-| `capabilities` | List of unique strings from the fixed capability vocabulary: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. |
+| `capabilities` | List of unique strings from the fixed capability vocabulary: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, `publish-change`, and `publish-commit-stack`. |
 
-The capability list MAY be in any order. Scherzo canonicalizes it before validation, prompt rendering, environment exposure, and fingerprinting. Malformed JSON, missing fields, unsupported versions, unknown capability names, duplicate capability names, non-string entries, nonzero exit, empty stdout, and timeout are workflow-config load failures.
+The capability list MAY be in any order. Scherzo canonicalizes it before validation, prompt rendering, environment exposure, and fingerprinting. Malformed JSON, missing fields, unsupported versions, unknown capability names, duplicate capability names, non-string entries, nonzero exit, empty stdout, and timeout are workflow-config load failures. `publish-commit-stack` is the same-repo `commit_stack` publication successor capability; drivers may continue to advertise `publish-change` for the migration-compatible path until the command contract is fully renamed.
 
 ## 7. Lifecycle commands
 
@@ -493,7 +493,7 @@ An artifact/no-op driver is suitable for workflows that only need an empty works
 - refuse `remove` unless the ownership marker is present,
 - report capabilities `status`, `changed-files`, and `assert-only`,
 - report every regular file under the workspace root as a changed file except private driver markers and Scherzo scratch/diagnostic directories, and
-- reject `diff`, `baseline`, `refresh-base`, and `publish-change` with exit code 2.
+- reject `diff`, `baseline`, `refresh-base`, `publish-change`, and `publish-commit-stack` with exit code 2.
 
 `scripts/scherzo-workspace-noop` is the bundled artifact/no-op driver, and packaged installs expose the same command as `scherzo-workspace-noop`. It reports present files with `status: "modified"` because it has no VCS baseline.
 
@@ -505,11 +505,11 @@ A VCS-backed driver is suitable for workflows that run in a source workspace and
 - preserve a clear baseline for each workspace,
 - report capabilities matching the operations it actually implements,
 - implement `status`, `diff`, `changed-files`, `assert-only`, and `baseline` against the prepared baseline,
-- implement `refresh-base` and `publish-change` only when the backend and operator credentials support those operations,
+- implement `refresh-base`, `publish-change`, and `publish-commit-stack` only when the backend and operator credentials support those operations,
 - keep changed-file and diff semantics stable enough for workflow validation, and
 - document which ignored files, generated files, caches, and backend metadata appear in `changed-files`.
 
-`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces, and packaged installs expose the same command as `scherzo-workspace-jj`. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces. Root workspace base selection is operator policy supplied through driver environment such as `SCHERZO_JJ_WORKSPACE_BASE`, `SCHERZO_JJ_WORKSPACE_REMOTE`, `SCHERZO_JJ_WORKSPACE_BASE_BRANCH`, and `SCHERZO_JJ_WORKSPACE_FETCH_BASE`; publication remote selection is separate through `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`. GitHub repository publication can be pinned with `SCHERZO_GITHUB_REPO=owner/repo` when remote URL inference is not enough. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` are not jj driver configuration inputs; `publish-change` fails closed when only the legacy publication remote is present.
+`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces, and packaged installs expose the same command as `scherzo-workspace-jj`. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`; it does not advertise `publish-commit-stack` until the bundled command implements the renamed operation. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces. Root workspace base selection is operator policy supplied through driver environment such as `SCHERZO_JJ_WORKSPACE_BASE`, `SCHERZO_JJ_WORKSPACE_REMOTE`, `SCHERZO_JJ_WORKSPACE_BASE_BRANCH`, and `SCHERZO_JJ_WORKSPACE_FETCH_BASE`; publication remote selection is separate through `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`. GitHub repository publication can be pinned with `SCHERZO_GITHUB_REPO=owner/repo` when remote URL inference is not enough. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` are not jj driver configuration inputs; `publish-change` fails closed when only the legacy publication remote is present.
 
 ## 13. Compatibility and versioning
 

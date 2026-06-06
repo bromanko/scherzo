@@ -373,6 +373,7 @@ pub type WorkspaceCapability {
   WorkspaceBaseline
   WorkspaceRefreshBase
   WorkspacePublishChange
+  WorkspacePublishCommitStack
 }
 
 pub type WorkspaceDriverConfig {
@@ -499,6 +500,7 @@ pub fn workspace_capability_from_string(
     "baseline" -> Ok(WorkspaceBaseline)
     "refresh-base" -> Ok(WorkspaceRefreshBase)
     "publish-change" -> Ok(WorkspacePublishChange)
+    "publish-commit-stack" -> Ok(WorkspacePublishCommitStack)
     _ -> Error(Nil)
   }
 }
@@ -514,6 +516,7 @@ pub fn workspace_capability_to_string(
     WorkspaceBaseline -> "baseline"
     WorkspaceRefreshBase -> "refresh-base"
     WorkspacePublishChange -> "publish-change"
+    WorkspacePublishCommitStack -> "publish-commit-stack"
   }
 }
 
@@ -535,6 +538,7 @@ pub fn canonical_workspace_capabilities(
     WorkspaceBaseline,
     WorkspaceRefreshBase,
     WorkspacePublishChange,
+    WorkspacePublishCommitStack,
   ]
   |> list.filter(fn(capability) { list.contains(capabilities, capability) })
 }

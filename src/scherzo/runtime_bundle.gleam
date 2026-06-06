@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/artifact_publication_config
+import scherzo/commit_stack_publication_preflight
 import scherzo/config
 import scherzo/config/tracker_config
 import scherzo/config/types as config_types
@@ -245,6 +246,18 @@ fn load_orchestrator(
     workspace_driver_discovery.enrich_orchestrator(orchestrator)
     |> result.map_error(workspace_driver_discovery_error_to_bundle_error),
   )
+  use _ <- result.try(
+    commit_stack_publication_preflight.validate_required(
+      orchestrator,
+      dict.to_list(workflows),
+    )
+    |> result.map_error(fn(err) {
+      BundleError(
+        commit_stack_publication_preflight.error_code(err),
+        commit_stack_publication_preflight.error_message(err),
+      )
+    }),
+  )
   use _ <- result.try(validate_workspace_profiles(
     orchestrator,
     dict.to_list(workflows),
@@ -324,6 +337,10 @@ fn workflow_completion_override(
 
 fn workflow_requires_review(dag: workflow_dag.WorkflowDag) -> Bool {
   list.contains(dag.workspace_capabilities, config_types.WorkspacePublishChange)
+  || list.contains(
+    dag.workspace_capabilities,
+    config_types.WorkspacePublishCommitStack,
+  )
   || workflow_declares_outputs(dag)
 }
 

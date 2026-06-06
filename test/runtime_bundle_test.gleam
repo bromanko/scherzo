@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
+import scherzo/commit_stack_publication_preflight
 import scherzo/config/types as config_types
 import scherzo/path
 import scherzo/result_artifact
@@ -129,6 +130,40 @@ fn write_publication_yaml_project(
   Nil
 }
 
+fn write_commit_stack_publication_yaml_project(
+  dir: String,
+  workspace_config: String,
+  workflow_workspace: String,
+  required: Bool,
+) -> Nil {
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\n"
+        <> workflow_workspace
+        <> "contract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: stdout\n    merge_target:\n      type: code_change\n      source:\n        step: main\n        field: stdout\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\nartifacts:\n  publications:\n    - id: publish_stack\n      repository: github.code\n      required: "
+        <> yaml_bool(required)
+        <> "\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_target\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\n"
+        <> workspace_config
+        <> "artifacts:\n  repositories:\n    github:\n      code:\n        repo: scherzo-systems/scherzo\n        base: main\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+  Nil
+}
+
+fn yaml_bool(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
+  }
+}
+
 fn write_default_yaml_project(dir: String) -> Nil {
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) =
@@ -180,6 +215,155 @@ pub fn rejects_unsupported_publication_repository_backend_test() {
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   assert code == "unsupported_publication_repository_backend"
   assert string.contains(message, "gitlab")
+}
+
+pub fn rejects_required_commit_stack_publication_with_noop_driver_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-noop-driver"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: noop\n",
+    "",
+    True,
+  )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "commit_stack_publication_driver_unsupported"
+  assert string.contains(message, "workflow implementation")
+  assert string.contains(message, "publication publish_stack")
+  assert string.contains(message, "workspace.driver noop")
+  assert string.contains(message, "publish-change")
+  assert string.contains(message, "required: false")
+}
+
+pub fn rejects_first_required_commit_stack_publication_in_declaration_order_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-diagnostic-order"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: stdout\n    merge_target:\n      type: code_change\n      source:\n        step: main\n        field: stdout\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\nartifacts:\n  publications:\n    - id: first_stack\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_target\n    - id: second_stack\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_target\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: noop\nartifacts:\n  repositories:\n    github:\n      code:\n        repo: scherzo-systems/scherzo\n        base: main\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "commit_stack_publication_driver_unsupported"
+  assert string.contains(message, "publication first_stack")
+  assert !string.contains(message, "publication second_stack")
+}
+
+pub fn loads_required_commit_stack_publication_with_jj_driver_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-jj-driver"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: jj\n",
+    "",
+    True,
+  )
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert dict.has_key(bundle.workflows, "implementation")
+}
+
+pub fn loads_required_commit_stack_publication_with_successor_capability_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-successor-driver"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n",
+    "",
+    True,
+  )
+  write_describe_driver(dir, "driver", "[\"publish-commit-stack\"]")
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert dict.has_key(bundle.workflows, "implementation")
+}
+
+pub fn loads_optional_commit_stack_publication_with_unsupported_driver_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-optional-noop"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: noop\n",
+    "",
+    False,
+  )
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let diagnostics =
+    commit_stack_publication_preflight.optional_diagnostics(
+      bundle.orchestrator,
+      dict.to_list(bundle.workflows),
+    )
+  let assert [diagnostic] = diagnostics
+  assert commit_stack_publication_preflight.diagnostic_code(diagnostic)
+    == "optional_commit_stack_publication_driver_unsupported"
+  assert string.contains(
+    commit_stack_publication_preflight.diagnostic_message(diagnostic),
+    "optional publication",
+  )
+}
+
+pub fn rejects_required_commit_stack_publication_with_custom_status_driver_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-custom-status"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n",
+    "",
+    True,
+  )
+  write_describe_driver(dir, "driver", "[\"status\",\"changed-files\"]")
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "commit_stack_publication_driver_unsupported"
+  assert string.contains(message, "workspace.driver custom")
+  assert string.contains(message, "status, changed-files")
+}
+
+pub fn rejects_commit_stack_publication_when_custom_driver_metadata_missing_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-missing-metadata"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n",
+    "",
+    True,
+  )
+  write_driver_script(
+    dir,
+    "driver",
+    "#!/bin/sh\necho missing describe >&2\nexit 2\n",
+  )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "workspace_driver_discovery_failed"
+  assert string.contains(message, "profile custom")
+  assert string.contains(message, "describe --json exited")
+}
+
+pub fn rejects_commit_stack_publication_when_driver_reports_unknown_capability_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-unknown-capability"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n",
+    "",
+    True,
+  )
+  write_describe_driver(dir, "driver", "[\"status\",\"publish-stack\"]")
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "workspace_driver_discovery_failed"
+  assert string.contains(message, "unknown capability: publish-stack")
 }
 
 pub fn rejects_markdown_paths_as_unsupported_config_path_test() {
@@ -314,6 +498,41 @@ pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test(
       workflow_completion_policy.StateByName("Done"),
       "no review is required",
     )
+}
+
+pub fn task_updates_completion_policy_accepts_publish_commit_stack_alias_with_jj_test() {
+  let dir = "test/tmp/runtime-bundle-task-updates-publish-commit-stack"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nworkspace:\n  driver: jj\n  requires: [publish-commit-stack]\nsteps:\n  - id: run\n    kind: command\n    run: echo reviewable\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: jj\ntask_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Triage\n    partial_success: Triage\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let assert Ok(dag) = dict.get(bundle.workflows, "implementation")
+  let assert Ok(profile) =
+    dict.get(bundle.orchestrator.workspace_profiles.profiles, "jj")
+  let assert Some(driver) = profile.driver
+  let assert Some(policy) = bundle.effective.handoff.completion_states
+  let assert Ok(implementation) = dict.get(policy.workflows, "implementation")
+
+  assert dag.workspace_capabilities
+    == [config_types.WorkspacePublishCommitStack]
+  assert list.contains(driver.capabilities, config_types.WorkspacePublishChange)
+  assert !list.contains(
+    driver.capabilities,
+    config_types.WorkspacePublishCommitStack,
+  )
+  assert implementation.produces_reviewable_artifacts == Some(True)
+  assert implementation.requires_review == Some(True)
 }
 
 pub fn loads_workflow_yaml_without_recover_fields_through_current_parser_test() {
