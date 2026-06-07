@@ -1,13 +1,17 @@
 import gleam/dict
+import gleam/list
 import gleam/option.{None}
+import orchestrator_transition_invariant_helpers as invariant_helpers
 import orchestrator_transition_test
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/runtime/identity
+import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
+import scherzo/state/record
 import scherzo/task
 
 pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
@@ -58,7 +62,7 @@ pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
     ]
 }
 
-pub fn ledger_spawn_continuation_failure_clears_pending_without_starting_test() {
+pub fn ledger_spawn_continuation_failure_schedules_recovery_retry_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let state = orchestrator_transition_test.state_with_pending_claim(issue)
 
@@ -82,15 +86,166 @@ pub fn ledger_spawn_continuation_failure_clears_pending_without_starting_test() 
   assert dict.get(next.pending_claims, identity) == Error(Nil)
   assert dict.get(next.runtime.running, identity) == Error(Nil)
   assert dict.get(next.workers.by_issue, identity) == Error(Nil)
-  assert effects
-    == [
-      effects_types.Log("warn", "ledger_append_failed", [
-        #("issue_id", "issue-1"),
-        #("run_id", "run-1"),
-        #("correlation_id", "claim:issue-1:run-1"),
-        #("error", "io"),
-      ]),
-    ]
+  let assert Ok(retry) = dict.get(next.runtime.retry_attempts, identity)
+  assert retry.issue_id == "issue-1"
+  assert retry.delay_ms == 10_000
+  assert retry.timer_generation == 1
+  assert dict.get(next.runtime.claimed, identity) == Ok("ABC-1")
+  invariant_helpers.assert_valid_state(next)
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      effects_types.StartWorker(_) -> True
+      _ -> False
+    }
+  })
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.Log("warn", "ledger_append_failed", [
+      #("issue_id", "issue-1"),
+      #("run_id", "run-1"),
+      #("correlation_id", "claim:issue-1:run-1"),
+      #("error", "io"),
+    ])
+  })
+  assert list.any(effects, fn(effect) {
+    case effect {
+      effects_types.AppendLedger(effects_types.LedgerAppend(
+        correlation_id: "claim_start_retry_schedule:issue-1:1",
+        batch: batch,
+        failure_event: "ledger_append_failed",
+        policy: effects_types.ContinueRegardless,
+      )) ->
+        ledger_batch.to_bodies(batch)
+        == [
+          record.RetryScheduled(
+            "issue-1",
+            "ABC-1",
+            10_000,
+            1,
+            "claim_start_ledger_append_failed",
+          ),
+        ]
+      _ -> False
+    }
+  })
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.ScheduleRetryTimer(
+      "issue-1",
+      10_000,
+      1,
+      orchestrator_reason.RetryClaimStartLedgerAppendFailed,
+    )
+  })
+}
+
+pub fn claim_start_recovery_retry_after_prior_retry_increments_generation_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let runtime = orchestrator_transition_test.fixture_runtime()
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..runtime,
+      retry_attempts: dict.insert(
+        runtime.retry_attempts,
+        task_identity,
+        orchestrator_state.RetryEntry(
+          task_ref: task.from_legacy_issue(issue).ref,
+          issue_id: issue.id,
+          delay_ms: 40_000,
+          timer_generation: 3,
+        ),
+      ),
+      claimed: dict.insert(runtime.claimed, task_identity, "ABC-1"),
+    )
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      runtime: runtime,
+    )
+  invariant_helpers.assert_valid_state(state)
+
+  let transition_types.Outcome(state: claiming, effects: retry_effects) =
+    transition.handle(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        3,
+        Ok([issue]),
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state,
+    )
+
+  let assert Ok(pending) = dict.get(claiming.pending_claims, task_identity)
+  assert pending.previous_retry_generation == 3
+  assert dict.get(claiming.runtime.retry_attempts, task_identity) == Error(Nil)
+  assert dict.get(claiming.runtime.claimed, task_identity) == Ok("ABC-1")
+  invariant_helpers.assert_valid_state(claiming)
+  assert list.any(retry_effects, fn(effect) {
+    case effect {
+      effects_types.ClaimIssue(_, _, _, _) -> True
+      _ -> False
+    }
+  })
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "claim:issue-1:" <> pending.run_id,
+        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
+          task_identity: task_identity,
+          issue_id: identity.issue_id_from_string("issue-1"),
+          run_id: identity.run_id_from_string(pending.run_id),
+          session_id: identity.session_id_from_string(pending.session_id),
+        ),
+        result: Error(ledger.Io("disk full")),
+        now_ms: 123,
+      ),
+      claiming,
+    )
+
+  let assert Ok(retry) = dict.get(next.runtime.retry_attempts, task_identity)
+  assert retry.issue_id == "issue-1"
+  assert retry.delay_ms == 80_000
+  assert retry.timer_generation == 4
+  assert dict.get(next.runtime.claimed, task_identity) == Ok("ABC-1")
+  invariant_helpers.assert_valid_state(next)
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      effects_types.StartWorker(_) -> True
+      _ -> False
+    }
+  })
+  assert list.any(effects, fn(effect) {
+    case effect {
+      effects_types.AppendLedger(effects_types.LedgerAppend(
+        correlation_id: "claim_start_retry_schedule:issue-1:4",
+        batch: batch,
+        failure_event: "ledger_append_failed",
+        policy: effects_types.ContinueRegardless,
+      )) ->
+        ledger_batch.to_bodies(batch)
+        == [
+          record.RetryScheduled(
+            "issue-1",
+            "ABC-1",
+            80_000,
+            4,
+            "claim_start_ledger_append_failed",
+          ),
+        ]
+      _ -> False
+    }
+  })
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.ScheduleRetryTimer(
+      "issue-1",
+      80_000,
+      4,
+      orchestrator_reason.RetryClaimStartLedgerAppendFailed,
+    )
+  })
 }
 
 pub fn claim_requested_empty_batch_does_not_emit_append_or_start_worker_test() {

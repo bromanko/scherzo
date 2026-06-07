@@ -1271,7 +1271,14 @@ fn dispatch_retry_claim(
       context.tracker_backend_kind,
     )
   let outcome =
-    claims.begin_for_issue(state, issue, [], context, claim_callbacks())
+    claims.begin_for_issue_after_retry(
+      state,
+      issue,
+      [],
+      context,
+      claim_callbacks(),
+      generation,
+    )
   transition_types.Outcome(
     state: outcome.state,
     effects: list.append(

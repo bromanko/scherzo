@@ -162,6 +162,42 @@ pub fn begin_for_issue(
   context: transition_types.DispatchContext,
   callbacks: Callbacks,
 ) -> transition_types.Outcome {
+  begin_for_issue_with_previous_retry_generation(
+    state,
+    issue,
+    remaining_candidates,
+    context,
+    callbacks,
+    0,
+  )
+}
+
+pub fn begin_for_issue_after_retry(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  context: transition_types.DispatchContext,
+  callbacks: Callbacks,
+  previous_retry_generation: Int,
+) -> transition_types.Outcome {
+  begin_for_issue_with_previous_retry_generation(
+    state,
+    issue,
+    remaining_candidates,
+    context,
+    callbacks,
+    previous_retry_generation,
+  )
+}
+
+fn begin_for_issue_with_previous_retry_generation(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  context: transition_types.DispatchContext,
+  callbacks: Callbacks,
+  previous_retry_generation: Int,
+) -> transition_types.Outcome {
   let Callbacks(dispatch_candidates: dispatch) = callbacks
   case helpers.select_workflow_route(context, issue) {
     Error(#(code, message)) -> {
@@ -238,6 +274,7 @@ pub fn begin_for_issue(
                   recovery: recovery,
                   remaining_candidates: remaining_candidates,
                   dispatch_context: context,
+                  previous_retry_generation: previous_retry_generation,
                 )
               transition_types.Outcome(
                 state: transition_types.State(
@@ -498,19 +535,115 @@ pub fn handle_spawn(
         True ->
           case result {
             Error(err) ->
-              transition_types.Outcome(
-                state: clear_pending_claim(state, task_identity),
-                effects: [
-                  effects_types.Log("warn", "ledger_append_failed", [
-                    #("issue_id", identity.issue_id_to_string(issue_id)),
-                    #("run_id", identity.run_id_to_string(run_id)),
-                    #("correlation_id", correlation_id),
-                    #("error", ledger_error_code(err)),
-                  ]),
-                ],
+              schedule_claim_start_recovery_retry(
+                state,
+                pending,
+                task_identity,
+                issue_id,
+                run_id,
+                correlation_id,
+                err,
               )
             Ok(Nil) -> start_worker(state, pending, callbacks)
           }
+      }
+  }
+}
+
+fn schedule_claim_start_recovery_retry(
+  state: transition_types.State,
+  pending: transition_types.PendingClaim,
+  task_identity: identity.TaskIdentity,
+  issue_id: identity.IssueId,
+  run_id: identity.RunId,
+  correlation_id: String,
+  err: ledger.LedgerError,
+) -> transition_types.Outcome {
+  let retry_reason = orchestrator_reason.RetryClaimStartLedgerAppendFailed
+  let generation =
+    next_retry_generation(
+      state.runtime,
+      task_identity,
+      pending.previous_retry_generation,
+    )
+  let delay_ms =
+    core.backoff_delay(
+      generation,
+      pending.dispatch_context.effective.agent.max_retry_backoff_ms,
+    )
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      retry_attempts: dict.insert(
+        state.runtime.retry_attempts,
+        task_identity,
+        orchestrator_state.RetryEntry(
+          task_ref: pending.task_ref,
+          issue_id: pending.issue_id,
+          delay_ms: delay_ms,
+          timer_generation: generation,
+        ),
+      ),
+      claimed: dict.insert(
+        state.runtime.claimed,
+        task_identity,
+        pending.issue.identifier,
+      ),
+    )
+  let state =
+    transition_types.State(
+      ..state,
+      pending_claims: dict.delete(state.pending_claims, task_identity),
+      runtime: runtime,
+    )
+    |> sync_state
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("warn", "ledger_append_failed", [
+      #("issue_id", identity.issue_id_to_string(issue_id)),
+      #("run_id", identity.run_id_to_string(run_id)),
+      #("correlation_id", correlation_id),
+      #("error", ledger_error_code(err)),
+    ]),
+    effects_types.Log("warn", "claim_start_recovery_retry_scheduled", [
+      #("issue_id", identity.issue_id_to_string(issue_id)),
+      #("run_id", identity.run_id_to_string(run_id)),
+      #("delay_ms", int.to_string(delay_ms)),
+    ]),
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "claim_start_retry_schedule:"
+        <> pending.issue_id
+        <> ":"
+        <> int.to_string(generation),
+      batch: ledger_batch.retry_scheduled(
+        pending.issue_id,
+        pending.issue.identifier,
+        delay_ms,
+        generation,
+        orchestrator_reason.retry_to_string(retry_reason),
+      ),
+      failure_event: "ledger_append_failed",
+      policy: effects_types.ContinueRegardless,
+    )),
+    effects_types.ScheduleRetryTimer(
+      pending.issue_id,
+      delay_ms,
+      generation,
+      retry_reason,
+    ),
+  ])
+}
+
+fn next_retry_generation(
+  runtime: orchestrator_state.RuntimeState,
+  task_identity: identity.TaskIdentity,
+  previous_retry_generation: Int,
+) -> Int {
+  case dict.get(runtime.retry_attempts, task_identity) {
+    Ok(entry) -> entry.timer_generation + 1
+    Error(Nil) ->
+      case previous_retry_generation > 0 {
+        True -> previous_retry_generation + 1
+        False -> 1
       }
   }
 }

@@ -161,6 +161,7 @@ pub fn state_with_pending_claim(
         recovery: None,
         remaining_candidates: [],
         dispatch_context: fixture_context(),
+        previous_retry_generation: 0,
       ),
     ),
     lifecycle: {
