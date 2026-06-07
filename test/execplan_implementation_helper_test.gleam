@@ -1008,7 +1008,7 @@ pub fn plan_completion_recovery_reports_repair_needed_for_fresh_fail_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 3",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1020,7 +1020,7 @@ pub fn plan_completion_recovery_reports_repair_needed_for_fresh_fail_test() {
   assert string.contains(artifact.stdout, "PLAN_COMPLETION_RECOVERY_ATTEMPT=2")
   assert string.contains(
     artifact.stdout,
-    "PLAN_COMPLETION_RECOVERY_MAX_ATTEMPTS=2",
+    "PLAN_COMPLETION_RECOVERY_MAX_ATTEMPTS=3",
   )
   assert string.contains(
     artifact.stdout,
@@ -1030,10 +1030,41 @@ pub fn plan_completion_recovery_reports_repair_needed_for_fresh_fail_test() {
     simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.json")
   assert string.contains(recovery_json, "\"status\": \"repair_needed\"")
   assert string.contains(recovery_json, "\"attempt\": 2")
-  assert string.contains(recovery_json, "\"max_attempts\": 2")
+  assert string.contains(recovery_json, "\"max_attempts\": 3")
   let assert Ok(recovery_md) =
     simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.md")
   assert string.contains(recovery_md, "Acceptance criterion remains unchecked.")
+}
+
+pub fn plan_completion_recovery_reports_repair_needed_before_final_repair_test() {
+  let dir = "test/tmp/plan-completion-recovery-final-repair-needed"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(
+    dir,
+    "fail",
+    fingerprint,
+    "[\"Acceptance criterion remains unchecked.\"]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-final-repair --attempt 3 --max-attempts 3",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_RECOVERY_STATUS=repair_needed",
+  )
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_RECOVERY_ATTEMPT=3")
+  let assert Ok(recovery_json) =
+    simplifile.read(dir <> "/tmp/scherzo-plan-completion-recovery.json")
+  assert string.contains(recovery_json, "\"phase\": \"before-final-repair\"")
+  assert string.contains(recovery_json, "\"status\": \"repair_needed\"")
+  assert string.contains(recovery_json, "\"attempt\": 3")
+  assert string.contains(recovery_json, "\"max_attempts\": 3")
 }
 
 pub fn plan_completion_recovery_reports_not_needed_for_fresh_pass_test() {
@@ -1044,7 +1075,7 @@ pub fn plan_completion_recovery_reports_not_needed_for_fresh_pass_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 3",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1071,14 +1102,14 @@ pub fn plan_completion_recovery_preserves_terminal_verdict_failures_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 3",
     )
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.failure_code == Some("plan_completion_verdict_malformed")
 }
 
-pub fn plan_completion_recovery_exhausts_after_late_repair_test() {
+pub fn plan_completion_recovery_exhausts_after_final_repair_test() {
   let dir = "test/tmp/plan-completion-recovery-exhausted"
   let fingerprint = setup_plan_completion_gate_fixture(dir)
   write_plan_completion_verdict(
@@ -1091,7 +1122,7 @@ pub fn plan_completion_recovery_exhausts_after_late_repair_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase after-final-repair --attempt 3 --max-attempts 3",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1146,7 +1177,7 @@ pub fn plan_completion_recovery_exhausts_at_final_gate_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase final --attempt 2 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase final --attempt 3 --max-attempts 3",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1160,7 +1191,7 @@ pub fn plan_completion_recovery_exhausts_at_final_gate_test() {
   assert string.contains(recovery_json, "\"phase\": \"final\"")
 }
 
-pub fn plan_completion_recovery_rejects_over_budget_before_late_repair_test() {
+pub fn plan_completion_recovery_rejects_over_budget_before_final_repair_test() {
   let dir = "test/tmp/plan-completion-recovery-over-budget"
   let fingerprint = setup_plan_completion_gate_fixture(dir)
   write_plan_completion_verdict(
@@ -1173,7 +1204,7 @@ pub fn plan_completion_recovery_rejects_over_budget_before_late_repair_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-late-repair --attempt 3 --max-attempts 2",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation plan-completion-recovery --phase before-final-repair --attempt 4 --max-attempts 3",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -2360,7 +2391,7 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
   assert string.contains(execplan, "- id: finalize_final_plan_completion_gate")
   assert string.contains(
     execplan,
-    "plan-completion-recovery --phase final --attempt 2 --max-attempts 2",
+    "plan-completion-recovery --phase final --attempt 3 --max-attempts 3",
   )
 }
 
@@ -2416,7 +2447,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   assert string.contains(workflow, "depends_on: [gate_plan_completion]")
   assert string.contains(
     workflow,
-    "plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2",
+    "plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 3",
   )
   assert string.contains(workflow, "- id: apply_late_plan_completion_feedback")
   assert string.contains(
@@ -2465,7 +2496,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "- id: finalize_plan_completion_gate_recovery",
+    "- id: classify_plan_completion_gate_after_late_repair",
   )
   assert string.contains(
     workflow,
@@ -2473,7 +2504,64 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2",
+    "plan-completion-recovery --phase before-final-repair --attempt 3 --max-attempts 3",
+  )
+  assert string.contains(workflow, "- id: apply_final_plan_completion_feedback")
+  assert string.contains(
+    workflow,
+    "depends_on: [classify_plan_completion_gate_after_late_repair]",
+  )
+  assert string.contains(
+    workflow,
+    "prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
+  )
+  assert string.contains(
+    workflow,
+    "- id: analyze_changes_after_final_plan_feedback",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [apply_final_plan_completion_feedback]",
+  )
+  assert string.contains(
+    workflow,
+    "- id: restore_execplan_artifacts_after_final_plan_feedback",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [analyze_changes_after_final_plan_feedback]",
+  )
+  assert string.contains(
+    workflow,
+    "- id: verify_plan_completion_after_final_repair",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [restore_execplan_artifacts_after_final_plan_feedback]",
+  )
+  assert string.contains(
+    workflow,
+    "prompts/execplan-implementation-verify-completion-after-final-repair.md",
+  )
+  assert string.contains(
+    workflow,
+    "- id: gate_plan_completion_after_final_repair",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [verify_plan_completion_after_final_repair]",
+  )
+  assert string.contains(
+    workflow,
+    "- id: finalize_plan_completion_gate_recovery",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [gate_plan_completion_after_final_repair]",
+  )
+  assert string.contains(
+    workflow,
+    "plan-completion-recovery --phase after-final-repair --attempt 3 --max-attempts 3",
   )
   assert string.contains(workflow, "- id: review_changes")
   assert string.contains(
@@ -2517,11 +2605,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   assert string.contains(workflow, "- id: finalize_final_plan_completion_gate")
   assert string.contains(
     workflow,
-    "plan-completion-recovery --phase final --attempt 2 --max-attempts 2",
-  )
-  assert !string.contains(
-    workflow,
-    "- id: apply_final_plan_completion_feedback",
+    "plan-completion-recovery --phase final --attempt 3 --max-attempts 3",
   )
   assert string.contains(workflow, "- id: publish_pr")
   assert string.contains(
