@@ -181,6 +181,7 @@ pub fn main() -> Nil {
           }
         }
       }
+    Ok(Connect(["--help"])) | Ok(Connect(["-h"])) -> io.println(connect.usage())
     Ok(Connect(args)) ->
       case connect.main(args) {
         Ok(Nil) -> Nil

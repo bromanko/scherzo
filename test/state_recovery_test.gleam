@@ -1252,6 +1252,7 @@ fn config() -> config_types.EffectiveConfig {
       enabled: False,
       endpoint: None,
       credential_ref: None,
+      daemon_label: None,
       command_bridge_enabled: False,
       heartbeat_interval_ms: 5000,
       state_interval_ms: 5000,

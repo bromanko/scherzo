@@ -1,7 +1,7 @@
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/remote/ui_websocket_client
 import scherzo/log
@@ -46,6 +46,7 @@ fn new_fixture() -> Fixture {
       websocket_url: "wss://ui.example.test/api/daemons/ws",
       daemon_id: "daemon_abc",
       boot_id: "boot_abc",
+      daemon_label: None,
       credential: "dcred_secret_1",
       heartbeat_interval_ms: 1000,
       state_interval_ms: 1000,
@@ -107,6 +108,31 @@ pub fn ui_websocket_client_sends_handshake_hello_heartbeat_and_state_test() {
   assert string.contains(
     test_async.expect_message(fixture.outbound),
     "daemon_state",
+  )
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_sends_daemon_label_metadata_test() {
+  let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(
+        ..settings,
+        daemon_label: Some("Project Foo / MacBook"),
+      ),
+      deps,
+    )
+  assert string.contains(
+    test_async.expect_message(outbound),
+    "\"daemonLabel\":\"Project Foo / MacBook\"",
+  )
+  assert string.contains(
+    test_async.expect_message(outbound),
+    "\"daemonLabel\":\"Project Foo / MacBook\"",
+  )
+  assert string.contains(
+    test_async.expect_message(outbound),
+    "\"daemonLabel\":\"Project Foo / MacBook\"",
   )
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }

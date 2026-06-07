@@ -65,6 +65,7 @@ pub fn start_with_control(
       websocket_url: validated.websocket_url,
       daemon_id: identity.daemon_id,
       boot_id: identity.boot_id,
+      daemon_label: effective.ui_server.daemon_label,
       credential: stored.secret,
       heartbeat_interval_ms: effective.ui_server.heartbeat_interval_ms,
       state_interval_ms: effective.ui_server.state_interval_ms,

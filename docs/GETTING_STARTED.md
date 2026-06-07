@@ -191,14 +191,15 @@ agents:
 ui_server:
   enabled: false
   # Leave this off for local-only operation. Pair first with:
-  #   scherzo connect --pairing-token <pair_...> --server-url <https-url>
-  # Then set a non-secret credential_ref here. The daemon loads the durable
+  #   scherzo connect --pairing-token <pair_...> --server-url <https-url> --name "Project Foo"
+  # Then set a non-secret credential_ref and optional daemon_label here. The daemon loads the durable
   # credential from the owner-only credential store, sends daemon_hello /
-  # heartbeat / daemon_state over the outbound UI connection, retries temporary
+  # heartbeat / daemon_state metadata over the outbound UI connection, retries temporary
   # outages in the background, and keeps local scherzoctl control as the
   # fallback. Command/result bridge work remains disabled by default.
   # endpoint: https://ui.example.test
   # credential_ref: work-laptop
+  # daemon_label: Project Foo
 
 task_updates:
   enabled: false

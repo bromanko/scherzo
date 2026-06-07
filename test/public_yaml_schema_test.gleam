@@ -317,7 +317,16 @@ pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
       <> "ui_server:\n"
       <> "  enabled: true\n"
       <> "  endpoint: https://scherzo.example\n"
-      <> "  credential_ref: work-laptop\n",
+      <> "  credential_ref: work-laptop\n"
+      <> "  daemon_label: Project Foo / MacBook\n",
+    minimal_config()
+      <> "ui_server:\n"
+      <> "  enabled: true\n"
+      <> "  endpoint: https://scherzo.example\n"
+      <> "  credential_ref: work-laptop\n"
+      <> "  daemon_label: \"  "
+      <> string.repeat("x", times: 80)
+      <> "  \"\n",
     minimal_config()
       <> "ui_server:\n"
       <> "  enabled: true\n"
@@ -481,6 +490,22 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
         <> "ui_server:\n"
         <> "  enabled: true\n"
         <> "  endpoint: https://scherzo.example/enroll\n",
+    ),
+    #(
+      "ui_server.daemon_label rejects whitespace-only",
+      minimal_config() <> "ui_server:\n  daemon_label: \"   \"\n",
+    ),
+    #(
+      "ui_server.daemon_label rejects overlength",
+      minimal_config()
+        <> "ui_server:\n  daemon_label: "
+        <> string.repeat("x", times: 81)
+        <> "\n",
+    ),
+    #(
+      "ui_server.daemon_label rejects control characters",
+      minimal_config()
+        <> "ui_server:\n  daemon_label: |\n    Project\n    Foo\n",
     ),
     #(
       "ui_server.enrollment_token_env is removed",

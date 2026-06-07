@@ -226,8 +226,11 @@ is eliminated.
   starts one outbound UI client, sends `daemon_hello`, `heartbeat`, and minimal
   `daemon_state` snapshots, retries temporary outages without blocking local
   control, and stops retrying when the credential or daemon identity is revoked
-  until the operator pairs again. Project config keeps only the non-secret UI
-  base URL and `credential_ref`; it does not read or reuse `control.json` or
+  until the operator pairs again. Pairing and later heartbeat/state frames may
+  include the non-secret `daemonLabel` from `scherzo connect --name` or
+  `ui_server.daemon_label`, with the CLI flag taking precedence during pairing.
+  Project config keeps only the non-secret UI
+  base URL, `credential_ref`, and optional `daemon_label`; it does not read or reuse `control.json` or
   `SCHERZO_CONTROL_FILE` for remote auth.
 - This lifecycle slice does not add browser UI, server-originated command
   mutation, workflow-helper/schema changes, provider-live or provider-cache

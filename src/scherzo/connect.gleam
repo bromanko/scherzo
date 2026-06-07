@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/control/remote/credential_store
+import scherzo/control/remote/daemon_label
 import scherzo/control/remote/pairing_client
 import scherzo/daemon_identity
 import scherzo/runtime_bundle
@@ -13,6 +14,7 @@ pub type Command {
     pairing_token: String,
     server_url: String,
     credential_ref: String,
+    daemon_label: Option(String),
     replace_credential: Bool,
     json: Bool,
     allow_loopback_url: Bool,
@@ -35,7 +37,7 @@ pub type Dependencies {
       Result(runtime_bundle.RuntimeBundle, runtime_bundle.BundleError),
     load_or_create_identity: fn(String) ->
       Result(daemon_identity.DaemonIdentity, daemon_identity.IdentityError),
-    exchange_pairing_token: fn(String, String, String, Bool) ->
+    exchange_pairing_token: fn(String, String, String, Option(String), Bool) ->
       Result(pairing_client.PairingSuccess, pairing_client.PairingError),
     write_credential: fn(
       credential_store.CredentialRef,
@@ -59,6 +61,7 @@ pub fn parse(args: List(String)) -> Result(Command, Error) {
       pairing_token: "",
       server_url: "",
       credential_ref: "default",
+      daemon_label: None,
       replace_credential: False,
       json: False,
       allow_loopback_url: False,
@@ -76,6 +79,13 @@ fn parse_loop(args: List(String), command: Command) -> Result(Command, Error) {
       parse_loop(rest, Command(..command, server_url: value))
     ["--credential-ref", value, ..rest] ->
       parse_loop(rest, Command(..command, credential_ref: value))
+    ["--name", value, ..rest] ->
+      case daemon_label.normalize(value) {
+        Ok(label) ->
+          parse_loop(rest, Command(..command, daemon_label: Some(label)))
+        Error(error) ->
+          Error(UsageError("--name " <> daemon_label.error_message(error)))
+      }
     ["--config", value, ..rest] ->
       parse_loop(rest, Command(..command, config_path: Some(value)))
     ["--json", ..rest] -> parse_loop(rest, Command(..command, json: True))
@@ -105,7 +115,9 @@ fn finalize(command: Command) -> Result(Command, Error) {
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo connect --pairing-token <pair_...> --server-url <url> [--credential-ref <name>] [--replace-credential] [--allow-loopback-url] [--json] [--config <path-to-scherzo.yaml>]"
+  "Usage: scherzo connect --pairing-token <pair_...> --server-url <url> [--name <friendly-name>] [--credential-ref <name>] [--replace-credential] [--allow-loopback-url] [--json] [--config <path-to-scherzo.yaml>]\n\nOptions:\n  --name <friendly-name>  Non-secret UI daemon label. Overrides ui_server.daemon_label from config. Shape: "
+  <> daemon_label.shape_description()
+  <> "."
 }
 
 pub fn run_with_deps(
@@ -126,11 +138,16 @@ pub fn run_with_deps(
     deps.load_or_create_identity(bundle.effective.workspace.root)
     |> result.map_error(identity_error),
   )
+  let resolved_daemon_label = case command.daemon_label {
+    Some(_) -> command.daemon_label
+    None -> bundle.effective.ui_server.daemon_label
+  }
   use paired <- result.try(
     deps.exchange_pairing_token(
       command.server_url,
       command.pairing_token,
       identity.daemon_id,
+      resolved_daemon_label,
       command.allow_loopback_url,
     )
     |> result.map_error(pairing_error),
@@ -153,19 +170,24 @@ pub fn run_with_deps(
     True ->
       output.line(
         json.to_string(
-          json.object([
-            #("status", json.string("ok")),
-            #("server_url", json.string(paired.server_url)),
-            #("daemon_id", json.string(paired.daemon_id)),
-            #("credential_ref", json.string(command.credential_ref)),
-            #("store_path", json.string(store_path)),
-          ]),
+          json.object(json_output_fields(
+            paired.server_url,
+            paired.daemon_id,
+            command.credential_ref,
+            store_path,
+            resolved_daemon_label,
+          )),
         ),
       )
-    False ->
+    False -> {
+      let label_clause = case resolved_daemon_label {
+        Some(label) -> " with UI label " <> label
+        None -> ""
+      }
       output.line(
         "Connected daemon "
         <> paired.daemon_id
+        <> label_clause
         <> " to "
         <> paired.server_url
         <> " using credential_ref "
@@ -173,8 +195,29 @@ pub fn run_with_deps(
         <> ". Stored credential at "
         <> store_path,
       )
+    }
   }
   Ok(Nil)
+}
+
+fn json_output_fields(
+  server_url: String,
+  daemon_id: String,
+  credential_ref: String,
+  store_path: String,
+  daemon_label_value: Option(String),
+) -> List(#(String, json.Json)) {
+  let base_fields = [
+    #("status", json.string("ok")),
+    #("server_url", json.string(server_url)),
+    #("daemon_id", json.string(daemon_id)),
+    #("credential_ref", json.string(credential_ref)),
+    #("store_path", json.string(store_path)),
+  ]
+  case daemon_label_value {
+    Some(label) -> [#("daemon_label", json.string(label)), ..base_fields]
+    None -> base_fields
+  }
 }
 
 fn default_dependencies() -> Dependencies {
@@ -185,12 +228,14 @@ fn default_dependencies() -> Dependencies {
       server_url,
       pairing_token,
       daemon_id,
+      daemon_label,
       allow_loopback_url,
     ) {
-      pairing_client.exchange_pairing_token(
+      pairing_client.exchange_pairing_token_with_label(
         server_url,
         pairing_token,
         daemon_id,
+        daemon_label,
         allow_loopback_url,
         pairing_client.default_dependencies(),
       )

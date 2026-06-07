@@ -101,6 +101,7 @@ pub type UiServerConfig {
     enabled: Bool,
     endpoint: Option(String),
     credential_ref: Option(String),
+    daemon_label: Option(String),
     command_bridge_enabled: Bool,
     heartbeat_interval_ms: Int,
     state_interval_ms: Int,
