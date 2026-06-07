@@ -3442,7 +3442,12 @@ fn retry_runner(
 ) -> command_runner.Runner {
   command_runner.Runner(run: fn(spec) {
     process.send(subject, OutLine(command_runner.describe(spec)))
-    let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
+    let command_runner.CommandSpec(
+      executable: executable,
+      args: args,
+      cwd: cwd,
+      ..,
+    ) = spec
     let _ = simplifile.create_directory_all(cwd)
     case executable, args {
       "git", ["clone", _, target] -> {

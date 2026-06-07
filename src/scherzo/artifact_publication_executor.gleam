@@ -3,7 +3,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/artifact_publication_attempts
 import scherzo/artifact_publication_config
+import scherzo/artifact_publication_driver.{type WorkspacePublicationDriver}
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
@@ -11,8 +13,6 @@ import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/github as github_repository
 import scherzo/artifact_repository/types
 import scherzo/state/artifact_store
-import scherzo/state/ledger
-import scherzo/state/projection
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_checkpoint
 import scherzo/workflow_contract_manifest
@@ -158,6 +158,7 @@ pub fn execute_routes_for_work_with_state_root(
     run_id,
     checkpoint,
     runner,
+    None,
     False,
     True,
   )
@@ -187,6 +188,7 @@ pub fn retry_routes_for_work_with_state_root(
     run_id,
     checkpoint,
     runner,
+    None,
     False,
     reuse_terminal_attempts,
   )
@@ -240,6 +242,38 @@ pub fn execute_recovered_routes_with_runner_and_state_root(
     run_id,
     checkpoint,
     runner,
+    None,
+    True,
+    True,
+  )
+}
+
+pub fn execute_recovered_routes_with_runner_and_state_root_and_publication_driver(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  workflow_bundle_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  let work = artifact_publication_recording.publication_work(issue)
+  execute_routes_for_work_with_mode(
+    routes,
+    repositories,
+    config_dir,
+    workflow_bundle_dir,
+    state_root,
+    output_manifest,
+    work,
+    run_id,
+    checkpoint,
+    runner,
+    publication_driver,
     True,
     True,
   )
@@ -256,6 +290,7 @@ fn execute_routes_for_work_with_mode(
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
   runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
   recovered_execution: Bool,
   reuse_terminal_attempts: Bool,
 ) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
@@ -270,6 +305,7 @@ fn execute_routes_for_work_with_mode(
     run_id,
     checkpoint,
     runner,
+    publication_driver,
     recovered_execution,
     reuse_terminal_attempts,
     [],
@@ -338,6 +374,38 @@ pub fn execute_routes_with_runner_and_state_root(
     run_id,
     checkpoint,
     runner,
+    None,
+    False,
+    True,
+  )
+}
+
+pub fn execute_routes_with_runner_and_state_root_and_publication_driver(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  workflow_bundle_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  let work = artifact_publication_recording.publication_work(issue)
+  execute_routes_for_work_with_mode(
+    routes,
+    repositories,
+    config_dir,
+    workflow_bundle_dir,
+    state_root,
+    output_manifest,
+    work,
+    run_id,
+    checkpoint,
+    runner,
+    publication_driver,
     False,
     True,
   )
@@ -354,6 +422,7 @@ fn execute_routes_loop(
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
   runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
   recovered_execution: Bool,
   reuse_terminal_attempts: Bool,
   required_failures: List(artifact_publication_recording.PublicationFailure),
@@ -379,6 +448,7 @@ fn execute_routes_loop(
         run_id,
         checkpoint,
         runner,
+        publication_driver,
         recovered_execution,
         reuse_terminal_attempts,
       ))
@@ -401,6 +471,7 @@ fn execute_routes_loop(
         run_id,
         checkpoint,
         runner,
+        publication_driver,
         recovered_execution,
         reuse_terminal_attempts,
         next_required,
@@ -429,6 +500,7 @@ fn execute_route(
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
   runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
   recovered_execution: Bool,
   reuse_terminal_attempts: Bool,
 ) -> Result(RouteExecutionOutcome, String) {
@@ -465,74 +537,40 @@ fn execute_route(
         Ok(planned) -> {
           let existing_attempt = case
             reuse_terminal_attempts,
-            terminal_attempt_reuse_allowed(planned)
+            artifact_publication_attempts.terminal_attempt_reuse_allowed(
+              planned,
+            )
           {
             True, True ->
-              existing_terminal_attempt(
+              artifact_publication_attempts.existing_terminal_attempt(
                 state_root,
                 run_id,
                 route.id,
                 planned.version_id,
                 recovered_execution,
-                planned_requires_pr(planned),
+                artifact_publication_attempts.planned_requires_pr(planned),
                 planned.repository_kind == "github",
               )
             _, _ -> None
           }
           case existing_attempt {
             Some(attempt) ->
-              Ok(RouteExecutionOutcome(attempt, failure_from_attempt(attempt)))
+              Ok(RouteExecutionOutcome(
+                attempt,
+                artifact_publication_attempts.failure_from_attempt(attempt),
+              ))
             None ->
-              case
-                prepare_repository_execution_input(route, planned, checkpoint)
-              {
-                Ok(prepared) -> {
-                  let manifest =
-                    github_repository.publish(
-                      prepared,
-                      state_root,
-                      runner,
-                      checkpoint.now_ms(),
-                    )
-                  artifact_publication_recording.record_manifest_attempt(
-                    route,
-                    output_manifest.workflow_id,
-                    run_id,
-                    manifest,
-                    checkpoint,
-                  )
-                  |> result.map(fn(attempt) {
-                    case manifest.error {
-                      Some(artifact_publication_manifest.PublicationErrorInfo(
-                        code,
-                        message,
-                      )) ->
-                        RouteExecutionOutcome(
-                          attempt,
-                          Some(
-                            artifact_publication_recording.PublicationFailure(
-                              route.id,
-                              code,
-                              message,
-                              route.required,
-                            ),
-                          ),
-                        )
-                      None -> RouteExecutionOutcome(attempt, None)
-                    }
-                  })
-                }
-                Error(#(code, message)) ->
-                  record_route_failure(
-                    route,
-                    output_manifest.workflow_id,
-                    work,
-                    run_id,
-                    checkpoint,
-                    code,
-                    message,
-                  )
-              }
+              execute_planned_publication(
+                route,
+                output_manifest.workflow_id,
+                planned,
+                state_root,
+                work,
+                run_id,
+                checkpoint,
+                runner,
+                publication_driver,
+              )
           }
         }
         Error(planner_error) -> {
@@ -552,6 +590,235 @@ fn execute_route(
   }
 }
 
+fn execute_planned_publication(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+  state_root: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
+) -> Result(RouteExecutionOutcome, String) {
+  case planned.commit_stack {
+    Some(_) ->
+      execute_commit_stack_publication(
+        route,
+        workflow_id,
+        planned,
+        state_root,
+        run_id,
+        checkpoint,
+        runner,
+        publication_driver,
+      )
+    None ->
+      execute_managed_repository_publication(
+        route,
+        workflow_id,
+        planned,
+        state_root,
+        work,
+        run_id,
+        checkpoint,
+        runner,
+      )
+  }
+}
+
+fn execute_managed_repository_publication(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+  state_root: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+) -> Result(RouteExecutionOutcome, String) {
+  case prepare_repository_execution_input(route, planned, checkpoint) {
+    Ok(prepared) -> {
+      let manifest =
+        github_repository.publish(
+          prepared,
+          state_root,
+          runner,
+          checkpoint.now_ms(),
+        )
+      record_execution_manifest(
+        route,
+        workflow_id,
+        run_id,
+        manifest,
+        checkpoint,
+      )
+    }
+    Error(#(code, message)) ->
+      record_route_failure(
+        route,
+        workflow_id,
+        work,
+        run_id,
+        checkpoint,
+        code,
+        message,
+      )
+  }
+}
+
+fn execute_commit_stack_publication(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+  state_root: String,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
+) -> Result(RouteExecutionOutcome, String) {
+  let now_ms = checkpoint.now_ms()
+  let attempt_id =
+    artifact_publication_attempts.success_attempt_id(
+      state_root,
+      run_id,
+      route.id,
+      planned,
+      now_ms,
+    )
+  let manifest = case
+    artifact_publication_driver.publish_commit_stack(
+      planned,
+      publication_driver,
+      runner,
+    )
+  {
+    Ok(driver_result) ->
+      driver_success_manifest(planned, attempt_id, now_ms, driver_result)
+    Error(error) -> failed_driver_publication_manifest(planned, now_ms, error)
+  }
+  record_execution_manifest(route, workflow_id, run_id, manifest, checkpoint)
+}
+
+fn record_execution_manifest(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  run_id: String,
+  manifest: artifact_publication_manifest.PublicationManifest,
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(RouteExecutionOutcome, String) {
+  artifact_publication_recording.record_manifest_attempt(
+    route,
+    workflow_id,
+    run_id,
+    manifest,
+    checkpoint,
+  )
+  |> result.map(fn(attempt) {
+    case manifest.error {
+      Some(artifact_publication_manifest.PublicationErrorInfo(code, message)) ->
+        RouteExecutionOutcome(
+          attempt,
+          Some(artifact_publication_recording.PublicationFailure(
+            route.id,
+            code,
+            message,
+            route.required,
+          )),
+        )
+      None -> RouteExecutionOutcome(attempt, None)
+    }
+  })
+}
+
+fn driver_success_manifest(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+  attempt_id: String,
+  now_ms: Int,
+  result: artifact_publication_driver.DriverPublicationResult,
+) -> artifact_publication_manifest.PublicationManifest {
+  let pr_url = driver_result_pr_url(planned, result.url)
+  let manifest = case result.status {
+    "unchanged" ->
+      artifact_publication_manifest.unchanged_manifest(
+        planned,
+        attempt_id,
+        now_ms,
+        Some(result.head_revision),
+        pr_url,
+        [],
+      )
+    _ ->
+      artifact_publication_manifest.published_manifest(
+        planned,
+        attempt_id,
+        now_ms,
+        result.head_revision,
+        pr_url,
+        [],
+        [],
+      )
+  }
+  artifact_publication_manifest.PublicationManifest(
+    ..manifest,
+    branch: Some(result.branch),
+    commit_sha: Some(result.head_revision),
+    pr_url: pr_url,
+    base_ref: Some(result.base_ref),
+    base_revision: Some(result.base_revision),
+    head_revision: Some(result.head_revision),
+    change_id: result.change_id,
+  )
+}
+
+fn driver_result_pr_url(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+  url: Option(String),
+) -> Option(String) {
+  case url, planned.target {
+    Some(url), _ -> Some(url)
+    None, artifact_publication_planner.ExistingPrBranchTargetPlan(target) ->
+      Some(target.pr_url)
+    None, artifact_publication_planner.StableBranchTargetPlan -> None
+  }
+}
+
+fn failed_driver_publication_manifest(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+  now_ms: Int,
+  error: artifact_publication_manifest.PublicationErrorInfo,
+) -> artifact_publication_manifest.PublicationManifest {
+  let attempt_id =
+    artifact_publication_manifest.attempt_key_for_failure(
+      planned.publication_id,
+      error.code,
+      error.message,
+      now_ms,
+    )
+  artifact_publication_manifest.failed_from_planned_manifest(
+    planned,
+    attempt_id,
+    now_ms,
+    True,
+    Some(planned.branch),
+    None,
+    planned_target_pr_url(planned),
+    [],
+    [],
+    error,
+  )
+}
+
+fn planned_target_pr_url(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+) -> Option(String) {
+  case planned.target {
+    artifact_publication_planner.ExistingPrBranchTargetPlan(target) ->
+      Some(target.pr_url)
+    artifact_publication_planner.StableBranchTargetPlan -> None
+  }
+}
+
 fn failure_code(reason: String) -> String {
   case string.split_once(reason, on: ":") {
     Ok(#(code, _)) -> code
@@ -564,219 +831,6 @@ fn failure_message(reason: String) -> String {
     Ok(#(_, message)) -> string.trim(message)
     Error(_) -> reason
   }
-}
-
-fn existing_terminal_attempt(
-  workspace_root: String,
-  run_id: String,
-  publication_id: String,
-  version_id: String,
-  recovered_execution: Bool,
-  requires_pr: Bool,
-  requires_branch_metadata: Bool,
-) -> Option(artifact_publication_recording.PublicationAttemptSummary) {
-  case ledger.path_for_workspace_root(workspace_root) {
-    Error(_) -> None
-    Ok(ledger_path) ->
-      case ledger.load_projection(ledger_path) {
-        Error(_) -> None
-        Ok(projected) -> {
-          let attempt =
-            projection.publication_attempts_for_run(
-              projected,
-              run_id,
-              publication_id,
-            )
-            |> latest_matching_terminal(version_id, recovered_execution, None)
-          case attempt {
-            Some(attempt) ->
-              case
-                terminal_attempt_is_complete(
-                  workspace_root,
-                  attempt,
-                  requires_pr,
-                  requires_branch_metadata,
-                )
-              {
-                True -> Some(attempt)
-                False -> None
-              }
-            None -> None
-          }
-        }
-      }
-  }
-}
-
-fn terminal_attempt_is_complete(
-  workspace_root: String,
-  attempt: artifact_publication_recording.PublicationAttemptSummary,
-  requires_pr: Bool,
-  requires_branch_metadata: Bool,
-) -> Bool {
-  case attempt.status {
-    "failed" -> True
-    _ ->
-      terminal_success_is_complete(
-        workspace_root,
-        attempt,
-        requires_pr,
-        requires_branch_metadata,
-      )
-  }
-}
-
-fn terminal_success_is_complete(
-  workspace_root: String,
-  attempt: artifact_publication_recording.PublicationAttemptSummary,
-  requires_pr: Bool,
-  requires_branch_metadata: Bool,
-) -> Bool {
-  case load_attempt_details(workspace_root, attempt.manifest_ref) {
-    Some(#(attempt_requires_pr, branch, commit_sha, pr_url)) ->
-      terminal_pr_complete(requires_pr || attempt_requires_pr, pr_url)
-      && terminal_branch_complete(requires_branch_metadata, branch, commit_sha)
-    None -> !requires_pr && !requires_branch_metadata
-  }
-}
-
-fn terminal_pr_complete(requires_pr: Bool, pr_url: Option(String)) -> Bool {
-  case requires_pr, pr_url {
-    False, _ -> True
-    True, Some(_) -> True
-    True, None -> False
-  }
-}
-
-fn terminal_branch_complete(
-  requires_branch_metadata: Bool,
-  branch: Option(String),
-  commit_sha: Option(String),
-) -> Bool {
-  case requires_branch_metadata, branch, commit_sha {
-    False, _, _ -> True
-    True, Some(_), Some(_) -> True
-    True, _, _ -> False
-  }
-}
-
-fn load_attempt_details(
-  workspace_root: String,
-  ref: String,
-) -> Option(#(Bool, Option(String), Option(String), Option(String))) {
-  let store = artifact_store.new(workspace_root)
-  case artifact_store.read_artifact_unverified(store, ref) {
-    Ok(contents) ->
-      case artifact_publication_manifest.decode_manifest_json(contents) {
-        Ok(manifest) ->
-          Some(#(
-            manifest_requires_pr(manifest),
-            manifest.branch,
-            manifest.commit_sha,
-            manifest.pr_url,
-          ))
-        Error(decode_error) -> {
-          let _ = decode_error
-          None
-        }
-      }
-    Error(read_error) -> {
-      let _ = read_error
-      None
-    }
-  }
-}
-
-fn manifest_requires_pr(
-  manifest: artifact_publication_manifest.PublicationManifest,
-) -> Bool {
-  case manifest.dry_run_manifest {
-    Some(planned) -> planned_requires_pr(planned)
-    None -> False
-  }
-}
-
-fn planned_requires_pr(
-  planned: artifact_publication_planner.DryRunPublicationManifest,
-) -> Bool {
-  case planned.target {
-    artifact_publication_planner.ExistingPrBranchTargetPlan(_) -> True
-    artifact_publication_planner.StableBranchTargetPlan ->
-      planned.pull_request.enabled
-  }
-}
-
-fn terminal_attempt_reuse_allowed(
-  planned: artifact_publication_planner.DryRunPublicationManifest,
-) -> Bool {
-  case planned.target {
-    artifact_publication_planner.ExistingPrBranchTargetPlan(_) -> False
-    artifact_publication_planner.StableBranchTargetPlan -> True
-  }
-}
-
-fn latest_matching_terminal(
-  attempts: List(projection.PublicationAttempt),
-  version_id: String,
-  recovered_execution: Bool,
-  best: Option(projection.PublicationAttempt),
-) -> Option(artifact_publication_recording.PublicationAttemptSummary) {
-  case attempts {
-    [] -> option.map(best, projection_attempt_to_summary)
-    [attempt, ..rest] -> {
-      let terminal =
-        attempt.status == "published"
-        || attempt.status == "unchanged"
-        || { recovered_execution && attempt.status == "failed" }
-      let next_best = case
-        attempt.version_id == Some(version_id),
-        terminal,
-        best
-      {
-        True, True, None -> Some(attempt)
-        True, True, Some(existing)
-          if attempt.recorded_at_ms >= existing.recorded_at_ms
-        -> Some(attempt)
-        _, _, _ -> best
-      }
-      latest_matching_terminal(rest, version_id, recovered_execution, next_best)
-    }
-  }
-}
-
-fn failure_from_attempt(
-  attempt: artifact_publication_recording.PublicationAttemptSummary,
-) -> Option(artifact_publication_recording.PublicationFailure) {
-  case attempt.status, attempt.error_code, attempt.error_message {
-    "failed", Some(code), Some(message) ->
-      Some(artifact_publication_recording.PublicationFailure(
-        publication_id: attempt.publication_id,
-        code: code,
-        message: message,
-        required: attempt.required,
-      ))
-    _, _, _ -> None
-  }
-}
-
-fn projection_attempt_to_summary(
-  attempt: projection.PublicationAttempt,
-) -> artifact_publication_recording.PublicationAttemptSummary {
-  artifact_publication_recording.PublicationAttemptSummary(
-    publication_id: attempt.publication_id,
-    series_id: attempt.series_id,
-    attempt_id: attempt.attempt_id,
-    status: attempt.status,
-    required: attempt.required,
-    retryable: attempt.retryable,
-    retry_execution_available: attempt.retry_execution_available,
-    version_id: attempt.version_id,
-    manifest_ref: option.unwrap(attempt.manifest_ref, ""),
-    manifest_sha256: option.unwrap(attempt.manifest_sha256, ""),
-    manifest_bytes: option.unwrap(attempt.manifest_bytes, 0),
-    error_code: attempt.error_code,
-    error_message: attempt.error_message,
-  )
 }
 
 fn prepare_repository_execution_input(
