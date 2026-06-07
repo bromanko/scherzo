@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
 version: 1
 id: workspace-cleanup
-description: Clean up eligible Scherzo local artifacts under the configured workspace root.
+description: Inventory and clean up eligible Scherzo-owned local state and delegated workspaces under the configured workspace root.
 workspace:
   driver: noop
 concurrency: 1

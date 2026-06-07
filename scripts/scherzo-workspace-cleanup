@@ -403,9 +403,10 @@ def remove_run_root(run_root: Path, inspection: RunInspection, workspace_root: P
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Remove inactive Scherzo run workspaces only when they contain no "
-            "jj file changes, no non-empty mutable jj commits, and no no-op "
-            "workspace files. Defaults to dry-run; pass --apply to delete."
+            "Local diagnostic helper for empty noop/jj Scherzo workspaces. "
+            "The authoritative scheduled cleanup path is scherzoctl cleanup; "
+            "this helper only inspects local workspace contents. Defaults to "
+            "dry-run; pass --apply to delete."
         )
     )
     parser.add_argument("--workspace-root", default=default_workspace_root())

@@ -50,6 +50,8 @@ The resolver's generic helper validates conflict-specific invariants only: unres
 
 When `on_failure.task.enabled: true`, the scheduler also applies reserved Linear labels `scherzo:scheduled` and `scherzo:scheduled-job:<job-id>` and writes the marker `<!-- scherzo-dedupe: scheduled-job:<job-id> -->` into the failure task body/comments. Do not rely on configured labels for dedupe.
 
+For Scherzo's checked-in workspace maintenance, `workspace-cleanup` now calls `scherzoctl cleanup --root <workspace-root> --json --yes`. Treat `scherzoctl cleanup --json` as the authoritative dry-run inventory for daemon-owned local state and delegated workspace cleanup. The legacy `scripts/scherzo-workspace-cleanup` helper remains only as a local diagnostic shim for empty noop/jj workspaces and is not the scheduled authority.
+
 ## Workflow and command shape
 
 The scheduled workflow is a normal workflow DAG. Scheduled prompts and command templates may use scheduled context variables and must not reference `issue.*` because no tracker task exists for successful scheduled intervals. The conflict scout is command-only and invokes the checked-in bundle-local `.scherzo/workflows/scripts/scherzo-github-pr-conflict-scout` helper.

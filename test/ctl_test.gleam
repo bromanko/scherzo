@@ -828,6 +828,8 @@ pub fn parse_operator_commands_test() {
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["schedules", "logs", "nightly"])
   let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["cleanup", "--yes", "--dry-run"])
+  let assert Error(ctl.UsageError(_)) =
     ctl.parse([
       "recovery",
       "cleanup-orphan-steps",
@@ -835,6 +837,45 @@ pub fn parse_operator_commands_test() {
       "--yes",
       "--dry-run",
     ])
+}
+
+pub fn cleanup_json_output_uses_provider_report_test() {
+  let root = "test/tmp/ctl-cleanup/json"
+  test_helpers.reset_dir(root)
+  let output_subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Cleanup(None, Some(root), True, False, False),
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"mode\":\"dry_run\"")
+  assert string.contains(transcript, "\"provider_id\":\"local_state\"")
+  assert string.contains(transcript, "\"provider_id\":\"workspaces\"")
+}
+
+pub fn cleanup_text_output_uses_provider_report_test() {
+  let root = "test/tmp/ctl-cleanup/text"
+  test_helpers.reset_dir(root)
+  let output_subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Cleanup(None, Some(root), False, True, False),
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "cleanup dry_run")
+  assert string.contains(transcript, "provider: local_state")
+  assert string.contains(transcript, "provider: workspaces")
+  assert string.contains(transcript, "available: true")
 }
 
 pub fn parse_rejects_usage_errors_test() {
