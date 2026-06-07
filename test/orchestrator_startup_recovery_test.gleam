@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/orchestrator/core
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/startup_recovery
+import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
 import scherzo/state/ledger
 import scherzo/state/outbox
@@ -346,6 +347,48 @@ pub fn load_recovers_cleanup_request_for_terminal_interrupted_run_test() {
   ] = loaded.cleanup_workspaces
   assert recovered_workspace == workspace_path
   assert loaded.retry_timers == []
+}
+
+pub fn load_replays_claim_start_append_failure_retry_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-claim-start-retry",
+      "prompts/task.md",
+    )
+  let candidate = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+
+  append_test_ledger_bodies(workspace_root, [
+    record.RetryScheduled(
+      issue_id: candidate.id,
+      issue_identifier: candidate.identifier,
+      delay_ms: 2500,
+      generation: 3,
+      reason: "claim_start_ledger_append_failed",
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([candidate]),
+      startup_dependencies(),
+      [],
+    )
+
+  let assert [
+    recovery.RecoveredRetry(
+      issue_id: "issue-1",
+      issue_identifier: "ABC-1",
+      delay_ms: 0,
+      generation: 3,
+      reason: "claim_start_ledger_append_failed",
+    ),
+  ] = loaded.retry_timers
+  let task_identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  assert dict.has_key(loaded.runtime.retry_attempts, task_identity)
+  assert dict.get(loaded.runtime.claimed, task_identity) == Ok("ABC-1")
+  assert dict.has_key(loaded.recovery_by_issue, "issue-1")
 }
 
 pub fn load_marks_pending_command_outbox_failed_test() {

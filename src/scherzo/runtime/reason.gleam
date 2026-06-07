@@ -3,6 +3,7 @@ pub type RetryReason {
   RetryAfterContinuation
   RetryNoSlots
   RetryPollFailed
+  RetryClaimStartLedgerAppendFailed
 }
 
 pub type ParkReason {
@@ -22,6 +23,7 @@ pub fn retry_to_string(reason: RetryReason) -> String {
     RetryAfterContinuation -> "continuation"
     RetryNoSlots -> "no available orchestrator slots"
     RetryPollFailed -> "retry poll failed"
+    RetryClaimStartLedgerAppendFailed -> "claim_start_ledger_append_failed"
   }
 }
 

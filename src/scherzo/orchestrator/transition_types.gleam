@@ -229,6 +229,7 @@ pub type PendingClaim {
     recovery: Option(session_event.RecoveryInfo),
     remaining_candidates: List(tracker_issue.Issue),
     dispatch_context: DispatchContext,
+    previous_retry_generation: Int,
   )
 }
 
