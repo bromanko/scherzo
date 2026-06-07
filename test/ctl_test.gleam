@@ -759,6 +759,23 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     == Ok(ctl.StateStatus("work", True))
   assert ctl.parse(["state", "archive-old", "--root", "work", "--yes"])
     == Ok(ctl.StateArchiveOld("work", False, True))
+  assert ctl.parse(["state", "compact", "--root", "work", "--dry-run"])
+    == Ok(ctl.StateCompact("work", False, True, False))
+  assert ctl.parse(["state", "compact", "--root", "work", "--yes", "--json"])
+    == Ok(ctl.StateCompact("work", True, False, True))
+  assert ctl.parse(["state", "compact", "--root", "work"])
+    == Error(ctl.UsageError("state compact requires --dry-run or --yes"))
+  assert ctl.parse([
+      "state",
+      "compact",
+      "--root",
+      "work",
+      "--dry-run",
+      "--yes",
+    ])
+    == Error(ctl.UsageError(
+      "state compact requires exactly one of --dry-run or --yes",
+    ))
   assert ctl.parse([
       "state",
       "repair-run-provenance",
@@ -968,6 +985,7 @@ pub fn usage_mentions_commands_and_options_test() {
     "artifact publication abandon --run <run-id> --publication <publication-id>",
   )
   assert string.contains(usage, "state status")
+  assert string.contains(usage, "state compact")
   assert string.contains(usage, "--control-file <path>")
   assert string.contains(usage, "--root <workspace-root>")
   assert string.contains(usage, "--json")
