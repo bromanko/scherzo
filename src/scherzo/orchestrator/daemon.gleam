@@ -697,7 +697,7 @@ pub fn start(
     }),
   )
   let builder =
-    actor.new_with_initialiser(10_000, fn(subject) {
+    actor.new_with_initialiser(60_000, fn(subject) {
       case
         start_query_service(
           effective,
