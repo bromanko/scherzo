@@ -265,6 +265,26 @@ pub fn cleanup_apply_retains_artifact_when_tombstone_write_fails_test() {
   let assert Ok(True) = simplifile.is_file(eligible)
 }
 
+pub fn cleanup_apply_is_safe_to_repeat_after_successful_deletion_test() {
+  let root = "test/tmp/local-artifacts/repeated-apply"
+  let _ = simplifile.delete(root)
+  let archive_dir = root <> "/.scherzo-state/ledger/archive"
+  let assert Ok(Nil) = simplifile.create_directory_all(archive_dir)
+  let eligible = archive_dir <> "/segment-1.jsonl"
+  let assert Ok(Nil) = simplifile.write(eligible, "old")
+
+  let now =
+    local_artifacts.now_ms()
+    + local_artifacts.workflow_artifact_retention_ms
+    + 1000
+  let first = local_artifacts.apply_cleanup(root, now)
+  let second = local_artifacts.apply_cleanup(root, now)
+
+  assert first.deleted != []
+  assert second.would_delete == []
+  let assert Ok(False) = simplifile.is_file(eligible)
+}
+
 pub fn offline_state_status_archive_discard_and_reinitialize_test() {
   let root = "test/tmp/local-artifacts/old-state-archive"
   let _ = simplifile.delete(root)

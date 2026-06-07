@@ -5,6 +5,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/cleanup
 import scherzo/control/client
 import scherzo/control/command as control_command
 import scherzo/control/file
@@ -930,14 +931,12 @@ fn run_cleanup(
   ))
   let now_ms = local_artifacts.now_ms()
   let result = case dry_run || !yes {
-    True -> local_artifacts.inventory(workspace_root, now_ms, True)
-    False -> local_artifacts.apply_cleanup(workspace_root, now_ms)
+    True -> cleanup.inventory(workspace_root, now_ms)
+    False -> cleanup.apply(workspace_root, now_ms)
   }
   case json_output {
     True ->
-      output.line(
-        result |> local_artifacts.cleanup_result_to_json |> json.to_string,
-      )
+      output.line(result |> cleanup.cleanup_report_to_json |> json.to_string)
     False -> print_cleanup_result(result, output)
   }
   Ok(Nil)
@@ -956,46 +955,62 @@ fn cleanup_workspace_root(
   }
 }
 
-fn print_cleanup_result(
-  result: local_artifacts.CleanupResult,
-  output: Output,
-) -> Nil {
-  output.line(local_artifacts.cleanup_summary(result))
-  output.line("transcript_root_status: " <> result.transcript_root_status)
-  output.line("roots:")
-  list.each(result.roots, fn(root) { output.line("  " <> root) })
-  print_decision_group("would_delete", result.would_delete, output)
-  print_decision_group("deleted", result.deleted, output)
-  print_decision_group("retained", result.retained, output)
+fn print_cleanup_result(result: cleanup.CleanupReport, output: Output) -> Nil {
+  output.line(cleanup.cleanup_summary(result))
+  list.each(result.providers, fn(provider) {
+    output.line("provider: " <> provider.provider_id)
+    output.line("  available: " <> bool_to_text(provider.available))
+    output.line("  transcript_root_status: " <> provider.transcript_root_status)
+    output.line("  roots:")
+    case provider.roots {
+      [] -> output.line("    -")
+      roots -> list.each(roots, fn(root) { output.line("    " <> root) })
+    }
+    print_cleanup_items(provider.items, output)
+    case provider.warnings {
+      [] -> Nil
+      warnings -> {
+        output.line("  warnings:")
+        list.each(warnings, fn(warning) { output.line("    " <> warning) })
+      }
+    }
+  })
   case result.warnings {
     [] -> Nil
-    _ -> {
+    warnings -> {
       output.line("warnings:")
-      list.each(result.warnings, fn(warning) { output.line("  " <> warning) })
+      list.each(warnings, fn(warning) { output.line("  " <> warning) })
     }
   }
 }
 
-fn print_decision_group(
-  name: String,
-  decisions: List(local_artifacts.LocalArtifactDecision),
+fn print_cleanup_items(
+  items: List(cleanup.CleanupItemReport),
   output: Output,
 ) -> Nil {
-  output.line(name <> ":")
-  case decisions {
-    [] -> output.line("  -")
+  output.line("  items:")
+  case items {
+    [] -> output.line("    -")
     _ ->
-      list.each(decisions, fn(decision) {
+      list.each(items, fn(item) {
         output.line(
-          "  "
-          <> decision.id
+          "    "
+          <> item.status
           <> " "
-          <> event.cleanup_phase_to_string(decision.cleanup_phase)
+          <> item.item_id
           <> " "
-          <> decision.display_path,
+          <> item.display_path,
         )
-        output.line("    reason: " <> decision.reason)
+        output.line("      intended_action: " <> item.intended_action)
+        output.line("      reason: " <> item.reason)
       })
+  }
+}
+
+fn bool_to_text(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
   }
 }
 

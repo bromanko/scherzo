@@ -113,6 +113,13 @@ pub fn cleanup_entries(
   )
 }
 
+pub fn read_entries(
+  run_root: String,
+) -> Result(List(Entry), error.WorkspaceError) {
+  use manifest <- result.try(read_manifest(run_root))
+  Ok(manifest.entries)
+}
+
 pub fn decode_manifest(contents: String) -> Result(List(Entry), Nil) {
   parse_manifest(contents)
   |> result.map(fn(manifest) { manifest.entries })
