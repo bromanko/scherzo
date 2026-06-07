@@ -20,7 +20,7 @@ import scherzo/control/query/metrics as query_metrics
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
-import scherzo/ctl/artifact_publication as ctl_artifact_publication
+import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/daemon_identity
 import scherzo/error
 import scherzo/log
@@ -2552,7 +2552,7 @@ fn retry_artifact_publication_for_operator(
 ) -> #(State, command.CommandResult) {
   let root = state.workflow.effective.workspace.root
   case
-    ctl_artifact_publication.retry_attempts_with_bundle_runner(
+    ctl_artifact_publication_retry.retry_attempts_with_bundle_runner(
       root,
       run_id,
       publication_id,

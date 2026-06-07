@@ -39,6 +39,7 @@ pub type PublicationAttemptSummary {
     manifest_bytes: Int,
     error_code: Option(String),
     error_message: Option(String),
+    recorded_at_ms: Int,
   )
 }
 
@@ -292,18 +293,21 @@ pub fn record_failed_attempt(
       generated_at_ms,
     )
   let manifest =
-    artifact_publication_manifest.failed_manifest(
-      run_id,
-      workflow_id,
-      route.id,
-      series_id,
-      route.required,
-      attempt_key,
-      generated_at_ms,
-      artifact_publication_manifest.PublicationErrorInfo(
-        code: code,
-        message: message,
+    artifact_publication_manifest.PublicationManifest(
+      ..artifact_publication_manifest.failed_manifest(
+        run_id,
+        workflow_id,
+        route.id,
+        series_id,
+        route.required,
+        attempt_key,
+        generated_at_ms,
+        artifact_publication_manifest.PublicationErrorInfo(
+          code: code,
+          message: message,
+        ),
       ),
+      publication_mode: Some(publication_mode_to_string(route.mode)),
     )
   use attempt <- result.try(write_attempt(
     route,
@@ -318,6 +322,15 @@ pub fn record_failed_attempt(
     checkpoint,
   ))
   Ok(#(PublicationFailure(route.id, code, message, route.required), attempt))
+}
+
+fn publication_mode_to_string(
+  mode: artifact_publication_config.PublicationMode,
+) -> String {
+  case mode {
+    artifact_publication_config.FilePublication -> "files"
+    artifact_publication_config.CommitStackPublication -> "commit_stack"
+  }
 }
 
 fn record_route_failure(
@@ -439,10 +452,11 @@ fn write_attempt(
     )
     |> result.map_error(workflow_checkpoint.describe_error),
   )
+  let recorded_at_ms = checkpoint.now_ms()
   let ledger_record =
     record.with_id(
       publication_record_id(run_id, route.id, attempt_key),
-      checkpoint.now_ms(),
+      recorded_at_ms,
       record.PublicationAttemptRecorded(
         run_id: run_id,
         workflow_id: workflow_id,
@@ -479,6 +493,7 @@ fn write_attempt(
     manifest_bytes: written.bytes,
     error_code: error_code,
     error_message: error_message,
+    recorded_at_ms: recorded_at_ms,
   ))
 }
 

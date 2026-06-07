@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -7,6 +8,7 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
 import scherzo/artifact_repository/command_runner
+import scherzo/commit_stack_artifact
 import scherzo/control/client as control_client
 import scherzo/control/command
 import scherzo/control/file
@@ -14,6 +16,7 @@ import scherzo/control/protocol
 import scherzo/control/query/types as query_types
 import scherzo/ctl
 import scherzo/ctl/artifact_publication as ctl_artifact_publication
+import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/hash
 import scherzo/path
 import scherzo/runtime_bundle
@@ -28,6 +31,7 @@ import scherzo/terminal/style
 import scherzo/turn_telemetry
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
+import scherzo/workspace_manifest
 import simplifile
 import support/test_helpers
 
@@ -731,6 +735,26 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     ))
   assert ctl.parse(["artifact", "publication", "retry", "--run", "run-1"])
     == Ok(ctl.ArtifactPublicationRetry(None, None, False, "run-1", None))
+  assert ctl.parse([
+      "artifact",
+      "publication",
+      "abandon",
+      "--run",
+      "run-1",
+      "--publication",
+      "review_doc",
+      "--reason",
+      "operator chose not to publish",
+      "--yes",
+    ])
+    == Ok(ctl.ArtifactPublicationAbandon(
+      None,
+      None,
+      False,
+      "run-1",
+      "review_doc",
+      "operator chose not to publish",
+    ))
   assert ctl.parse(["state", "status", "--root", "work", "--json"])
     == Ok(ctl.StateStatus("work", True))
   assert ctl.parse(["state", "archive-old", "--root", "work", "--yes"])
@@ -938,6 +962,10 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(
     usage,
     "artifact publication retry --run <run-id> [--publication <publication-id>]",
+  )
+  assert string.contains(
+    usage,
+    "artifact publication abandon --run <run-id> --publication <publication-id>",
   )
   assert string.contains(usage, "state status")
   assert string.contains(usage, "--control-file <path>")
@@ -1639,7 +1667,7 @@ pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test()
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -1659,6 +1687,7 @@ pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test()
     transcript,
     "\"branch\":\"scherzo/workflow.execplan/LIV-739/execplan_review_doc\"",
   )
+  assert !string.contains(transcript, "\"recorded_at_ms\":0")
   let commands = drain_output(command_subject)
   assert string.contains(commands, "git fetch origin main")
   assert string.contains(commands, "git commit -m scherzo publication")
@@ -1678,6 +1707,47 @@ pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test()
   assert string.contains(show_transcript, "\"status\":\"published\"")
 }
 
+pub fn artifact_publication_retry_uses_retained_workspace_driver_for_commit_stack_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-commit-stack"
+  let root = base <> "/workspaces"
+  test_helpers.reset_dir(base)
+  seed_failed_commit_stack_retry_publication_state(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication_retry.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("publish_stack"),
+      retained_workspace_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"publication_id\":\"publish_stack\"")
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(
+    transcript,
+    "\"branch\":\"scherzo/implementation/LIV-917\"",
+  )
+  assert string.contains(
+    transcript,
+    "\"pr_url\":\"https://example.test/pr/42\"",
+  )
+  assert !string.contains(transcript, "\"recorded_at_ms\":0")
+
+  let commands = drain_output(command_subject)
+  assert string.contains(commands, "retained-driver publish-commit-stack")
+  assert string.contains(
+    commands,
+    "(cwd="
+      <> path.absolute_or_original(root <> "/runs/run-1/workspaces/main")
+      <> ")",
+  )
+  assert !string.contains(commands, ".scherzo-state/artifact-repositories")
+}
+
 pub fn artifact_publication_retry_replays_failed_execution_matrix_test() {
   assert_retry_replays_failed_execution("commit", "git_commit_failed")
   assert_retry_replays_failed_execution("push", "git_push_failed")
@@ -1692,7 +1762,7 @@ pub fn artifact_publication_retry_replans_pre_execution_failure_test() {
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -1722,7 +1792,7 @@ pub fn artifact_publication_retry_recovers_body_template_read_failure_after_conf
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -1752,7 +1822,7 @@ pub fn artifact_publication_retry_rejects_tampered_output_manifest_test() {
   let command_subject = process.new_subject()
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -1775,7 +1845,7 @@ pub fn artifact_publication_retry_rejects_retryable_attempt_without_replan_evide
   let command_subject = process.new_subject()
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -1799,7 +1869,7 @@ pub fn artifact_publication_retry_all_rejects_retryable_attempt_without_replan_e
   let command_subject = process.new_subject()
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -1820,7 +1890,7 @@ pub fn artifact_publication_retry_accepts_unchanged_missing_pr_attempt_test() {
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -1841,7 +1911,7 @@ pub fn artifact_publication_retry_reports_failed_replay_as_error_test() {
   let command_subject = process.new_subject()
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -1877,7 +1947,7 @@ pub fn artifact_publication_retry_rejects_unknown_publication_id_test() {
   let command_subject = process.new_subject()
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -1908,7 +1978,7 @@ pub fn artifact_publication_retry_uses_workspace_state_root_for_terminal_attempt
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -1931,7 +2001,7 @@ pub fn artifact_publication_retry_does_not_reuse_success_missing_pr_test() {
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -1953,7 +2023,7 @@ pub fn artifact_publication_retry_without_publication_retries_all_failed_targets
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -1983,7 +2053,7 @@ pub fn artifact_publication_retry_all_selects_multiple_failed_and_skips_nonretry
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -2020,7 +2090,7 @@ pub fn artifact_publication_retry_requires_output_manifest_test() {
   seed_failed_retry_publication_state_without_output_manifest(root)
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -2048,7 +2118,7 @@ pub fn artifact_publication_retry_rejects_config_drift_test() {
     )
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -2078,7 +2148,7 @@ pub fn artifact_publication_retry_rejects_required_config_drift_test() {
   let command_subject = process.new_subject()
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -2681,7 +2751,7 @@ fn assert_retry_rejects_latest_status(
   let command_subject = process.new_subject()
 
   let assert Error(#(code, message)) =
-    ctl_artifact_publication.retry_with_runner(
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
       False,
       "run-1",
@@ -2813,6 +2883,97 @@ fn seed_failed_retry_publication_state(root: String) -> Nil {
     "previous push failed",
     None,
   )
+}
+
+fn seed_failed_commit_stack_retry_publication_state(root: String) -> Nil {
+  let config_path = write_commit_stack_retry_publication_config(root)
+  write_commit_stack_retained_workspace_manifest(root)
+  let output_manifest = seeded_commit_stack_output_manifest(root)
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "implementation")
+  let assert [route] = workflow.publication_routes
+  let work =
+    artifact_publication_planner.PublicationWork(
+      kind: artifact_publication_planner.TaskWork,
+      id: "issue-1",
+      identifier: "LIV-917",
+      slug: "LIV-917",
+    )
+  let assert Ok(planned) =
+    artifact_publication_planner.plan_publication(
+      output_manifest,
+      bundle.orchestrator.artifact_repositories,
+      route,
+      artifact_store.new(root),
+      work,
+      "run-1",
+      dict.new(),
+    )
+  let failed_ref = "runs/run-1/publications/publish_stack/failed-1.json"
+  let failed_manifest =
+    artifact_publication_manifest.failed_from_planned_manifest(
+      planned,
+      "failed-1",
+      1020,
+      True,
+      Some(planned.branch),
+      None,
+      Some("https://example.test/pr/42"),
+      [],
+      [],
+      artifact_publication_manifest.PublicationErrorInfo(
+        code: "workspace_driver_publish_failed",
+        message: "previous driver publication failed",
+      ),
+    )
+  let #(failed_sha, failed_bytes) =
+    write_publication_manifest(root, failed_ref, failed_manifest)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started",
+          1000,
+          record.WorkflowRunStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            workflow_fingerprint: "wf-1",
+            issue_id: "issue-1",
+            issue_identifier: "LIV-917",
+            issue_fingerprint: "issue-fingerprint",
+            observed_updated_at_ms: 999,
+            run_root: root <> "/runs/run-1",
+          ),
+        ),
+        commit_stack_output_manifest_record(root, output_manifest),
+        record.with_id(
+          "publication-failed",
+          1020,
+          record.PublicationAttemptRecorded(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            publication_id: "publish_stack",
+            series_id: planned.series_id,
+            attempt_id: "failed-1",
+            status: "failed",
+            required: True,
+            retryable: True,
+            retry_execution_available: True,
+            version_id: Some(planned.version_id),
+            manifest_ref: Some(failed_ref),
+            manifest_sha256: Some(failed_sha),
+            manifest_bytes: Some(failed_bytes),
+            error_code: Some("workspace_driver_publish_failed"),
+            error_message: Some("previous driver publication failed"),
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
 }
 
 fn seed_failed_retry_publication_state_with_error(
@@ -3430,7 +3591,7 @@ fn assert_retry_replays_failed_execution(
   let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication.retry_with_runner(
+  assert ctl_artifact_publication_retry.retry_with_runner(
       root,
       True,
       "run-1",
@@ -3491,6 +3652,166 @@ fn seeded_output_manifest_record(root: String) -> record.LedgerRecord {
       artifact_bytes: bit_array.byte_size(bit_array.from_string(payload)),
     ),
   )
+}
+
+fn seeded_commit_stack_output_manifest(
+  root: String,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  let stack_written =
+    write_seed_contract_artifact(
+      root,
+      "runs/run-1/outputs/commit-stack.json",
+      commit_stack_payload(),
+    )
+  let target_written =
+    write_seed_contract_artifact(
+      root,
+      "runs/run-1/outputs/merge-target.json",
+      existing_pr_branch_target_payload(),
+    )
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "implementation",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "commit_stack",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.CommitStack,
+          stack_written,
+          commit_stack_artifact.commit_stack_media_type,
+          None,
+        ),
+      ),
+      workflow_contract_manifest.NamedManifestValue(
+        name: "merge_target",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.GenericFile,
+          target_written,
+          "application/json",
+          None,
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn commit_stack_output_manifest_record(
+  root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+) -> record.LedgerRecord {
+  let payload =
+    output_manifest
+    |> workflow_contract_manifest.output_manifest_to_string
+  let ref = "runs/run-1/contract/outputs.json"
+  write_seed_artifact(root, ref, payload)
+  record.with_id(
+    "workflow-outputs-recorded",
+    1015,
+    record.WorkflowRunOutputsRecorded(
+      run_id: "run-1",
+      workflow_id: "implementation",
+      workflow_fingerprint: "wf-1",
+      artifact_ref: ref,
+      artifact_sha256: hash.sha256_hex(payload),
+      artifact_bytes: bit_array.byte_size(bit_array.from_string(payload)),
+    ),
+  )
+}
+
+fn write_seed_contract_artifact(
+  root: String,
+  ref: String,
+  contents: String,
+) -> workflow_contract_manifest.ArtifactWritten {
+  write_seed_artifact(root, ref, contents)
+  workflow_contract_manifest.ArtifactWritten(
+    ref: ref,
+    sha256: hash.sha256_hex(contents),
+    bytes: bit_array.byte_size(bit_array.from_string(contents)),
+  )
+}
+
+fn commit_stack_payload() -> String {
+  "{\"artifact_type\":\"scherzo.git_commit_stack.v1\",\"repository\":\"scherzo-systems/scherzo\",\"base\":{\"ref\":\"main\",\"sha\":\""
+  <> retry_commit_stack_base_sha()
+  <> "\"},\"head\":{\"sha\":\""
+  <> retry_commit_stack_head_sha()
+  <> "\",\"tree\":\""
+  <> retry_commit_stack_tree_sha()
+  <> "\"},\"carrier\":{\"ref\":\"runs/run-1/outputs/commit-stack.bundle\",\"sha256\":\""
+  <> hash.sha256_hex("bundle")
+  <> "\",\"bytes\":6,\"media_type\":\"application/vnd.git.bundle\"}}"
+}
+
+fn existing_pr_branch_target_payload() -> String {
+  "{\"artifact_type\":\"scherzo.github_existing_pr_branch_target.v1\",\"repository\":\"scherzo-systems/scherzo\",\"head\":{\"repo\":\"scherzo-systems/scherzo\",\"branch\":\"scherzo/implementation/LIV-917\",\"sha\":\""
+  <> retry_commit_stack_base_sha()
+  <> "\"},\"base\":{\"branch\":\"main\",\"sha\":\""
+  <> retry_commit_stack_base_sha()
+  <> "\"},\"pull_request\":{\"number\":42,\"url\":\"https://example.test/pr/42\"}}"
+}
+
+fn write_commit_stack_retry_publication_config(root: String) -> String {
+  let assert Ok(base) = path.dirname(root)
+  let workflow_dir = base <> "/workflows"
+  let script_dir = base <> "/scripts"
+  let config_path = base <> "/scherzo.yaml"
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(script_dir)
+  let driver_path = script_dir <> "/retained-driver"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver_path,
+      "#!/bin/sh\nif [ \"$1\" = describe ] && [ \"$2\" = --json ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"publish-commit-stack\"]}'\n  exit 0\nfi\nexit 1\n",
+    )
+  test_helpers.chmod_executable(driver_path)
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: stdout\n    merge_target:\n      type: code_change\n      source:\n        step: main\n        field: stdout\nartifacts:\n  publications:\n    - id: publish_stack\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_target\nsteps:\n  - id: main\n    kind: command\n    run: ignored\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
+        <> root
+        <> "\n  driver: retained\n  drivers:\n    retained:\n      type: custom\n      command: scripts/retained-driver\n      timeout: 1234ms\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  retries:\n    attempts: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: implementation\nartifacts:\n  repositories:\n    github:\n      code:\n        repo: scherzo-systems/scherzo\n        base: main\nworkflows:\n  implementation: workflows/implementation.yaml\n",
+    )
+  config_path
+}
+
+fn write_commit_stack_retained_workspace_manifest(root: String) -> Nil {
+  let run_root = root <> "/runs/run-1"
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root <> "/.scherzo")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace_manifest.manifest_path(run_root),
+      workspace_manifest.encode_manifest(
+        [
+          workspace_manifest.Entry(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            step_id: "main",
+            attempt_index: 1,
+            workspace_name: "main",
+            relative_path: "workspaces/main",
+            workspace_profile: "retained",
+            driver_command: "retained-driver",
+            driver_capabilities: ["publish-commit-stack"],
+            source_workspace_name: None,
+            source_workspace_relative_path: None,
+            state: workspace_manifest.Ready,
+          ),
+        ],
+        "run-1",
+        "implementation",
+      ),
+    )
+  Nil
 }
 
 fn write_retry_publication_config(root: String) -> String {
@@ -3582,6 +3903,40 @@ fn retry_push_failure_runner(
   subject: process.Subject(OutMsg),
 ) -> command_runner.Runner {
   retry_runner(subject, True)
+}
+
+fn retained_workspace_publish_runner(
+  subject: process.Subject(OutMsg),
+) -> command_runner.Runner {
+  command_runner.Runner(run: fn(spec) {
+    process.send(subject, OutLine(command_runner.describe(spec)))
+    let command_runner.CommandSpec(args: args, ..) = spec
+    case args {
+      ["publish-commit-stack", ..] ->
+        Ok(command_runner.CommandOutput(0, retained_driver_success_json(), ""))
+      _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn retained_driver_success_json() -> String {
+  "{\"version\":1,\"status\":\"published\",\"branch\":\"scherzo/implementation/LIV-917\",\"base_ref\":\"main\",\"base_revision\":\""
+  <> retry_commit_stack_base_sha()
+  <> "\",\"head_revision\":\""
+  <> retry_commit_stack_head_sha()
+  <> "\",\"created\":false,\"updated\":true,\"url\":\"https://example.test/pr/42\",\"change_id\":\"42\"}"
+}
+
+fn retry_commit_stack_base_sha() -> String {
+  "1111111111111111111111111111111111111111"
+}
+
+fn retry_commit_stack_head_sha() -> String {
+  "2222222222222222222222222222222222222222"
+}
+
+fn retry_commit_stack_tree_sha() -> String {
+  "3333333333333333333333333333333333333333"
 }
 
 fn retry_runner(

@@ -18,6 +18,7 @@ pub type PublicationStatus {
   Published
   Unchanged
   Failed
+  Abandoned
 }
 
 pub type PublicationErrorInfo {
@@ -82,6 +83,7 @@ pub type PublicationManifest {
     version_id: Option(String),
     attempt_id: String,
     status: PublicationStatus,
+    publication_mode: Option(String),
     required: Bool,
     retryable: Bool,
     retry_execution_available: Bool,
@@ -118,6 +120,7 @@ pub fn planned_manifest(
     version_id: Some(planned.version_id),
     attempt_id: attempt_id,
     status: Planned,
+    publication_mode: publication_mode_for_planned(planned),
     required: planned.required,
     retryable: False,
     retry_execution_available: False,
@@ -156,6 +159,7 @@ pub fn published_manifest(
     version_id: Some(planned.version_id),
     attempt_id: attempt_id,
     status: Published,
+    publication_mode: publication_mode_for_planned(planned),
     required: planned.required,
     retryable: False,
     retry_execution_available: True,
@@ -193,6 +197,7 @@ pub fn unchanged_manifest(
     version_id: Some(planned.version_id),
     attempt_id: attempt_id,
     status: Unchanged,
+    publication_mode: publication_mode_for_planned(planned),
     required: planned.required,
     retryable: False,
     retry_execution_available: True,
@@ -232,6 +237,7 @@ pub fn failed_manifest(
     version_id: None,
     attempt_id: attempt_id,
     status: Failed,
+    publication_mode: None,
     required: required,
     retryable: True,
     retry_execution_available: False,
@@ -273,6 +279,7 @@ pub fn failed_from_planned_manifest(
     version_id: Some(planned.version_id),
     attempt_id: attempt_id,
     status: Failed,
+    publication_mode: publication_mode_for_planned(planned),
     required: planned.required,
     retryable: retryable,
     retry_execution_available: True,
@@ -290,6 +297,27 @@ pub fn failed_from_planned_manifest(
     removed_paths: removed_paths,
     dry_run_manifest: Some(planned),
     error: Some(error),
+    cleanup_diagnostics: None,
+  )
+}
+
+pub fn abandoned_from_manifest(
+  manifest: PublicationManifest,
+  attempt_id: String,
+  generated_at_ms: Int,
+  reason: String,
+) -> PublicationManifest {
+  PublicationManifest(
+    ..manifest,
+    attempt_id: attempt_id,
+    status: Abandoned,
+    retryable: False,
+    retry_execution_available: False,
+    generated_at_ms: generated_at_ms,
+    error: Some(PublicationErrorInfo(
+      code: "publication_abandoned",
+      message: reason,
+    )),
     cleanup_diagnostics: None,
   )
 }
@@ -337,6 +365,17 @@ pub fn attempt_key_for_failure(
   )
 }
 
+pub fn attempt_key_for_abandon(
+  publication_id: String,
+  reason: String,
+  generated_at_ms: Int,
+) -> String {
+  "abandoned-"
+  <> hash.sha256_hex(
+    publication_id <> "|" <> reason <> "|" <> int.to_string(generated_at_ms),
+  )
+}
+
 pub fn manifest_ref(
   run_id: String,
   publication_id: String,
@@ -354,6 +393,7 @@ pub fn status_to_string(status: PublicationStatus) -> String {
     Published -> "published"
     Unchanged -> "unchanged"
     Failed -> "failed"
+    Abandoned -> "abandoned"
   }
 }
 
@@ -363,6 +403,7 @@ pub fn status_from_string(value: String) -> Result(PublicationStatus, Nil) {
     "published" -> Ok(Published)
     "unchanged" -> Ok(Unchanged)
     "failed" -> Ok(Failed)
+    "abandoned" -> Ok(Abandoned)
     _ -> Error(Nil)
   }
 }
@@ -378,6 +419,7 @@ pub fn to_json(manifest: PublicationManifest) -> json.Json {
     #("version_id", option_string_to_json(manifest.version_id)),
     #("attempt_id", json.string(manifest.attempt_id)),
     #("status", json.string(status_to_string(manifest.status))),
+    #("publication_mode", option_string_to_json(manifest.publication_mode)),
     #("required", json.bool(manifest.required)),
     #("retryable", json.bool(manifest.retryable)),
     #(
@@ -431,6 +473,15 @@ fn option_int_to_json(value: Option(Int)) -> json.Json {
   case value {
     Some(value) -> json.int(value)
     None -> json.null()
+  }
+}
+
+fn publication_mode_for_planned(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+) -> Option(String) {
+  case planned.commit_stack {
+    Some(_) -> Some("commit_stack")
+    None -> Some("files")
   }
 }
 
@@ -505,6 +556,11 @@ fn manifest_decoder() -> decode.Decoder(PublicationManifest) {
   use version_id <- decode.field("version_id", decode.optional(decode.string))
   use attempt_id <- decode.field("attempt_id", decode.string)
   use status_text <- decode.field("status", decode.string)
+  use publication_mode <- decode.optional_field(
+    "publication_mode",
+    None,
+    decode.optional(decode.string),
+  )
   use required <- decode.field("required", decode.bool)
   use retryable <- decode.field("retryable", decode.bool)
   use retry_execution_available <- decode.field(
@@ -577,6 +633,7 @@ fn manifest_decoder() -> decode.Decoder(PublicationManifest) {
     version_id: version_id,
     attempt_id: attempt_id,
     status: status,
+    publication_mode: publication_mode,
     required: required,
     retryable: retryable,
     retry_execution_available: retry_execution_available,

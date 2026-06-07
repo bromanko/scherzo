@@ -12,6 +12,8 @@ import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/query/types as query_types
 import scherzo/ctl/artifact_publication as ctl_artifact_publication
+import scherzo/ctl/artifact_publication_abandon as ctl_artifact_publication_abandon
+import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/ctl/parser
 import scherzo/ctl/renderers as ctl_renderers
 import scherzo/ctl/schedules as ctl_schedules
@@ -132,6 +134,14 @@ pub type Command {
     json: Bool,
     run_id: String,
     publication_id: Option(String),
+  )
+  ArtifactPublicationAbandon(
+    control_file: Option(String),
+    root: Option(String),
+    json: Bool,
+    run_id: String,
+    publication_id: String,
+    reason: String,
   )
   StateStatus(root: String, json: Bool)
   StateArchiveOld(root: String, json: Bool, yes: Bool)
@@ -434,9 +444,27 @@ fn command_from(name: String, flags: parser.Flags) -> Result(Command, Error) {
         flags.publication_id,
       ))
     }
+    "artifact", ["publication", "abandon"] -> {
+      use run_id <- try_ctl(required_run_id(flags))
+      use publication_id <- try_ctl(required_publication_id_for_abandon(flags))
+      use reason <- try_ctl(required_reason_for_abandon(flags))
+      case flags.yes {
+        True ->
+          Ok(ArtifactPublicationAbandon(
+            flags.control_file,
+            flags.root,
+            flags.json,
+            run_id,
+            publication_id,
+            reason,
+          ))
+        False ->
+          Error(UsageError("artifact publication abandon requires --yes"))
+      }
+    }
     "artifact", _ ->
       Error(UsageError(
-        "artifact usage: artifact publication list --run <run-id> | artifact publication show --run <run-id> --publication <publication-id> | artifact publication retry --run <run-id> [--publication <publication-id>]",
+        "artifact usage: artifact publication list --run <run-id> | artifact publication show --run <run-id> --publication <publication-id> | artifact publication retry --run <run-id> [--publication <publication-id>] | artifact publication abandon --run <run-id> --publication <publication-id> --reason <text> --yes",
       ))
     "state", ["status"] -> {
       use root <- try_ctl(required_root(flags))
@@ -517,6 +545,26 @@ fn required_publication_id(flags: parser.Flags) -> Result(String, Error) {
       Error(UsageError(
         "artifact publication show requires --publication <publication-id>",
       ))
+  }
+}
+
+fn required_publication_id_for_abandon(
+  flags: parser.Flags,
+) -> Result(String, Error) {
+  case flags.publication_id {
+    Some(publication_id) -> Ok(publication_id)
+    None ->
+      Error(UsageError(
+        "artifact publication abandon requires --publication <publication-id>",
+      ))
+  }
+}
+
+fn required_reason_for_abandon(flags: parser.Flags) -> Result(String, Error) {
+  case flags.reason {
+    Some(reason) -> Ok(reason)
+    None ->
+      Error(UsageError("artifact publication abandon requires --reason <text>"))
   }
 }
 
@@ -864,6 +912,23 @@ pub fn run_with_deps(
         publication_id,
         output,
       )
+    ArtifactPublicationAbandon(
+      control_path,
+      root,
+      json,
+      run_id,
+      publication_id,
+      reason,
+    ) ->
+      run_artifact_publication_abandon(
+        control_path,
+        root,
+        json,
+        run_id,
+        publication_id,
+        reason,
+        output,
+      )
     StateStatus(root, json) ->
       ctl_state_handlers.run_status(
         resolve_path_option(root),
@@ -1184,6 +1249,30 @@ fn run_artifact_publication_show(
   })
 }
 
+fn run_artifact_publication_abandon(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  json_output: Bool,
+  run_id: String,
+  publication_id: String,
+  reason: String,
+  output: Output,
+) -> Result(Nil, Error) {
+  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
+  ctl_artifact_publication_abandon.abandon(
+    root,
+    json_output,
+    run_id,
+    publication_id,
+    reason,
+    output.line,
+  )
+  |> result.map_error(fn(error) {
+    let #(code, message) = error
+    Failed(code, message)
+  })
+}
+
 fn run_artifact_publication_retry(
   control_path: Option(String),
   explicit_root: Option(String),
@@ -1218,7 +1307,7 @@ fn run_artifact_publication_retry(
     }
     Some(_) -> {
       use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
-      ctl_artifact_publication.retry(
+      ctl_artifact_publication_retry.retry(
         root,
         json_output,
         run_id,
