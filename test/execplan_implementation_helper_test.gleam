@@ -2018,22 +2018,31 @@ fn pr_draft_env_prefix(value: String) -> String {
   }
 }
 
-fn run_driver_backed_publish_with_pr_draft(
+fn run_driver_backed_publish_with_env(
   dir: String,
-  draft: String,
+  env_prefix: String,
 ) -> step_artifact.StepArtifact {
   test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
 
   run_helper_in(
     dir,
-    pr_draft_env_prefix(draft)
+    env_prefix
       <> "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=origin SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_GITHUB_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
   )
+}
+
+fn run_driver_backed_publish_with_pr_draft(
+  dir: String,
+  draft: String,
+) -> step_artifact.StepArtifact {
+  run_driver_backed_publish_with_env(dir, pr_draft_env_prefix(draft))
 }
 
 pub fn publish_time_revalidation_success_may_publish_test() {
@@ -2115,34 +2124,76 @@ pub fn legacy_publish_invalid_pr_draft_fails_before_publication_test() {
   assert read_or_empty(dir <> "/gh.log") == ""
 }
 
-pub fn driver_backed_publish_pr_draft_true_adds_draft_flag_test() {
+pub fn driver_backed_publish_pr_draft_true_prepares_core_publication_test() {
   let dir = "test/tmp/implementation-helper-driver-publish-draft-true"
   let artifact = run_driver_backed_publish_with_pr_draft(dir, "true")
 
   assert artifact.status == step_artifact.StepSucceeded
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "pr create")
-  assert string.contains(gh_log, "--draft")
+  assert string.contains(artifact.stdout, "PUBLICATION_MODE=commit_stack")
+  assert string.contains(
+    artifact.stdout,
+    "PUBLICATION_ORCHESTRATOR=scherzo_core",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "PR_URL will be reported by Scherzo core",
+  )
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+  assert string.contains(commit_stack, "scherzo.git_commit_stack.v1")
+  assert string.contains(commit_stack, "\"ref\": \"main\"")
+  assert string.contains(
+    commit_stack,
+    "\"sha\": \"1111111111111111111111111111111111111111\"",
+  )
+  assert string.contains(
+    commit_stack,
+    "\"sha\": \"3333333333333333333333333333333333333333\"",
+  )
+  assert string.contains(
+    commit_stack,
+    "\"tree\": \"4444444444444444444444444444444444444444\"",
+  )
+  assert string.contains(
+    commit_stack,
+    "\"ref\": \"runs/local-run/outputs/commit_stack.bundle\"",
+  )
+  assert string.contains(
+    commit_stack,
+    "\"media_type\": \"application/vnd.git.bundle\"",
+  )
+  let assert Ok(git_log) = simplifile.read(dir <> "/git.log")
+  assert string.contains(git_log, "bundle create")
+  assert string.contains(git_log, "bundle verify")
+  let assert Ok(publish_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
+  assert string.contains(publish_json, "ready_for_core_publication")
+  assert string.contains(publish_json, "scherzo_core")
+  assert read_or_empty(dir <> "/gh.log") == ""
 }
 
-pub fn driver_backed_publish_pr_draft_false_omits_draft_flag_test() {
+pub fn driver_backed_publish_pr_draft_false_prepares_core_publication_test() {
   let dir = "test/tmp/implementation-helper-driver-publish-draft-false"
   let artifact = run_driver_backed_publish_with_pr_draft(dir, "false")
 
   assert artifact.status == step_artifact.StepSucceeded
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "pr create")
-  assert !string.contains(gh_log, "--draft")
+  assert string.contains(
+    artifact.stdout,
+    "COMMIT_STACK_PATH=tmp/scherzo-implementation-commit-stack.json",
+  )
+  assert read_or_empty(dir <> "/gh.log") == ""
 }
 
-pub fn driver_backed_publish_pr_draft_unset_keeps_default_test() {
+pub fn driver_backed_publish_pr_draft_unset_prepares_core_publication_test() {
   let dir = "test/tmp/implementation-helper-driver-publish-draft-unset"
   let artifact = run_driver_backed_publish_with_pr_draft(dir, "")
 
   assert artifact.status == step_artifact.StepSucceeded
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "pr create")
-  assert !string.contains(gh_log, "--draft")
+  assert string.contains(
+    artifact.stdout,
+    "PUBLICATION_ORCHESTRATOR=scherzo_core",
+  )
+  assert read_or_empty(dir <> "/gh.log") == ""
 }
 
 pub fn driver_backed_publish_invalid_pr_draft_fails_before_publication_test() {
@@ -2158,6 +2209,35 @@ pub fn driver_backed_publish_invalid_pr_draft_fails_before_publication_test() {
   )
   assert read_or_empty(dir <> "/jj.log") == ""
   assert read_or_empty(dir <> "/gh.log") == ""
+}
+
+pub fn driver_backed_publish_rejects_unsafe_run_id_for_commit_stack_carrier_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-unsafe-run-id"
+  let artifact =
+    run_driver_backed_publish_with_env(dir, "SCHERZO_RUN_ID=../bad ")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("invalid_configuration")
+  assert string.contains(artifact.stderr, "SCHERZO_RUN_ID must be a safe")
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+}
+
+pub fn driver_backed_publish_rejects_invalid_commit_stack_git_objects_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-invalid-git-oid"
+  let artifact =
+    run_driver_backed_publish_with_env(dir, "SCHERZO_FAKE_INVALID_COMMIT_ID=1 ")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("invalid_commit_stack_artifact")
+  assert string.contains(
+    artifact.stderr,
+    "did not resolve to a 40-character Git object ID",
+  )
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
 }
 
 pub fn publish_includes_base_drift_repair_summary_test() {
@@ -2607,7 +2687,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
     workflow,
     "plan-completion-recovery --phase final --attempt 3 --max-attempts 3",
   )
-  assert string.contains(workflow, "- id: publish_pr")
+  assert string.contains(workflow, "- id: materialize_commit_stack")
   assert string.contains(
     workflow,
     "depends_on: [finalize_final_plan_completion_gate, finalize_review_dispositions]",
@@ -2647,7 +2727,7 @@ fn assert_workflow_refresh_ordering(
     workflow,
     "depends_on: [" <> final_validate_dependency <> "]",
   )
-  assert string.contains(workflow, "- id: publish_pr")
+  assert string.contains(workflow, "- id: materialize_commit_stack")
   assert string.contains(workflow, "depends_on: [" <> publish_dependency <> "]")
 }
 
@@ -2939,6 +3019,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
         <> "if [ \"$1\" = bookmark ]; then exit 0; fi\n"
         <> "if [ \"$1\" = status ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = debug ] && [ \"$2\" = object ] && [ \"$3\" = commit ]; then printf '%s\n' 'Commit {' '  root_tree: Resolved(' '    TreeId(' '      \"4444444444444444444444444444444444444444\",' '    ),' '  ),' '}'; exit 0; fi\n"
         <> "if [ \"$1\" = log ]; then\n"
         <> "  rev=\n"
         <> "  template=\n"
@@ -2949,9 +3030,9 @@ fn write_fake_jj(path: String) -> Nil {
         <> "    prev=$arg\n"
         <> "  done\n"
         <> "  case \"$rev\" in\n"
-        <> "    main@origin) echo remotecommit; exit 0;;\n"
-        <> "    @-) echo localparentcommit; exit 0;;\n"
-        <> "    @) case \"$template\" in *change_id.short*) echo publishchange;; *) echo currentcommit;; esac; exit 0;;\n"
+        <> "    main@origin) case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo remotecommit;; esac; exit 0;;\n"
+        <> "    @-) case \"$template\" in *commit_id*) echo 2222222222222222222222222222222222222222;; *) echo localparentcommit;; esac; exit 0;;\n"
+        <> "    @) case \"$template\" in *change_id.short*) echo publishchange;; *commit_id*) if [ \"${SCHERZO_FAKE_INVALID_COMMIT_ID:-}\" = 1 ]; then echo not-a-git-oid; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "    conflicts*) exit 0;;\n"
         <> "    remote_bookmarks*) exit 0;;\n"
         <> "    *) exit 1;;\n"
@@ -2987,6 +3068,7 @@ fn write_fake_refresh_jj(path: String) -> Nil {
         <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
         <> "if [ \"$1\" = bookmark ]; then exit 0; fi\n"
         <> "if [ \"$1\" = status ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = debug ] && [ \"$2\" = object ] && [ \"$3\" = commit ]; then printf '%s\n' 'Commit {' '  root_tree: Resolved(' '    TreeId(' '      \"4444444444444444444444444444444444444444\",' '    ),' '  ),' '}'; exit 0; fi\n"
         <> "if [ \"$1\" = log ]; then\n"
         <> "  rev=\n"
         <> "  template=\n"
@@ -2997,15 +3079,29 @@ fn write_fake_refresh_jj(path: String) -> Nil {
         <> "    prev=$arg\n"
         <> "  done\n"
         <> "  case \"$rev\" in\n"
-        <> "    main@origin) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; echo remotecommit; exit 0;;\n"
-        <> "    main) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; echo localfallbackcommit; exit 0;;\n"
-        <> "    @-) case \"$template\" in *change_id*) echo refreshed-base-change;; *) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ]; then echo remotecommit; else echo localparentcommit; fi;; esac; exit 0;;\n"
-        <> "    @) case \"$template\" in *change_id.short*) echo refreshchange;; *) echo currentcommit;; esac; exit 0;;\n"
+        <> "    main@origin) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo remotecommit;; esac; exit 0;;\n"
+        <> "    main) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo localfallbackcommit;; esac; exit 0;;\n"
+        <> "    @-) case \"$template\" in *change_id*) echo refreshed-base-change;; *commit_id*) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ]; then echo 1111111111111111111111111111111111111111; else echo 2222222222222222222222222222222222222222; fi;; *) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ]; then echo remotecommit; else echo localparentcommit; fi;; esac; exit 0;;\n"
+        <> "    @) case \"$template\" in *change_id.short*) echo refreshchange;; *commit_id*) if [ \"${SCHERZO_FAKE_INVALID_COMMIT_ID:-}\" = 1 ]; then echo not-a-git-oid; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "    conflicts*) if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT:-}\" = 1 ] || [ -f .fake-conflict ]; then echo conflictchange; fi; exit 0;;\n"
         <> "    remote_bookmarks*) exit 0;;\n"
         <> "    *) exit 1;;\n"
         <> "  esac\n"
         <> "fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_fake_git(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> git.log\n"
+        <> "if [ \"$1\" = update-ref ]; then exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'bundle create' ]; then mkdir -p \"$(dirname \"$3\")\"; printf 'fake bundle for %s\\n' \"$*\" > \"$3\"; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'bundle verify' ]; then test -s \"$3\"; exit $?; fi\n"
         <> "exit 1\n",
     )
   Nil

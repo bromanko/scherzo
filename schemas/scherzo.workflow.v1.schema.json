@@ -664,7 +664,12 @@
         "required": { "type": "boolean" },
         "mode": { "const": "commit_stack" },
         "commit_stack": { "$ref": "#/$defs/PublicationCommitStack" },
-        "target": { "$ref": "#/$defs/PublicationExistingPrBranchTarget" }
+        "target": {
+          "oneOf": [
+            { "$ref": "#/$defs/PublicationStableBranchTarget" },
+            { "$ref": "#/$defs/PublicationExistingPrBranchTarget" }
+          ]
+        }
       }
     },
     "PublicationRoute": {

@@ -475,8 +475,9 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   let assert Ok(finalize_dispositions) =
     workflow_dag.step_by_id(dag, "finalize_review_dispositions")
   assert finalize_dispositions.depends_on == ["final_validate"]
-  let assert Ok(publish_pr) = workflow_dag.step_by_id(dag, "publish_pr")
-  assert publish_pr.depends_on == ["finalize_review_dispositions"]
+  let assert Ok(materialize_commit_stack) =
+    workflow_dag.step_by_id(dag, "materialize_commit_stack")
+  assert materialize_commit_stack.depends_on == ["finalize_review_dispositions"]
 }
 
 pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_test() {
@@ -493,12 +494,16 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
   let assert Ok(finalize_dispositions) =
     workflow_dag.step_by_id(dag, "finalize_review_dispositions")
   assert finalize_dispositions.depends_on == ["final_validate"]
-  let assert Ok(publish_pr) = workflow_dag.step_by_id(dag, "publish_pr")
+  let assert Ok(materialize_commit_stack) =
+    workflow_dag.step_by_id(dag, "materialize_commit_stack")
   assert_list_contains(
-    publish_pr.depends_on,
+    materialize_commit_stack.depends_on,
     "finalize_final_plan_completion_gate",
   )
-  assert_list_contains(publish_pr.depends_on, "finalize_review_dispositions")
+  assert_list_contains(
+    materialize_commit_stack.depends_on,
+    "finalize_review_dispositions",
+  )
 
   let feedback_prompt_paths = [
     ".scherzo/workflows/prompts/apply-feedback.md",

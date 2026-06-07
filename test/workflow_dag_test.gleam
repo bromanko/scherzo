@@ -125,11 +125,15 @@ pub fn rejects_commit_stack_publication_without_existing_target_test() {
     == "missing_commit_stack_publication_target"
 }
 
-pub fn rejects_commit_stack_stable_branch_target_test() {
-  assert error_code(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\n",
+pub fn parses_commit_stack_stable_branch_publication_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: implementation_commit_stack\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\n",
     )
-    == "commit_stack_stable_branch_target_unsupported"
+
+  let assert [route] = dag.publication_routes
+  assert route.mode == artifact_publication_config.CommitStackPublication
+  let assert artifact_publication_config.StableBranchTarget = route.target
 }
 
 pub fn rejects_invalid_publication_route_shapes_test() {
