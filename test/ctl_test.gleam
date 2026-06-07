@@ -1582,6 +1582,13 @@ pub fn artifact_publication_list_and_show_offline_state_test() {
     json_transcript,
     "\"pr_url\":\"https://example.test/pr/1\"",
   )
+  assert string.contains(json_transcript, "\"cleanup_diagnostics\":{")
+  assert string.contains(
+    json_transcript,
+    "\"checkout_path\":\""
+      <> root
+      <> "/.scherzo-state/artifact-repositories/github/example\"",
+  )
 }
 
 pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test() {
@@ -1628,6 +1635,13 @@ pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test()
   let show_transcript = drain_output(show_subject)
   assert string.contains(show_transcript, "\"attempt_count\":2")
   assert string.contains(show_transcript, "\"status\":\"published\"")
+}
+
+pub fn artifact_publication_retry_replays_failed_execution_matrix_test() {
+  assert_retry_replays_failed_execution("commit", "git_commit_failed")
+  assert_retry_replays_failed_execution("push", "git_push_failed")
+  assert_retry_replays_failed_execution("pr-create", "pr_create_failed")
+  assert_retry_replays_failed_execution("dirty", "dirty_checkout")
 }
 
 pub fn artifact_publication_retry_replans_pre_execution_failure_test() {
@@ -2525,6 +2539,17 @@ fn seed_publication_state(root: String) -> Nil {
         message: "missing output",
       ),
     )
+    |> artifact_publication_manifest.with_cleanup_diagnostics(
+      artifact_publication_manifest.CleanupDiagnostics(
+        checkout_path: root
+          <> "/.scherzo-state/artifact-repositories/github/example",
+        pre_cleanup_status: Some("M docs/plans/LIV-739.md"),
+        reset_summary: Some("exit=0"),
+        clean_summary: Some("exit=0"),
+        post_cleanup_status: Some(""),
+        cleanup_succeeded: True,
+      ),
+    )
   let #(planned_sha, planned_bytes) =
     write_publication_manifest(root, planned_ref, planned_manifest)
   let #(failed_sha, failed_bytes) =
@@ -2741,6 +2766,20 @@ fn seed_mixed_retry_publication_state(root: String) -> Nil {
 }
 
 fn seed_failed_retry_publication_state(root: String) -> Nil {
+  seed_failed_retry_publication_state_with_error(
+    root,
+    "git_push_failed",
+    "previous push failed",
+    None,
+  )
+}
+
+fn seed_failed_retry_publication_state_with_error(
+  root: String,
+  error_code: String,
+  error_message: String,
+  cleanup_diagnostics: Option(artifact_publication_manifest.CleanupDiagnostics),
+) -> Nil {
   let planned = seeded_publication_plan(root)
   let failed_ref = "runs/run-1/publications/execplan_review_doc/failed-1.json"
   let failed_manifest =
@@ -2755,10 +2794,11 @@ fn seed_failed_retry_publication_state(root: String) -> Nil {
       ["docs/plans/LIV-739.md"],
       [],
       artifact_publication_manifest.PublicationErrorInfo(
-        code: "git_push_failed",
-        message: "previous push failed",
+        code: error_code,
+        message: error_message,
       ),
     )
+    |> add_cleanup_diagnostics(cleanup_diagnostics)
   let #(failed_sha, failed_bytes) =
     write_publication_manifest(root, failed_ref, failed_manifest)
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
@@ -2798,14 +2838,25 @@ fn seed_failed_retry_publication_state(root: String) -> Nil {
             manifest_ref: Some(failed_ref),
             manifest_sha256: Some(failed_sha),
             manifest_bytes: Some(failed_bytes),
-            error_code: Some("git_push_failed"),
-            error_message: Some("previous push failed"),
+            error_code: Some(error_code),
+            error_message: Some(error_message),
           ),
         ),
       ],
       True,
     )
   Nil
+}
+
+fn add_cleanup_diagnostics(
+  manifest: artifact_publication_manifest.PublicationManifest,
+  cleanup_diagnostics: Option(artifact_publication_manifest.CleanupDiagnostics),
+) -> artifact_publication_manifest.PublicationManifest {
+  case cleanup_diagnostics {
+    Some(cleanup) ->
+      artifact_publication_manifest.with_cleanup_diagnostics(manifest, cleanup)
+    None -> manifest
+  }
 }
 
 fn seed_unchanged_missing_pr_publication_state(root: String) -> Nil {
@@ -3296,6 +3347,62 @@ fn planned_publication_by_id(
   let assert Ok(planned) =
     list.find(plans, fn(plan) { plan.publication_id == publication_id })
   planned
+}
+
+fn assert_retry_replays_failed_execution(
+  suffix: String,
+  error_code: String,
+) -> Nil {
+  let root =
+    "test/tmp/ctl-artifact-publication-retry-matrix/" <> suffix <> "/workspaces"
+  test_helpers.reset_dir(
+    "test/tmp/ctl-artifact-publication-retry-matrix/" <> suffix,
+  )
+  let cleanup = case error_code == "dirty_checkout" {
+    True ->
+      Some(artifact_publication_manifest.CleanupDiagnostics(
+        checkout_path: root
+          <> "/.scherzo-state/artifact-repositories/github/example",
+        pre_cleanup_status: Some("M docs/plans/LIV-739.md"),
+        reset_summary: Some("exit=1 diagnostics=reset failed"),
+        clean_summary: Some("exit=0"),
+        post_cleanup_status: Some("M docs/plans/LIV-739.md"),
+        cleanup_succeeded: False,
+      ))
+    False ->
+      Some(artifact_publication_manifest.CleanupDiagnostics(
+        checkout_path: root
+          <> "/.scherzo-state/artifact-repositories/github/example",
+        pre_cleanup_status: Some("M docs/plans/LIV-739.md"),
+        reset_summary: Some("exit=0"),
+        clean_summary: Some("exit=0"),
+        post_cleanup_status: Some(""),
+        cleanup_succeeded: True,
+      ))
+  }
+  seed_failed_retry_publication_state_with_error(
+    root,
+    error_code,
+    "previous failure: " <> error_code,
+    cleanup,
+  )
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("execplan_review_doc"),
+      retry_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"status\":\"published\"")
+  let commands = drain_output(command_subject)
+  assert string.contains(commands, "git fetch origin main")
+  assert string.contains(commands, "git commit -m scherzo publication")
 }
 
 fn seeded_output_manifest() -> workflow_contract_manifest.ContractOutputManifest {

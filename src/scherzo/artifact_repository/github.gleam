@@ -6,6 +6,7 @@ import gleam/result
 import gleam/string
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
+import scherzo/artifact_repository/checkout_lock
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/github_cli
 import scherzo/artifact_repository/github_paths
@@ -20,6 +21,20 @@ import simplifile
 
 pub type PublishError {
   PublishError(code: String, message: String)
+}
+
+type CheckoutFailure {
+  CheckoutFailure(
+    retryable: Bool,
+    error: artifact_publication_manifest.PublicationErrorInfo,
+    cleanup_diagnostics: Option(
+      artifact_publication_manifest.CleanupDiagnostics,
+    ),
+  )
+}
+
+type CleanupCommandResult {
+  CleanupCommandResult(summary: String, succeeded: Bool)
 }
 
 pub fn code(error: PublishError) -> String {
@@ -199,16 +214,8 @@ fn failed_manifest(
   removed_paths: List(String),
   error: artifact_publication_manifest.PublicationErrorInfo,
 ) -> artifact_publication_manifest.PublicationManifest {
-  let attempt_id =
-    artifact_publication_manifest.attempt_key_for_failure(
-      manifest.publication_id,
-      error.code,
-      error.message,
-      now_ms,
-    )
-  artifact_publication_manifest.failed_from_planned_manifest(
+  failed_manifest_with_cleanup(
     manifest,
-    attempt_id,
     now_ms,
     retryable,
     branch,
@@ -217,7 +224,154 @@ fn failed_manifest(
     changed_paths,
     removed_paths,
     error,
+    None,
   )
+}
+
+fn failed_manifest_with_cleanup(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  now_ms: Int,
+  retryable: Bool,
+  branch: Option(String),
+  commit_sha: Option(String),
+  pr_url: Option(String),
+  changed_paths: List(String),
+  removed_paths: List(String),
+  error: artifact_publication_manifest.PublicationErrorInfo,
+  cleanup_diagnostics: Option(artifact_publication_manifest.CleanupDiagnostics),
+) -> artifact_publication_manifest.PublicationManifest {
+  let attempt_id =
+    artifact_publication_manifest.attempt_key_for_failure(
+      manifest.publication_id,
+      error.code,
+      error.message,
+      now_ms,
+    )
+  let manifest =
+    artifact_publication_manifest.failed_from_planned_manifest(
+      manifest,
+      attempt_id,
+      now_ms,
+      retryable,
+      branch,
+      commit_sha,
+      pr_url,
+      changed_paths,
+      removed_paths,
+      error,
+    )
+  case cleanup_diagnostics {
+    Some(cleanup_diagnostics) ->
+      artifact_publication_manifest.with_cleanup_diagnostics(
+        manifest,
+        cleanup_diagnostics,
+      )
+    None -> manifest
+  }
+}
+
+fn with_checkout_lock(
+  checkout_dir: String,
+  now_ms: Int,
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  lock_failure_pr_url: Option(String),
+  removed_paths: List(String),
+  run: fn() -> artifact_publication_manifest.PublicationManifest,
+) -> artifact_publication_manifest.PublicationManifest {
+  case checkout_lock.acquire(checkout_dir) {
+    Ok(lock) -> {
+      let result = run()
+      let _ = checkout_lock.release(lock)
+      result
+    }
+    Error(error) ->
+      failed_manifest(
+        manifest,
+        now_ms,
+        True,
+        Some(manifest.branch),
+        None,
+        lock_failure_pr_url,
+        [],
+        removed_paths,
+        artifact_publication_manifest.PublicationErrorInfo(
+          code: "publication_lock_failed",
+          message: checkout_lock.error_message(error),
+        ),
+      )
+  }
+}
+
+fn cleanup_checkout(
+  checkout_dir: String,
+  runner: command_runner.Runner,
+  pre_cleanup_status: Option(String),
+) -> artifact_publication_manifest.CleanupDiagnostics {
+  let reset =
+    run_cleanup_command(
+      runner,
+      command_runner.sh("git", ["reset", "--hard", "HEAD"], checkout_dir),
+    )
+  let clean =
+    run_cleanup_command(
+      runner,
+      command_runner.sh("git", ["clean", "-fd"], checkout_dir),
+    )
+  let post_status_result = status_snapshot(checkout_dir, runner)
+  let post_status = case post_status_result {
+    Ok(status) -> Some(status)
+    Error(error) -> Some("status_failed:" <> error.message)
+  }
+  let cleanup_succeeded =
+    reset.succeeded
+    && clean.succeeded
+    && status_snapshot_result_is_clean(post_status_result)
+  artifact_publication_manifest.CleanupDiagnostics(
+    checkout_path: checkout_dir,
+    pre_cleanup_status: pre_cleanup_status,
+    reset_summary: Some(reset.summary),
+    clean_summary: Some(clean.summary),
+    post_cleanup_status: post_status,
+    cleanup_succeeded: cleanup_succeeded,
+  )
+}
+
+fn status_snapshot(
+  checkout_dir: String,
+  runner: command_runner.Runner,
+) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
+  github_cli.run_stdout(
+    runner,
+    command_runner.sh("git", ["status", "--porcelain"], checkout_dir),
+    True,
+  )
+}
+
+fn status_snapshot_result_is_clean(
+  snapshot: Result(String, artifact_publication_manifest.PublicationErrorInfo),
+) -> Bool {
+  case snapshot {
+    Ok(snapshot) -> snapshot == ""
+    Error(_) -> False
+  }
+}
+
+fn run_cleanup_command(
+  runner: command_runner.Runner,
+  spec: command_runner.CommandSpec,
+) -> CleanupCommandResult {
+  case github_cli.run(runner, spec, True) {
+    Ok(output) ->
+      CleanupCommandResult(
+        summary: command_runner.summarize(output),
+        succeeded: output.exit_code == 0,
+      )
+    Error(error) ->
+      CleanupCommandResult(
+        summary: "spawn_failed:" <> error.message,
+        succeeded: False,
+      )
+  }
 }
 
 fn publish_with_checkout(
@@ -230,79 +384,98 @@ fn publish_with_checkout(
   attempt_id: String,
 ) -> artifact_publication_manifest.PublicationManifest {
   let checkout_dir = github_paths.checkout_dir(workspace_root, manifest)
-  case ensure_checkout(manifest, checkout_dir, runner) {
-    Error(#(retryable, error)) ->
-      failed_manifest(
-        manifest,
-        now_ms,
-        retryable,
-        Some(manifest.branch),
-        None,
-        None,
-        [],
-        removed_paths,
-        error,
-      )
-    Ok(Nil) ->
-      case
-        materialize_selected_files(checkout_dir, selected_files, removed_paths)
-      {
-        Error(error) ->
-          failed_manifest(
-            manifest,
-            now_ms,
-            False,
-            Some(manifest.branch),
-            None,
-            None,
-            [],
+  with_checkout_lock(checkout_dir, now_ms, manifest, None, removed_paths, fn() {
+    case ensure_checkout(manifest, checkout_dir, runner) {
+      Error(CheckoutFailure(retryable, error, cleanup_diagnostics)) ->
+        failed_manifest_with_cleanup(
+          manifest,
+          now_ms,
+          retryable,
+          Some(manifest.branch),
+          None,
+          None,
+          [],
+          removed_paths,
+          error,
+          cleanup_diagnostics,
+        )
+      Ok(Nil) -> {
+        let phase_result = case
+          materialize_selected_files(
+            checkout_dir,
+            selected_files,
             removed_paths,
-            error,
           )
-        Ok(changed_paths) ->
-          case
-            stage_and_diff(
-              checkout_dir,
+        {
+          Error(error) ->
+            failed_manifest(
               manifest,
-              changed_paths,
+              now_ms,
+              False,
+              Some(manifest.branch),
+              None,
+              None,
+              [],
               removed_paths,
-              runner,
+              error,
             )
-          {
-            Error(#(retryable, error)) ->
-              failed_manifest(
+          Ok(changed_paths) ->
+            case
+              stage_and_diff(
+                checkout_dir,
                 manifest,
-                now_ms,
-                retryable,
-                Some(manifest.branch),
-                None,
-                None,
                 changed_paths,
                 removed_paths,
-                error,
-              )
-            Ok(False) ->
-              unchanged_after_no_diff(
-                manifest,
-                checkout_dir,
                 runner,
-                now_ms,
-                attempt_id,
-                removed_paths,
               )
-            Ok(True) ->
-              commit_push_and_pr(
-                manifest,
-                checkout_dir,
-                runner,
-                now_ms,
-                attempt_id,
-                changed_paths,
-                removed_paths,
-              )
+            {
+              Error(#(retryable, error)) ->
+                failed_manifest(
+                  manifest,
+                  now_ms,
+                  retryable,
+                  Some(manifest.branch),
+                  None,
+                  None,
+                  changed_paths,
+                  removed_paths,
+                  error,
+                )
+              Ok(False) ->
+                unchanged_after_no_diff(
+                  manifest,
+                  checkout_dir,
+                  runner,
+                  now_ms,
+                  attempt_id,
+                  removed_paths,
+                )
+              Ok(True) ->
+                commit_push_and_pr(
+                  manifest,
+                  checkout_dir,
+                  runner,
+                  now_ms,
+                  attempt_id,
+                  changed_paths,
+                  removed_paths,
+                )
+            }
+        }
+        case phase_result.status {
+          artifact_publication_manifest.Failed -> {
+            let cleanup_diagnostics =
+              cleanup_checkout(checkout_dir, runner, None)
+            artifact_publication_manifest.with_cleanup_diagnostics(
+              phase_result,
+              cleanup_diagnostics,
+            )
           }
+          _ -> phase_result
+        }
       }
-  }
+    }
+  })
 }
 
 fn unchanged_after_no_diff(
@@ -355,7 +528,7 @@ fn unchanged_after_no_diff(
                 True,
                 Some(manifest.branch),
                 Some(commit_sha),
-                None,
+                github_cli.existing_pr_url(manifest, checkout_dir, runner),
                 [],
                 removed_paths,
                 error,
@@ -443,7 +616,7 @@ fn commit_push_and_pr(
                     True,
                     Some(manifest.branch),
                     Some(commit_sha),
-                    None,
+                    github_cli.existing_pr_url(manifest, checkout_dir, runner),
                     changed_paths,
                     removed_paths,
                     error,
@@ -531,34 +704,21 @@ fn publish_existing_branch_commit_stack(
 ) -> artifact_publication_manifest.PublicationManifest {
   let types.SelectedCommitStackBytes(stack, carrier_bytes) = selected_stack
   let checkout_dir = github_paths.checkout_dir(workspace_root, manifest)
-  case ensure_existing_branch_checkout(manifest, target, checkout_dir, runner) {
-    Error(#(retryable, error)) ->
-      failed_manifest(
-        manifest,
-        now_ms,
-        retryable,
-        Some(manifest.branch),
-        None,
-        Some(target.pr_url),
-        [],
-        [],
-        error,
-      )
-    Ok(Nil) ->
+  with_checkout_lock(
+    checkout_dir,
+    now_ms,
+    manifest,
+    Some(target.pr_url),
+    [],
+    fn() {
       case
-        github_cli.verify_existing_pr_branch(
-          manifest,
-          target,
-          stack.stack.head_sha,
-          checkout_dir,
-          runner,
-        )
+        ensure_existing_branch_checkout(manifest, target, checkout_dir, runner)
       {
-        Error(error) ->
+        Error(#(retryable, error)) ->
           failed_manifest(
             manifest,
             now_ms,
-            False,
+            retryable,
             Some(manifest.branch),
             None,
             Some(target.pr_url),
@@ -566,81 +726,105 @@ fn publish_existing_branch_commit_stack(
             [],
             error,
           )
-        Ok(verified_pr_url) ->
+        Ok(Nil) ->
           case
-            import_and_verify_commit_stack(
-              checkout_dir,
-              stack,
-              carrier_bytes,
+            github_cli.verify_existing_pr_branch(
+              manifest,
               target,
+              stack.stack.head_sha,
+              checkout_dir,
               runner,
             )
           {
-            Error(#(retryable, error)) ->
+            Error(error) ->
               failed_manifest(
                 manifest,
                 now_ms,
-                retryable,
+                False,
                 Some(manifest.branch),
                 None,
-                Some(verified_pr_url),
+                Some(target.pr_url),
                 [],
                 [],
                 error,
               )
-            Ok(RemoteAlreadyAtHead) ->
-              artifact_publication_manifest.unchanged_manifest(
-                manifest,
-                attempt_id,
-                now_ms,
-                Some(stack.stack.head_sha),
-                Some(verified_pr_url),
-                [],
-              )
-            Ok(RemoteReadyToPush) ->
+            Ok(verified_pr_url) ->
               case
-                github_cli.run_ok(
+                import_and_verify_commit_stack(
+                  checkout_dir,
+                  stack,
+                  carrier_bytes,
+                  target,
                   runner,
-                  command_runner.sh(
-                    "git",
-                    [
-                      "push",
-                      "origin",
-                      stack.stack.head_sha
-                        <> ":refs/heads/"
-                        <> target.head_branch,
-                    ],
-                    checkout_dir,
-                  ),
-                  True,
                 )
               {
-                Error(error) ->
+                Error(#(retryable, error)) ->
                   failed_manifest(
                     manifest,
                     now_ms,
-                    True,
+                    retryable,
                     Some(manifest.branch),
-                    Some(stack.stack.head_sha),
+                    None,
                     Some(verified_pr_url),
                     [],
                     [],
                     error,
                   )
-                Ok(_) ->
-                  artifact_publication_manifest.published_manifest(
+                Ok(RemoteAlreadyAtHead) ->
+                  artifact_publication_manifest.unchanged_manifest(
                     manifest,
                     attempt_id,
                     now_ms,
-                    stack.stack.head_sha,
+                    Some(stack.stack.head_sha),
                     Some(verified_pr_url),
                     [],
-                    [],
                   )
+                Ok(RemoteReadyToPush) ->
+                  case
+                    github_cli.run_ok(
+                      runner,
+                      command_runner.sh(
+                        "git",
+                        [
+                          "push",
+                          "origin",
+                          stack.stack.head_sha
+                            <> ":refs/heads/"
+                            <> target.head_branch,
+                        ],
+                        checkout_dir,
+                      ),
+                      True,
+                    )
+                  {
+                    Error(error) ->
+                      failed_manifest(
+                        manifest,
+                        now_ms,
+                        True,
+                        Some(manifest.branch),
+                        Some(stack.stack.head_sha),
+                        Some(verified_pr_url),
+                        [],
+                        [],
+                        error,
+                      )
+                    Ok(_) ->
+                      artifact_publication_manifest.published_manifest(
+                        manifest,
+                        attempt_id,
+                        now_ms,
+                        stack.stack.head_sha,
+                        Some(verified_pr_url),
+                        [],
+                        [],
+                      )
+                  }
               }
           }
       }
-  }
+    },
+  )
 }
 
 type CommitStackRemoteState {
@@ -1018,7 +1202,7 @@ fn ensure_checkout(
   manifest: artifact_publication_planner.DryRunPublicationManifest,
   checkout_dir: String,
   runner: command_runner.Runner,
-) -> Result(Nil, #(Bool, artifact_publication_manifest.PublicationErrorInfo)) {
+) -> Result(Nil, CheckoutFailure) {
   use repo <- result.try(
     require_option(
       manifest.github_repo,
@@ -1027,7 +1211,7 @@ fn ensure_checkout(
         message: "planned github publication is missing github_repo",
       ),
     )
-    |> result.map_error(fn(error) { #(False, error) }),
+    |> result.map_error(fn(error) { CheckoutFailure(False, error, None) }),
   )
   let remote_url = github_paths.remote_url(repo)
   let exists = simplifile.is_directory(checkout_dir) |> result.unwrap(False)
@@ -1049,7 +1233,7 @@ fn ensure_checkout(
           True,
         )
       {
-        Error(error) -> Error(#(True, error))
+        Error(error) -> Error(CheckoutFailure(True, error, None))
         Ok(_) -> {
           let _ = simplifile.create_directory_all(checkout_dir)
           sync_checkout(manifest, checkout_dir, runner)
@@ -1068,17 +1252,18 @@ fn ensure_checkout(
           True,
         )
       {
-        Error(error) -> Error(#(True, error))
+        Error(error) -> Error(CheckoutFailure(True, error, None))
         Ok(origin) ->
           case github_paths.same_remote(origin, remote_url, repo) {
             True -> sync_checkout(manifest, checkout_dir, runner)
             False ->
-              Error(#(
+              Error(CheckoutFailure(
                 False,
                 artifact_publication_manifest.PublicationErrorInfo(
                   code: "remote_mismatch",
                   message: "managed checkout origin does not match configured repository",
                 ),
+                None,
               ))
           }
       }
@@ -1146,7 +1331,7 @@ fn sync_checkout(
   manifest: artifact_publication_planner.DryRunPublicationManifest,
   checkout_dir: String,
   runner: command_runner.Runner,
-) -> Result(Nil, #(Bool, artifact_publication_manifest.PublicationErrorInfo)) {
+) -> Result(Nil, CheckoutFailure) {
   use base <- result.try(
     require_option(
       manifest.github_base,
@@ -1155,7 +1340,7 @@ fn sync_checkout(
         message: "planned github publication is missing github_base",
       ),
     )
-    |> result.map_error(fn(error) { #(False, error) }),
+    |> result.map_error(fn(error) { CheckoutFailure(False, error, None) }),
   )
   use _ <- result.try(
     github_cli.run_ok(
@@ -1163,19 +1348,22 @@ fn sync_checkout(
       command_runner.sh("git", ["fetch", "origin", base], checkout_dir),
       True,
     )
-    |> result.map_error(fn(error) { #(True, error) }),
+    |> result.map_error(fn(error) { CheckoutFailure(True, error, None) }),
   )
-  use branch_exists <- result.try(remote_branch_exists(
-    manifest,
-    checkout_dir,
-    runner,
-  ))
-  use _ <- result.try(fetch_publication_branch(
-    branch_exists,
-    manifest,
-    checkout_dir,
-    runner,
-  ))
+  use branch_exists <- result.try(
+    remote_branch_exists(manifest, checkout_dir, runner)
+    |> result.map_error(fn(pair) {
+      let #(retryable, error) = pair
+      CheckoutFailure(retryable, error, None)
+    }),
+  )
+  use _ <- result.try(
+    fetch_publication_branch(branch_exists, manifest, checkout_dir, runner)
+    |> result.map_error(fn(pair) {
+      let #(retryable, error) = pair
+      CheckoutFailure(retryable, error, None)
+    }),
+  )
   let checkout_args = case branch_exists {
     True -> ["checkout", "-B", manifest.branch, "origin/" <> manifest.branch]
     False -> ["checkout", "-B", manifest.branch, "origin/" <> base]
@@ -1186,28 +1374,27 @@ fn sync_checkout(
       command_runner.sh("git", checkout_args, checkout_dir),
       True,
     )
-    |> result.map_error(fn(error) { #(True, error) }),
+    |> result.map_error(fn(error) { CheckoutFailure(True, error, None) }),
   )
-  case
-    github_cli.run_stdout(
-      runner,
-      command_runner.sh("git", ["status", "--porcelain"], checkout_dir),
-      True,
-    )
-  {
-    Error(error) -> Error(#(True, error))
-    Ok(output) ->
-      case string.trim(output) == "" {
+  case status_snapshot(checkout_dir, runner) {
+    Ok(output) if output == "" -> Ok(Nil)
+    Ok(output) -> {
+      let cleanup_diagnostics =
+        cleanup_checkout(checkout_dir, runner, Some(output))
+      case cleanup_diagnostics.cleanup_succeeded {
         True -> Ok(Nil)
         False ->
-          Error(#(
-            False,
+          Error(CheckoutFailure(
+            True,
             artifact_publication_manifest.PublicationErrorInfo(
               code: "dirty_checkout",
               message: "managed checkout is dirty before materialization",
             ),
+            Some(cleanup_diagnostics),
           ))
       }
+    }
+    Error(error) -> Error(CheckoutFailure(True, error, None))
   }
 }
 
