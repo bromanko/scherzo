@@ -1,4 +1,5 @@
 import gleam/option.{type Option}
+import scherzo/json_value
 
 pub const schema_version = 1
 
@@ -35,6 +36,18 @@ pub type ValidationSummary {
   ValidationSummary(status: String, validator: String, checked_at: String)
 }
 
+pub type ContractDescriptorRecord {
+  ContractDescriptorRecord(
+    kind: String,
+    ref_type: Option(String),
+    media_type: Option(String),
+    artifact_type: Option(String),
+    source: Option(json_value.JsonValue),
+    validation: Option(json_value.JsonValue),
+    metadata: Option(json_value.JsonValue),
+  )
+}
+
 pub type ArtifactSnapshot {
   ArtifactSnapshot(
     ref: String,
@@ -42,8 +55,8 @@ pub type ArtifactSnapshot {
     bytes: Int,
     media_type: String,
     original_path: String,
-    contract_type: String,
-    artifact_type: Option(String),
+    descriptor: ContractDescriptorRecord,
+    contract_type: Option(String),
     producer: ProducerRef,
     validation: ValidationSummary,
     summary: String,
@@ -57,13 +70,13 @@ pub type HandoffOutput {
 pub type InputBinding {
   InputBinding(
     name: String,
-    contract_type: String,
+    descriptor: ContractDescriptorRecord,
+    contract_type: Option(String),
     value_ref: String,
     sha256: Option(String),
     bytes: Option(Int),
     media_type: Option(String),
     original_path: Option(String),
-    artifact_type: Option(String),
     source_kind: Option(String),
   )
 }

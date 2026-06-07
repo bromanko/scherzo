@@ -88,7 +88,7 @@
           "bytes",
           "media_type",
           "original_path",
-          "contract_type",
+          "descriptor",
           "producer",
           "validation",
           "summary"
@@ -112,6 +112,22 @@
           "original_path": {
             "type": "string",
             "pattern": "^(?!/)(?!\\.\\.($|/))(?!.*(/\\.\\.)(/|$)).+$"
+          },
+          "descriptor": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": { "type": "string" },
+              "ref_type": { "type": "string" },
+              "media_type": { "type": "string" },
+              "artifact_type": { "type": "string" },
+              "source": { "type": "object" },
+              "validation": { "type": "object" },
+              "metadata": { "type": "object" }
+            }
           },
           "contract_type": {
             "type": "string"

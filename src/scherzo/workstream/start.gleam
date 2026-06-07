@@ -83,7 +83,7 @@ fn manual_artifact_inputs(
 type ResolvedInput {
   ResolvedInput(
     name: String,
-    artifact_type: Option(String),
+    descriptor: types.ContractDescriptorRecord,
     contract_type: workflow_contract.ContractType,
     ref: String,
     sha256: String,
@@ -100,7 +100,15 @@ fn resolved_manual_inputs(
   list.map(inputs, fn(input) {
     ResolvedInput(
       name: input.name,
-      artifact_type: Some(input.artifact_type),
+      descriptor: types.ContractDescriptorRecord(
+        kind: contract_kind(input.contract_type),
+        ref_type: None,
+        media_type: Some(input.media_type),
+        artifact_type: Some(input.artifact_type),
+        source: None,
+        validation: None,
+        metadata: None,
+      ),
       contract_type: input.contract_type,
       ref: input.ref,
       sha256: input.sha256,
@@ -725,13 +733,14 @@ fn input_from_handoff_output(
   output: types.HandoffOutput,
   source_kind: String,
 ) -> Result(ResolvedInput, StartError) {
-  use contract_type <- result.try(
-    workflow_contract.type_from_string(output.snapshot.contract_type)
-    |> result.map_error(contract_type_error(output.name)),
-  )
+  use contract_type <- result.try(contract_type_from_descriptor(
+    output.name,
+    output.snapshot.descriptor,
+    output.snapshot.contract_type,
+  ))
   Ok(ResolvedInput(
     name: output.name,
-    artifact_type: output.snapshot.artifact_type,
+    descriptor: output.snapshot.descriptor,
     contract_type: contract_type,
     ref: output.snapshot.ref,
     sha256: output.snapshot.sha256,
@@ -755,10 +764,11 @@ fn inputs_from_bundle_loop(
   case bindings {
     [] -> Ok(list.reverse(acc))
     [binding, ..rest] -> {
-      use contract_type <- result.try(
-        workflow_contract.type_from_string(binding.contract_type)
-        |> result.map_error(contract_type_error(binding.name)),
-      )
+      use contract_type <- result.try(contract_type_from_descriptor(
+        binding.name,
+        binding.descriptor,
+        binding.contract_type,
+      ))
       use sha256 <- result.try(required_option(
         binding.sha256,
         "input_binding_sha256_missing",
@@ -779,7 +789,6 @@ fn inputs_from_bundle_loop(
         "input_binding_original_path_missing",
         "input bundle binding is missing original_path: " <> binding.name,
       ))
-      let artifact_type = binding.artifact_type
       let source_kind = case binding.source_kind {
         Some(value) -> value
         None -> "input_bundle"
@@ -787,7 +796,7 @@ fn inputs_from_bundle_loop(
       let input =
         ResolvedInput(
           name: binding.name,
-          artifact_type: artifact_type,
+          descriptor: binding.descriptor,
           contract_type: contract_type,
           ref: binding.value_ref,
           sha256: sha256,
@@ -806,28 +815,18 @@ fn require_contract_type(
   expected: workflow_contract.ContractType,
   name: String,
 ) -> Result(Nil, StartError) {
-  case input.contract_type == expected {
-    True -> require_artifact_type(input, expected, name)
+  let expected_descriptor = workflow_contract.descriptor_for_type(expected)
+  case base_descriptor_matches(input.descriptor, expected_descriptor) {
     False ->
       error(
         "contract_input_type_mismatch",
-        "input " <> name <> " does not match target contract type",
+        "input " <> name <> " does not match target contract descriptor",
       )
-  }
-}
-
-fn require_artifact_type(
-  input: ResolvedInput,
-  expected: workflow_contract.ContractType,
-  name: String,
-) -> Result(Nil, StartError) {
-  case input.artifact_type {
-    None -> Ok(Nil)
-    Some(artifact_type) ->
+    True ->
       case
-        workflow_contract_manifest.artifact_type_string_matches(
-          artifact_type,
-          expected,
+        artifact_type_matches(
+          input.descriptor.artifact_type,
+          expected_descriptor.artifact_type,
         )
       {
         True -> Ok(Nil)
@@ -867,7 +866,7 @@ fn manifest_value_for(
         #("source", json_value.JString("workstream_input_bundle")),
         #("source_kind", json_value.JString(input.source_kind)),
         #("original_path", json_value.JString(input.original_path)),
-        ..artifact_type_source_fields(input.artifact_type)
+        ..artifact_type_source_fields(input.descriptor.artifact_type)
       ]),
     ),
   )
@@ -876,13 +875,13 @@ fn manifest_value_for(
 fn input_binding(input: ResolvedInput) -> types.InputBinding {
   types.InputBinding(
     name: input.name,
-    contract_type: workflow_contract.type_to_string(input.contract_type),
+    descriptor: input.descriptor,
+    contract_type: None,
     value_ref: input.ref,
     sha256: Some(input.sha256),
     bytes: Some(input.bytes),
     media_type: Some(input.media_type),
     original_path: Some(input.original_path),
-    artifact_type: input.artifact_type,
     source_kind: Some(input.source_kind),
   )
 }
@@ -896,8 +895,59 @@ fn artifact_type_source_fields(
   }
 }
 
+fn contract_type_from_descriptor(
+  name: String,
+  descriptor: types.ContractDescriptorRecord,
+  contract_type: Option(String),
+) -> Result(workflow_contract.ContractType, StartError) {
+  case contract_type {
+    Some(contract_type) ->
+      workflow_contract.type_from_string(contract_type)
+      |> result.map_error(contract_type_error(name))
+    None ->
+      workflow_contract.infer_type_from_descriptor(
+        workflow_contract.ContractDescriptorSpec(
+          kind: Some(descriptor.kind),
+          ref_type: descriptor.ref_type,
+          media_type: descriptor.media_type,
+          artifact_type: descriptor.artifact_type,
+        ),
+        "workstream input",
+        name,
+      )
+      |> result.map_error(contract_type_error(name))
+  }
+}
+
+fn base_descriptor_matches(
+  actual: types.ContractDescriptorRecord,
+  expected: workflow_contract.ContractDescriptorSpec,
+) -> Bool {
+  Some(actual.kind) == expected.kind
+  && expected.ref_type == actual.ref_type
+  && expected.media_type == actual.media_type
+}
+
+fn artifact_type_matches(
+  actual: Option(String),
+  expected: Option(String),
+) -> Bool {
+  case actual, expected {
+    None, Some(_) -> True
+    _, _ -> actual == expected
+  }
+}
+
+fn contract_kind(type_: workflow_contract.ContractType) -> String {
+  let descriptor = workflow_contract.descriptor_for_type(type_)
+  case descriptor.kind {
+    Some(kind) -> kind
+    None -> "value"
+  }
+}
+
 fn ledger_artifact_type(input: ResolvedInput) -> String {
-  case input.artifact_type {
+  case input.descriptor.artifact_type {
     Some(value) -> value
     None -> workflow_contract.type_to_string(input.contract_type)
   }

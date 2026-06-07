@@ -2142,6 +2142,7 @@ fn unreadable_artifact_store() -> artifact_store.Store {
       read: fn(_) {
         Error(artifact_store.ArtifactIo("permission denied: /secret/local/path"))
       },
+      write_bytes: fn(_, _) { Ok(Nil) },
       write_immutable_bytes: fn(_, _) { Ok(artifact_store.ImmutableWritten) },
       read_bytes: fn(_) {
         Error(artifact_store.ArtifactIo("permission denied: /secret/local/path"))

@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -155,7 +156,7 @@ pub fn repaired_workflow_outputs_use_repair_generation_manifest_and_blob_test() 
         run_id: run_id,
         output_name: output_name,
         extension: ".json",
-        contents: repaired_blob_contents,
+        contents: bit_array.from_string(repaired_blob_contents),
       ),
     )
   assert blob.ref == "runs/run-1/repairs/1/outputs/code_change_bundle.json"
@@ -209,7 +210,7 @@ pub fn repaired_workflow_outputs_after_compaction_use_next_generation_test() {
         run_id: run_id,
         output_name: output_name,
         extension: ".json",
-        contents: first_blob_contents,
+        contents: bit_array.from_string(first_blob_contents),
       ),
     )
   assert first_blob.ref
@@ -231,7 +232,7 @@ pub fn repaired_workflow_outputs_after_compaction_use_next_generation_test() {
         run_id: run_id,
         output_name: output_name,
         extension: ".json",
-        contents: second_blob_contents,
+        contents: bit_array.from_string(second_blob_contents),
       ),
     )
   assert second_blob.ref

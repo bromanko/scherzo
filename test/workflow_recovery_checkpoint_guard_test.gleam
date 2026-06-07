@@ -223,6 +223,7 @@ pub fn snapshot_preflight_local_path_missing_returns_recovery_artifact_restore_f
       artifact_store.StoreCallbacks(
         write: fn(_, _) { Ok(Nil) },
         read: fn(_) { Ok("") },
+        write_bytes: fn(_, _) { Ok(Nil) },
         write_immutable_bytes: fn(_, _) { Ok(artifact_store.ImmutableExisting) },
         read_bytes: fn(_) { Ok(bit_array.from_string("{}")) },
         locate: fn(ref) {

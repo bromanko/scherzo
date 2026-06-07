@@ -38,12 +38,28 @@
         "additionalProperties": false,
         "required": [
           "name",
-          "contract_type",
+          "descriptor",
           "value_ref"
         ],
         "properties": {
           "name": {
             "type": "string"
+          },
+          "descriptor": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": { "type": "string" },
+              "ref_type": { "type": "string" },
+              "media_type": { "type": "string" },
+              "artifact_type": { "type": "string" },
+              "source": { "type": "object" },
+              "validation": { "type": "object" },
+              "metadata": { "type": "object" }
+            }
           },
           "contract_type": {
             "type": "string"

@@ -1,7 +1,11 @@
+import gleam/bit_array
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import scherzo/commit_stack_artifact
+import scherzo/hash
 import scherzo/json_value
+import scherzo/state/artifact_store
 import scherzo/workflow_artifact_descriptor as descriptor
 import simplifile
 
@@ -236,4 +240,253 @@ pub fn rejects_invalid_descriptors_with_stable_codes_test() {
       "{\"name\":\"bundle\",\"kind\":\"artifact_set\",\"ref\":\"runs/run-1/outputs/bundle.json\",\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"bytes\":1,\"media_type\":\"text/plain\",\"entries\":[]}",
     )
     == "artifact_descriptor_artifact_set_invalid_media_type"
+}
+
+pub fn retained_artifact_set_integrity_verifies_nested_refs_test() {
+  let screenshot_contents = "fake png bytes"
+  let screenshot =
+    screenshot_descriptor(
+      sha256: hash.sha256_hex(screenshot_contents),
+      bytes: bytes_of(screenshot_contents),
+    )
+  let nested_contents = artifact_set_contents("nested", [screenshot])
+  let nested =
+    artifact_set_ref_descriptor(
+      name: "nested",
+      ref: nested_ref(),
+      sha256: hash.sha256_hex(nested_contents),
+      bytes: bytes_of(nested_contents),
+    )
+  let root_contents = artifact_set_contents("visuals", [nested])
+  let root =
+    artifact_set_ref_descriptor(
+      name: "visuals",
+      ref: root_ref(),
+      sha256: hash.sha256_hex(root_contents),
+      bytes: bytes_of(root_contents),
+    )
+  let store =
+    store_with_contents([
+      #(root_ref(), root_contents),
+      #(nested_ref(), nested_contents),
+      #(screenshot_ref(), screenshot_contents),
+    ])
+
+  assert descriptor.verify_retained_integrity(root, store) == Ok(Nil)
+}
+
+pub fn retained_artifact_set_integrity_rejects_missing_hash_bytes_and_cycles_test() {
+  let screenshot_contents = "fake png bytes"
+  let screenshot =
+    screenshot_descriptor(
+      sha256: hash.sha256_hex(screenshot_contents),
+      bytes: bytes_of(screenshot_contents),
+    )
+  let root_contents = artifact_set_contents("visuals", [screenshot])
+  let root =
+    artifact_set_ref_descriptor(
+      name: "visuals",
+      ref: root_ref(),
+      sha256: hash.sha256_hex(root_contents),
+      bytes: bytes_of(root_contents),
+    )
+
+  assert verify_error_code(
+      root,
+      store_with_contents([#(root_ref(), root_contents)]),
+    )
+    == "artifact_descriptor_missing_ref_artifact"
+
+  let bad_sha_screenshot =
+    screenshot_descriptor(
+      sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      bytes: bytes_of(screenshot_contents),
+    )
+  let bad_sha_contents = artifact_set_contents("visuals", [bad_sha_screenshot])
+  let bad_sha_root =
+    artifact_set_ref_descriptor(
+      name: "visuals",
+      ref: root_ref(),
+      sha256: hash.sha256_hex(bad_sha_contents),
+      bytes: bytes_of(bad_sha_contents),
+    )
+  assert verify_error_code(
+      bad_sha_root,
+      store_with_contents([
+        #(root_ref(), bad_sha_contents),
+        #(screenshot_ref(), screenshot_contents),
+      ]),
+    )
+    == "artifact_descriptor_retained_sha256_mismatch"
+
+  let bad_bytes_screenshot =
+    screenshot_descriptor(
+      sha256: hash.sha256_hex(screenshot_contents),
+      bytes: bytes_of(screenshot_contents) + 1,
+    )
+  let bad_bytes_contents =
+    artifact_set_contents("visuals", [bad_bytes_screenshot])
+  let bad_bytes_root =
+    artifact_set_ref_descriptor(
+      name: "visuals",
+      ref: root_ref(),
+      sha256: hash.sha256_hex(bad_bytes_contents),
+      bytes: bytes_of(bad_bytes_contents),
+    )
+  assert verify_error_code(
+      bad_bytes_root,
+      store_with_contents([
+        #(root_ref(), bad_bytes_contents),
+        #(screenshot_ref(), screenshot_contents),
+      ]),
+    )
+    == "artifact_descriptor_retained_bytes_mismatch"
+
+  let cycle_entry =
+    artifact_set_ref_descriptor(
+      name: "again",
+      ref: root_ref(),
+      sha256: hash.sha256_hex(root_contents),
+      bytes: bytes_of(root_contents),
+    )
+  let cycle_contents = artifact_set_contents("visuals", [cycle_entry])
+  let cycle_root =
+    artifact_set_ref_descriptor(
+      name: "visuals",
+      ref: root_ref(),
+      sha256: hash.sha256_hex(cycle_contents),
+      bytes: bytes_of(cycle_contents),
+    )
+  assert verify_error_code(
+      cycle_root,
+      store_with_contents([#(root_ref(), cycle_contents)]),
+    )
+    == "artifact_descriptor_retained_cycle"
+}
+
+fn verify_error_code(
+  root: descriptor.ArtifactDescriptor,
+  store: artifact_store.Store,
+) -> String {
+  let assert Error(descriptor.DescriptorError(code, _)) =
+    descriptor.verify_retained_integrity(root, store)
+  code
+}
+
+fn artifact_set_contents(
+  name: String,
+  entries: List(descriptor.ArtifactDescriptor),
+) -> String {
+  descriptor.to_string(descriptor.ArtifactDescriptor(
+    name: name,
+    kind: descriptor.ArtifactSetKind,
+    artifact_type: Some("scherzo_ui.visual_artifact_bundle.v1"),
+    description: None,
+    source: None,
+    validation: None,
+    metadata: None,
+    ref_type: None,
+    ref: None,
+    sha256: None,
+    bytes: None,
+    media_type: Some("application/json"),
+    value: None,
+    entries: entries,
+  ))
+}
+
+fn artifact_set_ref_descriptor(
+  name name: String,
+  ref ref: String,
+  sha256 sha256: String,
+  bytes bytes: Int,
+) -> descriptor.ArtifactDescriptor {
+  descriptor.ArtifactDescriptor(
+    name: name,
+    kind: descriptor.ArtifactSetKind,
+    artifact_type: Some("scherzo_ui.visual_artifact_bundle.v1"),
+    description: None,
+    source: None,
+    validation: None,
+    metadata: None,
+    ref_type: None,
+    ref: Some(ref),
+    sha256: Some(sha256),
+    bytes: Some(bytes),
+    media_type: Some("application/json"),
+    value: None,
+    entries: [],
+  )
+}
+
+fn screenshot_descriptor(
+  sha256 sha256: String,
+  bytes bytes: Int,
+) -> descriptor.ArtifactDescriptor {
+  descriptor.ArtifactDescriptor(
+    name: "screenshot",
+    kind: descriptor.FileKind,
+    artifact_type: Some("scherzo_ui.screenshot.v1"),
+    description: None,
+    source: None,
+    validation: None,
+    metadata: None,
+    ref_type: None,
+    ref: Some(screenshot_ref()),
+    sha256: Some(sha256),
+    bytes: Some(bytes),
+    media_type: Some("image/png"),
+    value: None,
+    entries: [],
+  )
+}
+
+fn store_with_contents(
+  contents: List(#(String, String)),
+) -> artifact_store.Store {
+  let refs = dict.from_list(contents)
+  artifact_store.custom(
+    "workflow-artifact-descriptor-test",
+    artifact_store.StoreCallbacks(
+      write: fn(_, _) { Ok(Nil) },
+      read: fn(ref) {
+        case dict.get(refs, ref) {
+          Ok(contents) -> Ok(contents)
+          Error(Nil) -> Error(artifact_store.MissingStepArtifact(ref))
+        }
+      },
+      write_bytes: fn(_, _) { Ok(Nil) },
+      write_immutable_bytes: fn(_, _) { Ok(artifact_store.ImmutableWritten) },
+      read_bytes: fn(ref) {
+        case dict.get(refs, ref) {
+          Ok(contents) -> Ok(bit_array.from_string(contents))
+          Error(Nil) -> Error(artifact_store.MissingStepArtifact(ref))
+        }
+      },
+      locate: fn(ref) {
+        Ok(artifact_store.ArtifactLocation(
+          ref: ref,
+          uri: "artifact://test/" <> ref,
+          display_path: ref,
+          local_path: None,
+        ))
+      },
+    ),
+  )
+}
+
+fn bytes_of(contents: String) -> Int {
+  contents |> bit_array.from_string |> bit_array.byte_size
+}
+
+fn root_ref() -> String {
+  "runs/run-1/outputs/visuals.json"
+}
+
+fn nested_ref() -> String {
+  "runs/run-1/outputs/nested.json"
+}
+
+fn screenshot_ref() -> String {
+  "runs/run-1/outputs/screenshot.png"
 }

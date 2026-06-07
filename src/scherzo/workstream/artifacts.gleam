@@ -433,12 +433,16 @@ fn decode_input_bindings(
         "name",
         "workstream_input_name_missing",
       ))
-      use contract_type <- result.try(required_string(
+      use descriptor <- result.try(required_descriptor(entries))
+      use contract_type <- result.try(optional_string_field(
         entries,
         "contract_type",
-        "workstream_contract_type_missing",
+        "workstream_contract_type_invalid",
       ))
-      use Nil <- result.try(validate_contract_type(contract_type))
+      use Nil <- result.try(validate_descriptor_contract_type(
+        descriptor,
+        contract_type,
+      ))
       use value_ref <- result.try(required_string(
         entries,
         "value_ref",
@@ -472,11 +476,6 @@ fn decode_input_bindings(
         "workstream_original_path_invalid",
       ))
       use Nil <- result.try(validate_optional_original_path(original_path))
-      use artifact_type <- result.try(optional_string_field(
-        entries,
-        "artifact_type",
-        "workstream_artifact_type_invalid",
-      ))
       use source_kind <- result.try(optional_string_field(
         entries,
         "source_kind",
@@ -486,13 +485,13 @@ fn decode_input_bindings(
       Ok([
         types.InputBinding(
           name: name,
+          descriptor: descriptor,
           contract_type: contract_type,
           value_ref: value_ref,
           sha256: sha256,
           bytes: bytes,
           media_type: media_type,
           original_path: original_path,
-          artifact_type: artifact_type,
           source_kind: source_kind,
         ),
         ..other
@@ -541,16 +540,15 @@ fn decode_snapshot(
         "workstream_original_path_missing",
       ))
       use Nil <- result.try(validate_original_path(original_path))
-      use contract_type <- result.try(required_string(
+      use descriptor <- result.try(required_descriptor(entries))
+      use contract_type <- result.try(optional_string_field(
         entries,
         "contract_type",
-        "workstream_contract_type_missing",
+        "workstream_contract_type_invalid",
       ))
-      use Nil <- result.try(validate_contract_type(contract_type))
-      use artifact_type <- result.try(optional_string_field(
-        entries,
-        "artifact_type",
-        "workstream_artifact_type_invalid",
+      use Nil <- result.try(validate_descriptor_contract_type(
+        descriptor,
+        contract_type,
       ))
       use producer <- result.try(decode_producer(entries))
       use validation <- result.try(decode_validation(entries))
@@ -565,8 +563,8 @@ fn decode_snapshot(
         bytes: bytes,
         media_type: media_type,
         original_path: original_path,
+        descriptor: descriptor,
         contract_type: contract_type,
-        artifact_type: artifact_type,
         producer: producer,
         validation: validation,
         summary: summary,
@@ -829,6 +827,16 @@ fn optional_int_field(
   }
 }
 
+fn optional_json_field(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Result(Option(json_value.JsonValue), types.SpecError) {
+  case lookup(entries, key) {
+    None | Some(json_value.JNull) -> Ok(None)
+    Some(value) -> Ok(Some(value))
+  }
+}
+
 fn lookup(
   entries: List(#(String, json_value.JsonValue)),
   key: String,
@@ -953,6 +961,155 @@ fn validate_optional_bytes(value: Option(Int)) -> Result(Nil, types.SpecError) {
     Some(value) -> validate_bytes(value)
     None -> Ok(Nil)
   }
+}
+
+fn required_descriptor(
+  entries: List(#(String, json_value.JsonValue)),
+) -> Result(types.ContractDescriptorRecord, types.SpecError) {
+  case lookup(entries, "descriptor") {
+    Some(json_value.JObject(descriptor_entries)) ->
+      decode_descriptor_record(descriptor_entries)
+    Some(_) ->
+      spec_error(
+        "workstream_descriptor_invalid",
+        "descriptor must be an object",
+      )
+    None -> {
+      use contract_type <- result.try(required_string(
+        entries,
+        "contract_type",
+        "workstream_contract_type_missing",
+      ))
+      use Nil <- result.try(validate_contract_type(contract_type))
+      use type_ <- result.try(contract_type_to_spec_error(contract_type))
+      Ok(descriptor_from_contract_type(type_))
+    }
+  }
+}
+
+fn decode_descriptor_record(
+  entries: List(#(String, json_value.JsonValue)),
+) -> Result(types.ContractDescriptorRecord, types.SpecError) {
+  use kind <- result.try(required_string(
+    entries,
+    "kind",
+    "workstream_descriptor_kind_missing",
+  ))
+  use ref_type <- result.try(optional_string_field(
+    entries,
+    "ref_type",
+    "workstream_descriptor_ref_type_invalid",
+  ))
+  use media_type <- result.try(optional_string_field(
+    entries,
+    "media_type",
+    "workstream_descriptor_media_type_invalid",
+  ))
+  use artifact_type <- result.try(optional_string_field(
+    entries,
+    "artifact_type",
+    "workstream_descriptor_artifact_type_invalid",
+  ))
+  use source <- result.try(optional_json_field(entries, "source"))
+  use validation <- result.try(optional_json_field(entries, "validation"))
+  use metadata <- result.try(optional_json_field(entries, "metadata"))
+  let descriptor =
+    types.ContractDescriptorRecord(
+      kind: kind,
+      ref_type: ref_type,
+      media_type: media_type,
+      artifact_type: artifact_type,
+      source: source,
+      validation: validation,
+      metadata: metadata,
+    )
+  use Nil <- result.try(validate_descriptor_record(descriptor))
+  Ok(descriptor)
+}
+
+fn validate_descriptor_record(
+  descriptor: types.ContractDescriptorRecord,
+) -> Result(Nil, types.SpecError) {
+  workflow_contract.infer_type_from_descriptor(
+    workflow_contract.ContractDescriptorSpec(
+      kind: Some(descriptor.kind),
+      ref_type: descriptor.ref_type,
+      media_type: descriptor.media_type,
+      artifact_type: descriptor.artifact_type,
+    ),
+    "workstream",
+    "descriptor",
+  )
+  |> result.map(fn(_) { Nil })
+  |> result.map_error(fn(error) {
+    let workflow_contract.ContractError(_, message) = error
+    types.SpecError("workstream_descriptor_invalid", message)
+  })
+}
+
+fn validate_descriptor_contract_type(
+  descriptor: types.ContractDescriptorRecord,
+  contract_type: Option(String),
+) -> Result(Nil, types.SpecError) {
+  let inferred =
+    workflow_contract.infer_type_from_descriptor(
+      workflow_contract.ContractDescriptorSpec(
+        kind: Some(descriptor.kind),
+        ref_type: descriptor.ref_type,
+        media_type: descriptor.media_type,
+        artifact_type: descriptor.artifact_type,
+      ),
+      "workstream",
+      "descriptor",
+    )
+    |> result.map_error(fn(error) {
+      let workflow_contract.ContractError(_, message) = error
+      types.SpecError("workstream_descriptor_invalid", message)
+    })
+  use inferred <- result.try(inferred)
+  case contract_type {
+    Some(contract_type) -> {
+      use declared <- result.try(contract_type_to_spec_error(contract_type))
+      case declared == inferred {
+        True -> Ok(Nil)
+        False ->
+          spec_error(
+            "workstream_contract_type_mismatch",
+            "contract_type disagrees with descriptor",
+          )
+      }
+    }
+    None -> Ok(Nil)
+  }
+}
+
+fn descriptor_from_contract_type(
+  type_: workflow_contract.ContractType,
+) -> types.ContractDescriptorRecord {
+  let descriptor = workflow_contract.descriptor_for_type(type_)
+  let kind = case descriptor.kind {
+    Some(kind) -> kind
+    None -> "value"
+  }
+  types.ContractDescriptorRecord(
+    kind: kind,
+    ref_type: descriptor.ref_type,
+    media_type: descriptor.media_type,
+    artifact_type: descriptor.artifact_type,
+    source: None,
+    validation: None,
+    metadata: None,
+  )
+}
+
+fn contract_type_to_spec_error(
+  value: String,
+) -> Result(workflow_contract.ContractType, types.SpecError) {
+  workflow_contract.type_from_string(value)
+  |> result.map_error(fn(error) {
+    let workflow_contract.ContractError(_, message) = error
+    types.SpecError("workstream_contract_type_unknown", message)
+  })
 }
 
 fn validate_contract_type(value: String) -> Result(Nil, types.SpecError) {
