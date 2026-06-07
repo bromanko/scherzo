@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/state/record
 import scherzo/task
@@ -62,6 +63,20 @@ pub fn retry_cancelled(
   reason: String,
 ) -> LedgerBatch {
   LedgerBatch([record.RetryCancelled(issue_id, generation, reason)])
+}
+
+pub fn append_retry_cancelled(
+  batch: LedgerBatch,
+  issue_id: String,
+  generation: Int,
+  reason: String,
+) -> LedgerBatch {
+  let LedgerBatch(bodies) = batch
+  LedgerBatch(
+    list.append(bodies, [
+      record.RetryCancelled(issue_id, generation, reason),
+    ]),
+  )
 }
 
 // Workflow execution checkpoints own current workflow_run terminal records.

@@ -1169,6 +1169,40 @@ pub fn retry_status_transitions_replace_previous_status_test() {
   )) = dict.get(after_cancelled.retries, "issue-retry")
 }
 
+pub fn retry_cancellation_with_newer_generation_preserves_scheduled_retry_test() {
+  let scheduled =
+    record.with_id(
+      "retry-generation-1",
+      100,
+      record.RetryScheduled(
+        issue_id: "issue-retry",
+        issue_identifier: "SCH-10",
+        delay_ms: 1000,
+        generation: 1,
+        reason: "backoff",
+      ),
+    )
+  let cancelled =
+    record.with_id(
+      "retry-generation-2",
+      200,
+      record.RetryCancelled(
+        issue_id: "issue-retry",
+        generation: 2,
+        reason: "reschedule_retry",
+      ),
+    )
+
+  let after_cancelled = projection.fold([scheduled, cancelled])
+  let assert Ok(projection.RetryScheduled(
+    issue_identifier: "SCH-10",
+    delay_ms: 1000,
+    generation: 1,
+    reason: "backoff",
+    scheduled_at_ms: 100,
+  )) = dict.get(after_cancelled.retries, "issue-retry")
+}
+
 pub fn run_status_transitions_replace_previous_status_test() {
   let started =
     record.with_id(

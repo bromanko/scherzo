@@ -25,8 +25,14 @@ pub type Effect {
     delay_ms: Int,
     generation: Int,
     reason: reason.RetryReason,
+    previous_retry: Option(orchestrator_state.RetryEntry),
   )
-  CancelRetry(issue_id: String, generation: Int, reason: String)
+  CancelRetry(
+    issue_id: String,
+    generation: Int,
+    reason: String,
+    previous_retry: Option(orchestrator_state.RetryEntry),
+  )
   CleanupWorkspace(path: String)
   ReleaseClaim(issue_id: String)
   StopWorker(issue_id: String, reason: reason.StopReason)
@@ -652,9 +658,13 @@ pub fn schedule_task_retry(
   reason: reason.RetryReason,
 ) -> Transition {
   let identity = orchestrator_state.task_ref_identity(ref)
-  let current_generation = case dict.get(state.retry_attempts, identity) {
-    Ok(entry) -> Some(entry.timer_generation)
+  let previous_retry = case dict.get(state.retry_attempts, identity) {
+    Ok(entry) -> Some(entry)
     Error(Nil) -> None
+  }
+  let current_generation = case previous_retry {
+    Some(entry) -> Some(entry.timer_generation)
+    None -> None
   }
   let generation = recovery_policy.next_generation(current_generation)
   let retry =
@@ -670,8 +680,7 @@ pub fn schedule_task_retry(
       retry_attempts: dict.insert(state.retry_attempts, identity, retry),
     ),
     effects: [
-      CancelRetry(issue_id, generation, "reschedule_retry"),
-      ScheduleRetry(issue_id, delay_ms, generation, reason),
+      ScheduleRetry(issue_id, delay_ms, generation, reason, previous_retry),
     ],
   )
 }
@@ -728,10 +737,13 @@ fn release_retry_claim(
   cancel_reason: String,
 ) -> Transition {
   let generation = retry_generation(state, issue_id)
+  let previous_retry =
+    current_retry_entry(state, issue_id)
+    |> option.from_result
   Transition(
     state: release_claim(clear_retry(state, issue_id), issue_id),
     effects: [
-      CancelRetry(issue_id, generation, cancel_reason),
+      CancelRetry(issue_id, generation, cancel_reason, previous_retry),
       ReleaseClaim(issue_id),
     ],
   )
@@ -743,8 +755,11 @@ fn dispatch_retry_claim(
   issue: tracker_issue.Issue,
 ) -> Transition {
   let generation = retry_generation(state, issue_id)
+  let previous_retry =
+    current_retry_entry(state, issue_id)
+    |> option.from_result
   Transition(state: clear_retry(state, issue_id), effects: [
-    CancelRetry(issue_id, generation, "retry_dispatch"),
+    CancelRetry(issue_id, generation, "retry_dispatch", previous_retry),
     Dispatch(issue),
   ])
 }
@@ -952,10 +967,13 @@ pub fn stop_retry_for_policy_invalid(
   issue_id: String,
 ) -> Transition {
   let generation = retry_generation(state, issue_id)
+  let previous_retry =
+    current_retry_entry(state, issue_id)
+    |> option.from_result
   Transition(
     state: release_claim(clear_retry(state, issue_id), issue_id),
     effects: [
-      CancelRetry(issue_id, generation, "policy_invalid"),
+      CancelRetry(issue_id, generation, "policy_invalid", previous_retry),
       ReleaseClaim(issue_id),
     ],
   )
@@ -966,10 +984,18 @@ pub fn stop_retry_for_dependency_blocked(
   issue_id: String,
 ) -> Transition {
   let generation = retry_generation(state, issue_id)
+  let previous_retry =
+    current_retry_entry(state, issue_id)
+    |> option.from_result
   Transition(
     state: release_claim(clear_retry(state, issue_id), issue_id),
     effects: [
-      CancelRetry(issue_id, generation, "linear_dependency_blocked"),
+      CancelRetry(
+        issue_id,
+        generation,
+        "linear_dependency_blocked",
+        previous_retry,
+      ),
       ReleaseClaim(issue_id),
     ],
   )
@@ -979,11 +1005,18 @@ fn retry_generation(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Int {
-  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
-  case dict.get(state.retry_attempts, identity) {
+  case current_retry_entry(state, issue_id) {
     Ok(entry) -> entry.timer_generation
     Error(Nil) -> 0
   }
+}
+
+fn current_retry_entry(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> Result(orchestrator_state.RetryEntry, Nil) {
+  let identity = orchestrator_state.linear_issue_id_identity(issue_id)
+  dict.get(state.retry_attempts, identity)
 }
 
 pub fn blocked_dependency_fingerprint(

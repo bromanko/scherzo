@@ -78,7 +78,7 @@ pub fn automatic_retry_non_dispatch_state_dispatches_test() {
     orchestrator_state.issue_identity(issue),
   )
   assert has_claim_issue(effects)
-  assert has_cancel_retry_reason(effects, "retry_dispatch")
+  assert has_pending_retry_cancellation(next, issue.id, "retry_dispatch")
   assert !has_cancel_retry_reason(effects, "retry_not_dispatchable")
 }
 
@@ -139,7 +139,32 @@ pub fn automatic_retry_dispatch_state_dispatches_test() {
     orchestrator_state.issue_identity(issue),
   )
   assert has_claim_issue(effects)
-  assert has_cancel_retry_reason(effects, "retry_dispatch")
+  assert has_pending_retry_cancellation(next, issue.id, "retry_dispatch")
+}
+
+pub fn retry_refresh_without_retry_state_is_treated_as_stale_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        1,
+        Ok([issue]),
+        orchestrator_transition_test.fixture_context(),
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  assert dict.size(next.pending_claims) == 0
+  assert !has_claim_issue(effects)
+  assert !has_cancel_retry_reason(effects, "retry_dispatch")
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.Log("info", "retry_timer_stale", [
+      #("issue_id", issue.id),
+    ])
+  })
 }
 
 pub fn explicit_retry_non_dispatch_state_dispatches_test() {
@@ -898,7 +923,30 @@ fn has_cancel_retry_reason(
   list.any(effects, fn(effect) {
     case effect {
       effects_types.CancelRetryTimer(_, _, reason) -> reason == expected
+      effects_types.AppendLedger(effects_types.LedgerAppend(policy: policy, ..)) ->
+        case policy {
+          effects_types.CancelRetryTimerAfterAppend(cancel_reason: reason, ..) ->
+            reason == expected
+          _ -> False
+        }
       _ -> False
+    }
+  })
+}
+
+fn has_pending_retry_cancellation(
+  state: transition_types.State,
+  issue_id: String,
+  expected: String,
+) -> Bool {
+  state.pending_claims
+  |> dict.values
+  |> list.any(fn(pending) {
+    pending.issue_id == issue_id
+    && case pending.retry_cancellation {
+      Some(transition_types.RetryCancellation(reason: reason, ..)) ->
+        reason == expected
+      None -> False
     }
   })
 }

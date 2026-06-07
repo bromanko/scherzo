@@ -190,6 +190,7 @@ pub fn pending_slot_overcommit_reports_clear_error_test() {
       remaining_candidates: [],
       dispatch_context: orchestrator_transition_test.fixture_context(),
       previous_retry_generation: 0,
+      retry_cancellation: None,
     )
   let state =
     transition_types.State(

@@ -118,6 +118,19 @@ pub type LedgerAppend {
 pub type LedgerPolicy {
   ContinueRegardless
   StopBatchOnFailure
+  ScheduleRetryTimerAfterAppend(
+    issue_id: String,
+    delay_ms: Int,
+    generation: Int,
+    retry_reason: reason.RetryReason,
+    previous_retry: Option(orchestrator_state.RetryEntry),
+  )
+  CancelRetryTimerAfterAppend(
+    issue_id: String,
+    generation: Int,
+    cancel_reason: String,
+    previous_retry: Option(orchestrator_state.RetryEntry),
+  )
   SpawnClaimedWorkerAfterAppend(
     task_identity: identity.TaskIdentity,
     issue_id: identity.IssueId,
