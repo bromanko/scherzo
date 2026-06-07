@@ -6,6 +6,7 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight_policy
@@ -130,6 +131,8 @@ pub fn fixture_state() -> transition_types.State {
     workers: transition_types.new_worker_directory(),
     pending_claims: dict.new(),
     pending_dispatch_validations: dict.new(),
+    lifecycle: task_lifecycle.new(),
+    retry_refresh_generations: dict.new(),
     next_dispatch_validation_generation: 1,
     next_session_sequence: 1,
   )
@@ -160,6 +163,19 @@ pub fn state_with_pending_claim(
         dispatch_context: fixture_context(),
       ),
     ),
+    lifecycle: {
+      let assert Ok(directory) =
+        task_lifecycle.put(
+          task_lifecycle.new(),
+          task_lifecycle.Claiming(
+            task_ref: task_ref,
+            issue: issue,
+            run_id: "run-1",
+            session_id: "session-1",
+          ),
+        )
+      directory
+    },
   )
 }
 

@@ -3,6 +3,7 @@ import gleam/option.{type Option, None}
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/task_lifecycle
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
@@ -26,6 +27,8 @@ pub type State {
       identity.TaskIdentity,
       PendingDispatchValidation,
     ),
+    lifecycle: task_lifecycle.TaskDirectory,
+    retry_refresh_generations: dict.Dict(identity.TaskIdentity, Int),
     next_dispatch_validation_generation: Int,
     next_session_sequence: Int,
   )
@@ -338,4 +341,8 @@ pub fn new_worker_directory() -> WorkerDirectory {
     yaml_step_runs: dict.new(),
     stopped_yaml_runs: dict.new(),
   )
+}
+
+pub fn empty_lifecycle() -> task_lifecycle.TaskDirectory {
+  task_lifecycle.new()
 }

@@ -148,6 +148,12 @@ pub fn refresh_in_flight_count(state: State(timer)) -> Int {
   dict.size(state.refreshes_in_flight)
 }
 
+pub fn refresh_generations(
+  state: State(timer),
+) -> List(#(identity.TaskIdentity, Int)) {
+  dict.to_list(state.refreshes_in_flight)
+}
+
 pub fn timer_for_issue(
   state: State(timer),
   issue_id: String,
