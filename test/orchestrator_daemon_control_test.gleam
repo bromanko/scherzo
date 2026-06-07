@@ -12,12 +12,15 @@ import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/query/dto
 import scherzo/control/query/types as query_types
+import scherzo/control/remote/ui_websocket_client
 import scherzo/control/server as control_server
 import scherzo/error
 import scherzo/handoff
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/daemon_remote_client
 import scherzo/orchestrator/read_model
+import scherzo/path
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event
 import scherzo/session/hub
@@ -232,6 +235,109 @@ fn in_process_dependencies(
     make_control_token: fn() { Ok("test-token") },
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
+  )
+}
+
+type FakeRemoteClientConnection {
+  FakeRemoteClientConnection
+}
+
+fn ui_server_config_text(enabled: Bool) -> String {
+  case enabled {
+    True ->
+      "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n"
+    False -> "ui_server:\n  enabled: false\n"
+  }
+}
+
+fn overwrite_workflow_config(
+  workflow_path: String,
+  root: String,
+  ui_server_enabled: Bool,
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_path,
+      workflow_text_with_extra_config(
+        root,
+        0,
+        1,
+        1,
+        ui_server_config_text(ui_server_enabled),
+      ),
+    )
+  Nil
+}
+
+fn expected_resolved_workspace_root(
+  workflow_path: String,
+  root: String,
+) -> String {
+  case path.is_absolute(root) {
+    True -> root
+    False -> {
+      let assert Ok(config_dir) = path.dirname(workflow_path)
+      path.absolute_or_original(path.join(config_dir, root))
+    }
+  }
+}
+
+fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
+  let settings =
+    ui_websocket_client.Settings(
+      server_url: "https://ui.example.test",
+      websocket_url: "wss://ui.example.test/api/daemons/ws",
+      daemon_id: "daemon_abc",
+      boot_id: "boot_abc",
+      daemon_label: None,
+      credential: "dcred_secret_1",
+      heartbeat_interval_ms: 1000,
+      state_interval_ms: 1000,
+      retry_initial_ms: 50,
+      retry_max_ms: 100,
+      connect_timeout_ms: 50,
+      command_bridge_enabled: False,
+      redaction_secrets: ["dcred_secret_1"],
+    )
+  let deps =
+    ui_websocket_client.Dependencies(
+      now_ms: fn() { 42 },
+      connect: fn(_, _, _) { Ok(FakeRemoteClientConnection) },
+      send_text: fn(_, _, _) { Ok(Nil) },
+      recv_text: fn(_, _) { Error("timeout") },
+      close: fn(_) { Nil },
+      send_after: process.send_after,
+      cancel_timer: fn(timer) {
+        let _ = process.cancel_timer(timer)
+        Nil
+      },
+      list_sessions: fn() { Ok([]) },
+      dispatch_paused: fn(_) { Ok(False) },
+      logger: fn(_, _, _, _) { Ok(Nil) },
+    )
+  let _ = key
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+  daemon_remote_client.wrap(handle)
+}
+
+fn remote_client_dependencies(
+  log_subject: process.Subject(String),
+  starts: process.Subject(String),
+  stops: process.Subject(String),
+) -> daemon.RuntimeDependencies {
+  daemon.RuntimeDependencies(
+    ..dependencies(log_subject),
+    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    stop_control_server: fn(_) { Nil },
+    start_remote_client: fn(effective: config_types.EffectiveConfig, _, _, _, _) {
+      process.send(starts, effective.workspace.root)
+      Ok(fake_remote_client_handle(effective.workspace.root))
+    },
+    stop_remote_client: fn(handle, _) {
+      process.send(stops, "stop")
+      daemon_remote_client.stop(handle, 1000)
+    },
+    monitor_remote_client: daemon_remote_client.monitor,
   )
 }
 
@@ -1218,6 +1324,145 @@ pub fn startup_recovery_new_park_posts_park_comment_test() {
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
+}
+
+pub fn reload_workflow_starts_remote_client_after_enabling_ui_server_test() {
+  let #(workflow_path, root) =
+    write_workflow_with_extra_config(
+      "test/tmp/daemon-control-reload-ui-enable",
+      0,
+      1,
+      1,
+      ui_server_config_text(False),
+    )
+  let log_subject = process.new_subject()
+  let starts = process.new_subject()
+  let stops = process.new_subject()
+  let assert Ok(started) =
+    daemon.start(
+      Some(workflow_path),
+      remote_client_dependencies(log_subject, starts, stops),
+    )
+
+  overwrite_workflow_config(workflow_path, root, True)
+  let assert Ok(reloaded) =
+    daemon.apply_operator_command(started.data, command.ReloadWorkflow, 1000)
+  assert command.status_to_string(reloaded.status) == "applied"
+  assert test_async.expect_message(starts) != ""
+  test_async.assert_no_extra_message(stops)
+
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert snapshot.ui_server_enabled
+  assert snapshot.remote_client_status == read_model.Connected
+  let assert Ok(query_types.MetricsResponse(metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  assert metrics.ui_server_enabled
+  assert metrics.remote_client_status == "connected"
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn reload_workflow_stops_remote_client_after_disabling_ui_server_test() {
+  let #(workflow_path, root) =
+    write_workflow_with_extra_config(
+      "test/tmp/daemon-control-reload-ui-disable",
+      0,
+      1,
+      1,
+      ui_server_config_text(True),
+    )
+  let log_subject = process.new_subject()
+  let starts = process.new_subject()
+  let stops = process.new_subject()
+  let assert Ok(started) =
+    daemon.start(
+      Some(workflow_path),
+      remote_client_dependencies(log_subject, starts, stops),
+    )
+  let _ = test_async.expect_message(starts)
+
+  overwrite_workflow_config(workflow_path, root, False)
+  let assert Ok(reloaded) =
+    daemon.apply_operator_command(started.data, command.ReloadWorkflow, 1000)
+  assert command.status_to_string(reloaded.status) == "applied"
+  assert test_async.expect_message(stops) == "stop"
+
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert !snapshot.ui_server_enabled
+  assert snapshot.remote_client_status == read_model.Disabled
+  let assert Ok(query_types.MetricsResponse(metrics)) =
+    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  assert !metrics.ui_server_enabled
+  assert metrics.remote_client_status == "disabled"
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn reload_workflow_restarts_remote_client_when_ui_server_is_still_enabled_test() {
+  let #(workflow_path, root) =
+    write_workflow_with_extra_config(
+      "test/tmp/daemon-control-reload-ui-restart",
+      0,
+      1,
+      1,
+      ui_server_config_text(True),
+    )
+  let log_subject = process.new_subject()
+  let starts = process.new_subject()
+  let stops = process.new_subject()
+  let assert Ok(started) =
+    daemon.start(
+      Some(workflow_path),
+      remote_client_dependencies(log_subject, starts, stops),
+    )
+  let _ = test_async.expect_message(starts)
+
+  let assert Ok(reloaded) =
+    daemon.apply_operator_command(started.data, command.ReloadWorkflow, 1000)
+  assert command.status_to_string(reloaded.status) == "applied"
+  assert test_async.expect_message(stops) == "stop"
+  assert test_async.expect_message(starts)
+    == expected_resolved_workspace_root(workflow_path, root)
+
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert snapshot.ui_server_enabled
+  assert snapshot.remote_client_status == read_model.Connected
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn poll_tick_restarts_remote_client_after_changed_config_reload_test() {
+  let #(workflow_path, root) =
+    write_workflow_with_extra_config(
+      "test/tmp/daemon-control-reload-ui-poll",
+      0,
+      1,
+      1,
+      ui_server_config_text(True),
+    )
+  let log_subject = process.new_subject()
+  let starts = process.new_subject()
+  let stops = process.new_subject()
+  let assert Ok(started) =
+    daemon.start(
+      Some(workflow_path),
+      remote_client_dependencies(log_subject, starts, stops),
+    )
+  assert test_async.expect_message(starts)
+    == expected_resolved_workspace_root(workflow_path, root)
+
+  let reloaded_root = root <> "-after-reload"
+  overwrite_workflow_config(workflow_path, reloaded_root, True)
+  process.send(started.data, daemon.PollTick(1))
+
+  assert test_async.expect_message(stops) == "stop"
+  assert test_async.expect_message(starts)
+    == expected_resolved_workspace_root(workflow_path, reloaded_root)
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert snapshot.ui_server_enabled
+  assert snapshot.remote_client_status == read_model.Connected
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
 pub fn reload_workflow_command_reports_success_and_missing_file_failure_test() {

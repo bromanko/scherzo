@@ -3,6 +3,9 @@ import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/control/client
+import scherzo/control/command
+import scherzo/control/file as control_file
 import scherzo/control/remote/credential_store
 import scherzo/control/remote/daemon_label
 import scherzo/control/remote/pairing_client
@@ -31,6 +34,13 @@ pub type Output {
   Output(line: fn(String) -> Nil)
 }
 
+pub type ActivationStatus {
+  ReloadNotified
+  ManualReloadRequired
+}
+
+const activation_reload_timeout_ms = 1000
+
 pub type Dependencies {
   Dependencies(
     load_bundle: fn(Option(String)) ->
@@ -46,6 +56,7 @@ pub type Dependencies {
       credential_store.DaemonCredential,
       Bool,
     ) -> Result(credential_store.WriteResult, credential_store.StoreError),
+    notify_reload: fn(String) -> ActivationStatus,
   )
 }
 
@@ -166,6 +177,7 @@ pub fn run_with_deps(
     credential_store.CredentialWritten(path) -> path
     credential_store.CredentialAlreadyStored(path) -> path
   }
+  let activation = deps.notify_reload(bundle.effective.workspace.root)
   case command.json {
     True ->
       output.line(
@@ -176,6 +188,7 @@ pub fn run_with_deps(
             command.credential_ref,
             store_path,
             resolved_daemon_label,
+            activation,
           )),
         ),
       )
@@ -193,7 +206,9 @@ pub fn run_with_deps(
         <> " using credential_ref "
         <> command.credential_ref
         <> ". Stored credential at "
-        <> store_path,
+        <> store_path
+        <> ". "
+        <> activation_message(activation),
       )
     }
   }
@@ -206,6 +221,7 @@ fn json_output_fields(
   credential_ref: String,
   store_path: String,
   daemon_label_value: Option(String),
+  activation: ActivationStatus,
 ) -> List(#(String, json.Json)) {
   let base_fields = [
     #("status", json.string("ok")),
@@ -213,6 +229,8 @@ fn json_output_fields(
     #("daemon_id", json.string(daemon_id)),
     #("credential_ref", json.string(credential_ref)),
     #("store_path", json.string(store_path)),
+    #("activation_status", json.string(activation_status_name(activation))),
+    #("activation_message", json.string(activation_message(activation))),
   ]
   case daemon_label_value {
     Some(label) -> [#("daemon_label", json.string(label)), ..base_fields]
@@ -241,7 +259,43 @@ fn default_dependencies() -> Dependencies {
       )
     },
     write_credential: credential_store.write_credential,
+    notify_reload: notify_local_reload_for_workspace,
   )
+}
+
+pub fn notify_local_reload_for_workspace(
+  workspace_root: String,
+) -> ActivationStatus {
+  let path = control_file.path_for_workspace(workspace_root)
+  case control_file.read(path) {
+    Ok(control) ->
+      case
+        client.apply_command_with_response_timeout(
+          control,
+          command.ReloadWorkflow,
+          activation_reload_timeout_ms,
+        )
+      {
+        Ok(command.CommandResult(status: command.Applied, ..)) -> ReloadNotified
+        Ok(_) | Error(_) -> ManualReloadRequired
+      }
+    Error(_) -> ManualReloadRequired
+  }
+}
+
+fn activation_status_name(activation: ActivationStatus) -> String {
+  case activation {
+    ReloadNotified -> "reload_notified"
+    ManualReloadRequired -> "manual_reload_required"
+  }
+}
+
+fn activation_message(activation: ActivationStatus) -> String {
+  case activation {
+    ReloadNotified -> "Notified the running daemon to reload UI pairing."
+    ManualReloadRequired ->
+      "Run scherzoctl reload or restart the daemon to activate UI pairing."
+  }
 }
 
 fn bundle_error(error: runtime_bundle.BundleError) -> Error {
