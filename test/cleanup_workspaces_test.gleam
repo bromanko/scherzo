@@ -1,10 +1,18 @@
+import gleam/bit_array
+import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/artifact_publication_manifest
+import scherzo/artifact_publication_planner
 import scherzo/cleanup
+import scherzo/commit_stack_artifact
+import scherzo/ctl/artifact_publication_abandon as ctl_artifact_publication_abandon
+import scherzo/hash
 import scherzo/path
 import scherzo/state/ledger
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/workspace_manifest
 import simplifile
@@ -62,6 +70,173 @@ pub fn workspace_cleanup_inventory_protects_active_unmanaged_retained_and_unsafe
   assert item_reason_contains(items, retained, "retention marker")
   assert item_reason_contains(items, unmanaged, "manifest")
   assert item_reason_contains(items, unsafe, "realpath escapes run root")
+}
+
+pub fn workspace_cleanup_inventory_protects_active_scheduled_run_test() {
+  let repo = "test/tmp/cleanup-workspaces/scheduled-active"
+  let workspace_root = setup_repo(repo)
+  let active =
+    create_manifest_run(repo, workspace_root, "run-scheduled-active", "main")
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(Nil) =
+    ledger.append(
+      paths,
+      record.with_id(
+        "scheduled-started",
+        12,
+        record.ScheduledRunStarted(
+          "job-1",
+          "implementation",
+          10,
+          11,
+          "run-scheduled-active",
+          1,
+          "session-1",
+          active,
+        ),
+      ),
+      False,
+    )
+
+  let report = cleanup.inventory(workspace_root, 0)
+  let items = workspace_items(report)
+
+  assert item_status(items, active) == Some("retained")
+  assert item_reason_contains(items, active, "active")
+}
+
+pub fn workspace_cleanup_retains_pending_failed_and_releases_successful_commit_stack_publications_test() {
+  let repo = "test/tmp/cleanup-workspaces/commit-stack-retention"
+  let workspace_root = setup_repo(repo)
+  let pending = create_manifest_run(repo, workspace_root, "run-pending", "main")
+  let failed = create_manifest_run(repo, workspace_root, "run-failed", "main")
+  let failed_preplan =
+    create_manifest_run(repo, workspace_root, "run-failed-preplan", "main")
+  let published =
+    create_manifest_run(repo, workspace_root, "run-published", "main")
+  seed_commit_stack_publication(workspace_root, "run-pending", "planned")
+  seed_commit_stack_publication(workspace_root, "run-failed", "failed")
+  seed_preplan_commit_stack_publication(workspace_root, "run-failed-preplan")
+  seed_commit_stack_publication(workspace_root, "run-published", "published")
+
+  let report = cleanup.inventory(workspace_root, 0)
+  let items = workspace_items(report)
+
+  assert item_status(items, pending) == Some("retained")
+  assert item_status(items, failed) == Some("retained")
+  assert item_status(items, failed_preplan) == Some("retained")
+  assert item_status(items, published) == Some("would_delete")
+  assert item_reason_contains(
+    items,
+    pending,
+    "commit_stack publication is pending",
+  )
+  assert item_reason_contains(
+    items,
+    failed,
+    "commit_stack publication is failed",
+  )
+  assert item_reason_contains(
+    items,
+    failed_preplan,
+    "commit_stack publication is failed",
+  )
+  assert item_reason_contains(items, failed, "artifact publication retry")
+  assert item_reason_contains(items, failed, "artifact publication abandon")
+}
+
+pub fn workspace_cleanup_releases_abandoned_commit_stack_publication_test() {
+  let repo = "test/tmp/cleanup-workspaces/commit-stack-abandoned"
+  let workspace_root = setup_repo(repo)
+  let abandoned =
+    create_manifest_run(repo, workspace_root, "run-abandoned", "main")
+  seed_commit_stack_publication(workspace_root, "run-abandoned", "abandoned")
+
+  let report = cleanup.inventory(workspace_root, 0)
+  let items = workspace_items(report)
+
+  assert item_status(items, abandoned) == Some("would_delete")
+}
+
+pub fn workspace_cleanup_abandon_command_records_abandoned_and_releases_publication_test() {
+  let repo = "test/tmp/cleanup-workspaces/commit-stack-abandon-command"
+  let workspace_root = setup_repo(repo)
+  let run_root =
+    create_manifest_run(repo, workspace_root, "run-abandon-command", "main")
+  seed_commit_stack_publication(workspace_root, "run-abandon-command", "failed")
+  let subject = process.new_subject()
+
+  assert ctl_artifact_publication_abandon.abandon(
+      workspace_root,
+      True,
+      "run-abandon-command",
+      "implementation_commit_stack",
+      "operator abandoned from test",
+      fn(line) { process.send(subject, line) },
+    )
+    == Ok(Nil)
+  let assert Ok(transcript) = process.receive(subject, within: 1000)
+  assert string.contains(transcript, "\"status\":\"abandoned\"")
+  assert string.contains(
+    transcript,
+    "\"error_message\":\"operator abandoned from test\"",
+  )
+
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(replayed) = ledger.replay(paths)
+  let assert Ok(latest) =
+    projection.latest_publication_for_run(
+      replayed.projection,
+      "run-abandon-command",
+      "implementation_commit_stack",
+    )
+  assert latest.status == "abandoned"
+  assert latest.retryable == False
+  assert latest.retry_execution_available == False
+  assert latest.error_message == Some("operator abandoned from test")
+
+  let report = cleanup.inventory(workspace_root, 0)
+  let items = workspace_items(report)
+  assert item_status(items, run_root) == Some("would_delete")
+}
+
+pub fn workspace_cleanup_abandon_command_rejects_non_abandonable_latest_statuses_test() {
+  let repo = "test/tmp/cleanup-workspaces/commit-stack-abandon-rejects-status"
+  let workspace_root = setup_repo(repo)
+  let _published =
+    create_manifest_run(repo, workspace_root, "run-published", "main")
+  let _abandoned =
+    create_manifest_run(repo, workspace_root, "run-already-abandoned", "main")
+  seed_commit_stack_publication(workspace_root, "run-published", "published")
+  seed_commit_stack_publication(
+    workspace_root,
+    "run-already-abandoned",
+    "abandoned",
+  )
+
+  let assert Error(#(published_code, published_message)) =
+    ctl_artifact_publication_abandon.abandon(
+      workspace_root,
+      False,
+      "run-published",
+      "implementation_commit_stack",
+      "should not abandon published",
+      fn(_) { Nil },
+    )
+  assert published_code == "publication_abandon_not_allowed"
+  assert string.contains(published_message, "status=published")
+
+  let assert Error(#(abandoned_code, abandoned_message)) =
+    ctl_artifact_publication_abandon.abandon(
+      workspace_root,
+      False,
+      "run-already-abandoned",
+      "implementation_commit_stack",
+      "should not abandon twice",
+      fn(_) { Nil },
+    )
+  assert abandoned_code == "publication_already_abandoned"
+  assert string.contains(abandoned_message, "already abandoned")
 }
 
 pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
@@ -246,23 +421,288 @@ fn create_manifest_run(
     )
   let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
   let _ =
+    ledger.append_many(
+      paths,
+      [
+        record.with_id(
+          "started-" <> run_id,
+          1,
+          record.WorkflowRunStarted(
+            run_id,
+            "implementation",
+            "fingerprint",
+            "issue-id",
+            "LIV-1",
+            "issue-fingerprint",
+            1,
+            run_root,
+          ),
+        ),
+        record.with_id(
+          "finished-" <> run_id,
+          2,
+          record.WorkflowRunFinished(
+            run_id,
+            "implementation",
+            "issue-id",
+            "success",
+            0,
+            0,
+          ),
+        ),
+      ],
+      False,
+    )
+  run_root
+}
+
+fn seed_commit_stack_publication(
+  workspace_root: String,
+  run_id: String,
+  status: String,
+) -> Nil {
+  let planned = commit_stack_plan(run_id)
+  let attempt_id = status <> "-attempt"
+  let manifest = case status {
+    "planned" ->
+      artifact_publication_manifest.planned_manifest(planned, attempt_id, 10)
+    "published" ->
+      artifact_publication_manifest.published_manifest(
+        planned,
+        attempt_id,
+        10,
+        commit_stack_head_sha(),
+        Some(existing_pr_url()),
+        [],
+        [],
+      )
+    "abandoned" ->
+      artifact_publication_manifest.planned_manifest(planned, "planned", 9)
+      |> artifact_publication_manifest.abandoned_from_manifest(
+        attempt_id,
+        10,
+        "operator abandoned publication",
+      )
+    _ ->
+      artifact_publication_manifest.failed_from_planned_manifest(
+        planned,
+        attempt_id,
+        10,
+        True,
+        Some(planned.branch),
+        None,
+        Some(existing_pr_url()),
+        [],
+        [],
+        artifact_publication_manifest.PublicationErrorInfo(
+          code: "publish_failed",
+          message: "remote rejected publication",
+        ),
+      )
+  }
+  let ref =
+    "runs/"
+    <> run_id
+    <> "/publications/implementation_commit_stack/"
+    <> attempt_id
+    <> ".json"
+  let #(sha, bytes) = write_publication_manifest(workspace_root, ref, manifest)
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(Nil) =
     ledger.append(
       paths,
       record.with_id(
-        "finished-" <> run_id,
-        2,
-        record.WorkflowRunFinished(
-          run_id,
-          "implementation",
-          "issue-id",
-          "success",
-          0,
-          0,
+        "publication-" <> run_id <> "-" <> status,
+        11,
+        record.PublicationAttemptRecorded(
+          run_id: run_id,
+          workflow_id: "implementation",
+          publication_id: "implementation_commit_stack",
+          series_id: planned.series_id,
+          attempt_id: attempt_id,
+          status: status,
+          required: True,
+          retryable: status == "failed",
+          retry_execution_available: status == "failed",
+          version_id: Some(planned.version_id),
+          manifest_ref: Some(ref),
+          manifest_sha256: Some(sha),
+          manifest_bytes: Some(bytes),
+          error_code: publication_error_code(status),
+          error_message: publication_error_message(status),
         ),
       ),
       False,
     )
-  run_root
+  Nil
+}
+
+fn seed_preplan_commit_stack_publication(
+  workspace_root: String,
+  run_id: String,
+) -> Nil {
+  let publication_id = "implementation_commit_stack"
+  let attempt_id = "failed-preplan-attempt"
+  let series_id = "issue-id:implementation:" <> publication_id
+  let error =
+    artifact_publication_manifest.PublicationErrorInfo(
+      code: "invalid_commit_stack_output",
+      message: "commit stack output could not be read",
+    )
+  let manifest =
+    artifact_publication_manifest.PublicationManifest(
+      ..artifact_publication_manifest.failed_manifest(
+        run_id,
+        "implementation",
+        publication_id,
+        series_id,
+        True,
+        attempt_id,
+        10,
+        error,
+      ),
+      publication_mode: Some("commit_stack"),
+    )
+  let ref =
+    "runs/"
+    <> run_id
+    <> "/publications/implementation_commit_stack/"
+    <> attempt_id
+    <> ".json"
+  let #(sha, bytes) = write_publication_manifest(workspace_root, ref, manifest)
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(Nil) =
+    ledger.append(
+      paths,
+      record.with_id(
+        "publication-" <> run_id <> "-failed-preplan",
+        11,
+        record.PublicationAttemptRecorded(
+          run_id: run_id,
+          workflow_id: "implementation",
+          publication_id: publication_id,
+          series_id: series_id,
+          attempt_id: attempt_id,
+          status: "failed",
+          required: True,
+          retryable: True,
+          retry_execution_available: False,
+          version_id: None,
+          manifest_ref: Some(ref),
+          manifest_sha256: Some(sha),
+          manifest_bytes: Some(bytes),
+          error_code: Some(error.code),
+          error_message: Some(error.message),
+        ),
+      ),
+      False,
+    )
+  Nil
+}
+
+fn commit_stack_plan(
+  run_id: String,
+) -> artifact_publication_planner.DryRunPublicationManifest {
+  artifact_publication_planner.DryRunPublicationManifest(
+    run_id: run_id,
+    workflow_id: "implementation",
+    publication_id: "implementation_commit_stack",
+    series_id: "issue-id:implementation:implementation_commit_stack",
+    version_id: "version-" <> run_id,
+    required: True,
+    dry_run: False,
+    repository_kind: "github",
+    repository_id: "code",
+    github_repo: Some("scherzo-systems/scherzo"),
+    github_base: Some("main"),
+    branch: "scherzo/implementation/LIV-917",
+    target: artifact_publication_planner.ExistingPrBranchTargetPlan(
+      commit_stack_artifact.ExistingPrBranchTarget(
+        repository: "scherzo-systems/scherzo",
+        head_repo: "scherzo-systems/scherzo",
+        head_branch: "scherzo/implementation/LIV-917",
+        expected_head_sha: commit_stack_base_sha(),
+        base_branch: "main",
+        base_sha: commit_stack_base_sha(),
+        pr_number: 42,
+        pr_url: existing_pr_url(),
+      ),
+    ),
+    pull_request: artifact_publication_planner.PlannedPullRequest(
+      enabled: True,
+      draft: True,
+      title: Some("Implementation publication"),
+      body: Some("Published by Scherzo"),
+    ),
+    files: [],
+    commit_stack: Some(artifact_publication_planner.PlannedCommitStack(
+      output: "commit_stack",
+      manifest_ref: "runs/" <> run_id <> "/outputs/commit-stack.json",
+      manifest_sha256: hash.sha256_hex("{}"),
+      manifest_bytes: 2,
+      stack: commit_stack_artifact.CommitStackArtifact(
+        repository: "scherzo-systems/scherzo",
+        base_ref: "main",
+        base_sha: commit_stack_base_sha(),
+        head_sha: commit_stack_head_sha(),
+        head_tree: commit_stack_tree_sha(),
+        carrier: commit_stack_artifact.CommitStackCarrier(
+          ref: "runs/" <> run_id <> "/outputs/commit-stack.bundle",
+          sha256: hash.sha256_hex("bundle"),
+          bytes: 6,
+          media_type: commit_stack_artifact.bundle_media_type,
+        ),
+      ),
+    )),
+  )
+}
+
+fn write_publication_manifest(
+  workspace_root: String,
+  ref: String,
+  manifest: artifact_publication_manifest.PublicationManifest,
+) -> #(String, Int) {
+  let payload = artifact_publication_manifest.to_string(manifest)
+  let absolute = workspace_root <> "/.scherzo-state/artifacts/" <> ref
+  let assert Ok(dir) = path.dirname(absolute)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let assert Ok(Nil) = simplifile.write(absolute, payload)
+  #(
+    hash.sha256_hex(payload),
+    bit_array.byte_size(bit_array.from_string(payload)),
+  )
+}
+
+fn publication_error_code(status: String) -> Option(String) {
+  case status {
+    "failed" -> Some("publish_failed")
+    "abandoned" -> Some("publication_abandoned")
+    _ -> None
+  }
+}
+
+fn publication_error_message(status: String) -> Option(String) {
+  case status {
+    "failed" -> Some("remote rejected publication")
+    "abandoned" -> Some("operator abandoned publication")
+    _ -> None
+  }
+}
+
+fn commit_stack_base_sha() -> String {
+  "1111111111111111111111111111111111111111"
+}
+
+fn commit_stack_head_sha() -> String {
+  "2222222222222222222222222222222222222222"
+}
+
+fn commit_stack_tree_sha() -> String {
+  "3333333333333333333333333333333333333333"
+}
+
+fn existing_pr_url() -> String {
+  "https://example.test/pr/42"
 }
 
 fn workspace_provider(

@@ -264,6 +264,7 @@ fn projection_attempt_to_summary(
     manifest_bytes: option_int_or(attempt.manifest_bytes, 0),
     error_code: attempt.error_code,
     error_message: attempt.error_message,
+    recorded_at_ms: attempt.recorded_at_ms,
   )
 }
 

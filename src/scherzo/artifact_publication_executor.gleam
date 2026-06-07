@@ -177,7 +177,7 @@ pub fn retry_routes_for_work_with_state_root(
   runner: command_runner.Runner,
   reuse_terminal_attempts: Bool,
 ) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
-  execute_routes_for_work_with_mode(
+  retry_routes_for_work_with_state_root_and_publication_driver(
     routes,
     repositories,
     config_dir,
@@ -189,6 +189,36 @@ pub fn retry_routes_for_work_with_state_root(
     checkpoint,
     runner,
     None,
+    reuse_terminal_attempts,
+  )
+}
+
+pub fn retry_routes_for_work_with_state_root_and_publication_driver(
+  routes: List(artifact_publication_config.PublicationRoute),
+  repositories: artifact_publication_config.ArtifactRepositories,
+  config_dir: String,
+  workflow_bundle_dir: String,
+  state_root: String,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
+  reuse_terminal_attempts: Bool,
+) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
+  execute_routes_for_work_with_mode(
+    routes,
+    repositories,
+    config_dir,
+    workflow_bundle_dir,
+    state_root,
+    output_manifest,
+    work,
+    run_id,
+    checkpoint,
+    runner,
+    publication_driver,
     False,
     reuse_terminal_attempts,
   )

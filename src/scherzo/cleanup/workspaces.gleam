@@ -1,13 +1,16 @@
 import gleam/dict
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import scherzo/artifact_publication_manifest
+import scherzo/artifact_publication_runtime
 import scherzo/control/file
 import scherzo/error
 import scherzo/path
 import scherzo/runtime_bundle
+import scherzo/state/artifact_store
 import scherzo/state/ledger
-import scherzo/state/record
+import scherzo/state/projection
 import scherzo/workspace_manifest
 import scherzo/workspace_run
 import simplifile
@@ -43,11 +46,30 @@ type ManifestContext {
   )
 }
 
+type LedgerContext {
+  LedgerContext(
+    active_roots: dict.Dict(String, Bool),
+    publication_protections: dict.Dict(String, List(PublicationProtection)),
+  )
+}
+
+type PublicationProtection {
+  PublicationProtection(
+    publication_id: String,
+    status: String,
+    retryable: Bool,
+    retry_execution_available: Bool,
+    manifest_ref: Option(String),
+    error_code: Option(String),
+    error_message: Option(String),
+  )
+}
+
 pub fn inventory(workspace_root: String) -> WorkspaceProviderResult {
   let root = path.absolute_or_original(workspace_root)
   let roots = [root]
   let run_roots = discover_run_roots(root)
-  case active_run_roots(root) {
+  case ledger_context(root) {
     Error(reason) ->
       WorkspaceProviderResult(
         available: False,
@@ -55,11 +77,11 @@ pub fn inventory(workspace_root: String) -> WorkspaceProviderResult {
         items: list.map(run_roots, unavailable_item(root, reason, _)),
         warnings: [reason],
       )
-    Ok(active) ->
+    Ok(context) ->
       WorkspaceProviderResult(
         available: True,
         roots: roots,
-        items: list.map(run_roots, inventory_item(root, active, _)),
+        items: list.map(run_roots, inventory_item(root, context, _)),
         warnings: [],
       )
   }
@@ -94,7 +116,7 @@ fn unavailable_item(
 
 fn inventory_item(
   workspace_root: String,
-  active_roots: dict.Dict(String, Bool),
+  ledger_context: LedgerContext,
   run_root: String,
 ) -> WorkspaceItem {
   let base = fn(status: String, reason: String, extra: List(String)) {
@@ -117,7 +139,7 @@ fn inventory_item(
         [],
       )
     False ->
-      case dict.get(active_roots, run_root) {
+      case dict.get(ledger_context.active_roots, run_root) {
         Ok(True) ->
           base(
             "retained",
@@ -125,14 +147,30 @@ fn inventory_item(
             ["active run root recorded in Scherzo ledger"],
           )
         Ok(False) | Error(Nil) ->
-          case
-            simplifile.is_file(workspace_run.cleanup_retention_marker(run_root))
-          {
-            Ok(True) ->
-              base("retained", "workspace retention marker is present", [
-                "retention marker .scherzo-keep-workspace is present",
-              ])
-            _ -> classify_manifest_backed_run(workspace_root, run_root, base)
+          case dict.get(ledger_context.publication_protections, run_root) {
+            Ok([protection, ..]) ->
+              base(
+                "retained",
+                publication_protection_reason(
+                  run_id_from_manifest_or_path(run_root),
+                  protection,
+                  run_root,
+                ),
+                publication_protection_evidence(protection),
+              )
+            Ok([]) | Error(Nil) ->
+              case
+                simplifile.is_file(workspace_run.cleanup_retention_marker(
+                  run_root,
+                ))
+              {
+                Ok(True) ->
+                  base("retained", "workspace retention marker is present", [
+                    "retention marker .scherzo-keep-workspace is present",
+                  ])
+                _ ->
+                  classify_manifest_backed_run(workspace_root, run_root, base)
+              }
           }
       }
   }
@@ -195,7 +233,7 @@ fn apply_eligible_item(
   workspace_root: String,
   item: WorkspaceItem,
 ) -> WorkspaceItem {
-  case active_run_roots(path.absolute_or_original(workspace_root)) {
+  case ledger_context(path.absolute_or_original(workspace_root)) {
     Error(reason) ->
       WorkspaceItem(
         ..item,
@@ -204,15 +242,28 @@ fn apply_eligible_item(
           <> reason,
         warnings: [reason, ..item.warnings],
       )
-    Ok(active) ->
-      case dict.get(active, item.run_root) {
+    Ok(context) ->
+      case dict.get(context.active_roots, item.run_root) {
         Ok(True) ->
           WorkspaceItem(
             ..item,
             status: "retained",
             reason: "workspace run became active and is protected from cleanup",
           )
-        Ok(False) | Error(Nil) -> delegate_cleanup_item(workspace_root, item)
+        Ok(False) | Error(Nil) ->
+          case dict.get(context.publication_protections, item.run_root) {
+            Ok([protection, ..]) ->
+              WorkspaceItem(
+                ..item,
+                status: "retained",
+                reason: publication_protection_reason(
+                  item.run_id,
+                  protection,
+                  item.run_root,
+                ),
+              )
+            Ok([]) | Error(Nil) -> delegate_cleanup_item(workspace_root, item)
+          }
       }
   }
 }
@@ -363,63 +414,234 @@ fn looks_like_run_root(path_: String) -> Bool {
   )
 }
 
-fn active_run_roots(
-  workspace_root: String,
-) -> Result(dict.Dict(String, Bool), String) {
+fn ledger_context(workspace_root: String) -> Result(LedgerContext, String) {
   case ledger.path_for_workspace_root(workspace_root) {
     Error(err) -> Error(ledger.ledger_error_to_string(err))
     Ok(paths) ->
-      case ledger.read_records(paths) {
+      case ledger.replay(paths) {
         Error(err) -> Error(ledger.ledger_error_to_string(err))
-        Ok(read) ->
-          case read.truncated_tail {
+        Ok(replayed) ->
+          case replayed.truncated_tail {
             True ->
               Error(
                 "active-run ledger has a truncated tail; retaining workspace run roots until activity can be proven",
               )
-            False -> Ok(active_run_roots_from_records(read.records, dict.new()))
+            False ->
+              Ok(LedgerContext(
+                active_roots: active_run_roots_from_projection(
+                  replayed.projection,
+                ),
+                publication_protections: publication_protections(
+                  workspace_root,
+                  replayed.projection,
+                ),
+              ))
           }
       }
   }
 }
 
-fn active_run_roots_from_records(
-  records: List(record.LedgerRecord),
-  active: dict.Dict(String, String),
+fn active_run_roots_from_projection(
+  projected: projection.Projection,
 ) -> dict.Dict(String, Bool) {
-  case records {
-    [] ->
-      active
-      |> dict.values
-      |> list.fold(dict.new(), fn(found, root) {
-        dict.insert(found, root, True)
-      })
-    [next, ..rest] ->
-      active_run_roots_from_records(rest, fold_active_record(active, next))
+  let active_roots =
+    projection.active_workflow_runs(projected)
+    |> list.fold(dict.new(), fn(active, entry) {
+      let #(_, status) = entry
+      dict.insert(
+        active,
+        path.absolute_or_original(workflow_run_root(status)),
+        True,
+      )
+    })
+
+  projection.scheduled_statuses(projected)
+  |> list.fold(active_roots, fn(active, status) {
+    case status.state, status.current_run {
+      projection.ScheduledActive, Some(run) ->
+        case run.run_root {
+          Some(run_root) ->
+            dict.insert(active, path.absolute_or_original(run_root), True)
+          None -> active
+        }
+      _, _ -> active
+    }
+  })
+}
+
+fn publication_protections(
+  workspace_root: String,
+  projected: projection.Projection,
+) -> dict.Dict(String, List(PublicationProtection)) {
+  projected.workflow_runs
+  |> dict.to_list
+  |> list.fold(dict.new(), fn(protected, entry) {
+    let #(run_id, status) = entry
+    let run_root = path.absolute_or_original(workflow_run_root(status))
+    let protections =
+      publication_protections_for_run(workspace_root, projected, run_id)
+    case protections {
+      [] -> protected
+      _ -> dict.insert(protected, run_root, protections)
+    }
+  })
+}
+
+fn publication_protections_for_run(
+  workspace_root: String,
+  projected: projection.Projection,
+  run_id: String,
+) -> List(PublicationProtection) {
+  projection.publication_ids_for_run(projected, run_id)
+  |> list.filter_map(fn(publication_id) {
+    case
+      projection.latest_publication_for_run(projected, run_id, publication_id)
+    {
+      Ok(attempt) ->
+        case publication_protection_for_attempt(workspace_root, attempt) {
+          Some(protection) -> Ok(protection)
+          None -> Error(Nil)
+        }
+      Error(Nil) -> Error(Nil)
+    }
+  })
+}
+
+fn publication_protection_for_attempt(
+  workspace_root: String,
+  attempt: projection.PublicationAttempt,
+) -> Option(PublicationProtection) {
+  case attempt.required, attempt.status {
+    True, "planned" | True, "failed" ->
+      case attempt_is_commit_stack(workspace_root, attempt) {
+        True ->
+          Some(PublicationProtection(
+            publication_id: attempt.publication_id,
+            status: attempt.status,
+            retryable: attempt.retryable,
+            retry_execution_available: attempt.retry_execution_available,
+            manifest_ref: attempt.manifest_ref,
+            error_code: attempt.error_code,
+            error_message: attempt.error_message,
+          ))
+        False -> None
+      }
+    _, _ -> None
   }
 }
 
-fn fold_active_record(
-  active: dict.Dict(String, String),
-  ledger_record: record.LedgerRecord,
-) -> dict.Dict(String, String) {
-  case ledger_record.body {
-    record.WorkflowRunStarted(run_id, _, _, _, _, _, _, run_root)
-    | record.WorkflowRunStartedWithTask(run_id, _, _, _, _, _, _, _, run_root)
-    | record.ScheduledRunStarted(_, _, _, _, run_id, _, _, run_root) ->
-      dict.insert(active, run_id, path.absolute_or_original(run_root))
+fn attempt_is_commit_stack(
+  workspace_root: String,
+  attempt: projection.PublicationAttempt,
+) -> Bool {
+  case attempt.manifest_ref {
+    Some(ref) ->
+      case
+        artifact_store.read_artifact_unverified(
+          artifact_store.new(workspace_root),
+          ref,
+        )
+      {
+        Ok(contents) ->
+          case artifact_publication_manifest.decode_manifest_json(contents) {
+            Ok(manifest) ->
+              artifact_publication_runtime.publication_manifest_is_commit_stack(
+                manifest,
+              )
+            Error(_) -> False
+          }
+        Error(_) -> False
+      }
+    None -> False
+  }
+}
 
-    record.WorkflowRunFinished(run_id, _, _, _, _, _)
-    | record.WorkflowRunFinishedWithTask(run_id, _, _, _, _, _, _)
-    | record.WorkflowRunInterrupted(run_id, _, _, _)
-    | record.WorkflowRunSuperseded(run_id, _, _, _, _)
-    | record.ScheduledRunSucceeded(_, _, _, run_id, _, _, _, _)
-    | record.ScheduledRunFailed(_, _, _, run_id, _, _, _, _, _)
-    | record.ScheduledRunPendingCancelled(_, _, _, run_id, _, _)
-    | record.ScheduledRunRetryCancelled(_, run_id, _, _) ->
-      dict.delete(active, run_id)
+fn workflow_run_root(status: projection.WorkflowRunStatus) -> String {
+  case status {
+    projection.WorkflowRunActive(run_root: run_root, ..)
+    | projection.WorkflowRunFinished(run_root: run_root, ..)
+    | projection.WorkflowRunInterrupted(run_root: run_root, ..)
+    | projection.WorkflowRunSuperseded(run_root: run_root, ..) -> run_root
+  }
+}
 
-    _ -> active
+fn publication_protection_reason(
+  run_id: String,
+  protection: PublicationProtection,
+  run_root: String,
+) -> String {
+  "required same-repo commit_stack publication is "
+  <> publication_state_label(protection.status)
+  <> "; retained_workspace_path="
+  <> retained_workspace_path_for_run_root(run_root)
+  <> "; publication_id="
+  <> protection.publication_id
+  <> "; retryable="
+  <> bool_string(protection.retryable)
+  <> "; retry_execution_available="
+  <> bool_string(protection.retry_execution_available)
+  <> "; retry with: scherzoctl artifact publication retry --run "
+  <> run_id
+  <> " --publication "
+  <> protection.publication_id
+  <> "; abandon with: scherzoctl artifact publication abandon --run "
+  <> run_id
+  <> " --publication "
+  <> protection.publication_id
+  <> " --reason <reason> --yes"
+  <> optional_error_suffix(protection.error_code, protection.error_message)
+}
+
+fn retained_workspace_path_for_run_root(run_root: String) -> String {
+  case
+    artifact_publication_runtime.retained_workspace_path_from_run_root(run_root)
+  {
+    Some(workspace_path) -> workspace_path
+    None -> run_root
+  }
+}
+
+fn publication_state_label(status: String) -> String {
+  case status {
+    "planned" -> "pending"
+    other -> other
+  }
+}
+
+fn publication_protection_evidence(
+  protection: PublicationProtection,
+) -> List(String) {
+  [
+    "required same-repo commit_stack publication is not published",
+    "publication_id=" <> protection.publication_id,
+    "publication_status=" <> protection.status,
+    "publication_manifest_ref=" <> optional_string(protection.manifest_ref),
+  ]
+}
+
+fn optional_error_suffix(
+  error_code: Option(String),
+  error_message: Option(String),
+) -> String {
+  case error_code, error_message {
+    Some(code), Some(message) -> "; error=" <> code <> ": " <> message
+    Some(code), None -> "; error=" <> code
+    None, Some(message) -> "; error=" <> message
+    None, None -> ""
+  }
+}
+
+fn optional_string(value: Option(String)) -> String {
+  case value {
+    Some(value) -> value
+    None -> "-"
+  }
+}
+
+fn bool_string(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
   }
 }
 
