@@ -7,8 +7,10 @@ import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
+import scherzo/artifact_repository/checkout_lock
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/github
+import scherzo/artifact_repository/github_paths
 import scherzo/artifact_repository/types as repository_types
 import scherzo/commit_stack_artifact
 import scherzo/hash
@@ -207,14 +209,219 @@ pub fn publish_fails_when_checkout_is_dirty_test() {
   let log = root <> "/commands.log"
   test_helpers.reset_dir(root)
   seed_checkout(root)
+  let assert Ok(Nil) = simplifile.write(dirty_marker(root), "dirty")
   let input = prepared_input(root, True)
 
-  let manifest = github.publish(input, root, dirty_checkout_runner(log), 123)
+  let manifest =
+    github.publish(
+      input,
+      root,
+      unrecoverable_dirty_checkout_runner(log, root),
+      123,
+    )
 
   assert artifact_publication_manifest.status_to_string(manifest.status)
     == "failed"
   let assert Some(error) = manifest.error
   assert error.code == "dirty_checkout"
+  let assert Some(cleanup) = manifest.cleanup_diagnostics
+  assert cleanup.cleanup_succeeded == False
+  assert cleanup.pre_cleanup_status == Some("M dirty-marker")
+}
+
+pub fn publish_self_heals_dirty_checkout_before_materialization_test() {
+  let root = "test/tmp/artifact-repository-github/dirty-checkout-self-heal"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  seed_checkout(root)
+  let assert Ok(Nil) = simplifile.write(dirty_marker(root), "dirty")
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(
+      input,
+      root,
+      self_healing_dirty_checkout_runner(log, root),
+      123,
+    )
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "published"
+  assert manifest.cleanup_diagnostics == None
+  let transcript = read_file(log)
+  assert string.contains(transcript, "git reset --hard HEAD")
+  assert string.contains(transcript, "git clean -fd")
+}
+
+pub fn publish_commit_failure_records_cleanup_diagnostics_test() {
+  let root = "test/tmp/artifact-repository-github/commit-failure-cleanup"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(input, root, commit_failure_cleanup_runner(log, root), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == "git_commit_failed"
+  let assert Some(cleanup) = manifest.cleanup_diagnostics
+  assert cleanup.cleanup_succeeded == True
+  assert cleanup.reset_summary == Some("exit=0")
+  assert cleanup.post_cleanup_status == Some("")
+  assert simplifile.is_file(checkout_file(root, "docs/plans/LIV-761.md"))
+    == Ok(False)
+}
+
+pub fn publish_returns_publication_lock_failed_when_checkout_is_already_locked_test() {
+  let root = "test/tmp/artifact-repository-github/lock-held"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+  let lock_dir = checkout_root(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(lock_dir)
+  let assert Ok(lock) = checkout_lock.acquire(lock_dir)
+
+  let manifest = github.publish(input, root, fail_if_called_runner(), 123)
+
+  let _ = checkout_lock.release(lock)
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == "publication_lock_failed"
+}
+
+pub fn checkout_lock_allows_distinct_checkouts_and_releases_after_failure_test() {
+  let distinct_root = "test/tmp/artifact-repository-github/lock-distinct"
+  let first_root = distinct_root <> "/first"
+  let second_root = distinct_root <> "/second"
+  test_helpers.reset_dir(distinct_root)
+  let first_dir = checkout_root(first_root)
+  let second_dir = checkout_root(second_root)
+  let assert Ok(Nil) = simplifile.create_directory_all(first_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(second_dir)
+
+  let assert Ok(first_lock) = checkout_lock.acquire(first_dir)
+  let assert Error(checkout_lock.LockAlreadyHeld(_)) =
+    checkout_lock.acquire(first_dir)
+  let assert Ok(second_lock) = checkout_lock.acquire(second_dir)
+  let _ = checkout_lock.release(second_lock)
+  let _ = checkout_lock.release(first_lock)
+
+  let retry_root =
+    "test/tmp/artifact-repository-github/lock-release-after-failure"
+  let first_log = retry_root <> "/first.log"
+  let second_log = retry_root <> "/second.log"
+  test_helpers.reset_dir(retry_root)
+  let input = prepared_input(retry_root, True)
+
+  let failed =
+    github.publish(
+      input,
+      retry_root,
+      unrecoverable_dirty_checkout_runner(first_log, retry_root),
+      123,
+    )
+
+  assert artifact_publication_manifest.status_to_string(failed.status)
+    == "failed"
+  let retried =
+    github.publish(input, retry_root, create_pr_runner(second_log, True), 456)
+  assert artifact_publication_manifest.status_to_string(retried.status)
+    == "published"
+}
+
+pub fn publish_materialization_failure_records_cleanup_diagnostics_test() {
+  let root =
+    "test/tmp/artifact-repository-github/materialization-failure-cleanup"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = materialization_failure_input(root)
+
+  let manifest =
+    github.publish(
+      input,
+      root,
+      cleanup_failure_runner(log, root, "materialize"),
+      123,
+    )
+
+  assert_cleanup_failure(
+    manifest,
+    "destination_dir_failed",
+    checkout_file(root, "docs"),
+  )
+}
+
+pub fn publish_git_add_failure_records_cleanup_diagnostics_test() {
+  let root = "test/tmp/artifact-repository-github/git-add-fails"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(input, root, cleanup_failure_runner(log, root, "add"), 123)
+
+  assert_cleanup_failure(
+    manifest,
+    "git_add_failed",
+    checkout_file(root, "docs/plans/LIV-761.md"),
+  )
+}
+
+pub fn publish_git_diff_failure_records_cleanup_diagnostics_test() {
+  let root = "test/tmp/artifact-repository-github/git-diff-fails"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(input, root, cleanup_failure_runner(log, root, "diff"), 123)
+
+  assert_cleanup_failure(
+    manifest,
+    "git_diff_failed",
+    checkout_file(root, "docs/plans/LIV-761.md"),
+  )
+}
+
+pub fn publish_push_failure_records_cleanup_diagnostics_test() {
+  let root = "test/tmp/artifact-repository-github/git-push-fails"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(input, root, cleanup_failure_runner(log, root, "push"), 123)
+
+  assert_cleanup_failure(
+    manifest,
+    "git_push_failed",
+    checkout_file(root, "docs/plans/LIV-761.md"),
+  )
+  assert manifest.commit_sha == Some("deadbeef")
+}
+
+pub fn publish_pr_create_failure_records_cleanup_diagnostics_test() {
+  let root = "test/tmp/artifact-repository-github/pr-create-fails"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let input = prepared_input(root, True)
+
+  let manifest =
+    github.publish(
+      input,
+      root,
+      cleanup_failure_runner(log, root, "pr_create"),
+      123,
+    )
+
+  assert_cleanup_failure(
+    manifest,
+    "pr_create_failed",
+    checkout_file(root, "docs/plans/LIV-761.md"),
+  )
+  assert manifest.commit_sha == Some("deadbeef")
 }
 
 pub fn publish_fails_for_duplicate_destination_paths_before_running_commands_test() {
@@ -229,20 +436,6 @@ pub fn publish_fails_for_duplicate_destination_paths_before_running_commands_tes
     == "failed"
   let assert Some(error) = manifest.error
   assert error.code == "duplicate_destination_path"
-}
-
-pub fn publish_fails_when_git_add_fails_test() {
-  let root = "test/tmp/artifact-repository-github/git-add-fails"
-  let log = root <> "/commands.log"
-  test_helpers.reset_dir(root)
-  let input = prepared_input(root, True)
-
-  let manifest = github.publish(input, root, git_add_failure_runner(log), 123)
-
-  assert artifact_publication_manifest.status_to_string(manifest.status)
-    == "failed"
-  let assert Some(error) = manifest.error
-  assert error.code == "git_add_failed"
 }
 
 pub fn publish_fails_when_pr_lookup_is_ambiguous_test() {
@@ -279,12 +472,22 @@ pub fn publish_fails_when_pr_edit_fails_after_existing_pr_found_test() {
   test_helpers.reset_dir(root)
   let input = prepared_input(root, True)
 
-  let manifest = github.publish(input, root, pr_edit_failure_runner(log), 123)
+  let manifest =
+    github.publish(
+      input,
+      root,
+      cleanup_failure_runner(log, root, "pr_edit"),
+      123,
+    )
 
   assert artifact_publication_manifest.status_to_string(manifest.status)
     == "failed"
   let assert Some(error) = manifest.error
   assert error.code == "pr_edit_failed"
+  let assert Some(cleanup) = manifest.cleanup_diagnostics
+  assert cleanup.cleanup_succeeded == True
+  assert manifest.commit_sha == Some("deadbeef")
+  assert manifest.pr_url == Some("https://example.test/pr/42")
   assert string.contains(read_file(log), "gh pr edit 42")
 }
 
@@ -538,6 +741,25 @@ pub fn publish_commit_stack_updates_existing_branch_without_new_pr_test() {
   assert !string.contains(transcript, "gh pr edit")
 }
 
+pub fn publish_commit_stack_returns_publication_lock_failed_when_checkout_is_already_locked_test() {
+  let root = "test/tmp/artifact-repository-github/commit-stack-lock-held"
+  test_helpers.reset_dir(root)
+  let input = commit_stack_input(root)
+  let checkout_dir =
+    github_paths.checkout_dir(root, commit_stack_publication_manifest())
+  let assert Ok(Nil) = simplifile.create_directory_all(checkout_dir)
+  let assert Ok(lock) = checkout_lock.acquire(checkout_dir)
+
+  let manifest = github.publish(input, root, fail_if_called_runner(), 123)
+
+  let _ = checkout_lock.release(lock)
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == "publication_lock_failed"
+  assert manifest.pr_url == Some(existing_pr_url())
+}
+
 pub fn publish_commit_stack_retry_recovers_from_retained_carrier_test() {
   let root = "test/tmp/artifact-repository-github/commit-stack-retry"
   let first_log = root <> "/first-commands.log"
@@ -686,6 +908,60 @@ fn prepared_input_for_manifest(
   write_artifact(root, plan_ref(), plan_contents())
   let assert Ok(prepared) = github.prepare_publication_input(manifest, store)
   prepared
+}
+
+fn prepared_input_with_bytes(
+  manifest: artifact_publication_planner.DryRunPublicationManifest,
+  entries: List(#(String, String)),
+) -> repository_types.PublicationExecutionInput {
+  let assert Ok(prepared) =
+    github.prepare_publication_input(manifest, store_with_contents(entries))
+  prepared
+}
+
+fn materialization_failure_input(
+  root: String,
+) -> repository_types.PublicationExecutionInput {
+  let first =
+    artifact_publication_planner.SelectedArtifact(
+      output: "review_doc",
+      entry: None,
+      name: "first",
+      artifact_type: None,
+      metadata: None,
+      ref: "runs/run-1/outputs/first.md",
+      sha256: hash.sha256_hex("file"),
+      bytes: 4,
+      media_type: "text/markdown",
+    )
+  let second =
+    artifact_publication_planner.SelectedArtifact(
+      output: "review_doc",
+      entry: None,
+      name: "second",
+      artifact_type: None,
+      metadata: None,
+      ref: "runs/run-1/outputs/second.md",
+      sha256: hash.sha256_hex("child"),
+      bytes: 5,
+      media_type: "text/markdown",
+    )
+  let manifest =
+    artifact_publication_planner.DryRunPublicationManifest(
+      ..dry_run_manifest(True),
+      files: [
+        artifact_publication_planner.PlannedPublicationFile(first, "docs"),
+        artifact_publication_planner.PlannedPublicationFile(
+          second,
+          "docs/child.md",
+        ),
+      ],
+    )
+  let _ = root
+  prepared_input_with_bytes(manifest, [
+    #("runs/run-1/outputs/first.md", "file"),
+    #("runs/run-1/outputs/second.md", "child"),
+  ])
 }
 
 fn commit_stack_input(
@@ -1134,7 +1410,25 @@ fn commit_stack_runner_with_pr(
   })
 }
 
-fn dirty_checkout_runner(log: String) -> command_runner.Runner {
+fn self_healing_dirty_checkout_runner(
+  log: String,
+  root: String,
+) -> command_runner.Runner {
+  dirty_checkout_cleanup_runner(log, root, True)
+}
+
+fn unrecoverable_dirty_checkout_runner(
+  log: String,
+  root: String,
+) -> command_runner.Runner {
+  dirty_checkout_cleanup_runner(log, root, False)
+}
+
+fn dirty_checkout_cleanup_runner(
+  log: String,
+  root: String,
+  heal: Bool,
+) -> command_runner.Runner {
   runner(log, fn(executable, args, _, _) {
     case executable, args {
       "git", ["remote", "get-url", "origin"] ->
@@ -1149,13 +1443,38 @@ fn dirty_checkout_runner(log: String) -> command_runner.Runner {
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
       "git", ["status", ..] ->
-        Ok(command_runner.CommandOutput(0, " M docs/other.md", ""))
+        case simplifile.is_file(dirty_marker(root)) {
+          Ok(True) -> Ok(command_runner.CommandOutput(0, "M dirty-marker", ""))
+          _ -> Ok(command_runner.CommandOutput(0, "", ""))
+        }
+      "git", ["reset", "--hard", "HEAD"] -> {
+        case heal {
+          True -> {
+            let _ = simplifile.delete(dirty_marker(root))
+            Ok(command_runner.CommandOutput(0, "", ""))
+          }
+          False -> Ok(command_runner.CommandOutput(1, "", "reset failed"))
+        }
+      }
+      "git", ["clean", "-fd"] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] ->
+        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
       _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
 }
 
-fn git_add_failure_runner(log: String) -> command_runner.Runner {
+fn commit_failure_cleanup_runner(
+  log: String,
+  root: String,
+) -> command_runner.Runner {
   runner(log, fn(executable, args, _, _) {
     case executable, args {
       "git", ["clone", _, target] -> {
@@ -1167,12 +1486,116 @@ fn git_add_failure_runner(log: String) -> command_runner.Runner {
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["add", ..] ->
-        Ok(command_runner.CommandOutput(2, "", "add failed"))
+      "git", ["status", ..] ->
+        case simplifile.is_file(checkout_file(root, "docs/plans/LIV-761.md")) {
+          Ok(True) ->
+            Ok(command_runner.CommandOutput(0, "M docs/plans/LIV-761.md", ""))
+          _ -> Ok(command_runner.CommandOutput(0, "", ""))
+        }
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["commit", ..] ->
+        Ok(command_runner.CommandOutput(2, "", "commit failed"))
+      "git", ["reset", "--hard", "HEAD"] -> {
+        let _ = simplifile.delete(checkout_file(root, "docs/plans/LIV-761.md"))
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["clean", "-fd"] -> Ok(command_runner.CommandOutput(0, "", ""))
       _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
+}
+
+fn assert_cleanup_failure(
+  manifest: artifact_publication_manifest.PublicationManifest,
+  expected_code: String,
+  dirty_path: String,
+) -> Nil {
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "failed"
+  let assert Some(error) = manifest.error
+  assert error.code == expected_code
+  let assert Some(cleanup) = manifest.cleanup_diagnostics
+  assert cleanup.cleanup_succeeded == True
+  assert cleanup.reset_summary == Some("exit=0")
+  assert cleanup.post_cleanup_status == Some("")
+  assert simplifile.is_file(dirty_path) == Ok(False)
+}
+
+fn cleanup_failure_runner(
+  log: String,
+  root: String,
+  stage: String,
+) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, _) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] ->
+        Ok(command_runner.CommandOutput(0, dirty_status(root), ""))
+      "git", ["add", ..] ->
+        case stage == "add" {
+          True -> Ok(command_runner.CommandOutput(2, "", "add failed"))
+          False -> Ok(command_runner.CommandOutput(0, "", ""))
+        }
+      "git", ["diff", ..] ->
+        case stage == "diff" {
+          True -> Ok(command_runner.CommandOutput(2, "", "diff failed"))
+          False -> Ok(command_runner.CommandOutput(1, "", ""))
+        }
+      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] ->
+        case stage == "push" {
+          True -> Ok(command_runner.CommandOutput(2, "", "push failed"))
+          False -> Ok(command_runner.CommandOutput(0, "", ""))
+        }
+      "gh", ["pr", "list", ..] ->
+        case stage == "pr_edit" {
+          True ->
+            Ok(command_runner.CommandOutput(
+              0,
+              "[{\"number\":42,\"url\":\"https://example.test/pr/42\",\"isDraft\":true,\"title\":\"existing\"}]",
+              "",
+            ))
+          False -> Ok(command_runner.CommandOutput(0, "[]", ""))
+        }
+      "gh", ["pr", "create", ..] ->
+        case stage == "pr_create" {
+          True -> Ok(command_runner.CommandOutput(1, "", "create failed"))
+          False ->
+            Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+        }
+      "gh", ["pr", "edit", ..] ->
+        Ok(command_runner.CommandOutput(1, "", "edit failed"))
+      "git", ["reset", "--hard", "HEAD"] -> {
+        let _ = simplifile.delete(checkout_file(root, "docs/plans/LIV-761.md"))
+        let _ = simplifile.delete(checkout_file(root, "docs"))
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["clean", "-fd"] -> Ok(command_runner.CommandOutput(0, "", ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn dirty_status(root: String) -> String {
+  case simplifile.is_file(checkout_file(root, "docs/plans/LIV-761.md")) {
+    Ok(True) -> "M docs/plans/LIV-761.md"
+    _ ->
+      case simplifile.is_file(checkout_file(root, "docs")) {
+        Ok(True) -> "?? docs"
+        _ -> ""
+      }
+  }
 }
 
 fn ambiguous_pr_runner(log: String) -> command_runner.Runner {
@@ -1226,38 +1649,6 @@ fn malformed_pr_runner(log: String) -> command_runner.Runner {
       "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
       "gh", ["pr", "list", ..] ->
         Ok(command_runner.CommandOutput(0, "[{\"number\":wat}]", ""))
-      _, _ -> Error(command_runner.command_error("unexpected_command"))
-    }
-  })
-}
-
-fn pr_edit_failure_runner(log: String) -> command_runner.Runner {
-  runner(log, fn(executable, args, _, _) {
-    case executable, args {
-      "git", ["clone", _, target] -> {
-        let _ = simplifile.create_directory_all(target)
-        Ok(command_runner.CommandOutput(0, "", ""))
-      }
-      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
-      "git", ["rev-parse", "--verify", ..] ->
-        Ok(command_runner.CommandOutput(1, "", ""))
-      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
-      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["rev-parse", "HEAD"] ->
-        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
-      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "gh", ["pr", "list", ..] ->
-        Ok(command_runner.CommandOutput(
-          0,
-          "[{\"number\":42,\"url\":\"https://example.test/pr/42\",\"isDraft\":true,\"title\":\"existing\"}]",
-          "",
-        ))
-      "gh", ["pr", "edit", ..] ->
-        Ok(command_runner.CommandOutput(1, "", "edit failed"))
       _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
@@ -1836,6 +2227,10 @@ fn checkout_root(root: String) -> String {
 
 fn checkout_file(root: String, relative: String) -> String {
   path.join(checkout_root(root), relative)
+}
+
+fn dirty_marker(root: String) -> String {
+  checkout_file(root, "dirty-marker")
 }
 
 fn destination_path(

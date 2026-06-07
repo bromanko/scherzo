@@ -9,6 +9,7 @@ import scherzo/artifact_publication_config
 import scherzo/artifact_publication_driver
 import scherzo/artifact_publication_executor
 import scherzo/artifact_publication_manifest
+import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/command_runner
 import scherzo/commit_stack_artifact
 import scherzo/config/types as config_types
@@ -523,6 +524,29 @@ pub fn execute_routes_classifies_required_and_optional_failures_test() {
   assert optional_attempt.status == "failed"
 }
 
+pub fn retry_routes_replay_failed_execution_manifests_without_manual_cleanup_test() {
+  assert_retry_recovers_failure(
+    "commit",
+    executor_failure_runner("commit"),
+    "git_commit_failed",
+  )
+  assert_retry_recovers_failure(
+    "push",
+    executor_failure_runner("push"),
+    "git_push_failed",
+  )
+  assert_retry_recovers_failure(
+    "pr-create",
+    executor_failure_runner("pr_create"),
+    "pr_create_failed",
+  )
+  assert_retry_recovers_failure(
+    "dirty",
+    executor_dirty_checkout_runner(),
+    "dirty_checkout",
+  )
+}
+
 pub fn execute_routes_dedupes_repeated_finalization_after_success_test() {
   let root = "test/tmp/artifact-publication-executor/finalization-dedupe"
   test_helpers.reset_dir(root)
@@ -693,6 +717,62 @@ pub fn execute_routes_resolves_route_template_from_workflow_bundle_dir_test() {
   assert result.required_failures == []
   let assert [attempt] = result.attempts
   assert attempt.status == "published"
+}
+
+fn assert_retry_recovers_failure(
+  suffix: String,
+  failing_runner: command_runner.Runner,
+  expected_code: String,
+) -> Nil {
+  let root = "test/tmp/artifact-publication-executor/retry-recovery-" <> suffix
+  test_helpers.reset_dir(root)
+  write_template(root)
+  write_artifact(root, plan_ref(), plan_contents())
+
+  let assert Ok(first) =
+    artifact_publication_executor.execute_routes_with_runner(
+      [route(True)],
+      repositories(),
+      root,
+      output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+      failing_runner,
+    )
+  let assert [first_failure] = first.required_failures
+  assert first_failure.code == expected_code
+  let assert [first_attempt] = first.attempts
+  let manifest = read_publication_manifest(root, first_attempt.manifest_ref)
+  let assert Some(cleanup) = manifest.cleanup_diagnostics
+  assert cleanup.checkout_path != ""
+
+  let assert Ok(second) =
+    artifact_publication_executor.retry_routes_for_work_with_state_root(
+      [route(True)],
+      repositories(),
+      root,
+      root,
+      root,
+      output_manifest(),
+      publication_work(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(root, fn() { 456 }),
+      fake_runner(),
+      False,
+    )
+  assert second.required_failures == []
+  let assert [second_attempt] = second.attempts
+  assert second_attempt.status == "published"
+}
+
+fn publication_work() -> artifact_publication_planner.PublicationWork {
+  artifact_publication_planner.PublicationWork(
+    kind: artifact_publication_planner.TaskWork,
+    id: "task-1",
+    identifier: "LIV-761",
+    slug: "LIV-761",
+  )
 }
 
 fn fake_runner() -> command_runner.Runner {
@@ -1015,6 +1095,10 @@ fn driver_stale_existing_branch_json() -> String {
 }
 
 fn commit_failure_runner() -> command_runner.Runner {
+  executor_failure_runner("commit")
+}
+
+fn executor_failure_runner(stage: String) -> command_runner.Runner {
   command_runner.Runner(run: fn(spec) {
     let command_runner.CommandSpec(
       executable: executable,
@@ -1029,18 +1113,93 @@ fn commit_failure_runner() -> command_runner.Runner {
         Ok(command_runner.CommandOutput(0, "", ""))
       }
       "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["remote", "get-url", "origin"] ->
+        Ok(command_runner.CommandOutput(
+          0,
+          "https://github.com/scherzo-systems/scherzo.git",
+          "",
+        ))
       "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
       "git", ["rev-parse", "--verify", ..] ->
         Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] ->
+        Ok(command_runner.CommandOutput(0, executor_dirty_status(cwd), ""))
       "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
       "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
       "git", ["commit", ..] ->
-        Ok(command_runner.CommandOutput(2, "", "commit failed"))
+        case stage == "commit" {
+          True -> Ok(command_runner.CommandOutput(2, "", "commit failed"))
+          False -> Ok(command_runner.CommandOutput(0, "", ""))
+        }
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] ->
+        case stage == "push" {
+          True -> Ok(command_runner.CommandOutput(2, "", "push failed"))
+          False -> Ok(command_runner.CommandOutput(0, "", ""))
+        }
+      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] ->
+        case stage == "pr_create" {
+          True -> Ok(command_runner.CommandOutput(1, "", "create failed"))
+          False ->
+            Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+        }
+      "git", ["reset", "--hard", "HEAD"] -> {
+        let _ = simplifile.delete(cwd <> "/docs/plans/LIV-761.md")
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["clean", "-fd"] -> Ok(command_runner.CommandOutput(0, "", ""))
       _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
+}
+
+fn executor_dirty_checkout_runner() -> command_runner.Runner {
+  command_runner.Runner(run: fn(spec) {
+    let command_runner.CommandSpec(
+      executable: executable,
+      args: args,
+      cwd: cwd,
+      ..,
+    ) = spec
+    let _ = simplifile.create_directory_all(cwd)
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        let _ = simplifile.write(target <> "/dirty-marker", "dirty")
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["remote", "get-url", "origin"] ->
+        Ok(command_runner.CommandOutput(
+          0,
+          "https://github.com/scherzo-systems/scherzo.git",
+          "",
+        ))
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] ->
+        case simplifile.is_file(cwd <> "/dirty-marker") {
+          Ok(True) -> Ok(command_runner.CommandOutput(0, "M dirty-marker", ""))
+          _ -> Ok(command_runner.CommandOutput(0, "", ""))
+        }
+      "git", ["reset", "--hard", "HEAD"] ->
+        Ok(command_runner.CommandOutput(1, "", "reset failed"))
+      "git", ["clean", "-fd"] -> Ok(command_runner.CommandOutput(0, "", ""))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn executor_dirty_status(cwd: String) -> String {
+  case simplifile.is_file(cwd <> "/docs/plans/LIV-761.md") {
+    Ok(True) -> "M docs/plans/LIV-761.md"
+    _ -> ""
+  }
 }
 
 fn fail_if_called_runner() -> command_runner.Runner {

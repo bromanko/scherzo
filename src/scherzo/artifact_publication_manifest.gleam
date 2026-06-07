@@ -24,6 +24,17 @@ pub type PublicationErrorInfo {
   PublicationErrorInfo(code: String, message: String)
 }
 
+pub type CleanupDiagnostics {
+  CleanupDiagnostics(
+    checkout_path: String,
+    pre_cleanup_status: Option(String),
+    reset_summary: Option(String),
+    clean_summary: Option(String),
+    post_cleanup_status: Option(String),
+    cleanup_succeeded: Bool,
+  )
+}
+
 pub type RetryEligibility {
   RetryAllowed
   RetryNotRetryable
@@ -90,6 +101,7 @@ pub type PublicationManifest {
       artifact_publication_planner.DryRunPublicationManifest,
     ),
     error: Option(PublicationErrorInfo),
+    cleanup_diagnostics: Option(CleanupDiagnostics),
   )
 }
 
@@ -123,6 +135,7 @@ pub fn planned_manifest(
     removed_paths: [],
     dry_run_manifest: Some(planned),
     error: None,
+    cleanup_diagnostics: None,
   )
 }
 
@@ -160,6 +173,7 @@ pub fn published_manifest(
     removed_paths: removed_paths,
     dry_run_manifest: Some(planned),
     error: None,
+    cleanup_diagnostics: None,
   )
 }
 
@@ -196,6 +210,7 @@ pub fn unchanged_manifest(
     removed_paths: removed_paths,
     dry_run_manifest: Some(planned),
     error: None,
+    cleanup_diagnostics: None,
   )
 }
 
@@ -234,6 +249,7 @@ pub fn failed_manifest(
     removed_paths: [],
     dry_run_manifest: None,
     error: Some(error),
+    cleanup_diagnostics: None,
   )
 }
 
@@ -274,6 +290,17 @@ pub fn failed_from_planned_manifest(
     removed_paths: removed_paths,
     dry_run_manifest: Some(planned),
     error: Some(error),
+    cleanup_diagnostics: None,
+  )
+}
+
+pub fn with_cleanup_diagnostics(
+  manifest: PublicationManifest,
+  cleanup_diagnostics: CleanupDiagnostics,
+) -> PublicationManifest {
+  PublicationManifest(
+    ..manifest,
+    cleanup_diagnostics: Some(cleanup_diagnostics),
   )
 }
 
@@ -371,6 +398,10 @@ pub fn to_json(manifest: PublicationManifest) -> json.Json {
     #("removed_paths", json.array(manifest.removed_paths, json.string)),
     #("dry_run_manifest", option_dry_run_to_json(manifest.dry_run_manifest)),
     #("error", option_error_to_json(manifest.error)),
+    #(
+      "cleanup_diagnostics",
+      option_cleanup_diagnostics_to_json(manifest.cleanup_diagnostics),
+    ),
   ])
 }
 
@@ -428,6 +459,30 @@ fn option_error_to_json(value: Option(PublicationErrorInfo)) -> json.Json {
       json.object([
         #("code", json.string(code)),
         #("message", json.string(message)),
+      ])
+    None -> json.null()
+  }
+}
+
+fn option_cleanup_diagnostics_to_json(
+  value: Option(CleanupDiagnostics),
+) -> json.Json {
+  case value {
+    Some(CleanupDiagnostics(
+      checkout_path,
+      pre_cleanup_status,
+      reset_summary,
+      clean_summary,
+      post_cleanup_status,
+      cleanup_succeeded,
+    )) ->
+      json.object([
+        #("checkout_path", json.string(checkout_path)),
+        #("pre_cleanup_status", option_string_to_json(pre_cleanup_status)),
+        #("reset_summary", option_string_to_json(reset_summary)),
+        #("clean_summary", option_string_to_json(clean_summary)),
+        #("post_cleanup_status", option_string_to_json(post_cleanup_status)),
+        #("cleanup_succeeded", json.bool(cleanup_succeeded)),
       ])
     None -> json.null()
   }
@@ -503,6 +558,11 @@ fn manifest_decoder() -> decode.Decoder(PublicationManifest) {
     None,
     decode.optional(error_decoder()),
   )
+  use cleanup_diagnostics <- decode.optional_field(
+    "cleanup_diagnostics",
+    None,
+    decode.optional(cleanup_diagnostics_decoder()),
+  )
   let _ = schema_version
   let _ = artifact
   let status = case status_from_string(status_text) {
@@ -534,6 +594,40 @@ fn manifest_decoder() -> decode.Decoder(PublicationManifest) {
     removed_paths: removed_paths,
     dry_run_manifest: dry_run_manifest,
     error: error,
+    cleanup_diagnostics: cleanup_diagnostics,
+  ))
+}
+
+fn cleanup_diagnostics_decoder() -> decode.Decoder(CleanupDiagnostics) {
+  use checkout_path <- decode.field("checkout_path", decode.string)
+  use pre_cleanup_status <- decode.optional_field(
+    "pre_cleanup_status",
+    None,
+    decode.optional(decode.string),
+  )
+  use reset_summary <- decode.optional_field(
+    "reset_summary",
+    None,
+    decode.optional(decode.string),
+  )
+  use clean_summary <- decode.optional_field(
+    "clean_summary",
+    None,
+    decode.optional(decode.string),
+  )
+  use post_cleanup_status <- decode.optional_field(
+    "post_cleanup_status",
+    None,
+    decode.optional(decode.string),
+  )
+  use cleanup_succeeded <- decode.field("cleanup_succeeded", decode.bool)
+  decode.success(CleanupDiagnostics(
+    checkout_path: checkout_path,
+    pre_cleanup_status: pre_cleanup_status,
+    reset_summary: reset_summary,
+    clean_summary: clean_summary,
+    post_cleanup_status: post_cleanup_status,
+    cleanup_succeeded: cleanup_succeeded,
   ))
 }
 

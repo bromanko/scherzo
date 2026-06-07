@@ -195,6 +195,9 @@ type PublicationManifestDetails {
     branch: Option(String),
     commit_sha: Option(String),
     pr_url: Option(String),
+    cleanup_diagnostics: Option(
+      artifact_publication_manifest.CleanupDiagnostics,
+    ),
   )
 }
 
@@ -835,6 +838,10 @@ fn publication_attempt_to_json(
     #("manifest_bytes", optional_int_json(attempt.manifest_bytes)),
     #("error_code", optional_string_json(attempt.error_code)),
     #("error_message", optional_string_json(attempt.error_message)),
+    #(
+      "cleanup_diagnostics",
+      cleanup_diagnostics_json(manifest_detail_cleanup(details)),
+    ),
     #("recorded_at_ms", json.int(attempt.recorded_at_ms)),
   ])
 }
@@ -851,6 +858,7 @@ fn manifest_details_for_attempt(
             branch: manifest.branch,
             commit_sha: manifest.commit_sha,
             pr_url: manifest.pr_url,
+            cleanup_diagnostics: manifest.cleanup_diagnostics,
           ))
         Error(_) -> None
       }
@@ -1000,6 +1008,45 @@ fn commit_sha_option(details: PublicationManifestDetails) -> Option(String) {
 
 fn pr_url_option(details: PublicationManifestDetails) -> Option(String) {
   details.pr_url
+}
+
+fn manifest_detail_cleanup(
+  details: Option(PublicationManifestDetails),
+) -> Option(artifact_publication_manifest.CleanupDiagnostics) {
+  case details {
+    Some(details) -> details.cleanup_diagnostics
+    None -> None
+  }
+}
+
+fn cleanup_diagnostics_json(
+  value: Option(artifact_publication_manifest.CleanupDiagnostics),
+) -> json.Json {
+  cleanup_diagnostics_option_to_json(value)
+}
+
+fn cleanup_diagnostics_option_to_json(
+  value: Option(artifact_publication_manifest.CleanupDiagnostics),
+) -> json.Json {
+  case value {
+    Some(artifact_publication_manifest.CleanupDiagnostics(
+      checkout_path,
+      pre_cleanup_status,
+      reset_summary,
+      clean_summary,
+      post_cleanup_status,
+      cleanup_succeeded,
+    )) ->
+      json.object([
+        #("checkout_path", optional_string_json(Some(checkout_path))),
+        #("pre_cleanup_status", optional_string_json(pre_cleanup_status)),
+        #("reset_summary", optional_string_json(reset_summary)),
+        #("clean_summary", optional_string_json(clean_summary)),
+        #("post_cleanup_status", optional_string_json(post_cleanup_status)),
+        #("cleanup_succeeded", json.bool(cleanup_succeeded)),
+      ])
+    None -> json.null()
+  }
 }
 
 fn planner_error_message(
