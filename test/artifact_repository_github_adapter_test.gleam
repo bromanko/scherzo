@@ -1594,7 +1594,12 @@ fn runner(
     Result(command_runner.CommandOutput, command_runner.CommandError),
 ) -> command_runner.Runner {
   command_runner.Runner(run: fn(spec) {
-    let command_runner.CommandSpec(executable, args, cwd, _, _) = spec
+    let command_runner.CommandSpec(
+      executable: executable,
+      args: args,
+      cwd: cwd,
+      ..,
+    ) = spec
     append_log(log, command_runner.describe(spec))
     handle(executable, args, cwd, spec)
   })

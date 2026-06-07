@@ -13,6 +13,7 @@ pub type CommandSpec {
     cwd: String,
     env: List(#(String, String)),
     stdin: Option(String),
+    timeout_ms: Option(Int),
   )
 }
 
@@ -42,7 +43,14 @@ pub fn error_message(error: CommandError) -> String {
 }
 
 fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
-  let CommandSpec(executable, args, cwd, env, stdin) = spec
+  let CommandSpec(
+    executable: executable,
+    args: args,
+    cwd: cwd,
+    env: env,
+    stdin: stdin,
+    timeout_ms: timeout_ms,
+  ) = spec
   let process_result = case stdin {
     Some(input) -> port.start_argv_with_input(executable, args, cwd, env, input)
     None -> port.start_argv(executable, args, cwd, env)
@@ -53,6 +61,47 @@ fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
       CommandError("spawn_failed:" <> port.port_error_to_string(error))
     }),
   )
+  case timeout_ms {
+    Some(timeout_ms) -> run_command_with_timeout(process, timeout_ms)
+    None -> run_command_with_idle_stdout(process)
+  }
+}
+
+fn run_command_with_timeout(
+  process: port.Process,
+  timeout_ms: Int,
+) -> Result(CommandOutput, CommandError) {
+  let timeout_ms = positive_timeout_ms(timeout_ms)
+  case port.await_exit_with_stdout(process, timeout_ms) {
+    Ok(#(status, stdout)) -> {
+      let diagnostics = port.read_diagnostics(process) |> result.unwrap("")
+      Ok(CommandOutput(
+        exit_code: status,
+        stdout: string.trim(stdout),
+        diagnostics: diagnostics,
+      ))
+    }
+    Error(port.ReadTimeout) -> {
+      let terminate_suffix = terminate_process(process)
+      let diagnostics = port.read_diagnostics(process) |> result.unwrap("")
+      Error(CommandError(
+        "timed_out after "
+        <> int.to_string(timeout_ms)
+        <> "ms"
+        <> diagnostics_suffix(diagnostics)
+        <> terminate_suffix,
+      ))
+    }
+    Error(error) ->
+      Error(CommandError(
+        "await_exit_failed:" <> port.port_error_to_string(error),
+      ))
+  }
+}
+
+fn run_command_with_idle_stdout(
+  process: port.Process,
+) -> Result(CommandOutput, CommandError) {
   let stdout = read_stdout(process, [], stdout_idle_timeouts())
   case port.await_exit_with_stdout(process, 10_000) {
     Ok(#(status, late_stdout)) -> {
@@ -68,6 +117,27 @@ fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
       Error(CommandError(
         "await_exit_failed:" <> port.port_error_to_string(error),
       ))
+  }
+}
+
+fn positive_timeout_ms(timeout_ms: Int) -> Int {
+  case timeout_ms < 1 {
+    True -> 1
+    False -> timeout_ms
+  }
+}
+
+fn diagnostics_suffix(diagnostics: String) -> String {
+  case diagnostics == "" {
+    True -> ""
+    False -> ":" <> diagnostics
+  }
+}
+
+fn terminate_process(process: port.Process) -> String {
+  case port.terminate(process) {
+    Ok(Nil) -> ""
+    Error(error) -> "; terminate_failed:" <> port.port_error_to_string(error)
   }
 }
 
@@ -118,6 +188,7 @@ pub fn sh(executable: String, args: List(String), cwd: String) -> CommandSpec {
     cwd: cwd,
     env: [],
     stdin: None,
+    timeout_ms: None,
   )
 }
 
@@ -133,8 +204,18 @@ pub fn with_env(
   CommandSpec(..spec, env: list.append(env, existing))
 }
 
+pub fn with_timeout_ms(spec: CommandSpec, timeout_ms: Int) -> CommandSpec {
+  CommandSpec(..spec, timeout_ms: Some(timeout_ms))
+}
+
 pub fn describe(spec: CommandSpec) -> String {
-  let CommandSpec(executable, args, cwd, _, stdin) = spec
+  let CommandSpec(
+    executable: executable,
+    args: args,
+    cwd: cwd,
+    stdin: stdin,
+    ..,
+  ) = spec
   executable
   <> " "
   <> string.join(args, with: " ")

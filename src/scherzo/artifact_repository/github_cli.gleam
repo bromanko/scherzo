@@ -154,7 +154,7 @@ pub fn run_ok(
       )
     }),
   )
-  let command_runner.CommandSpec(executable, args, ..) = spec
+  let command_runner.CommandSpec(executable: executable, args: args, ..) = spec
   case output.exit_code == 0 {
     True -> Ok(output)
     False ->

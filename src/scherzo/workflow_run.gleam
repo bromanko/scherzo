@@ -8,6 +8,8 @@ import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/artifact_publication_executor
 import scherzo/artifact_publication_recording
+import scherzo/artifact_publication_runtime
+import scherzo/artifact_repository/command_runner
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/orchestrator/schedule_core
@@ -1102,6 +1104,9 @@ fn record_publications_if_configured(
   run_id: String,
   recovered_execution: Bool,
   dependencies: Dependencies,
+  _run_root: Option(String),
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(artifact_publication_recording.PublicationRecordingResult, String) {
   case outputs.manifest {
     Some(output_manifest) -> {
@@ -1109,7 +1114,7 @@ fn record_publications_if_configured(
         workflow_identity.workflow_bundle_dir(orchestrator, dag.id)
       case recovered_execution {
         True ->
-          artifact_publication_executor.execute_recovered_routes_with_state_root(
+          artifact_publication_executor.execute_recovered_routes_with_runner_and_state_root_and_publication_driver(
             dag.publication_routes,
             orchestrator.artifact_repositories,
             orchestrator.config_dir,
@@ -1119,9 +1124,17 @@ fn record_publications_if_configured(
             issue,
             run_id,
             dependencies.checkpoint,
+            command_runner.production(),
+            artifact_publication_runtime.driver_for_run(
+              issue,
+              dag,
+              orchestrator,
+              prepared_workspaces,
+              profile,
+            ),
           )
         False ->
-          artifact_publication_executor.execute_routes_with_state_root(
+          artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
             dag.publication_routes,
             orchestrator.artifact_repositories,
             orchestrator.config_dir,
@@ -1131,6 +1144,14 @@ fn record_publications_if_configured(
             issue,
             run_id,
             dependencies.checkpoint,
+            command_runner.production(),
+            artifact_publication_runtime.driver_for_run(
+              issue,
+              dag,
+              orchestrator,
+              prepared_workspaces,
+              profile,
+            ),
           )
       }
     }
@@ -1179,6 +1200,29 @@ fn append_optional_publication_diagnostics(
         dependencies,
       )
     }
+  }
+}
+
+fn record_required_publication_retention_diagnostic(
+  retain_workspace: Bool,
+  dag: workflow_dag.WorkflowDag,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  dependencies: Dependencies,
+) -> Nil {
+  case retain_workspace {
+    True ->
+      ignore_secondary_checkpoint_result(
+        dependencies.checkpoint.workflow_diagnostic(
+          workflow_checkpoint.WorkflowDiagnostic(
+            run_id: run_id,
+            workflow_id: dag.id,
+            issue_id: issue.id,
+            reason: "workflow_publication_workspace_retained_for_commit_stack_publication_failure",
+          ),
+        ),
+      )
+    False -> Nil
   }
 }
 
@@ -1287,6 +1331,9 @@ fn loop(
               run_id,
               recovered_execution,
               dependencies,
+              run_root,
+              prepared_workspaces,
+              profile,
             )
           {
             Ok(publication_result) ->
@@ -1477,6 +1524,20 @@ fn loop(
                     }
                   }
                 [failure, ..] -> {
+                  let retain_workspace =
+                    cleanup_allowed
+                    && artifact_publication_runtime.failures_require_workspace_retention(
+                      dag.publication_routes,
+                      publication_result.required_failures,
+                    )
+                  let Nil =
+                    record_required_publication_retention_diagnostic(
+                      retain_workspace,
+                      dag,
+                      issue,
+                      run_id,
+                      dependencies,
+                    )
                   use Nil <- result_try_checkpoint(
                     dependencies.checkpoint.workflow_finished(
                       workflow_checkpoint.WorkflowFinished(
@@ -1495,19 +1556,30 @@ fn loop(
                     run_root,
                     None,
                   )
+                  let publication_cleanup_allowed =
+                    cleanup_allowed && !retain_workspace
                   let cleanup_suffix =
                     cleanup_failure_suffix(cleanup_if_allowed(
                       run_root,
                       orchestrator,
                       profile,
                       dependencies,
-                      cleanup_allowed,
+                      publication_cleanup_allowed,
                     ))
+                  let retention_suffix = case retain_workspace {
+                    True ->
+                      artifact_publication_runtime.retention_reason_suffix(
+                        dag.publication_routes,
+                        publication_result.required_failures,
+                      )
+                    False -> ""
+                  }
                   Error(WorkflowRunFailure(
                     reason: "workflow_publication_required_failed:"
                       <> failure.publication_id
                       <> ":"
                       <> failure.code
+                      <> retention_suffix
                       <> cleanup_suffix,
                     agent_reason: None,
                     artifacts: artifacts,

@@ -4,6 +4,8 @@ import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/artifact_publication_executor
 import scherzo/artifact_publication_recording
+import scherzo/artifact_publication_runtime
+import scherzo/artifact_repository/command_runner
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/session/tokens as session_tokens
@@ -11,6 +13,7 @@ import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
+import scherzo/workflow_identity
 import scherzo/workflow_outcome
 import scherzo/workflow_run/contract_io
 import scherzo/workflow_run/contract_io_error as contract_error
@@ -167,6 +170,8 @@ pub fn finish_success(input: SuccessInput) -> Result(Success, Failure) {
           outputs,
           input.run_id,
           input.runtime.checkpoint,
+          input.prepared_workspaces,
+          input.profile,
         )
       {
         Ok(publication_result) ->
@@ -277,12 +282,10 @@ pub fn finish_success(input: SuccessInput) -> Result(Success, Failure) {
                   )
               }
             [failure, ..] ->
-              terminal_success_blocker_failure(
+              terminal_required_publication_failure(
                 input,
-                "workflow_publication_required_failed:"
-                  <> failure.publication_id
-                  <> ":"
-                  <> failure.code,
+                publication_result.required_failures,
+                failure,
               )
           }
         Error(error) ->
@@ -310,9 +313,74 @@ pub fn finish_success(input: SuccessInput) -> Result(Success, Failure) {
   }
 }
 
+fn terminal_required_publication_failure(
+  input: SuccessInput,
+  failures: List(artifact_publication_recording.PublicationFailure),
+  failure: artifact_publication_recording.PublicationFailure,
+) -> Result(Success, Failure) {
+  let retain_workspace =
+    input.cleanup_allowed
+    && artifact_publication_runtime.failures_require_workspace_retention(
+      input.dag.publication_routes,
+      failures,
+    )
+  let Nil =
+    record_required_publication_retention_diagnostic(input, retain_workspace)
+  let cleanup_allowed = input.cleanup_allowed && !retain_workspace
+  let retention_suffix = case retain_workspace {
+    True ->
+      artifact_publication_runtime.retention_reason_suffix(
+        input.dag.publication_routes,
+        failures,
+      )
+    False -> ""
+  }
+  terminal_success_blocker_failure_with_cleanup(
+    input,
+    "workflow_publication_required_failed:"
+      <> failure.publication_id
+      <> ":"
+      <> failure.code
+      <> retention_suffix,
+    cleanup_allowed,
+  )
+}
+
 fn terminal_success_blocker_failure(
   input: SuccessInput,
   reason: String,
+) -> Result(Success, Failure) {
+  terminal_success_blocker_failure_with_cleanup(
+    input,
+    reason,
+    input.cleanup_allowed,
+  )
+}
+
+fn record_required_publication_retention_diagnostic(
+  input: SuccessInput,
+  retain_workspace: Bool,
+) -> Nil {
+  case retain_workspace {
+    True ->
+      ignore_secondary_checkpoint_result(
+        input.runtime.checkpoint.workflow_diagnostic(
+          workflow_checkpoint.WorkflowDiagnostic(
+            run_id: input.run_id,
+            workflow_id: input.dag.id,
+            issue_id: input.issue.id,
+            reason: "workflow_publication_workspace_retained_for_commit_stack_publication_failure",
+          ),
+        ),
+      )
+    False -> Nil
+  }
+}
+
+fn terminal_success_blocker_failure_with_cleanup(
+  input: SuccessInput,
+  reason: String,
+  cleanup_allowed: Bool,
 ) -> Result(Success, Failure) {
   use Nil <- result_try_checkpoint(
     input.runtime.checkpoint.workflow_finished(
@@ -336,7 +404,7 @@ fn terminal_success_blocker_failure(
       input.orchestrator,
       input.profile,
       input.runtime,
-      input.cleanup_allowed,
+      cleanup_allowed,
     ))
   Error(Failure(
     reason: reason <> cleanup_suffix,
@@ -626,26 +694,41 @@ fn record_publications_if_configured(
   outputs: contract_io.ContractOutputsResult,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(
   artifact_publication_recording.PublicationRecordingResult,
   PublicationPolicyError,
 ) {
   case outputs.manifest {
-    Some(output_manifest) ->
+    Some(output_manifest) -> {
+      let workflow_bundle_dir =
+        workflow_identity.workflow_bundle_dir(orchestrator, dag.id)
       case
-        artifact_publication_executor.execute_routes(
+        artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
           dag.publication_routes,
           orchestrator.artifact_repositories,
           orchestrator.config_dir,
+          workflow_bundle_dir,
+          orchestrator.effective.workspace.root,
           output_manifest,
           issue,
           run_id,
           checkpoint,
+          command_runner.production(),
+          artifact_publication_runtime.driver_for_run(
+            issue,
+            dag,
+            orchestrator,
+            prepared_workspaces,
+            profile,
+          ),
         )
       {
         Ok(result) -> Ok(result)
         Error(reason) -> Error(PublicationPolicyError(reason))
       }
+    }
     None ->
       Ok(
         artifact_publication_recording.PublicationRecordingResult(
