@@ -66,6 +66,7 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
           )
         },
         write_credential: credential_store.write_credential,
+        notify_reload: fn(_) { connect.ManualReloadRequired },
       ),
       connect.Output(line: fn(line) { process.send(connect_output, line) }),
     )

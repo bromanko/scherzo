@@ -125,6 +125,13 @@ pub fn update_dispatch_paused(
   ReadModel(..read_model, dispatch_paused: dispatch_paused)
 }
 
+pub fn update_ui_server_enabled(
+  read_model: ReadModel,
+  ui_server_enabled ui_server_enabled: Bool,
+) -> ReadModel {
+  ReadModel(..read_model, ui_server_enabled: ui_server_enabled)
+}
+
 pub fn update_remote_client_status(
   read_model: ReadModel,
   status status: RemoteClientStatus,

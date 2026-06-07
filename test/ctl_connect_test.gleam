@@ -2,10 +2,15 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/connect
+import scherzo/control/command
+import scherzo/control/file as control_file
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/credential_store
 import scherzo/control/remote/pairing_client
+import scherzo/control/server
 import scherzo/daemon_identity
 import scherzo/runtime_bundle
+import scherzo/session/event
 import simplifile
 import support/test_helpers
 import test_async
@@ -74,6 +79,16 @@ fn deps(
     credential_store.StoreError,
   ),
 ) -> connect.Dependencies {
+  deps_with_activation(write_result, connect.ReloadNotified)
+}
+
+fn deps_with_activation(
+  write_result: Result(
+    credential_store.WriteResult,
+    credential_store.StoreError,
+  ),
+  activation: connect.ActivationStatus,
+) -> connect.Dependencies {
   connect.Dependencies(
     load_bundle: runtime_bundle.load,
     load_or_create_identity: fn(root) {
@@ -91,6 +106,7 @@ fn deps(
     write_credential: fn(_ref, _server_url, _daemon_id, _credential, _replace) {
       write_result
     },
+    notify_reload: fn(_) { activation },
   )
 }
 
@@ -217,6 +233,7 @@ pub fn connect_cli_label_overrides_config_label_test() {
         ) {
           Ok(credential_store.CredentialWritten("/tmp/creds.json"))
         },
+        notify_reload: fn(_) { connect.ReloadNotified },
       ),
       output(process.new_subject()),
     )
@@ -273,6 +290,7 @@ pub fn connect_uses_config_label_when_cli_name_absent_test() {
         ) {
           Ok(credential_store.CredentialWritten("/tmp/creds.json"))
         },
+        notify_reload: fn(_) { connect.ReloadNotified },
       ),
       output(process.new_subject()),
     )
@@ -302,6 +320,10 @@ pub fn connect_pretty_output_is_redacted_test() {
   let line = test_async.expect_message(subject)
   assert string.contains(line, "credential_ref work-laptop")
   assert string.contains(line, "Project Foo / MacBook")
+  assert string.contains(
+    line,
+    "Notified the running daemon to reload UI pairing",
+  )
   assert !string.contains(line, "pair_secret_1")
   assert !string.contains(line, "dcred_secret_1")
 }
@@ -327,6 +349,7 @@ pub fn connect_json_output_is_redacted_test() {
     )
   let line = test_async.expect_message(subject)
   assert string.contains(line, "\"credential_ref\":\"work-laptop\"")
+  assert string.contains(line, "\"activation_status\":\"reload_notified\"")
   assert !string.contains(line, "daemon_label")
   assert !string.contains(line, "pair_secret_1")
   assert !string.contains(line, "dcred_secret_1")
@@ -353,8 +376,96 @@ pub fn connect_json_output_includes_non_secret_daemon_label_test() {
     )
   let line = test_async.expect_message(subject)
   assert string.contains(line, "\"daemon_label\":\"Project Foo\"")
+  assert string.contains(
+    line,
+    "\"activation_message\":\"Notified the running daemon to reload UI pairing.\"",
+  )
   assert !string.contains(line, "pair_secret_1")
   assert !string.contains(line, "dcred_secret_1")
+}
+
+pub fn connect_pretty_output_reports_manual_reload_fallback_test() {
+  let root = "test/tmp/connect-manual-reload"
+  let config_path = write_config(root)
+  let subject = process.new_subject()
+  let assert Ok(Nil) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: None,
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        config_path: Some(config_path),
+      ),
+      deps_with_activation(
+        Ok(credential_store.CredentialWritten("/tmp/creds.json")),
+        connect.ManualReloadRequired,
+      ),
+      output(subject),
+    )
+  let line = test_async.expect_message(subject)
+  assert string.contains(line, "Run scherzoctl reload or restart the daemon")
+  assert !string.contains(line, "pair_secret_1")
+  assert !string.contains(line, "dcred_secret_1")
+}
+
+pub fn notify_local_reload_for_workspace_applies_reload_command_test() {
+  let workspace_root = "test/tmp/connect-notify-reload/workspaces/main"
+  test_helpers.reset_dir("test/tmp/connect-notify-reload")
+  let command_subject = process.new_subject()
+  let backend =
+    server.Backend(
+      list_sessions: fn(_) { Ok(event.SessionList(sessions: [], now_ms: 1)) },
+      get_session: fn(_, _) { Ok(None) },
+      events_after: fn(_, cursor, _, _) {
+        Ok(event.EventPage(events: [], next_cursor: cursor, truncated: False))
+      },
+      query: fn(_) {
+        Error(query_types.QueryError(
+          query_types.UnsupportedQuery,
+          "query backend unavailable",
+        ))
+      },
+      apply_command: fn(operator_command, _) {
+        process.send(command_subject, operator_command)
+        Ok(command.applied(operator_command, Some("done")))
+      },
+    )
+  let assert Ok(server_handle) =
+    server.start(
+      server.Settings(
+        host: "127.0.0.1",
+        port: 0,
+        token: "control-token",
+        event_timeout_ms: 500,
+        stream_poll_ms: 20,
+        command_timeout_ms: 500,
+      ),
+      backend,
+    )
+  let control_path = control_file.path_for_workspace(workspace_root)
+  let assert Ok(Nil) =
+    control_file.write(
+      control_path,
+      control_file.ControlFile(
+        host: "127.0.0.1",
+        port: server.bound_port(server_handle),
+        token: "control-token",
+        workspace_root: workspace_root,
+        started_at_ms: 1,
+      ),
+    )
+
+  assert connect.notify_local_reload_for_workspace(workspace_root)
+    == connect.ReloadNotified
+  let assert Ok(applied_command) =
+    process.receive(command_subject, within: 1000)
+  assert applied_command == command.ReloadWorkflow
+
+  server.stop(server_handle)
 }
 
 pub fn connect_replace_required_error_test() {

@@ -562,12 +562,7 @@ fn update_read_model_remote_client_status(
 
 fn restart_remote_client_if_enabled(state: State) -> State {
   case state.workflow.effective.ui_server.enabled {
-    False ->
-      state
-      |> update_read_model_remote_client_status(read_model.Disabled)
-      |> fn(state) {
-        State(..state, remote_client: None, remote_client_monitor: None)
-      }
+    False -> stop_remote_client_and_clear(state, read_model.Disabled)
     True ->
       case
         state.dependencies.start_remote_client(
@@ -596,12 +591,37 @@ fn restart_remote_client_if_enabled(state: State) -> State {
             #("message", message),
           ])
           state
-          |> update_read_model_remote_client_status(read_model.Retrying(code))
-          |> fn(state) {
-            State(..state, remote_client: None, remote_client_monitor: None)
-          }
+          |> stop_remote_client_and_clear(read_model.Retrying(code))
         }
       }
+  }
+}
+
+fn stop_remote_client_and_clear(
+  state: State,
+  status: read_model.RemoteClientStatus,
+) -> State {
+  case state.remote_client_monitor {
+    Some(monitor) -> process.demonitor_process(monitor)
+    None -> Nil
+  }
+  case state.remote_client {
+    Some(handle) ->
+      case state.dependencies.stop_remote_client(handle, 1000) {
+        Ok(Nil) -> Nil
+        Error(Nil) -> {
+          remote_command_runtime.kill(handle)
+          log_state(state, "warn", "remote_client_shutdown_timeout", [
+            #("timeout_ms", "1000"),
+          ])
+        }
+      }
+    None -> Nil
+  }
+  state
+  |> update_read_model_remote_client_status(status)
+  |> fn(state) {
+    State(..state, remote_client: None, remote_client_monitor: None)
   }
 }
 
@@ -3211,8 +3231,32 @@ fn apply_reloaded_workflow(
       runtime: runtime,
     )
   let state = refresh_scheduled_next_due_after_reload(state)
+  let state = reconcile_remote_client_after_reload(state)
   log_state(state, "info", "workflow_reloaded", [])
   state
+}
+
+fn reconcile_remote_client_after_reload(state: State) -> State {
+  let ui_server = state.workflow.effective.ui_server
+  let state =
+    State(
+      ..state,
+      read_model: read_model.update_ui_server_enabled(
+        state.read_model,
+        ui_server.enabled,
+      ),
+    )
+  case ui_server.enabled {
+    False -> stop_remote_client_and_clear(state, read_model.Disabled)
+    True ->
+      case state.remote_client {
+        None -> restart_remote_client_if_enabled(state)
+        Some(_) ->
+          state
+          |> stop_remote_client_and_clear(read_model.Starting)
+          |> restart_remote_client_if_enabled
+      }
+  }
 }
 
 fn refresh_scheduled_next_due_after_reload(state: State) -> State {

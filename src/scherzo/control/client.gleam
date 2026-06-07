@@ -96,9 +96,20 @@ pub fn raw_request(
   control_file: file.ControlFile,
   request: protocol.Request,
 ) -> Result(String, ControlError) {
+  raw_request_with_response_timeout(
+    control_file,
+    request,
+    request_response_timeout_ms(request),
+  )
+}
+
+fn raw_request_with_response_timeout(
+  control_file: file.ControlFile,
+  request: protocol.Request,
+  response_timeout_ms: Int,
+) -> Result(String, ControlError) {
   use socket <- try_control(connect(control_file))
   let request = authenticate(control_file, request)
-  let timeout_ms = request_response_timeout_ms(request)
   let result = case
     send_line(
       socket,
@@ -108,7 +119,7 @@ pub fn raw_request(
   {
     Error(error) -> Error(ConnectionFailed(error))
     Ok(Nil) ->
-      case recv_line(socket, timeout_ms) {
+      case recv_line(socket, response_timeout_ms) {
         Ok(line) -> Ok(line)
         Error(error) -> Error(ConnectionFailed(error))
       }
@@ -196,9 +207,22 @@ pub fn apply_command(
   control_file: file.ControlFile,
   operator_command: command.OperatorCommand,
 ) -> Result(command.CommandResult, ControlError) {
-  use line <- try_control(raw_request(
+  apply_command_with_response_timeout(
+    control_file,
+    operator_command,
+    operator_command_response_timeout_ms,
+  )
+}
+
+pub fn apply_command_with_response_timeout(
+  control_file: file.ControlFile,
+  operator_command: command.OperatorCommand,
+  response_timeout_ms: Int,
+) -> Result(command.CommandResult, ControlError) {
+  use line <- try_control(raw_request_with_response_timeout(
     control_file,
     protocol.command_request("1", "", operator_command),
+    response_timeout_ms,
   ))
   protocol.decode_command_result_response(line) |> map_error_body
 }
