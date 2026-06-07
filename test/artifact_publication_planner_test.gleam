@@ -458,12 +458,16 @@ pub fn commit_stack_manifest_round_trips_through_decoder_test() {
   assert target.pr_url == "https://example.test/pr/42"
 }
 
-pub fn commit_stack_stable_branch_target_returns_planner_error_test() {
-  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+pub fn commit_stack_stable_branch_target_plans_driver_publication_test() {
+  let stack_contents =
+    commit_stack_manifest_contents_with_base_ref(
+      "scherzo-systems/scherzo",
+      "main",
+    )
   let target_contents = existing_target_contents("scherzo-systems/scherzo")
   let store = store_with_contents([#(commit_stack_ref(), stack_contents)])
 
-  let assert Error(error) =
+  let assert Ok(manifest) =
     artifact_publication_planner.plan_publication(
       commit_stack_output_manifest(stack_contents, target_contents),
       repositories(),
@@ -471,11 +475,19 @@ pub fn commit_stack_stable_branch_target_returns_planner_error_test() {
       store,
       work(),
       "run-1",
-      dict.new(),
+      dict.from_list([#("templates/publication.md", body_template())]),
     )
 
-  assert artifact_publication_planner.code(error)
-    == "unsupported_commit_stack_target"
+  assert manifest.branch
+    == "scherzo/workflow.implementation/LIV-761/conflict_resolution"
+  assert manifest.files == []
+  assert manifest.pull_request.enabled == True
+  assert manifest.pull_request.title == Some("LIV-761 publication")
+  let assert Some(body) = manifest.pull_request.body
+  assert string.contains(body, manifest.version_id)
+  let assert artifact_publication_planner.StableBranchTargetPlan =
+    manifest.target
+  let assert Some(_) = manifest.commit_stack
 }
 
 pub fn commit_stack_artifact_rejects_malformed_payloads_test() {
@@ -489,6 +501,7 @@ pub fn commit_stack_artifact_rejects_malformed_payloads_test() {
       commit_stack_manifest_contents_with(
         "scherzo-systems/scherzo",
         "scherzo.not_a_commit_stack.v1",
+        existing_branch(),
         expected_existing_head_sha(),
         commit_stack_head_sha(),
         commit_stack_head_tree(),
@@ -503,6 +516,7 @@ pub fn commit_stack_artifact_rejects_malformed_payloads_test() {
       commit_stack_manifest_contents_with(
         "scherzo-systems/scherzo",
         commit_stack_artifact.commit_stack_artifact_type,
+        existing_branch(),
         expected_existing_head_sha(),
         commit_stack_head_sha(),
         commit_stack_head_tree(),
@@ -519,6 +533,7 @@ pub fn commit_stack_artifact_rejects_non_oid_revisions_test() {
       commit_stack_manifest_contents_with(
         "scherzo-systems/scherzo",
         commit_stack_artifact.commit_stack_artifact_type,
+        existing_branch(),
         "refs/heads/main",
         commit_stack_head_sha(),
         commit_stack_head_tree(),
@@ -623,6 +638,7 @@ pub fn commit_stack_existing_pr_branch_rejects_stack_base_sha_mismatch_test() {
     commit_stack_manifest_contents_with(
       "scherzo-systems/scherzo",
       commit_stack_artifact.commit_stack_artifact_type,
+      existing_branch(),
       "5555555555555555555555555555555555555555",
       commit_stack_head_sha(),
       commit_stack_head_tree(),
@@ -1915,9 +1931,17 @@ fn pack_contents() -> String {
 }
 
 fn commit_stack_manifest_contents(repo: String) -> String {
+  commit_stack_manifest_contents_with_base_ref(repo, existing_branch())
+}
+
+fn commit_stack_manifest_contents_with_base_ref(
+  repo: String,
+  base_ref: String,
+) -> String {
   commit_stack_manifest_contents_with(
     repo,
     commit_stack_artifact.commit_stack_artifact_type,
+    base_ref,
     expected_existing_head_sha(),
     commit_stack_head_sha(),
     commit_stack_head_tree(),
@@ -1928,6 +1952,7 @@ fn commit_stack_manifest_contents(repo: String) -> String {
 fn commit_stack_manifest_contents_with(
   repo: String,
   artifact_type: String,
+  base_ref: String,
   base_sha: String,
   head_sha: String,
   head_tree: String,
@@ -1940,7 +1965,7 @@ fn commit_stack_manifest_contents_with(
     #(
       "base",
       json.object([
-        #("ref", json.string(existing_branch())),
+        #("ref", json.string(base_ref)),
         #("sha", json.string(base_sha)),
       ]),
     ),

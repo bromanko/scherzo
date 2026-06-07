@@ -14,7 +14,7 @@ routed workflow path.
 This helper keeps the common mechanics in one place: fetching source context,
 recording the starting jj parent, retaining failed run workspaces until a PR is
 published, detecting changed file languages across the full workflow history,
-running final validation, and publishing a GitHub PR.
+running final validation, and materializing declarative commit_stack publication artifacts.
 """
 
 from __future__ import annotations
@@ -46,6 +46,8 @@ PLAN_COMPLETION_RECOVERY_PATH = TMP_DIR / "scherzo-plan-completion-recovery.json
 PLAN_COMPLETION_RECOVERY_SUMMARY_PATH = TMP_DIR / "scherzo-plan-completion-recovery.md"
 VALIDATION_PATH = TMP_DIR / "scherzo-implementation-validation.json"
 PUBLISH_PATH = TMP_DIR / "scherzo-implementation-publish.json"
+COMMIT_STACK_PATH = TMP_DIR / "scherzo-implementation-commit-stack.json"
+COMMIT_STACK_CARRIER_NAME = "commit_stack.bundle"
 TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
 PLAN_BRIEF_PATH = TMP_DIR / "scherzo-execplan-brief.md"
 PLAN_INDEX_PATH = TMP_DIR / "scherzo-execplan-index.json"
@@ -56,6 +58,7 @@ BASE_DRIFT_REPAIR_SUMMARY_PATH = TMP_DIR / "scherzo-implementation-base-drift-re
 BASE_DRIFT_REPAIR_FAILURE_PATH = TMP_DIR / "scherzo-implementation-base-drift-failure.md"
 RETENTION_MARKER = ".scherzo-keep-workspace"
 REFRESH_STAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ARTIFACT_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
 PLAN_RE = re.compile(
     r"(?<![A-Za-z0-9_./-])(docs/plans/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:html|md))(?![A-Za-z0-9_/-])"
@@ -119,8 +122,9 @@ refresh-base --stage <stage>
               Fetch the canonical jj workspace base, rebase @ when needed,
               and write structured base-refresh JSON under tmp/.
 validate      Run final direnv-backed SelfCI verification.
-publish       Describe the final jj change, push a bookmark, create/find a PR,
-              clear the retention marker, and print the PR URL.
+publish       Normalize and validate the final change, then materialize the
+              commit_stack and PR metadata consumed by Scherzo core's
+              declarative same-repo publication route.
 
 Test helpers:
 extract-plan <text-file> [repo-root]
@@ -3186,48 +3190,164 @@ def write_publish_metadata_files(pr_title: str, body: str) -> tuple[Path, Path, 
     return title_path, PR_BODY_PATH, repair_summary_included
 
 
-def driver_publish_change(
+def require_artifact_run_id(value: str) -> str:
+    if not ARTIFACT_RUN_ID_RE.fullmatch(value):
+        fail(
+            "SCHERZO_RUN_ID must be a safe artifact path segment containing only letters, digits, '.', '_' and '-'",
+            failure_code="invalid_configuration",
+        )
+    return value
+
+
+def run_id_for_artifacts() -> str:
+    run_id = os.environ.get("SCHERZO_RUN_ID", "local-run").strip() or "local-run"
+    return require_artifact_run_id(run_id)
+
+
+def run_artifact_dir_for_commit_stack(run_id: str) -> Path | None:
+    explicit = os.environ.get("SCHERZO_RUN_ARTIFACT_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if not run_root:
+        return None
+    run_root_path = Path(run_root)
+    candidates = [
+        run_root_path / ".scherzo-state" / "artifacts" / "runs" / run_id,
+        run_root_path.parent.parent.parent / ".scherzo-state" / "artifacts" / "runs" / run_id,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
+def artifact_output_ref(run_id: str, name: str) -> str:
+    return f"runs/{run_id}/outputs/{name}"
+
+
+def require_git_oid(value: str, *, label: str) -> str:
+    oid = value.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", oid):
+        return oid
+    fail(
+        f"{label} did not resolve to a 40-character Git object ID",
+        failure_code="invalid_commit_stack_artifact",
+    )
+
+
+def jj_commit_oid(revision: str) -> str:
+    value = run([
+        "jj",
+        "log",
+        "-r",
+        revision,
+        "--no-graph",
+        "-T",
+        "commit_id",
+        "--color=never",
+    ]).strip()
+    return require_git_oid(value, label=f"jj revision {revision}")
+
+
+def jj_tree_oid(revision: str, _head_oid: str) -> str:
+    commit = jj_commit_oid(revision)
+    proc = run_proc(["jj", "debug", "object", "commit", commit])
+    if proc.returncode != 0:
+        fail(
+            f"could not inspect Git tree for jj revision {revision}",
+            failure_code="invalid_commit_stack_artifact",
+        )
+    match = re.search(r'TreeId\(\s*"([0-9a-f]{40})"\s*,?\s*\)', proc.stdout)
+    if not match:
+        fail(
+            f"jj revision {revision} did not expose a 40-character Git tree ID",
+            failure_code="invalid_commit_stack_artifact",
+        )
+    return require_git_oid(match.group(1), label=f"tree for jj revision {revision}")
+
+
+def commit_stack_bundle_ref(run_id: str, head_oid: str) -> str:
+    run_hash = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+    return f"refs/scherzo/commit-stack/{run_hash}/{head_oid}"
+
+
+def write_commit_stack_carrier(
     *,
-    source_kind: str,
-    branch_prefix: str,
-    pr_title: str,
-    body: str,
-    base: str,
-) -> tuple[dict[str, Any], bool]:
-    title_path, body_path, repair_summary_included = write_publish_metadata_files(
-        pr_title,
-        body,
-    )
-    payload, _ = run_workspace_driver_json(
-        [
-            "publish-change",
-            "--kind",
-            "implementation",
-            "--title-file",
-            str(title_path),
-            "--body-file",
-            str(body_path),
-            "--branch-prefix",
-            branch_prefix,
-            "--base",
-            base,
-            "--json",
-        ],
-        failure_code="workspace_driver_publish_change_failed",
-    )
-    status = payload.get("status")
-    if status not in {"published", "updated", "unchanged"}:
-        fail(
-            f"workspace driver publish-change returned unsuccessful status {status!r}",
-            failure_code="workspace_driver_publish_change_failed",
+    run_id: str,
+    repository: str,
+    base_ref: str,
+    base_oid: str,
+    head_oid: str,
+    head_tree_oid: str,
+) -> tuple[str, str, int]:
+    del repository, base_ref, head_tree_oid
+    require_command("git")
+    artifact_dir = run_artifact_dir_for_commit_stack(run_id)
+    if artifact_dir is None:
+        carrier_path = TMP_DIR / COMMIT_STACK_CARRIER_NAME
+        carrier_ref = str(carrier_path)
+    else:
+        carrier_path = artifact_dir / "outputs" / COMMIT_STACK_CARRIER_NAME
+        carrier_ref = artifact_output_ref(run_id, COMMIT_STACK_CARRIER_NAME)
+    carrier_path.parent.mkdir(parents=True, exist_ok=True)
+    if carrier_path.exists():
+        carrier_path.unlink()
+
+    bundle_ref = commit_stack_bundle_ref(run_id, head_oid)
+    try:
+        run(
+            ["git", "update-ref", bundle_ref, head_oid],
+            failure_code="invalid_commit_stack_artifact",
         )
-    if not isinstance(payload.get("url"), str) or not str(payload.get("url")).strip():
-        fail(
-            "workspace driver publish-change did not return a hosted review url",
-            failure_code="workspace_driver_publish_change_failed",
+        run(
+            ["git", "bundle", "create", str(carrier_path), bundle_ref, f"^{base_oid}"],
+            failure_code="invalid_commit_stack_artifact",
         )
-    payload["source_kind"] = source_kind
-    return payload, repair_summary_included
+        run(
+            ["git", "bundle", "verify", str(carrier_path)],
+            failure_code="invalid_commit_stack_artifact",
+        )
+    finally:
+        run(["git", "update-ref", "-d", bundle_ref], check=False)
+
+    carrier = carrier_path.read_bytes()
+    return carrier_ref, hashlib.sha256(carrier).hexdigest(), len(carrier)
+
+
+def materialize_commit_stack_artifact(
+    *,
+    repository: str,
+    base_ref: str,
+    base_revision: str,
+) -> dict[str, Any]:
+    run_id = run_id_for_artifacts()
+    base_oid = jj_commit_oid(base_revision)
+    head_oid = jj_commit_oid("@")
+    head_tree_oid = jj_tree_oid("@", head_oid)
+    carrier_ref, carrier_sha256, carrier_bytes = write_commit_stack_carrier(
+        run_id=run_id,
+        repository=repository,
+        base_ref=base_ref,
+        base_oid=base_oid,
+        head_oid=head_oid,
+        head_tree_oid=head_tree_oid,
+    )
+    artifact = {
+        "schema_version": 1,
+        "artifact_type": "scherzo.git_commit_stack.v1",
+        "repository": {"repo": repository},
+        "base": {"ref": base_ref, "sha": base_oid},
+        "head": {"sha": head_oid, "tree": head_tree_oid},
+        "carrier": {
+            "ref": carrier_ref,
+            "sha256": carrier_sha256,
+            "bytes": carrier_bytes,
+            "media_type": "application/vnd.git.bundle",
+        },
+    }
+    write_json(COMMIT_STACK_PATH, artifact)
+    return artifact
 
 
 def publish_command() -> None:
@@ -3236,6 +3356,7 @@ def publish_command() -> None:
         return
 
     pr_draft_setting()
+    require_command("jj")
     ensure_validation_passed()
     metadata = load_implementation_metadata()
     base, _remote = configured_publish_base()
@@ -3261,32 +3382,38 @@ def publish_command() -> None:
             print("PUBLISH_BLOCKED_REASON=base drift after final validation")
             raise
 
-    source_kind, branch_prefix, _slug, _description, pr_title, body = publish_values(metadata)
+    source_kind, _branch_prefix, _slug, _description, pr_title, body = publish_values(metadata)
     files = workspace_driver_changed_files()
     if not files:
         fail("refusing to publish because no changed files were found")
 
-    publish_payload, repair_summary_included = driver_publish_change(
-        source_kind=source_kind,
-        branch_prefix=branch_prefix,
-        pr_title=pr_title,
-        body=body,
-        base=base,
+    title_path, body_path, repair_summary_included = write_publish_metadata_files(
+        pr_title,
+        body,
     )
-    pr_url = str(publish_payload["url"])
-    branch = str(publish_payload.get("branch") or "")
-    clear_retention_marker()
+    repository = default_repo(configured_publication_remote())
+    commit_stack = materialize_commit_stack_artifact(
+        repository=repository,
+        base_ref=base,
+        base_revision=base_revision,
+    )
 
     publish = {
         "source_kind": source_kind,
-        "branch": branch,
-        "pr_url": pr_url,
+        "status": "ready_for_core_publication",
+        "publication_mode": "commit_stack",
+        "publication_orchestrator": "scherzo_core",
         "changed_files": files,
         "publish_base_revision": base_revision,
+        "base_revision": base_revision,
+        "branch": "pending-core-publication",
+        "head_revision": commit_stack["head"]["sha"],
         "base_drift_repair_summary_included": repair_summary_included,
-        "driver_status": publish_payload.get("status"),
-        "driver_change_id": publish_payload.get("change_id"),
-        "driver_head_revision": publish_payload.get("head_revision"),
+        "pr_title_path": str(title_path),
+        "pr_body_path": str(body_path),
+        "commit_stack_path": str(COMMIT_STACK_PATH),
+        "commit_stack_head_revision": commit_stack["head"]["sha"],
+        "commit_stack_base_revision": commit_stack["base"]["sha"],
     }
     if repair_summary_included:
         publish["base_drift_repair_summary_path"] = str(BASE_DRIFT_REPAIR_SUMMARY_PATH)
@@ -3297,15 +3424,23 @@ def publish_command() -> None:
 
     print("## Summary")
     if source_kind == "execplan":
-        print(f"Implemented `{metadata['plan_path']}` and published the result for human acceptance.")
+        print(
+            f"Implemented `{metadata['plan_path']}` and prepared the result for Scherzo core publication."
+        )
     else:
         issue_identifier = metadata.get("issue_identifier") or "task"
         issue_title = metadata.get("issue_title") or "Untitled"
-        print(f"Implemented task `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
+        print(
+            f"Implemented task `{issue_identifier}: {issue_title}` and prepared the result for Scherzo core publication."
+        )
     print("")
-    print("## Pull request")
-    print(f"PR_URL={pr_url}")
-    print(f"BRANCH={branch}")
+    print("## Publication")
+    print("PUBLICATION_MODE=commit_stack")
+    print("PUBLICATION_ORCHESTRATOR=scherzo_core")
+    print(f"COMMIT_STACK_PATH={COMMIT_STACK_PATH}")
+    print(f"PR_TITLE_PATH={title_path}")
+    print(f"PR_BODY_PATH={body_path}")
+    print("PR_URL will be reported by Scherzo core after declarative publication completes.")
     print("")
     print("## Validation")
     validation = current_validation_result()

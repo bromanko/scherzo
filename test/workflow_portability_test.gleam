@@ -319,6 +319,33 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
     assert_not_contains(workflow, "--from @- --to @")
   })
 
+  let implementation_workflow =
+    read_file(".scherzo/workflows/implementation.yaml")
+  let execplan_implementation_workflow =
+    read_file(".scherzo/workflows/execplan-implementation.yaml")
+  list.each(
+    [implementation_workflow, execplan_implementation_workflow],
+    fn(workflow) {
+      assert_contains(workflow, "commit_stack:")
+      assert_contains(workflow, "artifact_type: scherzo.git_commit_stack.v1")
+      assert_contains(
+        workflow,
+        "path: tmp/scherzo-implementation-commit-stack.json",
+      )
+      assert_contains(workflow, "repository: github.code")
+      assert_contains(workflow, "mode: commit_stack")
+      assert_contains(workflow, "kind: stable_branch")
+      assert_not_contains(
+        workflow,
+        "files:\n        - select:\n            output: commit_stack",
+      )
+    },
+  )
+
+  let implementation_helper =
+    read_file(".scherzo/workflows/scripts/scherzo-implementation")
+  assert_not_contains(implementation_helper, "publish-change")
+
   let prompt_paths = [
     ".scherzo/workflows/prompts/implement.md",
     ".scherzo/workflows/prompts/code-review.md",

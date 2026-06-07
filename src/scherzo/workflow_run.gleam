@@ -4,15 +4,18 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/artifact_publication_executor
+import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_recording
 import scherzo/artifact_publication_runtime
 import scherzo/artifact_repository/command_runner
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/orchestrator/schedule_core
+import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/template
@@ -43,6 +46,7 @@ import scherzo/workflow_run/workstream_handoff
 import scherzo/workflow_scheduler
 import scherzo/workspace_profile
 import scherzo/workspace_run
+import simplifile
 
 pub type PostSuccessCleanupWarning {
   PostSuccessCleanupWarning(code: String, message: String, run_root: String)
@@ -1166,6 +1170,128 @@ fn record_publications_if_configured(
   }
 }
 
+fn result_with_publication_summary(
+  result: result_artifact.ResultArtifact,
+  publication_result: artifact_publication_recording.PublicationRecordingResult,
+  checkpoint: workflow_checkpoint.Writer,
+  limits: config_types.ArtifactLimits,
+) -> result_artifact.ResultArtifact {
+  let artifact_publication_recording.PublicationRecordingResult(attempts:, ..) =
+    publication_result
+  case publication_summary_text(attempts, checkpoint) {
+    "" -> result
+    summary ->
+      result_artifact.append(
+        result,
+        result_artifact.from_final_response(
+          Some(summary),
+          False,
+          "artifact_publication",
+        ),
+        limits.workflow_summary_max_chars,
+      )
+  }
+}
+
+fn publication_summary_text(
+  attempts: List(artifact_publication_recording.PublicationAttemptSummary),
+  checkpoint: workflow_checkpoint.Writer,
+) -> String {
+  let lines = publication_summary_lines(attempts, checkpoint, [])
+  case lines {
+    [] -> ""
+    _ -> "## Publication\n" <> string.join(lines, with: "\n")
+  }
+}
+
+fn publication_summary_lines(
+  attempts: List(artifact_publication_recording.PublicationAttemptSummary),
+  checkpoint: workflow_checkpoint.Writer,
+  acc: List(String),
+) -> List(String) {
+  case attempts {
+    [] -> list.reverse(acc)
+    [attempt, ..rest] ->
+      publication_summary_lines(rest, checkpoint, [
+        publication_attempt_summary_line(attempt, checkpoint),
+        ..acc
+      ])
+  }
+}
+
+fn publication_attempt_summary_line(
+  attempt: artifact_publication_recording.PublicationAttemptSummary,
+  checkpoint: workflow_checkpoint.Writer,
+) -> String {
+  case checkpoint.read_artifact(attempt.manifest_ref) {
+    Ok(contents) ->
+      case artifact_publication_manifest.decode_manifest_json(contents) {
+        Ok(manifest) -> publication_manifest_summary_line(attempt, manifest)
+        Error(_) ->
+          "- "
+          <> attempt.publication_id
+          <> ": "
+          <> attempt.status
+          <> " (manifest: `"
+          <> attempt.manifest_ref
+          <> "`)"
+      }
+    Error(_) ->
+      "- "
+      <> attempt.publication_id
+      <> ": "
+      <> attempt.status
+      <> " (manifest unavailable: `"
+      <> attempt.manifest_ref
+      <> "`)"
+  }
+}
+
+fn publication_manifest_summary_line(
+  attempt: artifact_publication_recording.PublicationAttemptSummary,
+  manifest: artifact_publication_manifest.PublicationManifest,
+) -> String {
+  let status = artifact_publication_manifest.status_to_string(manifest.status)
+  let branch = option.unwrap(manifest.branch, "")
+  let pr_url = option.unwrap(manifest.pr_url, "")
+  let commit_sha = option.unwrap(manifest.commit_sha, "")
+  "- "
+  <> attempt.publication_id
+  <> ": "
+  <> status
+  <> optional_summary_field("PR_URL", pr_url)
+  <> optional_summary_field("BRANCH", branch)
+  <> optional_summary_field("COMMIT_SHA", commit_sha)
+  <> " (manifest: `"
+  <> attempt.manifest_ref
+  <> "`)"
+}
+
+fn optional_summary_field(label: String, value: String) -> String {
+  case string.trim(value) {
+    "" -> ""
+    trimmed -> " " <> label <> "=" <> trimmed
+  }
+}
+
+fn clear_success_retention_marker(run_root: Option(String)) -> Nil {
+  case run_root {
+    None -> Nil
+    Some(path) ->
+      case simplifile.delete(workspace_run.cleanup_retention_marker(path)) {
+        Ok(Nil) | Error(simplifile.Enoent) -> Nil
+        Error(file_error) ->
+          note_ignored_retention_marker_cleanup_error(simplifile.describe_error(
+            file_error,
+          ))
+      }
+  }
+}
+
+fn note_ignored_retention_marker_cleanup_error(_message: String) -> Nil {
+  Nil
+}
+
 fn append_optional_publication_diagnostics(
   failures: List(artifact_publication_recording.PublicationFailure),
   run_id: String,
@@ -1338,7 +1464,8 @@ fn loop(
           {
             Ok(publication_result) ->
               case publication_result.required_failures {
-                [] ->
+                [] -> {
+                  let Nil = clear_success_retention_marker(run_root)
                   case
                     append_optional_publication_diagnostics(
                       publication_result.optional_failures,
@@ -1348,7 +1475,14 @@ fn loop(
                       dependencies,
                     )
                   {
-                    Ok(Nil) ->
+                    Ok(Nil) -> {
+                      let result =
+                        result_with_publication_summary(
+                          result,
+                          publication_result,
+                          dependencies.checkpoint,
+                          orchestrator.artifact_limits,
+                        )
                       case
                         emit_workstream_handoff_if_configured(
                           issue,
@@ -1485,6 +1619,7 @@ fn loop(
                           ))
                         }
                       }
+                    }
                     Error(reason) -> {
                       use Nil <- result_try_checkpoint(
                         dependencies.checkpoint.workflow_finished(
@@ -1523,6 +1658,7 @@ fn loop(
                       ))
                     }
                   }
+                }
                 [failure, ..] -> {
                   let retain_workspace =
                     cleanup_allowed

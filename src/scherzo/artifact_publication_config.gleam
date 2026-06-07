@@ -763,24 +763,18 @@ fn default_publication_target(
         "missing_commit_stack_publication_target",
         "publication "
           <> publication_id
-          <> " uses mode commit_stack and must declare target.kind existing_pr_branch",
+          <> " uses mode commit_stack and must declare target.kind stable_branch or existing_pr_branch",
       )
   }
 }
 
 fn require_stable_branch_target(
   mode: PublicationMode,
-  publication_id: String,
+  _publication_id: String,
 ) -> Result(PublicationTarget, PublicationConfigError) {
   case mode {
     FilePublication -> Ok(StableBranchTarget)
-    CommitStackPublication ->
-      error(
-        "commit_stack_stable_branch_target_unsupported",
-        "publication "
-          <> publication_id
-          <> " uses mode commit_stack and cannot target stable_branch yet; use target.kind existing_pr_branch",
-      )
+    CommitStackPublication -> Ok(StableBranchTarget)
   }
 }
 
