@@ -42,6 +42,10 @@ pub type ReadRecordsResult {
   ReadRecordsResult(records: List(record.LedgerRecord), truncated_tail: Bool)
 }
 
+pub type CurrentSegmentStats {
+  CurrentSegmentStats(record_count: Int, truncated_tail: Bool)
+}
+
 pub type ReplayResult {
   ReplayResult(
     records: List(record.LedgerRecord),
@@ -322,6 +326,15 @@ pub fn read_records(
 ) -> Result(ReadRecordsResult, LedgerError) {
   with_ledger_lock(ledger_path.ledger_dir, fn() {
     read_records_unlocked(ledger_path)
+  })
+}
+
+pub fn current_segment_stats(
+  ledger_path: LedgerPath,
+) -> Result(CurrentSegmentStats, LedgerError) {
+  with_ledger_lock(ledger_path.ledger_dir, fn() {
+    use _snapshot_projection <- result.try(read_snapshot(ledger_path))
+    current_segment_stats_unlocked(ledger_path.current_path)
   })
 }
 
@@ -627,6 +640,24 @@ fn fold_current_segment_streaming(
   }
 }
 
+fn current_segment_stats_unlocked(
+  current_path: String,
+) -> Result(CurrentSegmentStats, LedgerError) {
+  let initial = JsonlFold(value: 0, error: None, truncated_tail: False)
+  case fold_lines(current_path, initial, current_segment_stats_fold_step) {
+    Ok(JsonlFold(value: count, error: None, truncated_tail: truncated_tail)) ->
+      Ok(CurrentSegmentStats(
+        record_count: count,
+        truncated_tail: truncated_tail,
+      ))
+    Ok(JsonlFold(value: _, error: Some(error), truncated_tail: _)) ->
+      Error(error)
+    Error(OpenFailed("enoent")) ->
+      Ok(CurrentSegmentStats(record_count: 0, truncated_tail: False))
+    Error(error) -> Error(LedgerFfiFailed(error))
+  }
+}
+
 fn record_fold_step(
   state: JsonlFold(List(record.LedgerRecord)),
   line: String,
@@ -640,6 +671,35 @@ fn record_fold_step(
         Ok(ParsedRecord(ledger_record)) ->
           JsonlFold(
             value: [ledger_record, ..state.value],
+            error: None,
+            truncated_tail: state.truncated_tail,
+          )
+        Ok(EmptyTrailingLine) -> state
+        Ok(TruncatedTail) ->
+          JsonlFold(value: state.value, error: None, truncated_tail: True)
+        Error(error) ->
+          JsonlFold(
+            value: state.value,
+            error: Some(error),
+            truncated_tail: state.truncated_tail,
+          )
+      }
+  }
+}
+
+fn current_segment_stats_fold_step(
+  state: JsonlFold(Int),
+  line: String,
+  line_number: Int,
+  is_last: Bool,
+) -> JsonlFold(Int) {
+  case state.error {
+    Some(_) -> state
+    None ->
+      case parse_jsonl_line(line, line_number, is_last) {
+        Ok(ParsedRecord(_)) ->
+          JsonlFold(
+            value: state.value + 1,
             error: None,
             truncated_tail: state.truncated_tail,
           )

@@ -147,6 +147,7 @@ pub type Command {
   StateArchiveOld(root: String, json: Bool, yes: Bool)
   StateDiscardOld(root: String, json: Bool, yes: Bool)
   StateReinitialize(root: String, json: Bool, yes: Bool)
+  StateCompact(root: String, json: Bool, dry_run: Bool, yes: Bool)
   StateRepairRunProvenance(
     root: String,
     json: Bool,
@@ -482,6 +483,18 @@ fn command_from(name: String, flags: parser.Flags) -> Result(Command, Error) {
       use root <- try_ctl(required_root(flags))
       Ok(StateReinitialize(root, flags.json, flags.yes))
     }
+    "state", ["compact"] -> {
+      use root <- try_ctl(required_root(flags))
+      case flags.yes, flags.dry_run {
+        True, True ->
+          Error(UsageError(
+            "state compact requires exactly one of --dry-run or --yes",
+          ))
+        False, False ->
+          Error(UsageError("state compact requires --dry-run or --yes"))
+        _, _ -> Ok(StateCompact(root, flags.json, flags.dry_run, flags.yes))
+      }
+    }
     "state", ["repair-run-provenance", target] -> {
       use root <- try_ctl(required_root(flags))
       use run_id <- try_ctl(repair_run_provenance_target(target))
@@ -506,7 +519,7 @@ fn command_from(name: String, flags: parser.Flags) -> Result(Command, Error) {
     }
     "state", _ ->
       Error(UsageError(
-        "state usage: state status|archive-old|discard-old|reinitialize|repair-run-provenance --root <workspace-root>",
+        "state usage: state status|archive-old|discard-old|reinitialize|compact|repair-run-provenance --root <workspace-root>",
       ))
     _, _ -> Error(UsageError("unknown or invalid ctl command: " <> name))
   }
@@ -956,6 +969,15 @@ pub fn run_with_deps(
       ctl_state_handlers.run_reinitialize(
         resolve_path_option(root),
         json_output: json,
+        yes: yes,
+        line: output.line,
+      )
+      |> result.map_error(pair_error_to_failed)
+    StateCompact(root, json, dry_run, yes) ->
+      ctl_state_handlers.run_compact(
+        resolve_path_option(root),
+        json_output: json,
+        dry_run: dry_run,
         yes: yes,
         line: output.line,
       )
