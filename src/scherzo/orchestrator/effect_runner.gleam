@@ -8,6 +8,7 @@ import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/error
 import scherzo/orchestrator/effects/interpreter as transition_interpreter
+import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/runtime/state as orchestrator_state
@@ -150,6 +151,8 @@ pub fn reply_snapshot(
       workers: transition_types.new_worker_directory(),
       pending_claims: dict.new(),
       pending_dispatch_validations: dict.new(),
+      lifecycle: task_lifecycle.new(),
+      retry_refresh_generations: dict.new(),
       next_dispatch_validation_generation: 1,
       next_session_sequence: 1,
     )

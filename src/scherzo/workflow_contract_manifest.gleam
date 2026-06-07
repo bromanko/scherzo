@@ -1,6 +1,7 @@
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
@@ -11,7 +12,7 @@ import scherzo/state/artifact_store
 import scherzo/workflow_artifact_descriptor as artifact_descriptor
 import scherzo/workflow_contract
 
-pub const schema_version = 1
+pub const schema_version = 2
 
 pub type ArtifactWritten {
   ArtifactWritten(ref: String, sha256: String, bytes: Int)
@@ -241,9 +242,13 @@ fn source_contract_artifact_type(value: ManifestValue) -> Option(String) {
 }
 
 fn descriptor_artifact_type_for_value(value: ManifestValue) -> Option(String) {
-  case source_contract_artifact_type(value) {
+  case source_contract_descriptor_string(value, "artifact_type") {
     Some(artifact_type) -> Some(artifact_type)
-    None -> legacy_descriptor_artifact_type(value.type_)
+    None ->
+      case source_contract_artifact_type(value) {
+        Some(artifact_type) -> Some(artifact_type)
+        None -> legacy_descriptor_artifact_type(value.type_)
+      }
   }
 }
 
@@ -408,10 +413,18 @@ pub fn decode_output_manifest(
 }
 
 pub fn manifest_value_decoder() -> decode.Decoder(ManifestValue) {
-  use type_text <- decode.field("type", decode.string)
-  let type_ = case workflow_contract.type_from_string(type_text) {
-    Ok(type_) -> type_
-    Error(workflow_contract.ContractError(_, _)) -> workflow_contract.Text
+  use type_text <- decode.optional_field(
+    "type",
+    None,
+    decode.optional(decode.string),
+  )
+  let type_ = case type_text {
+    Some(type_text) ->
+      case workflow_contract.type_from_string(type_text) {
+        Ok(type_) -> type_
+        Error(workflow_contract.ContractError(_, _)) -> workflow_contract.Text
+      }
+    None -> workflow_contract.Text
   }
   use status <- decode.field("status", status_decoder())
   use ref_kind <- decode.optional_field(
@@ -522,7 +535,10 @@ fn manifest_header_decoder(
 ) -> decode.Decoder(Nil) {
   use version <- decode.field("schema_version", decode.int)
   use artifact_type <- decode.field("artifact_type", decode.string)
-  case version == schema_version && artifact_type == expected_artifact_type {
+  case
+    { version == 1 || version == schema_version }
+    && artifact_type == expected_artifact_type
+  {
     True -> decode.success(Nil)
     False -> decode.failure(Nil, expected: "workflow contract manifest header")
   }
@@ -557,18 +573,31 @@ pub fn descriptor_for_named_value(
 }
 
 pub fn manifest_value_to_json(value: ManifestValue) -> json.Json {
-  json.object([
-    #("type", json.string(workflow_contract.type_to_string(value.type_))),
-    #("status", json.string(status_to_string(value.status))),
-    #("ref_kind", option_ref_kind_to_json(value.ref_kind)),
-    #("ref", option_string_to_json(value.ref)),
-    #("sha256", option_string_to_json(value.sha256)),
-    #("bytes", option_int_to_json(value.bytes)),
-    #("media_type", option_string_to_json(value.media_type)),
-    #("value", option_json_value_to_json(value.value)),
-    #("source", option_json_value_to_json(value.source)),
-    #("diagnostic", option_string_to_json(value.diagnostic)),
-  ])
+  let legacy_fields = case value.status {
+    Present -> []
+    Absent -> [
+      #("type", json.string(workflow_contract.type_to_string(value.type_))),
+    ]
+  }
+  let legacy_fields = case value.status {
+    Present -> legacy_fields
+    Absent ->
+      list.append(legacy_fields, [
+        #("ref_kind", option_ref_kind_to_json(value.ref_kind)),
+      ])
+  }
+  json.object(
+    list.append(legacy_fields, [
+      #("status", json.string(status_to_string(value.status))),
+      #("ref", option_string_to_json(value.ref)),
+      #("sha256", option_string_to_json(value.sha256)),
+      #("bytes", option_int_to_json(value.bytes)),
+      #("media_type", option_string_to_json(value.media_type)),
+      #("value", option_json_value_to_json(value.value)),
+      #("source", option_json_value_to_json(value.source)),
+      #("diagnostic", option_string_to_json(value.diagnostic)),
+    ]),
+  )
 }
 
 fn named_manifest_value_decoder() -> decode.Decoder(NamedManifestValue) {
@@ -579,6 +608,7 @@ fn named_manifest_value_decoder() -> decode.Decoder(NamedManifestValue) {
     None,
     decode.optional(artifact_descriptor.decoder()),
   )
+  let value = normalize_decoded_value(name, value, descriptor)
   case descriptor_matches_manifest_value(name, value, descriptor) {
     True -> decode.success(NamedManifestValue(name: name, value: value))
     False ->
@@ -586,6 +616,111 @@ fn named_manifest_value_decoder() -> decode.Decoder(NamedManifestValue) {
         NamedManifestValue(name: name, value: value),
         expected: "descriptor compatible with manifest entry value",
       )
+  }
+}
+
+fn normalize_decoded_value(
+  _name: String,
+  value: ManifestValue,
+  descriptor: Option(artifact_descriptor.ArtifactDescriptor),
+) -> ManifestValue {
+  case descriptor {
+    Some(descriptor) ->
+      ManifestValue(
+        type_: descriptor_to_contract_type(descriptor),
+        status: value.status,
+        ref_kind: descriptor_to_ref_kind(descriptor),
+        ref: value.ref,
+        sha256: value.sha256,
+        bytes: value.bytes,
+        media_type: normalize_media_type(value.media_type, descriptor),
+        value: normalize_value(value.value, descriptor),
+        source: value.source,
+        diagnostic: value.diagnostic,
+      )
+    None -> value
+  }
+}
+
+fn descriptor_to_contract_type(
+  descriptor: artifact_descriptor.ArtifactDescriptor,
+) -> workflow_contract.ContractType {
+  case
+    descriptor.kind,
+    descriptor.artifact_type,
+    descriptor.media_type,
+    descriptor.ref_type
+  {
+    artifact_descriptor.ArtifactSetKind,
+      Some("scherzo.exec_plan_bundle.v2"),
+      _,
+      _
+    -> workflow_contract.ExecPlanBundle
+    artifact_descriptor.ArtifactSetKind,
+      Some("scherzo.code_change_bundle.v2"),
+      _,
+      _
+    -> workflow_contract.CodeChangeBundle
+    artifact_descriptor.ArtifactSetKind, Some("artifact[]"), _, _ ->
+      workflow_contract.ArtifactList
+    artifact_descriptor.ArtifactSetKind, _, _, _ ->
+      workflow_contract.GenericArtifactSet
+    artifact_descriptor.FileKind, Some("scherzo.exec_plan.v1"), _, _ ->
+      workflow_contract.ExecPlan
+    artifact_descriptor.FileKind, Some("scherzo.implementation_pack.v2"), _, _
+    -> workflow_contract.ImplementationPack
+    artifact_descriptor.FileKind, Some("scherzo.implementation_pack.v1"), _, _
+    -> workflow_contract.ImplementationPack
+    artifact_descriptor.FileKind, Some("document.markdown"), _, _ ->
+      workflow_contract.DocumentMarkdown
+    artifact_descriptor.FileKind, _, Some("text/markdown"), _ ->
+      workflow_contract.DocumentMarkdown
+    artifact_descriptor.FileKind, _, Some("text/plain"), _ ->
+      workflow_contract.Text
+    artifact_descriptor.FileKind, _, _, _ -> workflow_contract.GenericFile
+    artifact_descriptor.CommitStackKind, _, _, _ ->
+      workflow_contract.CommitStack
+    artifact_descriptor.ValueKind, Some("code_change"), _, _ ->
+      workflow_contract.CodeChange
+    artifact_descriptor.ValueKind, _, _, _ -> workflow_contract.GenericValue
+    artifact_descriptor.RefKind, _, _, Some("url") -> workflow_contract.Url
+    artifact_descriptor.RefKind, _, _, Some("git_ref") ->
+      workflow_contract.GitRef
+    artifact_descriptor.RefKind, _, _, _ -> workflow_contract.GenericRef
+  }
+}
+
+fn descriptor_to_ref_kind(
+  descriptor: artifact_descriptor.ArtifactDescriptor,
+) -> Option(RefKind) {
+  case descriptor.kind, descriptor.ref_type {
+    artifact_descriptor.FileKind, _ -> Some(RunArtifact)
+    artifact_descriptor.ArtifactSetKind, _ -> Some(RunArtifact)
+    artifact_descriptor.CommitStackKind, _ -> Some(RunArtifact)
+    artifact_descriptor.ValueKind, _ -> Some(InlineJsonRef)
+    artifact_descriptor.RefKind, Some("url") -> Some(UrlRef)
+    artifact_descriptor.RefKind, Some("git_ref") -> Some(GitRefRef)
+    artifact_descriptor.RefKind, _ -> None
+  }
+}
+
+fn normalize_media_type(
+  current: Option(String),
+  descriptor: artifact_descriptor.ArtifactDescriptor,
+) -> Option(String) {
+  case current {
+    Some(_) -> current
+    None -> descriptor.media_type
+  }
+}
+
+fn normalize_value(
+  current: Option(json_value.JsonValue),
+  descriptor: artifact_descriptor.ArtifactDescriptor,
+) -> Option(json_value.JsonValue) {
+  case current {
+    Some(_) -> current
+    None -> descriptor.value
   }
 }
 
@@ -827,7 +962,7 @@ fn descriptor_matches_manifest_value(
   case descriptor {
     None -> True
     Some(descriptor) ->
-      case descriptor_for_named_value(name, value) {
+      case manifest_value_descriptor(name, value) {
         Some(expected) -> descriptors_compatible(descriptor, expected)
         None -> False
       }
@@ -920,43 +1055,30 @@ fn run_artifact_descriptor(
   name: String,
   value: ManifestValue,
 ) -> artifact_descriptor.ArtifactDescriptor {
-  case value.type_ {
-    workflow_contract.ArtifactList
-    | workflow_contract.ExecPlanBundle
-    | workflow_contract.CodeChangeBundle ->
-      artifact_descriptor.ArtifactDescriptor(
-        name: name,
-        kind: artifact_descriptor.ArtifactSetKind,
-        artifact_type: descriptor_artifact_type_for_value(value),
-        description: None,
-        source: value.source,
-        validation: None,
-        metadata: None,
-        ref_type: None,
-        ref: value.ref,
-        sha256: value.sha256,
-        bytes: value.bytes,
-        media_type: value.media_type,
-        value: None,
-        entries: [],
-      )
-    _ ->
-      artifact_descriptor.ArtifactDescriptor(
-        name: name,
-        kind: artifact_kind_for_run_artifact(value.type_),
-        artifact_type: descriptor_artifact_type_for_value(value),
-        description: None,
-        source: value.source,
-        validation: None,
-        metadata: None,
-        ref_type: None,
-        ref: value.ref,
-        sha256: value.sha256,
-        bytes: value.bytes,
-        media_type: value.media_type,
-        value: None,
-        entries: [],
-      )
+  artifact_descriptor.ArtifactDescriptor(
+    name: name,
+    kind: artifact_kind_for_manifest_value(value),
+    artifact_type: descriptor_artifact_type_for_value(value),
+    description: None,
+    source: value.source,
+    validation: None,
+    metadata: None,
+    ref_type: None,
+    ref: value.ref,
+    sha256: value.sha256,
+    bytes: value.bytes,
+    media_type: value.media_type,
+    value: None,
+    entries: [],
+  )
+}
+
+fn artifact_kind_for_manifest_value(
+  value: ManifestValue,
+) -> artifact_descriptor.ArtifactKind {
+  case source_contract_descriptor_kind(value) {
+    Some(kind) -> kind
+    None -> artifact_kind_for_run_artifact(value.type_)
   }
 }
 
@@ -964,6 +1086,11 @@ fn artifact_kind_for_run_artifact(
   type_: workflow_contract.ContractType,
 ) -> artifact_descriptor.ArtifactKind {
   case type_ {
+    workflow_contract.ArtifactList
+    | workflow_contract.ExecPlanBundle
+    | workflow_contract.CodeChangeBundle
+    | workflow_contract.GenericArtifactSet ->
+      artifact_descriptor.ArtifactSetKind
     workflow_contract.CommitStack -> artifact_descriptor.CommitStackKind
     _ -> artifact_descriptor.FileKind
   }
@@ -984,7 +1111,53 @@ fn legacy_descriptor_artifact_type(
     workflow_contract.DocumentMarkdown -> Some("document.markdown")
     workflow_contract.Url -> Some("url")
     workflow_contract.GitRef -> Some("git_ref")
-    workflow_contract.Text -> None
+    workflow_contract.Text
+    | workflow_contract.GenericFile
+    | workflow_contract.GenericArtifactSet
+    | workflow_contract.GenericValue
+    | workflow_contract.GenericRef -> None
+  }
+}
+
+fn source_contract_descriptor_kind(
+  value: ManifestValue,
+) -> Option(artifact_descriptor.ArtifactKind) {
+  case source_contract_descriptor_string(value, "kind") {
+    Some(kind) ->
+      case artifact_descriptor.kind_from_string(kind) {
+        Ok(kind) -> Some(kind)
+        Error(_) -> None
+      }
+    None -> None
+  }
+}
+
+fn source_contract_descriptor_string(
+  value: ManifestValue,
+  key: String,
+) -> Option(String) {
+  case value.source {
+    Some(json_value.JObject(entries)) ->
+      case source_json_field(entries, "contract_descriptor") {
+        Some(json_value.JObject(descriptor_entries)) ->
+          source_string_field(descriptor_entries, key)
+        _ -> None
+      }
+    _ -> None
+  }
+}
+
+fn source_json_field(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Option(json_value.JsonValue) {
+  case entries {
+    [] -> None
+    [#(current, value), ..rest] ->
+      case current == key {
+        True -> Some(value)
+        False -> source_json_field(rest, key)
+      }
   }
 }
 

@@ -159,7 +159,7 @@ pub type WorkflowOutputBlobWrite {
     run_id: String,
     output_name: String,
     extension: String,
-    contents: String,
+    contents: BitArray,
   )
 }
 
@@ -385,8 +385,8 @@ pub fn noop_writer() -> Writer {
           <> "/outputs/"
           <> workflow_identity.safe_component(write.output_name, "output")
           <> write.extension,
-        sha256: "noop",
-        bytes: 0,
+        sha256: hash.sha256_hex_bytes(write.contents),
+        bytes: bit_array.byte_size(write.contents),
       ))
     },
     step_finished: fn(_, _) { Ok(Nil) },
@@ -819,7 +819,7 @@ pub fn ledger_writer_with_artifact_store(
         workspace_root,
         write.run_id,
       ))
-      artifact_store.write_output_blob_for_generation(
+      artifact_store.write_output_blob_bytes_for_generation(
         store,
         write.run_id,
         write.output_name,

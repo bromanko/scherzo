@@ -1140,7 +1140,7 @@ fn validate_selector_against_contract(
           case entry {
             None -> Ok(Nil)
             Some(entry_name) ->
-              case aggregate_capable_output(spec.type_) {
+              case aggregate_capable_output(spec) {
                 True -> Ok(Nil)
                 False ->
                   error(
@@ -1158,12 +1158,20 @@ fn validate_selector_against_contract(
   }
 }
 
-fn aggregate_capable_output(type_: workflow_contract.ContractType) -> Bool {
-  case type_ {
-    workflow_contract.ArtifactList
-    | workflow_contract.ExecPlanBundle
-    | workflow_contract.CodeChangeBundle -> True
-    _ -> False
+fn aggregate_capable_output(spec: workflow_contract.OutputSpec) -> Bool {
+  case spec.descriptor {
+    Some(workflow_contract.ContractDescriptorSpec(
+      kind: Some("artifact_set"),
+      ..,
+    )) -> True
+    _ ->
+      case spec.type_ {
+        workflow_contract.ArtifactList
+        | workflow_contract.ExecPlanBundle
+        | workflow_contract.CodeChangeBundle
+        | workflow_contract.GenericArtifactSet -> True
+        _ -> False
+      }
   }
 }
 

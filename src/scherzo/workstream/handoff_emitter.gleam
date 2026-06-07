@@ -1,10 +1,11 @@
 import gleam/bit_array
 import gleam/list
-import gleam/option.{type Option, None, Some, flatten, map}
+import gleam/option.{type Option, None, Some, unwrap}
 import gleam/result
 import gleam/string
 import scherzo/json_value
 import scherzo/state/record
+import scherzo/workflow_artifact_descriptor as artifact_descriptor
 import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
@@ -51,8 +52,8 @@ pub type EmitResult {
 type ResolvedOutput {
   ResolvedOutput(
     name: String,
+    descriptor: types.ContractDescriptorRecord,
     contract_type: workflow_contract.ContractType,
-    artifact_type: Option(String),
     artifact_ref: String,
     sha256: String,
     bytes: Int,
@@ -363,12 +364,10 @@ fn resolve_output_value(
           Ok(ResolvedOutput(
             name: output_name,
             contract_type: value.type_,
-            artifact_type: workflow_contract_manifest.descriptor_for_named_value(
+            descriptor: descriptor_record_from_manifest_value(
               output_name,
               value,
-            )
-              |> map(fn(descriptor) { descriptor.artifact_type })
-              |> flatten,
+            ),
             artifact_ref: artifact_ref,
             sha256: sha256,
             bytes: bytes,
@@ -432,8 +431,8 @@ fn snapshot_output(
     bytes: snapshot.bytes,
     media_type: snapshot.media_type,
     original_path: snapshot.original_path,
-    contract_type: workflow_contract.type_to_string(output.contract_type),
-    artifact_type: output.artifact_type,
+    descriptor: output.descriptor,
+    contract_type: None,
     producer: types.ProducerRef(
       workflow_id: workflow_id,
       run_id: run_id,
@@ -650,6 +649,51 @@ fn next_action_original_path(artifact_id: String) -> String {
 
 fn handoff_original_path(artifact_id: String) -> String {
   "workstream/handoffs/" <> artifact_id <> ".json"
+}
+
+fn descriptor_record_from_manifest_value(
+  output_name: String,
+  value: workflow_contract_manifest.ManifestValue,
+) -> types.ContractDescriptorRecord {
+  let descriptor =
+    workflow_contract_manifest.descriptor_for_named_value(output_name, value)
+    |> unwrap(
+      artifact_descriptor.ArtifactDescriptor(
+        name: output_name,
+        kind: artifact_descriptor.FileKind,
+        artifact_type: None,
+        description: None,
+        source: None,
+        validation: None,
+        metadata: None,
+        ref_type: None,
+        ref: None,
+        sha256: None,
+        bytes: None,
+        media_type: value.media_type,
+        value: None,
+        entries: [],
+      ),
+    )
+  types.ContractDescriptorRecord(
+    kind: artifact_kind_string(descriptor.kind),
+    ref_type: descriptor.ref_type,
+    media_type: descriptor.media_type,
+    artifact_type: descriptor.artifact_type,
+    source: descriptor.source,
+    validation: descriptor.validation,
+    metadata: descriptor.metadata,
+  )
+}
+
+fn artifact_kind_string(kind: artifact_descriptor.ArtifactKind) -> String {
+  case kind {
+    artifact_descriptor.FileKind -> "file"
+    artifact_descriptor.ValueKind -> "value"
+    artifact_descriptor.RefKind -> "ref"
+    artifact_descriptor.ArtifactSetKind -> "artifact_set"
+    artifact_descriptor.CommitStackKind -> "commit_stack"
+  }
 }
 
 fn error(code: String, message: String) -> Result(a, EmitError) {

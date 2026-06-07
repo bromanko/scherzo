@@ -9,6 +9,11 @@
     {
       "name": "exec_plan_bundle",
       "contract_type": "exec_plan_bundle",
+      "descriptor": {
+        "kind": "artifact_set",
+        "media_type": "application/json",
+        "artifact_type": "scherzo.exec_plan_bundle.v2"
+      },
       "value_ref": "workstream-artifacts/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json"
     }
   ]

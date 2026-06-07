@@ -22,6 +22,7 @@ pub type StoreCallbacks {
   StoreCallbacks(
     write: fn(String, String) -> Result(Nil, ArtifactError),
     read: fn(String) -> Result(String, ArtifactError),
+    write_bytes: fn(String, BitArray) -> Result(Nil, ArtifactError),
     write_immutable_bytes: fn(String, BitArray) ->
       Result(ImmutableWriteResult, ArtifactError),
     read_bytes: fn(String) -> Result(BitArray, ArtifactError),
@@ -135,6 +136,9 @@ pub fn filesystem(workspace_root: String) -> Store {
     StoreCallbacks(
       write: fn(ref, contents) { filesystem_write(root, ref, contents) },
       read: fn(ref) { filesystem_read(root, ref) },
+      write_bytes: fn(ref, contents) {
+        filesystem_write_bytes(root, ref, contents)
+      },
       write_immutable_bytes: fn(ref, contents) {
         filesystem_write_immutable_bytes(root, ref, contents)
       },
@@ -513,7 +517,25 @@ pub fn write_output_blob_for_generation(
   repair_generation: Int,
   contents: String,
 ) -> Result(ArtifactRef, ArtifactError) {
-  write_ref(
+  write_output_blob_bytes_for_generation(
+    store,
+    run_id,
+    output_name,
+    extension,
+    repair_generation,
+    bit_array.from_string(contents),
+  )
+}
+
+pub fn write_output_blob_bytes_for_generation(
+  store: Store,
+  run_id: String,
+  output_name: String,
+  extension: String,
+  repair_generation: Int,
+  contents: BitArray,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref_bytes(
     store,
     output_blob_ref_for_generation(
       run_id,
@@ -571,16 +593,24 @@ fn write_ref(
   ref: String,
   contents: String,
 ) -> Result(ArtifactRef, ArtifactError) {
+  write_ref_bytes(store, ref, bit_array.from_string(contents))
+}
+
+fn write_ref_bytes(
+  store: Store,
+  ref: String,
+  contents: BitArray,
+) -> Result(ArtifactRef, ArtifactError) {
   use valid_ref <- result.try(validated_ref(ref))
-  use Nil <- result.try(store.callbacks.write(valid_ref, contents))
-  use final <- result.try(store.callbacks.read(valid_ref))
-  let sha = hash.sha256_hex(final)
+  use Nil <- result.try(store.callbacks.write_bytes(valid_ref, contents))
+  use final <- result.try(store.callbacks.read_bytes(valid_ref))
+  let sha = hash.sha256_hex_bytes(final)
   case final == contents {
     True ->
       Ok(ArtifactRef(
         ref: valid_ref,
         sha256: sha,
-        bytes: bit_array.byte_size(bit_array.from_string(final)),
+        bytes: bit_array.byte_size(final),
       ))
     False -> Error(CorruptStepArtifact(valid_ref))
   }
@@ -868,6 +898,17 @@ fn filesystem_read(root: String, ref: String) -> Result(String, ArtifactError) {
       _ -> ArtifactIo("read artifact: " <> simplifile.describe_error(error))
     }
   })
+}
+
+fn filesystem_write_bytes(
+  root: String,
+  ref: String,
+  contents: BitArray,
+) -> Result(Nil, ArtifactError) {
+  let final_path = path.join(root, ref)
+  use Nil <- result.try(ensure_parent(final_path))
+  write_atomic_bytes(final_path, contents)
+  |> result.map_error(fn(error) { ArtifactWriteFailed(error) })
 }
 
 fn filesystem_write_immutable_bytes(

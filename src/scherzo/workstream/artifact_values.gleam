@@ -161,12 +161,12 @@ fn snapshot_to_value(value: types.ArtifactSnapshot) -> json_value.JsonValue {
     #("bytes", json_value.JInt(value.bytes)),
     #("media_type", json_value.JString(value.media_type)),
     #("original_path", json_value.JString(value.original_path)),
-    #("contract_type", json_value.JString(value.contract_type)),
+    #("descriptor", descriptor_to_value(value.descriptor)),
     #("producer", producer_to_value(value.producer)),
     #("validation", validation_to_value(value.validation)),
     #("summary", json_value.JString(value.summary)),
   ]
-  let base = append_optional_string(base, "artifact_type", value.artifact_type)
+  let base = append_optional_string(base, "contract_type", value.contract_type)
   json_value.JObject(base)
 }
 
@@ -190,9 +190,10 @@ fn decision_input_to_value(
 fn input_binding_to_value(value: types.InputBinding) -> json_value.JsonValue {
   let base = [
     #("name", json_value.JString(value.name)),
-    #("contract_type", json_value.JString(value.contract_type)),
+    #("descriptor", descriptor_to_value(value.descriptor)),
     #("value_ref", json_value.JString(value.value_ref)),
   ]
+  let base = append_optional_string(base, "contract_type", value.contract_type)
   let base = append_optional_string(base, "sha256", value.sha256)
   let base = case value.bytes {
     Some(bytes) -> list.append(base, [#("bytes", json_value.JInt(bytes))])
@@ -200,8 +201,20 @@ fn input_binding_to_value(value: types.InputBinding) -> json_value.JsonValue {
   }
   let base = append_optional_string(base, "media_type", value.media_type)
   let base = append_optional_string(base, "original_path", value.original_path)
-  let base = append_optional_string(base, "artifact_type", value.artifact_type)
   let base = append_optional_string(base, "source_kind", value.source_kind)
+  json_value.JObject(base)
+}
+
+fn descriptor_to_value(
+  value: types.ContractDescriptorRecord,
+) -> json_value.JsonValue {
+  let base = [#("kind", json_value.JString(value.kind))]
+  let base = append_optional_string(base, "ref_type", value.ref_type)
+  let base = append_optional_string(base, "media_type", value.media_type)
+  let base = append_optional_string(base, "artifact_type", value.artifact_type)
+  let base = append_optional_json(base, "source", value.source)
+  let base = append_optional_json(base, "validation", value.validation)
+  let base = append_optional_json(base, "metadata", value.metadata)
   json_value.JObject(base)
 }
 
@@ -212,6 +225,17 @@ fn append_optional_string(
 ) -> List(#(String, json_value.JsonValue)) {
   case value {
     Some(value) -> list.append(entries, [#(key, json_value.JString(value))])
+    None -> entries
+  }
+}
+
+fn append_optional_json(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+  value: Option(json_value.JsonValue),
+) -> List(#(String, json_value.JsonValue)) {
+  case value {
+    Some(value) -> list.append(entries, [#(key, value)])
     None -> entries
   }
 }

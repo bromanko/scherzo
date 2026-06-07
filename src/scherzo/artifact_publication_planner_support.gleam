@@ -118,6 +118,8 @@ pub fn default_extension(media_type: String) -> String {
     "text/plain" -> ".txt"
     "application/yaml" -> ".yaml"
     "text/yaml" -> ".yaml"
+    "image/png" -> ".png"
+    "video/webm" -> ".webm"
     _ -> ""
   }
 }

@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/error
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/task_lifecycle_legacy
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/helpers
 import scherzo/path as scherzo_path
@@ -14,6 +15,7 @@ import scherzo/review_lane_preflight_gate
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
+import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 import scherzo/state/record
@@ -30,6 +32,127 @@ pub type Callbacks {
       transition_types.DispatchContext,
     ) -> transition_types.Outcome,
   )
+}
+
+pub fn sync_outcome(
+  outcome: transition_types.Outcome,
+) -> transition_types.Outcome {
+  transition_types.Outcome(
+    state: sync_state(outcome.state),
+    effects: outcome.effects,
+  )
+}
+
+pub fn has_dispatch_blocker(
+  state: transition_types.State,
+  task_identity: identity.TaskIdentity,
+) -> Bool {
+  task_lifecycle_legacy.has_dispatch_blocker(state, task_identity)
+}
+
+pub fn has_tracker_claim(
+  state: transition_types.State,
+  task_identity: identity.TaskIdentity,
+) -> Bool {
+  task_lifecycle_legacy.has_tracker_claim(state, task_identity)
+}
+
+pub fn pending_count_for_state(
+  state: transition_types.State,
+  normalized_state,
+) -> Int {
+  task_lifecycle_legacy.pending_count_for_state(state, normalized_state)
+}
+
+pub fn add_pending_dispatch_validation(
+  state: transition_types.State,
+  task_identity: identity.TaskIdentity,
+  pending: transition_types.PendingDispatchValidation,
+  next_generation: Int,
+) -> transition_types.State {
+  transition_types.State(
+    ..state,
+    pending_dispatch_validations: dict.insert(
+      state.pending_dispatch_validations,
+      task_identity,
+      pending,
+    ),
+    next_dispatch_validation_generation: next_generation,
+  )
+  |> sync_state
+}
+
+pub fn remove_pending_dispatch_validation(
+  state: transition_types.State,
+  task_identity: identity.TaskIdentity,
+) -> transition_types.State {
+  transition_types.State(
+    ..state,
+    pending_dispatch_validations: dict.delete(
+      state.pending_dispatch_validations,
+      task_identity,
+    ),
+  )
+  |> sync_state
+}
+
+pub fn park_runtime(
+  state: transition_types.State,
+  ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  reason: orchestrator_reason.ParkReason,
+  now_ms: Int,
+) -> transition_types.State {
+  let parked =
+    orchestrator_state.ParkedEntry(
+      task_ref: ref,
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: reason,
+      release_policy: orchestrator_state.ExplicitUnparkOnly,
+      parked_at_ms: now_ms,
+    )
+  let task_identity = orchestrator_state.task_ref_identity(ref)
+  transition_types.State(
+    ..state,
+    runtime: orchestrator_state.RuntimeState(
+      ..state.runtime,
+      running: dict.delete(state.runtime.running, task_identity),
+      claimed: dict.delete(state.runtime.claimed, task_identity),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, task_identity),
+      issue_counters: dict.delete(state.runtime.issue_counters, task_identity),
+      parked: dict.insert(state.runtime.parked, task_identity, parked),
+    ),
+    retry_refresh_generations: dict.delete(
+      state.retry_refresh_generations,
+      orchestrator_state.issue_id_identity_for_backend(
+        issue.id,
+        ref.backend_kind,
+      ),
+    ),
+  )
+  |> sync_state
+}
+
+pub fn complete_runtime_failure(
+  state: transition_types.State,
+  task_identity: identity.TaskIdentity,
+  issue: tracker_issue.Issue,
+  tokens: session_tokens.TokenTotals,
+) -> transition_types.State {
+  transition_types.State(
+    ..state,
+    runtime: orchestrator_state.RuntimeState(
+      ..state.runtime,
+      running: dict.delete(state.runtime.running, task_identity),
+      completed: dict.insert(state.runtime.completed, task_identity, issue),
+      aggregate_pi_totals: session_tokens.add(
+        state.runtime.aggregate_pi_totals,
+        tokens,
+      ),
+    ),
+  )
+  |> sync_state
 }
 
 pub fn begin_for_issue(
@@ -125,7 +248,8 @@ pub fn begin_for_issue(
                     pending,
                   ),
                   next_session_sequence: sequence + 1,
-                ),
+                )
+                  |> sync_state,
                 effects: [
                   effects_types.ReserveSessionSequence(sequence),
                   effects_types.ClaimIssue(
@@ -252,7 +376,7 @@ fn park_preflight_failure(
         parked,
       ),
     )
-  #(transition_types.State(..state, runtime: runtime), [
+  #(transition_types.State(..state, runtime: runtime) |> sync_state, [
     effects_types.ParkIssue(parked, None),
   ])
 }
@@ -436,6 +560,7 @@ fn start_worker(
       ),
       workers: workers,
     )
+    |> sync_state
   let continued =
     dispatch(pending.remaining_candidates, state, pending.dispatch_context)
   transition_types.Outcome(state: continued.state, effects: [
@@ -478,6 +603,14 @@ fn clear_pending_claim(
     ..state,
     pending_claims: dict.delete(state.pending_claims, task_identity),
   )
+  |> sync_state
+}
+
+fn sync_state(state: transition_types.State) -> transition_types.State {
+  case task_lifecycle_legacy.from_transition_state(state) {
+    Ok(directory) -> transition_types.State(..state, lifecycle: directory)
+    Error(_) -> state
+  }
 }
 
 fn claim_started_batch_is_valid(

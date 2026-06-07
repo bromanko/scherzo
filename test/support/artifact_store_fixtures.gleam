@@ -36,6 +36,20 @@ pub fn hidden_local_path_store(root: String) -> artifact_store.Store {
           }
         })
       },
+      write_bytes: fn(ref, contents) {
+        let final_path = store_root <> "/" <> ref
+        let parent = path.dirname(final_path) |> result.unwrap(final_path)
+        use Nil <- result.try(
+          simplifile.create_directory_all(parent)
+          |> result.map_error(fn(error) {
+            artifact_store.ArtifactIo(simplifile.describe_error(error))
+          }),
+        )
+        artifact_store.write_atomic_bytes(final_path, contents)
+        |> result.map_error(fn(error) {
+          artifact_store.ArtifactWriteFailed(error)
+        })
+      },
       write_immutable_bytes: fn(ref, contents) {
         artifact_store.write_immutable(store_root <> "/" <> ref, contents)
         |> result.map_error(fn(error) {

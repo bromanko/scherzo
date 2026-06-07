@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -6,7 +7,9 @@ import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
 import scherzo/commit_stack_artifact
+import scherzo/hash
 import scherzo/json_value
+import scherzo/state/artifact_store
 import scherzo/workflow_contract
 
 pub type ArtifactKind {
@@ -134,6 +137,13 @@ pub fn validate(
     ArtifactSetKind -> validate_artifact_set(descriptor)
     CommitStackKind -> validate_commit_stack_descriptor(descriptor)
   }
+}
+
+pub fn verify_retained_integrity(
+  descriptor: ArtifactDescriptor,
+  store: artifact_store.Store,
+) -> Result(Nil, DescriptorError) {
+  verify_retained_integrity_with_seen(descriptor, store, [])
 }
 
 fn from_json_value(
@@ -455,6 +465,156 @@ fn validate_artifact_set(
   )
   use Nil <- result.try(validate_entries(descriptor.entries))
   validate_retained_artifact_set_metadata(descriptor)
+}
+
+fn verify_retained_integrity_with_seen(
+  descriptor: ArtifactDescriptor,
+  store: artifact_store.Store,
+  seen_refs: List(String),
+) -> Result(Nil, DescriptorError) {
+  case descriptor.kind {
+    FileKind | CommitStackKind -> verify_retained_file(descriptor, store)
+    ArtifactSetKind ->
+      verify_retained_artifact_set(descriptor, store, seen_refs)
+    ValueKind | RefKind -> Ok(Nil)
+  }
+}
+
+fn verify_retained_file(
+  descriptor: ArtifactDescriptor,
+  store: artifact_store.Store,
+) -> Result(Nil, DescriptorError) {
+  use ref <- result.try(require_field(
+    descriptor.ref,
+    "artifact_descriptor_file_missing_ref",
+    descriptor.name <> " file descriptor is missing ref",
+  ))
+  use sha256 <- result.try(require_field(
+    descriptor.sha256,
+    "artifact_descriptor_file_missing_sha256",
+    descriptor.name <> " file descriptor is missing sha256",
+  ))
+  use bytes <- result.try(require_field(
+    descriptor.bytes,
+    "artifact_descriptor_file_missing_bytes",
+    descriptor.name <> " file descriptor is missing bytes",
+  ))
+  verify_ref_bytes(ref, sha256, bytes, descriptor.name, store)
+}
+
+fn verify_retained_artifact_set(
+  descriptor: ArtifactDescriptor,
+  store: artifact_store.Store,
+  seen_refs: List(String),
+) -> Result(Nil, DescriptorError) {
+  use ref <- result.try(require_field(
+    descriptor.ref,
+    "artifact_descriptor_artifact_set_missing_ref",
+    descriptor.name <> " artifact_set descriptor is missing ref",
+  ))
+  use sha256 <- result.try(require_field(
+    descriptor.sha256,
+    "artifact_descriptor_artifact_set_missing_sha256",
+    descriptor.name <> " artifact_set descriptor is missing sha256",
+  ))
+  use bytes <- result.try(require_field(
+    descriptor.bytes,
+    "artifact_descriptor_artifact_set_missing_bytes",
+    descriptor.name <> " artifact_set descriptor is missing bytes",
+  ))
+  case list.contains(seen_refs, ref) {
+    True ->
+      error(
+        "artifact_descriptor_retained_cycle",
+        descriptor.name
+          <> " retained artifact_set contains a cycle at ref "
+          <> ref,
+      )
+    False -> {
+      use contents <- result.try(read_verified_bytes(
+        ref,
+        sha256,
+        bytes,
+        descriptor.name,
+        store,
+      ))
+      use text <- result.try(case bit_array.to_string(contents) {
+        Ok(text) -> Ok(text)
+        Error(_) ->
+          error(
+            "artifact_descriptor_invalid_json",
+            descriptor.name <> " artifact_set payload must be valid UTF-8 JSON",
+          )
+      })
+      use parsed <- result.try(parse_retained_artifact_set(text, descriptor))
+      verify_retained_entries(parsed.entries, store, [ref, ..seen_refs])
+    }
+  }
+}
+
+fn verify_retained_entries(
+  entries: List(ArtifactDescriptor),
+  store: artifact_store.Store,
+  seen_refs: List(String),
+) -> Result(Nil, DescriptorError) {
+  case entries {
+    [] -> Ok(Nil)
+    [entry, ..rest] -> {
+      use Nil <- result.try(verify_retained_integrity_with_seen(
+        entry,
+        store,
+        seen_refs,
+      ))
+      verify_retained_entries(rest, store, seen_refs)
+    }
+  }
+}
+
+fn read_verified_bytes(
+  ref: String,
+  expected_sha256: String,
+  expected_bytes: Int,
+  name: String,
+  store: artifact_store.Store,
+) -> Result(BitArray, DescriptorError) {
+  use contents <- result.try(
+    artifact_store.read_artifact_bytes_unverified(store, ref)
+    |> result.map_error(fn(_) {
+      DescriptorError(
+        "artifact_descriptor_missing_ref_artifact",
+        name <> " retained artifact ref is missing: " <> ref,
+      )
+    }),
+  )
+  let actual_sha256 = hash.sha256_hex_bytes(contents)
+  let actual_bytes = bit_array.byte_size(contents)
+  case actual_sha256 != expected_sha256 {
+    True ->
+      error(
+        "artifact_descriptor_retained_sha256_mismatch",
+        name <> " retained artifact sha256 mismatch for ref " <> ref,
+      )
+    False ->
+      case actual_bytes != expected_bytes {
+        True ->
+          error(
+            "artifact_descriptor_retained_bytes_mismatch",
+            name <> " retained artifact byte count mismatch for ref " <> ref,
+          )
+        False -> Ok(contents)
+      }
+  }
+}
+
+fn verify_ref_bytes(
+  ref: String,
+  sha256: String,
+  bytes: Int,
+  name: String,
+  store: artifact_store.Store,
+) -> Result(Nil, DescriptorError) {
+  read_verified_bytes(ref, sha256, bytes, name, store)
+  |> result.map(fn(_) { Nil })
 }
 
 fn validate_entries(
