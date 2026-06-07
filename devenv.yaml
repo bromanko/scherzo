@@ -1,5 +1,6 @@
 inputs:
-  # Keep in sync with flake.lock's nixpkgs pin, and only bump to revisions
-  # where cache.nixos.org substitutes aarch64-linux pkgs.gleam.
+  # Keep in sync with flake.lock's nixpkgs pin, and only bump to cache-safe
+  # revisions for the aarch64-linux CI toolchain. Gleam itself is pinned via
+  # nix/gleam-bin.nix.
   nixpkgs:
     url: github:NixOS/nixpkgs/nixpkgs-unstable
