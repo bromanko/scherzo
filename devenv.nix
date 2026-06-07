@@ -1,6 +1,10 @@
 { pkgs, ... }:
 
 let
+  # Keep devenv on the repository-pinned Gleam release without bumping nixpkgs
+  # past the aarch64-linux cache-safe revision.
+  gleam = pkgs.callPackage ./nix/gleam-bin.nix { };
+
   pi = pkgs.callPackage ./nix/pi.nix { };
 
   linearCli = pkgs.callPackage ./nix/linear-cli.nix { };
@@ -23,7 +27,7 @@ in
   env.SCHERZO_PI_BIN = "${pi}/bin/pi";
 
   packages = [
-    pkgs.gleam
+    gleam
     pkgs.erlang
     pkgs.rebar3
     pkgs.nodejs_22
