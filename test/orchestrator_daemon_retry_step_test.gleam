@@ -2329,13 +2329,13 @@ fn wait_for_all_logs_loop(
         True -> False
         False ->
           case process.receive(subject, within: 100) {
-            Ok(actual) ->
-              wait_for_all_logs_loop(
-                subject,
-                expected,
-                [actual, ..seen],
-                attempts - 1,
-              )
+            Ok(actual) -> {
+              let next_seen = case list.contains(expected, actual) {
+                True -> [actual, ..seen]
+                False -> seen
+              }
+              wait_for_all_logs_loop(subject, expected, next_seen, attempts)
+            }
             Error(_) ->
               wait_for_all_logs_loop(subject, expected, seen, attempts - 1)
           }
