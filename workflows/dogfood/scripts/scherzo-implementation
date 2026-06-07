@@ -110,10 +110,10 @@ gate-plan-completion [--final]
               Fail closed unless tmp/scherzo-plan-completion-verdict.json is
               a fresh, well-formed passing verdict for the current ExecPlan
               implementation patch.
-plan-completion-recovery --phase before-late-repair|after-late-repair|final --attempt INT --max-attempts INT
-              Classify the current plan-completion verdict for late recovery,
+plan-completion-recovery --phase before-late-repair|before-final-repair|after-late-repair|after-final-repair|final --attempt INT --max-attempts INT
+              Classify the current plan-completion verdict for bounded recovery,
               write tmp/scherzo-plan-completion-recovery.{json,md}, and either
-              authorize one bounded late repair pass or fail with retained
+              authorize one bounded repair pass or fail with retained
               workspace diagnostics.
 refresh-base --stage <stage>
               Fetch the canonical jj workspace base, rebase @ when needed,
@@ -2421,7 +2421,13 @@ def parse_plan_completion_recovery_args(args: list[str]) -> tuple[str, int, int]
     parser.add_argument(
         "--phase",
         required=True,
-        choices=["before-late-repair", "after-late-repair", "final"],
+        choices=[
+            "before-late-repair",
+            "before-final-repair",
+            "after-late-repair",
+            "after-final-repair",
+            "final",
+        ],
     )
     parser.add_argument("--attempt", required=True, type=int)
     parser.add_argument("--max-attempts", required=True, type=int)
@@ -2458,25 +2464,31 @@ def plan_completion_recovery_command(args: list[str]) -> None:
         "deferred_manual_verification": verdict["deferred_manual_verification"],
     }
     if verdict["verdict"] == "pass":
-        payload["next_action"] = "No late plan-completion repair is needed."
+        payload["next_action"] = "No bounded plan-completion repair is needed."
         write_plan_completion_recovery_artifacts(payload)
         print_plan_completion_recovery_summary(payload)
         return
 
     repair_budget_description = (
-        "attempt 1 is apply_plan_completion_feedback; attempt 2 is the late pre-review repair"
+        "attempt 1 is apply_plan_completion_feedback; "
+        "attempt 2 is the late pre-review repair; "
+        "attempt 3 is the final pre-review salvage repair"
     )
     retry_command = plan_completion_retry_command(metadata)
     issue_identifier = implementation_issue_identifier(metadata)
     source_ref = issue_identifier or str(current["plan_path"])
 
-    if phase == "before-late-repair" and attempt <= max_attempts:
+    repair_next_actions = {
+        "before-late-repair": "run late plan-completion repair step",
+        "before-final-repair": "run final plan-completion repair step",
+    }
+    if phase in repair_next_actions and attempt <= max_attempts:
         payload.update(
             {
                 "status": "repair_needed",
                 "retryable": True,
                 "repair_budget_description": repair_budget_description,
-                "next_action": "run late plan-completion repair step",
+                "next_action": repair_next_actions[phase],
             }
         )
         write_plan_completion_recovery_artifacts(payload)

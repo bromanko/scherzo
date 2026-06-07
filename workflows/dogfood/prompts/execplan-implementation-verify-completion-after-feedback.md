@@ -68,7 +68,7 @@ Write valid JSON (no Markdown fences, no comments, no trailing commas) to `tmp/s
 }
 ```
 
-Use `"verdict": "fail"` when promised behavior is still incomplete after the single repair chance. In that case, keep `blocking_findings` concrete and actionable for retained-workspace triage. Set `deferred_manual_verification` to `[]` when there are no explicitly deferred manual checks.
+Use `"verdict": "fail"` when promised behavior is still incomplete after the first repair chance. In that case, keep `blocking_findings` concrete and actionable for the next bounded repair pass. Set `deferred_manual_verification` to `[]` when there are no explicitly deferred manual checks.
 
 Process:
 

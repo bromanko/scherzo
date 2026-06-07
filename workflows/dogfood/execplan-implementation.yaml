@@ -117,7 +117,7 @@ steps:
   - id: classify_plan_completion_gate
     kind: command
     depends_on: [gate_plan_completion]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 3'
     run_in: main
 
   - id: apply_late_plan_completion_feedback
@@ -153,10 +153,49 @@ steps:
     on_failure: continue
     run_in: main
 
-  - id: finalize_plan_completion_gate_recovery
+  - id: classify_plan_completion_gate_after_late_repair
     kind: command
     depends_on: [gate_plan_completion_after_late_repair]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase before-final-repair --attempt 3 --max-attempts 3'
+    run_in: main
+
+  - id: apply_final_plan_completion_feedback
+    kind: agent
+    depends_on: [classify_plan_completion_gate_after_late_repair]
+    prompt: prompts/execplan-implementation-apply-final-plan-completion-feedback.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
+    run_in: main
+
+  - id: analyze_changes_after_final_plan_feedback
+    kind: command
+    depends_on: [apply_final_plan_completion_feedback]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
+    run_in: main
+
+  - id: restore_execplan_artifacts_after_final_plan_feedback
+    kind: command
+    depends_on: [analyze_changes_after_final_plan_feedback]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
+    run_in: main
+
+  - id: verify_plan_completion_after_final_repair
+    kind: agent
+    depends_on: [restore_execplan_artifacts_after_final_plan_feedback]
+    prompt: prompts/execplan-implementation-verify-completion-after-final-repair.md
+    run_in: main
+
+  - id: gate_plan_completion_after_final_repair
+    kind: command
+    depends_on: [verify_plan_completion_after_final_repair]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" gate-plan-completion'
+    on_failure: continue
+    run_in: main
+
+  - id: finalize_plan_completion_gate_recovery
+    kind: command
+    depends_on: [gate_plan_completion_after_final_repair]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase after-final-repair --attempt 3 --max-attempts 3'
     run_in: main
     recovery:
       enabled: false
@@ -555,7 +594,7 @@ steps:
   - id: finalize_final_plan_completion_gate
     kind: command
     depends_on: [final_plan_completion_gate]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase final --attempt 2 --max-attempts 2'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase final --attempt 3 --max-attempts 3'
     run_in: main
     recovery:
       enabled: false
