@@ -238,7 +238,7 @@ fn driver_publish_args(
   ]
   list.append(
     base_args,
-    list.append(target_args(planned.target), [
+    list.append(target_args(operation, planned.target), [
       "--allow-no-changes",
       "true",
       "--json",
@@ -247,15 +247,22 @@ fn driver_publish_args(
 }
 
 fn target_args(
+  operation: String,
   target: artifact_publication_planner.PlannedPublicationTarget,
 ) -> List(String) {
   case target {
-    artifact_publication_planner.ExistingPrBranchTargetPlan(existing) -> [
-      "--target-branch",
-      existing.head_branch,
-      "--target-pr",
-      int.to_string(existing.pr_number),
-    ]
+    artifact_publication_planner.ExistingPrBranchTargetPlan(existing) -> {
+      let branch_args = ["--target-branch", existing.head_branch]
+      let pr_args = case existing.pr_number > 0 {
+        True -> ["--target-pr", int.to_string(existing.pr_number)]
+        False -> []
+      }
+      let expected_args = case operation == "publish-commit-stack" {
+        True -> ["--expected-head", existing.expected_head_sha]
+        False -> []
+      }
+      list.append(branch_args, list.append(pr_args, expected_args))
+    }
     artifact_publication_planner.StableBranchTargetPlan -> []
   }
 }
@@ -356,6 +363,7 @@ fn parse_and_verify_driver_publish_success(
 ) {
   use driver_result <- result.try(parse_driver_publish_success(
     operation,
+    planned,
     stdout,
     redaction_values,
   ))
@@ -369,6 +377,7 @@ fn parse_and_verify_driver_publish_success(
 
 fn parse_driver_publish_success(
   operation: String,
+  planned: artifact_publication_planner.DryRunPublicationManifest,
   stdout: String,
   redaction_values: List(String),
 ) -> Result(
@@ -413,7 +422,7 @@ fn parse_driver_publish_success(
         "updated",
       ))
       let url = optional_json_string(entries, "url")
-      case status_requires_url(status), url {
+      case status_requires_url(status, planned), url {
         True, None ->
           Error(malformed_driver_output(
             operation,
@@ -434,8 +443,25 @@ fn parse_driver_publish_success(
   }
 }
 
-fn status_requires_url(status: String) -> Bool {
-  status == "published" || status == "updated"
+fn status_requires_url(
+  status: String,
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+) -> Bool {
+  case status {
+    "published" -> True
+    "updated" -> existing_target_has_pr(planned.target)
+    _ -> False
+  }
+}
+
+fn existing_target_has_pr(
+  target: artifact_publication_planner.PlannedPublicationTarget,
+) -> Bool {
+  case target {
+    artifact_publication_planner.ExistingPrBranchTargetPlan(existing) ->
+      existing.pr_number > 0
+    artifact_publication_planner.StableBranchTargetPlan -> False
+  }
 }
 
 fn parse_driver_publish_failure(

@@ -377,6 +377,49 @@ pub fn project_validation_wrapper_skips_command_when_no_conflicts_test() {
   assert string.contains(wrapper.stdout, "PROJECT_VALIDATION=not_needed")
 }
 
+pub fn publish_no_conflicts_materializes_commit_stack_status_test() {
+  let dir = "test/tmp/merge-conflict-publish-no-conflicts"
+  write_no_conflicts_validation_fixture(dir)
+  let helper_env = "PATH=\"$PWD/bin:$PATH\" "
+
+  let validate =
+    run_helper_in(
+      dir,
+      helper_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
+    )
+  assert validate.status == step_artifact.StepSucceeded
+
+  let published =
+    run_helper_in(
+      dir,
+      helper_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict publish",
+    )
+
+  assert published.status == step_artifact.StepSucceeded
+  assert published.exit_code == Some(0)
+  assert string.contains(published.stdout, "PUSHED=false")
+  assert string.contains(published.stdout, "REASON=no_conflicts")
+  assert string.contains(published.stdout, "PUBLICATION_MODE=commit_stack")
+  assert string.contains(published.stdout, "PROJECT_VALIDATION=not_needed")
+  assert !string.contains(published.stdout, "no-op")
+  let assert Ok(publish) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-publish.json")
+  assert string.contains(publish, "\"status\": \"ready_for_core_publication\"")
+  assert string.contains(publish, "\"publication_mode\": \"commit_stack\"")
+  assert string.contains(publish, "\"resolution_status\": \"no_conflicts\"")
+  let assert Ok(target_artifact) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-target.json")
+  assert string.contains(
+    target_artifact,
+    "scherzo.github_existing_pr_branch_target.v1",
+  )
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-commit-stack.json")
+  assert string.contains(commit_stack, "scherzo.git_commit_stack.v1")
+}
+
 pub fn publish_requires_recorded_project_validation_test() {
   let dir = "test/tmp/merge-conflict-publish-project-validation-gate"
   write_validation_fixture(dir, "safe\n")
@@ -390,6 +433,8 @@ pub fn publish_requires_recorded_project_validation_test() {
         <> "  \"target_kind\": \"branch\",\n"
         <> "  \"head_branch\": \"feature/conflicted-branch\",\n"
         <> "  \"base_branch\": \"trunk\",\n"
+        <> "  \"head_commit_at_prepare\": \"1111111111111111111111111111111111111111\",\n"
+        <> "  \"base_commit_at_prepare\": \"2222222222222222222222222222222222222222\",\n"
         <> "  \"conflicted_files\": [\"conflicted.txt\"],\n"
         <> "  \"non_conflict_fingerprints\": {\n"
         <> "    \"safe.txt\": {\"type\": \"file\", \"sha256\": \"93d868f3b59590f611d7646894ce8def1cea5ad63a9af0d9ccc56e9bc6968c11\", \"size\": 5}\n"
@@ -446,16 +491,79 @@ pub fn publish_requires_recorded_project_validation_test() {
 
   assert published.status == step_artifact.StepSucceeded
   assert published.exit_code == Some(0)
-  assert string.contains(published.stdout, "PUSHED=true")
+  assert string.contains(published.stdout, "PUSHED=false")
+  assert string.contains(published.stdout, "PUBLICATION_MODE=commit_stack")
   assert string.contains(published.stdout, "PROJECT_VALIDATION=passed")
-  let assert Ok(driver_log) = simplifile.read(dir <> "/workspace-driver.log")
+  let assert Ok(False) = simplifile.is_file(dir <> "/workspace-driver.log")
+  let assert Ok(target_artifact) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-target.json")
   assert string.contains(
-    driver_log,
-    "env remote=upstream base=trunk publish=fork legacy_remote=legacy legacy_base=legacy",
+    target_artifact,
+    "scherzo.github_existing_pr_branch_target.v1",
   )
-  assert string.contains(driver_log, "publish-change")
-  assert string.contains(driver_log, "--base trunk")
-  assert !string.contains(driver_log, "--base main")
+  assert string.contains(target_artifact, "feature/conflicted-branch")
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-commit-stack.json")
+  assert string.contains(commit_stack, "scherzo.git_commit_stack.v1")
+  assert string.contains(
+    commit_stack,
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  )
+}
+
+pub fn publish_writes_commit_stack_carrier_to_run_artifacts_test() {
+  let dir = "test/tmp/merge-conflict-publish-run-artifact-carrier"
+  write_validation_fixture(dir, "safe\n")
+  let assert Ok(metadata) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict.json")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/artifacts/merge-conflict")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/artifacts/merge-conflict/scherzo-merge-conflict.json",
+      metadata,
+    )
+
+  let workflow_env =
+    "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_RUN_ID=run-123 PATH=\"$PWD/bin:$PATH\" "
+  let validate =
+    run_helper_in(
+      dir,
+      workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
+    )
+  assert validate.status == step_artifact.StepSucceeded
+  let record =
+    run_helper_in(
+      dir,
+      workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict record-project-validation",
+    )
+  assert record.status == step_artifact.StepSucceeded
+
+  let published =
+    run_helper_in(
+      dir,
+      workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict publish",
+    )
+
+  assert published.status == step_artifact.StepSucceeded
+  let carrier =
+    dir
+    <> "/.scherzo-state/artifacts/runs/run-123/outputs/scherzo-merge-conflict-commit-stack.bundle"
+  let assert Ok(True) = simplifile.is_file(carrier)
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-commit-stack.json")
+  assert string.contains(
+    commit_stack,
+    "runs/run-123/outputs/scherzo-merge-conflict-commit-stack.bundle",
+  )
+  let assert Ok(git_log) = simplifile.read(dir <> "/git.log")
+  assert string.contains(git_log, "bundle create ")
+  assert string.contains(git_log, "scherzo-merge-conflict-commit-stack.bundle")
+  assert string.contains(git_log, "^1111111111111111111111111111111111111111")
+  assert string.contains(git_log, "^2222222222222222222222222222222222222222")
 }
 
 pub fn validate_accepts_prepare_metadata_with_jj_conflict_status_suffix_test() {
@@ -533,6 +641,11 @@ pub fn checked_in_merge_conflict_workflow_is_routed_and_guarded_test() {
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" prepare")
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" validate")
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" publish")
+  assert string.contains(workflow, "mode: commit_stack")
+  assert string.contains(workflow, "kind: existing_pr_branch")
+  assert string.contains(workflow, "- id: materialize_commit_stack")
+  assert !string.contains(workflow, "- id: publish_resolution")
+  assert !string.contains(workflow, "publish-change")
   assert string.contains(workflow, "from: main")
   assert string.contains(prompt, "tmp/scherzo-merge-conflict-failure.md")
   assert string.contains(
@@ -563,6 +676,8 @@ fn write_validation_fixture(dir: String, safe_contents: String) -> Nil {
         <> "  \"target_kind\": \"branch\",\n"
         <> "  \"head_branch\": \"feature/conflicted-branch\",\n"
         <> "  \"base_branch\": \"main\",\n"
+        <> "  \"head_commit_at_prepare\": \"1111111111111111111111111111111111111111\",\n"
+        <> "  \"base_commit_at_prepare\": \"2222222222222222222222222222222222222222\",\n"
         <> "  \"conflicted_files\": [\"conflicted.txt\"],\n"
         <> "  \"non_conflict_fingerprints\": {\n"
         <> "    \"safe.txt\": {\"type\": \"file\", \"sha256\": \"93d868f3b59590f611d7646894ce8def1cea5ad63a9af0d9ccc56e9bc6968c11\", \"size\": 5}\n"
@@ -571,6 +686,8 @@ fn write_validation_fixture(dir: String, safe_contents: String) -> Nil {
     )
   write_fake_validation_jj(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/git")
 }
 
 fn write_no_conflicts_validation_fixture(dir: String) -> Nil {
@@ -589,6 +706,8 @@ fn write_no_conflicts_validation_fixture(dir: String) -> Nil {
         <> "  \"target_kind\": \"branch\",\n"
         <> "  \"head_branch\": \"feature/conflicted-branch\",\n"
         <> "  \"base_branch\": \"main\",\n"
+        <> "  \"head_commit_at_prepare\": \"1111111111111111111111111111111111111111\",\n"
+        <> "  \"base_commit_at_prepare\": \"2222222222222222222222222222222222222222\",\n"
         <> "  \"conflicted_files\": [],\n"
         <> "  \"non_conflict_fingerprints\": {\n"
         <> "    \"conflicted.txt\": {\"type\": \"file\", \"sha256\": \"3a6b975479a644e01da8a06ae3df67f52785abb2c35bf359efdfe40adea1da8c\", \"size\": 9},\n"
@@ -598,6 +717,8 @@ fn write_no_conflicts_validation_fixture(dir: String) -> Nil {
     )
   write_fake_validation_jj(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/git")
 }
 
 fn outer_workflow_context_env() -> String {
@@ -682,6 +803,20 @@ fn write_fake_unresolved_conflict_jj(path: String) -> Nil {
   Nil
 }
 
+fn write_fake_commit_stack_git(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> git.log\n"
+        <> "if [ \"$1\" = update-ref ]; then exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'bundle create' ]; then printf '%s\\n' bundle > \"$3\"; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'bundle verify' ]; then exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
 fn write_fake_validation_jj(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
@@ -690,6 +825,9 @@ fn write_fake_validation_jj(path: String) -> Nil {
         <> "printf '%s\\n' \"$*\" >> jj.log\n"
         <> "if [ \"$1\" = resolve ]; then echo 'Error: No conflicts found at this revision' >&2; exit 2; fi\n"
         <> "if [ \"$1 $2\" = 'file list' ]; then printf '%s\\n' conflicted.txt safe.txt; exit 0; fi\n"
+        <> "if [ \"$1\" = log ] && [ \"$2\" = -r ] && [ \"$6\" = commit_id ]; then printf '%s\\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\n"
+        <> "if [ \"$1\" = log ] && [ \"$2\" = -r ] && [ \"$6\" = 'commit_id.short()' ]; then printf '%s\\n' aaaaaaaa; exit 0; fi\n"
+        <> "if [ \"$1 $2 $3\" = 'debug object commit' ]; then printf '%s\\n' 'TreeId(\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\")'; exit 0; fi\n"
         <> "exit 1\n",
     )
   Nil
