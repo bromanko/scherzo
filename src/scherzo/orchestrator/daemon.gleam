@@ -2010,7 +2010,26 @@ fn retry_step_issue_preflight(
                       <> issue_state.to_string(issue.state),
                     ),
                   ))
-                False -> Ok(issue)
+                False ->
+                  case core.is_active(state.workflow.effective, issue.state) {
+                    True -> Ok(issue)
+                    False ->
+                      Error(command.rejected(
+                        operator_command,
+                        "issue_state_drift:non_active_state",
+                        Some(
+                          "run "
+                          <> command.retry_workflow_step_target_to_string(
+                            target,
+                          )
+                          <> " for issue "
+                          <> issue.identifier
+                          <> " is currently in non-active state "
+                          <> issue_state.to_string(issue.state)
+                          <> "; move the issue to a configured active state before retry-step",
+                        ),
+                      ))
+                  }
               }
           }
       }
@@ -3875,6 +3894,14 @@ fn transition_stop_worker_after_issue_refresh(
   reason: orchestrator_reason.StopReason,
 ) -> State {
   let reason_text = orchestrator_reason.stop_to_string(reason)
+  let run_id = identity.run_id_to_string(identity.run_id)
+  let state =
+    cleanup_orphaned_yaml_children_after_parent_stop(
+      state,
+      run_id,
+      reason_text,
+      Some(issue_state.to_string(identity.issue.state)),
+    )
   case worker_registry.worker_for_task_ref(state.registry, identity.task_ref) {
     Error(Nil) -> state
     Ok(handle) -> {

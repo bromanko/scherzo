@@ -12,10 +12,10 @@
   };
 
   inputs = {
-    # Linux CI depends on substituting aarch64-linux pkgs.gleam from
-    # cache.nixos.org. Only bump this nixpkgs-unstable lock to revisions where
-    # that output is cached; otherwise CI may compile deno/rusty-v8 and OOM
-    # before Scherzo's derivation runs.
+    # Linux CI depends on cache.nixos.org substituting large aarch64-linux
+    # dependencies from nixpkgs (for example deno/rusty-v8). Only bump this
+    # nixpkgs-unstable lock to cache-safe revisions; Gleam itself is pinned
+    # separately via nix/gleam-bin.nix.
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
@@ -36,6 +36,15 @@
         import nixpkgs {
           inherit system;
         };
+
+      # Keep the nixpkgs pin on cache-safe revisions for CI; pin the Gleam
+      # toolchain itself via official release binaries.
+      gleamFor =
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        pkgs.callPackage ./nix/gleam-bin.nix { };
 
       sourceRevision = self.shortRev or (self.dirtyShortRev or "unknown");
 
@@ -81,6 +90,7 @@
         pkgs.callPackage ./nix/scherzo.nix {
           src = sourceFor system;
           pi = piFor system;
+          gleam = gleamFor system;
           inherit sourceRevision sourceDate sourceDirty;
         };
 
@@ -129,6 +139,7 @@
         in
         {
           default = scherzo;
+          gleam = gleamFor system;
           linear-cli = linearCliFor system;
           pi = pi;
           scherzo = scherzo;
@@ -167,6 +178,7 @@
       });
 
       overlays.default = final: _prev: {
+        gleam = final.callPackage ./nix/gleam-bin.nix { };
         linear-cli = final.callPackage ./nix/linear-cli.nix { };
         pi = final.callPackage ./nix/pi.nix { };
         scherzo = final.callPackage ./nix/scherzo.nix {

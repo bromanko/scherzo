@@ -221,7 +221,7 @@ fn plan_commit_stack_publication(
   store: artifact_store.Store,
   work: PublicationWork,
   run_id: String,
-  _body_templates: Dict(String, String),
+  body_templates: Dict(String, String),
 ) -> Result(DryRunPublicationManifest, PlannerError) {
   use stack_route <- result.try(require_commit_stack_route(route))
   let artifact_publication_config.PublicationCommitStackRoute(selector:) =
@@ -247,6 +247,7 @@ fn plan_commit_stack_publication(
     work,
     stack,
     target,
+    body_templates,
   ))
   use branch <- result.try(branch_for_target(
     target,
@@ -258,7 +259,17 @@ fn plan_commit_stack_publication(
     run_id,
     work,
   ))
-  let pull_request = pull_request_for_target(repository, target)
+  use pull_request <- result.try(pull_request_for_target(
+    route,
+    repository,
+    target,
+    series_id,
+    version_id,
+    manifest.workflow_id,
+    run_id,
+    work,
+    body_templates,
+  ))
   Ok(DryRunPublicationManifest(
     run_id: run_id,
     workflow_id: manifest.workflow_id,
@@ -536,9 +547,11 @@ fn validate_commit_stack_target(
   ))
   case target {
     StableBranchTargetPlan ->
-      error(
-        "unsupported_commit_stack_target",
-        "commit_stack publication currently requires target existing_pr_branch",
+      require_equal(
+        stack.base_ref,
+        repository.base,
+        "commit_stack_base_ref_mismatch",
+        "commit stack base ref does not match publication repository base",
       )
     ExistingPrBranchTargetPlan(existing) -> {
       use _ <- result.try(require_same_repo(
@@ -601,19 +614,31 @@ fn branch_for_target(
 }
 
 fn pull_request_for_target(
+  route: artifact_publication_config.PublicationRoute,
   repository: ResolvedGithubRepository,
   target: PlannedPublicationTarget,
-) -> PlannedPullRequest {
+  series_id: String,
+  version_id: String,
+  workflow_id: String,
+  run_id: String,
+  work: PublicationWork,
+  body_templates: Dict(String, String),
+) -> Result(PlannedPullRequest, PlannerError) {
   case target {
     StableBranchTargetPlan ->
-      PlannedPullRequest(
-        repository.pull_request_enabled,
-        repository.pull_request_draft,
-        None,
-        None,
+      render_pull_request(
+        route,
+        repository,
+        series_id,
+        version_id,
+        workflow_id,
+        run_id,
+        work,
+        "",
+        body_templates,
       )
     ExistingPrBranchTargetPlan(_) ->
-      PlannedPullRequest(False, False, None, None)
+      Ok(PlannedPullRequest(False, False, None, None))
   }
 }
 
@@ -946,19 +971,12 @@ fn compute_file_version_id(
   selected: List(SelectedArtifact),
   body_templates: Dict(String, String),
 ) -> Result(String, PlannerError) {
+  use body_template_contents <- result.try(body_template_contents_for_version(
+    route,
+    repository,
+    body_templates,
+  ))
   let body_template = effective_body_template_path(route, repository)
-  use body_template_contents <- result.try(
-    case repository.pull_request_enabled {
-      False -> Ok(None)
-      True ->
-        case body_template {
-          Some(template_path) ->
-            resolve_body_template(template_path, body_templates)
-            |> result.map(Some)
-          None -> Ok(None)
-        }
-    },
-  )
   let title_template = effective_title_template(route, repository)
   let payload =
     json.object([
@@ -1001,6 +1019,24 @@ fn compute_file_version_id(
   Ok(hash.sha256_hex(payload))
 }
 
+fn body_template_contents_for_version(
+  route: artifact_publication_config.PublicationRoute,
+  repository: ResolvedGithubRepository,
+  body_templates: Dict(String, String),
+) -> Result(Option(String), PlannerError) {
+  let body_template = effective_body_template_path(route, repository)
+  case repository.pull_request_enabled {
+    False -> Ok(None)
+    True ->
+      case body_template {
+        Some(template_path) ->
+          resolve_body_template(template_path, body_templates)
+          |> result.map(Some)
+        None -> Ok(None)
+      }
+  }
+}
+
 fn compute_commit_stack_version_id(
   workflow_id: String,
   route: artifact_publication_config.PublicationRoute,
@@ -1008,7 +1044,29 @@ fn compute_commit_stack_version_id(
   work: PublicationWork,
   stack: PlannedCommitStack,
   target: PlannedPublicationTarget,
+  body_templates: Dict(String, String),
 ) -> Result(String, PlannerError) {
+  use body_template_contents <- result.try(case target {
+    StableBranchTargetPlan ->
+      body_template_contents_for_version(route, repository, body_templates)
+    ExistingPrBranchTargetPlan(_) -> Ok(None)
+  })
+  let body_template = case target {
+    StableBranchTargetPlan -> effective_body_template_path(route, repository)
+    ExistingPrBranchTargetPlan(_) -> None
+  }
+  let title_template = case target {
+    StableBranchTargetPlan -> effective_title_template(route, repository)
+    ExistingPrBranchTargetPlan(_) -> None
+  }
+  let pull_request_enabled = case target {
+    StableBranchTargetPlan -> repository.pull_request_enabled
+    ExistingPrBranchTargetPlan(_) -> False
+  }
+  let pull_request_draft = case target {
+    StableBranchTargetPlan -> repository.pull_request_draft
+    ExistingPrBranchTargetPlan(_) -> False
+  }
   let payload =
     json.object([
       #("workflow_id", json.string(workflow_id)),
@@ -1016,6 +1074,18 @@ fn compute_commit_stack_version_id(
       #("repository_id", json.string(repository.id)),
       #("github_repo", json.string(repository.repo)),
       #("github_base", json.string(repository.base)),
+      #("branch_template", json.string(repository.branch_template)),
+      #("pull_request_enabled", json.bool(pull_request_enabled)),
+      #("pull_request_draft", json.bool(pull_request_draft)),
+      #("title_template", planner_support.option_string_to_json(title_template)),
+      #(
+        "body_template_path",
+        planner_support.option_string_to_json(body_template),
+      ),
+      #(
+        "body_template_contents",
+        planner_support.option_string_to_json(body_template_contents),
+      ),
       #("mode", json.string("commit_stack")),
       #("target", target_to_json(target)),
       #(

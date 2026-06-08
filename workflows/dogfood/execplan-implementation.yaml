@@ -26,6 +26,13 @@ contract:
       source:
         step: materialize_code_change_bundle
         path: tmp/execplan-code-change-bundle.json
+    commit_stack:
+      kind: commit_stack
+      media_type: application/vnd.scherzo.git-commit-stack+json
+      artifact_type: scherzo.git_commit_stack.v1
+      source:
+        step: materialize_commit_stack
+        path: tmp/scherzo-implementation-commit-stack.json
 workstream_phase:
   phase_id: implementation
   display_name: ExecPlan implemented, reviewed, validated, and published
@@ -35,6 +42,17 @@ workstream_phase:
     snapshot: required
   gates: [implementation_review, validation_proof, publish_pr]
   final_phase: false
+artifacts:
+  publications:
+    - id: implementation_commit_stack
+      repository: github.code
+      required: true
+      mode: commit_stack
+      commit_stack:
+        select:
+          output: commit_stack
+      target:
+        kind: stable_branch
 steps:
   - id: prepare_bundle
     kind: command
@@ -605,7 +623,7 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$bundle_dir/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact tmp/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
     run_in: main
 
-  - id: publish_pr
+  - id: materialize_commit_stack
     kind: command
     depends_on: [finalize_final_plan_completion_gate, finalize_review_dispositions]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
@@ -616,7 +634,7 @@ steps:
 
   - id: materialize_code_change_bundle
     kind: command
-    depends_on: [publish_pr]
+    depends_on: [materialize_commit_stack]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; bundle_path=${SCHERZO_RUN_ROOT:-}/state/implementation/execplan-bundle.json; if [ ! -f "$bundle_path" ]; then bundle_path=tmp/execplan-bundle.json; fi; "$bundle_dir/scripts/scherzo-execplan" materialize-code-change-bundle --bundle "$bundle_path" --output tmp/execplan-code-change-bundle.json'
     run_in: main
     recovery:

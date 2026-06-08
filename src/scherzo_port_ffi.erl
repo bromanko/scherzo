@@ -112,7 +112,7 @@ start_shell(Cmd, Dir, Env, BashPath) ->
                     {cd, Dir},
                     {env, Env}
                 ]),
-                Process = {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir},
+                Process = process_with_owner_cleanup(Port, ErrPath, ChildPidPath, TmpDir),
                 wait_for_launch_ready(Port, ChildPidPath),
                 {ok, Process}
             catch
@@ -141,7 +141,7 @@ start_argv_checked(Exe, ArgList, Dir, Env, BashPath) ->
                     {cd, Dir},
                     {env, Env}
                 ]),
-                Process = {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir},
+                Process = process_with_owner_cleanup(Port, ErrPath, ChildPidPath, TmpDir),
                 wait_for_launch_ready(Port, ChildPidPath),
                 {ok, Process}
             catch
@@ -175,7 +175,7 @@ start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes, BashPath) ->
                             {cd, Dir},
                             {env, Env}
                         ]),
-                        Process = {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir},
+                        Process = process_with_owner_cleanup(Port, ErrPath, ChildPidPath, TmpDir),
                         wait_for_launch_ready(Port, ChildPidPath),
                         {ok, Process}
                     catch
@@ -188,6 +188,28 @@ start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes, BashPath) ->
                     {error, tagged_error(spawn_failed, <<"write_stdin:", (reason_to_binary(Reason))/binary>>)}
             end;
         {error, Error} -> {error, Error}
+    end.
+
+process_with_owner_cleanup(Port, ErrPath, ChildPidPath, TmpDir) ->
+    OsPid = port_os_pid(Port),
+    CleanupRef = make_ref(),
+    CleanupHandle = start_owner_cleanup_watcher(self(), CleanupRef, OsPid, ChildPidPath, TmpDir),
+    {scherzo_process, Port, ErrPath, OsPid, ChildPidPath, TmpDir, CleanupHandle}.
+
+start_owner_cleanup_watcher(Owner, CleanupRef, OsPid, ChildPidPath, TmpDir) ->
+    CleanupPid = spawn(fun() -> owner_cleanup_watcher(Owner, CleanupRef, OsPid, ChildPidPath, TmpDir) end),
+    {CleanupPid, CleanupRef}.
+
+owner_cleanup_watcher(Owner, CleanupRef, OsPid, ChildPidPath, TmpDir) ->
+    Monitor = erlang:monitor(process, Owner),
+    receive
+        {scherzo_port_owner_done, CleanupRef} ->
+            erlang:demonitor(Monitor, [flush]),
+            ok;
+        {'DOWN', Monitor, process, Owner, _Reason} ->
+            terminate_launched_process(OsPid, ChildPidPath),
+            _ = cleanup_private_temp_dir(TmpDir),
+            ok
     end.
 
 shell_launch_wrapper() ->
@@ -462,6 +484,7 @@ terminate(Process) ->
             {ok, Port} -> catch erlang:port_close(Port);
             error -> ok
         end,
+        _ = stop_owner_cleanup_watcher(Process),
         case cleanup_process_storage(Process) of
             ok -> {ok, nil};
             {error, Reason} -> {error, tagged_error(cleanup_failed, Reason)}
@@ -611,6 +634,7 @@ finish_process_exit_with_stdout(Process, Port, Status, State) ->
 
 finish_process_exit(Process, Status) ->
     _ = cache_diagnostics(Process),
+    _ = stop_owner_cleanup_watcher(Process),
     case cleanup_process_storage(Process) of
         ok -> {ok, Status};
         {error, Reason} -> {error, tagged_error(cleanup_failed, Reason)}
@@ -933,26 +957,45 @@ now_ms() -> erlang:monotonic_time(millisecond).
 min_int(A, B) when A =< B -> A;
 min_int(_A, B) -> B.
 
+stop_owner_cleanup_watcher(Process) ->
+    case process_cleanup_handle(Process) of
+        {Pid, CleanupRef} when is_pid(Pid), is_reference(CleanupRef) ->
+            Pid ! {scherzo_port_owner_done, CleanupRef},
+            ok;
+        Pid when is_pid(Pid) ->
+            Pid ! {scherzo_port_owner_done, self()},
+            ok;
+        _ -> ok
+    end.
+
 process_port_result({scherzo_process, Port, _ErrPath}) -> {ok, Port};
 process_port_result({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath}) -> {ok, Port};
 process_port_result({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath, _TmpDir}) -> {ok, Port};
+process_port_result({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath, _TmpDir, _CleanupPid}) -> {ok, Port};
 process_port_result(_Other) -> error.
 
 process_err_path({scherzo_process, _Port, ErrPath}) -> ErrPath;
 process_err_path({scherzo_process, _Port, ErrPath, _OsPid, _ChildPidPath}) -> ErrPath;
-process_err_path({scherzo_process, _Port, ErrPath, _OsPid, _ChildPidPath, _TmpDir}) -> ErrPath.
+process_err_path({scherzo_process, _Port, ErrPath, _OsPid, _ChildPidPath, _TmpDir}) -> ErrPath;
+process_err_path({scherzo_process, _Port, ErrPath, _OsPid, _ChildPidPath, _TmpDir, _CleanupPid}) -> ErrPath.
 
 process_os_pid({scherzo_process, Port, _ErrPath}) -> port_os_pid(Port);
 process_os_pid({scherzo_process, _Port, _ErrPath, OsPid, _ChildPidPath}) -> OsPid;
-process_os_pid({scherzo_process, _Port, _ErrPath, OsPid, _ChildPidPath, _TmpDir}) -> OsPid.
+process_os_pid({scherzo_process, _Port, _ErrPath, OsPid, _ChildPidPath, _TmpDir}) -> OsPid;
+process_os_pid({scherzo_process, _Port, _ErrPath, OsPid, _ChildPidPath, _TmpDir, _CleanupPid}) -> OsPid.
 
 process_child_pid_path({scherzo_process, _Port, _ErrPath}) -> undefined;
 process_child_pid_path({scherzo_process, _Port, _ErrPath, _OsPid, ChildPidPath}) -> ChildPidPath;
-process_child_pid_path({scherzo_process, _Port, _ErrPath, _OsPid, ChildPidPath, _TmpDir}) -> ChildPidPath.
+process_child_pid_path({scherzo_process, _Port, _ErrPath, _OsPid, ChildPidPath, _TmpDir}) -> ChildPidPath;
+process_child_pid_path({scherzo_process, _Port, _ErrPath, _OsPid, ChildPidPath, _TmpDir, _CleanupPid}) -> ChildPidPath.
 
 process_tmp_dir({scherzo_process, _Port, _ErrPath}) -> undefined;
 process_tmp_dir({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath}) -> undefined;
-process_tmp_dir({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath, TmpDir}) -> TmpDir.
+process_tmp_dir({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath, TmpDir}) -> TmpDir;
+process_tmp_dir({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath, TmpDir, _CleanupPid}) -> TmpDir.
+
+process_cleanup_handle({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath, _TmpDir, CleanupHandle}) -> CleanupHandle;
+process_cleanup_handle(_Process) -> undefined.
 
 process_status_path(Process) ->
     case process_tmp_dir(Process) of

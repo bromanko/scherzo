@@ -392,26 +392,23 @@ pub fn retry_step_does_not_append_provenance_repair_when_finalization_rejects_te
   hub.stop(hub_subject)
 }
 
-pub fn retry_step_accepts_non_active_non_terminal_issue_state_for_retained_run_test() {
+pub fn retry_step_rejects_non_active_non_terminal_issue_state_for_retained_run_test() {
   let dir = "test/tmp/daemon-retry-step-non-active"
   let issue = issue("issue-1", "LIV-510", "Triage")
   let #(workflow_path, root) = write_retry_step_workflow(dir)
   seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let before = ledger_bodies(root)
   let log_subject = process.new_subject()
-  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
       log_subject,
       tracker_with_candidate(issue),
       hub_subject,
-      fn(issue, context, _effective) {
-        process.send(log_subject, "recovered_worker_started:" <> issue.id)
-        assert context.step_id == "apply_feedback"
-        test_async.block_until_released(worker_barrier)
+      fn(_, _, _) {
         Error(agent_types.WorkerFailure(
-          reason: error.PiFailed(error.PiProtocolError("stopped")),
-          workspace_path: Some(context.workspace_path),
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
           tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         ))
@@ -433,16 +430,27 @@ pub fn retry_step_accepts_non_active_non_terminal_issue_state_for_retained_run_t
       1000,
     )
 
-  assert command.status_to_string(result.status) == "applied"
-  assert command.status_reason(result.status) == None
-  assert contains_kind_sequence(root, [
-    "workflow_repair_requested",
-    "step_attempt_superseded",
-    "workflow_run_started",
-  ])
-  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 20)
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status)
+    == Some("issue_state_drift:non_active_state")
+  assert result.message
+    == Some(
+      "run run-1 for issue LIV-510 is currently in non-active state Triage; move the issue to a configured active state before retry-step",
+    )
+  assert ledger_bodies(root) == before
 
-  test_async.release_barrier_if_waiting(worker_barrier)
+  let assert Ok(run_result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
+      1000,
+    )
+  assert command.status_to_string(run_result.status) == "rejected"
+  assert command.status_reason(run_result.status)
+    == Some("issue_state_drift:non_active_state")
+  assert run_result.message == result.message
+  assert ledger_bodies(root) == before
+
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -922,6 +930,103 @@ pub fn retry_step_active_command_session_has_no_orphan_cleanup_recovery_test() {
   hub.stop(hub_subject)
 }
 
+pub fn retry_step_non_active_parent_stop_interrupts_command_child_test() {
+  let dir = "test/tmp/daemon-retry-step-command-non-active-stop"
+  let active_issue = issue("issue-6", "LIV-932", "Todo")
+  let non_active_issue = issue("issue-6", "LIV-932", "Triage")
+  let #(workflow_path, root) = write_retry_command_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, active_issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let issue_subject = start_issue_sequence(active_issue)
+  let command_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let base_deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_sequence(issue_subject),
+      hub_subject,
+      fn(_, context, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError(
+            "unexpected agent step: " <> context.step_id,
+          )),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_deps,
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..base_deps.workflow_run_dependencies,
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _command: String,
+          _timeout_ms: Int,
+          _secrets: List(String),
+          limits: config_types.ArtifactLimits,
+        ) {
+          process.send(
+            log_subject,
+            "active_command_started:" <> context.step_id,
+          )
+          test_async.block_until_released(command_barrier)
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "done",
+            "",
+            False,
+            [],
+            limits,
+          )
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(retry_result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
+      1000,
+    )
+  assert command.status_to_string(retry_result.status) == "applied"
+  assert wait_for_log(log_subject, "active_command_started:apply_feedback", 20)
+
+  let assert Ok(active_command_session) =
+    wait_for_active_step_session(hub_subject, "run-1", "apply_feedback", 2, 20)
+  assert_active_child_has_no_orphan_cleanup_recovery(active_command_session)
+
+  set_issue_sequence(issue_subject, non_active_issue)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "worker_stop_requested", 20)
+
+  let assert Ok(stopped_command_session) =
+    wait_for_step_session(hub_subject, "apply_feedback", 20)
+  assert stopped_command_session.status == event.Exited(session_reason.Stopped)
+  assert_child_orphan_recovery_for_attempt(
+    stopped_command_session,
+    "apply_feedback",
+    2,
+    "Todo",
+  )
+  assert has_step_interrupted_attempt_reason(
+    root,
+    "apply_feedback",
+    2,
+    "orphaned_parent_stopped",
+  )
+  assert !has_step_finished_attempt(root, "apply_feedback", 2)
+
+  test_async.release_barrier_if_waiting(command_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(issue_subject, IssueSequenceStop)
+  hub.stop(hub_subject)
+}
+
 pub fn retry_step_rejects_terminal_issue_state_for_retained_run_test() {
   let dir = "test/tmp/daemon-retry-step-terminal"
   let issue = issue("issue-1", "LIV-511", "Done")
@@ -1185,6 +1290,72 @@ fn tracker_issue_only(candidate: tracker_issue.Issue) -> tracker.Client {
     fetch_candidate_issues: fn() { Ok([]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
     fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+  )
+}
+
+type IssueSequenceMessage {
+  IssueSequenceSet(issue: tracker_issue.Issue, reply: process.Subject(Nil))
+  IssueSequenceNext(reply: process.Subject(tracker_issue.Issue))
+  IssueSequenceStop
+}
+
+fn start_issue_sequence(
+  initial: tracker_issue.Issue,
+) -> process.Subject(IssueSequenceMessage) {
+  let name = process.new_name("issue-sequence")
+  let ready = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let assert Ok(Nil) = process.register(process.self(), name)
+      let subject = process.named_subject(name)
+      process.send(ready, Nil)
+      issue_sequence_loop(subject, initial)
+    })
+  let assert Ok(Nil) = process.receive(ready, within: 1000)
+  process.named_subject(name)
+}
+
+fn issue_sequence_loop(
+  subject: process.Subject(IssueSequenceMessage),
+  current: tracker_issue.Issue,
+) -> Nil {
+  case process.receive_forever(subject) {
+    IssueSequenceSet(issue, reply) -> {
+      process.send(reply, Nil)
+      issue_sequence_loop(subject, issue)
+    }
+    IssueSequenceNext(reply) -> {
+      process.send(reply, current)
+      issue_sequence_loop(subject, current)
+    }
+    IssueSequenceStop -> Nil
+  }
+}
+
+fn set_issue_sequence(
+  subject: process.Subject(IssueSequenceMessage),
+  issue: tracker_issue.Issue,
+) -> Nil {
+  let reply = process.new_subject()
+  process.send(subject, IssueSequenceSet(issue, reply))
+  let assert Ok(Nil) = process.receive(reply, within: 1000)
+  Nil
+}
+
+fn tracker_issue_sequence(
+  subject: process.Subject(IssueSequenceMessage),
+) -> tracker.Client {
+  tracker.Client(
+    fetch_candidate_issues: fn() { Ok([]) },
+    fetch_issues_by_states: fn(_) { Ok([]) },
+    fetch_issue_states_by_ids: fn(_) {
+      let reply = process.new_subject()
+      process.send(subject, IssueSequenceNext(reply))
+      case process.receive(reply, within: 1000) {
+        Ok(issue) -> Ok([issue])
+        Error(Nil) -> Ok([])
+      }
+    },
   )
 }
 
@@ -2136,6 +2307,47 @@ fn has_step_interrupted_reason(
   count_step_interrupted_reason(root, step_id, expected) > 0
 }
 
+fn has_step_interrupted_attempt_reason(
+  root: String,
+  step_id: String,
+  attempt_index: Int,
+  expected: String,
+) -> Bool {
+  ledger_bodies(root)
+  |> list.any(fn(body) {
+    case body {
+      record.StepAttemptInterrupted(
+        step_id: body_step_id,
+        attempt_index: body_attempt_index,
+        reason: reason,
+        ..,
+      ) ->
+        body_step_id == step_id
+        && body_attempt_index == attempt_index
+        && reason == expected
+      _ -> False
+    }
+  })
+}
+
+fn has_step_finished_attempt(
+  root: String,
+  step_id: String,
+  attempt_index: Int,
+) -> Bool {
+  ledger_bodies(root)
+  |> list.any(fn(body) {
+    case body {
+      record.StepAttemptFinished(
+        step_id: body_step_id,
+        attempt_index: body_attempt_index,
+        ..,
+      ) -> body_step_id == step_id && body_attempt_index == attempt_index
+      _ -> False
+    }
+  })
+}
+
 fn count_step_interrupted_reason(
   root: String,
   step_id: String,
@@ -2296,15 +2508,24 @@ fn assert_child_orphan_recovery(
   summary: event.SessionSummary,
   step_id: String,
 ) -> Nil {
+  assert_child_orphan_recovery_for_attempt(summary, step_id, 1, "Todo")
+}
+
+fn assert_child_orphan_recovery_for_attempt(
+  summary: event.SessionSummary,
+  step_id: String,
+  attempt_index: Int,
+  expected_issue_state: String,
+) -> Nil {
   let assert Some(recovery) = summary.recovery
   assert recovery.status == event.Cleanup
   assert recovery.source == "workflow.yaml_step_orphan_cleanup"
   assert recovery.workflow_run_id == Some("run-1")
   assert recovery.workflow_step_id == Some(step_id)
-  assert recovery.workflow_attempt_index == Some(1)
+  assert recovery.workflow_attempt_index == Some(attempt_index)
   assert recovery.parent_session_id == Some("run-1")
   assert recovery.orphan_status == Some("orphaned_parent_stopped")
-  assert recovery.issue_state == Some("Todo")
+  assert recovery.issue_state == Some(expected_issue_state)
   assert recovery.recommended_action == Some("cleanup_orphan_steps")
 }
 
