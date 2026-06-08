@@ -7,6 +7,7 @@ import scherzo/path as scherzo_path
 import scherzo/port
 import simplifile
 import support/test_helpers
+import test_async
 
 pub fn port_cwd_and_stdin_stdout_test() {
   let cwd = "test/tmp/port-cwd"
@@ -319,6 +320,71 @@ pub fn port_terminate_exits_child_test() {
   assert child_dead
 }
 
+pub fn port_non_owner_await_exit_stops_cleanup_watcher_test() {
+  let cwd = "test/tmp/port-non-owner-cleanup"
+  test_helpers.reset_dir(cwd)
+
+  let process_subject = process.new_subject()
+  let owner_barrier = test_async.new_barrier()
+  let _owner =
+    process.spawn_unlinked(fn() {
+      let assert Ok(started_process) = port.start("printf 'done\\n'", cwd)
+      process.send(process_subject, started_process)
+      test_async.block_until_released(owner_barrier)
+    })
+  let assert Ok(started_process) =
+    process.receive(process_subject, within: 1000)
+  assert process_cleanup_watcher_alive(started_process)
+
+  let assert Ok(0) = port.await_exit(started_process, 1000)
+
+  assert wait_until_cleanup_watcher_stopped(started_process, 50)
+  test_async.release_barrier(owner_barrier)
+}
+
+pub fn port_owner_death_terminates_child_test() {
+  assert_owner_death_terminates_child("test/tmp/port-owner-death", fn(cwd) {
+    port.start(owner_death_command(), cwd)
+  })
+}
+
+pub fn port_start_argv_owner_death_terminates_child_test() {
+  assert_owner_death_terminates_child("test/tmp/port-argv-owner-death", fn(cwd) {
+    port.start_argv("sh", ["-c", owner_death_command()], cwd, [])
+  })
+}
+
+fn assert_owner_death_terminates_child(
+  cwd: String,
+  start_process: fn(String) -> Result(port.Process, port.PortError),
+) -> Nil {
+  test_helpers.reset_dir(cwd)
+
+  let child_pid_file = cwd <> "/child.pid"
+  let side_effect_file = cwd <> "/side-effect"
+  let owner_ready = process.new_subject()
+  let owner_barrier = test_async.new_barrier()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let assert Ok(_process) = start_process(cwd)
+      process.send(owner_ready, Nil)
+      test_async.block_until_released(owner_barrier)
+    })
+  let assert Ok(Nil) = process.receive(owner_ready, within: 1000)
+  let assert Ok(child_pid) = read_pid_file(child_pid_file)
+  assert pid_alive(child_pid)
+
+  process.kill(owner)
+  test_async.release_barrier_if_waiting(owner_barrier)
+
+  assert wait_until_dead(child_pid, 50)
+  assert simplifile.is_file(side_effect_file) == Ok(False)
+}
+
+fn owner_death_command() -> String {
+  "echo $$ > child.pid; sleep 60; echo leaked > side-effect"
+}
+
 pub fn port_await_exit_cleans_residual_descendant_test() {
   let cwd = "test/tmp/port-await-descendant"
   test_helpers.reset_dir(cwd)
@@ -578,8 +644,28 @@ fn wait_until_dead(pid: Int, attempts: Int) -> Bool {
   }
 }
 
+fn wait_until_cleanup_watcher_stopped(
+  port_process: port.Process,
+  attempts: Int,
+) -> Bool {
+  case process_cleanup_watcher_alive(port_process) {
+    False -> True
+    True ->
+      case attempts <= 0 {
+        True -> False
+        False -> {
+          process.sleep(20)
+          wait_until_cleanup_watcher_stopped(port_process, attempts - 1)
+        }
+      }
+  }
+}
+
 @external(erlang, "scherzo_test_ffi", "pid_alive")
 fn pid_alive(pid: Int) -> Bool
+
+@external(erlang, "scherzo_test_ffi", "process_cleanup_watcher_alive")
+fn process_cleanup_watcher_alive(port_process: port.Process) -> Bool
 
 @external(erlang, "scherzo_test_ffi", "wait_for_port_data_and_requeue")
 fn wait_for_port_data_and_requeue(

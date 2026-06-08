@@ -5,6 +5,7 @@
     setenv/2,
     unsetenv/1,
     pid_alive/1,
+    process_cleanup_watcher_alive/1,
     wait_for_port_data_and_requeue/2,
     drain_port_data_messages/1,
     drain_any_port_data_messages/0
@@ -36,6 +37,12 @@ pid_alive(Pid) when is_integer(Pid), Pid > 1 ->
         _ -> false
     end;
 pid_alive(_Pid) -> false.
+
+process_cleanup_watcher_alive({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath, _TmpDir, {CleanupPid, _CleanupRef}}) when is_pid(CleanupPid) ->
+    erlang:is_process_alive(CleanupPid);
+process_cleanup_watcher_alive({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath, _TmpDir, CleanupPid}) when is_pid(CleanupPid) ->
+    erlang:is_process_alive(CleanupPid);
+process_cleanup_watcher_alive(_Process) -> false.
 
 wait_for_port_data_and_requeue(Process, TimeoutMs) ->
     case process_port(Process) of
@@ -73,6 +80,7 @@ drain_any_port_data_messages(Count) ->
 process_port({scherzo_process, Port, _ErrPath}) when is_port(Port) -> {ok, Port};
 process_port({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath}) when is_port(Port) -> {ok, Port};
 process_port({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath, _TmpDir}) when is_port(Port) -> {ok, Port};
+process_port({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath, _TmpDir, _CleanupPid}) when is_port(Port) -> {ok, Port};
 process_port(_Other) -> error.
 
 normalize_timeout(TimeoutMs) when is_integer(TimeoutMs), TimeoutMs >= 0 -> TimeoutMs;
