@@ -490,7 +490,10 @@ fn planned_pr_number(
 ) -> Option(Int) {
   case planned.target {
     artifact_publication_planner.ExistingPrBranchTargetPlan(target) ->
-      Some(target.pr_number)
+      case target.pr_number > 0 {
+        True -> Some(target.pr_number)
+        False -> None
+      }
     artifact_publication_planner.StableBranchTargetPlan -> None
   }
 }

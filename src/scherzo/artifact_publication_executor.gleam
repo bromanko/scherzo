@@ -808,8 +808,15 @@ fn driver_result_pr_url(
   case url, planned.target {
     Some(url), _ -> Some(url)
     None, artifact_publication_planner.ExistingPrBranchTargetPlan(target) ->
-      Some(target.pr_url)
+      non_empty_string_option(target.pr_url)
     None, artifact_publication_planner.StableBranchTargetPlan -> None
+  }
+}
+
+fn non_empty_string_option(value: String) -> Option(String) {
+  case string.trim(value) {
+    "" -> None
+    trimmed -> Some(trimmed)
   }
 }
 
@@ -844,7 +851,7 @@ fn planned_target_pr_url(
 ) -> Option(String) {
   case planned.target {
     artifact_publication_planner.ExistingPrBranchTargetPlan(target) ->
-      Some(target.pr_url)
+      non_empty_string_option(target.pr_url)
     artifact_publication_planner.StableBranchTargetPlan -> None
   }
 }

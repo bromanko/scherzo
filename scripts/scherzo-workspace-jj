@@ -25,6 +25,7 @@ USAGE = """Usage:
   scherzo-workspace-jj baseline --json
   scherzo-workspace-jj refresh-base --stage <stage> [--target <driver-ref>] --json
   scherzo-workspace-jj publish-change --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--allow-no-changes <true|false>] --json
+  scherzo-workspace-jj publish-commit-stack --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--expected-head <sha>] [--allow-no-changes <true|false>] --json
   scherzo-workspace-jj assert-only --path <relative-file>
 """
 
@@ -72,6 +73,7 @@ def describe_json() -> None:
             "baseline",
             "refresh-base",
             "publish-change",
+            "publish-commit-stack",
         ],
     })
 
@@ -1280,6 +1282,7 @@ def parse_publish_args(args: list[str]) -> dict[str, str]:
         "--base",
         "--target-branch",
         "--target-pr",
+        "--expected-head",
         "--allow-no-changes",
     }
     index = 0
@@ -1405,7 +1408,40 @@ def run_capture(args: list[str], root: Path) -> subprocess.CompletedProcess[str]
         json_failure(status="invalid_request", failure_code="command_not_found", message=f"required command not found: {args[0]}")
 
 
-def publish_change(root: Path, args: list[str]) -> None:
+def validate_expected_target_head(root: Path, remote: str, branch: str, expected: str) -> None:
+    expected = expected.strip().lower()
+    if not expected:
+        return
+    if not re.fullmatch(r"[0-9a-f]{40}", expected):
+        usage_error("--expected-head must be a 40-character Git object ID")
+    fetch = run_jj_proc(root, ["git", "fetch", "--remote", remote, "--branch", branch])
+    if fetch.returncode != 0:
+        json_failure(
+            status="publication_failed",
+            failure_code="target_fetch_failed",
+            message=(fetch.stderr or fetch.stdout or "jj git fetch failed").strip(),
+        )
+    actual = revision_value(root, f"{branch}@{remote}", "commit_id", default="").lower()
+    if actual != expected:
+        json_failure(
+            status="stale_existing_branch",
+            failure_code="stale_existing_branch",
+            message=f"remote branch {branch} is no longer at expected head {expected}",
+            expected_head=expected,
+            actual_head=actual,
+            branch=branch,
+        )
+
+
+def publish_needs_repo(operation: str, values: dict[str, str]) -> bool:
+    if values.get("target-pr"):
+        return True
+    if operation == "publish-commit-stack" and values.get("target-branch"):
+        return False
+    return True
+
+
+def publish_change(root: Path, args: list[str], *, operation: str = "publish-change") -> None:
     values = parse_publish_args(args)
     reject_legacy_publication_remote_without_canonical()
     draft = pr_draft_setting()
@@ -1416,7 +1452,9 @@ def publish_change(root: Path, args: list[str]) -> None:
     allow_no_changes = values["allow-no-changes"] == "true"
     base = values["base"]
     remote = selected_publication_remote()
-    repo = default_repo(root, remote)
+    if values.get("target-branch") and values.get("expected-head"):
+        validate_expected_target_head(root, remote, values["target-branch"], values["expected-head"])
+    repo = default_repo(root, remote) if publish_needs_repo(operation, values) else ""
 
     if not records and allow_no_changes:
         branch = values.get("target-branch") or ""
@@ -1451,7 +1489,7 @@ def publish_change(root: Path, args: list[str]) -> None:
     bookmark_args = ["bookmark", "set"]
     if values.get("target-branch"):
         # Merge-conflict resolution publishes intentionally retarget an existing
-        # PR branch. Ensure jj treats the selected remote bookmark as the
+        # PR/head branch. Ensure jj treats the selected remote bookmark as the
         # tracking source, then allow replacing stale local resolver bookmarks.
         # The subsequent git push remains non-force and remote fast-forward-safe.
         track = run_jj_proc(root, ["bookmark", "track", branch, f"--remote={remote}"])
@@ -1476,15 +1514,16 @@ def publish_change(root: Path, args: list[str]) -> None:
     pr_url = ""
     created = False
     updated = bool(values.get("target-branch") or values.get("target-pr"))
+    branch_only_commit_stack = operation == "publish-commit-stack" and bool(values.get("target-branch")) and not values.get("target-pr")
     if values.get("target-pr"):
         view = run_capture(["gh", "pr", "view", values["target-pr"], "--repo", repo, "--json", "url", "--jq", ".url"], root)
         if view.returncode == 0:
             pr_url = view.stdout.strip()
-    if not pr_url:
+    if not pr_url and not branch_only_commit_stack:
         view = run_capture(["gh", "pr", "view", branch, "--repo", repo, "--json", "url", "--jq", ".url"], root)
         if view.returncode == 0:
             pr_url = view.stdout.strip()
-    if not pr_url and not values.get("target-pr"):
+    if not pr_url and not values.get("target-pr") and not branch_only_commit_stack:
         gh_base = base.split("@", 1)[0]
         create_args = [
             "gh",
@@ -1511,7 +1550,7 @@ def publish_change(root: Path, args: list[str]) -> None:
             pr_url = create.stdout.strip()
             created = True
             updated = False
-    if not pr_url:
+    if not pr_url and not branch_only_commit_stack:
         json_failure(status="publication_failed", failure_code="pr_url_missing", message=f"failed to create or locate hosted review URL for {branch}")
 
     json_dump({
@@ -1577,6 +1616,10 @@ def main(argv: list[str]) -> None:
 
     if command == "publish-change":
         publish_change(root, rest)
+        return
+
+    if command == "publish-commit-stack":
+        publish_change(root, rest, operation="publish-commit-stack")
         return
 
     if command == "assert-only":

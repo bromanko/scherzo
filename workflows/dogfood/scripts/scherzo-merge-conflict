@@ -5,8 +5,9 @@ This workflow is intentionally narrow: locate one same-repository GitHub PR or
 branch named by a manually-created Linear issue, create a merge commit from the
 latest target branch and base branch, let pi resolve only materialized conflicts,
 validate that non-conflicted files were not touched except for explicitly
-manifested mechanical fallout repairs, and fast-forward the target branch with
-the merge commit.
+manifested mechanical fallout repairs, retain the discovered existing PR/head
+branch target, and materialize the validated resolution as a first-class
+commit_stack artifact for Scherzo core publication.
 """
 
 from __future__ import annotations
@@ -35,6 +36,11 @@ MECHANICAL_EDITS_PATH = TMP_DIR / "scherzo-merge-conflict-mechanical-edits.json"
 VALIDATION_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-validation.json"
 PUBLISH_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-publish.json"
 PR_COMMENT_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-pr-comment.md"
+TARGET_ARTIFACT_PATH = TMP_DIR / "scherzo-merge-conflict-target.json"
+COMMIT_STACK_PATH = TMP_DIR / "scherzo-merge-conflict-commit-stack.json"
+COMMIT_STACK_CARRIER_NAME = "scherzo-merge-conflict-commit-stack.bundle"
+COMMIT_STACK_CARRIER_PATH = TMP_DIR / COMMIT_STACK_CARRIER_NAME
+COMMIT_STACK_MAX_CARRIER_BYTES = 104_857_600
 RETENTION_MARKER = ".scherzo-keep-workspace"
 CONFLICT_MARKER_RE = re.compile(r"^(<<<<<<<|>>>>>>>|%%%%%%%|\+{7}|\\{7})", re.MULTILINE)
 JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
@@ -62,8 +68,9 @@ run-project-validation -- <command> [args...]
 record-project-validation
               Mark repo-local workflow project validation as passed after the
               configured validation command step succeeds.
-publish       Fast-forward the target branch with the validated merge commit,
-              or no-op when prepare found no conflicts.
+publish       Materialize the validated resolution target and commit_stack
+              artifacts for Scherzo core publication. The workflow artifact
+              publication route updates the existing PR/head branch.
 
 Test helper:
 extract-target <text-file> [repo]
@@ -148,6 +155,87 @@ def load_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def require_artifact_run_id(value: str) -> str:
+    run_id = value.strip() or "local-run"
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_id):
+        return run_id
+    fail("SCHERZO_RUN_ID contains characters that cannot be used in artifact refs")
+
+
+def run_id_for_artifacts() -> str:
+    return require_artifact_run_id(os.environ.get("SCHERZO_RUN_ID", "local-run"))
+
+
+def run_artifact_dir(run_id: str) -> Path | None:
+    explicit = os.environ.get("SCHERZO_RUN_ARTIFACT_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+
+    candidates = run_artifact_dir_candidates(run_id)
+    if candidates:
+        return candidates[0]
+    return None
+
+
+def run_artifact_dir_candidates(run_id: str) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if run_root:
+        append_artifact_dir_candidate(candidates, seen, Path(run_root), run_id)
+
+    repo_root = os.environ.get("SCHERZO_REPO_ROOT", "").strip()
+    if repo_root:
+        append_artifact_dir_candidate(candidates, seen, Path(repo_root), run_id)
+
+    for root in state_root_search_paths():
+        append_artifact_dir_candidate(candidates, seen, root, run_id)
+
+    return candidates
+
+
+def state_root_search_paths() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    starts = [Path.cwd()]
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if run_root:
+        starts.append(Path(run_root))
+
+    for start in starts:
+        for root in [start, *start.parents]:
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            if (root / ".scherzo-state").is_dir():
+                roots.append(root)
+    return roots
+
+
+def append_artifact_dir_candidate(
+    candidates: list[Path], seen: set[str], root: Path, run_id: str
+) -> None:
+    candidate = root / ".scherzo-state" / "artifacts" / "runs" / run_id
+    key = str(candidate)
+    if key not in seen:
+        seen.add(key)
+        candidates.append(candidate)
+
+
+def artifact_output_ref(run_id: str, name: str) -> str:
+    return f"runs/{run_id}/outputs/{name}"
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def workspace_driver_command() -> str | None:
@@ -593,6 +681,138 @@ def current_commit_short(rev: str) -> str:
     return run(["jj", "log", "-r", rev, "--no-graph", "-T", "commit_id.short()", "--color=never"]).strip()
 
 
+def require_git_oid(value: str, *, label: str) -> str:
+    oid = value.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", oid):
+        return oid
+    fail(f"{label} did not resolve to a 40-character Git object ID")
+
+
+def jj_commit_oid(revision: str) -> str:
+    return require_git_oid(current_commit(revision), label=f"jj revision {revision}")
+
+
+def jj_tree_oid(revision: str) -> str:
+    commit = jj_commit_oid(revision)
+    proc = run_proc(["jj", "debug", "object", "commit", commit])
+    if proc.returncode != 0:
+        fail(f"could not inspect Git tree for jj revision {revision}")
+    match = re.search(r'TreeId\(\s*"([0-9a-f]{40})"\s*,?\s*\)', proc.stdout)
+    if not match:
+        fail(f"jj revision {revision} did not expose a 40-character Git tree ID")
+    return require_git_oid(match.group(1), label=f"tree for jj revision {revision}")
+
+
+def commit_stack_bundle_ref(run_id: str, head_oid: str) -> str:
+    run_hash = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+    return f"refs/scherzo/merge-conflict-commit-stack/{run_hash}/{head_oid}"
+
+
+def unique_git_oids(values: list[str]) -> list[str]:
+    oids: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        oid = require_git_oid(value, label="commit_stack bundle prerequisite")
+        if oid not in seen:
+            seen.add(oid)
+            oids.append(oid)
+    return oids
+
+
+def write_commit_stack_carrier(
+    *, run_id: str, prerequisite_oids: list[str], head_oid: str
+) -> tuple[str, str, int]:
+    require_command("git")
+    artifact_dir = run_artifact_dir(run_id)
+    if artifact_dir is None:
+        carrier_path = COMMIT_STACK_CARRIER_PATH
+        carrier_ref = str(carrier_path)
+    else:
+        carrier_path = artifact_dir / "outputs" / COMMIT_STACK_CARRIER_NAME
+        carrier_ref = artifact_output_ref(run_id, COMMIT_STACK_CARRIER_NAME)
+    carrier_path.parent.mkdir(parents=True, exist_ok=True)
+    if carrier_path.exists():
+        carrier_path.unlink()
+
+    prerequisites = [f"^{oid}" for oid in unique_git_oids(prerequisite_oids)]
+    bundle_ref = commit_stack_bundle_ref(run_id, head_oid)
+    try:
+        run(["git", "update-ref", bundle_ref, head_oid])
+        run(["git", "bundle", "create", str(carrier_path), bundle_ref, *prerequisites])
+        run(["git", "bundle", "verify", str(carrier_path)])
+    finally:
+        run(["git", "update-ref", "-d", bundle_ref], check=False)
+
+    carrier_bytes = carrier_path.stat().st_size
+    if carrier_bytes > COMMIT_STACK_MAX_CARRIER_BYTES:
+        fail(
+            "commit_stack carrier bundle exceeds maximum supported size "
+            f"({carrier_bytes} bytes > {COMMIT_STACK_MAX_CARRIER_BYTES} bytes)"
+        )
+    return carrier_ref, file_sha256(carrier_path), carrier_bytes
+
+
+def materialize_commit_stack_artifact(metadata: dict[str, Any]) -> dict[str, Any]:
+    run_id = run_id_for_artifacts()
+    target_head_oid = require_git_oid(
+        metadata["head_commit_at_prepare"], label="target branch head at prepare"
+    )
+    base_branch_oid = require_git_oid(
+        metadata["base_commit_at_prepare"], label="base branch head at prepare"
+    )
+    head_oid = jj_commit_oid("@")
+    head_tree_oid = jj_tree_oid("@")
+    carrier_ref, carrier_sha256, carrier_bytes = write_commit_stack_carrier(
+        run_id=run_id,
+        prerequisite_oids=[target_head_oid, base_branch_oid],
+        head_oid=head_oid,
+    )
+    artifact = {
+        "schema_version": 1,
+        "artifact_type": "scherzo.git_commit_stack.v1",
+        "repository": {"repo": metadata["repo"]},
+        "base": {"ref": metadata["head_branch"], "sha": target_head_oid},
+        "head": {"sha": head_oid, "tree": head_tree_oid},
+        "carrier": {
+            "ref": carrier_ref,
+            "sha256": carrier_sha256,
+            "bytes": carrier_bytes,
+            "media_type": "application/vnd.git.bundle",
+        },
+    }
+    write_json(COMMIT_STACK_PATH, artifact)
+    return artifact
+
+
+def target_artifact(metadata: dict[str, Any]) -> dict[str, Any]:
+    artifact: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": "scherzo.github_existing_pr_branch_target.v1",
+        "repository": {"repo": metadata["repo"]},
+        "head": {
+            "repo": metadata["repo"],
+            "branch": metadata["head_branch"],
+            "sha": metadata["head_commit_at_prepare"],
+        },
+        "base": {
+            "branch": metadata["base_branch"],
+            "sha": metadata["base_commit_at_prepare"],
+        },
+    }
+    if metadata.get("pr_number"):
+        artifact["pull_request"] = {
+            "number": metadata["pr_number"],
+            "url": metadata.get("pr_url") or "",
+        }
+    return artifact
+
+
+def write_target_artifact(metadata: dict[str, Any]) -> dict[str, Any]:
+    artifact = target_artifact(metadata)
+    write_json(TARGET_ARTIFACT_PATH, artifact)
+    return artifact
+
+
 def track_remote_bookmark(remote: str, branch: str) -> None:
     run(["jj", "bookmark", "track", branch, f"--remote={remote}"])
 
@@ -788,6 +1008,7 @@ def prepare_command() -> None:
         "non_conflict_fingerprints": non_conflict_hashes,
     }
     write_json(METADATA_PATH, metadata)
+    write_target_artifact(metadata)
     write_brief(issue, metadata)
     write_retention_marker(target_label)
 
@@ -809,6 +1030,7 @@ def prepare_command() -> None:
     else:
         print("- None")
     print(f"METADATA_PATH={METADATA_PATH}")
+    print(f"TARGET_ARTIFACT_PATH={TARGET_ARTIFACT_PATH}")
     print(f"BRIEF_PATH={BRIEF_PATH}")
     print(f"MECHANICAL_EDITS_PATH={MECHANICAL_EDITS_PATH}")
     print(f"RETENTION_MARKER={retention_marker_path()}")
@@ -1129,8 +1351,7 @@ def write_publish_pr_comment(metadata: dict[str, Any], validation: dict[str, Any
 
 
 def publish_command() -> None:
-    if not workspace_driver_available():
-        require_command("jj")
+    require_command("jj")
     metadata = load_json(METADATA_PATH)
     validation = ensure_validation_passed()
     if (
@@ -1139,109 +1360,71 @@ def publish_command() -> None:
     ):
         fail(
             "repo-local project validation has not been recorded; run the "
-            "project_validation workflow step before publish"
+            "project_validation workflow step before publication artifact materialization"
         )
 
     conflicted: list[str] = metadata.get("conflicted_files", [])
-    if not conflicted:
-        clear_retention_marker()
-        publish = {
-            "pushed": False,
-            "reason": "no_conflicts",
-            "branch": metadata["head_branch"],
-            "base_branch": metadata["base_branch"],
-            "pr_url": metadata.get("pr_url"),
-        }
-        write_json(PUBLISH_PATH, publish)
-        print("## Summary")
-        print("No merge conflicts were found after fetching the target and base branches; no branch changes were pushed.")
-        print("")
-        print("PUSHED=false")
-        print("REASON=no_conflicts")
-        print(f"BRANCH={metadata['head_branch']}")
-        if metadata.get("pr_url"):
-            print(f"PR_URL={metadata['pr_url']}")
-        return
-
-    remote = metadata["remote"]
+    target = write_target_artifact(metadata)
+    commit_stack = materialize_commit_stack_artifact(metadata)
     head_branch = metadata["head_branch"]
     base_branch = metadata["base_branch"]
-    target_label = f"PR #{metadata['pr_number']}" if metadata.get("pr_number") else f"branch {head_branch}"
-    if workspace_driver_available():
-        title_path = TMP_DIR / "scherzo-merge-conflict-pr-title.txt"
-        body_path = TMP_DIR / "scherzo-merge-conflict-pr-body.md"
-        title_path.parent.mkdir(parents=True, exist_ok=True)
-        title_path.write_text(f"chore: resolve merge conflicts for {target_label}\n")
-        body_path.write_text(RESOLUTION_SUMMARY_PATH.read_text() if RESOLUTION_SUMMARY_PATH.exists() else "Merge conflict resolution.\n")
-        driver_args = [
-            "publish-change",
-            "--kind",
-            "merge-conflict",
-            "--title-file",
-            str(title_path),
-            "--body-file",
-            str(body_path),
-            "--branch-prefix",
-            "scherzo/merge-conflict",
-            "--base",
-            base_branch,
-            "--target-branch",
-            head_branch,
-            "--allow-no-changes",
-            "false",
-            "--json",
-        ]
-        if metadata.get("pr_number"):
-            driver_args.extend(["--target-pr", str(metadata["pr_number"])])
-        payload = run_workspace_driver_json(driver_args)
-        commit = str(payload.get("head_revision") or payload.get("change_id") or "")
-    else:
-        require_command("gh")
-        run(["jj", "git", "fetch", "--remote", remote, "--branch", head_branch])
-        run(["jj", "git", "fetch", "--remote", remote, "--branch", base_branch])
-        remote_head = current_commit(f"{head_branch}@{remote}")
-        if remote_head != metadata["head_commit_at_prepare"]:
-            fail(
-                "target branch advanced after prepare; rerun the merge-conflict "
-                "workflow on the latest branch head before pushing"
-            )
-
-        run(["jj", "describe", "-m", f"chore: resolve merge conflicts for {target_label}"])
-        track_remote_bookmark(remote, head_branch)
-        run(["jj", "bookmark", "set", head_branch, "--revision", "@"])
-        run(["jj", "git", "push", "--remote", remote, "--bookmark", head_branch])
-        commit = current_commit_short("@")
-    commented = write_publish_pr_comment(metadata, validation, commit)
-    clear_retention_marker()
+    resolution_status = validation.get("resolution_status") or (
+        "resolved" if conflicted else "no_conflicts"
+    )
 
     publish = {
-        "pushed": True,
+        "status": "ready_for_core_publication",
+        "publication_mode": "commit_stack",
+        "publication_orchestrator": "scherzo_core",
+        "resolution_status": resolution_status,
         "branch": head_branch,
         "base_branch": base_branch,
         "pr_url": metadata.get("pr_url"),
-        "commit": commit,
+        "target_artifact_path": str(TARGET_ARTIFACT_PATH),
+        "commit_stack_path": str(COMMIT_STACK_PATH),
+        "commit_stack_head_revision": commit_stack["head"]["sha"],
+        "commit_stack_base_revision": commit_stack["base"]["sha"],
+        "target_expected_head_revision": target["head"]["sha"],
         "conflicted_files": conflicted,
         "mechanical_non_conflicted_edits": validation.get("mechanical_non_conflicted_edits") or [],
         "project_validation": validation.get("project_validation"),
-        "commented": commented,
     }
+    if metadata.get("pr_number"):
+        publish["pr_number"] = metadata["pr_number"]
+    if resolution_status == "no_conflicts":
+        publish["reason"] = "no_conflicts"
     write_json(PUBLISH_PATH, publish)
 
     print("## Summary")
-    print(f"Resolved merge conflicts on `{head_branch}` by merging `{base_branch}` and pushed the merge commit.")
-    print("")
-    print("PUSHED=true")
+    if resolution_status == "no_conflicts":
+        print("No manual conflict resolution was needed after fetching the target and base branches; Scherzo retained the validated commit_stack for core publication.")
+        print("")
+        print("PUSHED=false")
+        print("REASON=no_conflicts")
+    else:
+        print(f"Resolved merge conflicts on `{head_branch}` by merging `{base_branch}` and retained the validated merge commit for Scherzo core publication.")
+        print("")
+        print("PUSHED=false")
+    print("PUBLICATION_MODE=commit_stack")
+    print("PUBLICATION_ORCHESTRATOR=scherzo_core")
     print(f"BRANCH={head_branch}")
     print(f"BASE_BRANCH={base_branch}")
     if metadata.get("pr_url"):
         print(f"PR_URL={metadata['pr_url']}")
-    print(f"COMMIT={commit}")
-    print(f"COMMENTED={'true' if commented else 'false'}")
+    if metadata.get("pr_number"):
+        print(f"PR_NUMBER={metadata['pr_number']}")
+    print(f"TARGET_ARTIFACT_PATH={TARGET_ARTIFACT_PATH}")
+    print(f"TARGET_EXPECTED_HEAD_REVISION={target['head']['sha']}")
+    print(f"COMMIT_STACK_PATH={COMMIT_STACK_PATH}")
+    print(f"COMMIT_STACK_HEAD_REVISION={commit_stack['head']['sha']}")
     print(f"PROJECT_VALIDATION={validation.get('project_validation')}")
     print(f"MECHANICAL_NON_CONFLICTED_EDITS={len(validation.get('mechanical_non_conflicted_edits') or [])}")
     print("CONFLICTED_FILES:")
-    for path in conflicted:
-        print(f"- {path}")
+    if conflicted:
+        for path in conflicted:
+            print(f"- {path}")
+    else:
+        print("- None")
 
 
 def print_target(target: dict[str, Any]) -> None:

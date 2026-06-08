@@ -422,6 +422,33 @@ pub fn commit_stack_existing_pr_branch_plans_retained_target_test() {
   assert target.pr_url == "https://example.test/pr/42"
 }
 
+pub fn commit_stack_existing_branch_plans_retained_target_without_pr_test() {
+  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+  let target_contents = existing_branch_target_contents_without_pr()
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert manifest.branch == existing_branch()
+  let assert artifact_publication_planner.ExistingPrBranchTargetPlan(target) =
+    manifest.target
+  assert target.pr_number == 0
+  assert target.pr_url == ""
+}
+
 pub fn commit_stack_manifest_round_trips_through_decoder_test() {
   let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
   let target_contents = existing_target_contents("scherzo-systems/scherzo")
@@ -2046,6 +2073,36 @@ fn existing_target_contents_with_base_branch(
       json.object([
         #("number", json.int(42)),
         #("url", json.string("https://example.test/pr/42")),
+      ]),
+    ),
+  ])
+  |> json.to_string
+}
+
+fn existing_branch_target_contents_without_pr() -> String {
+  json.object([
+    #("schema_version", json.int(1)),
+    #(
+      "artifact_type",
+      json.string("scherzo.github_existing_pr_branch_target.v1"),
+    ),
+    #(
+      "repository",
+      json.object([#("repo", json.string("scherzo-systems/scherzo"))]),
+    ),
+    #(
+      "head",
+      json.object([
+        #("repo", json.string("scherzo-systems/scherzo")),
+        #("branch", json.string(existing_branch())),
+        #("sha", json.string(expected_existing_head_sha())),
+      ]),
+    ),
+    #(
+      "base",
+      json.object([
+        #("branch", json.string("main")),
+        #("sha", json.string(expected_base_sha())),
       ]),
     ),
   ])

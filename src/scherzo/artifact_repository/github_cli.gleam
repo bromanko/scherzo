@@ -77,31 +77,36 @@ pub fn verify_existing_pr_branch(
   checkout_dir: String,
   runner: command_runner.Runner,
 ) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
-  use repo <- result.try(require_option(
-    manifest.github_repo,
-    artifact_publication_manifest.PublicationErrorInfo(
-      code: "missing_github_repo",
-      message: "planned github publication is missing github_repo",
-    ),
-  ))
-  use stdout <- result.try(run_stdout(
-    runner,
-    gh_command(
-      [
-        "pr",
-        "view",
-        int.to_string(target.pr_number),
-        "--repo",
-        repo,
-        "--json",
-        "number,url,state,headRefName,headRefOid,baseRefName,isCrossRepository",
-      ],
-      checkout_dir,
-    ),
-    True,
-  ))
-  use pr <- result.try(decode_existing_pr_branch_view(stdout))
-  validate_existing_pr_branch(pr, target, desired_head_sha)
+  case target.pr_number <= 0 {
+    True -> Ok("")
+    False -> {
+      use repo <- result.try(require_option(
+        manifest.github_repo,
+        artifact_publication_manifest.PublicationErrorInfo(
+          code: "missing_github_repo",
+          message: "planned github publication is missing github_repo",
+        ),
+      ))
+      use stdout <- result.try(run_stdout(
+        runner,
+        gh_command(
+          [
+            "pr",
+            "view",
+            int.to_string(target.pr_number),
+            "--repo",
+            repo,
+            "--json",
+            "number,url,state,headRefName,headRefOid,baseRefName,isCrossRepository",
+          ],
+          checkout_dir,
+        ),
+        True,
+      ))
+      use pr <- result.try(decode_existing_pr_branch_view(stdout))
+      validate_existing_pr_branch(pr, target, desired_head_sha)
+    }
+  }
 }
 
 type ExistingPrBranchView {

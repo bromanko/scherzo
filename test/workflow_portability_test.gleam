@@ -307,7 +307,7 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
     ),
     #(
       ".scherzo/workflows/merge-conflict-resolution.yaml",
-      "  requires: [status, diff, changed-files, publish-change]",
+      "  requires: [status, diff, changed-files, publish-commit-stack]",
     ),
   ]
 

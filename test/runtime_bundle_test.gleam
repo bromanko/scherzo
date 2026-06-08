@@ -527,7 +527,7 @@ pub fn task_updates_completion_policy_accepts_publish_commit_stack_alias_with_jj
   assert dag.workspace_capabilities
     == [config_types.WorkspacePublishCommitStack]
   assert list.contains(driver.capabilities, config_types.WorkspacePublishChange)
-  assert !list.contains(
+  assert list.contains(
     driver.capabilities,
     config_types.WorkspacePublishCommitStack,
   )
@@ -794,6 +794,7 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
       config_types.WorkspaceBaseline,
       config_types.WorkspaceRefreshBase,
       config_types.WorkspacePublishChange,
+      config_types.WorkspacePublishCommitStack,
     ]
 
   assert_dogfood_workflows_select_profile(
@@ -846,7 +847,7 @@ fn assert_dogfood_workflows_select_profile(
           config_types.WorkspaceStatus,
           config_types.WorkspaceDiff,
           config_types.WorkspaceChangedFiles,
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]
         _ -> []
       }
@@ -1090,6 +1091,7 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
       config_types.WorkspaceBaseline,
       config_types.WorkspaceRefreshBase,
       config_types.WorkspacePublishChange,
+      config_types.WorkspacePublishCommitStack,
     ]
   assert driver.timeout_ms == 60_000
   assert driver.env

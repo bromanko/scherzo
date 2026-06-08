@@ -165,8 +165,17 @@ pub fn validate_existing_pr_branch_target(
   use _ <- result.try(validate_git_oid(target.expected_head_sha, "head.sha"))
   use _ <- result.try(validate_non_empty(target.base_branch, "base.branch"))
   use _ <- result.try(validate_git_oid(target.base_sha, "base.sha"))
-  use _ <- result.try(validate_non_empty(target.pr_url, "pull_request.url"))
-  Ok(target)
+  use _ <- result.try(validate_non_negative(
+    target.pr_number,
+    "pull_request.number",
+  ))
+  case target.pr_number > 0 {
+    True -> {
+      use _ <- result.try(validate_non_empty(target.pr_url, "pull_request.url"))
+      Ok(target)
+    }
+    False -> Ok(target)
+  }
 }
 
 fn decode_commit_stack(
@@ -233,9 +242,8 @@ fn decode_existing_pr_branch_target(
   use base <- result.try(required_object(entries, "base"))
   use base_branch <- result.try(required_string(base, "branch"))
   use base_sha <- result.try(required_string(base, "sha"))
-  use pull_request <- result.try(required_object(entries, "pull_request"))
-  use pr_number <- result.try(required_int(pull_request, "number"))
-  use pr_url <- result.try(required_string(pull_request, "url"))
+  use pull_request <- result.try(optional_pull_request(entries))
+  let #(pr_number, pr_url) = pull_request
   validate_existing_pr_branch_target(ExistingPrBranchTarget(
     repository: repository,
     head_repo: head_repo,
@@ -246,6 +254,24 @@ fn decode_existing_pr_branch_target(
     pr_number: pr_number,
     pr_url: pr_url,
   ))
+}
+
+fn optional_pull_request(
+  entries: List(#(String, json_value.JsonValue)),
+) -> Result(#(Int, String), ArtifactParseError) {
+  case field(entries, "pull_request") {
+    None -> Ok(#(0, ""))
+    Some(json_value.JObject(pull_request)) -> {
+      use pr_number <- result.try(required_int(pull_request, "number"))
+      use pr_url <- result.try(required_string(pull_request, "url"))
+      Ok(#(pr_number, pr_url))
+    }
+    Some(_) ->
+      error(
+        "pull_request_not_object",
+        "pull_request must be an object when present",
+      )
+  }
 }
 
 fn parse_json(
