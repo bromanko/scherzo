@@ -4,7 +4,7 @@ id: implementation
 description: Implement a focused Scherzo task from Linear-fetched context, review it, validate it, publish a PR, and report the PR URL.
 workspace:
   driver: dogfood-jj
-  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]
+  requires: [status, diff, changed-files, baseline, refresh-base, publish-commit-stack]
 concurrency: 4
 recovery:
   attempts: 1

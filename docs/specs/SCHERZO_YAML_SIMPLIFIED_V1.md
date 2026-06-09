@@ -346,17 +346,18 @@ run fails. The only current dedupe mode is `open_task_per_schedule`.
 `workflow_summary_chars` replace the old `artifact_limits` section.
 
 Artifact publication repository targets are configured under
-`artifacts.repositories.github.<name>`:
+`artifacts.repositories.github.<name>`. Checked-in dogfood workflows use a
+`github.code` target for same-repository `commit_stack` publication; they do not
+configure a `github.docs` single-file publication repository for ExecPlan review
+docs.
 
 ```yaml
 artifacts:
   repositories:
     github:
-      docs:
+      code:
         repo: scherzo-systems/scherzo
         base: main
-        checkout:
-          strategy: managed_git
         branch:
           strategy: stable_per_work
           template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
@@ -371,12 +372,14 @@ artifacts:
 `branch.template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}`,
 `pull_request.enabled: true`,
 `pull_request.strategy: update_existing`, and `pull_request.draft: false`.
+The managed-checkout default is parser compatibility for older file-publication
+configuration; it is not an active same-repository GitHub publication fallback.
 `pull_request.body_template`, when present, must be a repository-relative path.
 Publication templates support interpolation variables (`{{ ... }}`) only; control
 flow tags such as `{% if %}` are not accepted in this config surface.
 This schema slice only parses and validates configuration; runtime publication,
-GitHub mutation, durable publication state, retry commands, and migration away
-from `publish-change` are deferred.
+GitHub mutation, durable publication state, retry commands, and any remaining
+legacy driver aliases are handled by later runtime layers.
 
 ## Workflow YAML schema
 
@@ -391,7 +394,7 @@ concurrency: 4
 
 workspace:
   driver: jj
-  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]
+  requires: [status, diff, changed-files, baseline, refresh-base, publish-commit-stack]
 
 
 steps:
@@ -449,31 +452,41 @@ Structured-output command validator `timeout` also replaces `timeout_ms`.
 other structured output fields remain unchanged.
 
 Workflow artifact publication routes are configured under
-`artifacts.publications`:
+`artifacts.publications`. Same-repository GitHub publication uses `mode:
+commit_stack` and selects a `commit_stack` contract output:
 
 ```yaml
+contract:
+  version: 1
+  outputs:
+    commit_stack:
+      kind: commit_stack
+      media_type: application/vnd.scherzo.git-commit-stack+json
+      artifact_type: scherzo.git_commit_stack.v1
+      source:
+        step: materialize_commit_stack
+        path: tmp/scherzo-implementation-commit-stack.json
 artifacts:
   publications:
-    - id: execplan_review_doc
-      repository: github.docs
+    - id: implementation_commit_stack
+      repository: github.code
       required: true
-      pull_request:
-        title: "{{ work.identifier }} ExecPlan"
-        body_template: prompts/execplan-pr-body.md
-      files:
-        - select:
-            output: exec_plan_bundle
-            entry: plan
-          path: docs/plans/{{ work.identifier }}.md
+      mode: commit_stack
+      commit_stack:
+        select:
+          output: commit_stack
+      target:
+        kind: stable_branch
 ```
 
 `repository` references a root repository target as `<backend>.<name>`.
 Non-empty `artifacts.publications` requires a workflow `contract.outputs` block so
-selectors can be validated before dispatch. `required` defaults to `true`. Each
-file route must declare `select.output`, may optionally declare `select.entry` for
-aggregate-capable outputs such as
-`artifact[]`, `exec_plan_bundle`, and `code_change_bundle`, and must write to a
-repository-relative `path`. Branch names, PR titles, and destination paths may
+selectors can be validated before dispatch. `required` defaults to `true`.
+`mode: commit_stack` routes must declare `commit_stack.select.output` and must not
+also declare `files` or workflow-local PR overrides. The `files` route form
+remains a schema concept for external/cross-repo file publication, but checked-in
+dogfood workflows must not use it for same-repository GitHub publication or for
+ExecPlan review-doc publication. Branch names, PR titles, and destination paths may
 use the publication template variables from the artifact publication PRD,
 including `work.*`, `workflow.id`, `publication.*`, and artifact-scoped
 variables such as `artifact.output`, `artifact.entry`, and the supported

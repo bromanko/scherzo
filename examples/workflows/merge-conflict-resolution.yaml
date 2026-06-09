@@ -4,8 +4,40 @@ id: merge-conflict-resolution
 description: Resolve merge conflicts on a same-repository GitHub PR or branch without intentional functionality changes.
 workspace:
   driver: isolated
-  requires: [status, diff, changed-files, publish-change]
+  requires: [status, diff, changed-files, publish-commit-stack]
 concurrency: 1
+contract:
+  version: 1
+  outputs:
+    merge_target:
+      kind: value
+      media_type: application/json
+      artifact_type: scherzo.github_existing_pr_branch_target.v1
+      required: true
+      source:
+        step: materialize_commit_stack
+        path: tmp/scherzo-merge-conflict-target.json
+    commit_stack:
+      kind: commit_stack
+      media_type: application/vnd.scherzo.git-commit-stack+json
+      artifact_type: scherzo.git_commit_stack.v1
+      required: true
+      source:
+        step: materialize_commit_stack
+        path: tmp/scherzo-merge-conflict-commit-stack.json
+artifacts:
+  publications:
+    - id: merge_conflict_resolution_commit_stack
+      repository: github.code
+      required: true
+      mode: commit_stack
+      commit_stack:
+        select:
+          output: commit_stack
+      target:
+        kind: existing_pr_branch
+        source:
+          output: merge_target
 steps:
   - id: prepare_target
     kind: command
@@ -56,7 +88,7 @@ steps:
       name: main
       from: main
 
-  - id: publish_resolution
+  - id: materialize_commit_stack
     kind: command
     depends_on: [project_validation]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" publish'

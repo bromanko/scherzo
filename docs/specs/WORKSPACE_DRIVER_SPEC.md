@@ -43,7 +43,7 @@ This specification does not prescribe one version-control backend, one publicati
 
 **Lifecycle operation**: a driver operation Scherzo invokes while creating, checking, or removing a workspace. Lifecycle operations may create or delete directories and therefore have stricter target-safety requirements than read-only capabilities.
 
-**Capability**: a named operation that workflow code may require with `workspace.requires` and invoke through the selected driver, such as `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, or `publish-change`.
+**Capability**: a named operation that workflow code may require with `workspace.requires` and invoke through the selected driver, such as `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, or `publish-commit-stack`. `publish-change` is retained only as a migration-compatible alias.
 
 **Driver reference**: an opaque backend-specific reference string accepted by a VCS-backed driver, such as a base revision, remote branch, change id, bookmark, or hosted-review target. Scherzo treats driver references as strings unless a command in this specification narrows the accepted shape.
 
@@ -387,12 +387,12 @@ On a valid request that cannot be completed, the driver SHOULD print a version 1
 
 Failure JSON MUST include `version`, `status`, `failure_code`, and `message`. When available, it SHOULD also include `stage`, `base_ref`, `base_revision`, `before_revision`, `after_revision`, and `conflict_files`. A driver MAY use a command-specific nonzero exit code for operator classification; the bundled jj driver exits `20` for `status: "conflicts"`.
 
-### 8.7 `publish-change`
+### 8.7 `publish-commit-stack`
 
-A VCS-backed driver that advertises `publish-change` MUST implement:
+A VCS-backed driver that advertises `publish-commit-stack` MUST implement the commit-stack publication command. A driver MAY also advertise `publish-change` as a migration-compatible alias with the same hosted-review semantics, but checked-in workflows should require `publish-commit-stack` for same-repository GitHub publication.
 
 ```text
-<driver> publish-change --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--allow-no-changes <true|false>] --json
+<driver> publish-commit-stack --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--expected-head <sha>] [--allow-no-changes <true|false>] --json
 ```
 
 Required arguments:
@@ -412,6 +412,7 @@ Optional arguments:
 | --- | --- |
 | `--target-branch` | Existing branch/bookmark to update instead of creating a new one. |
 | `--target-pr` | Existing hosted-review identifier to update or inspect. |
+| `--expected-head` | Optional expected head Git SHA for commit-stack publication safety checks. |
 | `--allow-no-changes` | Literal `true` or `false`; missing defaults to `false`. |
 
 `--title-file` and `--body-file` MUST be validated as safe workspace-root-relative paths before reading. Drivers MUST NOT read arbitrary absolute paths or paths containing `..` segments for these arguments. Drivers that create GitHub PRs MUST honor `SCHERZO_PR_DRAFT=true|false` when present: `true` creates a draft PR, `false` creates a ready-for-review PR, and unset preserves the driver's current default PR draft behavior. Any other non-empty value MUST fail before publication with a clear configuration diagnostic.
@@ -441,7 +442,7 @@ Successful `status` values are:
 
 `version`, `status`, `url`, `branch`, `base_ref`, `base_revision`, `head_revision`, `change_id`, `created`, and `updated` are required fields. `url` MUST be non-empty for `published` and `updated`. For `unchanged`, `url` SHOULD name the existing hosted review when known and MAY be empty only when no hosted review target was supplied or found. `created` and `updated` MUST be booleans.
 
-On a valid request that cannot be completed, the driver SHOULD print a version 1 JSON failure object with `status`, `failure_code`, and `message`, then exit nonzero.
+On a valid request that cannot be completed, the driver SHOULD print a version 1 JSON failure object with `status`, `failure_code`, and `message`, then exit nonzero. The legacy `publish-change` alias, when advertised, uses the same required fields and output contract but omits commit-stack-only safety arguments such as `--expected-head`.
 
 ## 9. Machine-readable output rules
 
@@ -509,7 +510,7 @@ A VCS-backed driver is suitable for workflows that run in a source workspace and
 - keep changed-file and diff semantics stable enough for workflow validation, and
 - document which ignored files, generated files, caches, and backend metadata appear in `changed-files`.
 
-`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces, and packaged installs expose the same command as `scherzo-workspace-jj`. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`; it does not advertise `publish-commit-stack` until the bundled command implements the renamed operation. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces. Root workspace base selection is operator policy supplied through driver environment such as `SCHERZO_JJ_WORKSPACE_BASE`, `SCHERZO_JJ_WORKSPACE_REMOTE`, `SCHERZO_JJ_WORKSPACE_BASE_BRANCH`, and `SCHERZO_JJ_WORKSPACE_FETCH_BASE`; publication remote selection is separate through `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`. GitHub repository publication can be pinned with `SCHERZO_GITHUB_REPO=owner/repo` when remote URL inference is not enough. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` are not jj driver configuration inputs; `publish-change` fails closed when only the legacy publication remote is present.
+`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces, and packaged installs expose the same command as `scherzo-workspace-jj`. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, `publish-commit-stack`, and the compatibility alias `publish-change` from `describe --json`. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces. Root workspace base selection is operator policy supplied through driver environment such as `SCHERZO_JJ_WORKSPACE_BASE`, `SCHERZO_JJ_WORKSPACE_REMOTE`, `SCHERZO_JJ_WORKSPACE_BASE_BRANCH`, and `SCHERZO_JJ_WORKSPACE_FETCH_BASE`; publication remote selection is separate through `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`. GitHub repository publication can be pinned with `SCHERZO_GITHUB_REPO=owner/repo` when remote URL inference is not enough. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` are not jj driver configuration inputs; commit-stack publication fails closed when only the legacy publication remote is present.
 
 ## 13. Compatibility and versioning
 

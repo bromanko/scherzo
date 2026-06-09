@@ -221,7 +221,6 @@ Commands:
   materialize-pack --review-doc PATH --submission PATH --output PATH
   materialize-pack --review-doc-path-file PATH --submission-step STEP --submission-artifact NAME --output PATH
   validate-bundle --bundle PATH [--bundle-sha256 SHA] [--artifact-root PATH] --repo-root PATH
-  publish-review-doc --review-doc-path-file PATH --publish-context PATH [--pack PATH] [--previous-bundle PATH --skip-if-unchanged]
   materialize-bundle --review-doc-path-file PATH --pack PATH --publish-context PATH --output PATH
   prepare-revision (--from-workstream-input|--from-issue-context|--prefer-workstream-input) --write-bundle PATH --write-review-doc-path PATH --write-pack PATH
   materialize-revision --previous-bundle PATH --review-doc-path-file PATH --pack PATH --publish-context PATH --status auto --output PATH
@@ -1738,9 +1737,6 @@ def load_pack_for_review(pack_path: Path, review_meta: dict[str, Any]) -> dict[s
     return pack
 
 
-def pack_source_issue(pack_path: Path, review_meta: dict[str, Any]) -> dict[str, str]:
-    return source_issue_from_submission_or_env(load_pack_for_review(pack_path, review_meta))
-
 
 def ensure_source_issue_identifier_matches(source_issue: dict[str, str], expected_identifier: str | None, context: str) -> None:
     expected = str(expected_identifier or "").strip()
@@ -1753,177 +1749,6 @@ def ensure_source_issue_identifier_matches(source_issue: dict[str, str], expecte
             code="execplan_v2_source_issue_mismatch",
         )
 
-
-def write_publish_context(path: Path, *, review_meta: dict[str, Any], source_issue: dict[str, str], pr: dict[str, Any], review_surface: dict[str, Any]) -> dict[str, Any]:
-    context = {
-        "schema_version": 1,
-        "artifact_type": "execplan_v2_publish_context",
-        "published_at": now_iso(),
-        "source_issue": source_issue,
-        "review_doc": review_meta,
-        "pr": {
-            "url": str(pr.get("url") or ""),
-            "branch": str(pr.get("branch") or ""),
-            "base_revision": str(pr.get("base_revision") or pr.get("base_ref") or "main"),
-            "head_revision": str(pr.get("head_revision") or pr.get("head_ref") or pr.get("branch") or "head"),
-        },
-        "review_surface": review_surface,
-    }
-    write_json(path, context)
-    return context
-
-
-def revision_publish_target(previous: dict[str, Any]) -> tuple[str, str]:
-    surface = previous.get("review_surface") if isinstance(previous.get("review_surface"), dict) else {}
-    branch = str(surface.get("branch") or "").strip()
-    if not branch or not safe_revision_branch(branch):
-        fail(
-            "previous exec_plan_bundle review_surface.branch must identify the existing ExecPlan PR branch for revisions",
-            code="execplan_revision_review_surface_missing",
-        )
-    pr_url = str(surface.get("pr_url") or "").strip()
-    match = GITHUB_PR_URL_RE.search(pr_url)
-    if not match:
-        fail(
-            "previous exec_plan_bundle review_surface.pr_url must be a GitHub pull request URL for revisions",
-            code="execplan_revision_review_surface_missing",
-        )
-    return branch, match.group(3)
-
-
-def publish_review_doc(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan publish-review-doc")
-    parser.add_argument("--review-doc-path-file", required=True)
-    parser.add_argument("--publish-context", required=True)
-    parser.add_argument("--previous-bundle")
-    parser.add_argument("--pack")
-    parser.add_argument("--skip-if-unchanged", action="store_true")
-    ns = parser.parse_args(args)
-    review_path = read_review_doc_path_file(Path(ns.review_doc_path_file))
-    review_meta = validate_review_doc_path(review_path)
-    previous: dict[str, Any] | None = None
-    if ns.previous_bundle:
-        previous = load_json(Path(ns.previous_bundle))
-    pack_issue = pack_source_issue(Path(ns.pack), review_meta) if ns.pack else None
-    if pack_issue:
-        previous_issue = previous.get("source_issue") if previous else None
-        if isinstance(previous_issue, dict):
-            ensure_source_issue_identifier_matches(
-                pack_issue,
-                str(previous_issue.get("identifier") or ""),
-                "previous bundle source_issue.identifier",
-            )
-        else:
-            ensure_source_issue_identifier_matches(
-                pack_issue,
-                os.environ.get("SCHERZO_ISSUE_IDENTIFIER"),
-                "SCHERZO_ISSUE_IDENTIFIER",
-            )
-    if ns.skip_if_unchanged and previous and previous.get("review_doc", {}).get("sha256") == review_meta["sha256"]:
-        source_issue = source_issue_from_context_or_env(pack_issue or previous.get("source_issue"))
-        surface = previous.get("review_surface", {}) if isinstance(previous.get("review_surface"), dict) else {}
-        pr = {
-            "url": surface.get("pr_url"),
-            "branch": surface.get("branch"),
-            "base_revision": "reused",
-            "head_revision": surface.get("head_revision") or "reused",
-        }
-        context = write_publish_context(
-            Path(ns.publish_context),
-            review_meta=review_meta,
-            source_issue=source_issue,
-            pr=pr,
-            review_surface={
-                "status": "reused",
-                "source_bundle_ref": previous.get("implementation_handoff", {}).get("bundle_ref"),
-                "head_revision": surface.get("head_revision"),
-            },
-        )
-        print("PUBLISH_REVIEW_DOC_STATUS=reused")
-        print(f"PUBLISH_CONTEXT={ns.publish_context}")
-        print(f"PR_URL={context['pr']['url']}")
-        return
-    records: list[dict[str, str]] = []
-    if workspace_driver_command():
-        records = changed_file_records()
-        unexpected = [record["path"] for record in records if record["path"] != str(review_path)]
-        if unexpected:
-            fail("refusing to publish review doc with unrelated checked-in changes: " + ", ".join(unexpected))
-    elif not env_enabled("SCHERZO_EXECPLAN_OFFLINE_PUBLISH", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_PUBLISH"):
-        fail("SCHERZO_WORKSPACE_DRIVER is required for publish-review-doc unless SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1")
-    source_issue = source_issue_from_context_or_env(pack_issue or (previous.get("source_issue") if previous else None))
-    revision_target = revision_publish_target(previous) if previous else None
-    branch = "execplan/" + slug(source_issue["identifier"] + "-" + source_issue["title"])[:80]
-    title_text = f"ExecPlan: {source_issue['identifier']} {source_issue['title']}"
-    body_text = (
-        f"Adds a concise ExecPlan review document.\n\nReview doc: `{review_meta['path']}`\n\n"
-        f"Source task: {source_issue['url']}\n\n"
-        "Implementation details are retained in Scherzo artifacts rather than checked in.\n"
-    )
-    tmp = Path("tmp")
-    tmp.mkdir(exist_ok=True)
-    title_file = tmp / "execplan-pr-title.txt"
-    body_file = tmp / "execplan-pr-body.md"
-    title_file.write_text(title_text + "\n", encoding="utf-8")
-    body_file.write_text(body_text, encoding="utf-8")
-    if workspace_driver_command():
-        driver_args = [
-            "publish-change",
-            "--kind",
-            "execplan-revision" if revision_target else "execplan",
-            "--title-file",
-            str(title_file),
-            "--body-file",
-            str(body_file),
-            "--branch-prefix",
-            branch,
-            "--base",
-            env_value("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main"),
-        ]
-        if revision_target:
-            target_branch, target_pr = revision_target
-            driver_args.extend([
-                "--target-branch",
-                target_branch,
-                "--target-pr",
-                target_pr,
-                "--allow-no-changes",
-                "true",
-            ])
-        driver_args.append("--json")
-        payload = workspace_driver_json(driver_args)
-        if payload.get("status") not in {"published", "updated", "unchanged"}:
-            fail(f"workspace driver publish-change returned status {payload.get('status')!r}")
-        pr = payload
-    else:
-        base_revision = env_value("SCHERZO_EXECPLAN_OFFLINE_BASE", "offline-base", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_BASE")
-        head_revision = env_value("SCHERZO_EXECPLAN_OFFLINE_HEAD", "offline-head", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_HEAD")
-        if revision_target and previous:
-            surface = previous.get("review_surface", {}) if isinstance(previous.get("review_surface"), dict) else {}
-            pr = {
-                "url": surface.get("pr_url"),
-                "branch": revision_target[0],
-                "base_revision": base_revision,
-                "head_revision": head_revision,
-            }
-        else:
-            pr = {
-                "url": env_value("SCHERZO_EXECPLAN_OFFLINE_PR_URL", "https://github.com/living-systems/scherzo/pull/0", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_PR_URL"),
-                "branch": branch,
-                "base_revision": base_revision,
-                "head_revision": head_revision,
-            }
-    context = write_publish_context(
-        Path(ns.publish_context),
-        review_meta=review_meta,
-        source_issue=source_issue,
-        pr=pr,
-        review_surface={"status": "published", "source_bundle_ref": None},
-    )
-    print("PUBLISH_REVIEW_DOC_STATUS=published")
-    print(f"PUBLISH_CONTEXT={ns.publish_context}")
-    print(f"PR_URL={context['pr']['url']}")
-    print(f"BRANCH={context['pr']['branch']}")
 
 
 def linear_issue_nodes(payload: Any) -> list[Any]:
@@ -3427,8 +3252,6 @@ def main(argv: list[str]) -> None:
         command_materialize_pack(args)
     elif command == "validate-bundle":
         command_validate_bundle(args)
-    elif command == "publish-review-doc":
-        publish_review_doc(args)
     elif command == "materialize-bundle":
         materialize_bundle(args)
     elif command == "prepare-revision":
