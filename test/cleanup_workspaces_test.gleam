@@ -654,6 +654,14 @@ fn commit_stack_plan(
         ),
       ),
     )),
+    work: artifact_publication_planner.PublicationWork(
+      kind: artifact_publication_planner.TaskWork,
+      id: "issue-id",
+      identifier: "LIV-917",
+      slug: "LIV-917",
+      title: Some("Cleanup publication"),
+      url: Some("https://linear.example/LIV-917"),
+    ),
   )
 }
 

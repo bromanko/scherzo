@@ -518,7 +518,16 @@ pub fn publication_work(
     id: issue.id,
     identifier: issue.identifier,
     slug: issue.identifier,
+    title: non_empty_string(issue.title),
+    url: issue.url,
   )
+}
+
+fn non_empty_string(value: String) -> Option(String) {
+  case string.trim(value) {
+    "" -> None
+    trimmed -> Some(trimmed)
+  }
 }
 
 pub fn load_body_templates(
