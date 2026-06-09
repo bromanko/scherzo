@@ -70,22 +70,7 @@ Scherzo needs two distinct publication modes.
 
 ### File publication
 
-File publication selects retained file artifacts and materializes them into an external/cross-repo artifact repository.
-
-Example:
-
-```yaml
-artifacts:
-  publications:
-    - id: execplan_review_doc
-      repository: github.docs
-      required: true
-      files:
-        - select:
-            output: exec_plan_bundle
-            entry: plan
-          path: docs/plans/{{ work.identifier }}.md
-```
+File publication selects retained file artifacts and materializes them into an external/cross-repo artifact repository. It is not the active same-repository GitHub publication model for checked-in dogfood workflows; ExecPlan review docs are retained as workflow outputs rather than published as single GitHub files.
 
 ### `commit_stack` publication
 
@@ -111,7 +96,7 @@ artifacts:
 
 Until the runtime/schema migration for LIV-908 lands, `repository` and `target.kind: existing_pr_branch` are the current executable schema shape for `commit_stack` routes. The `target.source.output` value names a `code_change` output that identifies the existing same-repo PR branch target; it does not make a hidden managed clone authoritative. A later migration may replace or alias this shape with a cleaner driver-owned route, but examples in this PRD should stay explicit about current validator requirements.
 
-`mode: commit_stack` routes select the repository-change output with `commit_stack.select` and must not declare `files` selectors or `pull_request` overrides. Retained plan-doc and review-doc artifacts remain separate file publication routes.
+`mode: commit_stack` routes select the repository-change output with `commit_stack.select` and must not declare `files` selectors or `pull_request` overrides. Retained plan-doc and review-doc artifacts may remain workflow outputs, but same-repository GitHub publication must not use separate single-file routes.
 
 For same-repo publication, Scherzo must not redirect to `.scherzo-state/artifact-repositories/github/<hash>`, must not fall back to a hidden managed clone, and must not require retained Git bundle import as the default path.
 
@@ -119,27 +104,7 @@ For same-repo publication, Scherzo must not redirect to `.scherzo-state/artifact
 
 ### Orchestrator-level repository targets
 
-Repository targets remain useful for file publication and future external/cross-repo flows.
-
-```yaml
-artifacts:
-  repositories:
-    github:
-      docs:
-        repo: scherzo-systems/scherzo
-        base: main
-        checkout:
-          strategy: managed_git
-        branch:
-          strategy: stable_per_work
-          template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
-        pull_request:
-          enabled: true
-          strategy: update_existing
-          draft: false
-```
-
-This configuration continues to describe managed artifact-repository publication for files. It does not redefine same-repo publication.
+Repository targets remain useful for same-repo `commit_stack` routing metadata and future external/cross-repo flows. The checked-in dogfood configuration no longer uses a `github.docs` single-file publication repository, and managed GitHub checkout configuration must not be treated as an active same-repository publication fallback.
 
 ### Workflow-level publication routes
 
@@ -208,19 +173,19 @@ If same-repo `commit_stack` publication fails:
 6. Missing or stale retained workspaces fail closed.
 7. Cleanup does not silently abandon publishable workspaces; abandonment must be explicit and auditable.
 
-If file publication fails, the retained file artifacts remain available and the managed artifact-repository retry path can be used without rerunning artifact-producing steps.
+If external file publication fails, the retained file artifacts remain available for a future external/cross-repo retry path without rerunning artifact-producing steps.
 
 ## 10. Migration from workspace `publish-change`
 
-This PRD names the same-repo capability `publish-commit-stack`. Existing bundled runtime drivers still advertise and accept `publish-change`; LIV-915 adds `publish-commit-stack` to the accepted capability vocabulary for custom or future drivers while keeping `publish-change` as the migration-compatible alias.
+The same-repo capability is `publish-commit-stack`. Checked-in dogfood workflows now require `publish-commit-stack` for commit-stack GitHub publication; `publish-change` remains only a compatibility alias accepted by bundled runtime drivers and older custom drivers with equivalent semantics.
 
 Migration direction:
 
-1. Keep file publication on the artifact-repository path.
-2. Preserve same-repo repository-change publication as workspace-driver-backed.
-3. Rename or replace same-repo publication invocations from `publish-change` to `publish-commit-stack` only when the bundled driver command, workflow requirements, and operator docs are migrated together; before then, accept `publish-commit-stack` as a capability name and `publish-change` as current bundled-driver compatibility vocabulary.
+1. Do not add new same-repository GitHub file-publication routes.
+2. Preserve same-repo repository-change publication as workspace-driver-backed `commit_stack` publication.
+3. Prefer `publish-commit-stack` in workflow requirements and operator docs; treat `publish-change` as a driver compatibility alias, not as a workflow-local direct PR creation path.
 4. Update doctor/preflight to reject same-repo `commit_stack` publication when the chosen driver cannot publish commit stacks under either the target name or the documented compatibility alias.
-5. Keep `.scherzo-state/artifact-repositories/github/<hash>` and retained bundle import deferred to future external/cross-repo or recovery work.
+5. Keep `.scherzo-state/artifact-repositories/github/<hash>` and retained bundle import out of active same-repo GitHub publication.
 
 The key migration rule is that artifact publication does not move same-repo repository changes away from workspace drivers.
 

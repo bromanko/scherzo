@@ -86,6 +86,18 @@ schedules:
           - job:github-pr-conflict-scout
         dedupe: open_task_per_schedule
 artifacts:
+  repositories:
+    github:
+      code:
+        repo: example/repo
+        base: main
+        branch:
+          strategy: stable_per_work
+          template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
+        pull_request:
+          enabled: true
+          strategy: update_existing
+          draft: false
   limits:
     command_output_chars: 20000
     template_field_chars: 8000

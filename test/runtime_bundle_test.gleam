@@ -830,7 +830,7 @@ fn assert_dogfood_workflows_select_profile(
           config_types.WorkspaceChangedFiles,
           config_types.WorkspaceBaseline,
           config_types.WorkspaceRefreshBase,
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]
         "execplan" -> [
           config_types.WorkspaceStatus,

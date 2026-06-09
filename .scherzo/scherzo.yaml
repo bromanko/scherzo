@@ -138,18 +138,6 @@ schedules:
 artifacts:
   repositories:
     github:
-      docs:
-        repo: scherzo-systems/scherzo
-        base: main
-        checkout:
-          strategy: managed_git
-        branch:
-          strategy: stable_per_work
-          template: scherzo/{{ work.identifier }}/{{ publication.id }}
-        pull_request:
-          enabled: true
-          strategy: update_existing
-          draft: false
       code:
         repo: scherzo-systems/scherzo
         base: main

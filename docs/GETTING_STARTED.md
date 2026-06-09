@@ -414,7 +414,7 @@ version: 1
 id: implementation
 workspace:
   driver: isolated
-  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]
+  requires: [status, diff, changed-files, baseline, refresh-base, publish-commit-stack]
 ```
 
 ### Custom workspace drivers

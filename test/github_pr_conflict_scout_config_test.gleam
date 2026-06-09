@@ -95,17 +95,22 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
     ]
 
   let github = bundle.orchestrator.artifact_repositories.github
-  let assert Ok(target) = dict.get(github, "docs")
+  assert !dict.has_key(github, "docs")
+  let assert Ok(target) = dict.get(github, "code")
   assert target.repo == "scherzo-systems/scherzo"
   assert target.base == "main"
   assert target.checkout.strategy == artifact_publication_config.ManagedGit
   assert target.branch.strategy == artifact_publication_config.StablePerWork
   assert target.branch.template
-    == "scherzo/{{ work.identifier }}/{{ publication.id }}"
+    == "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}"
   assert target.pull_request.enabled == True
   assert target.pull_request.strategy
     == artifact_publication_config.UpdateExisting
   assert target.pull_request.draft == False
+  assert target.pull_request.title
+    == Some("{{ work.identifier }}: publish implementation change")
+  assert target.pull_request.body_template
+    == Some("workflows/prompts/implementation-publication-pr-body.md")
 }
 
 pub fn checked_in_origin_sync_schedule_loads_test() {
@@ -210,8 +215,24 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   assert resolver.workspace_profile == Some("isolated")
   assert list.contains(
     resolver.workspace_capabilities,
-    config_types.WorkspacePublishChange,
+    config_types.WorkspacePublishCommitStack,
   )
+  let assert [route] = resolver.publication_routes
+  assert route.id == "merge_conflict_resolution_commit_stack"
+  assert route.repository == "github.code"
+  assert route.required == True
+  assert route.mode == artifact_publication_config.CommitStackPublication
+  let assert Some(commit_stack) = route.commit_stack
+  let artifact_publication_config.PublicationCommitStackRoute(selector:) =
+    commit_stack
+  let artifact_publication_config.PublicationCommitStackSelector(output:) =
+    selector
+  assert output == "commit_stack"
+  let assert artifact_publication_config.ExistingPrBranchTarget(source:) =
+    route.target
+  let artifact_publication_config.PublicationTargetSource(output: target_output) =
+    source
+  assert target_output == "merge_target"
   let assert [prepare, resolve, validate, project_validation, publish] =
     resolver.steps
   let prepare_run =
@@ -268,7 +289,7 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   let publish_run =
     assert_command_step(
       publish,
-      "publish_resolution",
+      "materialize_commit_stack",
       ["project_validation"],
       Some("main"),
       300_000,

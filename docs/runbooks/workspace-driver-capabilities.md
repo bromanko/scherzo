@@ -60,7 +60,7 @@ workspace:
       timeout: 60s
 ```
 
-For local/offline work use `base: "@"`; for a repository that already has the selected base locally use `fetch_base: false`. In a fork/upstream recipe, `remote` selects the base remote while `publish_remote` selects the publication remote. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` do not configure jj workspace base, fetch, or publication remote behavior; a legacy-only `SCHERZO_PR_REMOTE` makes `publish-change` fail closed instead of silently publishing to `origin`. Set `github_repo: owner/repo` when `publish-change` should use an explicit GitHub repository instead of remote URL inference, for example with SSH host aliases. Put `SCHERZO_PR_DRAFT` in `env` when you need to force draft or ready-for-review PRs; when it is unset, `publish-change` keeps the current default PR draft behavior. `publish-change` requires `gh`; packaged `scherzo-workspace-jj` includes it on the wrapper path, while source-tree users must provide `gh` on `PATH`.
+For local/offline work use `base: "@"`; for a repository that already has the selected base locally use `fetch_base: false`. In a fork/upstream recipe, `remote` selects the base remote while `publish_remote` selects the publication remote. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` do not configure jj workspace base, fetch, or publication remote behavior; a legacy-only `SCHERZO_PR_REMOTE` makes commit-stack publication fail closed instead of silently publishing to `origin`. Set `github_repo: owner/repo` when `publish-commit-stack` should use an explicit GitHub repository instead of remote URL inference, for example with SSH host aliases. Put `SCHERZO_PR_DRAFT` in `env` when you need to force draft or ready-for-review PRs; when it is unset, `publish-commit-stack` keeps the current default PR draft behavior. `publish-commit-stack` requires `gh`; packaged `scherzo-workspace-jj` includes it on the wrapper path, while source-tree users must provide `gh` on `PATH`.
 
 Workflow requirements still belong in workflow YAML:
 
@@ -88,7 +88,7 @@ result/bin/scherzo-workspace-noop describe --json
 result/bin/scherzo-workspace-jj describe --json
 ```
 
-The no-op driver should report `status`, `changed-files`, and `assert-only`. The current jj driver should report `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`; custom same-repo commit-stack drivers may report `publish-commit-stack` instead. Neither command should require `SCHERZO_WORKSPACE_PATH` or a prepared workflow workspace.
+The no-op driver should report `status`, `changed-files`, and `assert-only`. The current jj driver should report `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-commit-stack` (it may also report the compatibility alias `publish-change`). Neither command should require `SCHERZO_WORKSPACE_PATH` or a prepared workflow workspace.
 
 Then rerun the relevant validation:
 

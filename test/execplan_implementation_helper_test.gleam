@@ -1373,642 +1373,32 @@ pub fn validate_base_drift_marker_reports_previous_validation_summary_test() {
   )
 }
 
-pub fn publish_rebases_to_remote_base_and_revalidates_test() {
-  let dir = "test/tmp/implementation-helper-publish-normalize"
+pub fn publish_requires_workspace_driver_and_does_not_legacy_push_test() {
+  let dir = "test/tmp/implementation-helper-publish-no-driver"
   test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_PR_REMOTE=legacy SCHERZO_PR_BASE=legacy SCHERZO_GITHUB_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "Publish base normalization")
-  assert string.contains(
-    artifact.stdout,
-    "Revalidation after publish-base normalization",
-  )
-  assert string.contains(
-    artifact.stdout,
-    "PR_URL=https://github.com/example/repo/pull/123",
-  )
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert string.contains(jj_log, "git fetch --remote origin --branch main")
-  assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
-  assert string.contains(jj_log, "diff --from main@origin --to @ --name-only")
-  assert string.contains(jj_log, "git push --remote fork")
-  assert !string.contains(jj_log, "git push --remote origin")
-  let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
-  assert string.contains(
-    direnv_log,
-    "exec . selfci check --base main@origin --candidate @ --print-output",
-  )
-  assert !string.contains(direnv_log, "exec . gleam format --check src test")
-  assert !string.contains(direnv_log, "exec . gleam test")
-  assert string.contains(
-    artifact.stdout,
-    "`direnv exec . selfci check --base main@origin --candidate @ --print-output`: passed",
-  )
-  let assert Ok(body) =
-    simplifile.read(dir <> "/tmp/scherzo-implementation-pr-body.md")
-  assert string.contains(
-    body,
-    "Task: [SCH-123: Fix publish](https://linear.example/SCH-123)",
-  )
-  assert string.contains(
-    body,
-    "Source: task title, description, labels, and recent comments fetched from Linear.",
-  )
-  assert string.contains(body, "SelfCI validation completed before publication")
-  assert string.contains(
-    body,
-    "`direnv exec . selfci check --base main@origin --candidate @ --print-output`",
-  )
-  let assert Ok(publish_json) =
-    simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
-  assert string.contains(
-    publish_json,
-    "\"publish_base_revision\": \"main@origin\"",
-  )
-}
-
-pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test() {
-  let dir = "test/tmp/execplan-implementation-publish-linking"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md",
-      "# Make workflow recovery visible and safe for operators\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/tmp/scherzo-implementation.json",
-      "{\n"
-        <> "  \"source_kind\": \"execplan\",\n"
-        <> "  \"issue_identifier\": \"LIV-65\",\n"
-        <> "  \"issue_title\": \"Implement plan: workflow recovery operator UX and retention\",\n"
-        <> "  \"issue_url\": \"https://linear.example/LIV-65\",\n"
-        <> "  \"implementation_issue_identifier\": \"LIV-65\",\n"
-        <> "  \"implementation_issue_title\": \"Implement plan: workflow recovery operator UX and retention\",\n"
-        <> "  \"implementation_issue_url\": \"https://linear.example/LIV-65\",\n"
-        <> "  \"source_issue_identifier\": \"LIV-58\",\n"
-        <> "  \"source_issue_title\": \"ExecPlan: workflow recovery operator UX and retention\",\n"
-        <> "  \"source_issue_url\": \"https://linear.example/LIV-58\",\n"
-        <> "  \"plan_path\": \"docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md\",\n"
-        <> "  \"base_change_id\": \"local-start\"\n"
-        <> "}\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/tmp/scherzo-implementation-validation.json",
-      "{\"status\": \"passed\", \"commands\": []}\n",
-    )
-  write_fake_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert string.contains(jj_log, "describe -m feat: implement liv-65")
-  assert string.contains(
-    jj_log,
-    "bookmark set scherzo/execplan-implementation/liv-65-implement-plan",
-  )
-  assert !string.contains(jj_log, "scherzo/execplan-implementation/liv-58")
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(
-    gh_log,
-    "--head scherzo/execplan-implementation/liv-65-implement-plan",
-  )
-  assert string.contains(
-    gh_log,
-    "--title Implement LIV-65: workflow recovery operator UX and retention",
-  )
-  assert !string.contains(gh_log, "liv-58-workflow-recovery")
-  let assert Ok(body) =
-    simplifile.read(dir <> "/tmp/scherzo-implementation-pr-body.md")
-  assert string.contains(
-    body,
-    "Task: [LIV-65: Implement plan: workflow recovery operator UX and retention](https://linear.example/LIV-65)",
-  )
-  assert string.contains(
-    body,
-    "Source ExecPlan issue: [LIV-58: ExecPlan: workflow recovery operator UX and retention](https://linear.example/LIV-58)",
-  )
-  assert string.contains(
-    body,
-    "Source ExecPlan plan: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
-  )
-  assert !string.contains(body, "Task: [LIV-58")
-  assert string.contains(body, "SelfCI validation completed before publication")
-  assert string.contains(
-    body,
-    "`direnv exec . selfci check --base main@origin --candidate @ --print-output`",
-  )
-  let assert Ok(publish_json) =
-    simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
-  assert string.contains(publish_json, "\"issue_identifier\": \"LIV-65\"")
-  assert string.contains(
-    publish_json,
-    "\"implementation_issue_identifier\": \"LIV-65\"",
-  )
-  assert string.contains(
-    publish_json,
-    "\"source_issue_identifier\": \"LIV-58\"",
-  )
-}
-
-pub fn publish_prefers_remote_repo_over_github_repository_test() {
-  let dir = "test/tmp/implementation-helper-publish-github-repository"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" GITHUB_REPOSITORY=ambient/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "--repo example/repo")
-  assert !string.contains(gh_log, "--repo ambient/repo")
-}
-
-pub fn publish_uses_legacy_repo_alias_when_canonical_unset_test() {
-  let dir = "test/tmp/implementation-helper-publish-legacy-repo"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_FAKE_JJ_REMOTES='origin git@github-scherzo-agent:legacy/repo.git' SCHERZO_PR_REPO=legacy/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "--repo legacy/repo")
-}
-
-pub fn publish_uses_github_repository_when_remote_repo_unparseable_test() {
-  let dir = "test/tmp/implementation-helper-publish-github-repository-fallback"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_FAKE_JJ_REMOTES='origin ssh://git@git.example.invalid/scm/repo.git' GITHUB_REPOSITORY=github/env-repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "--repo github/env-repo")
-}
-
-pub fn publish_rejects_explicit_repo_mismatch_before_push_test() {
-  let dir = "test/tmp/implementation-helper-publish-repo-mismatch"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_GITHUB_REPO=wrong/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("workspace_driver_unavailable")
   assert string.contains(
     artifact.stderr,
-    "SCHERZO_GITHUB_REPO=wrong/repo does not match selected jj publication remote",
+    "SCHERZO_WORKSPACE_DRIVER is required",
   )
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert string.contains(jj_log, "git remote list --color=never")
-  assert !string.contains(jj_log, "git push")
-}
-
-pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
-  let dir = "test/tmp/implementation-helper-publish-rebase-conflict"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_JJ_REBASE_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.failure_code == Some("publish_rebase_conflict")
-  assert string.contains(
-    artifact.stderr,
-    "SCHERZO_FAILURE_CODE=publish_rebase_conflict",
-  )
-  assert string.contains(artifact.stderr, "could not rebase")
-}
-
-pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
-  let dir = "test/tmp/implementation-helper-publish-revalidation-failed"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.failure_code == Some("publish_revalidation_failed")
-  assert string.contains(
-    artifact.stdout,
-    "Revalidation after publish-base normalization",
-  )
-  assert string.contains(
-    artifact.stderr,
-    "SCHERZO_FAILURE_CODE=publish_revalidation_failed",
-  )
-  assert string.contains(artifact.stderr, "command failed with exit code 1")
-}
-
-pub fn refresh_base_reports_fresh_base_test() {
-  let dir = "test/tmp/implementation-helper-refresh-fresh"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=fresh")
-  assert string.contains(artifact.stdout, "REFRESH_BASE_REPAIRABLE=false")
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert !string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
-  let assert Ok(json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
-    )
-  assert string.contains(json, "\"status\": \"fresh\"")
-  assert string.contains(json, "\"rebased\": false")
-}
-
-pub fn refresh_base_rebases_stale_base_and_updates_start_metadata_test() {
-  let dir = "test/tmp/implementation-helper-refresh-rebase-start"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/tmp/scherzo-implementation.json",
-      "{\"source_kind\":\"ticket\",\"base_change_id\":\"old-base\"}\n",
-    )
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-implementation",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=rebased_clean")
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert string.contains(jj_log, "git fetch --remote origin --branch main")
-  assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
-  let assert Ok(metadata) =
-    simplifile.read(dir <> "/tmp/scherzo-implementation.json")
-  assert string.contains(
-    metadata,
-    "\"base_change_id\": \"refreshed-base-change\"",
-  )
-  assert string.contains(metadata, "\"initial_base_change_id\": \"old-base\"")
-  let assert Ok(json) =
-    simplifile.read(
-      dir
-      <> "/tmp/scherzo-implementation-refresh-base-before-implementation.json",
-    )
-  assert string.contains(json, "\"metadata_base_change_id_updated\": true")
-}
-
-pub fn refresh_base_reports_repairable_conflicts_test() {
-  let dir = "test/tmp/implementation-helper-refresh-conflicts"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(20)
-  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=conflicts")
-  assert string.contains(artifact.stdout, "REFRESH_BASE_REPAIRABLE=true")
-  assert string.contains(artifact.stdout, "- src/conflicted.gleam")
-  let assert Ok(json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
-    )
-  assert string.contains(json, "\"status\": \"conflicts\"")
-  assert string.contains(json, "\"has_unresolved_conflicts\": true")
-}
-
-pub fn refresh_base_fetch_failure_is_nonrepairable_test() {
-  let dir = "test/tmp/implementation-helper-refresh-fetch-failure"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_REFRESH_FETCH_FAIL=1 SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=fetch_failed")
-  let assert Ok(json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
-    )
-  assert string.contains(json, "\"status\": \"fetch_failed\"")
-  assert string.contains(json, "\"repairable\": false")
-}
-
-pub fn refresh_base_base_not_found_is_nonrepairable_test() {
-  let dir = "test/tmp/implementation-helper-refresh-base-not-found"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_REFRESH_BASE_MISSING=1 SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  let assert Ok(json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
-    )
-  assert string.contains(json, "\"status\": \"base_not_found\"")
-  assert string.contains(json, "\"repairable\": false")
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert !string.contains(jj_log, "rebase -r @")
-}
-
-pub fn refresh_base_rebase_failed_without_conflicts_is_nonrepairable_test() {
-  let dir = "test/tmp/implementation-helper-refresh-rebase-failed"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_REFRESH_REBASE_FAIL=1 SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  let assert Ok(json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
-    )
-  assert string.contains(json, "\"status\": \"rebase_failed\"")
-  assert string.contains(json, "\"repairable\": false")
-}
-
-pub fn refresh_base_rejects_unsafe_stage_and_writes_latest_json_test() {
-  let dir = "test/tmp/implementation-helper-refresh-safe-stage"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-
-  let bad =
-    run_helper_in(
-      dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage ../bad",
-    )
-  assert bad.status == step_artifact.StepFailed
-  assert bad.exit_code == Some(1)
-  assert string.contains(bad.stderr, "invalid refresh-base stage")
-  let assert Error(_) = simplifile.read("test/tmp/bad")
-
-  let good =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
-    )
-  assert good.status == step_artifact.StepSucceeded
-  let assert Ok(stage_json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
-    )
-  let assert Ok(latest_json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-latest.json",
-    )
-  assert string.contains(stage_json, "\"stage\": \"before-validation\"")
-  assert string.contains(latest_json, "\"stage\": \"before-validation\"")
-  assert string.contains(latest_json, "\"status\": \"fresh\"")
-}
-
-pub fn validate_fails_on_base_drift_failure_marker_test() {
-  let dir = "test/tmp/implementation-helper-validate-marker"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/tmp/scherzo-implementation-base-drift-failure.md",
-      "# Base drift repair failure\n",
-    )
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  assert string.contains(
-    artifact.stderr,
-    "base drift repair requested workflow failure",
-  )
-  assert read_or_empty(dir <> "/direnv.log") == ""
-}
-
-pub fn validate_fails_on_unresolved_jj_conflicts_test() {
-  let dir = "test/tmp/implementation-helper-validate-conflicts"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_REFRESH_CONFLICT=1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  assert string.contains(artifact.stderr, "src/conflicted.gleam")
-  assert read_or_empty(dir <> "/direnv.log") == ""
-}
-
-pub fn publish_time_conflicts_do_not_publish_test() {
-  let dir = "test/tmp/implementation-helper-publish-conflicts-blocked"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  let assert Ok(Nil) =
-    simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=conflicts")
-  assert string.contains(artifact.stdout, "PUBLISH_BLOCKED=true")
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert !string.contains(jj_log, "describe -m")
-  assert !string.contains(jj_log, "bookmark set")
-  assert !string.contains(jj_log, "git push")
+  assert read_or_empty(dir <> "/jj.log") == ""
   assert read_or_empty(dir <> "/gh.log") == ""
-  let assert Ok(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
-  let assert Ok(json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-publish.json",
-    )
-  assert string.contains(json, "\"status\": \"conflicts\"")
-}
-
-pub fn publish_time_revalidation_failure_does_not_publish_test() {
-  let dir = "test/tmp/implementation-helper-publish-revalidation-blocked"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  let assert Ok(Nil) =
-    simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.failure_code == Some("publish_revalidation_failed")
-  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=rebased_clean")
-  assert string.contains(artifact.stdout, "PUBLISH_BLOCKED=true")
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert !string.contains(jj_log, "bookmark set")
-  assert !string.contains(jj_log, "git push")
-  assert read_or_empty(dir <> "/gh.log") == ""
-  let assert Ok(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
-  let assert Ok(json) =
-    simplifile.read(
-      dir <> "/tmp/scherzo-implementation-refresh-base-publish.json",
-    )
-  assert string.contains(json, "\"status\": \"rebased_clean\"")
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
 }
 
 fn pr_draft_env_prefix(value: String) -> String {
@@ -2043,85 +1433,6 @@ fn run_driver_backed_publish_with_pr_draft(
   draft: String,
 ) -> step_artifact.StepArtifact {
   run_driver_backed_publish_with_env(dir, pr_draft_env_prefix(draft))
-}
-
-pub fn publish_time_revalidation_success_may_publish_test() {
-  let dir = "test/tmp/implementation-helper-publish-revalidation-success"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  let assert Ok(Nil) =
-    simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert string.contains(jj_log, "bookmark set")
-  assert string.contains(jj_log, "git push --remote origin")
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "pr create")
-  assert !string.contains(gh_log, "--draft")
-  let assert Error(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
-}
-
-pub fn legacy_publish_pr_draft_true_adds_draft_flag_test() {
-  let dir = "test/tmp/implementation-helper-publish-draft-true"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_PR_DRAFT=true SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "pr create")
-  assert string.contains(gh_log, "--draft")
-}
-
-pub fn legacy_publish_invalid_pr_draft_fails_before_publication_test() {
-  let dir = "test/tmp/implementation-helper-publish-draft-invalid"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_PR_DRAFT=maybe SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  assert artifact.failure_code == Some("invalid_configuration")
-  assert string.contains(
-    artifact.stderr,
-    "SCHERZO_PR_DRAFT must be true or false",
-  )
-  assert read_or_empty(dir <> "/jj.log") == ""
-  assert read_or_empty(dir <> "/gh.log") == ""
 }
 
 pub fn driver_backed_publish_pr_draft_true_prepares_core_publication_test() {
@@ -2240,6 +1551,58 @@ pub fn driver_backed_publish_rejects_invalid_commit_stack_git_objects_test() {
     simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
 }
 
+pub fn driver_backed_publish_unknown_refresh_status_fails_closed_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-refresh-failure"
+  test_helpers.reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  write_fake_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
+  write_unknown_refresh_status_driver(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("boom")
+  assert string.contains(artifact.stderr, "invalid_request")
+  assert string.contains(artifact.stderr, "refresh failed")
+  let assert Ok(driver_log) = simplifile.read(dir <> "/driver.log")
+  assert string.contains(driver_log, "refresh-base --stage publish --json")
+  assert read_or_empty(dir <> "/git.log") == ""
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
+}
+
+pub fn driver_backed_publish_rejects_oversize_commit_stack_carrier_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-oversize-carrier"
+  let artifact =
+    run_driver_backed_publish_with_env(
+      dir,
+      "SCHERZO_COMMIT_STACK_MAX_CARRIER_BYTES=8 ",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("commit_stack_carrier_too_large")
+  assert string.contains(artifact.stderr, "commit_stack carrier bundle exceeds")
+  let assert Ok(git_log) = simplifile.read(dir <> "/git.log")
+  assert string.contains(git_log, "bundle create")
+  assert string.contains(git_log, "bundle verify")
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
+}
+
 pub fn publish_includes_base_drift_repair_summary_test() {
   let dir = "test/tmp/implementation-helper-publish-repair-summary"
   test_helpers.reset_dir(dir)
@@ -2250,16 +1613,16 @@ pub fn publish_includes_base_drift_repair_summary_test() {
       "# Base drift repair summary\n\nNo-op summary.\n",
     )
   write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=origin SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_GITHUB_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -2281,16 +1644,16 @@ pub fn publish_includes_base_drift_repair_summary_test() {
   test_helpers.reset_dir(dir_without)
   write_publish_fixture_metadata(dir_without)
   write_fake_refresh_jj(dir_without <> "/bin/jj")
+  write_fake_git(dir_without <> "/bin/git")
   write_fake_gh(dir_without <> "/bin/gh")
-  write_fake_direnv(dir_without <> "/bin/direnv")
   test_helpers.chmod_executable(dir_without <> "/bin/jj")
+  test_helpers.chmod_executable(dir_without <> "/bin/git")
   test_helpers.chmod_executable(dir_without <> "/bin/gh")
-  test_helpers.chmod_executable(dir_without <> "/bin/direnv")
 
   let artifact_without =
     run_helper_in(
       dir_without,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=origin SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_GITHUB_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact_without.status == step_artifact.StepSucceeded
@@ -2447,6 +1810,14 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
     simplifile.read(".scherzo/workflows/implementation.yaml")
   let assert Ok(execplan) =
     simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
+  let assert Ok(merge_conflict) =
+    simplifile.read(".scherzo/workflows/merge-conflict-resolution.yaml")
+
+  list.each([implementation, execplan, merge_conflict], fn(workflow) {
+    assert string.contains(workflow, "mode: commit_stack")
+    assert string.contains(workflow, "publish-commit-stack")
+    assert !string.contains(workflow, "publish-change")
+  })
 
   assert_workflow_refresh_ordering(
     implementation,
@@ -3103,6 +2474,22 @@ fn write_fake_git(path: String) -> Nil {
         <> "if [ \"$1 $2\" = 'bundle create' ]; then mkdir -p \"$(dirname \"$3\")\"; printf 'fake bundle for %s\\n' \"$*\" > \"$3\"; exit 0; fi\n"
         <> "if [ \"$1 $2\" = 'bundle verify' ]; then test -s \"$3\"; exit $?; fi\n"
         <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_unknown_refresh_status_driver(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> driver.log\n"
+        <> "if [ \"$1\" = refresh-base ]; then\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"invalid_request\",\"failure_code\":\"boom\",\"message\":\"refresh failed\"}'\n"
+        <> "  exit 2\n"
+        <> "fi\n"
+        <> "printf 'unexpected driver command: %s\\n' \"$*\" >&2\n"
+        <> "exit 2\n",
     )
   Nil
 }
