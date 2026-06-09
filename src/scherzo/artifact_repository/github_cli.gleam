@@ -6,6 +6,7 @@ import gleam/result
 import gleam/string
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
+import scherzo/artifact_publication_pr
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/types
 import scherzo/commit_stack_artifact
@@ -533,35 +534,13 @@ fn malformed_pr_json_error() -> artifact_publication_manifest.PublicationErrorIn
 fn default_pr_title(
   manifest: artifact_publication_planner.DryRunPublicationManifest,
 ) -> String {
-  case manifest.pull_request.title {
-    Some(title) ->
-      case string.trim(title) == "" {
-        True ->
-          "Scherzo publication "
-          <> manifest.publication_id
-          <> " "
-          <> manifest.version_id
-        False -> title
-      }
-    None ->
-      "Scherzo publication "
-      <> manifest.publication_id
-      <> " "
-      <> manifest.version_id
-  }
+  artifact_publication_pr.title(manifest)
 }
 
 fn default_pr_body(
   manifest: artifact_publication_planner.DryRunPublicationManifest,
 ) -> String {
-  case manifest.pull_request.body {
-    Some(body) ->
-      case string.trim(body) == "" {
-        True -> "Published by Scherzo.\n\nVersion: " <> manifest.version_id
-        False -> body
-      }
-    None -> "Published by Scherzo.\n\nVersion: " <> manifest.version_id
-  }
+  artifact_publication_pr.body(manifest)
 }
 
 fn require_option(

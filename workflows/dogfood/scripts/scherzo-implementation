@@ -2959,6 +2959,22 @@ def validation_body_section() -> str:
     return "\n".join(lines) + "\n"
 
 
+def changed_files_body_section(files: list[str]) -> str:
+    if not files:
+        return ""
+    lines = ["## Changed files", ""]
+    lines.extend(f"- `{file}`" for file in files)
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def append_changed_files_section(body: str, files: list[str]) -> str:
+    section = changed_files_body_section(files)
+    if not section:
+        return body
+    return body.rstrip() + "\n\n" + section
+
+
 def execplan_plan_display_path(metadata: dict[str, Any]) -> str:
     for key in ["review_surface_path", "legacy_review_doc_path", "plan_artifact_ref", "plan_path"]:
         value = str(metadata.get(key) or "").strip()
@@ -3097,6 +3113,7 @@ def publish_command_legacy() -> None:
     files = changed_files_since(base_revision)
     if not files:
         fail("refusing to publish because no changed files were found")
+    body = append_changed_files_section(body, files)
 
     change_id = current_change_id_short()
     if not change_id:
@@ -3320,6 +3337,7 @@ def materialize_commit_stack_artifact(
     repository: str,
     base_ref: str,
     base_revision: str,
+    changed_files: list[str],
 ) -> dict[str, Any]:
     run_id = run_id_for_artifacts()
     base_oid = jj_commit_oid(base_revision)
@@ -3339,6 +3357,7 @@ def materialize_commit_stack_artifact(
         "repository": {"repo": repository},
         "base": {"ref": base_ref, "sha": base_oid},
         "head": {"sha": head_oid, "tree": head_tree_oid},
+        "changed_files": changed_files,
         "carrier": {
             "ref": carrier_ref,
             "sha256": carrier_sha256,
@@ -3396,6 +3415,7 @@ def publish_command() -> None:
         repository=repository,
         base_ref=base,
         base_revision=base_revision,
+        changed_files=files,
     )
 
     publish = {

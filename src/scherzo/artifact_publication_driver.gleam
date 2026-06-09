@@ -5,6 +5,7 @@ import gleam/result
 import gleam/string
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
+import scherzo/artifact_publication_pr
 import scherzo/artifact_repository/command_runner
 import scherzo/config/types as config_types
 import scherzo/hash
@@ -320,36 +321,13 @@ fn publication_kind(workflow_id: String) -> String {
 fn driver_pr_title(
   planned: artifact_publication_planner.DryRunPublicationManifest,
 ) -> String {
-  let title = case planned.pull_request.title {
-    Some(value) ->
-      case string.trim(value) {
-        "" ->
-          "Scherzo publication "
-          <> planned.publication_id
-          <> " "
-          <> planned.version_id
-        _ -> value
-      }
-    None ->
-      "Scherzo publication "
-      <> planned.publication_id
-      <> " "
-      <> planned.version_id
-  }
-  string.trim(title) <> "\n"
+  string.trim(artifact_publication_pr.title(planned)) <> "\n"
 }
 
 fn driver_pr_body(
   planned: artifact_publication_planner.DryRunPublicationManifest,
 ) -> String {
-  case planned.pull_request.body {
-    Some(value) ->
-      case string.trim(value) {
-        "" -> "Published by Scherzo.\n\nVersion: " <> planned.version_id <> "\n"
-        _ -> value
-      }
-    None -> "Published by Scherzo.\n\nVersion: " <> planned.version_id <> "\n"
-  }
+  artifact_publication_pr.body(planned)
 }
 
 fn parse_and_verify_driver_publish_success(

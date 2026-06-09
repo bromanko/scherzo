@@ -111,6 +111,12 @@ pub fn render_files_markdown(files: List(#(String, String, String))) -> String {
   |> string.join(with: "\n")
 }
 
+pub fn render_changed_files_markdown(files: List(String)) -> String {
+  files
+  |> list.map(fn(file) { "- `" <> file <> "`" })
+  |> string.join(with: "\n")
+}
+
 pub fn default_extension(media_type: String) -> String {
   case media_type {
     "text/markdown" -> ".md"
@@ -145,12 +151,16 @@ pub fn work_identity_to_json(
   id: String,
   identifier: String,
   slug: String,
+  title: Option(String),
+  url: Option(String),
 ) -> json.Json {
   json.object([
     #("kind", json.string(kind)),
     #("id", json.string(id)),
     #("identifier", json.string(identifier)),
     #("slug", json.string(slug)),
+    #("title", option_string_to_json(title)),
+    #("url", option_string_to_json(url)),
   ])
 }
 

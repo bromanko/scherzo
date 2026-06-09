@@ -1405,6 +1405,8 @@ fn publication_template_variables() -> List(String) {
     "work.id",
     "work.identifier",
     "work.slug",
+    "work.title",
+    "work.url",
     "workflow.id",
     "run.id",
     "publication.id",

@@ -113,6 +113,21 @@ pub fn execute_routes_publishes_commit_stack_with_workspace_driver_test() {
   assert string.contains(transcript, "--target-pr 42")
   assert string.contains(transcript, "--allow-no-changes true --json")
   assert string.contains(transcript, "CWD=" <> workspace)
+  let words = string.split(transcript, on: " ")
+  let assert Some(title_file) = arg_after(words, "--title-file")
+  let assert Some(body_file) = arg_after(words, "--body-file")
+  let title = read_file(path.join(workspace, title_file))
+  let body = read_file(path.join(workspace, body_file))
+  assert string.contains(title, "LIV-761: publish conflict resolution")
+  assert string.contains(body, "Publication executor")
+  assert string.contains(
+    body,
+    "https://linear.app/living-systems/issue/LIV-761/publication-executor",
+  )
+  assert string.contains(body, "Workflow: `workflow.implementation`")
+  assert string.contains(body, "Publication: `conflict_resolution`")
+  assert string.contains(body, "src/scherzo/workflow.gleam")
+  assert string.contains(body, "test/workflow_test.gleam")
 }
 
 pub fn execute_routes_commit_stack_passes_configured_driver_timeout_test() {
@@ -772,6 +787,10 @@ fn publication_work() -> artifact_publication_planner.PublicationWork {
     id: "task-1",
     identifier: "LIV-761",
     slug: "LIV-761",
+    title: Some("Publication executor"),
+    url: Some(
+      "https://linear.app/living-systems/issue/LIV-761/publication-executor",
+    ),
   )
 }
 
@@ -1249,6 +1268,14 @@ fn read_file(path: String) -> String {
   contents
 }
 
+fn arg_after(args: List(String), flag: String) -> Option(String) {
+  case args {
+    [] -> None
+    [current, value, ..] if current == flag -> Some(value)
+    [_, ..rest] -> arg_after(rest, flag)
+  }
+}
+
 fn write_template(root: String) -> Nil {
   let template = root <> "/templates/publication.md"
   let assert Ok(Nil) = simplifile.create_directory_all(root <> "/templates")
@@ -1277,7 +1304,9 @@ fn issue() -> tracker_issue.Issue {
     priority: None,
     state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
-    url: None,
+    url: Some(
+      "https://linear.app/living-systems/issue/LIV-761/publication-executor",
+    ),
     labels: [],
     blocked_by: [],
     blocked_by_complete: True,
@@ -1475,6 +1504,13 @@ fn commit_stack_manifest_contents() -> String {
         #("sha", json.string(commit_stack_head_sha())),
         #("tree", json.string(commit_stack_head_tree())),
       ]),
+    ),
+    #(
+      "changed_files",
+      json.array(
+        ["src/scherzo/workflow.gleam", "test/workflow_test.gleam"],
+        of: json.string,
+      ),
     ),
     #(
       "carrier",

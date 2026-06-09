@@ -160,7 +160,7 @@ artifacts:
           enabled: true
           strategy: update_existing
           draft: false
-          title: "{{ work.identifier }}: publish implementation change"
+          title: "Implement {{ work.identifier }}: {{ work.title }}"
           body_template: workflows/prompts/implementation-publication-pr-body.md
   limits:
     command_output_chars: 20000

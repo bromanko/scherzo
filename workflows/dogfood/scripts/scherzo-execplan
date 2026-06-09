@@ -1855,10 +1855,26 @@ def publish_review_doc(args: list[str]) -> None:
     revision_target = revision_publish_target(previous) if previous else None
     branch = "execplan/" + slug(source_issue["identifier"] + "-" + source_issue["title"])[:80]
     title_text = f"ExecPlan: {source_issue['identifier']} {source_issue['title']}"
+    workflow_id = "execplan-revision" if revision_target else "execplan"
+    source_url = str(source_issue.get("url") or "").strip()
+    source_link = f"[{source_issue['identifier']}]({source_url})" if source_url else "Unavailable"
     body_text = (
-        f"Adds a concise ExecPlan review document.\n\nReview doc: `{review_meta['path']}`\n\n"
-        f"Source task: {source_issue['url']}\n\n"
-        "Implementation details are retained in Scherzo artifacts rather than checked in.\n"
+        "## Work\n\n"
+        f"- Identifier: `{source_issue['identifier']}`\n"
+        f"- Title: {source_issue['title']}\n"
+        f"- Linear/source link: {source_link}\n\n"
+        "## Summary\n\n"
+        "Publishes a retained ExecPlan review document for human review. "
+        "Implementation details are retained in Scherzo artifacts rather than checked in.\n\n"
+        "## Published artifact\n\n"
+        f"- `{review_meta['path']}`\n\n"
+        "## Publication details\n\n"
+        f"- Workflow: `{workflow_id}`\n"
+        f"- Publication route: `execplan_review_doc`\n"
+        f"- Run: `{os.environ.get('SCHERZO_RUN_ID', 'unavailable')}`\n\n"
+        "## Validation and review evidence\n\n"
+        "Review the retained ExecPlan bundle, publication metadata, and workflow run artifacts. "
+        "The Linear result attachment/comment links to retained evidence when available.\n"
     )
     tmp = Path("tmp")
     tmp.mkdir(exist_ok=True)

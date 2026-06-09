@@ -606,6 +606,14 @@ fn commit_stack_plan(
   artifact_publication_planner.DryRunPublicationManifest(
     run_id: run_id,
     workflow_id: "implementation",
+    work: artifact_publication_planner.PublicationWork(
+      kind: artifact_publication_planner.TaskWork,
+      id: "issue-id",
+      identifier: "LIV-917",
+      slug: "LIV-917",
+      title: Some("Cleanup workspace test"),
+      url: Some("https://linear.app/living-systems/issue/LIV-917/test"),
+    ),
     publication_id: "implementation_commit_stack",
     series_id: "issue-id:implementation:implementation_commit_stack",
     version_id: "version-" <> run_id,
@@ -646,6 +654,7 @@ fn commit_stack_plan(
         base_sha: commit_stack_base_sha(),
         head_sha: commit_stack_head_sha(),
         head_tree: commit_stack_tree_sha(),
+        changed_files: [],
         carrier: commit_stack_artifact.CommitStackCarrier(
           ref: "runs/" <> run_id <> "/outputs/commit-stack.bundle",
           sha256: hash.sha256_hex("bundle"),

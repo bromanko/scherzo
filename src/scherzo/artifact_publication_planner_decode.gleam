@@ -20,6 +20,7 @@ pub fn dry_run_manifest_decoder() -> decode.Decoder(
   use artifact_type <- decode.field("artifact_type", decode.string)
   use run_id <- decode.field("run_id", decode.string)
   use workflow_id <- decode.field("workflow_id", decode.string)
+  use work <- decode.optional_field("work", default_work(), work_decoder())
   use publication_id <- decode.field("publication_id", decode.string)
   use series_id <- decode.field("series_id", decode.string)
   use version_id <- decode.field("version_id", decode.string)
@@ -45,6 +46,7 @@ pub fn dry_run_manifest_decoder() -> decode.Decoder(
   decode.success(artifact_publication_planner.DryRunPublicationManifest(
     run_id: run_id,
     workflow_id: workflow_id,
+    work: work,
     publication_id: publication_id,
     series_id: series_id,
     version_id: version_id,
@@ -60,6 +62,47 @@ pub fn dry_run_manifest_decoder() -> decode.Decoder(
     files: files,
     commit_stack: commit_stack,
   ))
+}
+
+fn default_work() -> artifact_publication_planner.PublicationWork {
+  artifact_publication_planner.PublicationWork(
+    kind: artifact_publication_planner.TaskWork,
+    id: "",
+    identifier: "",
+    slug: "",
+    title: None,
+    url: None,
+  )
+}
+
+fn work_decoder() -> decode.Decoder(
+  artifact_publication_planner.PublicationWork,
+) {
+  use kind <- decode.field("kind", decode.string)
+  use id <- decode.field("id", decode.string)
+  use identifier <- decode.field("identifier", decode.string)
+  use slug <- decode.field("slug", decode.string)
+  use title <- decode.optional_field(
+    "title",
+    None,
+    decode.optional(decode.string),
+  )
+  use url <- decode.optional_field("url", None, decode.optional(decode.string))
+  decode.success(artifact_publication_planner.PublicationWork(
+    kind: work_kind(kind),
+    id: id,
+    identifier: identifier,
+    slug: slug,
+    title: title,
+    url: url,
+  ))
+}
+
+fn work_kind(kind: String) -> artifact_publication_planner.WorkKind {
+  case kind {
+    "scheduled" -> artifact_publication_planner.ScheduledWork
+    _ -> artifact_publication_planner.TaskWork
+  }
 }
 
 fn target_decoder() -> decode.Decoder(
@@ -111,6 +154,11 @@ fn commit_stack_decoder() -> decode.Decoder(
   use base_sha <- decode.field("base_sha", decode.string)
   use head_sha <- decode.field("head_sha", decode.string)
   use head_tree <- decode.field("head_tree", decode.string)
+  use changed_files <- decode.optional_field(
+    "changed_files",
+    [],
+    decode.list(decode.string),
+  )
   use carrier <- decode.field("carrier", carrier_decoder())
   let stack =
     commit_stack_artifact.CommitStackArtifact(
@@ -119,6 +167,7 @@ fn commit_stack_decoder() -> decode.Decoder(
       base_sha: base_sha,
       head_sha: head_sha,
       head_tree: head_tree,
+      changed_files: changed_files,
       carrier: carrier,
     )
   case commit_stack_artifact.validate_commit_stack(stack) {

@@ -69,7 +69,7 @@ artifacts:
       repository: github.docs
       required: true
       pull_request:
-        title: "{{ work.identifier }}: update ExecPlan review document"
+        title: "{{ work.identifier }}: update ExecPlan review document for {{ work.title }}"
         body_template: prompts/execplan-pr-body.md
       files:
         - select:

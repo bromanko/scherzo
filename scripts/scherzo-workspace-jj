@@ -1441,6 +1441,30 @@ def publish_needs_repo(operation: str, values: dict[str, str]) -> bool:
     return True
 
 
+def edit_existing_pr_metadata(root: Path, repo: str, pr_ref: str, title: str, body_file: str) -> None:
+    edit = run_capture(
+        [
+            "gh",
+            "pr",
+            "edit",
+            pr_ref,
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--body-file",
+            body_file,
+        ],
+        root,
+    )
+    if edit.returncode != 0:
+        json_failure(
+            status="publication_failed",
+            failure_code="pr_edit_failed",
+            message=(edit.stderr or edit.stdout or "gh pr edit failed").strip(),
+        )
+
+
 def publish_change(root: Path, args: list[str], *, operation: str = "publish-change") -> None:
     values = parse_publish_args(args)
     reject_legacy_publication_remote_without_canonical()
@@ -1459,15 +1483,19 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
     if not records and allow_no_changes:
         branch = values.get("target-branch") or ""
         url = ""
+        metadata_updated = False
         if values.get("target-pr"):
             proc = run_capture(
                 ["gh", "pr", "view", values["target-pr"], "--repo", repo, "--json", "url", "--jq", ".url"],
                 root,
             )
             url = proc.stdout.strip() if proc.returncode == 0 else ""
+            if url:
+                edit_existing_pr_metadata(root, repo, values["target-pr"], title_text, values["body-file"])
+                metadata_updated = True
         json_dump({
             "version": 1,
-            "status": "unchanged",
+            "status": "updated" if metadata_updated else "unchanged",
             "url": url,
             "branch": branch,
             "base_ref": base,
@@ -1475,7 +1503,8 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
             "head_revision": revision_value(root, "@", "commit_id", default=""),
             "change_id": revision_value(root, "@", "change_id.short()", default=""),
             "created": False,
-            "updated": False,
+            "updated": metadata_updated,
+            "metadata_updated": metadata_updated,
         })
         return
     if not records:
@@ -1523,6 +1552,9 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
         view = run_capture(["gh", "pr", "view", branch, "--repo", repo, "--json", "url", "--jq", ".url"], root)
         if view.returncode == 0:
             pr_url = view.stdout.strip()
+    if pr_url and not created and not branch_only_commit_stack:
+        pr_ref = values.get("target-pr") or branch
+        edit_existing_pr_metadata(root, repo, pr_ref, title_text, values["body-file"])
     if not pr_url and not values.get("target-pr") and not branch_only_commit_stack:
         gh_base = base.split("@", 1)[0]
         create_args = [

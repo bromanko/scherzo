@@ -10,6 +10,7 @@ import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/checkout_lock
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/github
+import scherzo/artifact_repository/github_cli
 import scherzo/artifact_repository/github_paths
 import scherzo/artifact_repository/types as repository_types
 import scherzo/commit_stack_artifact
@@ -670,6 +671,27 @@ pub fn publish_maps_github_auth_env_and_pr_body_stdin_test() {
     == "published"
 }
 
+pub fn direct_pr_helper_fallback_uses_work_metadata_test() {
+  let manifest =
+    artifact_publication_planner.DryRunPublicationManifest(
+      ..dry_run_manifest(True),
+      pull_request: artifact_publication_planner.PlannedPullRequest(
+        enabled: True,
+        draft: False,
+        title: None,
+        body: None,
+      ),
+    )
+  let assert Ok(Some(url)) =
+    github_cli.ensure_pull_request(
+      manifest,
+      "test/tmp/artifact-repository-github/direct-pr-helper",
+      direct_pr_runner(),
+    )
+
+  assert url == "https://example.test/pr/direct"
+}
+
 pub fn publish_recovers_existing_pr_when_create_reports_duplicate_test() {
   let root = "test/tmp/artifact-repository-github/pr-create-duplicate"
   let log = root <> "/commands.log"
@@ -978,6 +1000,7 @@ fn commit_stack_publication_manifest() -> artifact_publication_planner.DryRunPub
   artifact_publication_planner.DryRunPublicationManifest(
     run_id: "run-1",
     workflow_id: "workflow.implementation",
+    work: work(),
     publication_id: "conflict_resolution",
     series_id: "work/task-1/workflow/workflow.implementation/publication/conflict_resolution",
     version_id: "commit-stack-version-1",
@@ -1020,6 +1043,7 @@ fn planned_commit_stack_with_carrier_bytes(
       base_sha: expected_existing_head_sha(),
       head_sha: commit_stack_head_sha(),
       head_tree: commit_stack_head_tree(),
+      changed_files: ["src/scherzo/example.gleam"],
       carrier: commit_stack_artifact.CommitStackCarrier(
         ref: commit_stack_carrier_ref(),
         sha256: hash.sha256_hex(commit_stack_carrier()),
@@ -1248,6 +1272,28 @@ fn store_with_bytes(
       },
     ),
   )
+}
+
+fn direct_pr_runner() -> command_runner.Runner {
+  command_runner.Runner(run: fn(spec) {
+    let command_runner.CommandSpec(args: args, ..) = spec
+    case args {
+      ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      ["pr", "create", ..] -> {
+        assert arg_after(args, "--title") == Some("LIV-761: publish review doc")
+        let assert Some(body) = gh_stdin(spec)
+        assert string.contains(body, "Review publication metadata")
+        assert string.contains(
+          body,
+          "https://linear.app/living-systems/issue/LIV-761/review-publication-metadata",
+        )
+        assert string.contains(body, "Workflow: `workflow.execplan`")
+        assert string.contains(body, "docs/plans/LIV-761.md")
+        Ok(command_runner.CommandOutput(0, "https://example.test/pr/direct", ""))
+      }
+      _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
 }
 
 fn create_pr_runner(log: String, draft: Bool) -> command_runner.Runner {
@@ -1889,6 +1935,11 @@ fn auth_env_runner(
       "gh", ["pr", "create", ..] -> {
         assert gh_token(spec) == Some(expected_token)
         let assert Some(body) = gh_stdin(spec)
+        assert string.contains(body, "Review publication metadata")
+        assert string.contains(
+          body,
+          "https://linear.app/living-systems/issue/LIV-761/review-publication-metadata",
+        )
         assert string.contains(body, "Version")
         Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
       }
@@ -2010,6 +2061,14 @@ fn append_log(path: String, line: String) -> Nil {
 
 fn read_file(path: String) -> String {
   simplifile.read(path) |> result.unwrap("")
+}
+
+fn arg_after(args: List(String), flag: String) -> Option(String) {
+  case args {
+    [] -> None
+    [current, value, ..] if current == flag -> Some(value)
+    [_, ..rest] -> arg_after(rest, flag)
+  }
 }
 
 fn seed_checkout(root: String) -> Nil {
@@ -2298,6 +2357,10 @@ fn work() -> artifact_publication_planner.PublicationWork {
     id: "task-1",
     identifier: "LIV-761",
     slug: "LIV-761",
+    title: Some("Review publication metadata"),
+    url: Some(
+      "https://linear.app/living-systems/issue/LIV-761/review-publication-metadata",
+    ),
   )
 }
 
@@ -2374,5 +2437,5 @@ fn existing_pr_view_json(
 }
 
 fn body_template() -> String {
-  "Version {{ publication.version_id }}"
+  "Work {{ work.title }}\nSource {{ work.url }}\nVersion {{ publication.version_id }}"
 }

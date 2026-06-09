@@ -518,6 +518,8 @@ pub fn publication_work(
     id: issue.id,
     identifier: issue.identifier,
     slug: issue.identifier,
+    title: Some(issue.title),
+    url: issue.url,
   )
 }
 

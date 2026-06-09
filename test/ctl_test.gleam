@@ -1,6 +1,7 @@
 import gleam/bit_array
 import gleam/dict
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -1738,7 +1739,14 @@ pub fn artifact_publication_retry_uses_retained_workspace_driver_for_commit_stac
       True,
       "run-1",
       Some("publish_stack"),
-      retained_workspace_publish_runner(command_subject),
+      retained_workspace_publish_metadata_runner(
+        command_subject,
+        Some("LIV-917"),
+        [
+          "Retry publication metadata",
+          "https://linear.app/living-systems/issue/LIV-917/retry-publication-metadata",
+        ],
+      ),
       subject_line(subject),
     )
     == Ok(Nil)
@@ -1764,6 +1772,40 @@ pub fn artifact_publication_retry_uses_retained_workspace_driver_for_commit_stac
       <> ")",
   )
   assert !string.contains(commands, ".scherzo-state/artifact-repositories")
+}
+
+pub fn artifact_publication_retry_falls_back_to_projection_when_retained_dry_run_lacks_work_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-legacy-commit-stack"
+  let root = base <> "/workspaces"
+  test_helpers.reset_dir(base)
+  seed_failed_commit_stack_retry_publication_state_without_work(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication_retry.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      Some("publish_stack"),
+      retained_workspace_publish_metadata_runner(
+        command_subject,
+        Some("LIV-917"),
+        ["- Identifier: `LIV-917`"],
+      ),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"publication_id\":\"publish_stack\"")
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(
+    transcript,
+    "\"branch\":\"scherzo/implementation/LIV-917\"",
+  )
+
+  let commands = drain_output(command_subject)
+  assert string.contains(commands, "retained-driver publish-commit-stack")
+  assert !string.contains(commands, "Scherzo: publish publish stack")
 }
 
 pub fn artifact_publication_retry_replays_failed_execution_matrix_test() {
@@ -2904,6 +2946,19 @@ fn seed_failed_retry_publication_state(root: String) -> Nil {
 }
 
 fn seed_failed_commit_stack_retry_publication_state(root: String) -> Nil {
+  seed_failed_commit_stack_retry_publication_state_with_work(root, True)
+}
+
+fn seed_failed_commit_stack_retry_publication_state_without_work(
+  root: String,
+) -> Nil {
+  seed_failed_commit_stack_retry_publication_state_with_work(root, False)
+}
+
+fn seed_failed_commit_stack_retry_publication_state_with_work(
+  root: String,
+  include_work: Bool,
+) -> Nil {
   let config_path = write_commit_stack_retry_publication_config(root)
   write_commit_stack_retained_workspace_manifest(root)
   let output_manifest = seeded_commit_stack_output_manifest(root)
@@ -2917,6 +2972,10 @@ fn seed_failed_commit_stack_retry_publication_state(root: String) -> Nil {
       id: "issue-1",
       identifier: "LIV-917",
       slug: "LIV-917",
+      title: Some("Retry publication metadata"),
+      url: Some(
+        "https://linear.app/living-systems/issue/LIV-917/retry-publication-metadata",
+      ),
     )
   let assert Ok(planned) =
     artifact_publication_planner.plan_publication(
@@ -2945,8 +3004,15 @@ fn seed_failed_commit_stack_retry_publication_state(root: String) -> Nil {
         message: "previous driver publication failed",
       ),
     )
-  let #(failed_sha, failed_bytes) =
-    write_publication_manifest(root, failed_ref, failed_manifest)
+  let #(failed_sha, failed_bytes) = case include_work {
+    True -> write_publication_manifest(root, failed_ref, failed_manifest)
+    False ->
+      write_publication_manifest_payload(
+        root,
+        failed_ref,
+        publication_manifest_without_work(failed_manifest, work),
+      )
+  }
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) =
     ledger.append_many(
@@ -2980,7 +3046,10 @@ fn seed_failed_commit_stack_retry_publication_state(root: String) -> Nil {
             required: True,
             retryable: True,
             retry_execution_available: True,
-            version_id: Some(planned.version_id),
+            version_id: case include_work {
+              True -> Some(planned.version_id)
+              False -> None
+            },
             manifest_ref: Some(failed_ref),
             manifest_sha256: Some(failed_sha),
             manifest_bytes: Some(failed_bytes),
@@ -3552,6 +3621,10 @@ fn seeded_publication_plans_from_config(
           id: "issue-1",
           identifier: "LIV-739",
           slug: "LIV-739",
+          title: Some("Retry matrix metadata"),
+          url: Some(
+            "https://linear.app/living-systems/issue/LIV-739/retry-matrix-metadata",
+          ),
         ),
         "run-1",
         body_templates,
@@ -3891,11 +3964,33 @@ fn write_publication_manifest(
   manifest: artifact_publication_manifest.PublicationManifest,
 ) -> #(String, Int) {
   let payload = artifact_publication_manifest.to_string(manifest)
+  write_publication_manifest_payload(root, ref, payload)
+}
+
+fn write_publication_manifest_payload(
+  root: String,
+  ref: String,
+  payload: String,
+) -> #(String, Int) {
   write_seed_artifact(root, ref, payload)
   #(
     hash.sha256_hex(payload),
     bit_array.byte_size(bit_array.from_string(payload)),
   )
+}
+
+fn publication_manifest_without_work(
+  manifest: artifact_publication_manifest.PublicationManifest,
+  work: artifact_publication_planner.PublicationWork,
+) -> String {
+  let payload = artifact_publication_manifest.to_string(manifest)
+  let work_fragment =
+    "\"work\":"
+    <> json.to_string(artifact_publication_planner.work_to_json(work))
+    <> ","
+  let legacy_payload = string.replace(payload, each: work_fragment, with: "")
+  assert !string.contains(legacy_payload, work_fragment)
+  legacy_payload
 }
 
 fn write_seed_artifact(root: String, ref: String, contents: String) -> Nil {
@@ -3923,18 +4018,53 @@ fn retry_push_failure_runner(
   retry_runner(subject, True)
 }
 
-fn retained_workspace_publish_runner(
+fn retained_workspace_publish_metadata_runner(
   subject: process.Subject(OutMsg),
+  expected_title_fragment: Option(String),
+  expected_body_fragments: List(String),
 ) -> command_runner.Runner {
   command_runner.Runner(run: fn(spec) {
     process.send(subject, OutLine(command_runner.describe(spec)))
-    let command_runner.CommandSpec(args: args, ..) = spec
+    let command_runner.CommandSpec(args: args, cwd: cwd, ..) = spec
     case args {
-      ["publish-commit-stack", ..] ->
+      ["publish-commit-stack", ..] -> {
+        let assert Some(title_file) = arg_after(args, "--title-file")
+        let assert Some(body_file) = arg_after(args, "--body-file")
+        let title = read_file_or_panic(path.join(cwd, title_file))
+        let body = read_file_or_panic(path.join(cwd, body_file))
+        process.send(subject, OutLine("publication-title=" <> title))
+        process.send(subject, OutLine("publication-body=" <> body))
+        case expected_title_fragment {
+          Some(fragment) -> {
+            assert string.contains(title, fragment)
+            Nil
+          }
+          None -> Nil
+        }
+        assert_contains_all(body, expected_body_fragments)
         Ok(command_runner.CommandOutput(0, retained_driver_success_json(), ""))
+      }
       _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
+}
+
+fn arg_after(args: List(String), flag: String) -> Option(String) {
+  case args {
+    [] -> None
+    [current, value, ..] if current == flag -> Some(value)
+    [_, ..rest] -> arg_after(rest, flag)
+  }
+}
+
+fn assert_contains_all(value: String, fragments: List(String)) -> Nil {
+  case fragments {
+    [] -> Nil
+    [fragment, ..rest] -> {
+      assert string.contains(value, fragment)
+      assert_contains_all(value, rest)
+    }
+  }
 }
 
 fn retained_driver_success_json() -> String {

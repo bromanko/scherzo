@@ -35,7 +35,14 @@ pub type WorkKind {
 }
 
 pub type PublicationWork {
-  PublicationWork(kind: WorkKind, id: String, identifier: String, slug: String)
+  PublicationWork(
+    kind: WorkKind,
+    id: String,
+    identifier: String,
+    slug: String,
+    title: Option(String),
+    url: Option(String),
+  )
 }
 
 pub type SelectedArtifact {
@@ -84,6 +91,7 @@ pub type DryRunPublicationManifest {
   DryRunPublicationManifest(
     run_id: String,
     workflow_id: String,
+    work: PublicationWork,
     publication_id: String,
     series_id: String,
     version_id: String,
@@ -192,11 +200,13 @@ fn plan_file_publication(
     run_id,
     work,
     files_markdown,
+    "",
     body_templates,
   ))
   Ok(DryRunPublicationManifest(
     run_id: run_id,
     workflow_id: manifest.workflow_id,
+    work: work,
     publication_id: route.id,
     series_id: series_id,
     version_id: version_id,
@@ -268,11 +278,13 @@ fn plan_commit_stack_publication(
     manifest.workflow_id,
     run_id,
     work,
+    stack,
     body_templates,
   ))
   Ok(DryRunPublicationManifest(
     run_id: run_id,
     workflow_id: manifest.workflow_id,
+    work: work,
     publication_id: route.id,
     series_id: series_id,
     version_id: version_id,
@@ -309,6 +321,7 @@ pub fn manifest_to_json(manifest: DryRunPublicationManifest) -> json.Json {
     #("artifact_type", json.string(dry_run_artifact_type)),
     #("run_id", json.string(manifest.run_id)),
     #("workflow_id", json.string(manifest.workflow_id)),
+    #("work", work_to_json(manifest.work)),
     #("publication_id", json.string(manifest.publication_id)),
     #("series_id", json.string(manifest.series_id)),
     #("version_id", json.string(manifest.version_id)),
@@ -622,6 +635,7 @@ fn pull_request_for_target(
   workflow_id: String,
   run_id: String,
   work: PublicationWork,
+  stack: PlannedCommitStack,
   body_templates: Dict(String, String),
 ) -> Result(PlannedPullRequest, PlannerError) {
   case target {
@@ -635,6 +649,7 @@ fn pull_request_for_target(
         run_id,
         work,
         "",
+        planner_support.render_changed_files_markdown(stack.stack.changed_files),
         body_templates,
       )
     ExistingPrBranchTargetPlan(_) ->
@@ -997,15 +1012,7 @@ fn compute_file_version_id(
         "body_template_contents",
         planner_support.option_string_to_json(body_template_contents),
       ),
-      #(
-        "work",
-        planner_support.work_identity_to_json(
-          work_kind_to_string(work.kind),
-          work.id,
-          work.identifier,
-          work.slug,
-        ),
-      ),
+      #("work", work_to_version_json(work)),
       #(
         "files",
         json.array(
@@ -1088,15 +1095,7 @@ fn compute_commit_stack_version_id(
       ),
       #("mode", json.string("commit_stack")),
       #("target", target_to_json(target)),
-      #(
-        "work",
-        planner_support.work_identity_to_json(
-          work_kind_to_string(work.kind),
-          work.id,
-          work.identifier,
-          work.slug,
-        ),
-      ),
+      #("work", work_to_version_json(work)),
       #("commit_stack", commit_stack_to_json(stack)),
     ])
     |> json.to_string
@@ -1203,6 +1202,7 @@ fn render_pull_request(
   run_id: String,
   work: PublicationWork,
   files_markdown: String,
+  changed_files_markdown: String,
   body_templates: Dict(String, String),
 ) -> Result(PlannedPullRequest, PlannerError) {
   case repository.pull_request_enabled {
@@ -1211,6 +1211,10 @@ fn render_pull_request(
     True -> {
       let locals = [
         #("publication.files_markdown", template.VString(files_markdown)),
+        #(
+          "publication.changed_files_markdown",
+          template.VString(changed_files_markdown),
+        ),
         ..base_template_locals(
           route.id,
           series_id,
@@ -1352,6 +1356,8 @@ fn base_template_locals(
     #("work.id", template.VString(work.id)),
     #("work.identifier", template.VString(work.identifier)),
     #("work.slug", template.VString(work.slug)),
+    #("work.title", planner_support.option_string_to_template_value(work.title)),
+    #("work.url", planner_support.option_string_to_template_value(work.url)),
     #("workflow.id", template.VString(workflow_id)),
     #("run.id", template.VString(run_id)),
     #("publication.id", template.VString(publication_id)),
@@ -1403,6 +1409,28 @@ fn work_kind_to_string(kind: WorkKind) -> String {
     TaskWork -> "task"
     ScheduledWork -> "scheduled"
   }
+}
+
+pub fn work_to_json(work: PublicationWork) -> json.Json {
+  planner_support.work_identity_to_json(
+    work_kind_to_string(work.kind),
+    work.id,
+    work.identifier,
+    work.slug,
+    work.title,
+    work.url,
+  )
+}
+
+fn work_to_version_json(work: PublicationWork) -> json.Json {
+  json.object([
+    #("kind", json.string(work_kind_to_string(work.kind))),
+    #("id", json.string(work.id)),
+    #("identifier", json.string(work.identifier)),
+    #("slug", json.string(work.slug)),
+    #("title", planner_support.option_string_to_json(work.title)),
+    #("url", planner_support.option_string_to_json(work.url)),
+  ])
 }
 
 fn validation_error_to_planner_error(pair: #(String, String)) -> PlannerError {

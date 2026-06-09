@@ -2,6 +2,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/artifact_publication_driver
 import scherzo/artifact_publication_executor
@@ -241,8 +242,10 @@ fn retry_selected_publications(
   )
   use work <- result.try(publication_workflow_identity(
     projected,
+    root,
     run_id,
     workflow_status,
+    targets,
   ))
   use resolved <- result.try(resolve_retry_routes(
     targets,
@@ -692,6 +695,61 @@ fn workflow_status_run_root(status: projection.WorkflowRunStatus) -> String {
 
 fn publication_workflow_identity(
   projected: projection.Projection,
+  root: String,
+  run_id: String,
+  workflow_status: projection.WorkflowRunStatus,
+  targets: List(RetrySelection),
+) -> Result(artifact_publication_planner.PublicationWork, #(String, String)) {
+  case retained_publication_work(root, targets) {
+    Some(work) -> Ok(work)
+    None ->
+      publication_workflow_identity_from_projection(
+        projected,
+        run_id,
+        workflow_status,
+      )
+  }
+}
+
+fn retained_publication_work(
+  root: String,
+  targets: List(RetrySelection),
+) -> Option(artifact_publication_planner.PublicationWork) {
+  case targets {
+    [] -> None
+    [RetrySelection(latest: latest), ..rest] ->
+      case latest.manifest_ref {
+        Some(ref) ->
+          case load_publication_manifest(root, ref) {
+            Ok(artifact_publication_manifest.PublicationManifest(
+              dry_run_manifest: Some(dry_run),
+              ..,
+            )) ->
+              case usable_publication_work(dry_run.work) {
+                True -> Some(dry_run.work)
+                False -> retained_publication_work(root, rest)
+              }
+            _ -> retained_publication_work(root, rest)
+          }
+        None -> retained_publication_work(root, rest)
+      }
+  }
+}
+
+fn usable_publication_work(
+  work: artifact_publication_planner.PublicationWork,
+) -> Bool {
+  non_empty_string(work.id)
+  || non_empty_string(work.identifier)
+  || non_empty_string(work.slug)
+}
+
+fn non_empty_string(value: String) -> Bool {
+  string.trim(value) != ""
+}
+
+fn publication_workflow_identity_from_projection(
+  projected: projection.Projection,
   run_id: String,
   workflow_status: projection.WorkflowRunStatus,
 ) -> Result(artifact_publication_planner.PublicationWork, #(String, String)) {
@@ -706,6 +764,8 @@ fn publication_workflow_identity(
         id: issue_id,
         identifier: issue_identifier,
         slug: issue_identifier,
+        title: None,
+        url: None,
       ))
     projection.WorkflowRunFinished(issue_id: issue_id, ..)
     | projection.WorkflowRunInterrupted(issue_id: issue_id, ..)
@@ -729,6 +789,8 @@ fn publication_workflow_identity(
         id: issue_id,
         identifier: issue_identifier,
         slug: issue_identifier,
+        title: None,
+        url: task_ref.task_url,
       ))
     }
   }

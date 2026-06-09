@@ -32,6 +32,7 @@ pub type CommitStackArtifact {
     base_sha: String,
     head_sha: String,
     head_tree: String,
+    changed_files: List(String),
     carrier: CommitStackCarrier,
   )
 }
@@ -101,6 +102,7 @@ pub fn commit_stack_identity_json(stack: CommitStackArtifact) -> json.Json {
     #("base_sha", json.string(stack.base_sha)),
     #("head_sha", json.string(stack.head_sha)),
     #("head_tree", json.string(stack.head_tree)),
+    #("changed_files", json.array(stack.changed_files, of: json.string)),
     #(
       "carrier",
       json.object([
@@ -195,6 +197,7 @@ fn decode_commit_stack(
   use head <- result.try(required_object(entries, "head"))
   use head_sha <- result.try(required_string(head, "sha"))
   use head_tree <- result.try(required_string(head, "tree"))
+  use changed_files <- result.try(optional_string_list(entries, "changed_files"))
   use carrier_entries <- result.try(required_object(entries, "carrier"))
   use carrier <- result.try(decode_carrier(carrier_entries))
   validate_commit_stack(CommitStackArtifact(
@@ -203,6 +206,7 @@ fn decode_commit_stack(
     base_sha: base_sha,
     head_sha: head_sha,
     head_tree: head_tree,
+    changed_files: changed_files,
     carrier: carrier,
   ))
 }
@@ -338,6 +342,38 @@ fn optional_string(
   case field(entries, key) {
     Some(json_value.JString(value)) -> Some(value)
     _ -> None
+  }
+}
+
+fn optional_string_list(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Result(List(String), ArtifactParseError) {
+  case field(entries, key) {
+    None -> Ok([])
+    Some(json_value.JArray(values)) -> decode_string_list(values, key, [])
+    Some(_) ->
+      error(
+        "artifact_field_invalid",
+        "artifact field " <> key <> " must be a list of strings",
+      )
+  }
+}
+
+fn decode_string_list(
+  values: List(json_value.JsonValue),
+  key: String,
+  acc: List(String),
+) -> Result(List(String), ArtifactParseError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [json_value.JString(value), ..rest] ->
+      decode_string_list(rest, key, [value, ..acc])
+    [_, ..] ->
+      error(
+        "artifact_field_invalid",
+        "artifact field " <> key <> " must be a list of strings",
+      )
   }
 }
 

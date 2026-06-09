@@ -43,6 +43,11 @@ pub fn plans_leaf_output_publication_manifest_test() {
   assert manifest.pull_request.enabled == True
   assert manifest.pull_request.title == Some("LIV-761 publication")
   let assert Some(body) = manifest.pull_request.body
+  assert string.contains(body, "Planner publication metadata")
+  assert string.contains(
+    body,
+    "https://linear.app/living-systems/issue/LIV-761/planner-publication-metadata",
+  )
   assert string.contains(body, "docs/plans/LIV-761.md")
   assert string.contains(body, manifest.version_id)
 
@@ -511,6 +516,12 @@ pub fn commit_stack_stable_branch_target_plans_driver_publication_test() {
   assert manifest.pull_request.enabled == True
   assert manifest.pull_request.title == Some("LIV-761 publication")
   let assert Some(body) = manifest.pull_request.body
+  assert string.contains(body, "Planner publication metadata")
+  assert string.contains(
+    body,
+    "https://linear.app/living-systems/issue/LIV-761/planner-publication-metadata",
+  )
+  assert string.contains(body, "src/scherzo/planner.gleam")
   assert string.contains(body, manifest.version_id)
   let assert artifact_publication_planner.StableBranchTargetPlan =
     manifest.target
@@ -1182,6 +1193,10 @@ fn work() -> artifact_publication_planner.PublicationWork {
     id: "task-1",
     identifier: "LIV-761",
     slug: "LIV-761",
+    title: Some("Planner publication metadata"),
+    url: Some(
+      "https://linear.app/living-systems/issue/LIV-761/planner-publication-metadata",
+    ),
   )
 }
 
@@ -2004,6 +2019,10 @@ fn commit_stack_manifest_contents_with(
       ]),
     ),
     #(
+      "changed_files",
+      json.array(["src/scherzo/planner.gleam"], of: json.string),
+    ),
+    #(
       "carrier",
       json.object([
         #("ref", json.string(commit_stack_carrier_ref())),
@@ -2190,7 +2209,7 @@ fn bytes_of(contents: String) -> Int {
 }
 
 fn body_template() -> String {
-  "Version {{ publication.version_id }}\n{{ publication.files_markdown }}"
+  "Work {{ work.title }}\nSource {{ work.url }}\nVersion {{ publication.version_id }}\n{{ publication.files_markdown }}\n{{ publication.changed_files_markdown }}"
 }
 
 fn store_with_contents(
