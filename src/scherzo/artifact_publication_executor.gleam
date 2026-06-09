@@ -10,12 +10,14 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
 import scherzo/artifact_repository/command_runner
-import scherzo/artifact_repository/github as github_repository
-import scherzo/artifact_repository/types
 import scherzo/state/artifact_store
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_checkpoint
 import scherzo/workflow_contract_manifest
+
+const unsupported_file_publication_code = "file_artifact_publication_unsupported"
+
+const unsupported_file_publication_message = "File artifact publication to GitHub repositories is no longer supported because Scherzo no longer owns hidden managed GitHub checkouts. Publish same-repo changes through mode commit_stack with a workspace driver publish-commit-stack or publish-change capability."
 
 pub fn execute_routes(
   routes: List(artifact_publication_config.PublicationRoute),
@@ -534,6 +536,52 @@ fn execute_route(
   recovered_execution: Bool,
   reuse_terminal_attempts: Bool,
 ) -> Result(RouteExecutionOutcome, String) {
+  case route.mode {
+    artifact_publication_config.FilePublication ->
+      record_unsupported_file_publication_route(
+        route,
+        output_manifest.workflow_id,
+        work,
+        run_id,
+        state_root,
+        checkpoint,
+        recovered_execution,
+        reuse_terminal_attempts,
+      )
+    artifact_publication_config.CommitStackPublication ->
+      execute_supported_route(
+        route,
+        repositories,
+        output_manifest,
+        config_dir,
+        workflow_bundle_dir,
+        state_root,
+        work,
+        run_id,
+        checkpoint,
+        runner,
+        publication_driver,
+        recovered_execution,
+        reuse_terminal_attempts,
+      )
+  }
+}
+
+fn execute_supported_route(
+  route: artifact_publication_config.PublicationRoute,
+  repositories: artifact_publication_config.ArtifactRepositories,
+  output_manifest: workflow_contract_manifest.ContractOutputManifest,
+  config_dir: String,
+  workflow_bundle_dir: String,
+  state_root: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  runner: command_runner.Runner,
+  publication_driver: Option(WorkspacePublicationDriver),
+  recovered_execution: Bool,
+  reuse_terminal_attempts: Bool,
+) -> Result(RouteExecutionOutcome, String) {
   case
     artifact_publication_recording.load_body_templates(
       [route],
@@ -595,7 +643,6 @@ fn execute_route(
                 output_manifest.workflow_id,
                 planned,
                 state_root,
-                work,
                 run_id,
                 checkpoint,
                 runner,
@@ -620,12 +667,55 @@ fn execute_route(
   }
 }
 
+fn record_unsupported_file_publication_route(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  state_root: String,
+  checkpoint: workflow_checkpoint.Writer,
+  recovered_execution: Bool,
+  reuse_terminal_attempts: Bool,
+) -> Result(RouteExecutionOutcome, String) {
+  let existing_attempt = case recovered_execution, reuse_terminal_attempts {
+    True, True ->
+      artifact_publication_attempts.existing_failed_attempt_by_error(
+        state_root,
+        run_id,
+        route.id,
+        unsupported_file_publication_code,
+        unsupported_file_publication_message,
+      )
+    _, _ -> None
+  }
+  case existing_attempt {
+    Some(attempt) ->
+      Ok(RouteExecutionOutcome(
+        attempt,
+        artifact_publication_attempts.failure_from_attempt(attempt),
+      ))
+    None -> {
+      use #(failure, attempt) <- result.try(
+        artifact_publication_recording.record_nonretryable_failed_attempt(
+          route,
+          workflow_id,
+          work,
+          run_id,
+          checkpoint,
+          unsupported_file_publication_code,
+          unsupported_file_publication_message,
+        ),
+      )
+      Ok(RouteExecutionOutcome(attempt, Some(failure)))
+    }
+  }
+}
+
 fn execute_planned_publication(
   route: artifact_publication_config.PublicationRoute,
   workflow_id: String,
   planned: artifact_publication_planner.DryRunPublicationManifest,
   state_root: String,
-  work: artifact_publication_planner.PublicationWork,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
   runner: command_runner.Runner,
@@ -643,57 +733,7 @@ fn execute_planned_publication(
         runner,
         publication_driver,
       )
-    None ->
-      execute_managed_repository_publication(
-        route,
-        workflow_id,
-        planned,
-        state_root,
-        work,
-        run_id,
-        checkpoint,
-        runner,
-      )
-  }
-}
-
-fn execute_managed_repository_publication(
-  route: artifact_publication_config.PublicationRoute,
-  workflow_id: String,
-  planned: artifact_publication_planner.DryRunPublicationManifest,
-  state_root: String,
-  work: artifact_publication_planner.PublicationWork,
-  run_id: String,
-  checkpoint: workflow_checkpoint.Writer,
-  runner: command_runner.Runner,
-) -> Result(RouteExecutionOutcome, String) {
-  case prepare_repository_execution_input(route, planned, checkpoint) {
-    Ok(prepared) -> {
-      let manifest =
-        github_repository.publish(
-          prepared,
-          state_root,
-          runner,
-          checkpoint.now_ms(),
-        )
-      record_execution_manifest(
-        route,
-        workflow_id,
-        run_id,
-        manifest,
-        checkpoint,
-      )
-    }
-    Error(#(code, message)) ->
-      record_route_failure(
-        route,
-        workflow_id,
-        work,
-        run_id,
-        checkpoint,
-        code,
-        message,
-      )
+    None -> Error("commit_stack_publication_missing_planned_stack")
   }
 }
 
@@ -867,36 +907,6 @@ fn failure_message(reason: String) -> String {
   case string.split_once(reason, on: ":") {
     Ok(#(_, message)) -> string.trim(message)
     Error(_) -> reason
-  }
-}
-
-fn prepare_repository_execution_input(
-  route: artifact_publication_config.PublicationRoute,
-  planned: artifact_publication_planner.DryRunPublicationManifest,
-  checkpoint: workflow_checkpoint.Writer,
-) -> Result(types.PublicationExecutionInput, #(String, String)) {
-  case
-    artifact_publication_config.repository_ref_parts(
-      route.repository,
-      "publication.repository",
-    )
-  {
-    Ok(#("github", _)) ->
-      github_repository.prepare_publication_input(
-        planned,
-        checkpoint_store(checkpoint),
-      )
-      |> result.map(fn(input) { input })
-      |> result.map_error(fn(error) {
-        #(github_repository.code(error), github_repository.message(error))
-      })
-    Ok(#(kind, _)) ->
-      Error(#("unsupported_repository", "unsupported repository kind: " <> kind))
-    Error(error) ->
-      Error(#(
-        "invalid_repository",
-        artifact_publication_config.error_message(error),
-      ))
   }
 }
 

@@ -141,8 +141,6 @@ artifacts:
       docs:
         repo: scherzo-systems/scherzo
         base: main
-        checkout:
-          strategy: managed_git
         branch:
           strategy: stable_per_work
           template: scherzo/{{ work.identifier }}/{{ publication.id }}

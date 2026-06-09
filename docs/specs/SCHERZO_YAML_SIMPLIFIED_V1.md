@@ -355,8 +355,6 @@ artifacts:
       docs:
         repo: scherzo-systems/scherzo
         base: main
-        checkout:
-          strategy: managed_git
         branch:
           strategy: stable_per_work
           template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
@@ -366,8 +364,8 @@ artifacts:
           draft: false
 ```
 
-`repo` is an `owner/repo` string. `base` is the target branch. Defaults are
-`checkout.strategy: managed_git`, `branch.strategy: stable_per_work`,
+`repo` is an `owner/repo` string. `base` is the target branch. `checkout` was removed; GitHub publication now uses workflow `mode: commit_stack` and a workspace-driver-backed publish operation rather than a Scherzo-managed repository checkout. Defaults are
+`branch.strategy: stable_per_work`,
 `branch.template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}`,
 `pull_request.enabled: true`,
 `pull_request.strategy: update_existing`, and `pull_request.draft: false`.

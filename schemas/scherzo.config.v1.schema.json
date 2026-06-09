@@ -561,11 +561,8 @@
         },
         "base": { "$ref": "#/$defs/NonEmptyString" },
         "checkout": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "strategy": { "enum": ["managed_git"] }
-          }
+          "description": "checkout was removed; GitHub publication must use workflow mode commit_stack with workspace driver publication.",
+          "not": {}
         },
         "branch": {
           "type": "object",

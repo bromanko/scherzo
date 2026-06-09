@@ -34,18 +34,9 @@ pub type GithubRepositoryTarget {
     name: String,
     repo: String,
     base: String,
-    checkout: GithubCheckoutConfig,
     branch: GithubBranchConfig,
     pull_request: GithubPullRequestConfig,
   )
-}
-
-pub type GithubCheckoutConfig {
-  GithubCheckoutConfig(strategy: GithubCheckoutStrategy)
-}
-
-pub type GithubCheckoutStrategy {
-  ManagedGit
 }
 
 pub type GithubBranchConfig {
@@ -204,33 +195,36 @@ fn parse_github_repository_target(
     ["repo", "base", "checkout", "branch", "pull_request", "draft_pr"],
     path,
   ))
+  use _ <- result.try(reject_removed_checkout(entries, path))
   use _ <- result.try(reject_legacy_draft_pr(entries, path))
   use repo <- result.try(required_string_entry(entries, "repo", path <> ".repo"))
   use _ <- result.try(validate_github_repo(repo, path <> ".repo"))
   use base <- result.try(required_string_entry(entries, "base", path <> ".base"))
   use _ <- result.try(validate_non_empty(base, path <> ".base"))
-  let checkout_node =
-    unwrap_node(get_entry(entries, "checkout"), yay.NodeMap([]))
   let branch_node = unwrap_node(get_entry(entries, "branch"), yay.NodeMap([]))
   let pull_request_node =
     unwrap_node(get_entry(entries, "pull_request"), yay.NodeMap([]))
-  use checkout <- result.try(parse_checkout_config(
-    checkout_node,
-    path <> ".checkout",
-  ))
   use branch <- result.try(parse_branch_config(branch_node, path <> ".branch"))
   use pull_request <- result.try(parse_pull_request_defaults(
     pull_request_node,
     path <> ".pull_request",
   ))
-  Ok(GithubRepositoryTarget(
-    name:,
-    repo:,
-    base:,
-    checkout:,
-    branch:,
-    pull_request:,
-  ))
+  Ok(GithubRepositoryTarget(name:, repo:, base:, branch:, pull_request:))
+}
+
+fn reject_removed_checkout(
+  entries: List(#(String, yay.Node)),
+  path: String,
+) -> Result(Nil, PublicationConfigError) {
+  case get_entry(entries, "checkout") {
+    Some(_) ->
+      error(
+        "artifact_repository_checkout_removed",
+        path
+          <> ".checkout.strategy was removed; GitHub artifact repository publication no longer supports Scherzo-managed Git checkouts. Use workflow mode commit_stack with a workspace driver publish-commit-stack/publish-change capability instead.",
+      )
+    None -> Ok(Nil)
+  }
 }
 
 fn reject_legacy_draft_pr(
@@ -245,29 +239,6 @@ fn reject_legacy_draft_pr(
       )
     None -> Ok(Nil)
   }
-}
-
-fn parse_checkout_config(
-  node: yay.Node,
-  path: String,
-) -> Result(GithubCheckoutConfig, PublicationConfigError) {
-  use entries <- result.try(read_map_entries(node, path))
-  use _ <- result.try(require_only_keys(entries, ["strategy"], path))
-  let strategy = case get_entry(entries, "strategy") {
-    None -> Ok(ManagedGit)
-    Some(yay.NodeStr("managed_git")) -> Ok(ManagedGit)
-    Some(yay.NodeStr(other)) ->
-      error(
-        "invalid_artifact_repository_checkout_strategy",
-        path <> ".strategy must be managed_git, got " <> other,
-      )
-    Some(_) ->
-      error(
-        "artifact_repository_checkout_strategy_not_string",
-        path <> ".strategy must be a string",
-      )
-  }
-  result.map(strategy, fn(strategy) { GithubCheckoutConfig(strategy:) })
 }
 
 fn parse_branch_config(

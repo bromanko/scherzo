@@ -1,6 +1,6 @@
 # GitHub artifact repository adapter
 
-This ExecPlan v2 review document is the human review surface for LIV-740. It plans a later implementation of Scherzo's GitHub artifact repository adapter; mechanical implementation steps, tests, interfaces, dependencies, and artifact notes are supplied through the structured implementation-pack submission captured by Scherzo.
+This ExecPlan v2 review document is the human review surface for LIV-740. It is retained as historical context only; LIV-934 removed the managed-checkout artifact repository implementation described here. Mechanical implementation steps, tests, interfaces, dependencies, and artifact notes were supplied through the structured implementation-pack submission captured by Scherzo.
 
 ## Purpose / Big Picture
 
@@ -10,7 +10,7 @@ Scherzo workflows need to publish selected retained artifacts to GitHub without 
 
 The source PRD keeps Scherzo's internal artifact store canonical and treats GitHub as a derived publication target. The current tree already has typed publication config and a dry-run planner, while legacy ExecPlan publishing still goes through `workspace-driver publish-change`. The adapter must therefore sit behind Scherzo artifact publication runtime code, not behind a workspace driver, and it must read bytes by artifact-store ref rather than from a step workspace path.
 
-The MVP is intentionally GitHub-only and may use local `git` plus `gh` as implementation tools, but those tools are dependencies of the artifact repository adapter itself. The adapter must use a managed checkout under Scherzo state outside workflow step workspaces, with checkout identity keyed by repository target, base branch, and publication series so independent publications to the same GitHub repository cannot share a dirty branch. It must support only `checkout.strategy: managed_git`, `branch.strategy: stable_per_work`, `pull_request.strategy: update_existing`, and `pull_request.draft`, and fail closed for unsafe paths, missing artifact bytes, early Git command failures, mutation command failures, or ambiguous PR lookup. Non-GitHub backends, generalized review state, GitHub approval tracking, and broad dogfood workflow migration are deferred.
+The historical MVP was intentionally GitHub-only and planned to use local `git` plus `gh` as implementation tools. It assumed a managed checkout under Scherzo state outside workflow step workspaces, keyed by repository target, base branch, and publication series so independent publications to the same GitHub repository could not share a dirty branch. LIV-934 superseded that strategy: GitHub file publication is unsupported until a driver-owned lane/worktree exists, while same-repo publication uses `mode: commit_stack` and the workspace driver. Non-GitHub backends, generalized review state, GitHub approval tracking, and broad dogfood workflow migration were deferred.
 
 ## Strategy Overview
 

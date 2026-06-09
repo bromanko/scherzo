@@ -5418,9 +5418,6 @@ fn publication_repositories() -> artifact_publication_config.ArtifactRepositorie
           name: "docs",
           repo: "scherzo-systems/scherzo",
           base: "main",
-          checkout: artifact_publication_config.GithubCheckoutConfig(
-            strategy: artifact_publication_config.ManagedGit,
-          ),
           branch: artifact_publication_config.GithubBranchConfig(
             strategy: artifact_publication_config.StablePerWork,
             template: "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}",
@@ -5509,32 +5506,11 @@ fn record_publication_output_manifest(
   written
 }
 
-fn publication_commit_failure_runner() -> command_runner.Runner {
-  command_runner.Runner(run: fn(spec) {
-    let command_runner.CommandSpec(
-      executable: executable,
-      args: args,
-      cwd: cwd,
-      ..,
-    ) = spec
-    let _ = simplifile.create_directory_all(cwd)
-    case executable, args {
-      "git", ["clone", _, target] -> {
-        let _ = simplifile.create_directory_all(target)
-        Ok(command_runner.CommandOutput(0, "", ""))
-      }
-      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
-      "git", ["rev-parse", "--verify", ..] ->
-        Ok(command_runner.CommandOutput(1, "", ""))
-      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
-      "git", ["commit", ..] ->
-        Ok(command_runner.CommandOutput(2, "", "commit failed"))
-      _, _ -> Error(command_runner.command_error("unexpected_command"))
-    }
+fn publication_fail_if_called_runner() -> command_runner.Runner {
+  command_runner.Runner(run: fn(_) {
+    Error(command_runner.command_error(
+      "publication runner should not be called",
+    ))
   })
 }
 
@@ -6454,9 +6430,9 @@ pub fn contracted_invalid_json_file_output_fails_publication_test() {
     )
 }
 
-pub fn workflow_publication_success_records_planned_attempt_test() {
+pub fn workflow_required_file_publication_unsupported_is_durable_test() {
   let subject = process.new_subject()
-  let root = "test/tmp/workflow-run/publication-success"
+  let root = "test/tmp/workflow-run/publication-file-unsupported"
   test_helpers.reset_dir(root)
   test_helpers.reset_dir(
     "test/tmp/workflow-run/workspaces/implementation/ABC-123",
@@ -6472,35 +6448,39 @@ pub fn workflow_publication_success_records_planned_attempt_test() {
     )
   let orchestrator = publication_orchestrator(root)
 
-  let assert Ok(_) =
-    with_fake_publication_tools(root, fn() {
-      workflow_run.execute(
-        issue(),
-        dag,
-        orchestrator,
-        empty_tracker(),
-        [],
-        "run-1",
-        dependencies,
-      )
-    })
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
 
+  assert string.starts_with(
+    failure.reason,
+    "workflow_publication_required_failed:review_doc:file_artifact_publication_unsupported",
+  )
   let attempts = publication_attempt_records(root, "review_doc")
   let assert [
     record.PublicationAttemptRecorded(
       status: status,
       manifest_ref: Some(manifest_ref),
       retryable: retryable,
+      retry_execution_available: retry_execution_available,
       ..,
     ),
   ] = attempts
-  assert status == "published"
+  assert status == "failed"
   assert retryable == False
+  assert retry_execution_available == False
   assert manifest_ref
     == "runs/run-1/publications/review_doc/"
     <> publication_attempt_id(root, "review_doc")
     <> ".json"
-  assert workflow_finished_outcome(root) == "completed"
+  assert workflow_finished_outcome(root) == "failed_fatal"
 }
 
 pub fn workflow_without_publication_routes_records_no_publication_attempts_test() {
@@ -6562,7 +6542,7 @@ pub fn workflow_publication_required_failure_is_durable_test() {
 
   assert string.starts_with(
     failure.reason,
-    "workflow_publication_required_failed:review_doc:",
+    "workflow_publication_required_failed:review_doc:file_artifact_publication_unsupported",
   )
   let attempts = publication_attempt_records(root, "review_doc")
   assert list.length(attempts) == 1
@@ -6642,10 +6622,10 @@ pub fn resumed_publication_finalization_preserves_terminal_required_failure_test
       issue(),
       "run-1",
       base_checkpoint,
-      publication_commit_failure_runner(),
+      publication_fail_if_called_runner(),
     )
   let assert [failure] = initial_result.required_failures
-  assert failure.code == "git_commit_failed"
+  assert failure.code == "file_artifact_publication_unsupported"
   assert list.length(publication_attempt_records(state_root, "review_doc")) == 1
 
   let assert Error(failure) =
@@ -6667,7 +6647,7 @@ pub fn resumed_publication_finalization_preserves_terminal_required_failure_test
 
   assert string.starts_with(
     failure.reason,
-    "workflow_publication_required_failed:review_doc:git_commit_failed",
+    "workflow_publication_required_failed:review_doc:file_artifact_publication_unsupported",
   )
   assert list.length(publication_attempt_records(state_root, "review_doc")) == 1
   assert workflow_finished_outcome(state_root) == "failed_fatal"
@@ -6681,7 +6661,7 @@ pub fn resumed_publication_finalization_dedupes_attempt_recording_after_finish_c
     "test/tmp/workflow-run/workspaces/implementation/ABC-123",
   )
   write_publication_template(root)
-  let assert Ok(dag) = workflow_dag.parse(publication_workflow_yaml(True))
+  let assert Ok(dag) = workflow_dag.parse(publication_workflow_yaml(False))
   let base_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let resumed_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 456 })
   let crashing_checkpoint =
@@ -6744,7 +6724,7 @@ pub fn resumed_publication_finalization_dedupes_attempt_recording_after_finish_c
   assert workflow_finished_outcome(root) == "completed"
 }
 
-pub fn resumed_publication_finalization_after_pre_attempt_crash_publishes_once_test() {
+pub fn resumed_publication_finalization_after_pre_attempt_crash_records_unsupported_once_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/publication-finalization-pre-attempt"
   test_helpers.reset_dir(root)
@@ -6758,7 +6738,7 @@ pub fn resumed_publication_finalization_after_pre_attempt_crash_publishes_once_t
   let resumed_checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 456 })
   let output_written = record_publication_output_manifest(base_checkpoint)
 
-  let assert Ok(_) =
+  let assert Error(failure) =
     with_fake_publication_tools(root, fn() {
       workflow_run.execute_with_resume(
         issue(),
@@ -6775,10 +6755,14 @@ pub fn resumed_publication_finalization_after_pre_attempt_crash_publishes_once_t
       )
     })
 
+  assert string.starts_with(
+    failure.reason,
+    "workflow_publication_required_failed:review_doc:file_artifact_publication_unsupported",
+  )
   let assert [record.PublicationAttemptRecorded(status: status, ..)] =
     publication_attempt_records(root, "review_doc")
-  assert status == "published"
-  assert workflow_finished_outcome(root) == "completed"
+  assert status == "failed"
+  assert workflow_finished_outcome(root) == "failed_fatal"
 }
 
 pub fn resumed_publication_finalization_replays_incomplete_nonterminal_attempt_test() {
@@ -6796,7 +6780,7 @@ pub fn resumed_publication_finalization_replays_incomplete_nonterminal_attempt_t
   let output_written = record_publication_output_manifest(base_checkpoint)
   seed_nonterminal_publication_attempt(root, "planned-before-crash")
 
-  let assert Ok(_) =
+  let assert Error(failure) =
     with_fake_publication_tools(root, fn() {
       workflow_run.execute_with_resume(
         issue(),
@@ -6813,13 +6797,17 @@ pub fn resumed_publication_finalization_replays_incomplete_nonterminal_attempt_t
       )
     })
 
+  assert string.starts_with(
+    failure.reason,
+    "workflow_publication_required_failed:review_doc:file_artifact_publication_unsupported",
+  )
   let assert [
     record.PublicationAttemptRecorded(status: planned_status, ..),
-    record.PublicationAttemptRecorded(status: published_status, ..),
+    record.PublicationAttemptRecorded(status: failed_status, ..),
   ] = publication_attempt_records(root, "review_doc")
   assert planned_status == "planned"
-  assert published_status == "published"
-  assert workflow_finished_outcome(root) == "completed"
+  assert failed_status == "failed"
+  assert workflow_finished_outcome(root) == "failed_fatal"
 }
 
 pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {

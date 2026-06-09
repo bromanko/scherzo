@@ -116,6 +116,31 @@ pub fn record_routes_records_optional_failures_in_ledger_projection_test() {
   assert latest.retry_execution_available == False
 }
 
+pub fn record_nonretryable_failed_attempt_records_metadata_test() {
+  let root = "test/tmp/artifact-publication-recording/nonretryable-failure"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(#(failure, attempt)) =
+    artifact_publication_recording.record_nonretryable_failed_attempt(
+      route(True),
+      "workflow.execplan",
+      artifact_publication_recording.publication_work(issue()),
+      "run-1",
+      checkpoint,
+      "file_artifact_publication_unsupported",
+      "File publication is unsupported",
+    )
+
+  assert failure.code == "file_artifact_publication_unsupported"
+  assert attempt.status == "failed"
+  assert attempt.retryable == False
+  assert attempt.retry_execution_available == False
+  assert attempt.version_id == None
+  assert attempt.error_code == Some("file_artifact_publication_unsupported")
+  assert publication_attempt_records(root) == 1
+}
+
 pub fn record_routes_records_missing_body_template_as_failed_attempt_test() {
   let root = "test/tmp/artifact-publication-recording/missing-template"
   test_helpers.reset_dir(root)
@@ -367,9 +392,6 @@ fn repositories() -> artifact_publication_config.ArtifactRepositories {
           name: "docs",
           repo: "scherzo-systems/scherzo",
           base: "main",
-          checkout: artifact_publication_config.GithubCheckoutConfig(
-            strategy: artifact_publication_config.ManagedGit,
-          ),
           branch: artifact_publication_config.GithubBranchConfig(
             strategy: artifact_publication_config.StablePerWork,
             template: "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}",

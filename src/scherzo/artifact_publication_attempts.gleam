@@ -49,6 +49,29 @@ pub fn existing_terminal_attempt(
   }
 }
 
+pub fn existing_failed_attempt_by_error(
+  workspace_root: String,
+  run_id: String,
+  publication_id: String,
+  error_code: String,
+  error_message: String,
+) -> Option(artifact_publication_recording.PublicationAttemptSummary) {
+  case ledger.path_for_workspace_root(workspace_root) {
+    Error(error) -> none_from_error(error)
+    Ok(ledger_path) ->
+      case ledger.load_projection(ledger_path) {
+        Error(error) -> none_from_error(error)
+        Ok(projected) ->
+          projection.publication_attempts_for_run(
+            projected,
+            run_id,
+            publication_id,
+          )
+          |> latest_matching_failed(error_code, error_message, None)
+      }
+  }
+}
+
 pub fn planned_requires_pr(
   planned: artifact_publication_planner.DryRunPublicationManifest,
 ) -> Bool {
@@ -243,6 +266,32 @@ fn latest_matching_terminal(
         _, _, _ -> best
       }
       latest_matching_terminal(rest, version_id, recovered_execution, next_best)
+    }
+  }
+}
+
+fn latest_matching_failed(
+  attempts: List(projection.PublicationAttempt),
+  error_code: String,
+  error_message: String,
+  best: Option(projection.PublicationAttempt),
+) -> Option(artifact_publication_recording.PublicationAttemptSummary) {
+  case attempts {
+    [] -> option.map(best, projection_attempt_to_summary)
+    [attempt, ..rest] -> {
+      let next_best = case
+        attempt.status == "failed",
+        attempt.error_code == Some(error_code),
+        attempt.error_message == Some(error_message),
+        best
+      {
+        True, True, True, None -> Some(attempt)
+        True, True, True, Some(existing)
+          if attempt.recorded_at_ms >= existing.recorded_at_ms
+        -> Some(attempt)
+        _, _, _, _ -> best
+      }
+      latest_matching_failed(rest, error_code, error_message, next_best)
     }
   }
 }

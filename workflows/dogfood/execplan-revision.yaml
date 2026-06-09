@@ -63,19 +63,6 @@ workstream_phase:
       priority: 1
       inputs: [exec_plan_bundle]
       auto_enqueue: false
-artifacts:
-  publications:
-    - id: execplan_review_doc
-      repository: github.docs
-      required: true
-      pull_request:
-        title: "{{ work.identifier }}: update ExecPlan review document"
-        body_template: prompts/execplan-pr-body.md
-      files:
-        - select:
-            output: exec_plan_bundle
-            entry: plan
-          path: "{{ artifact.metadata.publication.destination_path }}"
 steps:
   - id: prepare_revision
     kind: command

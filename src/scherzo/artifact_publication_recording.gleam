@@ -283,6 +283,49 @@ pub fn record_failed_attempt(
   code: String,
   message: String,
 ) -> Result(#(PublicationFailure, PublicationAttemptSummary), String) {
+  record_failed_attempt_with_retryable(
+    route,
+    workflow_id,
+    work,
+    run_id,
+    checkpoint,
+    code,
+    message,
+    True,
+  )
+}
+
+pub fn record_nonretryable_failed_attempt(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  code: String,
+  message: String,
+) -> Result(#(PublicationFailure, PublicationAttemptSummary), String) {
+  record_failed_attempt_with_retryable(
+    route,
+    workflow_id,
+    work,
+    run_id,
+    checkpoint,
+    code,
+    message,
+    False,
+  )
+}
+
+fn record_failed_attempt_with_retryable(
+  route: artifact_publication_config.PublicationRoute,
+  workflow_id: String,
+  work: artifact_publication_planner.PublicationWork,
+  run_id: String,
+  checkpoint: workflow_checkpoint.Writer,
+  code: String,
+  message: String,
+  retryable: Bool,
+) -> Result(#(PublicationFailure, PublicationAttemptSummary), String) {
   let series_id = make_series_id(work.id, workflow_id, route.id)
   let generated_at_ms = checkpoint.now_ms()
   let attempt_key =
@@ -308,6 +351,8 @@ pub fn record_failed_attempt(
         ),
       ),
       publication_mode: Some(publication_mode_to_string(route.mode)),
+      retryable: retryable,
+      retry_execution_available: False,
     )
   use attempt <- result.try(write_attempt(
     route,
@@ -316,7 +361,7 @@ pub fn record_failed_attempt(
     series_id,
     attempt_key,
     manifest,
-    True,
+    retryable,
     Some(code),
     Some(message),
     checkpoint,

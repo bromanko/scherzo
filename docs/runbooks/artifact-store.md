@@ -92,28 +92,12 @@ Operators can inspect that state without a running daemon by using:
 - `scripts/scherzoctl artifact publication show --run <run-id> --publication <publication-id> --root <workspace-root>`
 - `scripts/scherzoctl artifact publication retry --run <run-id> --publication <publication-id> --root <workspace-root>`
 
-ExecPlan authoring and revision now publish the retained `exec_plan_bundle` `plan`
-entry through the `execplan_review_doc` publication route, so the canonical bundle
-remains the implementation handoff while GitHub stays a derived review surface.
+Publication retry now targets driver-backed same-repository `commit_stack` routes. Canonical artifacts remain the source of truth, while the retained workflow workspace and its selected workspace driver own repository mutation.
 
-Current GitHub publication still materializes into a Scherzo-owned managed checkout
-under `.scherzo-state/artifact-repositories/github/<hash>`. That path is intentionally
-separate from the active workflow workspace: artifact publication must not reuse a
-possibly dirty agent workspace, even when the selected workspace driver advertises
-`publish-change`. If same-repository publication later moves onto the workspace driver,
-it must do so through a separate clean driver-owned publication lane that still lets
-operators replay retained output bytes with `scripts/scherzoctl artifact publication retry`.
+GitHub file artifact publication is no longer an active production path. Scherzo must not create or recover hidden managed GitHub checkouts under `.scherzo-state/artifact-repositories/github/<hash>`, and operators should not remove sibling `.publication.lock` files as a normal recovery step. If a retained legacy manifest mentions such a checkout, keep it as historical evidence and migrate the route to `mode: commit_stack` with workspace-driver publication instead of resetting or cleaning that path.
 
 `retryable` reports whether a failed planning or execution attempt can be replayed
 from retained artifacts. `retry_execution_available` becomes `true` once Scherzo has
 recorded the retained manifest and current publication config needed for replay.
-
-When operators must recover a dirty managed checkout manually, the safe order is:
-
-1. stop concurrent publication for that repository/check-out key,
-2. capture `git status --porcelain`, `git diff --stat`, and retained manifest cleanup diagnostics,
-3. verify the path is the Scherzo-owned managed checkout under `.scherzo-state/artifact-repositories/github/<hash>` and, after confirming no publication process is running, save/remove only a stale sibling `<managed-checkout>.publication.lock` if one is blocking retry,
-4. run `git reset --hard HEAD` and `git clean -fd` only in that managed checkout,
-5. rerun `scripts/scherzoctl artifact publication retry ...` against the retained publication.
 
 Do not reset or clean the active workflow workspace as part of artifact publication recovery.

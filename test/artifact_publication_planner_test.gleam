@@ -1156,9 +1156,6 @@ fn repositories_with_branch(
           name: "docs",
           repo: "scherzo-systems/scherzo",
           base: "main",
-          checkout: artifact_publication_config.GithubCheckoutConfig(
-            strategy: artifact_publication_config.ManagedGit,
-          ),
           branch: artifact_publication_config.GithubBranchConfig(
             strategy: artifact_publication_config.StablePerWork,
             template: branch_template,

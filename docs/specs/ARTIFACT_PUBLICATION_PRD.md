@@ -111,7 +111,7 @@ artifacts:
 
 Until the runtime/schema migration for LIV-908 lands, `repository` and `target.kind: existing_pr_branch` are the current executable schema shape for `commit_stack` routes. The `target.source.output` value names a `code_change` output that identifies the existing same-repo PR branch target; it does not make a hidden managed clone authoritative. A later migration may replace or alias this shape with a cleaner driver-owned route, but examples in this PRD should stay explicit about current validator requirements.
 
-`mode: commit_stack` routes select the repository-change output with `commit_stack.select` and must not declare `files` selectors or `pull_request` overrides. Retained plan-doc and review-doc artifacts remain separate file publication routes.
+`mode: commit_stack` routes select the repository-change output with `commit_stack.select` and must not declare `files` selectors or `pull_request` overrides. Retained plan-doc and review-doc artifacts are retained as canonical artifacts, but GitHub file publication is no longer an active same-repo route.
 
 For same-repo publication, Scherzo must not redirect to `.scherzo-state/artifact-repositories/github/<hash>`, must not fall back to a hidden managed clone, and must not require retained Git bundle import as the default path.
 
@@ -119,7 +119,7 @@ For same-repo publication, Scherzo must not redirect to `.scherzo-state/artifact
 
 ### Orchestrator-level repository targets
 
-Repository targets remain useful for file publication and future external/cross-repo flows.
+Repository targets remain useful for same-repo `commit_stack` metadata and future external/cross-repo flows.
 
 ```yaml
 artifacts:
@@ -128,8 +128,6 @@ artifacts:
       docs:
         repo: scherzo-systems/scherzo
         base: main
-        checkout:
-          strategy: managed_git
         branch:
           strategy: stable_per_work
           template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
@@ -139,13 +137,13 @@ artifacts:
           draft: false
 ```
 
-This configuration continues to describe managed artifact-repository publication for files. It does not redefine same-repo publication.
+`checkout` was removed. This configuration supplies repository metadata, branch templates, and pull-request defaults for driver-backed `commit_stack` publication; it does not authorize Scherzo to create a managed repository checkout.
 
 ### Workflow-level publication routes
 
 Workflow-level publication remains the selection point for both modes.
 
-- File routes reference a named repository target.
+- File routes are not an active GitHub publication path until a driver-owned replacement exists.
 - same-repo `commit_stack` routes reference the retained workflow workspace and selected workspace driver.
 - In the current schema, same-repo `commit_stack` routes also declare `target.kind: existing_pr_branch` and its `source` output so validators know which existing PR branch is being updated until the LIV-908 migration changes or aliases that route shape.
 
@@ -155,15 +153,7 @@ A same-repo `commit_stack` route must fail doctor/preflight before remote mutati
 
 ### File publication behavior
 
-For each configured file publication, Scherzo should:
-
-1. Resolve the workflow output manifest.
-2. Select the configured file descriptors.
-3. Read selected canonical artifact bytes from the internal artifact store.
-4. Materialize those bytes into configured repository-relative paths in a Scherzo-managed publication checkout.
-5. Create or update a GitHub branch according to `branch.strategy`.
-6. Create or update a pull request when `pull_request.enabled` is true.
-7. Record publication metadata and final status in durable state.
+Configured GitHub file publication is unsupported until Scherzo has a driver-owned publication lane/worktree. Runtime execution must fail with a targeted unsupported-file-publication diagnostic and must not create `.scherzo-state/artifact-repositories/github/<hash>`.
 
 ### same-repo `commit_stack` behavior
 
@@ -177,7 +167,7 @@ For each configured same-repo `commit_stack` publication, Scherzo should:
 6. Record whether the result was `published`, `unchanged`, or `failed`.
 7. Retain the unpublished workspace until explicit abandonment or configured cleanup.
 
-same-repo publication is workspace-driver-backed. It must not use `.scherzo-state/artifact-repositories/github/<hash>` as a default path or fallback path. Managed artifact repositories remain available only for file publication or future external/cross-repo publication.
+same-repo publication is workspace-driver-backed. It must not use `.scherzo-state/artifact-repositories/github/<hash>` as a default path or fallback path. Managed artifact repository checkouts are no longer an active production capability.
 
 ## 8. Publication states
 
