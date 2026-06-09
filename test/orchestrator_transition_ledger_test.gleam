@@ -1,6 +1,6 @@
 import gleam/dict
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import orchestrator_transition_invariant_helpers as invariant_helpers
 import orchestrator_transition_test
 import scherzo/orchestrator/effects/types as effects_types
@@ -113,7 +113,13 @@ pub fn ledger_spawn_continuation_failure_schedules_recovery_retry_test() {
         correlation_id: "claim_start_retry_schedule:issue-1:1",
         batch: batch,
         failure_event: "ledger_append_failed",
-        policy: effects_types.ContinueRegardless,
+        policy: effects_types.ScheduleRetryTimerAfterAppend(
+          issue_id: "issue-1",
+          delay_ms: 10_000,
+          generation: 1,
+          retry_reason: orchestrator_reason.RetryClaimStartLedgerAppendFailed,
+          previous_retry: None,
+        ),
       )) ->
         ledger_batch.to_bodies(batch)
         == [
@@ -128,14 +134,11 @@ pub fn ledger_spawn_continuation_failure_schedules_recovery_retry_test() {
       _ -> False
     }
   })
-  assert list.any(effects, fn(effect) {
-    effect
-    == effects_types.ScheduleRetryTimer(
-      "issue-1",
-      10_000,
-      1,
-      orchestrator_reason.RetryClaimStartLedgerAppendFailed,
-    )
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      effects_types.ScheduleRetryTimer(_, _, _, _) -> True
+      _ -> False
+    }
   })
 }
 
@@ -206,8 +209,8 @@ pub fn claim_start_recovery_retry_after_prior_retry_increments_generation_test()
 
   let assert Ok(retry) = dict.get(next.runtime.retry_attempts, task_identity)
   assert retry.issue_id == "issue-1"
-  assert retry.delay_ms == 80_000
-  assert retry.timer_generation == 4
+  assert retry.delay_ms == 40_000
+  assert retry.timer_generation == 3
   assert dict.get(next.runtime.claimed, task_identity) == Ok("ABC-1")
   invariant_helpers.assert_valid_state(next)
   assert !list.any(effects, fn(effect) {
@@ -216,36 +219,49 @@ pub fn claim_start_recovery_retry_after_prior_retry_increments_generation_test()
       _ -> False
     }
   })
-  assert list.any(effects, fn(effect) {
+  assert !list.any(effects, fn(effect) {
     case effect {
-      effects_types.AppendLedger(effects_types.LedgerAppend(
-        correlation_id: "claim_start_retry_schedule:issue-1:4",
-        batch: batch,
-        failure_event: "ledger_append_failed",
-        policy: effects_types.ContinueRegardless,
-      )) ->
-        ledger_batch.to_bodies(batch)
-        == [
-          record.RetryScheduled(
-            "issue-1",
-            "ABC-1",
-            80_000,
-            4,
-            "claim_start_ledger_append_failed",
-          ),
-        ]
+      effects_types.AppendLedger(_) -> True
       _ -> False
     }
   })
   assert list.any(effects, fn(effect) {
-    effect
-    == effects_types.ScheduleRetryTimer(
-      "issue-1",
-      80_000,
-      4,
-      orchestrator_reason.RetryClaimStartLedgerAppendFailed,
-    )
+    effect == effects_types.DeferRetryTimer("issue-1", 3, 40_000)
   })
+}
+
+pub fn claim_start_batch_appends_retry_cancellation_after_workflow_start_test() {
+  let workflow_started =
+    record.WorkflowRunStartedWithTask(
+      "run-1",
+      "default",
+      "workflow-fingerprint",
+      "issue-1",
+      "ABC-1",
+      record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      "issue-fingerprint",
+      123,
+      "test/tmp/workspaces/ABC-1",
+    )
+  let batch =
+    ledger_batch.claim_started(
+      workflow_started,
+      "issue-1",
+      "ABC-1",
+      "test/tmp/workspaces/ABC-1",
+      0,
+      1,
+      456,
+    )
+    |> ledger_batch.append_retry_cancelled("issue-1", 3, "retry_dispatch")
+
+  assert ledger_batch.to_bodies(batch)
+    == [
+      workflow_started,
+      record.KnownWorkspace("issue-1", "ABC-1", "test/tmp/workspaces/ABC-1"),
+      record.IssueCounterUpdated("issue-1", "ABC-1", 0, 1, 456, None),
+      record.RetryCancelled("issue-1", 3, "retry_dispatch"),
+    ]
 }
 
 pub fn claim_requested_empty_batch_does_not_emit_append_or_start_worker_test() {

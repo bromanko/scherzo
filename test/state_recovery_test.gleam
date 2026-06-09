@@ -719,6 +719,62 @@ pub fn retry_for_terminal_issue_is_cancelled_during_recovery_test() {
   )
 }
 
+pub fn active_workflow_run_suppresses_stale_retry_recovery_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+      record.with_id(
+        "workflow-started",
+        1100,
+        record.WorkflowRunStartedWithTask(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "workflow-fingerprint",
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          task_ref: record.linear_task_ref_fields(
+            "issue-1",
+            Some("ABC-1"),
+            None,
+          ),
+          issue_fingerprint: "issue-fingerprint",
+          observed_updated_at_ms: 900,
+          run_root: "test/tmp/state-recovery/run-1",
+        ),
+      ),
+    ])
+  let refreshed = issue("issue-1", "ABC-1", "Todo")
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
+
+  assert plan.retry_timers == []
+  assert !dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert !dict.has_key(
+    plan.runtime.claimed,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert plan.warnings == []
+  assert has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_active_workflow_run",
+  )
+}
+
 pub fn payload_less_pending_outbox_is_marked_failed_test() {
   let projection =
     projection.fold([

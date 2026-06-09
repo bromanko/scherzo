@@ -2459,6 +2459,15 @@ fn restore_retries(
   now_ms: Int,
 ) -> Build {
   let backend_kinds = recovered_backend_kinds(projection)
+  let active_workflow_issue_ids =
+    projection.active_workflow_runs(projection)
+    |> list.map(fn(entry) {
+      let #(_, status) = entry
+      case status {
+        projection.WorkflowRunActive(issue_id: issue_id, ..) -> issue_id
+        _ -> ""
+      }
+    })
   projection.retries
   |> dict.to_list
   |> list.fold(build, fn(build, entry) {
@@ -2469,6 +2478,7 @@ fn restore_retries(
           build,
           config,
           backend_kinds,
+          active_workflow_issue_ids,
           issue_by_id,
           issue_id,
           issue_identifier,
@@ -2486,6 +2496,7 @@ fn restore_scheduled_retry(
   build: Build,
   config: config_types.EffectiveConfig,
   backend_kinds: Dict(String, String),
+  active_workflow_issue_ids: List(String),
   issue_by_id: Dict(String, tracker_issue.Issue),
   issue_id: String,
   issue_identifier: String,
@@ -2507,89 +2518,107 @@ fn restore_scheduled_retry(
         "recovery_auto_unparked",
       )
     False ->
-      case dict.has_key(build.runtime.parked, recovered_identity) {
+      case list.contains(active_workflow_issue_ids, issue_id) {
         True ->
           cancel_recovered_retry(
             build,
             issue_id,
             recovered_identity,
             generation,
-            "recovery_parked",
+            "recovery_active_workflow_run",
           )
         False ->
-          case dict.get(issue_by_id, issue_id) {
-            Error(Nil) ->
+          case dict.has_key(build.runtime.parked, recovered_identity) {
+            True ->
               cancel_recovered_retry(
                 build,
                 issue_id,
                 recovered_identity,
                 generation,
-                "recovery_missing_issue",
+                "recovery_parked",
               )
-            Ok(issue) ->
-              case recovery_policy.is_terminal(config, issue.state) {
-                True ->
+            False ->
+              case dict.get(issue_by_id, issue_id) {
+                Error(Nil) ->
                   cancel_recovered_retry(
                     build,
                     issue_id,
                     recovered_identity,
                     generation,
-                    "recovery_terminal_issue",
+                    "recovery_missing_issue",
                   )
-                False ->
-                  case config_types.retry_state_allowed(config, issue.state) {
-                    False ->
+                Ok(issue) ->
+                  case recovery_policy.is_terminal(config, issue.state) {
+                    True ->
                       cancel_recovered_retry(
                         build,
                         issue_id,
                         recovered_identity,
                         generation,
-                        config_types.recovery_non_retryable_reason(issue.state),
+                        "recovery_terminal_issue",
                       )
-                    True -> {
-                      let remaining =
-                        workflow_attempt.remaining_retry_delay(status, now_ms)
-                      let task_ref =
-                        orchestrator_state.issue_ref_for_backend(
-                          issue,
-                          backend_kind,
-                        )
-                      let identity =
-                        orchestrator_state.task_ref_identity(task_ref)
-                      let retry =
-                        orchestrator_state.RetryEntry(
-                          task_ref: task_ref,
-                          issue_id: issue_id,
-                          delay_ms: remaining,
-                          timer_generation: generation,
-                        )
-                      Build(
-                        ..build,
-                        runtime: orchestrator_state.RuntimeState(
-                          ..build.runtime,
-                          retry_attempts: dict.insert(
-                            build.runtime.retry_attempts,
-                            identity,
-                            retry,
-                          ),
-                          claimed: dict.insert(
-                            build.runtime.claimed,
-                            identity,
-                            issue_identifier,
-                          ),
-                        ),
-                        retry_timers: [
-                          RecoveredRetry(
+                    False ->
+                      case
+                        config_types.retry_state_allowed(config, issue.state)
+                      {
+                        False ->
+                          cancel_recovered_retry(
+                            build,
                             issue_id,
-                            issue_identifier,
-                            remaining,
+                            recovered_identity,
                             generation,
-                            reason_text,
-                          ),
-                          ..build.retry_timers
-                        ],
-                      )
-                    }
+                            config_types.recovery_non_retryable_reason(
+                              issue.state,
+                            ),
+                          )
+                        True -> {
+                          let remaining =
+                            workflow_attempt.remaining_retry_delay(
+                              status,
+                              now_ms,
+                            )
+                          let task_ref =
+                            orchestrator_state.issue_ref_for_backend(
+                              issue,
+                              backend_kind,
+                            )
+                          let identity =
+                            orchestrator_state.task_ref_identity(task_ref)
+                          let retry =
+                            orchestrator_state.RetryEntry(
+                              task_ref: task_ref,
+                              issue_id: issue_id,
+                              delay_ms: remaining,
+                              timer_generation: generation,
+                            )
+                          Build(
+                            ..build,
+                            runtime: orchestrator_state.RuntimeState(
+                              ..build.runtime,
+                              retry_attempts: dict.insert(
+                                build.runtime.retry_attempts,
+                                identity,
+                                retry,
+                              ),
+                              claimed: dict.insert(
+                                build.runtime.claimed,
+                                identity,
+                                issue_identifier,
+                              ),
+                            ),
+                            retry_timers: [
+                              RecoveredRetry(
+                                issue_id,
+                                issue_identifier,
+                                remaining,
+                                generation,
+                                reason_text,
+                              ),
+                              ..build.retry_timers
+                            ],
+                          )
+                        }
+                      }
                   }
               }
           }

@@ -1,7 +1,7 @@
 import gleam/dict
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/error
 import scherzo/orchestrator/core
@@ -162,13 +162,14 @@ pub fn begin_for_issue(
   context: transition_types.DispatchContext,
   callbacks: Callbacks,
 ) -> transition_types.Outcome {
-  begin_for_issue_with_previous_retry_generation(
+  begin_for_issue_with_retry_metadata(
     state,
     issue,
     remaining_candidates,
     context,
     callbacks,
     0,
+    None,
   )
 }
 
@@ -179,24 +180,27 @@ pub fn begin_for_issue_after_retry(
   context: transition_types.DispatchContext,
   callbacks: Callbacks,
   previous_retry_generation: Int,
+  retry_cancellation: transition_types.RetryCancellation,
 ) -> transition_types.Outcome {
-  begin_for_issue_with_previous_retry_generation(
+  begin_for_issue_with_retry_metadata(
     state,
     issue,
     remaining_candidates,
     context,
     callbacks,
     previous_retry_generation,
+    Some(retry_cancellation),
   )
 }
 
-fn begin_for_issue_with_previous_retry_generation(
+fn begin_for_issue_with_retry_metadata(
   state: transition_types.State,
   issue: tracker_issue.Issue,
   remaining_candidates: List(tracker_issue.Issue),
   context: transition_types.DispatchContext,
   callbacks: Callbacks,
   previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
 ) -> transition_types.Outcome {
   let Callbacks(dispatch_candidates: dispatch) = callbacks
   case helpers.select_workflow_route(context, issue) {
@@ -275,6 +279,7 @@ fn begin_for_issue_with_previous_retry_generation(
                   remaining_candidates: remaining_candidates,
                   dispatch_context: context,
                   previous_retry_generation: previous_retry_generation,
+                  retry_cancellation: retry_cancellation,
                 )
               transition_types.Outcome(
                 state: transition_types.State(
@@ -535,7 +540,7 @@ pub fn handle_spawn(
         True ->
           case result {
             Error(err) ->
-              schedule_claim_start_recovery_retry(
+              handle_claim_append_failed(
                 state,
                 pending,
                 task_identity,
@@ -548,6 +553,88 @@ pub fn handle_spawn(
           }
       }
   }
+}
+
+fn handle_claim_append_failed(
+  state: transition_types.State,
+  pending: transition_types.PendingClaim,
+  task_identity: identity.TaskIdentity,
+  issue_id: identity.IssueId,
+  run_id: identity.RunId,
+  correlation_id: String,
+  err: ledger.LedgerError,
+) -> transition_types.Outcome {
+  case pending.retry_cancellation {
+    Some(retry_cancellation) ->
+      restore_retry_after_claim_append_failure(
+        state,
+        pending,
+        task_identity,
+        issue_id,
+        run_id,
+        correlation_id,
+        err,
+        retry_cancellation,
+      )
+    None ->
+      schedule_claim_start_recovery_retry(
+        state,
+        pending,
+        task_identity,
+        issue_id,
+        run_id,
+        correlation_id,
+        err,
+      )
+  }
+}
+
+fn restore_retry_after_claim_append_failure(
+  state: transition_types.State,
+  pending: transition_types.PendingClaim,
+  task_identity: identity.TaskIdentity,
+  issue_id: identity.IssueId,
+  run_id: identity.RunId,
+  correlation_id: String,
+  err: ledger.LedgerError,
+  retry_cancellation: transition_types.RetryCancellation,
+) -> transition_types.Outcome {
+  let transition_types.RetryCancellation(previous_retry: previous_retry, ..) =
+    retry_cancellation
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      retry_attempts: dict.insert(
+        state.runtime.retry_attempts,
+        task_identity,
+        previous_retry,
+      ),
+      claimed: dict.insert(
+        state.runtime.claimed,
+        task_identity,
+        pending.issue.identifier,
+      ),
+    )
+  let state =
+    transition_types.State(
+      ..state,
+      pending_claims: dict.delete(state.pending_claims, task_identity),
+      runtime: runtime,
+    )
+    |> sync_state
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("warn", "ledger_append_failed", [
+      #("issue_id", identity.issue_id_to_string(issue_id)),
+      #("run_id", identity.run_id_to_string(run_id)),
+      #("correlation_id", correlation_id),
+      #("error", ledger_error_code(err)),
+    ]),
+    effects_types.DeferRetryTimer(
+      pending.issue_id,
+      previous_retry.timer_generation,
+      previous_retry.delay_ms,
+    ),
+  ])
 }
 
 fn schedule_claim_start_recovery_retry(
@@ -622,14 +709,14 @@ fn schedule_claim_start_recovery_retry(
         orchestrator_reason.retry_to_string(retry_reason),
       ),
       failure_event: "ledger_append_failed",
-      policy: effects_types.ContinueRegardless,
+      policy: effects_types.ScheduleRetryTimerAfterAppend(
+        pending.issue_id,
+        delay_ms,
+        generation,
+        retry_reason,
+        None,
+      ),
     )),
-    effects_types.ScheduleRetryTimer(
-      pending.issue_id,
-      delay_ms,
-      generation,
-      retry_reason,
-    ),
   ])
 }
 
@@ -696,6 +783,16 @@ fn start_worker(
     |> sync_state
   let continued =
     dispatch(pending.remaining_candidates, state, pending.dispatch_context)
+  let retry_effects = case pending.retry_cancellation {
+    Some(transition_types.RetryCancellation(
+      generation: generation,
+      reason: reason,
+      ..,
+    )) -> [
+      effects_types.CancelRetryTimer(pending.issue_id, generation, reason),
+    ]
+    None -> []
+  }
   transition_types.Outcome(state: continued.state, effects: [
     effects_types.StartWorker(effects_types.WorkerStart(
       task_ref: pending.task_ref,
@@ -709,7 +806,7 @@ fn start_worker(
       route_label: pending.route_label,
       recovery: pending.recovery,
     )),
-    ..continued.effects
+    ..list_append(retry_effects, continued.effects)
   ])
 }
 

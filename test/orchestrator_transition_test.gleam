@@ -10,8 +10,10 @@ import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight_policy
+import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
+import scherzo/state/ledger
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -162,6 +164,7 @@ pub fn state_with_pending_claim(
         remaining_candidates: [],
         dispatch_context: fixture_context(),
         previous_retry_generation: 0,
+        retry_cancellation: None,
       ),
     ),
     lifecycle: {
@@ -233,7 +236,199 @@ pub fn retry_refresh_failure_logs_error_before_reschedule_test() {
   })
   assert list.any(outcome.effects, fn(effect) {
     case effect {
-      effects_types.ScheduleRetryTimer("issue-1", _, _, _) -> True
+      effects_types.AppendLedger(effects_types.LedgerAppend(
+        policy: effects_types.ScheduleRetryTimerAfterAppend(
+          issue_id: "issue-1",
+          retry_reason: orchestrator_reason.RetryPollFailed,
+          ..,
+        ),
+        ..,
+      )) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn schedule_retry_append_failure_without_previous_retry_does_not_leave_timer_test() {
+  let issue = fixture_issue()
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..fixture_runtime(),
+      retry_attempts: dict.from_list([
+        #(
+          orchestrator_state.issue_identity(issue),
+          orchestrator_state.RetryEntry(
+            task_ref: task.from_legacy_issue(issue).ref,
+            issue_id: issue.id,
+            delay_ms: 10_000,
+            timer_generation: 1,
+          ),
+        ),
+      ]),
+      claimed: dict.from_list([
+        #(orchestrator_state.issue_identity(issue), issue.identifier),
+      ]),
+    )
+  let state = transition_types.State(..fixture_state(), runtime: runtime)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "retry_schedule:issue-1:1",
+        continuation: effects_types.ScheduleRetryTimerAfterAppend(
+          issue_id: "issue-1",
+          delay_ms: 10_000,
+          generation: 1,
+          retry_reason: orchestrator_reason.RetryPollFailed,
+          previous_retry: None,
+        ),
+        result: Error(ledger.Io("disk full")),
+        now_ms: 123,
+      ),
+      state,
+    )
+
+  assert dict.get(
+      next.runtime.retry_attempts,
+      orchestrator_state.issue_identity(issue),
+    )
+    == Error(Nil)
+  assert dict.get(
+      next.runtime.claimed,
+      orchestrator_state.issue_identity(issue),
+    )
+    == Error(Nil)
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      effects_types.ScheduleRetryTimer(_, _, _, _) -> True
+      effects_types.DeferRetryTimer(_, _, _) -> True
+      _ -> False
+    }
+  })
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.Log("warn", "ledger_append_failed", [
+      #("issue_id", "issue-1"),
+      #("generation", "1"),
+      #("correlation_id", "retry_schedule:issue-1:1"),
+      #("error", "io"),
+    ])
+  })
+}
+
+pub fn schedule_retry_append_failure_without_previous_retry_cleans_non_linear_identity_test() {
+  let issue = fixture_issue()
+  let retry_ref = orchestrator_state.issue_ref_for_backend(issue, "memory")
+  let retry_identity = orchestrator_state.task_ref_identity(retry_ref)
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..fixture_runtime(),
+      retry_attempts: dict.from_list([
+        #(
+          retry_identity,
+          orchestrator_state.RetryEntry(
+            task_ref: retry_ref,
+            issue_id: issue.id,
+            delay_ms: 10_000,
+            timer_generation: 1,
+          ),
+        ),
+      ]),
+      claimed: dict.from_list([#(retry_identity, issue.identifier)]),
+    )
+  let state = transition_types.State(..fixture_state(), runtime: runtime)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "retry_schedule:issue-1:1",
+        continuation: effects_types.ScheduleRetryTimerAfterAppend(
+          issue_id: "issue-1",
+          delay_ms: 10_000,
+          generation: 1,
+          retry_reason: orchestrator_reason.RetryPollFailed,
+          previous_retry: None,
+        ),
+        result: Error(ledger.Io("disk full")),
+        now_ms: 123,
+      ),
+      state,
+    )
+
+  assert dict.get(next.runtime.retry_attempts, retry_identity) == Error(Nil)
+  assert dict.get(next.runtime.claimed, retry_identity) == Error(Nil)
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      effects_types.ScheduleRetryTimer(_, _, _, _) -> True
+      effects_types.DeferRetryTimer(_, _, _) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn cancel_retry_append_success_emits_cancel_timer_test() {
+  let transition_types.Outcome(effects: effects, ..) =
+    transition.handle(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "retry_cancel:issue-1:3",
+        continuation: effects_types.CancelRetryTimerAfterAppend(
+          issue_id: "issue-1",
+          generation: 3,
+          cancel_reason: "operator",
+          previous_retry: None,
+        ),
+        result: Ok(Nil),
+        now_ms: 123,
+      ),
+      fixture_state(),
+    )
+
+  assert effects == [effects_types.CancelRetryTimer("issue-1", 3, "operator")]
+}
+
+pub fn cancel_retry_append_failure_restores_previous_retry_and_defers_timer_test() {
+  let issue = fixture_issue()
+  let previous_retry =
+    orchestrator_state.RetryEntry(
+      task_ref: task.from_legacy_issue(issue).ref,
+      issue_id: issue.id,
+      delay_ms: 10_000,
+      timer_generation: 3,
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "retry_cancel:issue-1:3",
+        continuation: effects_types.CancelRetryTimerAfterAppend(
+          issue_id: "issue-1",
+          generation: 3,
+          cancel_reason: "operator",
+          previous_retry: Some(previous_retry),
+        ),
+        result: Error(ledger.Io("disk full")),
+        now_ms: 123,
+      ),
+      fixture_state(),
+    )
+
+  let assert Ok(retry) =
+    dict.get(
+      next.runtime.retry_attempts,
+      orchestrator_state.issue_identity(issue),
+    )
+  assert retry == previous_retry
+  assert dict.get(
+      next.runtime.claimed,
+      orchestrator_state.issue_identity(issue),
+    )
+    == Ok(issue.identifier)
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.DeferRetryTimer("issue-1", 3, 10_000)
+  })
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      effects_types.CancelRetryTimer(_, _, _) -> True
       _ -> False
     }
   })

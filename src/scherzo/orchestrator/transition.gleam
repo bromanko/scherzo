@@ -1225,6 +1225,9 @@ fn release_retry_claim(
       issue_id,
       context.tracker_backend_kind,
     )
+  let previous_retry =
+    current_retry_entry(state.runtime, issue_id, context.tracker_backend_kind)
+    |> option.from_result
   transition_types.Outcome(
     state: clear_retry_refresh_generation(
       transition_types.State(
@@ -1239,7 +1242,7 @@ fn release_retry_claim(
       context.tracker_backend_kind,
     ),
     effects: list.append(
-      cancel_retry_effects(issue_id, generation, cancel_reason),
+      cancel_retry_effects(issue_id, generation, cancel_reason, previous_retry),
       [effects_types.ReleaseClaim(issue_id)],
     ),
   )
@@ -1251,41 +1254,46 @@ fn dispatch_retry_claim(
   issue: tracker_issue.Issue,
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let generation =
-    current_retry_generation(
-      state.runtime,
+  let retry_identity =
+    orchestrator_state.issue_id_identity_for_backend(
       issue_id,
       context.tracker_backend_kind,
     )
-  let state =
-    clear_retry_refresh_generation(
-      transition_types.State(
-        ..state,
-        runtime: clear_retry(
-          state.runtime,
+  case dict.get(state.runtime.retry_attempts, retry_identity) {
+    Error(Nil) -> retry_timer_stale(state, issue_id, 0, False)
+    Ok(previous_retry) -> {
+      let generation = previous_retry.timer_generation
+      let retry_cancellation =
+        transition_types.RetryCancellation(
+          issue_id: issue_id,
+          generation: generation,
+          reason: "retry_dispatch",
+          previous_retry: previous_retry,
+        )
+      let state =
+        clear_retry_refresh_generation(
+          transition_types.State(
+            ..state,
+            runtime: clear_retry(
+              state.runtime,
+              issue_id,
+              context.tracker_backend_kind,
+            ),
+          ),
           issue_id,
           context.tracker_backend_kind,
-        ),
-      ),
-      issue_id,
-      context.tracker_backend_kind,
-    )
-  let outcome =
-    claims.begin_for_issue_after_retry(
-      state,
-      issue,
-      [],
-      context,
-      claim_callbacks(),
-      generation,
-    )
-  transition_types.Outcome(
-    state: outcome.state,
-    effects: list.append(
-      cancel_retry_effects(issue_id, generation, "retry_dispatch"),
-      outcome.effects,
-    ),
-  )
+        )
+      claims.begin_for_issue_after_retry(
+        state,
+        issue,
+        [],
+        context,
+        claim_callbacks(),
+        generation,
+        retry_cancellation,
+      )
+    }
+  }
 }
 
 fn current_retry_generation(
@@ -1293,12 +1301,20 @@ fn current_retry_generation(
   issue_id: String,
   backend_kind: String,
 ) -> Int {
-  let identity =
-    orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
-  case dict.get(runtime.retry_attempts, identity) {
+  case current_retry_entry(runtime, issue_id, backend_kind) {
     Ok(entry) -> entry.timer_generation
     Error(Nil) -> 0
   }
+}
+
+fn current_retry_entry(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+  backend_kind: String,
+) -> Result(orchestrator_state.RetryEntry, Nil) {
+  let identity =
+    orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
+  dict.get(runtime.retry_attempts, identity)
 }
 
 fn schedule_retry_with_backoff(
@@ -1387,6 +1403,9 @@ fn stop_retry_for_issue(
       issue_id,
       backend_kind,
     )
+  let previous_retry =
+    current_retry_entry(state.runtime, issue_id, backend_kind)
+    |> option.from_result
   transition_types.Outcome(
     state: clear_retry_refresh_generation(
       transition_types.State(..state, runtime: runtime),
@@ -1394,7 +1413,7 @@ fn stop_retry_for_issue(
       backend_kind,
     ),
     effects: list.append(
-      cancel_retry_effects(issue_id, generation, cancel_reason),
+      cancel_retry_effects(issue_id, generation, cancel_reason, previous_retry),
       [
         effects_types.ReleaseClaim(issue_id),
       ],
@@ -1453,7 +1472,13 @@ fn map_lifecycle_core_effect(
   source_task_ref: Option(task.TaskRef),
 ) -> transition_types.Outcome {
   case effect {
-    core.ScheduleRetry(issue_id, delay_ms, generation, retry_reason) ->
+    core.ScheduleRetry(
+      issue_id,
+      delay_ms,
+      generation,
+      retry_reason,
+      previous_retry,
+    ) ->
       transition_types.Outcome(
         state: state,
         effects: schedule_retry_effects_for_ref(
@@ -1462,13 +1487,19 @@ fn map_lifecycle_core_effect(
           delay_ms,
           generation,
           retry_reason,
+          previous_retry,
           source_task_ref,
         ),
       )
-    core.CancelRetry(issue_id, generation, cancel_reason) ->
+    core.CancelRetry(issue_id, generation, cancel_reason, previous_retry) ->
       transition_types.Outcome(
         state: state,
-        effects: cancel_retry_effects(issue_id, generation, cancel_reason),
+        effects: cancel_retry_effects(
+          issue_id,
+          generation,
+          cancel_reason,
+          previous_retry,
+        ),
       )
     core.ReleaseClaim(issue_id) ->
       transition_types.Outcome(state: state, effects: [
@@ -1507,7 +1538,13 @@ fn map_core_effect(
   case effect {
     core.Dispatch(issue) ->
       claims.begin_for_issue(state, issue, [], context, claim_callbacks())
-    core.ScheduleRetry(issue_id, delay_ms, generation, retry_reason) ->
+    core.ScheduleRetry(
+      issue_id,
+      delay_ms,
+      generation,
+      retry_reason,
+      previous_retry,
+    ) ->
       transition_types.Outcome(
         state: state,
         effects: schedule_retry_effects(
@@ -1516,12 +1553,18 @@ fn map_core_effect(
           delay_ms,
           generation,
           retry_reason,
+          previous_retry,
         ),
       )
-    core.CancelRetry(issue_id, generation, cancel_reason) ->
+    core.CancelRetry(issue_id, generation, cancel_reason, previous_retry) ->
       transition_types.Outcome(
         state: state,
-        effects: cancel_retry_effects(issue_id, generation, cancel_reason),
+        effects: cancel_retry_effects(
+          issue_id,
+          generation,
+          cancel_reason,
+          previous_retry,
+        ),
       )
     core.ReleaseClaim(issue_id) ->
       transition_types.Outcome(state: state, effects: [
@@ -1582,6 +1625,7 @@ fn schedule_retry_effects(
   delay_ms: Int,
   generation: Int,
   retry_reason: orchestrator_reason.RetryReason,
+  previous_retry: Option(orchestrator_state.RetryEntry),
 ) -> List(effects_types.Effect) {
   schedule_retry_effects_for_ref(
     runtime,
@@ -1589,6 +1633,7 @@ fn schedule_retry_effects(
     delay_ms,
     generation,
     retry_reason,
+    previous_retry,
     None,
   )
 }
@@ -1599,6 +1644,7 @@ fn schedule_retry_effects_for_ref(
   delay_ms: Int,
   generation: Int,
   retry_reason: orchestrator_reason.RetryReason,
+  previous_retry: Option(orchestrator_state.RetryEntry),
   ref: Option(task.TaskRef),
 ) -> List(effects_types.Effect) {
   let reason_text = orchestrator_reason.retry_to_string(retry_reason)
@@ -1616,14 +1662,14 @@ fn schedule_retry_effects_for_ref(
         reason_text,
       ),
       failure_event: "ledger_append_failed",
-      policy: effects_types.ContinueRegardless,
+      policy: effects_types.ScheduleRetryTimerAfterAppend(
+        issue_id,
+        delay_ms,
+        generation,
+        retry_reason,
+        previous_retry,
+      ),
     )),
-    effects_types.ScheduleRetryTimer(
-      issue_id,
-      delay_ms,
-      generation,
-      retry_reason,
-    ),
   ]
 }
 
@@ -1631,6 +1677,7 @@ fn cancel_retry_effects(
   issue_id: String,
   generation: Int,
   cancel_reason: String,
+  previous_retry: Option(orchestrator_state.RetryEntry),
 ) -> List(effects_types.Effect) {
   [
     effects_types.AppendLedger(effects_types.LedgerAppend(
@@ -1640,9 +1687,13 @@ fn cancel_retry_effects(
         <> int.to_string(generation),
       batch: ledger_batch.retry_cancelled(issue_id, generation, cancel_reason),
       failure_event: "ledger_append_failed",
-      policy: effects_types.ContinueRegardless,
+      policy: effects_types.CancelRetryTimerAfterAppend(
+        issue_id,
+        generation,
+        cancel_reason,
+        previous_retry,
+      ),
     )),
-    effects_types.CancelRetryTimer(issue_id, generation, cancel_reason),
   ]
 }
 
@@ -1653,6 +1704,38 @@ fn handle_ledger_append_completed(
   result: Result(Nil, ledger.LedgerError),
 ) -> transition_types.Outcome {
   case continuation {
+    effects_types.ScheduleRetryTimerAfterAppend(
+      issue_id,
+      delay_ms,
+      generation,
+      retry_reason,
+      previous_retry,
+    ) ->
+      handle_retry_schedule_append_completed(
+        state,
+        correlation_id,
+        issue_id,
+        delay_ms,
+        generation,
+        retry_reason,
+        previous_retry,
+        result,
+      )
+    effects_types.CancelRetryTimerAfterAppend(
+      issue_id,
+      generation,
+      cancel_reason,
+      previous_retry,
+    ) ->
+      handle_retry_cancel_append_completed(
+        state,
+        correlation_id,
+        issue_id,
+        generation,
+        cancel_reason,
+        previous_retry,
+        result,
+      )
     effects_types.SpawnClaimedWorkerAfterAppend(
       task_identity,
       issue_id,
@@ -1688,6 +1771,146 @@ fn handle_ledger_append_completed(
       )
     effects_types.ContinueRegardless | effects_types.StopBatchOnFailure ->
       transition_types.Outcome(state: state, effects: [])
+  }
+}
+
+fn handle_retry_schedule_append_completed(
+  state: transition_types.State,
+  correlation_id: String,
+  issue_id: String,
+  delay_ms: Int,
+  generation: Int,
+  retry_reason: orchestrator_reason.RetryReason,
+  previous_retry: Option(orchestrator_state.RetryEntry),
+  result: Result(Nil, ledger.LedgerError),
+) -> transition_types.Outcome {
+  case result {
+    Ok(Nil) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.ScheduleRetryTimer(
+          issue_id,
+          delay_ms,
+          generation,
+          retry_reason,
+        ),
+      ])
+    Error(err) ->
+      retry_append_failed_outcome(
+        state,
+        correlation_id,
+        issue_id,
+        generation,
+        previous_retry,
+        err,
+      )
+  }
+}
+
+fn handle_retry_cancel_append_completed(
+  state: transition_types.State,
+  correlation_id: String,
+  issue_id: String,
+  generation: Int,
+  cancel_reason: String,
+  previous_retry: Option(orchestrator_state.RetryEntry),
+  result: Result(Nil, ledger.LedgerError),
+) -> transition_types.Outcome {
+  case result {
+    Ok(Nil) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.CancelRetryTimer(issue_id, generation, cancel_reason),
+      ])
+    Error(err) ->
+      retry_append_failed_outcome(
+        state,
+        correlation_id,
+        issue_id,
+        generation,
+        previous_retry,
+        err,
+      )
+  }
+}
+
+fn retry_append_failed_outcome(
+  state: transition_types.State,
+  correlation_id: String,
+  issue_id: String,
+  generation: Int,
+  previous_retry: Option(orchestrator_state.RetryEntry),
+  err: ledger.LedgerError,
+) -> transition_types.Outcome {
+  let effects = [
+    effects_types.Log("warn", "ledger_append_failed", [
+      #("issue_id", issue_id),
+      #("generation", int.to_string(generation)),
+      #("correlation_id", correlation_id),
+      #("error", ledger.ledger_error_code(err)),
+    ]),
+  ]
+  case previous_retry {
+    Some(previous_retry) -> {
+      let identity =
+        orchestrator_state.task_ref_identity(previous_retry.task_ref)
+      let runtime =
+        orchestrator_state.RuntimeState(
+          ..state.runtime,
+          retry_attempts: dict.insert(
+            state.runtime.retry_attempts,
+            identity,
+            previous_retry,
+          ),
+          claimed: dict.insert(
+            state.runtime.claimed,
+            identity,
+            retry_entry_identifier(previous_retry),
+          ),
+        )
+      transition_types.Outcome(
+        state: transition_types.State(..state, runtime: runtime),
+        effects: list.append(effects, [
+          effects_types.DeferRetryTimer(
+            issue_id,
+            previous_retry.timer_generation,
+            previous_retry.delay_ms,
+          ),
+        ]),
+      )
+    }
+    None -> {
+      let runtime =
+        remove_failed_retry_generation(state.runtime, issue_id, generation)
+      transition_types.Outcome(
+        state: transition_types.State(..state, runtime: runtime),
+        effects: effects,
+      )
+    }
+  }
+}
+
+fn remove_failed_retry_generation(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+  generation: Int,
+) -> orchestrator_state.RuntimeState {
+  list.fold(dict.to_list(runtime.retry_attempts), runtime, fn(runtime, entry) {
+    let #(task_identity, retry) = entry
+    case retry.issue_id == issue_id && retry.timer_generation == generation {
+      False -> runtime
+      True ->
+        orchestrator_state.RuntimeState(
+          ..runtime,
+          retry_attempts: dict.delete(runtime.retry_attempts, task_identity),
+          claimed: dict.delete(runtime.claimed, task_identity),
+        )
+    }
+  })
+}
+
+fn retry_entry_identifier(retry: orchestrator_state.RetryEntry) -> String {
+  case retry.task_ref.key {
+    Some(identifier) -> identifier
+    None -> retry.issue_id
   }
 }
 

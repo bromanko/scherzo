@@ -6088,16 +6088,34 @@ fn claim_ledger_batch_for_pending(
   let counter = counter_for_runtime(post_spawn_runtime, pending.issue.id)
   case workflow_run_started_body_for_claim(state, pending) {
     Error(reason) -> transition_types.HandoffClaimStartRecordFailed(reason)
-    Ok(workflow_started_body) ->
-      transition_types.HandoffClaimSucceeded(ledger_batch.claim_started(
-        workflow_started_body,
-        pending.issue.id,
-        pending.issue.identifier,
-        pending.workspace_path,
-        counter.failure_attempts,
-        counter.worker_sessions,
-        state.dependencies.now_ms(),
-      ))
+    Ok(workflow_started_body) -> {
+      let batch =
+        ledger_batch.claim_started(
+          workflow_started_body,
+          pending.issue.id,
+          pending.issue.identifier,
+          pending.workspace_path,
+          counter.failure_attempts,
+          counter.worker_sessions,
+          state.dependencies.now_ms(),
+        )
+      let batch = case pending.retry_cancellation {
+        Some(transition_types.RetryCancellation(
+          issue_id: retry_issue_id,
+          generation: generation,
+          reason: reason,
+          ..,
+        )) ->
+          ledger_batch.append_retry_cancelled(
+            batch,
+            retry_issue_id,
+            generation,
+            reason,
+          )
+        None -> batch
+      }
+      transition_types.HandoffClaimSucceeded(batch)
+    }
   }
 }
 

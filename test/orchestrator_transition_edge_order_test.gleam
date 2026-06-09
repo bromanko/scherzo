@@ -191,6 +191,31 @@ fn generated_edge_cases() -> List(GeneratedCase) {
       ),
     ),
     GeneratedCase(
+      initial: state_with_retry(issue, 3),
+      messages: [
+        transition_types.RetryRefreshCompleted(
+          issue.id,
+          3,
+          Ok([issue]),
+          orchestrator_transition_test.fixture_context(),
+        ),
+        valid_retry_handoff_claim(issue),
+      ],
+      expectations: Expectations(
+        final_state_unchanged: False,
+        observer_events_only: False,
+        expected_start_count: 1,
+        pending_claims_empty: True,
+        expected_events: [
+          "retry:finish:issue-1",
+          "claim:issue-1",
+          "append:claim:issue-1:ABC-1-123-1",
+          "retry:cancel:issue-1:3:retry_dispatch",
+          "start:issue-1:ABC-1-123-1:ABC-1-123-1",
+        ],
+      ),
+    ),
+    GeneratedCase(
       initial: state_with_worker(issue, transition_types.WorkerStarting),
       messages: [
         transition_types.WorkerStartSucceeded(
@@ -700,14 +725,41 @@ fn valid_handoff_claim(issue: tracker_issue.Issue) -> transition_types.Message {
   )
 }
 
+fn valid_retry_handoff_claim(
+  issue: tracker_issue.Issue,
+) -> transition_types.Message {
+  let run_id = retry_run_id(issue)
+  transition_types.HandoffClaimCompleted(
+    task_identity(issue),
+    identity.issue_id_from_string(issue.id),
+    identity.run_id_from_string(run_id),
+    transition_types.HandoffClaimSucceeded(retry_claim_batch(issue, run_id)),
+  )
+}
+
 fn task_identity(issue: tracker_issue.Issue) -> identity.TaskIdentity {
   orchestrator_state.issue_identity(issue)
 }
 
 fn claim_batch(issue: tracker_issue.Issue) -> ledger_batch.LedgerBatch {
+  claim_batch_with_run_id(issue, "run-1")
+}
+
+fn retry_claim_batch(
+  issue: tracker_issue.Issue,
+  run_id: String,
+) -> ledger_batch.LedgerBatch {
+  claim_batch_with_run_id(issue, run_id)
+  |> ledger_batch.append_retry_cancelled(issue.id, 3, "retry_dispatch")
+}
+
+fn claim_batch_with_run_id(
+  issue: tracker_issue.Issue,
+  run_id: String,
+) -> ledger_batch.LedgerBatch {
   ledger_batch.claim_started(
     record.WorkflowRunStartedWithTask(
-      "run-1",
+      run_id,
       "default",
       "workflow-fingerprint",
       issue.id,
@@ -724,6 +776,10 @@ fn claim_batch(issue: tracker_issue.Issue) -> ledger_batch.LedgerBatch {
     1,
     456,
   )
+}
+
+fn retry_run_id(issue: tracker_issue.Issue) -> String {
+  issue.identifier <> "-123-1"
 }
 
 fn worker_success(issue: tracker_issue.Issue) -> agent_types.WorkerSuccess {

@@ -152,10 +152,9 @@ pub fn transition_runner_retry_continue_regardless_keeps_timer_after_append_fail
     == [
       "retry:finish:issue-1",
       "log:retry_refresh_failed",
-      "append:retry_cancel:issue-1:2",
-      "retry:cancel:issue-1",
       "append:retry_schedule:issue-1:2",
-      "retry:schedule:issue-1",
+      "log:ledger_append_failed",
+      "retry:defer:issue-1",
     ]
 }
 
@@ -473,8 +472,6 @@ pub fn worker_down_known_removes_worker_and_reports_failure_test() {
       "publish:issue-1",
       "append:worker_failure:issue-1:run-1",
       "failure:issue-1",
-      "append:retry_cancel:issue-1:1",
-      "retry:cancel:issue-1",
       "append:retry_schedule:issue-1:1",
       "retry:schedule:issue-1",
     ]

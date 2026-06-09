@@ -348,8 +348,13 @@ pub fn worker_failure_retry_uses_task_ref_with_duplicate_remote_ids_test() {
   assert dict.has_key(next.retry_attempts, memory_identity)
   assert effects
     == [
-      core.CancelRetry(memory_issue.id, 1, "reschedule_retry"),
-      core.ScheduleRetry(memory_issue.id, 10_000, 1, reason.RetryAfterFailure),
+      core.ScheduleRetry(
+        memory_issue.id,
+        10_000,
+        1,
+        reason.RetryAfterFailure,
+        previous_retry: None,
+      ),
     ]
 }
 
@@ -527,7 +532,20 @@ pub fn retry_policy_invalid_can_stop_retry_test() {
   assert !dict.has_key(stopped.retry_attempts, identity)
   assert !dict.has_key(stopped.claimed, identity)
   assert effects
-    == [core.CancelRetry("a", 1, "policy_invalid"), core.ReleaseClaim("a")]
+    == [
+      core.CancelRetry(
+        "a",
+        1,
+        "policy_invalid",
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 10_000,
+          timer_generation: 1,
+        )),
+      ),
+      core.ReleaseClaim("a"),
+    ]
 }
 
 pub fn invalid_workflow_report_fingerprint_helpers_test() {
@@ -920,8 +938,13 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
     )
   assert effects
     == [
-      core.CancelRetry("a", 1, "reschedule_retry"),
-      core.ScheduleRetry("a", 1000, 1, reason.RetryAfterContinuation),
+      core.ScheduleRetry(
+        "a",
+        1000,
+        1,
+        reason.RetryAfterContinuation,
+        previous_retry: None,
+      ),
     ]
 
   let state2 = core.apply_worker_start(next, issue, "/tmp/ws")
@@ -973,8 +996,13 @@ pub fn worker_success_in_progress_remains_lifecycle_active_test() {
   )
   assert effects
     == [
-      core.CancelRetry("a", 1, "reschedule_retry"),
-      core.ScheduleRetry("a", 1000, 1, reason.RetryAfterContinuation),
+      core.ScheduleRetry(
+        "a",
+        1000,
+        1,
+        reason.RetryAfterContinuation,
+        previous_retry: None,
+      ),
     ]
 }
 
@@ -991,8 +1019,13 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
     core.apply_worker_failure(state, config(), "a", issue, 100)
   assert effects1
     == [
-      core.CancelRetry("a", 1, "reschedule_retry"),
-      core.ScheduleRetry("a", 10_000, 1, reason.RetryAfterFailure),
+      core.ScheduleRetry(
+        "a",
+        10_000,
+        1,
+        reason.RetryAfterFailure,
+        previous_retry: None,
+      ),
     ]
   let state = core.apply_worker_start(one, issue, "/tmp/ws")
   let core.Transition(state: two, effects: _) =
@@ -1072,7 +1105,17 @@ pub fn retry_candidate_can_dispatch_self_claimed_issue_test() {
 
   assert effects
     == [
-      core.CancelRetry("a", 1, "retry_dispatch"),
+      core.CancelRetry(
+        "a",
+        1,
+        "retry_dispatch",
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 10_000,
+          timer_generation: 1,
+        )),
+      ),
       core.Dispatch(updated),
     ]
   let identity = orchestrator_state.issue_identity(issue)
@@ -1100,7 +1143,17 @@ pub fn continuation_retry_can_dispatch_self_claimed_issue_test() {
 
   assert effects
     == [
-      core.CancelRetry("a", 1, "retry_dispatch"),
+      core.CancelRetry(
+        "a",
+        1,
+        "retry_dispatch",
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 1000,
+          timer_generation: 1,
+        )),
+      ),
       core.Dispatch(issue),
     ]
   let identity = orchestrator_state.issue_identity(issue)
@@ -1125,7 +1178,17 @@ pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
 
   assert effects
     == [
-      core.CancelRetry("a", 1, "retry_terminal_state:Done"),
+      core.CancelRetry(
+        "a",
+        1,
+        "retry_terminal_state:Done",
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 10_000,
+          timer_generation: 1,
+        )),
+      ),
       core.ReleaseClaim("a"),
     ]
   let identity = orchestrator_state.issue_identity(issue)
@@ -1150,7 +1213,17 @@ pub fn retry_candidate_non_dispatch_failure_state_can_dispatch_test() {
 
   assert effects
     == [
-      core.CancelRetry("a", 1, "retry_dispatch"),
+      core.CancelRetry(
+        "a",
+        1,
+        "retry_dispatch",
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 10_000,
+          timer_generation: 1,
+        )),
+      ),
       core.Dispatch(triage),
     ]
   let identity = orchestrator_state.issue_identity(issue)
@@ -1175,7 +1248,17 @@ pub fn retry_candidate_non_retryable_state_clears_retry_test() {
 
   assert effects
     == [
-      core.CancelRetry("a", 1, "retry_non_retryable_state:Backlog"),
+      core.CancelRetry(
+        "a",
+        1,
+        "retry_non_retryable_state:Backlog",
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 10_000,
+          timer_generation: 1,
+        )),
+      ),
       core.ReleaseClaim("a"),
     ]
   let identity = orchestrator_state.issue_identity(issue)
@@ -1214,8 +1297,18 @@ pub fn retry_candidate_without_slot_capacity_retries_no_slots_test() {
 
   assert effects
     == [
-      core.CancelRetry("a", 2, "reschedule_retry"),
-      core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
+      core.ScheduleRetry(
+        "a",
+        20_000,
+        2,
+        reason.RetryNoSlots,
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 10_000,
+          timer_generation: 1,
+        )),
+      ),
     ]
   let identity = orchestrator_state.issue_identity(retry_issue)
   assert dict.has_key(next.retry_attempts, identity)
@@ -1233,23 +1326,53 @@ pub fn retry_timer_handling_test() {
   assert dict.has_key(kept.claimed, orchestrator_state.issue_identity(issue))
   assert poll_failed
     == [
-      core.CancelRetry("a", 2, "reschedule_retry"),
-      core.ScheduleRetry("a", 20_000, 2, reason.RetryPollFailed),
+      core.ScheduleRetry(
+        "a",
+        20_000,
+        2,
+        reason.RetryPollFailed,
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 10_000,
+          timer_generation: 1,
+        )),
+      ),
     ]
 
   let core.Transition(effects: poll_failed_again, state: kept_again) =
     core.handle_retry_candidate(kept, config(), "a", Error("tracker"))
   assert poll_failed_again
     == [
-      core.CancelRetry("a", 3, "reschedule_retry"),
-      core.ScheduleRetry("a", 40_000, 3, reason.RetryPollFailed),
+      core.ScheduleRetry(
+        "a",
+        40_000,
+        3,
+        reason.RetryPollFailed,
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 20_000,
+          timer_generation: 2,
+        )),
+      ),
     ]
 
   let core.Transition(effects: absent, state: released) =
     core.handle_retry_candidate(kept_again, config(), "a", Ok(None))
   assert absent
     == [
-      core.CancelRetry("a", 3, "retry_issue_missing"),
+      core.CancelRetry(
+        "a",
+        3,
+        "retry_issue_missing",
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 40_000,
+          timer_generation: 3,
+        )),
+      ),
       core.ReleaseClaim("a"),
     ]
   assert !dict.has_key(
@@ -1272,8 +1395,18 @@ pub fn retry_candidate_without_slots_uses_backoff_test() {
 
   assert effects
     == [
-      core.CancelRetry("a", 2, "reschedule_retry"),
-      core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
+      core.ScheduleRetry(
+        "a",
+        20_000,
+        2,
+        reason.RetryNoSlots,
+        previous_retry: Some(orchestrator_state.RetryEntry(
+          task_ref: orchestrator_state.linear_issue_id_ref("a"),
+          issue_id: "a",
+          delay_ms: 10_000,
+          timer_generation: 1,
+        )),
+      ),
     ]
 }
 

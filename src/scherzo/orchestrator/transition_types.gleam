@@ -215,6 +215,15 @@ pub type ParkedIssueResolution {
   ParkedIssueResolutionFailed
 }
 
+pub type RetryCancellation {
+  RetryCancellation(
+    issue_id: String,
+    generation: Int,
+    reason: String,
+    previous_retry: orchestrator_state.RetryEntry,
+  )
+}
+
 pub type PendingClaim {
   PendingClaim(
     task_ref: task.TaskRef,
@@ -230,6 +239,7 @@ pub type PendingClaim {
     remaining_candidates: List(tracker_issue.Issue),
     dispatch_context: DispatchContext,
     previous_retry_generation: Int,
+    retry_cancellation: Option(RetryCancellation),
   )
 }
 

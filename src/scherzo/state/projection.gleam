@@ -1550,15 +1550,34 @@ pub fn apply(
           RetryScheduled(issue_identifier, delay_ms, generation, reason, at_ms),
         ),
       )
-    record.RetryCancelled(issue_id, generation, reason) ->
+    record.RetryCancelled(issue_id, generation, reason) -> {
+      let next_status = case dict.get(projection.retries, issue_id) {
+        Ok(RetryScheduled(
+          issue_identifier,
+          delay_ms,
+          current_generation,
+          current_reason,
+          scheduled_at_ms,
+        )) ->
+          case current_generation == generation {
+            True -> RetryCancelled(generation, reason, at_ms)
+            False ->
+              RetryScheduled(
+                issue_identifier,
+                delay_ms,
+                current_generation,
+                current_reason,
+                scheduled_at_ms,
+              )
+          }
+        Ok(RetryCancelled(_, _, _)) | Error(Nil) ->
+          RetryCancelled(generation, reason, at_ms)
+      }
       Projection(
         ..projection,
-        retries: dict.insert(
-          projection.retries,
-          issue_id,
-          RetryCancelled(generation, reason, at_ms),
-        ),
+        retries: dict.insert(projection.retries, issue_id, next_status),
       )
+    }
     record.IssueCounterUpdated(
       issue_id,
       issue_identifier,

@@ -1982,14 +1982,14 @@ fn interpret_effect(
         #("issue_id", issue.id),
         #("issue_identifier", issue.identifier),
       ])
-    core.ScheduleRetry(issue_id, delay_ms, generation, reason) ->
+    core.ScheduleRetry(issue_id, delay_ms, generation, reason, _) ->
       log.info("retry_scheduled", [
         #("issue_id", issue_id),
         #("delay_ms", int_to_string(delay_ms)),
         #("generation", int_to_string(generation)),
         #("reason", orchestrator_reason.retry_to_string(reason)),
       ])
-    core.CancelRetry(issue_id, generation, reason) ->
+    core.CancelRetry(issue_id, generation, reason, _) ->
       log.info("retry_cancelled", [
         #("issue_id", issue_id),
         #("generation", int_to_string(generation)),

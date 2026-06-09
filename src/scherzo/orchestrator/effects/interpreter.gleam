@@ -728,7 +728,9 @@ fn append_follow_up(
   follow_up_messages: List(transition_types.Message),
 ) -> List(transition_types.Message) {
   case request.policy {
-    effects_types.SpawnClaimedWorkerAfterAppend(..)
+    effects_types.ScheduleRetryTimerAfterAppend(..)
+    | effects_types.CancelRetryTimerAfterAppend(..)
+    | effects_types.SpawnClaimedWorkerAfterAppend(..)
     | effects_types.ReportParkAfterAppend(..) -> [
       transition_types.LedgerAppendCompleted(
         correlation_id: request.correlation_id,
@@ -750,6 +752,8 @@ fn should_stop_after_append(
   case request.policy {
     effects_types.StopBatchOnFailure -> result != Ok(Nil)
     effects_types.ContinueRegardless
+    | effects_types.ScheduleRetryTimerAfterAppend(..)
+    | effects_types.CancelRetryTimerAfterAppend(..)
     | effects_types.SpawnClaimedWorkerAfterAppend(..)
     | effects_types.ReportParkAfterAppend(..) -> False
   }
