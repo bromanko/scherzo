@@ -10,7 +10,7 @@ Scherzo workflows produce canonical retained artifacts. Publication must copy se
 
 The publication model needs an explicit split:
 
-- File artifacts for external/cross-repo review can be copied into a managed artifact repository.
+- File artifacts for external/cross-repo review need a future driver-owned or external publication lane; the old managed-checkout implementation is removed.
 - same-repo repository changes must remain workspace-driver-backed and must publish from the retained workflow workspace, not from a hidden managed clone.
 
 Today the docs overstate the artifact-repository path and make it sound like same-repo repository changes should move away from workspace drivers. That is the wrong boundary for same-repo publication. For same-repo changes, the selected workspace driver already owns repository identity, baseline normalization, diff semantics, and publication safety. Scherzo should keep using that boundary through a named driver capability, `publish-commit-stack`, while making `commit_stack` a first-class workflow output and publication concept.
@@ -23,7 +23,7 @@ ExecPlan workflows also have dual outputs with different audiences. An ExecPlan 
 - Keep same-repo repository-change publication workspace-driver-backed.
 - Define `publish-commit-stack` as the same-repo publication capability.
 - Define `commit_stack` as the workflow-level repository-change output for same-repo publication.
-- Allow file artifacts to publish to external/cross-repo managed repositories.
+- Keep file artifact selection/configuration understandable while runtime publication is unsupported until a driver-owned or external replacement exists.
 - Support deterministic doctor/preflight checks before remote mutation.
 - Make same-repo publication retryable from the retained workflow workspace.
 - Preserve unchanged retry idempotence and explicit abandonment semantics.
@@ -32,7 +32,7 @@ ExecPlan workflows also have dual outputs with different audiences. An ExecPlan 
 ## 3. Non-goals for MVP
 
 - Reconstructing same-repo repository changes from retained Git bundles by default.
-- Making `.scherzo-state/artifact-repositories/github/<hash>` part of the same-repo default path.
+- Reintroducing hidden Scherzo-owned GitHub checkout clones for same-repo publication.
 - Generalized review-state tracking.
 - Non-GitHub managed repository backends beyond the current artifact-repository framing.
 - Step-level publication configuration.
@@ -54,7 +54,7 @@ Publication of repository changes back into the repository already represented b
 
 ### external/cross-repo publication
 
-Publication into a different configured repository or a managed copy owned by Scherzo. This path may use managed checkouts, retained bundle import, or `.scherzo-state/artifact-repositories/github/<hash>` in future implementations. It is not the default or fallback for same-repo publication.
+Publication into a different configured repository or a future driver-owned/external lane. This path is not implemented by hidden Scherzo-owned GitHub checkout clones and is not the default or fallback for same-repo publication.
 
 ### Publication series
 
@@ -70,7 +70,7 @@ Scherzo needs two distinct publication modes.
 
 ### File publication
 
-File publication selects retained file artifacts and materializes them into an external/cross-repo artifact repository.
+File publication selects retained file artifacts for an external/cross-repo review surface. Runtime GitHub file publication is currently unsupported until a driver-owned or external replacement exists.
 
 Example:
 
@@ -128,8 +128,6 @@ artifacts:
       docs:
         repo: scherzo-systems/scherzo
         base: main
-        checkout:
-          strategy: managed_git
         branch:
           strategy: stable_per_work
           template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
@@ -139,7 +137,7 @@ artifacts:
           draft: false
 ```
 
-This configuration continues to describe managed artifact-repository publication for files. It does not redefine same-repo publication.
+This configuration names repository metadata for planning and future external publication. It does not activate a Scherzo-owned checkout and does not redefine same-repo publication.
 
 ### Workflow-level publication routes
 
@@ -155,15 +153,13 @@ A same-repo `commit_stack` route must fail doctor/preflight before remote mutati
 
 ### File publication behavior
 
-For each configured file publication, Scherzo should:
+For each configured file publication, current Scherzo runtime should:
 
-1. Resolve the workflow output manifest.
-2. Select the configured file descriptors.
-3. Read selected canonical artifact bytes from the internal artifact store.
-4. Materialize those bytes into configured repository-relative paths in a Scherzo-managed publication checkout.
-5. Create or update a GitHub branch according to `branch.strategy`.
-6. Create or update a pull request when `pull_request.enabled` is true.
-7. Record publication metadata and final status in durable state.
+1. Resolve and validate the route enough to produce a targeted failure.
+2. Record `file_publication_unsupported` without cloning, fetching, resetting, or cleaning a hidden GitHub checkout.
+3. Direct workflow authors to publish from a workspace-driver-owned step or convert repository changes to `mode: commit_stack`.
+
+A future external/cross-repo implementation must keep the active workflow workspace boundary explicit and must not recreate hidden same-repo clones.
 
 ### same-repo `commit_stack` behavior
 
@@ -177,7 +173,7 @@ For each configured same-repo `commit_stack` publication, Scherzo should:
 6. Record whether the result was `published`, `unchanged`, or `failed`.
 7. Retain the unpublished workspace until explicit abandonment or configured cleanup.
 
-same-repo publication is workspace-driver-backed. It must not use `.scherzo-state/artifact-repositories/github/<hash>` as a default path or fallback path. Managed artifact repositories remain available only for file publication or future external/cross-repo publication.
+same-repo publication is workspace-driver-backed. It must not use hidden Scherzo-owned GitHub checkout clones as a default path or fallback path.
 
 ## 8. Publication states
 
@@ -208,7 +204,7 @@ If same-repo `commit_stack` publication fails:
 6. Missing or stale retained workspaces fail closed.
 7. Cleanup does not silently abandon publishable workspaces; abandonment must be explicit and auditable.
 
-If file publication fails, the retained file artifacts remain available and the managed artifact-repository retry path can be used without rerunning artifact-producing steps.
+If file publication is requested, the retained file artifacts remain available, but GitHub file publication fails with `file_publication_unsupported` until a driver-owned or external replacement exists.
 
 ## 10. Migration from workspace `publish-change`
 
@@ -216,11 +212,11 @@ This PRD names the same-repo capability `publish-commit-stack`. Existing bundled
 
 Migration direction:
 
-1. Keep file publication on the artifact-repository path.
+1. Keep GitHub file publication disabled rather than recreating the removed managed-checkout path.
 2. Preserve same-repo repository-change publication as workspace-driver-backed.
 3. Rename or replace same-repo publication invocations from `publish-change` to `publish-commit-stack` only when the bundled driver command, workflow requirements, and operator docs are migrated together; before then, accept `publish-commit-stack` as a capability name and `publish-change` as current bundled-driver compatibility vocabulary.
 4. Update doctor/preflight to reject same-repo `commit_stack` publication when the chosen driver cannot publish commit stacks under either the target name or the documented compatibility alias.
-5. Keep `.scherzo-state/artifact-repositories/github/<hash>` and retained bundle import deferred to future external/cross-repo or recovery work.
+5. Keep hidden Scherzo-owned GitHub checkout clones removed; any future external/cross-repo work must define a new driver-owned or explicit external boundary.
 
 The key migration rule is that artifact publication does not move same-repo repository changes away from workspace drivers.
 
@@ -241,7 +237,7 @@ same-repo publication is workspace-driver-backed because the driver already owns
 
 ### 11.3 external/cross-repo boundary
 
-Managed artifact repositories, retained Git bundle import, and `.scherzo-state/artifact-repositories/github/<hash>` remain valid future ideas for external/cross-repo or recovery flows. They are not the same-repo default and must not be used as the same-repo fallback path.
+External/cross-repo publication remains a future design space, but hidden Scherzo-owned GitHub checkout clones are not the same-repo default and must not be used as the same-repo fallback path.
 
 ### 11.4 Retry semantics
 

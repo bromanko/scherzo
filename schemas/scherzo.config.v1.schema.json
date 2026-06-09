@@ -560,13 +560,6 @@
           "pattern": "^[^/]+/[^/]+$"
         },
         "base": { "$ref": "#/$defs/NonEmptyString" },
-        "checkout": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "strategy": { "enum": ["managed_git"] }
-          }
-        },
         "branch": {
           "type": "object",
           "additionalProperties": false,

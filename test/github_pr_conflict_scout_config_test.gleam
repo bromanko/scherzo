@@ -95,13 +95,13 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
     ]
 
   let github = bundle.orchestrator.artifact_repositories.github
-  let assert Ok(target) = dict.get(github, "docs")
+  assert !dict.has_key(github, "docs")
+  let assert Ok(target) = dict.get(github, "code")
   assert target.repo == "scherzo-systems/scherzo"
   assert target.base == "main"
-  assert target.checkout.strategy == artifact_publication_config.ManagedGit
   assert target.branch.strategy == artifact_publication_config.StablePerWork
   assert target.branch.template
-    == "scherzo/{{ work.identifier }}/{{ publication.id }}"
+    == "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}"
   assert target.pull_request.enabled == True
   assert target.pull_request.strategy
     == artifact_publication_config.UpdateExisting

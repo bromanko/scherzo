@@ -10,8 +10,6 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
 import scherzo/artifact_repository/command_runner
-import scherzo/artifact_repository/github as github_repository
-import scherzo/artifact_repository/types
 import scherzo/state/artifact_store
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_checkpoint
@@ -625,7 +623,7 @@ fn execute_planned_publication(
   workflow_id: String,
   planned: artifact_publication_planner.DryRunPublicationManifest,
   state_root: String,
-  work: artifact_publication_planner.PublicationWork,
+  _work: artifact_publication_planner.PublicationWork,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
   runner: command_runner.Runner,
@@ -644,57 +642,50 @@ fn execute_planned_publication(
         publication_driver,
       )
     None ->
-      execute_managed_repository_publication(
+      execute_unsupported_file_publication(
         route,
         workflow_id,
         planned,
-        state_root,
-        work,
         run_id,
         checkpoint,
-        runner,
       )
   }
 }
 
-fn execute_managed_repository_publication(
+fn execute_unsupported_file_publication(
   route: artifact_publication_config.PublicationRoute,
   workflow_id: String,
   planned: artifact_publication_planner.DryRunPublicationManifest,
-  state_root: String,
-  work: artifact_publication_planner.PublicationWork,
   run_id: String,
   checkpoint: workflow_checkpoint.Writer,
-  runner: command_runner.Runner,
 ) -> Result(RouteExecutionOutcome, String) {
-  case prepare_repository_execution_input(route, planned, checkpoint) {
-    Ok(prepared) -> {
-      let manifest =
-        github_repository.publish(
-          prepared,
-          state_root,
-          runner,
-          checkpoint.now_ms(),
-        )
-      record_execution_manifest(
-        route,
-        workflow_id,
-        run_id,
-        manifest,
-        checkpoint,
-      )
-    }
-    Error(#(code, message)) ->
-      record_route_failure(
-        route,
-        workflow_id,
-        work,
-        run_id,
-        checkpoint,
-        code,
-        message,
-      )
-  }
+  let now_ms = checkpoint.now_ms()
+  let error =
+    artifact_publication_manifest.PublicationErrorInfo(
+      code: "file_publication_unsupported",
+      message: "GitHub file artifact publication no longer uses Scherzo-managed checkouts; use a workflow workspace-driver publication step or a mode: commit_stack publication route",
+    )
+  let attempt_id =
+    artifact_publication_manifest.attempt_key_for_failure(
+      planned.publication_id,
+      error.code,
+      error.message,
+      now_ms,
+    )
+  let manifest =
+    artifact_publication_manifest.failed_from_planned_manifest(
+      planned,
+      attempt_id,
+      now_ms,
+      False,
+      Some(planned.branch),
+      None,
+      planned_target_pr_url(planned),
+      [],
+      [],
+      error,
+    )
+  record_execution_manifest(route, workflow_id, run_id, manifest, checkpoint)
 }
 
 fn execute_commit_stack_publication(
@@ -867,36 +858,6 @@ fn failure_message(reason: String) -> String {
   case string.split_once(reason, on: ":") {
     Ok(#(_, message)) -> string.trim(message)
     Error(_) -> reason
-  }
-}
-
-fn prepare_repository_execution_input(
-  route: artifact_publication_config.PublicationRoute,
-  planned: artifact_publication_planner.DryRunPublicationManifest,
-  checkpoint: workflow_checkpoint.Writer,
-) -> Result(types.PublicationExecutionInput, #(String, String)) {
-  case
-    artifact_publication_config.repository_ref_parts(
-      route.repository,
-      "publication.repository",
-    )
-  {
-    Ok(#("github", _)) ->
-      github_repository.prepare_publication_input(
-        planned,
-        checkpoint_store(checkpoint),
-      )
-      |> result.map(fn(input) { input })
-      |> result.map_error(fn(error) {
-        #(github_repository.code(error), github_repository.message(error))
-      })
-    Ok(#(kind, _)) ->
-      Error(#("unsupported_repository", "unsupported repository kind: " <> kind))
-    Error(error) ->
-      Error(#(
-        "invalid_repository",
-        artifact_publication_config.error_message(error),
-      ))
   }
 }
 

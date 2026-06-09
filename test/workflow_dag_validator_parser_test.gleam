@@ -1,7 +1,6 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/artifact_publication_config
 import scherzo/path
 import scherzo/structured_output_source
 import scherzo/workflow_contract
@@ -359,18 +358,9 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   assert recovery_config.prompt
     == workflow_dag.PromptFile("prompts/execplan-recover-failed-step.md")
 
-  let assert [route] = drafting.publication_routes
-  assert route.id == "execplan_review_doc"
-  assert route.repository == "github.docs"
-  assert route.required == True
-  let assert [artifact_publication_config.PublicationFileRoute(selector, path)] =
-    route.files
-  assert selector.output == "exec_plan_bundle"
-  assert selector.entry == Some("plan")
-  assert path == "{{ artifact.metadata.publication.destination_path }}"
+  assert drafting.publication_routes == []
 
-  let assert Error(Nil) =
-    workflow_dag.step_by_id(drafting, "publish_review_doc")
+  let assert Ok(_) = workflow_dag.step_by_id(drafting, "publish_review_doc")
   let assert Ok(materialize_bundle) =
     workflow_dag.step_by_id(drafting, "materialize_bundle")
   let assert Ok(None) =

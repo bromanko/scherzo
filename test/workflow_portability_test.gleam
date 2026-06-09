@@ -295,11 +295,11 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
     ),
     #(
       ".scherzo/workflows/execplan.yaml",
-      "  requires: [status, diff, changed-files]",
+      "  requires: [status, diff, changed-files, publish-change]",
     ),
     #(
       ".scherzo/workflows/execplan-revision.yaml",
-      "  requires: [status, diff, changed-files, refresh-base]",
+      "  requires: [status, diff, changed-files, refresh-base, publish-change]",
     ),
     #(
       ".scherzo/workflows/execplan-implementation.yaml",
@@ -379,21 +379,18 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
   })
 }
 
-pub fn execplan_workflows_publish_review_docs_from_execplan_bundle_test() {
+pub fn execplan_workflows_publish_review_docs_with_workspace_driver_test() {
   let drafting = read_file(".scherzo/workflows/execplan.yaml")
   let revision = read_file(".scherzo/workflows/execplan-revision.yaml")
 
   list.each([drafting, revision], fn(workflow) {
-    assert_contains(workflow, "id: execplan_review_doc")
-    assert_contains(workflow, "repository: github.docs")
-    assert_contains(workflow, "entry: plan")
+    assert_not_contains(workflow, "repository: github.docs")
+    assert_contains(workflow, "id: publish_review_doc")
+    assert_contains(workflow, "publish-review-doc")
     assert_contains(
       workflow,
-      "path: \"{{ artifact.metadata.publication.destination_path }}\"",
+      "--publish-context tmp/execplan-publish-context.json",
     )
-    assert_contains(workflow, "body_template: prompts/execplan-pr-body.md")
-    assert_not_contains(workflow, "publish_review_doc")
-    assert_not_contains(workflow, "--publish-context")
   })
 }
 

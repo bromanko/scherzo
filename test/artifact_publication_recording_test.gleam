@@ -367,9 +367,6 @@ fn repositories() -> artifact_publication_config.ArtifactRepositories {
           name: "docs",
           repo: "scherzo-systems/scherzo",
           base: "main",
-          checkout: artifact_publication_config.GithubCheckoutConfig(
-            strategy: artifact_publication_config.ManagedGit,
-          ),
           branch: artifact_publication_config.GithubBranchConfig(
             strategy: artifact_publication_config.StablePerWork,
             template: "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}",

@@ -355,8 +355,6 @@ artifacts:
       docs:
         repo: scherzo-systems/scherzo
         base: main
-        checkout:
-          strategy: managed_git
         branch:
           strategy: stable_per_work
           template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
@@ -366,8 +364,16 @@ artifacts:
           draft: false
 ```
 
+These repository targets are metadata for file-publication planning and future
+external publication lanes. Current GitHub `files:` runtime publication is
+intentionally unsupported: matching workflow routes record
+`file_publication_unsupported` and do not create hidden
+`.scherzo-state/artifact-repositories/github/<hash>` clones. Publish same-repo
+review documents from an explicit workflow command/workspace-driver step, or
+publish same-repo repository changes with `mode: commit_stack`.
+
 `repo` is an `owner/repo` string. `base` is the target branch. Defaults are
-`checkout.strategy: managed_git`, `branch.strategy: stable_per_work`,
+`branch.strategy: stable_per_work`,
 `branch.template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}`,
 `pull_request.enabled: true`,
 `pull_request.strategy: update_existing`, and `pull_request.draft: false`.
@@ -449,7 +455,11 @@ Structured-output command validator `timeout` also replaces `timeout_ms`.
 other structured output fields remain unchanged.
 
 Workflow artifact publication routes are configured under
-`artifacts.publications`:
+`artifacts.publications` for schema validation and retained-artifact selection.
+Current GitHub `files:` routes are not executable; they fail closed with
+`file_publication_unsupported` until a driver-owned or external replacement
+exists. The example below documents the parsed shape, not an active GitHub file
+publication lane:
 
 ```yaml
 artifacts:
