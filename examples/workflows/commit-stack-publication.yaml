@@ -4,7 +4,7 @@ id: commit-stack-publication
 description: Example same-repo commit_stack publication route shape.
 workspace:
   driver: isolated
-  requires: [status, baseline, publish-change]
+  requires: [status, baseline, publish-commit-stack]
 contract:
   version: 1
   outputs:

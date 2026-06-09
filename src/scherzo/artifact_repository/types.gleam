@@ -12,14 +12,6 @@ pub type PublicationExecutionInput {
   PublicationExecutionInput(
     manifest: artifact_publication_planner.DryRunPublicationManifest,
     selected_files: List(SelectedArtifactBytes),
-    commit_stack: Option(SelectedCommitStackBytes),
-  )
-}
-
-pub type SelectedCommitStackBytes {
-  SelectedCommitStackBytes(
-    stack: artifact_publication_planner.PlannedCommitStack,
-    carrier_bytes: BitArray,
   )
 }
 

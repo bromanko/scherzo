@@ -83,7 +83,7 @@ pub fn execute_routes_publishes_commit_stack_with_workspace_driver_test() {
       driver_runner(log, workspace, DriverPublishes),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -106,13 +106,99 @@ pub fn execute_routes_publishes_commit_stack_with_workspace_driver_test() {
   let transcript = read_file(log)
   assert string.contains(
     transcript,
-    "fake-driver publish-change --kind implementation",
+    "fake-driver publish-commit-stack --kind implementation",
   )
   assert string.contains(transcript, "--base main")
   assert string.contains(transcript, "--target-branch " <> existing_branch())
   assert string.contains(transcript, "--target-pr 42")
+  assert string.contains(
+    transcript,
+    "--expected-head " <> expected_existing_head_sha(),
+  )
   assert string.contains(transcript, "--allow-no-changes true --json")
   assert string.contains(transcript, "CWD=" <> workspace)
+}
+
+pub fn execute_routes_commit_stack_revalidates_existing_pr_before_driver_push_test() {
+  assert_existing_pr_preflight_failure(
+    "commit-stack-closed-pr",
+    DriverClosedExistingPr,
+    "existing_pr_not_open",
+  )
+}
+
+pub fn execute_routes_commit_stack_rejects_cross_repo_existing_pr_before_driver_push_test() {
+  assert_existing_pr_preflight_failure(
+    "commit-stack-cross-repo-pr",
+    DriverCrossRepoExistingPr,
+    "existing_pr_cross_repository",
+  )
+}
+
+pub fn execute_routes_commit_stack_rejects_head_branch_mismatch_before_driver_push_test() {
+  assert_existing_pr_preflight_failure(
+    "commit-stack-head-branch-mismatch-pr",
+    DriverExistingPrHeadBranchMismatch,
+    "existing_pr_branch_mismatch",
+  )
+}
+
+pub fn execute_routes_commit_stack_rejects_base_branch_mismatch_before_driver_push_test() {
+  assert_existing_pr_preflight_failure(
+    "commit-stack-base-branch-mismatch-pr",
+    DriverExistingPrBaseBranchMismatch,
+    "existing_pr_base_branch_mismatch",
+  )
+}
+
+pub fn execute_routes_commit_stack_rejects_stale_existing_pr_head_before_driver_push_test() {
+  assert_existing_pr_preflight_failure(
+    "commit-stack-stale-pr-head",
+    DriverStaleExistingPrHead,
+    "stale_existing_pr_branch",
+  )
+}
+
+fn assert_existing_pr_preflight_failure(
+  root_slug: String,
+  behavior: DriverBehavior,
+  expected_code: String,
+) {
+  let root = "test/tmp/artifact-publication-executor/" <> root_slug
+  let state_root = root <> "/state"
+  let workspace = root <> "/workspace"
+  let log = root <> "/driver.log"
+  test_helpers.reset_dir(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  write_commit_stack_artifacts(state_root)
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      root,
+      state_root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      driver_runner(log, workspace, behavior),
+      Some(
+        publication_driver(workspace, [
+          config_types.WorkspacePublishCommitStack,
+        ]),
+      ),
+    )
+
+  let assert [failure] = result.required_failures
+  assert failure.code == expected_code
+  let assert [attempt] = result.attempts
+  assert attempt.status == "failed"
+  assert attempt.error_code == Some(expected_code)
+  let transcript = read_file(log)
+  assert string.contains(transcript, "gh pr view 42")
+  assert !string.contains(transcript, "fake-driver publish-commit-stack")
 }
 
 pub fn execute_routes_commit_stack_passes_configured_driver_timeout_test() {
@@ -138,7 +224,7 @@ pub fn execute_routes_commit_stack_passes_configured_driver_timeout_test() {
       driver_runner(log, workspace, DriverPublishes),
       Some(publication_driver_with_timeout(
         workspace,
-        [config_types.WorkspacePublishChange],
+        [config_types.WorkspacePublishCommitStack],
         1234,
       )),
     )
@@ -170,7 +256,7 @@ pub fn execute_routes_commit_stack_rerun_rechecks_stale_target_with_driver_test(
       driver_runner(log, workspace, DriverPublishes),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -191,7 +277,7 @@ pub fn execute_routes_commit_stack_rerun_rechecks_stale_target_with_driver_test(
       driver_runner(log, workspace, DriverStaleExistingBranch),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -201,7 +287,7 @@ pub fn execute_routes_commit_stack_rerun_rechecks_stale_target_with_driver_test(
   let assert [second_attempt] = second.attempts
   assert second_attempt.status == "failed"
   assert second_attempt.error_code == Some("stale_existing_branch")
-  assert string.contains(read_file(log), "fake-driver publish-change")
+  assert string.contains(read_file(log), "fake-driver publish-commit-stack")
 }
 
 pub fn execute_routes_commit_stack_accepts_successor_driver_operation_test() {
@@ -258,7 +344,7 @@ pub fn execute_routes_commit_stack_unchanged_records_existing_pr_url_test() {
       driver_runner(root <> "/driver.log", workspace, DriverUnchangedNoUrl),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -299,6 +385,44 @@ pub fn execute_routes_fails_commit_stack_when_driver_unavailable_test() {
     == Some("commit_stack_publication_driver_unavailable")
 }
 
+pub fn execute_routes_rejects_publish_change_only_driver_for_commit_stack_test() {
+  let root =
+    "test/tmp/artifact-publication-executor/commit-stack-publish-change-only"
+  let state_root = root <> "/state"
+  let workspace = root <> "/workspace"
+  test_helpers.reset_dir(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  write_commit_stack_artifacts(state_root)
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      root,
+      state_root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      fail_if_called_runner(),
+      Some(
+        publication_driver(workspace, [
+          config_types.WorkspacePublishChange,
+        ]),
+      ),
+    )
+
+  let assert [failure] = result.required_failures
+  assert failure.code == "commit_stack_publication_driver_unsupported"
+  assert string.contains(failure.message, "publish-commit-stack")
+  assert !string.contains(failure.message, "publish-change or")
+  let assert [attempt] = result.attempts
+  assert attempt.status == "failed"
+  assert attempt.error_code
+    == Some("commit_stack_publication_driver_unsupported")
+}
+
 pub fn execute_routes_fails_commit_stack_on_malformed_driver_output_test() {
   let root = "test/tmp/artifact-publication-executor/commit-stack-malformed"
   let state_root = root <> "/state"
@@ -321,7 +445,7 @@ pub fn execute_routes_fails_commit_stack_on_malformed_driver_output_test() {
       driver_runner(root <> "/driver.log", workspace, DriverMalformed),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -359,7 +483,7 @@ pub fn execute_routes_fails_commit_stack_on_driver_head_mismatch_test() {
       driver_runner(root <> "/driver.log", workspace, DriverHeadMismatch),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -399,7 +523,7 @@ pub fn execute_routes_redacts_sensitive_commit_stack_driver_failure_test() {
       Some(
         publication_driver_with_env(
           workspace,
-          [config_types.WorkspacePublishChange],
+          [config_types.WorkspacePublishCommitStack],
           [#("GITHUB_TOKEN", secret)],
           [secret],
         ),
@@ -437,7 +561,7 @@ pub fn execute_routes_fails_commit_stack_on_unsuccessful_driver_status_test() {
       driver_runner(root <> "/driver.log", workspace, DriverUnsuccessful),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -839,6 +963,11 @@ type DriverBehavior {
   DriverUnchangedNoUrl
   DriverStaleExistingBranch
   DriverHeadMismatch
+  DriverClosedExistingPr
+  DriverCrossRepoExistingPr
+  DriverExistingPrHeadBranchMismatch
+  DriverExistingPrBaseBranchMismatch
+  DriverStaleExistingPrHead
   DriverMalformed
   DriverUnsuccessful
   DriverLeaksSecretFailure(String)
@@ -917,9 +1046,15 @@ fn driver_runner(
       ..,
     ) = spec
     let _ = write_driver_log(log, executable, args, cwd, env, timeout_ms)
-    case executable == "fake-driver", cwd == expected_workspace {
-      True, True -> driver_output(behavior, args)
-      _, _ -> Error(command_runner.command_error("unexpected_driver_command"))
+    case cwd == expected_workspace {
+      True ->
+        case executable, args {
+          "gh", ["pr", "view", _number, ..] -> gh_pr_view_output(behavior)
+          "fake-driver", _ -> driver_output(behavior, args)
+          _, _ ->
+            Error(command_runner.command_error("unexpected_driver_command"))
+        }
+      False -> Error(command_runner.command_error("unexpected_driver_command"))
     }
   })
 }
@@ -1003,6 +1138,13 @@ fn driver_output(
           ))
         False -> Error(command_runner.command_error("bad_driver_args"))
       }
+    DriverClosedExistingPr -> driver_called_after_pr_preflight_failed()
+    DriverCrossRepoExistingPr -> driver_called_after_pr_preflight_failed()
+    DriverExistingPrHeadBranchMismatch ->
+      driver_called_after_pr_preflight_failed()
+    DriverExistingPrBaseBranchMismatch ->
+      driver_called_after_pr_preflight_failed()
+    DriverStaleExistingPrHead -> driver_called_after_pr_preflight_failed()
     DriverMalformed ->
       Ok(command_runner.CommandOutput(
         0,
@@ -1026,6 +1168,13 @@ fn driver_output(
   }
 }
 
+fn driver_called_after_pr_preflight_failed() -> Result(
+  command_runner.CommandOutput,
+  command_runner.CommandError,
+) {
+  Error(command_runner.command_error("driver_called_after_pr_preflight_failed"))
+}
+
 fn driver_args_have_required_shape(args: List(String)) -> Bool {
   string.contains(
     string.join(args, with: " "),
@@ -1045,8 +1194,67 @@ fn driver_args_have_required_shape(args: List(String)) -> Bool {
     "--target-branch " <> existing_branch(),
   )
   && string.contains(string.join(args, with: " "), "--target-pr 42")
+  && string.contains(
+    string.join(args, with: " "),
+    "--expected-head " <> expected_existing_head_sha(),
+  )
   && string.contains(string.join(args, with: " "), "--allow-no-changes true")
   && string.ends_with(string.join(args, with: " "), "--json")
+}
+
+fn gh_pr_view_output(
+  behavior: DriverBehavior,
+) -> Result(command_runner.CommandOutput, command_runner.CommandError) {
+  let state = case behavior {
+    DriverClosedExistingPr -> "CLOSED"
+    _ -> "OPEN"
+  }
+  let head_ref_name = case behavior {
+    DriverExistingPrHeadBranchMismatch -> "feature/other-branch"
+    _ -> existing_branch()
+  }
+  let head_ref_oid = case behavior {
+    DriverStaleExistingPrHead -> driver_mismatched_head_revision()
+    _ -> expected_existing_head_sha()
+  }
+  let base_ref_name = case behavior {
+    DriverExistingPrBaseBranchMismatch -> "release"
+    _ -> "main"
+  }
+  let is_cross_repository = case behavior {
+    DriverCrossRepoExistingPr -> True
+    _ -> False
+  }
+  Ok(command_runner.CommandOutput(
+    0,
+    existing_pr_view_json(
+      state,
+      head_ref_name,
+      head_ref_oid,
+      base_ref_name,
+      is_cross_repository,
+    ),
+    "",
+  ))
+}
+
+fn existing_pr_view_json(
+  state: String,
+  head_ref_name: String,
+  head_ref_oid: String,
+  base_ref_name: String,
+  is_cross_repository: Bool,
+) -> String {
+  json.object([
+    #("number", json.int(42)),
+    #("url", json.string(existing_pr_url())),
+    #("state", json.string(state)),
+    #("headRefName", json.string(head_ref_name)),
+    #("headRefOid", json.string(head_ref_oid)),
+    #("baseRefName", json.string(base_ref_name)),
+    #("isCrossRepository", json.bool(is_cross_repository)),
+  ])
+  |> json.to_string
 }
 
 fn driver_success_json() -> String {

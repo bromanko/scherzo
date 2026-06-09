@@ -63,9 +63,9 @@ pub fn diagnostic_message(diagnostic: Diagnostic) -> String {
   }
   let action_text = case diagnostic.required {
     True ->
-      "select a workspace driver that advertises publish-change or publish-commit-stack before running this workflow, or mark the publication required: false if it is optional"
+      "select a workspace driver that advertises publish-commit-stack before running this workflow, or mark the publication required: false if it is optional"
     False ->
-      "optional publication will not be publishable until the selected workspace driver advertises publish-change or publish-commit-stack"
+      "optional publication will not be publishable until the selected workspace driver advertises publish-commit-stack"
   }
   "workflow "
   <> diagnostic.workflow_id
@@ -197,8 +197,7 @@ fn diagnostic_for_route(
 fn supports_commit_stack_publication(
   provided: List(config_types.WorkspaceCapability),
 ) -> Bool {
-  list.contains(provided, config_types.WorkspacePublishChange)
-  || list.contains(provided, config_types.WorkspacePublishCommitStack)
+  list.contains(provided, config_types.WorkspacePublishCommitStack)
 }
 
 fn workspace_profile_capabilities(

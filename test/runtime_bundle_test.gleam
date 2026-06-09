@@ -232,7 +232,7 @@ pub fn rejects_required_commit_stack_publication_with_noop_driver_test() {
   assert string.contains(message, "workflow implementation")
   assert string.contains(message, "publication publish_stack")
   assert string.contains(message, "workspace.driver noop")
-  assert string.contains(message, "publish-change")
+  assert string.contains(message, "publish-commit-stack")
   assert string.contains(message, "required: false")
 }
 
@@ -272,7 +272,7 @@ pub fn loads_required_commit_stack_publication_with_jj_driver_test() {
   assert dict.has_key(bundle.workflows, "implementation")
 }
 
-pub fn loads_required_commit_stack_publication_with_successor_capability_test() {
+pub fn loads_required_commit_stack_publication_with_publish_commit_stack_capability_test() {
   let dir = "test/tmp/runtime-bundle-commit-stack-successor-driver"
   write_commit_stack_publication_yaml_project(
     dir,
@@ -285,6 +285,46 @@ pub fn loads_required_commit_stack_publication_with_successor_capability_test() 
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   assert dict.has_key(bundle.workflows, "implementation")
+}
+
+pub fn rejects_publish_commit_stack_requirement_with_publish_change_only_driver_test() {
+  let dir = "test/tmp/runtime-bundle-requires-publish-commit-stack-change-only"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nworkspace:\n  driver: driver\n  requires: [publish-commit-stack]\nsteps:\n  - id: run\n    kind: command\n    run: echo no publication route\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: driver\n  drivers:\n    driver:\n      type: custom\n      command: scripts/driver\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+  write_describe_driver(dir, "driver", "[\"publish-change\"]")
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "workspace_capabilities_unavailable"
+  assert string.contains(message, "publish-commit-stack")
+  assert !string.contains(message, "missing: publish-change")
+}
+
+pub fn rejects_required_commit_stack_publication_with_publish_change_only_driver_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-publish-change-only"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n",
+    "",
+    True,
+  )
+  write_describe_driver(dir, "driver", "[\"publish-change\"]")
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "commit_stack_publication_driver_unsupported"
+  assert string.contains(message, "publish-commit-stack")
+  assert !string.contains(message, "publish-change or")
 }
 
 pub fn loads_optional_commit_stack_publication_with_unsupported_driver_test() {
@@ -830,7 +870,7 @@ fn assert_dogfood_workflows_select_profile(
           config_types.WorkspaceChangedFiles,
           config_types.WorkspaceBaseline,
           config_types.WorkspaceRefreshBase,
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]
         "execplan" -> [
           config_types.WorkspaceStatus,

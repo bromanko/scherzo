@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/command_runner
+import scherzo/artifact_repository/github_cli
 import scherzo/config/types as config_types
 import scherzo/hash
 import scherzo/json_value
@@ -52,6 +53,7 @@ pub fn publish_commit_stack(
   use operation <- result.try(driver_publish_operation(driver))
   use _ <- result.try(require_workspace_directory(driver.workspace_path))
   use base <- result.try(driver_base_ref(planned))
+  use _ <- result.try(verify_existing_pr_target(planned, driver, runner))
   use metadata <- result.try(write_driver_metadata_files(
     driver.workspace_path,
     planned,
@@ -109,7 +111,7 @@ fn require_publication_driver(
     None ->
       Error(artifact_publication_manifest.PublicationErrorInfo(
         code: "commit_stack_publication_driver_unavailable",
-        message: "same-repo commit_stack publication requires a workspace driver with publish-change or publish-commit-stack",
+        message: "same-repo commit_stack publication requires a workspace driver with publish-commit-stack",
       ))
   }
 }
@@ -122,16 +124,10 @@ fn driver_publish_operation(
   {
     True -> Ok("publish-commit-stack")
     False ->
-      case
-        list.contains(driver.capabilities, config_types.WorkspacePublishChange)
-      {
-        True -> Ok("publish-change")
-        False ->
-          Error(artifact_publication_manifest.PublicationErrorInfo(
-            code: "commit_stack_publication_driver_unsupported",
-            message: "workspace driver does not advertise publish-change or publish-commit-stack",
-          ))
-      }
+      Error(artifact_publication_manifest.PublicationErrorInfo(
+        code: "commit_stack_publication_driver_unsupported",
+        message: "workspace driver does not advertise publish-commit-stack",
+      ))
   }
 }
 
@@ -215,6 +211,29 @@ fn metadata_write_error(
     code: "workspace_driver_publish_metadata_write_failed",
     message: message,
   ))
+}
+
+fn verify_existing_pr_target(
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+  driver: WorkspacePublicationDriver,
+  runner: command_runner.Runner,
+) -> Result(Nil, artifact_publication_manifest.PublicationErrorInfo) {
+  case planned.target {
+    artifact_publication_planner.StableBranchTargetPlan -> Ok(Nil)
+    artifact_publication_planner.ExistingPrBranchTargetPlan(existing) ->
+      case planned.commit_stack {
+        Some(stack) ->
+          github_cli.verify_existing_pr_branch(
+            planned,
+            existing,
+            stack.stack.head_sha,
+            driver.workspace_path,
+            runner,
+          )
+          |> result.map(fn(_) { Nil })
+        None -> Ok(Nil)
+      }
+  }
 }
 
 fn driver_publish_args(

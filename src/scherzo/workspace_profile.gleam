@@ -203,8 +203,6 @@ fn capability_alias_is_provided(
   case capability {
     config_types.WorkspacePublishChange ->
       list.contains(provided, config_types.WorkspacePublishCommitStack)
-    config_types.WorkspacePublishCommitStack ->
-      list.contains(provided, config_types.WorkspacePublishChange)
     _ -> False
   }
 }

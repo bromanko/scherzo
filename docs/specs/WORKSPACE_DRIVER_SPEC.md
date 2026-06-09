@@ -43,7 +43,7 @@ This specification does not prescribe one version-control backend, one publicati
 
 **Lifecycle operation**: a driver operation Scherzo invokes while creating, checking, or removing a workspace. Lifecycle operations may create or delete directories and therefore have stricter target-safety requirements than read-only capabilities.
 
-**Capability**: a named operation that workflow code may require with `workspace.requires` and invoke through the selected driver, such as `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, or `publish-change`.
+**Capability**: a named operation that workflow code may require with `workspace.requires` and invoke through the selected driver, such as `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, or `publish-commit-stack`.
 
 **Driver reference**: an opaque backend-specific reference string accepted by a VCS-backed driver, such as a base revision, remote branch, change id, bookmark, or hosted-review target. Scherzo treats driver references as strings unless a command in this specification narrows the accepted shape.
 
@@ -208,7 +208,7 @@ Required fields:
 | `version` | Integer `1`. |
 | `capabilities` | List of unique strings from the fixed capability vocabulary: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, `publish-change`, and `publish-commit-stack`. |
 
-The capability list MAY be in any order. Scherzo canonicalizes it before validation, prompt rendering, environment exposure, and fingerprinting. Malformed JSON, missing fields, unsupported versions, unknown capability names, duplicate capability names, non-string entries, nonzero exit, empty stdout, and timeout are workflow-config load failures. `publish-commit-stack` is the same-repo `commit_stack` publication successor capability; drivers may continue to advertise `publish-change` for the migration-compatible path until the command contract is fully renamed.
+The capability list MAY be in any order. Scherzo canonicalizes it before validation, prompt rendering, environment exposure, and fingerprinting. Malformed JSON, missing fields, unsupported versions, unknown capability names, duplicate capability names, non-string entries, nonzero exit, empty stdout, and timeout are workflow-config load failures. `publish-commit-stack` is the same-repo `commit_stack` publication capability; drivers may continue to advertise `publish-change` only for older manual compatibility.
 
 ## 7. Lifecycle commands
 
@@ -387,7 +387,19 @@ On a valid request that cannot be completed, the driver SHOULD print a version 1
 
 Failure JSON MUST include `version`, `status`, `failure_code`, and `message`. When available, it SHOULD also include `stage`, `base_ref`, `base_revision`, `before_revision`, `after_revision`, and `conflict_files`. A driver MAY use a command-specific nonzero exit code for operator classification; the bundled jj driver exits `20` for `status: "conflicts"`.
 
-### 8.7 `publish-change`
+### 8.7 `publish-commit-stack`
+
+A VCS-backed driver that advertises `publish-commit-stack` MUST implement:
+
+```text
+<driver> publish-commit-stack --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--expected-head <sha>] [--allow-no-changes <true|false>] --json
+```
+
+Scherzo core invokes this command for same-repo `mode: commit_stack` publication. The selected retained workflow workspace is the publication boundary; workflows MUST NOT use workflow-local `publish-change`, direct `gh pr create`, or managed GitHub checkout paths as a fallback. `--expected-head` is used for existing-PR-branch targets and, when present, MUST be a 40-character Git object ID naming the remote branch head that publication is allowed to update. The remaining arguments, success JSON, failure JSON, path-safety rules, and `SCHERZO_PR_DRAFT` handling match legacy `publish-change` below.
+
+### 8.8 Legacy `publish-change`
+
+`publish-change` is retained in the capability vocabulary for older custom drivers and manual compatibility. New GitHub source-change workflows SHOULD require `publish-commit-stack`; Scherzo core commit-stack publication no longer falls back to `publish-change`.
 
 A VCS-backed driver that advertises `publish-change` MUST implement:
 

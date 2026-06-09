@@ -3062,125 +3062,6 @@ def add_publish_issue_identity_fields(
         publish["issue_identifier"] = metadata.get("issue_identifier") or ""
 
 
-def publish_command_legacy() -> None:
-    draft = pr_draft_setting()
-    require_command("jj")
-    ensure_validation_passed()
-    metadata = load_implementation_metadata()
-
-    base, base_remote = configured_publish_base()
-    publish_remote = configured_publication_remote()
-    refresh = refresh_base("publish")
-    write_refresh_base_result(refresh)
-    refresh_status = str(refresh.get("status") or "")
-    if refresh_status == "conflicts":
-        publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
-    if refresh_status == "rebase_failed":
-        publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
-    if refresh_status in {"fetch_failed", "base_not_found"}:
-        publish_blocked_after_refresh(refresh, failure_code="base_refresh_conflict")
-
-    base_revision = str(refresh.get("base_revision") or f"{base}@{base_remote}")
-    if refresh_status == "rebased_clean":
-        print("")
-        print("## Revalidation after publish-base normalization")
-        try:
-            validate_command(failure_code="publish_revalidation_failed")
-            ensure_validation_passed()
-        except SystemExit:
-            print("PUBLISH_BLOCKED=true")
-            print("PUBLISH_BLOCKED_REASON=base drift after final validation")
-            raise
-
-    source_kind, branch_prefix, slug, description, pr_title, body = publish_values(metadata)
-
-    files = changed_files_since(base_revision)
-    if not files:
-        fail("refusing to publish because no changed files were found")
-
-    change_id = current_change_id_short()
-    if not change_id:
-        fail("could not determine current jj change id")
-    branch = f"{branch_prefix}/{slug}-{change_id}"
-
-    repo = default_repo(publish_remote)
-    require_command("gh")
-    run(["jj", "describe", "-m", description])
-    ensure_no_empty_descriptions_to_push(publish_remote)
-    run(["jj", "bookmark", "set", branch, "--revision", "@"])
-    run(["jj", "git", "push", "--remote", publish_remote, "--bookmark", branch, "--allow-new"])
-
-    body, repair_summary_included = append_base_drift_repair_summary(body)
-    PR_BODY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PR_BODY_PATH.write_text(body)
-
-    pr_url = run(
-        ["gh", "pr", "view", branch, "--repo", repo, "--json", "url", "--jq", ".url"],
-        check=False,
-    ).strip()
-    if not pr_url:
-        create_args = [
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            repo,
-            "--base",
-            base,
-            "--head",
-            branch,
-            "--title",
-            pr_title,
-            "--body-file",
-            str(PR_BODY_PATH),
-        ]
-        if draft is True:
-            create_args.append("--draft")
-        pr_url = run(create_args).strip()
-    if not pr_url:
-        fail(f"failed to create or locate PR for branch {branch}")
-
-    clear_retention_marker()
-    publish = {
-        "source_kind": source_kind,
-        "branch": branch,
-        "pr_url": pr_url,
-        "changed_files": files,
-        "publish_base_revision": base_revision,
-        "base_drift_repair_summary_included": repair_summary_included,
-    }
-    if repair_summary_included:
-        publish["base_drift_repair_summary_path"] = str(BASE_DRIFT_REPAIR_SUMMARY_PATH)
-    if source_kind == "execplan":
-        publish["plan_path"] = metadata["plan_path"]
-    add_publish_issue_identity_fields(publish, metadata, source_kind)
-    write_json(PUBLISH_PATH, publish)
-
-    print("## Summary")
-    if source_kind == "execplan":
-        print(f"Implemented `{metadata['plan_path']}` and published the result for human acceptance.")
-    else:
-        issue_identifier = metadata.get("issue_identifier") or "task"
-        issue_title = metadata.get("issue_title") or "Untitled"
-        print(f"Implemented task `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
-    print("")
-    print("## Pull request")
-    print(f"PR_URL={pr_url}")
-    print(f"BRANCH={branch}")
-    print("")
-    print("## Validation")
-    validation = current_validation_result()
-    validation_commands = validation_commands_from_result(validation)
-    if validation.get("validator") == "selfci" and not validation_commands:
-        validation_commands = [" ".join(selfci_validation_command(base_revision))]
-    for command in validation_commands:
-        print(f"- `{command}`: passed")
-    print("")
-    print("## Changed files")
-    for file in files:
-        print(f"- `{file}`")
-
-
 def write_publish_metadata_files(pr_title: str, body: str) -> tuple[Path, Path, bool]:
     body, repair_summary_included = append_base_drift_repair_summary(body)
     title_path = TMP_DIR / "scherzo-implementation-pr-title.txt"
@@ -3352,8 +3233,7 @@ def materialize_commit_stack_artifact(
 
 def publish_command() -> None:
     if not workspace_driver_available():
-        publish_command_legacy()
-        return
+        workspace_driver_missing(failure_code="workspace_driver_unavailable")
 
     pr_draft_setting()
     require_command("jj")
@@ -3371,6 +3251,7 @@ def publish_command() -> None:
         publish_blocked_after_refresh(refresh, failure_code="base_refresh_conflict")
 
     base_revision = str(refresh.get("base_revision") or base)
+    repository = default_repo(configured_publication_remote())
     if refresh_status == "rebased_clean":
         print("")
         print("## Revalidation after publish-base normalization")
@@ -3391,7 +3272,6 @@ def publish_command() -> None:
         pr_title,
         body,
     )
-    repository = default_repo(configured_publication_remote())
     commit_stack = materialize_commit_stack_artifact(
         repository=repository,
         base_ref=base,

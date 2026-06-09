@@ -10,7 +10,6 @@ import scherzo/artifact_publication_planner
 import scherzo/artifact_repository/checkout_lock
 import scherzo/artifact_repository/command_runner
 import scherzo/artifact_repository/github
-import scherzo/artifact_repository/github_paths
 import scherzo/artifact_repository/types as repository_types
 import scherzo/commit_stack_artifact
 import scherzo/hash
@@ -712,181 +711,19 @@ pub fn publish_deletes_stale_owned_paths_from_previous_success_test() {
   assert string.contains(read_file(log), "docs/old.md")
 }
 
-pub fn publish_commit_stack_updates_existing_branch_without_new_pr_test() {
-  let root = "test/tmp/artifact-repository-github/commit-stack-existing"
-  let log = root <> "/commands.log"
-  test_helpers.reset_dir(root)
-  let input = commit_stack_input(root)
-
-  let manifest =
-    github.publish(input, root, commit_stack_success_runner(log), 123)
-
-  assert artifact_publication_manifest.status_to_string(manifest.status)
-    == "published"
-  assert manifest.branch == Some(existing_branch())
-  assert manifest.commit_sha == Some(commit_stack_head_sha())
-  assert manifest.pr_url == Some(existing_pr_url())
-  assert manifest.pr_number == Some(42)
-  let transcript = read_file(log)
-  assert string.contains(transcript, "git bundle verify")
-  assert string.contains(transcript, commit_stack_head_sha())
-  assert string.contains(
-    transcript,
-    "git push origin "
-      <> commit_stack_head_sha()
-      <> ":refs/heads/"
-      <> existing_branch(),
-  )
-  assert !string.contains(transcript, "gh pr create")
-  assert !string.contains(transcript, "gh pr edit")
-}
-
-pub fn publish_commit_stack_returns_publication_lock_failed_when_checkout_is_already_locked_test() {
-  let root = "test/tmp/artifact-repository-github/commit-stack-lock-held"
-  test_helpers.reset_dir(root)
-  let input = commit_stack_input(root)
-  let checkout_dir =
-    github_paths.checkout_dir(root, commit_stack_publication_manifest())
-  let assert Ok(Nil) = simplifile.create_directory_all(checkout_dir)
-  let assert Ok(lock) = checkout_lock.acquire(checkout_dir)
-
-  let manifest = github.publish(input, root, fail_if_called_runner(), 123)
-
-  let _ = checkout_lock.release(lock)
-  assert artifact_publication_manifest.status_to_string(manifest.status)
-    == "failed"
-  let assert Some(error) = manifest.error
-  assert error.code == "publication_lock_failed"
-  assert manifest.pr_url == Some(existing_pr_url())
-}
-
-pub fn publish_commit_stack_retry_recovers_from_retained_carrier_test() {
-  let root = "test/tmp/artifact-repository-github/commit-stack-retry"
-  let first_log = root <> "/first-commands.log"
-  let second_log = root <> "/second-commands.log"
-  test_helpers.reset_dir(root)
-  let input = commit_stack_input(root)
-
-  let first =
-    github.publish(
-      input,
-      root,
-      commit_stack_push_failure_runner(first_log),
-      123,
-    )
-
-  assert artifact_publication_manifest.status_to_string(first.status)
-    == "failed"
-  let assert Some(error) = first.error
-  assert error.code == "git_push_failed"
-
-  let second =
-    github.publish(input, root, commit_stack_success_runner(second_log), 456)
-
-  assert artifact_publication_manifest.status_to_string(second.status)
-    == "published"
-  assert second.commit_sha == Some(commit_stack_head_sha())
-  assert second.pr_url == Some(existing_pr_url())
-}
-
-pub fn publish_commit_stack_refuses_stale_existing_branch_test() {
-  let root = "test/tmp/artifact-repository-github/commit-stack-stale"
-  let log = root <> "/commands.log"
-  test_helpers.reset_dir(root)
-  let input = commit_stack_input(root)
-
-  let manifest =
-    github.publish(input, root, commit_stack_stale_runner(log), 123)
-
-  assert artifact_publication_manifest.status_to_string(manifest.status)
-    == "failed"
-  let assert Some(error) = manifest.error
-  assert error.code == "stale_existing_branch"
-  assert manifest.pr_url == Some(existing_pr_url())
-  assert manifest.pr_number == Some(42)
-  let transcript = read_file(log)
-  assert !string.contains(transcript, "git push origin")
-  assert !string.contains(transcript, "gh pr create")
-}
-
-pub fn publish_commit_stack_rechecks_existing_branch_after_prior_success_test() {
-  let root =
-    "test/tmp/artifact-repository-github/commit-stack-stale-after-success"
-  let log = root <> "/commands.log"
-  test_helpers.reset_dir(root)
-  seed_latest_commit_stack_publication(root)
-  let input = commit_stack_input(root)
-
-  let manifest =
-    github.publish(input, root, commit_stack_stale_runner(log), 456)
-
-  assert artifact_publication_manifest.status_to_string(manifest.status)
-    == "failed"
-  let assert Some(error) = manifest.error
-  assert error.code == "stale_existing_branch"
-  let transcript = read_file(log)
-  assert string.contains(transcript, "gh pr view 42")
-  assert string.contains(
-    transcript,
-    "git rev-parse origin/" <> existing_branch(),
-  )
-  assert !string.contains(transcript, "git push origin")
-}
-
-pub fn publish_commit_stack_refuses_unverified_pr_target_test() {
-  let root = "test/tmp/artifact-repository-github/commit-stack-pr-mismatch"
-  let log = root <> "/commands.log"
-  test_helpers.reset_dir(root)
-  let input = commit_stack_input(root)
-
-  let manifest =
-    github.publish(
-      input,
-      root,
-      commit_stack_pr_branch_mismatch_runner(log),
-      123,
-    )
-
-  assert artifact_publication_manifest.status_to_string(manifest.status)
-    == "failed"
-  let assert Some(error) = manifest.error
-  assert error.code == "existing_pr_branch_mismatch"
-  let transcript = read_file(log)
-  assert string.contains(transcript, "gh pr view 42")
-  assert !string.contains(transcript, "git push origin")
-  assert !string.contains(transcript, "gh pr create")
-}
-
-pub fn prepare_commit_stack_refuses_oversized_carrier_before_read_test() {
+pub fn prepare_commit_stack_rejects_managed_github_publication_path_test() {
   let store =
-    artifact_store.new("test/tmp/artifact-repository-github/oversized")
-  let manifest =
-    artifact_publication_planner.DryRunPublicationManifest(
-      ..commit_stack_publication_manifest(),
-      commit_stack: Some(planned_commit_stack_with_carrier_bytes(
-        commit_stack_artifact.max_bundle_bytes + 1,
-      )),
+    artifact_store.new(
+      "test/tmp/artifact-repository-github/commit-stack-removed",
     )
-
-  let assert Error(error) = github.prepare_publication_input(manifest, store)
-
-  assert github.code(error) == "commit_stack_carrier_too_large"
-}
-
-pub fn prepare_commit_stack_refuses_carrier_size_mismatch_before_hash_test() {
-  let root = "test/tmp/artifact-repository-github/carrier-size-mismatch"
-  test_helpers.reset_dir(root)
-  let store = artifact_store.new(root)
-  write_artifact(
-    root,
-    commit_stack_carrier_ref(),
-    commit_stack_carrier() <> " with unexpected bytes",
-  )
 
   let assert Error(error) =
     github.prepare_publication_input(commit_stack_publication_manifest(), store)
 
-  assert github.code(error) == "bytes_mismatch"
+  assert github.code(error)
+    == "commit_stack_publication_requires_workspace_driver"
+  assert string.contains(github.message(error), "workspace driver")
+  assert string.contains(github.message(error), "no longer import or push")
 }
 
 fn prepared_input(
@@ -962,16 +799,6 @@ fn materialization_failure_input(
     #("runs/run-1/outputs/first.md", "file"),
     #("runs/run-1/outputs/second.md", "child"),
   ])
-}
-
-fn commit_stack_input(
-  root: String,
-) -> repository_types.PublicationExecutionInput {
-  let store = artifact_store.new(root)
-  write_artifact(root, commit_stack_carrier_ref(), commit_stack_carrier())
-  let assert Ok(prepared) =
-    github.prepare_publication_input(commit_stack_publication_manifest(), store)
-  prepared
 }
 
 fn commit_stack_publication_manifest() -> artifact_publication_planner.DryRunPublicationManifest {
@@ -1303,108 +1130,6 @@ fn reuse_checkout_runner(log: String) -> command_runner.Runner {
       "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
       "gh", ["pr", "create", ..] ->
         Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
-      _, _ -> Error(command_runner.command_error("unexpected_command"))
-    }
-  })
-}
-
-fn commit_stack_success_runner(log: String) -> command_runner.Runner {
-  commit_stack_runner(log, expected_existing_head_sha())
-}
-
-fn commit_stack_stale_runner(log: String) -> command_runner.Runner {
-  commit_stack_runner(log, "9999999999999999999999999999999999999999")
-}
-
-fn commit_stack_pr_branch_mismatch_runner(
-  log: String,
-) -> command_runner.Runner {
-  commit_stack_runner_with_pr(
-    log,
-    expected_existing_head_sha(),
-    expected_existing_head_sha(),
-    "feature/other",
-    False,
-  )
-}
-
-fn commit_stack_push_failure_runner(log: String) -> command_runner.Runner {
-  runner(log, fn(executable, args, _, spec) {
-    case executable, args {
-      "git", ["push", ..] ->
-        Ok(command_runner.CommandOutput(2, "", "push failed"))
-      _, _ -> {
-        let command_runner.Runner(run: run_success) =
-          commit_stack_success_runner(log)
-        run_success(spec)
-      }
-    }
-  })
-}
-
-fn commit_stack_runner(
-  log: String,
-  remote_head: String,
-) -> command_runner.Runner {
-  commit_stack_runner_with_pr(
-    log,
-    remote_head,
-    expected_existing_head_sha(),
-    existing_branch(),
-    False,
-  )
-}
-
-fn commit_stack_runner_with_pr(
-  log: String,
-  remote_head: String,
-  pr_head: String,
-  pr_branch: String,
-  is_cross_repository: Bool,
-) -> command_runner.Runner {
-  runner(log, fn(executable, args, _, _) {
-    case executable, args {
-      "git", ["clone", _, target] -> {
-        let _ = simplifile.create_directory_all(target)
-        Ok(command_runner.CommandOutput(0, "", ""))
-      }
-      "git", ["remote", "get-url", "origin"] ->
-        Ok(command_runner.CommandOutput(
-          0,
-          "https://github.com/scherzo-systems/scherzo.git",
-          "",
-        ))
-      "git", ["fetch", "origin", _] ->
-        Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["bundle", "verify", _] ->
-        Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["fetch", _, head] ->
-        case head == commit_stack_head_sha() {
-          True -> Ok(command_runner.CommandOutput(0, "", ""))
-          False -> Error(command_runner.command_error("unexpected_command"))
-        }
-      "git", ["rev-parse", value] ->
-        case value == commit_stack_head_sha() <> "^{tree}" {
-          True ->
-            Ok(command_runner.CommandOutput(0, commit_stack_head_tree(), ""))
-          False ->
-            case value == "origin/" <> existing_branch() {
-              True -> Ok(command_runner.CommandOutput(0, remote_head, ""))
-              False -> Error(command_runner.command_error("unexpected_command"))
-            }
-        }
-      "git", ["merge-base", "--is-ancestor", _, _] ->
-        Ok(command_runner.CommandOutput(0, "", ""))
-      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
-      "gh", ["pr", "view", "42", ..] ->
-        Ok(command_runner.CommandOutput(
-          0,
-          existing_pr_view_json(pr_head, pr_branch, is_cross_repository),
-          "",
-        ))
       _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
@@ -2079,21 +1804,6 @@ fn seed_latest_publication_without_branch(root: String) -> Nil {
   )
 }
 
-fn seed_latest_commit_stack_publication(root: String) -> Nil {
-  let planned = commit_stack_publication_manifest()
-  let published =
-    artifact_publication_manifest.published_manifest(
-      planned,
-      planned.version_id,
-      100,
-      commit_stack_head_sha(),
-      Some(existing_pr_url()),
-      [],
-      [],
-    )
-  seed_publication_attempt(root, published, "latest-commit-stack", 100)
-}
-
 fn seed_latest_publication_with(
   root: String,
   version_id: String,
@@ -2351,26 +2061,6 @@ fn commit_stack_carrier() -> String {
 
 fn existing_pr_url() -> String {
   "https://example.test/pr/42"
-}
-
-fn existing_pr_view_json(
-  head_sha: String,
-  head_branch: String,
-  is_cross_repository: Bool,
-) -> String {
-  let cross_repository = case is_cross_repository {
-    True -> "true"
-    False -> "false"
-  }
-  "{\"number\":42,\"url\":\""
-  <> existing_pr_url()
-  <> "\",\"state\":\"OPEN\",\"headRefName\":\""
-  <> head_branch
-  <> "\",\"headRefOid\":\""
-  <> head_sha
-  <> "\",\"baseRefName\":\"main\",\"isCrossRepository\":"
-  <> cross_repository
-  <> "}"
 }
 
 fn body_template() -> String {

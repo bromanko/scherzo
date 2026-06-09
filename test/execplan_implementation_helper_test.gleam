@@ -1378,35 +1378,37 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_PR_REMOTE=legacy SCHERZO_PR_BASE=legacy SCHERZO_GITHUB_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_PR_REMOTE=legacy SCHERZO_PR_BASE=legacy SCHERZO_GITHUB_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "Publish base normalization")
+  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=rebased_clean")
   assert string.contains(
     artifact.stdout,
     "Revalidation after publish-base normalization",
   )
+  assert string.contains(artifact.stdout, "PUBLICATION_MODE=commit_stack")
   assert string.contains(
     artifact.stdout,
-    "PR_URL=https://github.com/example/repo/pull/123",
+    "PUBLICATION_ORCHESTRATOR=scherzo_core",
   )
   let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
   assert string.contains(jj_log, "git fetch --remote origin --branch main")
   assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
-  assert string.contains(jj_log, "diff --from main@origin --to @ --name-only")
-  assert string.contains(jj_log, "git push --remote fork")
-  assert !string.contains(jj_log, "git push --remote origin")
+  assert string.contains(jj_log, "diff --name-only --color=never")
+  assert !string.contains(jj_log, "git push")
   let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
   assert string.contains(
     direnv_log,
@@ -1476,37 +1478,34 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
       "{\"status\": \"passed\", \"commands\": []}\n",
     )
   write_fake_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_GITHUB_REPO=example/repo PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert string.contains(jj_log, "describe -m feat: implement liv-65")
+  assert !string.contains(jj_log, "describe -m")
+  assert !string.contains(jj_log, "bookmark set")
+  assert !string.contains(jj_log, "git push")
+  let assert Ok(title) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-pr-title.txt")
   assert string.contains(
-    jj_log,
-    "bookmark set scherzo/execplan-implementation/liv-65-implement-plan",
+    title,
+    "Implement LIV-65: workflow recovery operator UX and retention",
   )
-  assert !string.contains(jj_log, "scherzo/execplan-implementation/liv-58")
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(
-    gh_log,
-    "--head scherzo/execplan-implementation/liv-65-implement-plan",
-  )
-  assert string.contains(
-    gh_log,
-    "--title Implement LIV-65: workflow recovery operator UX and retention",
-  )
-  assert !string.contains(gh_log, "liv-58-workflow-recovery")
+  assert !string.contains(title, "liv-58-workflow-recovery")
+  assert read_or_empty(dir <> "/gh.log") == ""
   let assert Ok(body) =
     simplifile.read(dir <> "/tmp/scherzo-implementation-pr-body.md")
   assert string.contains(
@@ -1544,87 +1543,93 @@ pub fn publish_prefers_remote_repo_over_github_repository_test() {
   let dir = "test/tmp/implementation-helper-publish-github-repository"
   test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" GITHUB_REPOSITORY=ambient/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "env -u SCHERZO_GITHUB_REPO -u SCHERZO_PR_REPO SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj GITHUB_REPOSITORY=ambient/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "--repo example/repo")
-  assert !string.contains(gh_log, "--repo ambient/repo")
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+  assert string.contains(commit_stack, "\"repo\": \"example/repo\"")
+  assert !string.contains(commit_stack, "ambient/repo")
+  assert read_or_empty(dir <> "/gh.log") == ""
 }
 
 pub fn publish_uses_legacy_repo_alias_when_canonical_unset_test() {
   let dir = "test/tmp/implementation-helper-publish-legacy-repo"
   test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_FAKE_JJ_REMOTES='origin git@github-scherzo-agent:legacy/repo.git' SCHERZO_PR_REPO=legacy/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "env -u SCHERZO_GITHUB_REPO -u GITHUB_REPOSITORY SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_FAKE_JJ_REMOTES='origin git@github-scherzo-agent:legacy/repo.git' SCHERZO_PR_REPO=legacy/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "--repo legacy/repo")
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+  assert string.contains(commit_stack, "\"repo\": \"legacy/repo\"")
+  assert read_or_empty(dir <> "/gh.log") == ""
 }
 
 pub fn publish_uses_github_repository_when_remote_repo_unparseable_test() {
   let dir = "test/tmp/implementation-helper-publish-github-repository-fallback"
   test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_FAKE_JJ_REMOTES='origin ssh://git@git.example.invalid/scm/repo.git' GITHUB_REPOSITORY=github/env-repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "env -u SCHERZO_GITHUB_REPO -u SCHERZO_PR_REPO SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_FAKE_JJ_REMOTES='origin ssh://git@git.example.invalid/scm/repo.git' GITHUB_REPOSITORY=github/env-repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "--repo github/env-repo")
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+  assert string.contains(commit_stack, "\"repo\": \"github/env-repo\"")
+  assert read_or_empty(dir <> "/gh.log") == ""
 }
 
 pub fn publish_rejects_explicit_repo_mismatch_before_push_test() {
   let dir = "test/tmp/implementation-helper-publish-repo-mismatch"
   test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
-  write_fake_jj(dir <> "/bin/jj")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_GITHUB_REPO=wrong/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_GITHUB_REPO=wrong/repo SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1650,7 +1655,7 @@ pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_JJ_REBASE_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_JJ_REBASE_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1659,7 +1664,7 @@ pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
     artifact.stderr,
     "SCHERZO_FAILURE_CODE=publish_rebase_conflict",
   )
-  assert string.contains(artifact.stderr, "could not rebase")
+  assert string.contains(artifact.stderr, "simulated rebase conflict")
 }
 
 pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
@@ -1676,7 +1681,7 @@ pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1956,7 +1961,7 @@ pub fn publish_time_conflicts_do_not_publish_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1992,7 +1997,7 @@ pub fn publish_time_revalidation_failure_does_not_publish_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -2045,18 +2050,47 @@ fn run_driver_backed_publish_with_pr_draft(
   run_driver_backed_publish_with_env(dir, pr_draft_env_prefix(draft))
 }
 
-pub fn publish_time_revalidation_success_may_publish_test() {
+pub fn publish_time_revalidation_success_prepares_commit_stack_only_test() {
   let dir = "test/tmp/implementation-helper-publish-revalidation-success"
   test_helpers.reset_dir(dir)
   write_publish_fixture_metadata(dir)
   let assert Ok(Nil) =
     simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
   write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PUBLICATION_MODE=commit_stack")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert !string.contains(jj_log, "bookmark set")
+  assert !string.contains(jj_log, "git push")
+  assert read_or_empty(dir <> "/gh.log") == ""
+  let assert Ok(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+  let assert Ok(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+}
+
+pub fn publish_requires_workspace_driver_and_skips_legacy_pr_path_test() {
+  let dir = "test/tmp/implementation-helper-publish-requires-driver"
+  test_helpers.reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/gh")
 
   let artifact =
     run_helper_in(
@@ -2064,64 +2098,17 @@ pub fn publish_time_revalidation_success_may_publish_test() {
       "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert string.contains(jj_log, "bookmark set")
-  assert string.contains(jj_log, "git push --remote origin")
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "pr create")
-  assert !string.contains(gh_log, "--draft")
-  let assert Error(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
-}
-
-pub fn legacy_publish_pr_draft_true_adds_draft_flag_test() {
-  let dir = "test/tmp/implementation-helper-publish-draft-true"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_direnv(dir <> "/bin/direnv")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/direnv")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_PR_DRAFT=true SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
-  assert string.contains(gh_log, "pr create")
-  assert string.contains(gh_log, "--draft")
-}
-
-pub fn legacy_publish_invalid_pr_draft_fails_before_publication_test() {
-  let dir = "test/tmp/implementation-helper-publish-draft-invalid"
-  test_helpers.reset_dir(dir)
-  write_publish_fixture_metadata(dir)
-  write_fake_refresh_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/gh")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_PR_DRAFT=maybe SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
-    )
-
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
-  assert artifact.failure_code == Some("invalid_configuration")
+  assert artifact.failure_code == Some("workspace_driver_unavailable")
   assert string.contains(
     artifact.stderr,
-    "SCHERZO_PR_DRAFT must be true or false",
+    "SCHERZO_WORKSPACE_DRIVER is required",
   )
   assert read_or_empty(dir <> "/jj.log") == ""
   assert read_or_empty(dir <> "/gh.log") == ""
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
 }
 
 pub fn driver_backed_publish_pr_draft_true_prepares_core_publication_test() {
@@ -2250,16 +2237,18 @@ pub fn publish_includes_base_drift_repair_summary_test() {
       "# Base drift repair summary\n\nNo-op summary.\n",
     )
   write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_git(dir <> "/bin/git")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
   test_helpers.chmod_executable(dir <> "/bin/gh")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -2281,16 +2270,18 @@ pub fn publish_includes_base_drift_repair_summary_test() {
   test_helpers.reset_dir(dir_without)
   write_publish_fixture_metadata(dir_without)
   write_fake_refresh_jj(dir_without <> "/bin/jj")
+  write_fake_git(dir_without <> "/bin/git")
   write_fake_gh(dir_without <> "/bin/gh")
   write_fake_direnv(dir_without <> "/bin/direnv")
   test_helpers.chmod_executable(dir_without <> "/bin/jj")
+  test_helpers.chmod_executable(dir_without <> "/bin/git")
   test_helpers.chmod_executable(dir_without <> "/bin/gh")
   test_helpers.chmod_executable(dir_without <> "/bin/direnv")
 
   let artifact_without =
     run_helper_in(
       dir_without,
-      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_WORKSPACE_DRIVER=../../../scripts/scherzo-workspace-jj SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation publish",
     )
 
   assert artifact_without.status == step_artifact.StepSucceeded
@@ -3049,7 +3040,7 @@ fn write_fake_refresh_jj(path: String) -> Nil {
       path,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> jj.log\n"
-        <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then printf '%s\\n' 'origin https://github.com/example/repo.git' 'fork git@github-scherzo-agent:example/repo.git'; exit 0; fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then if [ -n \"${SCHERZO_FAKE_JJ_REMOTES+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_JJ_REMOTES\"; else printf '%s\\n' 'origin https://github.com/example/repo.git' 'fork git@github-scherzo-agent:example/repo.git'; fi; exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_REFRESH_FETCH_FAIL:-}\" = 1 ]; then echo 'fetch failed' >&2; exit 3; fi\n"
         <> "  exit 0\n"

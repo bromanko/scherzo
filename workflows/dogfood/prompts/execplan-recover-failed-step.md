@@ -5,12 +5,12 @@ You are running only because an ExecPlan workflow step failed and Scherzo is con
 Inspect relevant local evidence before changing files:
 - the failed step summary and command diagnostics;
 - `tmp/execplan-review-doc.path` and the referenced review document, if present;
-- `tmp/execplan-implementation-pack.json`, `tmp/scherzo-execplan-publish-context.json`, and other `tmp/execplan-*` files, if present;
+- `tmp/execplan-implementation-pack.json`, `tmp/execplan-bundle.json`, and other `tmp/execplan-*` files, if present;
 - retained structured-output validation messages for implementation-pack submissions, when the failure mentions structured output.
 
 Safe recovery examples:
 - restore a missing required ExecPlan review-doc section with concrete content;
-- fix a review-doc/implementation-pack mismatch before publish;
+- fix a review-doc/implementation-pack mismatch before materializing the bundle;
 - repair malformed or stale local ExecPlan helper inputs;
 - clean up incomplete local edits so the original validation/materialization command can pass.
 

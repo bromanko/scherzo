@@ -291,7 +291,7 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
   let workflow_expectations = [
     #(
       ".scherzo/workflows/implementation.yaml",
-      "  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+      "  requires: [status, diff, changed-files, baseline, refresh-base, publish-commit-stack]",
     ),
     #(
       ".scherzo/workflows/execplan.yaml",
@@ -303,7 +303,7 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
     ),
     #(
       ".scherzo/workflows/execplan-implementation.yaml",
-      "  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+      "  requires: [status, diff, changed-files, baseline, refresh-base, publish-commit-stack]",
     ),
     #(
       ".scherzo/workflows/merge-conflict-resolution.yaml",
@@ -379,21 +379,20 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
   })
 }
 
-pub fn execplan_workflows_publish_review_docs_from_execplan_bundle_test() {
+pub fn execplan_workflows_do_not_publish_review_docs_to_github_test() {
   let drafting = read_file(".scherzo/workflows/execplan.yaml")
   let revision = read_file(".scherzo/workflows/execplan-revision.yaml")
 
   list.each([drafting, revision], fn(workflow) {
-    assert_contains(workflow, "id: execplan_review_doc")
-    assert_contains(workflow, "repository: github.docs")
-    assert_contains(workflow, "entry: plan")
-    assert_contains(
+    assert_not_contains(workflow, "id: execplan_review_doc")
+    assert_not_contains(workflow, "repository: github.docs")
+    assert_not_contains(workflow, "body_template: prompts/execplan-pr-body.md")
+    assert_not_contains(workflow, "publish-review-doc")
+    assert_not_contains(workflow, "--publish-context")
+    assert_not_contains(
       workflow,
       "path: \"{{ artifact.metadata.publication.destination_path }}\"",
     )
-    assert_contains(workflow, "body_template: prompts/execplan-pr-body.md")
-    assert_not_contains(workflow, "publish_review_doc")
-    assert_not_contains(workflow, "--publish-context")
   })
 }
 

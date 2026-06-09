@@ -210,7 +210,7 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   assert resolver.workspace_profile == Some("isolated")
   assert list.contains(
     resolver.workspace_capabilities,
-    config_types.WorkspacePublishChange,
+    config_types.WorkspacePublishCommitStack,
   )
   let assert [prepare, resolve, validate, project_validation, publish] =
     resolver.steps

@@ -1756,6 +1756,7 @@ pub fn artifact_publication_retry_uses_retained_workspace_driver_for_commit_stac
   assert !string.contains(transcript, "\"recorded_at_ms\":0")
 
   let commands = drain_output(command_subject)
+  assert string.contains(commands, "gh pr view 42")
   assert string.contains(commands, "retained-driver publish-commit-stack")
   assert string.contains(
     commands,
@@ -3928,13 +3929,22 @@ fn retained_workspace_publish_runner(
 ) -> command_runner.Runner {
   command_runner.Runner(run: fn(spec) {
     process.send(subject, OutLine(command_runner.describe(spec)))
-    let command_runner.CommandSpec(args: args, ..) = spec
-    case args {
-      ["publish-commit-stack", ..] ->
+    let command_runner.CommandSpec(executable: executable, args: args, ..) =
+      spec
+    case executable, args {
+      "gh", ["pr", "view", "42", ..] ->
+        Ok(command_runner.CommandOutput(0, retained_existing_pr_view_json(), ""))
+      _, ["publish-commit-stack", ..] ->
         Ok(command_runner.CommandOutput(0, retained_driver_success_json(), ""))
-      _ -> Error(command_runner.command_error("unexpected_command"))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
+}
+
+fn retained_existing_pr_view_json() -> String {
+  "{\"number\":42,\"url\":\"https://example.test/pr/42\",\"state\":\"OPEN\",\"headRefName\":\"scherzo/implementation/LIV-917\",\"headRefOid\":\""
+  <> retry_commit_stack_base_sha()
+  <> "\",\"baseRefName\":\"main\",\"isCrossRepository\":false}"
 }
 
 fn retained_driver_success_json() -> String {

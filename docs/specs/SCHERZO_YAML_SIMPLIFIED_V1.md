@@ -355,8 +355,6 @@ artifacts:
       docs:
         repo: scherzo-systems/scherzo
         base: main
-        checkout:
-          strategy: managed_git
         branch:
           strategy: stable_per_work
           template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}
@@ -367,16 +365,17 @@ artifacts:
 ```
 
 `repo` is an `owner/repo` string. `base` is the target branch. Defaults are
-`checkout.strategy: managed_git`, `branch.strategy: stable_per_work`,
+`branch.strategy: stable_per_work`,
 `branch.template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}`,
 `pull_request.enabled: true`,
 `pull_request.strategy: update_existing`, and `pull_request.draft: false`.
 `pull_request.body_template`, when present, must be a repository-relative path.
 Publication templates support interpolation variables (`{{ ... }}`) only; control
 flow tags such as `{% if %}` are not accepted in this config surface.
-This schema slice only parses and validates configuration; runtime publication,
-GitHub mutation, durable publication state, retry commands, and migration away
-from `publish-change` are deferred.
+GitHub source-change publication is modeled as `mode: commit_stack` and is
+published through Scherzo core plus a `publish-commit-stack` capable workspace
+driver. Workflow-local `publish-change` commands and managed GitHub file routes
+are not the active dogfood publication model.
 
 ## Workflow YAML schema
 
@@ -391,7 +390,7 @@ concurrency: 4
 
 workspace:
   driver: jj
-  requires: [status, diff, changed-files, baseline, refresh-base, publish-change]
+  requires: [status, diff, changed-files, baseline, refresh-base, publish-commit-stack]
 
 
 steps:
@@ -454,31 +453,23 @@ Workflow artifact publication routes are configured under
 ```yaml
 artifacts:
   publications:
-    - id: execplan_review_doc
-      repository: github.docs
+    - id: implementation_commit_stack
+      repository: github.code
       required: true
-      pull_request:
-        title: "{{ work.identifier }} ExecPlan"
-        body_template: prompts/execplan-pr-body.md
-      files:
-        - select:
-            output: exec_plan_bundle
-            entry: plan
-          path: docs/plans/{{ work.identifier }}.md
+      mode: commit_stack
+      commit_stack:
+        select:
+          output: commit_stack
+      target:
+        kind: stable_branch
 ```
 
 `repository` references a root repository target as `<backend>.<name>`.
 Non-empty `artifacts.publications` requires a workflow `contract.outputs` block so
-selectors can be validated before dispatch. `required` defaults to `true`. Each
-file route must declare `select.output`, may optionally declare `select.entry` for
-aggregate-capable outputs such as
-`artifact[]`, `exec_plan_bundle`, and `code_change_bundle`, and must write to a
-repository-relative `path`. Branch names, PR titles, and destination paths may
-use the publication template variables from the artifact publication PRD,
-including `work.*`, `workflow.id`, `publication.*`, and artifact-scoped
-variables such as `artifact.output`, `artifact.entry`, and the supported
-publication metadata leaf `artifact.metadata.publication.destination_path` in
-file paths.
+selectors can be validated before dispatch. `required` defaults to `true`.
+GitHub source-change publication should use `mode: commit_stack` and select a
+`commit_stack` output. Commit-stack routes must not declare `files` selectors or
+`pull_request` overrides; PR metadata is produced by core publication.
 Templates support interpolation variables (`{{ ... }}`) only; control flow tags
 such as `{% if %}` are rejected. Unknown template variables, unsafe paths,
 unsupported selector keys, and unknown contract outputs are rejected during parsing
