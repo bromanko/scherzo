@@ -384,6 +384,72 @@ pub fn execute_routes_fails_commit_stack_on_driver_head_mismatch_test() {
   assert attempt.error_code == Some("workspace_driver_publish_head_mismatch")
 }
 
+pub fn execute_routes_commit_stack_retry_adopts_pr_after_head_mismatch_test() {
+  let root =
+    "test/tmp/artifact-publication-executor/commit-stack-idempotent-retry"
+  let state_root = root <> "/state"
+  let workspace = root <> "/workspace"
+  let log = root <> "/driver.log"
+  test_helpers.reset_dir(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  write_template(root)
+  write_stable_commit_stack_artifacts(state_root)
+  let runner = idempotent_partial_commit_stack_driver_runner(log, workspace)
+  let driver =
+    publication_driver(workspace, [
+      config_types.WorkspacePublishCommitStack,
+    ])
+
+  let assert Ok(first) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
+      [stable_commit_stack_route(True)],
+      repositories(),
+      root,
+      root,
+      state_root,
+      stable_commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      runner,
+      Some(driver),
+    )
+  let assert [first_failure] = first.required_failures
+  assert first_failure.code == "workspace_driver_publish_head_mismatch"
+  let assert [first_attempt] = first.attempts
+  assert first_attempt.status == "failed"
+
+  let assert Ok(second) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
+      [stable_commit_stack_route(True)],
+      repositories(),
+      root,
+      root,
+      state_root,
+      stable_commit_stack_output_manifest(),
+      issue(),
+      "run-2",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 456 }),
+      runner,
+      Some(driver),
+    )
+
+  assert second.required_failures == []
+  let assert [second_attempt] = second.attempts
+  assert second_attempt.status == "published"
+  let manifest =
+    read_publication_manifest(state_root, second_attempt.manifest_ref)
+  assert manifest.branch == Some(stable_commit_stack_branch())
+  assert manifest.pr_url == Some(existing_partial_pr_url())
+  let transcript = read_file(log)
+  assert count_lines_containing(transcript, "driver-action=create-pr") == 1
+  assert count_lines_containing(transcript, "driver-action=adopt-pr") == 1
+  assert string.contains(
+    transcript,
+    "--branch-prefix " <> stable_commit_stack_branch(),
+  )
+}
+
 pub fn execute_routes_redacts_sensitive_commit_stack_driver_failure_test() {
   let root = "test/tmp/artifact-publication-executor/commit-stack-redaction"
   let state_root = root <> "/state"
@@ -802,6 +868,102 @@ fn driver_runner(
   })
 }
 
+fn idempotent_partial_commit_stack_driver_runner(
+  log: String,
+  expected_workspace: String,
+) -> command_runner.Runner {
+  command_runner.Runner(run: fn(spec) {
+    let command_runner.CommandSpec(
+      executable: executable,
+      args: args,
+      cwd: cwd,
+      env: env,
+      timeout_ms: timeout_ms,
+      ..,
+    ) = spec
+    append_driver_log(
+      log,
+      executable
+        <> " "
+        <> string.join(args, with: " ")
+        <> "\nCWD="
+        <> cwd
+        <> "\nENV="
+        <> render_env(env)
+        <> "\nTIMEOUT="
+        <> render_timeout_ms(timeout_ms)
+        <> "\n",
+    )
+    case executable == "fake-driver", cwd == expected_workspace {
+      True, True -> idempotent_partial_driver_output(log, args)
+      _, _ -> Error(command_runner.command_error("unexpected_driver_command"))
+    }
+  })
+}
+
+fn idempotent_partial_driver_output(
+  log: String,
+  args: List(String),
+) -> Result(command_runner.CommandOutput, command_runner.CommandError) {
+  case stable_driver_args_have_required_shape(args) {
+    False -> Error(command_runner.command_error("bad_driver_args"))
+    True -> {
+      let state_path = log <> ".state"
+      case simplifile.is_file(state_path) {
+        Ok(True) -> {
+          append_driver_log(log, "driver-action=adopt-pr\n")
+          Ok(command_runner.CommandOutput(
+            0,
+            driver_stable_publication_json(
+              "updated",
+              commit_stack_head_sha(),
+              False,
+              True,
+            ),
+            "",
+          ))
+        }
+        _ -> {
+          let _ = simplifile.write(state_path, "created\n")
+          append_driver_log(log, "driver-action=create-pr\n")
+          Ok(command_runner.CommandOutput(
+            0,
+            driver_stable_publication_json(
+              "published",
+              driver_mismatched_head_revision(),
+              True,
+              False,
+            ),
+            "",
+          ))
+        }
+      }
+    }
+  }
+}
+
+fn stable_driver_args_have_required_shape(args: List(String)) -> Bool {
+  let joined = string.join(args, with: " ")
+  string.contains(joined, "publish-commit-stack --kind implementation")
+  && string.contains(joined, "--branch-prefix " <> stable_commit_stack_branch())
+  && string.contains(joined, "--base main")
+  && string.contains(joined, "--allow-no-changes true --json")
+  && !string.contains(joined, "--target-branch")
+}
+
+fn append_driver_log(log: String, text: String) -> Nil {
+  let _ = case path.dirname(log) {
+    Ok(dir) -> simplifile.create_directory_all(dir)
+    Error(Nil) -> Ok(Nil)
+  }
+  let existing = case simplifile.read(log) {
+    Ok(contents) -> contents
+    Error(_) -> ""
+  }
+  let _ = simplifile.write(log, existing <> text)
+  Nil
+}
+
 fn write_driver_log(
   log: String,
   executable: String,
@@ -947,6 +1109,27 @@ fn driver_success_json_with_head(head_revision: String) -> String {
   |> json.to_string
 }
 
+fn driver_stable_publication_json(
+  status: String,
+  head_revision: String,
+  created: Bool,
+  updated: Bool,
+) -> String {
+  json.object([
+    #("version", json.int(1)),
+    #("status", json.string(status)),
+    #("url", json.string(existing_partial_pr_url())),
+    #("branch", json.string(stable_commit_stack_branch())),
+    #("base_ref", json.string("main")),
+    #("base_revision", json.string(driver_base_revision())),
+    #("head_revision", json.string(head_revision)),
+    #("change_id", json.string(driver_change_id())),
+    #("created", json.bool(created)),
+    #("updated", json.bool(updated)),
+  ])
+  |> json.to_string
+}
+
 fn driver_unchanged_json() -> String {
   json.object([
     #("version", json.int(1)),
@@ -1017,6 +1200,13 @@ fn read_publication_manifest(
 fn read_file(path: String) -> String {
   let assert Ok(contents) = simplifile.read(path)
   contents
+}
+
+fn count_lines_containing(text: String, needle: String) -> Int {
+  text
+  |> string.split(on: "\n")
+  |> list.filter(fn(line) { string.contains(line, needle) })
+  |> list.length
 }
 
 fn arg_after(text: String, flag: String) -> String {
@@ -1139,6 +1329,27 @@ fn commit_stack_route(
   )
 }
 
+fn stable_commit_stack_route(
+  required: Bool,
+) -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    id: "implementation_commit_stack",
+    repository: "github.docs",
+    required: required,
+    pull_request: None,
+    mode: artifact_publication_config.CommitStackPublication,
+    files: [],
+    commit_stack: Some(
+      artifact_publication_config.PublicationCommitStackRoute(
+        selector: artifact_publication_config.PublicationCommitStackSelector(
+          output: "commit_stack",
+        ),
+      ),
+    ),
+    target: artifact_publication_config.StableBranchTarget,
+  )
+}
+
 fn output_manifest() -> workflow_contract_manifest.ContractOutputManifest {
   workflow_contract_manifest.ContractOutputManifest(
     run_id: "run-1",
@@ -1202,6 +1413,31 @@ fn commit_stack_output_manifest() -> workflow_contract_manifest.ContractOutputMa
   )
 }
 
+fn stable_commit_stack_output_manifest() -> workflow_contract_manifest.ContractOutputManifest {
+  let stack_contents = stable_commit_stack_manifest_contents()
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: "run-1",
+    workflow_id: "implementation",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "commit_stack",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.CommitStack,
+          workflow_contract_manifest.ArtifactWritten(
+            ref: commit_stack_ref(),
+            sha256: hash.sha256_hex(stack_contents),
+            bytes: bytes_of(stack_contents),
+          ),
+          commit_stack_artifact.commit_stack_media_type,
+          None,
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
 fn plan_ref() -> String {
   "runs/run-1/outputs/review_doc.md"
 }
@@ -1224,6 +1460,15 @@ fn write_commit_stack_artifacts(root: String) -> Nil {
   write_artifact(root, commit_stack_carrier_ref(), commit_stack_carrier())
 }
 
+fn write_stable_commit_stack_artifacts(root: String) -> Nil {
+  write_artifact(
+    root,
+    commit_stack_ref(),
+    stable_commit_stack_manifest_contents(),
+  )
+  write_artifact(root, commit_stack_carrier_ref(), commit_stack_carrier())
+}
+
 fn commit_stack_manifest_contents() -> String {
   json.object([
     #("schema_version", json.int(1)),
@@ -1240,6 +1485,44 @@ fn commit_stack_manifest_contents() -> String {
       json.object([
         #("ref", json.string(existing_branch())),
         #("sha", json.string(expected_existing_head_sha())),
+      ]),
+    ),
+    #(
+      "head",
+      json.object([
+        #("sha", json.string(commit_stack_head_sha())),
+        #("tree", json.string(commit_stack_head_tree())),
+      ]),
+    ),
+    #(
+      "carrier",
+      json.object([
+        #("ref", json.string(commit_stack_carrier_ref())),
+        #("sha256", json.string(hash.sha256_hex(commit_stack_carrier()))),
+        #("bytes", json.int(bytes_of(commit_stack_carrier()))),
+        #("media_type", json.string(commit_stack_artifact.bundle_media_type)),
+      ]),
+    ),
+  ])
+  |> json.to_string
+}
+
+fn stable_commit_stack_manifest_contents() -> String {
+  json.object([
+    #("schema_version", json.int(1)),
+    #(
+      "artifact_type",
+      json.string(commit_stack_artifact.commit_stack_artifact_type),
+    ),
+    #(
+      "repository",
+      json.object([#("repo", json.string("scherzo-systems/scherzo"))]),
+    ),
+    #(
+      "base",
+      json.object([
+        #("ref", json.string("main")),
+        #("sha", json.string(expected_base_sha())),
       ]),
     ),
     #(
@@ -1321,6 +1604,14 @@ fn existing_branch() -> String {
 
 fn existing_pr_url() -> String {
   "https://example.test/pr/42"
+}
+
+fn existing_partial_pr_url() -> String {
+  "https://example.test/pr/475"
+}
+
+fn stable_commit_stack_branch() -> String {
+  "scherzo/implementation/LIV-761/implementation_commit_stack"
 }
 
 fn driver_pr_url() -> String {

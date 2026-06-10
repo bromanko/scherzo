@@ -1441,30 +1441,102 @@ def publish_needs_repo(operation: str, values: dict[str, str]) -> bool:
     return True
 
 
+def uses_stable_commit_stack_branch(operation: str, values: dict[str, str]) -> bool:
+    return operation == "publish-commit-stack" and not bool(values.get("target-branch"))
+
+
+def publication_branch(
+    operation: str,
+    values: dict[str, str],
+    title_text: str,
+    change_id: str,
+) -> str:
+    if values.get("target-branch"):
+        return values["target-branch"]
+    if uses_stable_commit_stack_branch(operation, values):
+        return values["branch-prefix"]
+    return f"{values['branch-prefix'].rstrip('/')}/{sanitize_ref_part(title_text)[:60]}-{change_id}"
+
+
+def base_branch_name(driver_ref: str) -> str:
+    return driver_ref.split("@", 1)[0].strip()
+
+
+def reject_unsafe_stable_commit_stack_branch(branch: str, base: str) -> None:
+    stable_branch = branch.strip()
+    base_branch = base_branch_name(base)
+    if stable_branch.lower() == "head":
+        json_failure(
+            status="invalid_request",
+            failure_code="unsafe_publication_branch",
+            message="stable commit-stack publication branch must not be HEAD",
+            branch=branch,
+            base_ref=base,
+        )
+    if base_branch and stable_branch == base_branch:
+        json_failure(
+            status="invalid_request",
+            failure_code="unsafe_publication_branch",
+            message=f"stable commit-stack publication branch must not match base branch {base_branch}",
+            branch=branch,
+            base_ref=base,
+        )
+
+
+def stable_commit_stack_push_needs_reconcile(message: str) -> bool:
+    normalized = message.lower()
+    reconcile_markers = [
+        "non-fast-forward",
+        "not a fast-forward",
+        "fetch first",
+        "stale branch",
+        "stale bookmark",
+        "stale remote",
+        "remote has changed",
+        "diverg",
+        "conflict",
+        "would move backwards",
+        "move backward",
+        "moved backwards",
+        "bookmark already exists",
+        "remote bookmark",
+    ]
+    return any(marker in normalized for marker in reconcile_markers)
+
+
+def view_pull_request_url(root: Path, repo: str, selector: str) -> str:
+    proc = run_capture(
+        ["gh", "pr", "view", selector, "--repo", repo, "--json", "url", "--jq", ".url"],
+        root,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def publish_change(root: Path, args: list[str], *, operation: str = "publish-change") -> None:
     values = parse_publish_args(args)
     reject_legacy_publication_remote_without_canonical()
     draft = pr_draft_setting()
+    base = values["base"]
+    stable_commit_stack_branch = uses_stable_commit_stack_branch(operation, values)
+    if stable_commit_stack_branch:
+        reject_unsafe_stable_commit_stack_branch(values["branch-prefix"], base)
     title = read_required_file(values["title-file"], "title-file").strip().splitlines()
     title_text = title[0].strip() if title else "Scherzo change"
     _body = read_required_file(values["body-file"], "body-file")
     records = changed_file_records(root)
     allow_no_changes = values["allow-no-changes"] == "true"
-    base = values["base"]
     remote = selected_publication_remote()
     if values.get("target-branch") and values.get("expected-head"):
         validate_expected_target_head(root, remote, values["target-branch"], values["expected-head"])
     repo = default_repo(root, remote) if publish_needs_repo(operation, values) else ""
 
     if not records and allow_no_changes:
-        branch = values.get("target-branch") or ""
+        branch = values.get("target-branch") or (values["branch-prefix"] if stable_commit_stack_branch else "")
         url = ""
         if values.get("target-pr"):
-            proc = run_capture(
-                ["gh", "pr", "view", values["target-pr"], "--repo", repo, "--json", "url", "--jq", ".url"],
-                root,
-            )
-            url = proc.stdout.strip() if proc.returncode == 0 else ""
+            url = view_pull_request_url(root, repo, values["target-pr"])
+        elif stable_commit_stack_branch:
+            url = view_pull_request_url(root, repo, branch)
         json_dump({
             "version": 1,
             "status": "unchanged",
@@ -1482,7 +1554,7 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
         json_failure(status="nothing_to_publish", failure_code="nothing_to_publish", message="no changed files to publish")
 
     change_id = revision_value(root, "@", "change_id.short()", default="change")
-    branch = values.get("target-branch") or f"{values['branch-prefix'].rstrip('/')}/{sanitize_ref_part(title_text)[:60]}-{change_id}"
+    branch = publication_branch(operation, values, title_text, change_id)
     describe = run_jj_proc(root, ["describe", "-m", title_text])
     if describe.returncode != 0:
         json_failure(status="publication_failed", failure_code="describe_failed", message=(describe.stderr or describe.stdout or "jj describe failed").strip())
@@ -1500,6 +1572,11 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
                 message=(track.stderr or track.stdout or "jj bookmark track failed").strip(),
             )
         bookmark_args.append("--allow-backwards")
+    elif stable_commit_stack_branch:
+        # Stable commit-stack publications intentionally reuse the same local
+        # bookmark across retries. Allow local replacement here; the subsequent
+        # non-force git push remains the remote safety check.
+        bookmark_args.append("--allow-backwards")
     bookmark_args.extend([branch, "--revision", "@"])
     bookmark = run_jj_proc(root, bookmark_args)
     if bookmark.returncode != 0:
@@ -1509,20 +1586,31 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
         push_args.append("--allow-new")
     push = run_jj_proc(root, push_args)
     if push.returncode != 0:
-        json_failure(status="remote_rejected", failure_code="push_failed", message=(push.stderr or push.stdout or "jj git push failed").strip())
+        push_message = (push.stderr or push.stdout or "jj git push failed").strip()
+        if stable_commit_stack_branch and stable_commit_stack_push_needs_reconcile(push_message):
+            existing_url = view_pull_request_url(root, repo, branch)
+            if existing_url:
+                json_failure(
+                    status="reconcile_needed",
+                    failure_code="commit_stack_reconcile_needed",
+                    message=(
+                        f"existing hosted review {existing_url} for stable commit-stack "
+                        f"branch {branch} could not be safely updated; reconcile the "
+                        f"branch/PR before retrying: {push_message}"
+                    ),
+                    branch=branch,
+                    url=existing_url,
+                )
+        json_failure(status="remote_rejected", failure_code="push_failed", message=push_message)
 
     pr_url = ""
     created = False
     updated = bool(values.get("target-branch") or values.get("target-pr"))
     branch_only_commit_stack = operation == "publish-commit-stack" and bool(values.get("target-branch")) and not values.get("target-pr")
     if values.get("target-pr"):
-        view = run_capture(["gh", "pr", "view", values["target-pr"], "--repo", repo, "--json", "url", "--jq", ".url"], root)
-        if view.returncode == 0:
-            pr_url = view.stdout.strip()
+        pr_url = view_pull_request_url(root, repo, values["target-pr"])
     if not pr_url and not branch_only_commit_stack:
-        view = run_capture(["gh", "pr", "view", branch, "--repo", repo, "--json", "url", "--jq", ".url"], root)
-        if view.returncode == 0:
-            pr_url = view.stdout.strip()
+        pr_url = view_pull_request_url(root, repo, branch)
     if not pr_url and not values.get("target-pr") and not branch_only_commit_stack:
         gh_base = base.split("@", 1)[0]
         create_args = [
