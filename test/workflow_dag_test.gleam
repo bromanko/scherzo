@@ -104,11 +104,18 @@ pub fn rejects_commit_stack_publication_files_selector_test() {
     == "commit_stack_publication_files_unsupported"
 }
 
-pub fn rejects_commit_stack_publication_pull_request_override_test() {
-  assert error_code(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: Should not be used\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
+pub fn parses_commit_stack_publication_pull_request_override_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: Should be used\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
     )
-    == "commit_stack_pull_request_unsupported"
+
+  let assert [route] = dag.publication_routes
+  assert route.pull_request
+    == Some(artifact_publication_config.PublicationPullRequestOverride(
+      title: Some("Should be used"),
+      body_template: None,
+    ))
 }
 
 pub fn rejects_commit_stack_existing_pr_branch_non_code_change_target_test() {
@@ -116,6 +123,13 @@ pub fn rejects_commit_stack_existing_pr_branch_non_code_change_target_test() {
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: text\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
     )
     == "publication_target_output_type_mismatch"
+}
+
+pub fn rejects_sourced_commit_stack_target_without_publication_target_artifact_test() {
+  assert error_code(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    publication_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: sourced\n        source:\n          output: publication_target\n",
+    )
+    == "publication_target_output_artifact_type_mismatch"
 }
 
 pub fn rejects_commit_stack_publication_without_existing_target_test() {

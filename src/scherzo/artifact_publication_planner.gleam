@@ -499,15 +499,6 @@ fn select_commit_stack(
   }
 }
 
-fn select_target_artifact(
-  manifest: workflow_contract_manifest.ContractOutputManifest,
-  output: String,
-  store: artifact_store.Store,
-) -> Result(commit_stack_artifact.ExistingPrBranchTarget, PlannerError) {
-  planner_support.select_existing_pr_branch_target(manifest, output, store)
-  |> result.map_error(target_selection_error_to_planner_error)
-}
-
 fn select_artifact_descriptor(
   manifest: workflow_contract_manifest.ContractOutputManifest,
   output: String,
@@ -537,8 +528,28 @@ fn plan_target(
     artifact_publication_config.StableBranchTarget -> Ok(StableBranchTargetPlan)
     artifact_publication_config.ExistingPrBranchTarget(source) -> {
       let artifact_publication_config.PublicationTargetSource(output:) = source
-      use existing <- result.try(select_target_artifact(manifest, output, store))
+      use existing <- result.try(
+        planner_support.select_existing_pr_branch_target(
+          manifest,
+          output,
+          store,
+        )
+        |> result.map_error(target_selection_error_to_planner_error),
+      )
       Ok(ExistingPrBranchTargetPlan(existing))
+    }
+    artifact_publication_config.SourcedTarget(source) -> {
+      let artifact_publication_config.PublicationTargetSource(output:) = source
+      use selected <- result.try(
+        planner_support.select_publication_target(manifest, output, store)
+        |> result.map_error(target_selection_error_to_planner_error),
+      )
+      case selected {
+        commit_stack_artifact.PublicationTargetStableBranch ->
+          Ok(StableBranchTargetPlan)
+        commit_stack_artifact.PublicationTargetExistingPrBranch(existing) ->
+          Ok(ExistingPrBranchTargetPlan(existing))
+      }
     }
   }
 }

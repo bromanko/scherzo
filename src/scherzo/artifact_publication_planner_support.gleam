@@ -248,6 +248,30 @@ pub fn select_existing_pr_branch_target(
   }
 }
 
+pub fn select_publication_target(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  output: String,
+  store: artifact_store.Store,
+) -> Result(
+  commit_stack_artifact.PublicationTargetArtifact,
+  TargetSelectionError,
+) {
+  use named <- result.try(find_named_output(manifest.outputs, output))
+  case named.value.status {
+    workflow_contract_manifest.Absent ->
+      target_error("absent_output", "publication output is absent: " <> output)
+    workflow_contract_manifest.Present -> {
+      use contents <- result.try(read_retained_output_text(
+        output,
+        named.value,
+        store,
+      ))
+      commit_stack_artifact.parse_publication_target(contents)
+      |> result.map_error(commit_stack_parse_error_to_target_error)
+    }
+  }
+}
+
 fn find_named_output(
   outputs: List(workflow_contract_manifest.NamedManifestValue),
   name: String,
