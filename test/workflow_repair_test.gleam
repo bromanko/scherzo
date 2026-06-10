@@ -169,7 +169,7 @@ pub fn retry_step_interrupted_run_carries_step_recovery_evidence_test() {
     )
 
   assert plan.candidate.recovery_evidence
-    == workflow_outcome.StepRecoveryRetryRequested
+    == workflow_outcome.StepRecoveryRecheckRequested
 }
 
 pub fn retry_step_accepts_legacy_stateful_issue_fingerprint_when_equivalent_test() {
@@ -1225,7 +1225,7 @@ fn interrupted_run_records_with_step_recovery() -> List(record.LedgerRecord) {
       "run-1",
       "validate_before_native_review",
       26,
-      "retry_requested",
+      "recheck",
       Some(2),
     ),
   ])

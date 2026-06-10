@@ -561,8 +561,8 @@ fn recovery_evidence_from_status(
   status: projection.StepRecoveryStatus,
 ) -> workflow_outcome.RecoveryEvidence {
   case status {
-    projection.StepRecoveryFinishedStatus(result: "retry_requested", ..) ->
-      workflow_outcome.StepRecoveryRetryRequested
+    projection.StepRecoveryFinishedStatus(result: "recheck", ..) ->
+      workflow_outcome.StepRecoveryRecheckRequested
     projection.StepRecoveryStartedStatus(..)
     | projection.StepRecoveryFinishedStatus(..) ->
       workflow_outcome.StepRecoveryRan
@@ -574,9 +574,9 @@ fn combine_recovery_evidence(
   right: workflow_outcome.RecoveryEvidence,
 ) -> workflow_outcome.RecoveryEvidence {
   case left, right {
-    workflow_outcome.StepRecoveryRetryRequested, _
-    | _, workflow_outcome.StepRecoveryRetryRequested
-    -> workflow_outcome.StepRecoveryRetryRequested
+    workflow_outcome.StepRecoveryRecheckRequested, _
+    | _, workflow_outcome.StepRecoveryRecheckRequested
+    -> workflow_outcome.StepRecoveryRecheckRequested
     workflow_outcome.StepRecoveryRan, _ | _, workflow_outcome.StepRecoveryRan ->
       workflow_outcome.StepRecoveryRan
     _, _ -> workflow_outcome.NoStepRecovery

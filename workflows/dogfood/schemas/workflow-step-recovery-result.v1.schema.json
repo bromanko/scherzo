@@ -8,7 +8,7 @@
     "artifact_type": { "const": "workflow_step_recovery_result" },
     "decision": {
       "type": "string",
-      "enum": ["retry_requested", "gave_up"]
+      "enum": ["recheck", "gave_up"]
     },
     "summary": { "type": "string" },
     "reason": { "type": "string" }

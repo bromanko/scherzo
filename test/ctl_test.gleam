@@ -2248,9 +2248,9 @@ pub fn session_human_output_appends_workflow_recovery_history_test() {
   let transcript = drain_output(subject)
   assert string.contains(transcript, "display_name: session-1")
   assert string.contains(transcript, "workflow_step_recovery_history:")
-  assert string.contains(transcript, "decision: retry_requested")
-  assert string.contains(transcript, "retry_attempt_index: 2")
-  assert string.contains(transcript, "retry_result: succeeded")
+  assert string.contains(transcript, "decision: recheck")
+  assert string.contains(transcript, "recheck_attempt_index: 2")
+  assert string.contains(transcript, "recheck_result: succeeded")
   assert string.contains(
     transcript,
     "final_workflow_outcome: succeeded_after_recovery",
@@ -3738,9 +3738,9 @@ fn write_workflow_recovery_history(root: String) -> Nil {
             failed_attempt_index: 1,
             recovery_attempt_number: 1,
             recovery_session_id: "recover-1",
-            result: "retry_requested",
+            result: "recheck",
             summary: "Fixed tests",
-            reason: "Ready for retry",
+            reason: "Ready for recheck",
             retry_attempt_index: Some(2),
           ),
         ),

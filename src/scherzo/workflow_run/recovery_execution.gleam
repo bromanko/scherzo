@@ -70,7 +70,7 @@ pub fn dependencies(
 }
 
 pub type AttemptOutcome {
-  RecoveryRetryRequested(
+  RecoveryRecheckRequested(
     tokens: session_tokens.TokenTotals,
     final_issue: Option(tracker_issue.Issue),
     turns: Int,
@@ -88,10 +88,10 @@ pub fn combine_evidence(
   next: workflow_outcome.RecoveryEvidence,
 ) -> workflow_outcome.RecoveryEvidence {
   case current, next {
-    workflow_outcome.StepRecoveryRetryRequested, _ ->
-      workflow_outcome.StepRecoveryRetryRequested
-    _, workflow_outcome.StepRecoveryRetryRequested ->
-      workflow_outcome.StepRecoveryRetryRequested
+    workflow_outcome.StepRecoveryRecheckRequested, _ ->
+      workflow_outcome.StepRecoveryRecheckRequested
+    _, workflow_outcome.StepRecoveryRecheckRequested ->
+      workflow_outcome.StepRecoveryRecheckRequested
     workflow_outcome.StepRecoveryRan, _ -> workflow_outcome.StepRecoveryRan
     _, workflow_outcome.StepRecoveryRan -> workflow_outcome.StepRecoveryRan
     _, _ -> workflow_outcome.NoStepRecovery
@@ -188,13 +188,21 @@ pub fn execute(
           )
         }
         Ok(snapshot) ->
-          case dependencies.make_context() {
-            Error(spec_error) -> {
-              let failure_reason =
-                workflow_step_recovery.tool_spec_unavailable_reason(
-                  spec_error,
-                  secrets,
-                )
+          case
+            workflow_step_recovery.record_recovery_input(
+              dependencies.checkpoint,
+              workspace,
+              step.id,
+              recovery_attempt_number,
+              failed_artifact,
+              secrets,
+            )
+          {
+            Error(write_error) -> {
+              let reason =
+                "recovery_input_artifact_write_failed:"
+                <> workflow_checkpoint.describe_error(write_error)
+                |> workflow_step_recovery.detail(secrets)
               ignore_secondary_checkpoint_result(
                 workflow_step_recovery.record_finished(
                   dependencies.checkpoint,
@@ -202,9 +210,9 @@ pub fn execute(
                   step.id,
                   recovery_attempt_number,
                   recovery_session_id,
-                  "tool_spec_unavailable",
-                  "Recovery tool spec unavailable",
-                  failure_reason,
+                  "recovery_input_artifact_write_failed",
+                  "Recovery input artifact write failed",
+                  reason,
                   None,
                 ),
               )
@@ -215,120 +223,144 @@ pub fn execute(
                 workflow_outcome.StepRecoveryRan,
               )
             }
-            Ok(context) -> {
-              let prompt =
-                workflow_step_recovery.prompt(
-                  prompt_ref,
-                  step.id,
-                  workspace.attempt_index,
-                  failed_artifact,
-                )
-              let prompt_mode = workflow_attempt.StepRecoveryPrompt(prompt)
-              let effective =
-                effective_for_recovery(orchestrator, step, config.model)
-              let attempt_context =
-                dependencies.make_attempt_context(context, prompt_mode)
-              case
-                dependencies.agent_step(
-                  issue,
-                  context,
-                  prompt_mode,
-                  attempt_context,
-                  effective,
-                  tracker_client,
-                  fn(_) { Nil },
-                  fn(_) { Nil },
-                  fn(observation) {
-                    ignore_secondary_checkpoint_result(
-                      dependencies.checkpoint.step_pi_session_recorded(
-                        observation,
-                      ),
+            Ok(recovery_input) ->
+              case dependencies.make_context() {
+                Error(spec_error) -> {
+                  let failure_reason =
+                    workflow_step_recovery.tool_spec_unavailable_reason(
+                      spec_error,
+                      secrets,
                     )
-                  },
-                )
-              {
-                Ok(success) ->
+                  ignore_secondary_checkpoint_result(
+                    workflow_step_recovery.record_finished(
+                      dependencies.checkpoint,
+                      workspace,
+                      step.id,
+                      recovery_attempt_number,
+                      recovery_session_id,
+                      "tool_spec_unavailable",
+                      "Recovery tool spec unavailable",
+                      failure_reason,
+                      None,
+                    ),
+                  )
+                  RecoveryStop(
+                    session_tokens.zero_token_totals(),
+                    None,
+                    0,
+                    workflow_outcome.StepRecoveryRan,
+                  )
+                }
+                Ok(context) -> {
+                  let prompt =
+                    workflow_step_recovery.prompt(prompt_ref, recovery_input)
+                  let prompt_mode = workflow_attempt.StepRecoveryPrompt(prompt)
+                  let effective =
+                    effective_for_recovery(orchestrator, step, config.model)
+                  let attempt_context =
+                    dependencies.make_attempt_context(context, prompt_mode)
                   case
-                    workflow_recovery_checkpoint_guard.restore_after_recovery(
-                      checkpoint_root,
-                      snapshot,
-                    )
-                  {
-                    Ok(events) ->
-                      apply_success(
-                        step,
-                        workspace,
-                        recovery_attempt_number,
-                        recovery_session_id,
-                        success,
-                        secrets,
-                        dependencies.checkpoint,
-                        guard_reason_suffix(events),
-                      )
-                    Error(guard_error) ->
-                      stop_after_guard_failure(
-                        step,
-                        workspace,
-                        recovery_attempt_number,
-                        recovery_session_id,
-                        success.tokens,
-                        success.final_issue,
-                        success.turns,
-                        guard_error,
-                        secrets,
-                        dependencies.checkpoint,
-                      )
-                  }
-                Error(failure) ->
-                  case
-                    workflow_recovery_checkpoint_guard.restore_after_recovery(
-                      checkpoint_root,
-                      snapshot,
-                    )
-                  {
-                    Ok(events) -> {
-                      let failure_reason =
-                        append_reason_suffix(
-                          error.agent_artifact_detail(failure.reason)
-                            |> workflow_step_recovery.detail(secrets),
-                          guard_reason_suffix(events),
+                    dependencies.agent_step(
+                      issue,
+                      context,
+                      prompt_mode,
+                      attempt_context,
+                      effective,
+                      tracker_client,
+                      fn(_) { Nil },
+                      fn(_) { Nil },
+                      fn(observation) {
+                        ignore_secondary_checkpoint_result(
+                          dependencies.checkpoint.step_pi_session_recorded(
+                            observation,
+                          ),
                         )
-                      ignore_secondary_checkpoint_result(
-                        workflow_step_recovery.record_finished(
-                          dependencies.checkpoint,
-                          workspace,
-                          step.id,
-                          recovery_attempt_number,
-                          recovery_session_id,
-                          "worker_failed",
-                          "Recovery worker failed",
-                          failure_reason,
-                          None,
-                        ),
-                      )
-                      RecoveryStop(
-                        failure.tokens,
-                        failure.final_issue,
-                        0,
-                        workflow_outcome.StepRecoveryRan,
-                      )
-                    }
-                    Error(guard_error) ->
-                      stop_after_guard_failure(
-                        step,
-                        workspace,
-                        recovery_attempt_number,
-                        recovery_session_id,
-                        failure.tokens,
-                        failure.final_issue,
-                        0,
-                        guard_error,
-                        secrets,
-                        dependencies.checkpoint,
-                      )
+                      },
+                    )
+                  {
+                    Ok(success) ->
+                      case
+                        workflow_recovery_checkpoint_guard.restore_after_recovery(
+                          checkpoint_root,
+                          snapshot,
+                        )
+                      {
+                        Ok(events) ->
+                          apply_success(
+                            step,
+                            workspace,
+                            recovery_attempt_number,
+                            recovery_session_id,
+                            success,
+                            secrets,
+                            dependencies.checkpoint,
+                            guard_reason_suffix(events),
+                          )
+                        Error(guard_error) ->
+                          stop_after_guard_failure(
+                            step,
+                            workspace,
+                            recovery_attempt_number,
+                            recovery_session_id,
+                            success.tokens,
+                            success.final_issue,
+                            success.turns,
+                            guard_error,
+                            secrets,
+                            dependencies.checkpoint,
+                          )
+                      }
+                    Error(failure) ->
+                      case
+                        workflow_recovery_checkpoint_guard.restore_after_recovery(
+                          checkpoint_root,
+                          snapshot,
+                        )
+                      {
+                        Ok(events) -> {
+                          let failure_reason =
+                            append_reason_suffix(
+                              error.agent_artifact_detail(failure.reason)
+                                |> workflow_step_recovery.detail(secrets),
+                              guard_reason_suffix(events),
+                            )
+                          ignore_secondary_checkpoint_result(
+                            workflow_step_recovery.record_finished(
+                              dependencies.checkpoint,
+                              workspace,
+                              step.id,
+                              recovery_attempt_number,
+                              recovery_session_id,
+                              "worker_failed",
+                              "Recovery worker failed",
+                              failure_reason,
+                              None,
+                            ),
+                          )
+                          RecoveryStop(
+                            failure.tokens,
+                            failure.final_issue,
+                            0,
+                            workflow_outcome.StepRecoveryRan,
+                          )
+                        }
+                        Error(guard_error) ->
+                          stop_after_guard_failure(
+                            step,
+                            workspace,
+                            recovery_attempt_number,
+                            recovery_session_id,
+                            failure.tokens,
+                            failure.final_issue,
+                            0,
+                            guard_error,
+                            secrets,
+                            dependencies.checkpoint,
+                          )
+                      }
                   }
+                }
               }
-            }
           }
       }
     }
@@ -346,7 +378,7 @@ fn apply_success(
   reason_suffix: String,
 ) -> AttemptOutcome {
   case workflow_step_recovery.decision(success) {
-    Ok(workflow_step_recovery.RetryRequested(summary, reason)) ->
+    Ok(workflow_step_recovery.Recheck(summary, reason)) ->
       case
         workflow_step_recovery.record_decision(
           checkpoint,
@@ -354,7 +386,7 @@ fn apply_success(
           workspace,
           recovery_attempt_number,
           recovery_session_id,
-          "retry_requested",
+          "recheck",
           summary,
           append_reason_suffix(reason, reason_suffix),
           Some(workspace.attempt_index + 1),
@@ -362,7 +394,7 @@ fn apply_success(
         )
       {
         Ok(Nil) ->
-          RecoveryRetryRequested(
+          RecoveryRecheckRequested(
             success.tokens,
             success.final_issue,
             success.turns,

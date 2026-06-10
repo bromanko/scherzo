@@ -1,5 +1,4 @@
 import gleam/dynamic/decode
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -7,6 +6,7 @@ import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/log
+import scherzo/path as scherzo_path
 import scherzo/result_artifact
 import scherzo/step_artifact
 import scherzo/structured_output_source
@@ -27,8 +27,12 @@ pub const provider_schema_path = ".scherzo/workflows/schemas/provider/workflow-s
 
 pub const canonical_schema_path = ".scherzo/workflows/schemas/workflow-step-recovery-result.v1.schema.json"
 
+pub const recovery_input_artifact_name = "workflow_step_recovery_input"
+
+pub const recovery_input_schema_version = "scherzo.workflow_recovery_input.v1"
+
 pub type Decision {
-  RetryRequested(summary: String, reason: String)
+  Recheck(summary: String, reason: String)
   GaveUp(summary: String, reason: String)
 }
 
@@ -61,40 +65,26 @@ pub fn error_message(error: ProtocolError) -> String {
   message
 }
 
+pub type RecoveryInputArtifact {
+  RecoveryInputArtifact(ref: String, payload_json: String)
+}
+
 pub fn prompt(
   configured_prompt: String,
-  step_id: String,
-  attempt_index: Int,
-  failed_artifact: step_artifact.StepArtifact,
+  recovery_input: RecoveryInputArtifact,
 ) -> String {
   configured_prompt
-  <> "\n\nFailure context:\n"
-  <> "- step_id: "
-  <> step_id
-  <> "\n- failed_attempt_index: "
-  <> int.to_string(attempt_index)
-  <> "\n- status: "
-  <> step_artifact.status_to_string(failed_artifact.status)
-  <> "\n- failure_code: "
-  <> option_text(failed_artifact.failure_code, "none")
-  <> "\n- summary: "
-  <> failed_artifact.summary_text
-  <> stderr_block(failed_artifact.stderr)
-}
-
-fn stderr_block(stderr: String) -> String {
-  let trimmed = string.trim(stderr)
-  case trimmed == "" {
-    True -> ""
-    False -> "\n- stderr:\n" <> trimmed
-  }
-}
-
-fn option_text(value: Option(String), default: String) -> String {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
+  <> "\n\nRepair-and-recheck contract:\n"
+  <> "- You are not retrying the failed step. You are repairing the cause of the failure.\n"
+  <> "- Use the structured failure context, diagnostics, and current workspace state.\n"
+  <> "- Make the smallest safe local change needed to fix the failure.\n"
+  <> "- Return recheck only when the original failed step should pass if rerun unchanged.\n"
+  <> "- Return gave_up if the failure requires credentials, external service recovery, product decisions, unsafe side effects, broad redesign, missing context, or unclear scope.\n"
+  <> "\nStructured recovery input artifact: "
+  <> recovery_input.ref
+  <> "\n\nStructured recovery input JSON:\n```json\n"
+  <> recovery_input.payload_json
+  <> "\n```"
 }
 
 pub fn tool_spec(
@@ -170,6 +160,225 @@ pub fn tool_spec_unavailable_reason(
     "recovery_tool_spec_unavailable:" <> error.code <> ":" <> error.message,
     redaction_secrets,
   )
+}
+
+pub fn record_recovery_input(
+  checkpoint: workflow_checkpoint.Writer,
+  workspace: workspace_run.PreparedStepWorkspace,
+  step_id: String,
+  recovery_attempt_number: Int,
+  failed_artifact: step_artifact.StepArtifact,
+  redaction_secrets: List(String),
+) -> Result(RecoveryInputArtifact, workflow_checkpoint.CheckpointError) {
+  let payload =
+    recovery_input_json(
+      workspace.workflow_id,
+      workspace.run_id,
+      step_id,
+      workspace.attempt_index,
+      failed_artifact,
+      redaction_secrets,
+    )
+  let write =
+    workflow_checkpoint.RecoveryArtifactWrite(
+      run_id: workspace.run_id,
+      workflow_id: workspace.workflow_id,
+      step_id: step_id,
+      failed_attempt_index: workspace.attempt_index,
+      recovery_attempt_number: recovery_attempt_number,
+      artifact_name: recovery_input_artifact_name,
+      payload_json: payload,
+    )
+  checkpoint.write_recovery_artifact(write)
+  |> result.map(fn(written) {
+    RecoveryInputArtifact(ref: written.ref, payload_json: payload)
+  })
+}
+
+pub fn recovery_input_json(
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  failed_artifact: step_artifact.StepArtifact,
+  redaction_secrets: List(String),
+) -> String {
+  let fields = [
+    #("schema_version", json.string(recovery_input_schema_version)),
+    #("workflow_id", json.string(workflow_id)),
+    #("run_id", json.string(run_id)),
+    #("step_id", json.string(step_id)),
+    #("attempt_index", json.int(attempt_index)),
+    #(
+      "failure_summary",
+      json.string(log.redact(
+        "workflow_step_recovery",
+        failure_summary(failed_artifact),
+        redaction_secrets,
+      )),
+    ),
+    #(
+      "diagnostic_refs",
+      json.array(diagnostic_refs(failed_artifact), of: json.string),
+    ),
+    #(
+      "structured_output_refs",
+      json.array(
+        structured_output_refs(failed_artifact),
+        of: structured_output_ref_to_json,
+      ),
+    ),
+    #("recovery_policy", recovery_policy_json()),
+  ]
+  let fields =
+    list.append(fields, reason_code_fields(failed_artifact, redaction_secrets))
+  fields
+  |> json.object
+  |> json.to_string
+}
+
+fn failure_summary(failed_artifact: step_artifact.StepArtifact) -> String {
+  case string.trim(failed_artifact.summary_text) == "" {
+    True ->
+      "Workflow step failed. Inspect the retained step artifact and diagnostics."
+    False -> failed_artifact.summary_text
+  }
+}
+
+fn diagnostic_refs(
+  failed_artifact: step_artifact.StepArtifact,
+) -> List(String) {
+  case failed_artifact.diagnostic_path {
+    Some(path) -> [diagnostic_ref(path)]
+    None -> []
+  }
+}
+
+fn diagnostic_ref(value: String) -> String {
+  case scherzo_path.is_absolute(value) {
+    False -> value
+    True ->
+      case repo_relative_path(value) {
+        Some(relative) -> relative
+        None ->
+          case scherzo_workspace_relative_path(value) {
+            Some(relative) -> relative
+            None -> "<absolute path hidden>"
+          }
+      }
+  }
+}
+
+fn repo_relative_path(value: String) -> Option(String) {
+  case scherzo_path.env("SCHERZO_REPO_ROOT") {
+    Some(root) ->
+      case relative_to_root(value, root) {
+        Some(relative) -> Some(relative)
+        None -> cwd_relative_path(value)
+      }
+    None -> cwd_relative_path(value)
+  }
+}
+
+fn cwd_relative_path(value: String) -> Option(String) {
+  case scherzo_path.absolute(".") {
+    Ok(root) -> relative_to_root(value, root)
+    Error(Nil) -> None
+  }
+}
+
+fn relative_to_root(value: String, root: String) -> Option(String) {
+  let root_abs = scherzo_path.absolute_or_original(root) |> trim_trailing_slash
+  case scherzo_path.contains(root_abs, value) {
+    True ->
+      case value == root_abs {
+        True -> Some(".")
+        False -> Some(string.drop_start(value, string.length(root_abs) + 1))
+      }
+    False -> None
+  }
+}
+
+fn scherzo_workspace_relative_path(value: String) -> Option(String) {
+  case string.split_once(value, on: "/.scherzo/workspaces/") {
+    Ok(#(_, rest)) -> Some(".scherzo/workspaces/" <> rest)
+    Error(Nil) -> None
+  }
+}
+
+fn trim_trailing_slash(value: String) -> String {
+  case value != "/" && string.ends_with(value, "/") {
+    True -> string.drop_end(value, 1)
+    False -> value
+  }
+}
+
+fn structured_output_refs(
+  failed_artifact: step_artifact.StepArtifact,
+) -> List(#(String, String)) {
+  case failed_artifact.structured_output {
+    Some(step_artifact.StructuredOutputValid(metadata)) -> [
+      #(metadata.artifact_name, metadata.ref),
+    ]
+    _ -> []
+  }
+}
+
+fn structured_output_ref_to_json(ref: #(String, String)) -> json.Json {
+  let #(artifact_name, artifact_ref) = ref
+  json.object([
+    #("artifact_name", json.string(artifact_name)),
+    #("ref", json.string(artifact_ref)),
+  ])
+}
+
+fn recovery_policy_json() -> json.Json {
+  json.object([
+    #(
+      "allowed_actions",
+      json.array(
+        ["inspect_workspace", "edit_workspace", "run_local_validation"],
+        of: json.string,
+      ),
+    ),
+    #(
+      "forbidden_actions",
+      json.array(
+        [
+          "publish",
+          "push",
+          "create_pr",
+          "change_linear_issue",
+          "manage_workspaces_or_branches",
+          "change_recovery_policy_to_hide_failure",
+        ],
+        of: json.string,
+      ),
+    ),
+  ])
+}
+
+fn reason_code_fields(
+  failed_artifact: step_artifact.StepArtifact,
+  redaction_secrets: List(String),
+) -> List(#(String, json.Json)) {
+  case failed_artifact.failure_code {
+    Some(reason_code) ->
+      case string.trim(reason_code) == "" {
+        True -> []
+        False -> [
+          #(
+            "reason_code",
+            json.string(log.redact(
+              "workflow_step_recovery",
+              reason_code,
+              redaction_secrets,
+            )),
+          ),
+        ]
+      }
+    None -> []
+  }
 }
 
 pub fn record_finished(
@@ -367,11 +576,8 @@ fn payload_to_decision(payload: Payload) -> Result(Decision, ProtocolError) {
           ))
         False ->
           case payload.decision {
-            "retry_requested" ->
-              Ok(RetryRequested(
-                summary: payload.summary,
-                reason: payload.reason,
-              ))
+            "recheck" ->
+              Ok(Recheck(summary: payload.summary, reason: payload.reason))
             "gave_up" ->
               Ok(GaveUp(summary: payload.summary, reason: payload.reason))
             other ->
