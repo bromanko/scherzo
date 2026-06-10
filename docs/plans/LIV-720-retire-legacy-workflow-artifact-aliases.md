@@ -1,0 +1,115 @@
+# LIV-720 Retire Legacy Workflow Artifact Aliases
+
+## Purpose / Big Picture
+
+This future cleanup removes Scherzo core's knowledge of workflow-specific artifact aliases after the descriptor-first artifact model has proven stable in real operation. The operator-visible result is that a new workflow artifact can be introduced by declaring generic carrier fields such as `kind`, `media_type`, `artifact_type`, and validators, without adding daemon branches for names like `exec_plan_bundle`, `implementation_pack`, `code_change_bundle`, or `code_change`.
+
+The cleanup is intentionally not the descriptor migration itself. It is a post-compatibility retirement plan that keeps historical retained artifacts inspectable while preventing new runtime behavior from depending on legacy semantic core types.
+
+## Problem Framing and Constraints
+
+The current tree is in a compatibility state: first-party workflow YAML visible through `.scherzo/workflows/` and stored under `workflows/dogfood/` declares descriptor fields, while core modules still carry legacy `workflow_contract.ContractType` variants and compatibility behavior for `ExecPlanBundle`, `ImplementationPack`, `CodeChangeBundle`, and `CodeChange`. That compatibility is useful during migration, but it keeps Scherzo core coupled to particular workflows and makes future artifact domains look like core changes instead of workflow-owned schemas and validators.
+
+Implementation must not start until the future-start preconditions that protect this single-operator installation are true and recorded in the implementation evidence: the additive descriptor compatibility implementation is complete; checked-in workflows have migrated to the generic taxonomy; operator tooling reads descriptor-first manifests and bundles; the owner has either observed a short dogfood soak or explicitly waived it with rationale; and the owner has accepted the historical-manifest readability policy recorded below. This is not a formal release gate; because Scherzo currently has one human user, the evidence can be a checked note or implementation log entry rather than a formal approval process. Production changes must keep the repository lint policy green through `direnv exec . gleam run -m glinter` and `direnv exec . gleam run -m scherzo_lint`.
+
+Review feedback makes the evidence boundary first-class. The future implementation must capture the exact inventory, grep output, test names, helper-script checks, manual or dogfood evidence timing, and final validation transcripts that prove the cleanup is complete. Provider-live behavior and provider cache behavior are not migration mechanisms for this cleanup: the plan must not require clearing live caches or mutating provider state merely to retire artifact aliases. If the implementation unexpectedly touches live provider dispatch, publication, or cache code, that becomes a pre-publish evidence requirement rather than a deferred operator check.
+
+The compatibility decision for this plan is conservative: old retained manifests remain decode-only readable indefinitely. Scherzo may stop accepting legacy declarations in new workflow YAML after the owner records the dogfood-soak or waiver decision, and new manifests must be descriptor-first, but historical manifests and bundles should still decode for inspection, recovery, and audit. Any decoder retained for that purpose must be isolated and documented as historical-only, not used to choose new runtime semantics.
+
+## Strategy Overview
+
+Use descriptor-first behavior as the only live runtime path and quarantine legacy aliases at parse/decode boundaries. The implementation should begin with an inventory that proves the future-start preconditions, classifies every remaining legacy reference, and identifies which references are historical fixtures versus live daemon decisions. Then it should remove or replace live branches that switch on workflow-specific semantic types, leaving only a small historical decoder for old manifests and old retained bundles.
+
+The final taxonomy should treat `kind` as the carrier shape, `media_type` as the byte or value format, `artifact_type` as an opaque workflow/domain identifier, and validators as the semantic enforcement mechanism. Publication, handoff, repair, and inspection should ask generic descriptor questions such as whether an output is an `artifact_set`, `file`, `value`, or `ref`, rather than whether it is an `exec_plan_bundle` or `code_change_bundle`.
+
+Documentation, helper scripts, and migration diagnostics move with the code, not afterward. Deterministic fixture-backed checks are the pre-publish proof for parser, materialization, retained-artifact, helper, and publication behavior. A live dogfood run is pre-publish only if implementation changes live dispatch, publishing, provider invocation, or provider cache semantics; otherwise the final implementation evidence should explicitly name any live dogfood or operator inspection as deferred post-implementation evidence.
+
+## Alternatives Considered
+
+Keeping legacy aliases forever was rejected because it preserves the coupling this cleanup is meant to remove and forces future domains to study obsolete semantic branches. Deleting all aliases without either a short dogfood soak or an explicit owner waiver was rejected because retained runs, operator scripts, and bundle recovery still need predictable historical readability. Migrating historical manifests in place was rejected because retained artifacts are audit records; decode-only compatibility is safer and easier to roll back than rewriting old artifacts.
+
+A feature flag for the final behavior is not the preferred path because this work should only begin after descriptor-first paths have been exercised by the single operator, or the owner has explicitly waived that soak with rationale. If readiness evidence is incomplete, the correct response is to stop before implementation rather than ship a partially active mode.
+
+## Risks and Countermeasures
+
+The largest risk is breaking historical artifact inspection by deleting decoders that old retained manifests still need. Countermeasure: keep decode-only support indefinitely in a narrow historical module, add old-manifest fixtures, and require inspection tests before removing any live alias branch.
+
+A second risk is accidentally leaving a hidden runtime dependency on `exec_plan_bundle`, `implementation_pack`, `code_change_bundle`, or `code_change`. Countermeasure: make the first milestone a greppable inventory, add negative tests that introduce a new custom artifact without a core enum case, and require final greps showing remaining legacy names are confined to historical decoders, fixtures, schemas, helper migration notes, or tests that prove decode-only readability.
+
+A third risk is replacing one hard-coded semantic check with another. Countermeasure: remove the inline `code_change` publication-target check only after publication target validation is descriptor- or validator-driven, with tests for valid and invalid target descriptors.
+
+A fourth risk is future-you or automation confusion during the cutover. Countermeasure: update docs, migration notes, and helper diagnostics to say that new workflows use descriptor-first declarations, legacy `type:` aliases are no longer accepted for new workflow definitions, and historical retained artifacts remain readable for inspection only.
+
+A fifth risk is overlooking bundle-local helper scripts, root helper shims, or docs that still teach the legacy aliases. Countermeasure: inventory `workflows/dogfood/scripts/scherzo-execplan`, `workflows/dogfood/scripts/scherzo-implementation`, `scripts/scherzo-execplan-review`, `scripts/tests/test_scherzo_execplan.py`, `docs/specs/WORKFLOW_ARTIFACT_TAXONOMY.md`, and relevant runbooks before code removal, then update helper tests and documentation in the same milestone as the behavior change.
+
+A sixth risk is confusing provider-live or provider cache behavior with artifact-retirement correctness. Countermeasure: do not require provider cache clearing or live provider mutation for normal acceptance; if implementation touches provider-backed dispatch, publication, or cache code, require a pre-publish disposable live probe or explicitly park the cleanup until a separate provider/cache migration plan exists.
+
+## Scope Boundaries
+
+In scope are daemon core branches that interpret workflow-specific semantic types; parser compatibility for legacy workflow declarations; retained manifest encode/decode behavior; publication and handoff checks that depend on `code_change`, `exec_plan_bundle`, `implementation_pack`, or `code_change_bundle`; tests and fixtures that exercise those paths; workflow YAML visible through `.scherzo/workflows/` and stored under `workflows/dogfood/`; bundle-local helper scripts; root helper shims; and operator-facing docs or helper diagnostics that describe the final taxonomy.
+
+The in-scope helper and documentation surfaces must be treated as concrete migration targets: `workflows/dogfood/scripts/scherzo-execplan`, `workflows/dogfood/scripts/scherzo-implementation`, `scripts/scherzo-execplan-review`, `scripts/tests/test_scherzo_execplan.py`, `docs/specs/WORKFLOW_ARTIFACT_TAXONOMY.md`, `docs/runbooks/artifact-store.md`, and workflow or workstream runbooks that mention legacy artifact aliases.
+
+Out of scope are the initial additive descriptor implementation, the workflow migration to descriptor-first YAML, changing the canonical schemas for execplan or implementation bundles except where tests need fixture coverage, rewriting retained artifact records, clearing provider caches as a migration step, and intentionally breaking historical artifact inspection. Existing bundle artifact types such as `scherzo.exec_plan_bundle.v2` may continue to exist as opaque `artifact_type` strings owned by workflows and schemas; what retires is daemon core semantic branching on those names.
+
+## Milestones
+
+Milestone 1 proves readiness and freezes the compatibility boundary. It is complete when an inventory artifact, such as `docs/plans/LIV-720-legacy-alias-retirement-inventory.md`, records the future-start evidence, records the owner dogfood-soak decision or explicit waiver, lists every remaining legacy alias reference in `src/`, `test/`, `workflows/dogfood/`, `scripts/`, `docs/`, and schema fixtures, and classifies each reference as live runtime behavior, historical decode fixture, opaque artifact-type data, helper migration note, or documentation. The acceptance evidence for this milestone is the checked inventory plus final grep output for `exec_plan_bundle`, `implementation_pack`, `code_change_bundle`, `code_change`, and `artifact[]`.
+
+Milestone 2 isolates historical compatibility. It is complete when old retained manifests and old bundle shapes decode through a clearly named historical-only path, preferably a small module such as `src/scherzo/workflow_contract_historical_manifest.gleam`, while new manifest encoding remains descriptor-first. The required proof is old-manifest and old-bundle fixture coverage in `test/workflow_contract_manifest_test.gleam` and helper coverage in `scripts/tests/test_scherzo_execplan.py` showing that historical artifacts can still be inspected without re-enabling legacy declarations for new workflows.
+
+Milestone 3 removes live semantic core branches. It is complete when runtime parser, manifest, materialization, repair, publication, handoff, and operator inspection behavior use generic descriptor fields rather than `ExecPlanBundle`, `ImplementationPack`, `CodeChangeBundle`, or `CodeChange` branches, except for the historical decoder named in Milestone 2. The milestone must touch the live modules that still branch on aliases, including `src/scherzo/workflow_contract.gleam`, `src/scherzo/workflow_contract_descriptor_compat.gleam`, `src/scherzo/workflow_contract_manifest.gleam`, workflow run contract I/O, repair and handoff modules, and publication planning modules as indicated by the Milestone 1 inventory.
+
+Milestone 4 retires legacy declarations and the inline `code_change` check. It is complete when checked-in workflow YAML and accepted new workflow definitions use descriptor fields only, legacy `type:` aliases fail with clear migration diagnostics, and publication target validation relies on workflow-owned schemas or generic descriptor/validator rules instead of a hard-coded `code_change` type. The required tests include positive and negative parser cases for descriptor-first workflow definitions, invalid legacy alias declarations, and valid and invalid existing-PR publication targets.
+
+Milestone 5 documents, migrates helpers, and validates the final taxonomy. It is complete when docs, migration notes, helper diagnostics, and helper tests explain descriptor-first authoring, decode-only historical readability, rollback, provider-live/cache evidence boundaries, and single-operator evidence requirements. Before publish, the implementation must run deterministic helper checks, `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`; live dogfood evidence is pre-publish only if implementation changed live dispatch, publishing, provider invocation, or provider cache behavior, and otherwise is recorded as a deferred owner/operator check.
+
+## Progress
+
+- [x] (2026-06-08) Authored this future cleanup review document after inspecting descriptor-first workflow YAML, current legacy `ContractType` branches, manifest decoder compatibility, publication target checks, and execplan helper legacy constants. No source cleanup has started; implementation work remains intentionally deferred to the milestones after the future-start preconditions are met.
+- [x] (2026-06-09) Incorporated review feedback by tightening milestone evidence, test obligations, docs/helper migration scope, provider-live/cache boundaries, manual dogfood timing, and full validation/lint expectations in this review document and the updated implementation pack.
+- [x] (2026-06-09) Addressed single-operator feedback by replacing formal approval language with owner-recorded evidence, an explicit dogfood-soak waiver option, and documentation aimed at future-you and automation rather than an external user base.
+
+## Decision Log
+
+Decision: Do not start implementation until all future-start preconditions are evidenced in the implementation task. Rationale: this cleanup is safe only after descriptor-first compatibility, workflow migration, operator tooling migration, and an owner-recorded dogfood-soak decision or explicit waiver. Date: 2026-06-08.
+
+Decision: Keep historical retained manifests decode-only readable indefinitely. Rationale: retained artifacts are audit and recovery records, and the acceptance criteria explicitly warns against intentionally breaking historical artifact inspection without a deliberate compatibility decision. Date: 2026-06-08.
+
+Decision: Stop accepting legacy workflow declarations for new or checked-in workflow definitions once the owner records the dogfood-soak or waiver decision. Rationale: preserving new-authoring aliases would keep core semantic taxonomy alive and undermine the descriptor-first model. Date: 2026-06-08.
+
+Decision: Treat bundle names and workflow artifact types as opaque data after cleanup. Rationale: workflows and schemas may still use strings such as `scherzo.exec_plan_bundle.v2`, but daemon core should not branch on them except inside the historical decoder. Date: 2026-06-08.
+
+Decision: Treat docs, helper scripts, helper tests, and migration diagnostics as required migration surfaces, not optional follow-up cleanup. Rationale: operators and future workflow authors learn the artifact taxonomy through workflow YAML, helper errors, and runbooks; leaving those surfaces on legacy names would preserve the coupling even if production branches were removed. Date: 2026-06-09.
+
+Decision: Provider-live dispatch and provider cache behavior are acceptance evidence boundaries, not automatic migration targets. Rationale: this cleanup retires workflow artifact aliases and should not clear caches or mutate provider state for proof; if implementation touches live provider or cache code, pre-publish disposable dogfood or live-probe evidence is required, otherwise owner/operator live inspection may be deferred and explicitly named. Date: 2026-06-09.
+
+Decision: Treat Scherzo's current single-user status as a reason to make approvals lightweight, not as a reason to delete compatibility evidence. Rationale: the blast radius is one owner, so external signoff can be replaced by an owner-recorded decision or explicit soak waiver, but future retained-artifact inspection and agent-run helper behavior still need objective proof. Date: 2026-06-09.
+
+## Validation and Acceptance
+
+Acceptance requires concrete evidence for every outcome. The readiness gate is accepted only with inventory output showing that the descriptor compatibility implementation landed, checked-in workflows are descriptor-first, operator tooling reads descriptor-first manifests and bundles, the owner dogfood-soak decision or explicit waiver is recorded, and the decode-only historical policy is approved by the owner. The implementation evidence must include the inventory path, relevant grep commands, and a concise transcript or checked artifact showing the classification of remaining alias strings.
+
+The generic-artifact outcome is accepted only when a test workflow declares a new fake domain artifact using `kind`, `media_type`, `artifact_type`, and validators, and passes parser, materialization, retained-manifest, repair or handoff, and publication tests without adding a new core semantic enum or branch for that artifact. Final grep evidence must show no live source branch for that fake artifact name.
+
+The legacy-dependency outcome is accepted only when checked-in workflow YAML contains no legacy `type:` declarations for `exec_plan_bundle`, `implementation_pack`, `code_change_bundle`, `code_change`, or `artifact[]`; when parser tests show those declarations are rejected for new workflows with clear migration diagnostics; and when remaining legacy strings in source are confined to the historical decoder, compatibility fixtures, schemas, helper migration notes, or tests that prove decode-only readability. Required negative/error-path evidence includes invalid legacy declaration tests, invalid descriptor target tests, and final greps that would fail if a live branch still recognized the old aliases.
+
+The `code_change` removal outcome is accepted only when publication target validation has positive and negative tests driven by descriptors or workflow-owned validators, and when `src/scherzo/artifact_publication_config.gleam` no longer accepts a target solely because its core type is `CodeChange`. The relevant acceptance evidence should name the tests in `test/workflow_dag_test.gleam` or the replacement publication test file that cover valid existing-PR targets, invalid non-target outputs, and migration diagnostics.
+
+Historical readability is accepted only when retained v1/v2 manifest and bundle fixtures that use legacy fields still decode and can be inspected, while new manifest golden tests show descriptor-first shape. The required automated evidence includes `test/workflow_contract_manifest_test.gleam` coverage for old and new manifest shapes, `test/workflow_contract_test.gleam` coverage for descriptor-first and rejected legacy declarations, publication coverage for generic artifact sets and `code_change` target replacement, and `scripts/tests/test_scherzo_execplan.py` if helper behavior changes.
+
+Documentation and helper migration are accepted only when `docs/specs/WORKFLOW_ARTIFACT_TAXONOMY.md`, relevant runbooks, workflow YAML, helper diagnostics, and helper tests no longer teach legacy authoring as a live path. Provider-live and provider cache behavior are accepted with explicit evidence either that no provider-backed dispatch, publication, or cache code changed, or that a disposable pre-publish live probe covered the changed provider/cache path. A live dogfood run may be deferred to the owner/operator only when the implementation does not change live dispatch, publishing, provider invocation, or provider cache behavior.
+
+Final validation before publish must run `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`, expecting exit status 0 for each command. If helper scripts changed, also run `direnv exec . python scripts/tests/test_scherzo_execplan.py` and expect the Python unittest suite to pass. The validation transcript must record any manual, dogfood, or provider-live evidence as either pre-publish proof or explicitly deferred post-implementation owner/operator evidence.
+
+## Rollout, Recovery, and Idempotence
+
+Roll out in small green commits matching the milestones: readiness inventory, historical decoder isolation, live semantic branch removal, legacy declaration rejection and `code_change` publication replacement, docs/helper migration, then full validation and linting. Each commit should leave Scherzo able to inspect historical retained artifacts, and each commit should record the specific tests, greps, or helper checks that passed before the commit.
+
+Recovery for a bad cleanup is to revert the most recent removal and restore the historical decoder or alias diagnostic that failed. Because this plan does not rewrite retained artifacts, rollback is ordinary code rollback rather than data repair. If implementation discovers that an operator tool still needs live alias semantics, stop the cleanup, record the failed precondition, and split the missing operator migration to a prerequisite task instead of shipping a partial retirement.
+
+The work is idempotent: inventories, greps, parser checks, manifest fixture tests, helper unittest runs, and validation commands can be rerun without mutating external state. Provider caches must not be cleared as a cleanup step. Any helper, dogfood, provider-live, or publication command that does mutate external state must be explicitly identified in the implementation evidence and either run in a disposable fixture environment before publish or deferred with a named owner/operator evidence requirement when the implementation has not changed the live path.
+
+## Open Questions and Clarifications Needed
+
+Before implementation begins, the owner must record whether a short dogfood soak has happened or is explicitly waived, and what evidence proves descriptor-first tooling is in use. If the future inventory finds provider-live dispatch, publication, or provider cache code still depends on legacy aliases, the owner must decide whether to add a pre-publish disposable live probe to this cleanup or split that work into a prerequisite provider/cache migration. No open question changes the policy decision in this plan: historical manifests remain decode-only readable indefinitely.
