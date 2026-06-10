@@ -482,21 +482,8 @@ fn select_target_artifact(
   output: String,
   store: artifact_store.Store,
 ) -> Result(commit_stack_artifact.ExistingPrBranchTarget, PlannerError) {
-  use selected <- result.try(select_artifact_descriptor(
-    manifest,
-    output,
-    None,
-    store,
-  ))
-  use contents <- result.try(read_artifact_text(selected.ref, store))
-  use _ <- result.try(verify_text_contents(
-    selected.ref,
-    contents,
-    selected.sha256,
-    selected.bytes,
-  ))
-  commit_stack_artifact.parse_existing_pr_branch_target(contents)
-  |> result.map_error(commit_stack_parse_error_to_planner_error)
+  planner_support.select_existing_pr_branch_target(manifest, output, store)
+  |> result.map_error(target_selection_error_to_planner_error)
 }
 
 fn select_artifact_descriptor(
@@ -691,6 +678,15 @@ fn commit_stack_parse_error_to_planner_error(
   PlannerError(
     commit_stack_artifact.error_code(parse_error),
     commit_stack_artifact.error_message(parse_error),
+  )
+}
+
+fn target_selection_error_to_planner_error(
+  selection_error: planner_support.TargetSelectionError,
+) -> PlannerError {
+  PlannerError(
+    planner_support.target_selection_error_code(selection_error),
+    planner_support.target_selection_error_message(selection_error),
   )
 }
 
