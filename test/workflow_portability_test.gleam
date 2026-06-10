@@ -295,11 +295,11 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
     ),
     #(
       ".scherzo/workflows/execplan.yaml",
-      "  requires: [status, diff, changed-files, publish-change]",
+      "  requires: [status, diff, changed-files, publish-commit-stack]",
     ),
     #(
       ".scherzo/workflows/execplan-revision.yaml",
-      "  requires: [status, diff, changed-files, refresh-base, publish-change]",
+      "  requires: [status, diff, changed-files, refresh-base, publish-commit-stack]",
     ),
     #(
       ".scherzo/workflows/execplan-implementation.yaml",
@@ -383,18 +383,28 @@ pub fn execplan_workflows_publish_review_docs_with_workspace_driver_test() {
   let drafting = read_file(".scherzo/workflows/execplan.yaml")
   let revision = read_file(".scherzo/workflows/execplan-revision.yaml")
 
-  list.each([drafting, revision], fn(workflow) {
-    assert_not_contains(workflow, "id: execplan_review_doc")
-    assert_not_contains(workflow, "repository: github.docs")
-    assert_not_contains(workflow, "entry: plan")
-    assert_contains(workflow, "id: publish_review_doc")
-    assert_contains(workflow, "publish-review-doc")
-    assert_contains(
-      workflow,
-      "--publish-context tmp/execplan-publish-context.json",
-    )
-    assert_not_contains(workflow, "body_template: prompts/execplan-pr-body.md")
-  })
+  assert_contains(drafting, "id: execplan_review_doc")
+  assert_contains(drafting, "repository: github.code")
+  assert_contains(drafting, "mode: commit_stack")
+  assert_contains(drafting, "output: commit_stack")
+  assert_contains(drafting, "kind: stable_branch")
+  assert_contains(drafting, "body_template: prompts/execplan-pr-body.md")
+  assert_contains(drafting, "- id: materialize_commit_stack")
+  assert_contains(drafting, "materialize-commit-stack")
+  assert_not_contains(drafting, "publish-review-doc")
+  assert_not_contains(drafting, "entry: plan")
+
+  assert_contains(revision, "id: execplan_review_doc")
+  assert_contains(revision, "repository: github.code")
+  assert_contains(revision, "mode: commit_stack")
+  assert_contains(revision, "output: commit_stack")
+  assert_contains(revision, "kind: sourced")
+  assert_contains(revision, "output: publication_target")
+  assert_contains(revision, "path: tmp/execplan-publication-target.json")
+  assert_contains(revision, "- id: materialize_commit_stack")
+  assert_contains(revision, "materialize-commit-stack")
+  assert_not_contains(revision, "publish-review-doc")
+  assert_not_contains(revision, "repository: github.docs")
 }
 
 pub fn execplan_prompts_require_non_empty_review_doc_sections_test() {

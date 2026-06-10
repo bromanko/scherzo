@@ -16,6 +16,8 @@ pub const max_bundle_bytes = 104_857_600
 
 pub const existing_pr_branch_target_artifact_type = "scherzo.github_existing_pr_branch_target.v1"
 
+pub const publication_target_artifact_type = "scherzo.github_publication_target.v1"
+
 pub type CommitStackCarrier {
   CommitStackCarrier(
     ref: String,
@@ -47,6 +49,11 @@ pub type ExistingPrBranchTarget {
     pr_number: Int,
     pr_url: String,
   )
+}
+
+pub type PublicationTargetArtifact {
+  PublicationTargetStableBranch
+  PublicationTargetExistingPrBranch(ExistingPrBranchTarget)
 }
 
 pub type ArtifactParseError {
@@ -90,6 +97,23 @@ pub fn parse_existing_pr_branch_target(
       error(
         "existing_pr_branch_target_not_object",
         "existing PR branch target artifact must be a JSON object",
+      )
+  }
+}
+
+pub fn parse_publication_target(
+  contents: String,
+) -> Result(PublicationTargetArtifact, ArtifactParseError) {
+  use value <- result.try(parse_json(
+    contents,
+    "publication_target_payload_invalid",
+  ))
+  case value {
+    json_value.JObject(entries) -> decode_publication_target(entries)
+    _ ->
+      error(
+        "publication_target_payload_invalid",
+        "sourced publication target artifact must be a JSON object",
       )
   }
 }
@@ -254,6 +278,42 @@ fn decode_existing_pr_branch_target(
     pr_number: pr_number,
     pr_url: pr_url,
   ))
+}
+
+fn decode_publication_target(
+  entries: List(#(String, json_value.JsonValue)),
+) -> Result(PublicationTargetArtifact, ArtifactParseError) {
+  use artifact_type <- result.try(required_string(entries, "artifact_type"))
+  use _ <- result.try(require_equal(
+    artifact_type,
+    publication_target_artifact_type,
+    "publication_target_artifact_type_mismatch",
+    "sourced publication target artifact_type must be "
+      <> publication_target_artifact_type,
+  ))
+  use kind <- result.try(required_string(entries, "kind"))
+  case kind {
+    "stable_branch" -> Ok(PublicationTargetStableBranch)
+    "existing_pr_branch" -> {
+      use existing <- result.try(required_object(entries, "existing_pr_branch"))
+      let existing_json =
+        json.to_string(
+          json.object(
+            list.map(existing, fn(entry) {
+              let #(key, value) = entry
+              #(key, json_value.to_json(value))
+            }),
+          ),
+        )
+      use target <- result.try(parse_existing_pr_branch_target(existing_json))
+      Ok(PublicationTargetExistingPrBranch(target))
+    }
+    other ->
+      error(
+        "invalid_publication_target_kind",
+        "sourced publication target artifact kind is unsupported: " <> other,
+      )
+  }
 }
 
 fn optional_pull_request(

@@ -664,7 +664,8 @@ fn body_template_paths(
     [route, ..rest] -> {
       let next = case route.target {
         artifact_publication_config.ExistingPrBranchTarget(_) -> acc
-        artifact_publication_config.StableBranchTarget ->
+        artifact_publication_config.StableBranchTarget
+        | artifact_publication_config.SourcedTarget(_) ->
           case route.pull_request {
             Some(artifact_publication_config.PublicationPullRequestOverride(
               body_template: Some(body_template),

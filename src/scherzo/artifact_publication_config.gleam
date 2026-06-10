@@ -101,6 +101,7 @@ pub type PublicationCommitStackSelector {
 pub type PublicationTarget {
   StableBranchTarget
   ExistingPrBranchTarget(source: PublicationTargetSource)
+  SourcedTarget(source: PublicationTargetSource)
 }
 
 pub type PublicationTargetSource {
@@ -112,6 +113,8 @@ pub type PublicationFileSelector {
 }
 
 const default_branch_template = "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}"
+
+const publication_target_artifact_type = "scherzo.github_publication_target.v1"
 
 pub fn parse_root_repositories(
   root: yay.Node,
@@ -538,20 +541,11 @@ fn parse_publication_mode(
 }
 
 fn validate_pull_request_for_mode(
-  node: Option(yay.Node),
-  mode: PublicationMode,
-  publication_id: String,
+  _node: Option(yay.Node),
+  _mode: PublicationMode,
+  _publication_id: String,
 ) -> Result(Nil, PublicationConfigError) {
-  case mode, node {
-    CommitStackPublication, Some(_) ->
-      error(
-        "commit_stack_pull_request_unsupported",
-        "publication "
-          <> publication_id
-          <> " uses mode commit_stack and must not declare pull_request; existing PR metadata comes from target.source",
-      )
-    _, _ -> Ok(Nil)
-  }
+  Ok(Nil)
 }
 
 fn parse_files_for_mode(
@@ -700,8 +694,19 @@ fn parse_publication_target(
             get_entry(entries, "source"),
             contract,
             publication_id,
+            None,
           ))
           Ok(ExistingPrBranchTarget(source))
+        }
+        Some(yay.NodeStr("sourced")) -> {
+          use _ <- result.try(require_commit_stack_target(mode, publication_id))
+          use source <- result.try(parse_publication_target_source(
+            get_entry(entries, "source"),
+            contract,
+            publication_id,
+            Some(publication_target_artifact_type),
+          ))
+          Ok(SourcedTarget(source))
         }
         Some(yay.NodeStr("stable_branch")) ->
           require_stable_branch_target(mode, publication_id)
@@ -736,7 +741,7 @@ fn default_publication_target(
         "missing_commit_stack_publication_target",
         "publication "
           <> publication_id
-          <> " uses mode commit_stack and must declare target.kind stable_branch or existing_pr_branch",
+          <> " uses mode commit_stack and must declare target.kind stable_branch, existing_pr_branch, or sourced",
       )
   }
 }
@@ -771,6 +776,7 @@ fn parse_publication_target_source(
   node: Option(yay.Node),
   contract: Option(workflow_contract.Contract),
   publication_id: String,
+  expected_artifact_type: Option(String),
 ) -> Result(PublicationTargetSource, PublicationConfigError) {
   case node {
     None ->
@@ -801,6 +807,7 @@ fn parse_publication_target_source(
         contract,
         output,
         publication_id,
+        expected_artifact_type,
       ))
       Ok(PublicationTargetSource(output: output))
     }
@@ -1039,6 +1046,7 @@ fn validate_target_source_against_contract(
   contract: Option(workflow_contract.Contract),
   output: String,
   publication_id: String,
+  expected_artifact_type: Option(String),
 ) -> Result(Nil, PublicationConfigError) {
   case contract {
     None ->
@@ -1060,9 +1068,10 @@ fn validate_target_source_against_contract(
               <> " references unknown target output "
               <> output,
           )
-        Some(spec) ->
-          case spec.type_ {
-            workflow_contract.CodeChange -> Ok(Nil)
+        Some(spec) -> {
+          use _ <- result.try(case spec.type_ {
+            workflow_contract.CodeChange | workflow_contract.GenericValue ->
+              Ok(Nil)
             _ ->
               error(
                 "publication_target_output_type_mismatch",
@@ -1070,9 +1079,46 @@ fn validate_target_source_against_contract(
                   <> publication_id
                   <> " target output "
                   <> output
-                  <> " must have contract type code_change",
+                  <> " must have contract type code_change or value",
               )
-          }
+          })
+          validate_target_source_artifact_type(
+            spec,
+            output,
+            publication_id,
+            expected_artifact_type,
+          )
+        }
+      }
+  }
+}
+
+fn validate_target_source_artifact_type(
+  spec: workflow_contract.OutputSpec,
+  output: String,
+  publication_id: String,
+  expected_artifact_type: Option(String),
+) -> Result(Nil, PublicationConfigError) {
+  case expected_artifact_type {
+    None -> Ok(Nil)
+    Some(expected) ->
+      case spec.descriptor {
+        Some(workflow_contract.ContractDescriptorSpec(
+          artifact_type: Some(artifact_type),
+          ..,
+        ))
+          if artifact_type == expected
+        -> Ok(Nil)
+        _ ->
+          error(
+            "publication_target_output_artifact_type_mismatch",
+            "publication "
+              <> publication_id
+              <> " target output "
+              <> output
+              <> " must declare artifact_type "
+              <> expected,
+          )
       }
   }
 }

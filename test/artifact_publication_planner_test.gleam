@@ -454,6 +454,110 @@ pub fn commit_stack_existing_pr_branch_plans_retained_target_test() {
   assert target.pr_url == "https://example.test/pr/42"
 }
 
+pub fn commit_stack_sourced_target_plans_existing_pr_branch_test() {
+  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+  let target_contents =
+    sourced_existing_target_contents(existing_target_contents(
+      "scherzo-systems/scherzo",
+    ))
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest_with_target(
+        stack_contents,
+        retained_value_target_output(target_contents),
+      ),
+      repositories(),
+      commit_stack_sourced_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert manifest.branch == existing_branch()
+  assert manifest.pull_request.enabled == False
+  let assert artifact_publication_planner.ExistingPrBranchTargetPlan(target) =
+    manifest.target
+  assert target.pr_number == 42
+  assert target.pr_url == "https://example.test/pr/42"
+}
+
+pub fn commit_stack_sourced_target_plans_stable_branch_test() {
+  let stack_contents =
+    commit_stack_manifest_contents_with_base_ref(
+      "scherzo-systems/scherzo",
+      "main",
+    )
+  let target_contents = sourced_stable_target_contents()
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest_with_target(
+        stack_contents,
+        retained_value_target_output(target_contents),
+      ),
+      repositories(),
+      commit_stack_sourced_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  assert manifest.branch
+    == "scherzo/workflow.implementation/LIV-761/conflict_resolution"
+  assert manifest.pull_request.enabled == True
+  let assert artifact_publication_planner.StableBranchTargetPlan =
+    manifest.target
+}
+
+pub fn commit_stack_sourced_target_rejects_wrong_artifact_type_test() {
+  let stack_contents =
+    commit_stack_manifest_contents_with_base_ref(
+      "scherzo-systems/scherzo",
+      "main",
+    )
+  let target_contents =
+    sourced_stable_target_contents()
+    |> string.replace(
+      each: "\"artifact_type\": \"scherzo.github_publication_target.v1\"",
+      with: "\"artifact_type\": \"scherzo.other_target.v1\"",
+    )
+  let store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+
+  let assert Error(error) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest_with_target(
+        stack_contents,
+        retained_value_target_output(target_contents),
+      ),
+      repositories(),
+      commit_stack_sourced_route(),
+      store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+
+  assert artifact_publication_planner.code(error)
+    == "publication_target_artifact_type_mismatch"
+}
+
 pub fn commit_stack_existing_pr_branch_plans_retained_value_target_test() {
   let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
   let target_contents = existing_target_contents("scherzo-systems/scherzo")
@@ -1320,6 +1424,16 @@ fn commit_stack_stable_branch_route() -> artifact_publication_config.Publication
   commit_stack_route_with_target(artifact_publication_config.StableBranchTarget)
 }
 
+fn commit_stack_sourced_route() -> artifact_publication_config.PublicationRoute {
+  commit_stack_route_with_target(
+    artifact_publication_config.SourcedTarget(
+      artifact_publication_config.PublicationTargetSource(
+        output: "merge_conflict_target",
+      ),
+    ),
+  )
+}
+
 fn commit_stack_route_with_target(
   target: artifact_publication_config.PublicationTarget,
 ) -> artifact_publication_config.PublicationRoute {
@@ -1715,6 +1829,24 @@ fn retained_value_target_output(
       Some(value_target_source()),
     ),
   )
+}
+
+fn sourced_existing_target_contents(existing_target: String) -> String {
+  "{\n"
+  <> "  \"schema_version\": 1,\n"
+  <> "  \"artifact_type\": \"scherzo.github_publication_target.v1\",\n"
+  <> "  \"kind\": \"existing_pr_branch\",\n"
+  <> "  \"existing_pr_branch\": "
+  <> existing_target
+  <> "}\n"
+}
+
+fn sourced_stable_target_contents() -> String {
+  "{\n"
+  <> "  \"schema_version\": 1,\n"
+  <> "  \"artifact_type\": \"scherzo.github_publication_target.v1\",\n"
+  <> "  \"kind\": \"stable_branch\"\n"
+  <> "}\n"
 }
 
 fn value_target_source() -> json_value.JsonValue {

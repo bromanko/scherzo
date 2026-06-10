@@ -630,6 +630,15 @@
         "source": { "$ref": "#/$defs/PublicationTargetSource" }
       }
     },
+    "PublicationSourcedTarget": {
+      "type": "object",
+      "required": ["kind", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "sourced" },
+        "source": { "$ref": "#/$defs/PublicationTargetSource" }
+      }
+    },
     "FilePublicationRoute": {
       "type": "object",
       "required": ["id", "repository", "files"],
@@ -663,11 +672,13 @@
         },
         "required": { "type": "boolean" },
         "mode": { "const": "commit_stack" },
+        "pull_request": { "$ref": "#/$defs/PublicationPullRequest" },
         "commit_stack": { "$ref": "#/$defs/PublicationCommitStack" },
         "target": {
           "oneOf": [
             { "$ref": "#/$defs/PublicationStableBranchTarget" },
-            { "$ref": "#/$defs/PublicationExistingPrBranchTarget" }
+            { "$ref": "#/$defs/PublicationExistingPrBranchTarget" },
+            { "$ref": "#/$defs/PublicationSourcedTarget" }
           ]
         }
       }

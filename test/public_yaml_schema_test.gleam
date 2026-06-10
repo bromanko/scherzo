@@ -694,18 +694,16 @@ pub fn workflow_removed_keys_and_invalid_shapes_are_rejected_test() {
       ),
     ),
     #(
-      "commit_stack publication rejects pull request overrides",
+      "commit_stack pull request body template rejects traversal",
       commit_stack_publication_workflow_source(
         "      mode: commit_stack\n"
         <> "      pull_request:\n"
-        <> "        title: Should not be used\n"
+        <> "        body_template: ../docs/pr-body.md\n"
         <> "      commit_stack:\n"
         <> "        select:\n"
         <> "          output: commit_stack\n"
         <> "      target:\n"
-        <> "        kind: existing_pr_branch\n"
-        <> "        source:\n"
-        <> "          output: merge_conflict_target\n",
+        <> "        kind: stable_branch\n",
       ),
     ),
     #(
@@ -778,6 +776,25 @@ pub fn workflow_schema_only_invalid_shapes_are_rejected_test() {
       yaml,
     )
   })
+}
+
+pub fn workflow_schema_accepts_sourced_commit_stack_target_test() {
+  let yaml =
+    commit_stack_publication_workflow_source(
+      "      mode: commit_stack\n"
+      <> "      commit_stack:\n"
+      <> "        select:\n"
+      <> "          output: commit_stack\n"
+      <> "      target:\n"
+      <> "        kind: sourced\n"
+      <> "        source:\n"
+      <> "          output: merge_conflict_target\n",
+    )
+  validate_yaml_source_against_schema(
+    "public_workflow_schema",
+    "schemas/scherzo.workflow.v1.schema.json",
+    yaml,
+  )
 }
 
 pub fn workflow_schema_accepts_generic_descriptor_contract_entries_test() {
