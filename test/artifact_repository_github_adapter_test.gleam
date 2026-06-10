@@ -88,6 +88,35 @@ pub fn publish_clones_materializes_commits_pushes_and_creates_draft_pr_test() {
   )
 }
 
+pub fn publish_uses_informative_fallback_pr_title_and_body_test() {
+  let root = "test/tmp/artifact-repository-github/fallback-pr-text"
+  let log = root <> "/commands.log"
+  test_helpers.reset_dir(root)
+  let fallback_pr =
+    artifact_publication_planner.PlannedPullRequest(
+      enabled: True,
+      draft: True,
+      title: None,
+      body: None,
+    )
+  let input =
+    prepared_input_for_manifest(
+      root,
+      artifact_publication_planner.DryRunPublicationManifest(
+        ..dry_run_manifest(True),
+        pull_request: fallback_pr,
+      ),
+    )
+
+  let manifest = github.publish(input, root, fallback_pr_runner(log), 123)
+
+  assert artifact_publication_manifest.status_to_string(manifest.status)
+    == "published"
+  let transcript = read_file(log)
+  assert string.contains(transcript, "--title LIV-761: publish review doc")
+  assert !string.contains(transcript, "Scherzo publication")
+}
+
 pub fn publish_reuses_checkout_and_omits_draft_flag_when_disabled_test() {
   let root = "test/tmp/artifact-repository-github/non-draft-create"
   let log = root <> "/commands.log"
@@ -999,6 +1028,7 @@ fn commit_stack_publication_manifest() -> artifact_publication_planner.DryRunPub
     ),
     files: [],
     commit_stack: Some(planned_commit_stack()),
+    work: work(),
   )
 }
 
@@ -1272,6 +1302,40 @@ fn create_pr_runner(log: String, draft: Bool) -> command_runner.Runner {
       "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
       "gh", ["pr", "create", ..] -> {
         assert list.contains(args, "--draft") == draft
+        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+      }
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
+}
+
+fn fallback_pr_runner(log: String) -> command_runner.Runner {
+  runner(log, fn(executable, args, _, spec) {
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["checkout", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["status", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["add", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["commit", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] -> {
+        let assert Some(body) = gh_stdin(spec)
+        assert string.contains(body, "Publish review document")
+        assert string.contains(body, "https://linear.example/LIV-761")
+        assert string.contains(body, "Workflow: `workflow.execplan`")
+        assert string.contains(body, "Publication: `review_doc`")
+        assert string.contains(body, "docs/plans/LIV-761.md")
         Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
       }
       _, _ -> Error(command_runner.command_error("unexpected_command"))
@@ -1890,6 +1954,8 @@ fn auth_env_runner(
         assert gh_token(spec) == Some(expected_token)
         let assert Some(body) = gh_stdin(spec)
         assert string.contains(body, "Version")
+        assert string.contains(body, "Publish review document")
+        assert string.contains(body, "https://linear.example/LIV-761")
         Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
       }
       _, _ -> Error(command_runner.command_error("unexpected_command"))
@@ -2298,6 +2364,8 @@ fn work() -> artifact_publication_planner.PublicationWork {
     id: "task-1",
     identifier: "LIV-761",
     slug: "LIV-761",
+    title: Some("Publish review document"),
+    url: Some("https://linear.example/LIV-761"),
   )
 }
 
@@ -2374,5 +2442,5 @@ fn existing_pr_view_json(
 }
 
 fn body_template() -> String {
-  "Version {{ publication.version_id }}"
+  "Work {{ work.title }} {{ work.url }}\nVersion {{ publication.version_id }}"
 }

@@ -2917,6 +2917,8 @@ fn seed_failed_commit_stack_retry_publication_state(root: String) -> Nil {
       id: "issue-1",
       identifier: "LIV-917",
       slug: "LIV-917",
+      title: Some("Retry commit stack"),
+      url: Some("https://linear.example/LIV-917"),
     )
   let assert Ok(planned) =
     artifact_publication_planner.plan_publication(
@@ -3552,6 +3554,8 @@ fn seeded_publication_plans_from_config(
           id: "issue-1",
           identifier: "LIV-739",
           slug: "LIV-739",
+          title: Some("Seeded publication"),
+          url: Some("https://linear.example/LIV-739"),
         ),
         "run-1",
         body_templates,

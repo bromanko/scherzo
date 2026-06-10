@@ -113,6 +113,16 @@ pub fn execute_routes_publishes_commit_stack_with_workspace_driver_test() {
   assert string.contains(transcript, "--target-pr 42")
   assert string.contains(transcript, "--allow-no-changes true --json")
   assert string.contains(transcript, "CWD=" <> workspace)
+  let title_file = path.join(workspace, arg_after(transcript, "--title-file"))
+  let body_file = path.join(workspace, arg_after(transcript, "--body-file"))
+  let title = read_file(title_file)
+  let body = read_file(body_file)
+  assert string.contains(title, "LIV-761: publish conflict resolution")
+  assert !string.contains(title, "Scherzo publication")
+  assert string.contains(body, "Publication executor")
+  assert string.contains(body, "https://linear.example/LIV-761")
+  assert string.contains(body, "Workflow: `workflow.implementation`")
+  assert string.contains(body, "Publication: `conflict_resolution`")
 }
 
 pub fn execute_routes_commit_stack_passes_configured_driver_timeout_test() {
@@ -772,6 +782,8 @@ fn publication_work() -> artifact_publication_planner.PublicationWork {
     id: "task-1",
     identifier: "LIV-761",
     slug: "LIV-761",
+    title: Some("Publication executor"),
+    url: Some("https://linear.example/LIV-761"),
   )
 }
 
@@ -1249,6 +1261,12 @@ fn read_file(path: String) -> String {
   contents
 }
 
+fn arg_after(text: String, flag: String) -> String {
+  let assert Ok(#(_, rest)) = string.split_once(text, on: flag <> " ")
+  let assert [value, ..] = string.split(rest, on: " ")
+  value
+}
+
 fn write_template(root: String) -> Nil {
   let template = root <> "/templates/publication.md"
   let assert Ok(Nil) = simplifile.create_directory_all(root <> "/templates")
@@ -1277,7 +1295,7 @@ fn issue() -> tracker_issue.Issue {
     priority: None,
     state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
-    url: None,
+    url: Some("https://linear.example/LIV-761"),
     labels: [],
     blocked_by: [],
     blocked_by_complete: True,
