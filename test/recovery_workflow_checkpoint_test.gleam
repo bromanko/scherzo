@@ -561,7 +561,7 @@ pub fn workflow_recovery_candidate_marks_started_same_run_step_recovery_test() {
   assert candidate.recovery_evidence == workflow_outcome.StepRecoveryRan
 }
 
-pub fn workflow_recovery_candidate_marks_retry_requested_same_run_step_recovery_test() {
+pub fn workflow_recovery_candidate_marks_recheck_same_run_step_recovery_test() {
   let scenario =
     recovery_scenario(
       "test/tmp/recovery-workflow-step-recovery-finished",
@@ -571,12 +571,12 @@ pub fn workflow_recovery_candidate_marks_retry_requested_same_run_step_recovery_
     projection.fold([
       given_workflow_started(scenario, 1),
       given_step_recovery_started(scenario, 2, "a"),
-      given_step_recovery_finished(scenario, 3, "a", "retry_requested", Some(2)),
+      given_step_recovery_finished(scenario, 3, "a", "recheck", Some(2)),
     ])
 
   let assert [candidate] = recovery.workflow_candidates(folded)
   assert candidate.recovery_evidence
-    == workflow_outcome.StepRecoveryRetryRequested
+    == workflow_outcome.StepRecoveryRecheckRequested
 }
 
 pub fn workflow_recovery_ignores_other_run_step_recovery_records_test() {

@@ -2410,7 +2410,7 @@ fn finish_fatal_batch_result(
                   profile,
                 )
               {
-                recovery_execution.RecoveryRetryRequested(
+                recovery_execution.RecoveryRecheckRequested(
                   recovery_tokens,
                   recovery_final_issue,
                   recovery_turns,
@@ -2433,7 +2433,7 @@ fn finish_fatal_batch_result(
                     run_id,
                     workflow_fingerprint,
                     contract_outputs_recorded,
-                    workflow_outcome.StepRecoveryRetryRequested,
+                    workflow_outcome.StepRecoveryRecheckRequested,
                     recovered_execution,
                     dependencies,
                     scheduler_state,

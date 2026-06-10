@@ -308,7 +308,7 @@ pub fn example_research_recovery_prompt_is_bounded_to_collection_test() {
   assert_contains(prompt, "research-findings.md")
   assert_contains(prompt, "one-artifact contract")
   assert_contains(prompt, "submit_workflow_step_recovery_result")
-  assert_contains(prompt, "retry_requested")
+  assert_contains(prompt, "recheck")
   assert_contains(prompt, "gave_up")
   assert_contains(prompt, "missing workspace driver")
   assert_contains(prompt, "unsafe unexpected source change")

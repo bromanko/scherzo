@@ -2,19 +2,19 @@
 
 ## Purpose / Big Picture
 
-Operators need a quick way to understand what happened when a workflow step failed, ran recovery, retried, and eventually succeeded or failed after recovery. After this change, an operator can run the human `scripts/scherzoctl session <session-ref>` command for the original step session, a continuation session, or the nested recovery session and see a readable `workflow_step_recovery_history` block that ties together the failed attempt, recovery decision, retry attempt, and final recovered workflow outcome where that outcome is known.
+Operators need a quick way to understand what happened when a workflow step failed, ran recovery, rechecked, and eventually succeeded or failed after recovery. After this change, an operator can run the human `scripts/scherzoctl session <session-ref>` command for the original step session, a continuation session, or the nested recovery session and see a readable `workflow_step_recovery_history` block that ties together the failed attempt, recovery decision, recheck attempt, and final recovered workflow outcome where that outcome is known.
 
 ## Problem Framing and Constraints
 
-The recovery foundation records durable workflow step recovery state, but the local operator surface still leaves the recovery story scattered across ledger records, projection state, step sessions, and retained events. That makes failed-run triage slow and makes interrupted recovery-start-without-finish records easy to miss. The implementation should solve the display problem only. It should not change runtime recovery scheduling, retry mechanics, ledger record schemas, provider-live preflight, review-lane cache behavior, or JSON session contracts.
+The recovery foundation records durable workflow step recovery state, but the local operator surface still leaves the recovery story scattered across ledger records, projection state, step sessions, and retained events. That makes failed-run triage slow and makes interrupted recovery-start-without-finish records easy to miss. The implementation should solve the display problem only. It should not change runtime recovery scheduling, recheck mechanics, ledger record schemas, provider-live preflight, review-lane cache behavior, or JSON session contracts.
 
-This plan depends on the predecessor runtime work from LIV-488 and LIV-489. The implementation checkout must already contain durable recovery start and finish records, retry step attempts, and stable recovered terminal outcomes named `succeeded_after_recovery` and `failed_after_recovery`. If those contracts are absent, implementation should stop and report the missing predecessor evidence instead of inventing compatibility behavior.
+This plan depends on the predecessor runtime work from LIV-488 and LIV-489. The implementation checkout must already contain durable recovery start and finish records, recheck step attempts, and stable recovered terminal outcomes named `succeeded_after_recovery` and `failed_after_recovery`. If those contracts are absent, implementation should stop and report the missing predecessor evidence instead of inventing compatibility behavior.
 
 ## Strategy Overview
 
 Add a small read-only helper under `src/scherzo/ctl/workflow_recovery_history.gleam` that replays the local ledger, folds or receives the existing projection, and renders recovery history for a session summary. The helper should keep impure ledger loading separate from pure history construction so the timeline logic can be tested deterministically with in-memory records. The human `scherzoctl session` path should print the normal session detail first, then append the rendered recovery history. The `session --json` output should remain unchanged; if JSON output needs to change, implementation should stop and revise this plan with explicit JSON acceptance and tests.
 
-The history should be built from durable identities, not display names or retained Pi transcripts. Candidate run ids should come from step attempt session ids, continuation session ids, and recovery session ids recorded in the ledger and projection. Each recovery-start record should produce one timeline entry, sorted by ledger order. A matching finish record fills in the recovery decision, summary or reason, retry attempt index and retry result when present, and final workflow outcome when the projection exposes `succeeded_after_recovery` or `failed_after_recovery`. A start record without a finish record should render as incomplete and inspectable rather than disappearing.
+The history should be built from durable identities, not display names or retained Pi transcripts. Candidate run ids should come from step attempt session ids, continuation session ids, and recovery session ids recorded in the ledger and projection. Each recovery-start record should produce one timeline entry, sorted by ledger order. A matching finish record fills in the recovery decision, summary or reason, recheck attempt index and recheck result when present, and final workflow outcome when the projection exposes `succeeded_after_recovery` or `failed_after_recovery`. A start record without a finish record should render as incomplete and inspectable rather than disappearing.
 
 ## Alternatives Considered
 
@@ -26,7 +26,7 @@ A third option is to derive the timeline from retained agent transcripts or comm
 
 ## Risks and Countermeasures
 
-The main risk is showing an invented or misleading timeline. The countermeasure is to join only exact durable identifiers from `WorkflowStepRecoveryStarted`, `WorkflowStepRecoveryFinished`, step-attempt records, and projection keys. Partial data should render as incomplete or unknown, not as a guessed decision or retry result.
+The main risk is showing an invented or misleading timeline. The countermeasure is to join only exact durable identifiers from `WorkflowStepRecoveryStarted`, `WorkflowStepRecoveryFinished`, step-attempt records, and projection keys. Partial data should render as incomplete or unknown, not as a guessed decision or recheck result.
 
 A second risk is breaking existing `scherzoctl session` behavior. The countermeasure is to preserve the existing base session output, leave `session --json` unchanged, and add CLI tests that prove a ledger replay failure still prints `display_name:` and an unavailable-history note.
 
@@ -38,13 +38,13 @@ A fourth risk is implementing against missing predecessor contracts. The first i
 
 In scope are a read-only recovery-history helper, deterministic helper tests, non-JSON `scherzoctl session` integration, CLI tests for normal and unavailable-history output, and runbook updates that point operators to the implemented command.
 
-Out of scope are runtime recovery execution, retry scheduling, recovery-result parsing, checkpoint or ledger schema changes, provider-live or review-lane cache behavior, web UI changes, automatic repair of interrupted recovery, broad redaction hardening, and any intentional change to `scherzoctl session --json`.
+Out of scope are runtime recovery execution, recheck scheduling, recovery-result parsing, checkpoint or ledger schema changes, provider-live or review-lane cache behavior, web UI changes, automatic repair of interrupted recovery, broad redaction hardening, and any intentional change to `scherzoctl session --json`.
 
 ## Milestones
 
 Milestone 1 validates predecessor contracts before coding. The implementer should search `src` and `test` for `WorkflowStepRecoveryStarted`, `WorkflowStepRecoveryFinished`, `workflow_step_recovery_started`, `workflow_step_recovery_finished`, `succeeded_after_recovery`, and `failed_after_recovery`. The observable result is either evidence that the runtime contracts exist or a stopped implementation report that names the missing contract.
 
-Milestone 2 adds pure helper tests. The new `test/ctl_workflow_recovery_history_test.gleam` should use in-memory ledger records and projection fixtures to cover retry-requested with retry attempt 2 and `succeeded_after_recovery`, gave-up with `failed_after_recovery`, interrupted start without finish, original step session lookup, continuation session lookup, nested recovery session lookup, duplicate or multiple recovery starts, and an unrelated session rendering `workflow_step_recovery_history: -`.
+Milestone 2 adds pure helper tests. The new `test/ctl_workflow_recovery_history_test.gleam` should use in-memory ledger records and projection fixtures to cover recheck with recheck attempt 2 and `succeeded_after_recovery`, gave-up with `failed_after_recovery`, interrupted start without finish, original step session lookup, continuation session lookup, nested recovery session lookup, duplicate or multiple recovery starts, and an unrelated session rendering `workflow_step_recovery_history: -`.
 
 Milestone 3 implements the helper. The new `src/scherzo/ctl/workflow_recovery_history.gleam` should expose an impure `load` wrapper around existing ledger replay and pure construction and rendering functions. The observable result is that helper tests pass and long summary or reason text is normalized, newline-safe, and bounded.
 
@@ -82,7 +82,7 @@ Milestone 5 migrates documentation and completes validation. `docs/runbooks/work
 
 ## Validation and Acceptance
 
-Validation must be deterministic. Helper tests must cover retry-requested, gave-up, interrupted start-without-finish, failed-after-recovery, succeeded-after-recovery, original step sessions, continuation sessions, nested recovery sessions, unrelated sessions, and duplicate or multiple recovery-start entries. CLI tests must prove `scripts/scherzoctl session <session-ref>` human output contains the existing session fields plus `workflow_step_recovery_history`, `decision: retry_requested`, `retry_attempt_index: 2`, `retry_result: succeeded`, and `final_workflow_outcome: succeeded_after_recovery` for a successful recovered timeline.
+Validation must be deterministic. Helper tests must cover recheck, gave-up, interrupted start-without-finish, failed-after-recovery, succeeded-after-recovery, original step sessions, continuation sessions, nested recovery sessions, unrelated sessions, and duplicate or multiple recovery-start entries. CLI tests must prove `scripts/scherzoctl session <session-ref>` human output contains the existing session fields plus `workflow_step_recovery_history`, `decision: recheck`, `recheck_attempt_index: 2`, `recheck_result: succeeded`, and `final_workflow_outcome: succeeded_after_recovery` for a successful recovered timeline.
 
 Error-path evidence is required. A corrupt ledger snapshot or current segment must still print the normal session summary, including `display_name:`, and append a bounded `workflow_step_recovery_history: unavailable (...)` diagnostic instead of failing the command. The JSON command `scripts/scherzoctl session <session-ref> --json` must remain byte-shape compatible for the existing session object unless this plan is revised before implementation.
 
@@ -102,6 +102,6 @@ There are no stakeholder decisions required before implementation. The implement
 
 ## Outcomes & Retrospective
 
-The implementation stayed within the intended display-only scope. Operators can now inspect workflow step recovery history from the human `scherzoctl session` output for failed-step sessions, retry continuations, and nested recovery sessions, while `session --json` remains unchanged. The unavailable-history path is bounded and non-fatal, duplicate recovery-start records remain visible, and the required docs now point operators at the implemented surface.
+The implementation stayed within the intended display-only scope. Operators can now inspect workflow step recovery history from the human `scherzoctl session` output for failed-step sessions, recheck continuations, and nested recovery sessions, while `session --json` remains unchanged. The unavailable-history path is bounded and non-fatal, duplicate recovery-start records remain visible, and the required docs now point operators at the implemented surface.
 
 Validation passed for `direnv exec . gleam test` and `direnv exec . gleam format --check src test`. The required lint gates also completed successfully, but they still report the pre-existing repository warning inventory; this change did not add new lint errors or new warning categories.

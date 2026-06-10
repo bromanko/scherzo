@@ -330,9 +330,9 @@ pub fn projection_records_step_recoveries_test() {
           failed_attempt_index: 1,
           recovery_attempt_number: 1,
           recovery_session_id: "recover-1",
-          result: "retry_requested",
+          result: "recheck",
           summary: "Fixed tests",
-          reason: "Ready for retry",
+          reason: "Ready for recheck",
           retry_attempt_index: Some(2),
         ),
       ),
@@ -340,7 +340,7 @@ pub fn projection_records_step_recoveries_test() {
 
   let key = projection.step_recovery_key("run-1", "implement", 1, 1)
   let assert Ok(projection.StepRecoveryFinishedStatus(
-    result: "retry_requested",
+    result: "recheck",
     retry_attempt_index: Some(2),
     finished_at_ms: 1010,
     ..,

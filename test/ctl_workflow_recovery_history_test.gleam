@@ -9,7 +9,7 @@ import scherzo/state/projection
 import scherzo/state/record
 import scherzo/workflow_outcome
 
-pub fn original_step_session_renders_retry_requested_history_test() {
+pub fn original_step_session_renders_recheck_history_test() {
   let transcript = render(sample_success_records(), "session-1")
 
   assert string.contains(transcript, "workflow_step_recovery_history:")
@@ -29,14 +29,14 @@ pub fn original_step_session_renders_retry_requested_history_test() {
       "workflow_step_recovery_result",
     ),
   )
-  assert string.contains(transcript, "decision: retry_requested")
-  assert string.contains(transcript, "retry_attempt_index: 2")
+  assert string.contains(transcript, "decision: recheck")
+  assert string.contains(transcript, "recheck_attempt_index: 2")
   assert string.contains(
     transcript,
-    "retry_attempt_artifact_ref: runs/run-1/implement",
+    "recheck_attempt_artifact_ref: runs/run-1/implement",
   )
   assert string.contains(transcript, "/attempt-2.json")
-  assert string.contains(transcript, "retry_result: succeeded")
+  assert string.contains(transcript, "recheck_result: succeeded")
   assert string.contains(
     transcript,
     "final_workflow_outcome: succeeded_after_recovery",
@@ -47,12 +47,12 @@ pub fn original_step_session_renders_retry_requested_history_test() {
   assert string.contains(transcript, "…")
 }
 
-pub fn continuation_session_resolves_via_retry_attempt_index_test() {
+pub fn continuation_session_resolves_via_recheck_attempt_index_test() {
   let transcript = render(sample_success_records(), "continue-2")
 
-  assert string.contains(transcript, "decision: retry_requested")
-  assert string.contains(transcript, "retry_attempt_index: 2")
-  assert string.contains(transcript, "retry_result: succeeded")
+  assert string.contains(transcript, "decision: recheck")
+  assert string.contains(transcript, "recheck_attempt_index: 2")
+  assert string.contains(transcript, "recheck_result: succeeded")
 }
 
 pub fn control_characters_in_summary_and_reason_are_escaped_test() {
@@ -109,12 +109,12 @@ pub fn gave_up_history_renders_failed_after_recovery_outcome_test() {
     transcript,
     "final_workflow_outcome: failed_after_recovery",
   )
-  assert !string.contains(transcript, "retry_attempt_index:")
-  assert !string.contains(transcript, "retry_attempt_artifact_ref:")
-  assert !string.contains(transcript, "retry_result:")
+  assert !string.contains(transcript, "recheck_attempt_index:")
+  assert !string.contains(transcript, "recheck_attempt_artifact_ref:")
+  assert !string.contains(transcript, "recheck_result:")
 }
 
-pub fn failed_recovery_history_omits_result_and_retry_artifact_refs_test() {
+pub fn failed_recovery_history_omits_result_and_recheck_artifact_refs_test() {
   let transcript =
     render(sample_artifact_write_failed_records(), "session-artifact-failed")
 
@@ -126,8 +126,8 @@ pub fn failed_recovery_history_omits_result_and_retry_artifact_refs_test() {
   assert string.contains(transcript, "status: finished")
   assert string.contains(transcript, "decision: artifact_write_failed")
   assert !string.contains(transcript, "recovery_result_artifact_ref:")
-  assert !string.contains(transcript, "retry_attempt_index:")
-  assert !string.contains(transcript, "retry_attempt_artifact_ref:")
+  assert !string.contains(transcript, "recheck_attempt_index:")
+  assert !string.contains(transcript, "recheck_attempt_artifact_ref:")
 }
 
 pub fn unrelated_session_renders_empty_history_marker_test() {
@@ -232,9 +232,9 @@ fn sample_success_records() -> List(record.LedgerRecord) {
         failed_attempt_index: 1,
         recovery_attempt_number: 1,
         recovery_session_id: "recover-1",
-        result: "retry_requested",
+        result: "recheck",
         summary: "Fixed tests\nwith details",
-        reason: "retry-ready; protected_checkpoint_restored kind=step_attempt_artifact ref=runs/run-1/implement/attempt-1.json expected_sha256=abc observed=mutated",
+        reason: "recheck-ready; protected_checkpoint_restored kind=step_attempt_artifact ref=runs/run-1/implement/attempt-1.json expected_sha256=abc observed=mutated",
         retry_attempt_index: Some(2),
       ),
     ),
@@ -333,7 +333,7 @@ fn sample_control_character_records() -> List(record.LedgerRecord) {
         failed_attempt_index: 1,
         recovery_attempt_number: 1,
         recovery_session_id: "recover-1",
-        result: "retry_requested",
+        result: "recheck",
         summary: "Fixed\u{1b}[31m\nnext\rtail",
         reason: "osc \u{1b}]0;bad\u{7} c1 \u{9b}31m",
         retry_attempt_index: None,

@@ -402,7 +402,7 @@ Required arguments:
 | `--kind` | Workflow publication kind. The bundled jj driver accepts lowercase workflow kind tokens made from letters, numbers, and hyphens, for example `implementation`, `execplan`, `execplan-revision`, `execplan-implementation`, and `merge-conflict`. |
 | `--title-file` | Workspace-root-relative file path containing the hosted-review title. |
 | `--body-file` | Workspace-root-relative file path containing the hosted-review body. |
-| `--branch-prefix` | Prefix the driver may use when creating a publication branch/bookmark. |
+| `--branch-prefix` | Prefix the driver may use when creating a publication branch/bookmark. For stable same-repository `publish-commit-stack` requests without `--target-branch`, the bundled jj driver treats this value as the stable publication branch so retries reconcile with the same PR/branch instead of creating a new suffixed branch. The stable branch must be distinct from `--base` (before any `@remote` suffix) and must not be `HEAD`. |
 | `--base` | Base driver reference used for hosted-review base metadata. |
 | `--json` | Required output selector. |
 

@@ -71,7 +71,10 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  fi\n"
         <> "  exit 0\n"
         <> "fi\n"
-        <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_PUSH_FAIL:-}\" = 1 ]; then printf '%s\\n' \"${SCHERZO_FAKE_JJ_PUSH_FAIL_MESSAGE:-simulated push conflict}\" >&2; exit 1; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "if [ \"$1\" = log ]; then\n"
         <> "  revision=\n"
         <> "  while [ $# -gt 0 ]; do\n"
@@ -351,6 +354,12 @@ fn log_lines(log: String) -> List(String) {
     "" -> []
     trimmed -> string.split(trimmed, on: "\n")
   }
+}
+
+fn count_log_lines_containing(log: String, needle: String) -> Int {
+  log_lines(log)
+  |> list.filter(fn(line) { string.contains(line, needle) })
+  |> list.length
 }
 
 fn run_publish_change_with_pr_draft(
@@ -1161,6 +1170,242 @@ pub fn jj_driver_publish_commit_stack_pr_create_preserves_head_test() {
   let logged = log_text(log)
   assert !string.contains(logged, "describe -m")
   assert string.contains(logged, "gh: pr create")
+}
+
+pub fn jj_driver_publish_commit_stack_retry_reuses_stable_branch_pr_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-idempotent"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/title.txt", "LIV-936 publication\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-936/implementation_commit_stack"
+  let args =
+    "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+    <> branch
+    <> " --base main@origin --json"
+  let base_env = [
+    #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+    #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+    #("SCHERZO_PR_REPO", "example/repo"),
+  ]
+
+  let first =
+    run_jj(
+      "jj_driver_publish_commit_stack_idempotent_first",
+      args,
+      fake_env(workspace, bin, log, base_env),
+    )
+  assert_exit(first, 0)
+  assert string.contains(first.stdout, "\"status\":\"published\"")
+  assert string.contains(first.stdout, "\"branch\":\"" <> branch <> "\"")
+
+  let second =
+    run_jj(
+      "jj_driver_publish_commit_stack_idempotent_second",
+      args,
+      fake_env(
+        workspace,
+        bin,
+        log,
+        list.append(base_env, [
+          #(
+            "SCHERZO_FAKE_GH_VIEW_URL",
+            "https://github.com/example/repo/pull/475",
+          ),
+        ]),
+      ),
+    )
+  assert_exit(second, 0)
+  assert string.contains(second.stdout, "\"status\":\"updated\"")
+  assert string.contains(second.stdout, "\"created\":false")
+
+  let logged = log_text(log)
+  assert string.contains(
+    logged,
+    "bookmark set --allow-backwards " <> branch <> " --revision @",
+  )
+  assert string.contains(
+    logged,
+    "git push --remote origin --bookmark " <> branch <> " --allow-new",
+  )
+  assert string.contains(
+    logged,
+    "gh: pr create --repo example/repo --base main --head " <> branch,
+  )
+  assert string.contains(
+    logged,
+    "gh: pr view " <> branch <> " --repo example/repo --json url --jq .url",
+  )
+  assert string.contains(
+    logged,
+    "gh: pr edit " <> branch <> " --repo example/repo",
+  )
+  assert count_log_lines_containing(log, "gh: pr create") == 1
+}
+
+pub fn jj_driver_publish_commit_stack_retry_with_no_changes_recovers_stable_branch_pr_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-no-changes"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-936/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_no_changes_retry",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --allow-no-changes true --json",
+      fake_env(workspace, bin, log, [
+        #(
+          "SCHERZO_FAKE_GH_VIEW_URL",
+          "https://github.com/example/repo/pull/475",
+        ),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stdout, "\"status\":\"unchanged\"")
+  assert string.contains(artifact.stdout, "\"branch\":\"" <> branch <> "\"")
+  assert string.contains(
+    artifact.stdout,
+    "https://github.com/example/repo/pull/475",
+  )
+  assert string.contains(artifact.stdout, "\"created\":false")
+  assert string.contains(artifact.stdout, "\"updated\":false")
+
+  let logged = log_text(log)
+  assert string.contains(
+    logged,
+    "gh: pr view " <> branch <> " --repo example/repo --json url --jq .url",
+  )
+  assert !string.contains(logged, "git push")
+  assert !string.contains(logged, "gh: pr create")
+}
+
+pub fn jj_driver_publish_commit_stack_reconcile_needed_when_stable_branch_not_safe_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-reconcile"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-936/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_reconcile",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_JJ_PUSH_FAIL", "1"),
+        #(
+          "SCHERZO_FAKE_GH_VIEW_URL",
+          "https://github.com/example/repo/pull/475",
+        ),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"commit_stack_reconcile_needed\"",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "https://github.com/example/repo/pull/475",
+  )
+  let logged = log_text(log)
+  assert string.contains(
+    logged,
+    "gh: pr view " <> branch <> " --repo example/repo --json url --jq .url",
+  )
+  assert !string.contains(logged, "gh: pr create")
+}
+
+pub fn jj_driver_publish_commit_stack_push_auth_failure_with_existing_pr_reports_push_failed_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-auth-failure"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-936/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_auth_failure",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_JJ_PUSH_FAIL", "1"),
+        #("SCHERZO_FAKE_JJ_PUSH_FAIL_MESSAGE", "authentication failed"),
+        #(
+          "SCHERZO_FAKE_GH_VIEW_URL",
+          "https://github.com/example/repo/pull/475",
+        ),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stdout, "\"status\":\"remote_rejected\"")
+  assert string.contains(artifact.stdout, "\"failure_code\":\"push_failed\"")
+  assert string.contains(artifact.stdout, "authentication failed")
+  assert !string.contains(artifact.stdout, "commit_stack_reconcile_needed")
+
+  let logged = log_text(log)
+  assert string.contains(
+    logged,
+    "git push --remote origin --bookmark " <> branch <> " --allow-new",
+  )
+  assert !string.contains(logged, "gh: pr create")
+}
+
+pub fn jj_driver_publish_commit_stack_rejects_base_branch_prefix_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-base-branch"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_rejects_base_branch",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix main --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stdout, "\"status\":\"invalid_request\"")
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"unsafe_publication_branch\"",
+  )
+  assert string.contains(artifact.stdout, "base branch main")
+
+  let logged = log_text(log)
+  assert !string.contains(logged, "bookmark set")
+  assert !string.contains(logged, "git push")
+  assert !string.contains(logged, "gh:")
 }
 
 pub fn jj_driver_publish_commit_stack_rejects_stale_target_branch_test() {

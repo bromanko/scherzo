@@ -1025,7 +1025,7 @@ pub fn active_fatal_run_after_recovery_emits_recovered_failed_finish_record_test
       dag,
       planner.WorkflowRunFacts(
         ..base_run([failed_fatal("implement", 1)]),
-        recovery_evidence: workflow_outcome.StepRecoveryRetryRequested,
+        recovery_evidence: workflow_outcome.StepRecoveryRecheckRequested,
       ),
       current_ok(),
     )

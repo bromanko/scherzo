@@ -437,7 +437,8 @@ fn status_requires_url(
 ) -> Bool {
   case status {
     "published" -> True
-    "updated" -> existing_target_has_pr(planned.target)
+    "updated" ->
+      planned.pull_request.enabled || existing_target_has_pr(planned.target)
     _ -> False
   }
 }

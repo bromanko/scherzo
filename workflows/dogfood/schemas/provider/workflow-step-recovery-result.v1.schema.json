@@ -7,7 +7,7 @@
     "artifact_type": { "type": "string", "pattern": "^workflow_step_recovery_result$" },
     "decision": {
       "type": "string",
-      "pattern": "^(retry_requested|gave_up)$"
+      "pattern": "^(recheck|gave_up)$"
     },
     "summary": { "type": "string" },
     "reason": { "type": "string" }
