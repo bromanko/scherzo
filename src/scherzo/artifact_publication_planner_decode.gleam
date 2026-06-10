@@ -39,6 +39,11 @@ pub fn dry_run_manifest_decoder() -> decode.Decoder(
     None,
     decode.optional(planned_commit_stack_decoder()),
   )
+  use work <- decode.optional_field(
+    "work",
+    legacy_publication_work(),
+    publication_work_decoder(),
+  )
   let _ = schema_version
   let _ = artifact_type
   let #(repository_kind, repository_id, github_repo, github_base) = repository
@@ -59,7 +64,55 @@ pub fn dry_run_manifest_decoder() -> decode.Decoder(
     pull_request: pull_request,
     files: files,
     commit_stack: commit_stack,
+    work: work,
   ))
+}
+
+fn publication_work_decoder() -> decode.Decoder(
+  artifact_publication_planner.PublicationWork,
+) {
+  use kind <- decode.field("kind", decode.string)
+  use id <- decode.field("id", decode.string)
+  use identifier <- decode.field("identifier", decode.string)
+  use slug <- decode.field("slug", decode.string)
+  use title <- decode.optional_field(
+    "title",
+    None,
+    decode.optional(decode.string),
+  )
+  use url <- decode.optional_field("url", None, decode.optional(decode.string))
+  case kind {
+    "task" ->
+      decode.success(artifact_publication_planner.PublicationWork(
+        kind: artifact_publication_planner.TaskWork,
+        id: id,
+        identifier: identifier,
+        slug: slug,
+        title: title,
+        url: url,
+      ))
+    "scheduled" ->
+      decode.success(artifact_publication_planner.PublicationWork(
+        kind: artifact_publication_planner.ScheduledWork,
+        id: id,
+        identifier: identifier,
+        slug: slug,
+        title: title,
+        url: url,
+      ))
+    _ -> decode.failure(legacy_publication_work(), expected: "publication work")
+  }
+}
+
+fn legacy_publication_work() -> artifact_publication_planner.PublicationWork {
+  artifact_publication_planner.PublicationWork(
+    kind: artifact_publication_planner.ScheduledWork,
+    id: "",
+    identifier: "",
+    slug: "",
+    title: None,
+    url: None,
+  )
 }
 
 fn target_decoder() -> decode.Decoder(

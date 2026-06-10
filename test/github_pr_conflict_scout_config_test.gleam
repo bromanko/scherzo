@@ -108,7 +108,9 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
     == artifact_publication_config.UpdateExisting
   assert target.pull_request.draft == False
   assert target.pull_request.title
-    == Some("{{ work.identifier }}: publish implementation change")
+    == Some(
+      "{{ work.identifier }}: implement {% if work.title %}{{ work.title }}{% else %}implementation changes{% endif %}",
+    )
   assert target.pull_request.body_template
     == Some("workflows/prompts/implementation-publication-pr-body.md")
 }

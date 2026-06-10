@@ -35,7 +35,14 @@ pub type WorkKind {
 }
 
 pub type PublicationWork {
-  PublicationWork(kind: WorkKind, id: String, identifier: String, slug: String)
+  PublicationWork(
+    kind: WorkKind,
+    id: String,
+    identifier: String,
+    slug: String,
+    title: Option(String),
+    url: Option(String),
+  )
 }
 
 pub type SelectedArtifact {
@@ -98,6 +105,7 @@ pub type DryRunPublicationManifest {
     pull_request: PlannedPullRequest,
     files: List(PlannedPublicationFile),
     commit_stack: Option(PlannedCommitStack),
+    work: PublicationWork,
   )
 }
 
@@ -211,6 +219,7 @@ fn plan_file_publication(
     pull_request: pull_request,
     files: files,
     commit_stack: None,
+    work: work,
   ))
 }
 
@@ -287,6 +296,7 @@ fn plan_commit_stack_publication(
     pull_request: pull_request,
     files: [],
     commit_stack: Some(stack),
+    work: work,
   ))
 }
 
@@ -328,11 +338,23 @@ pub fn manifest_to_json(manifest: DryRunPublicationManifest) -> json.Json {
     #("pull_request", pull_request_to_json(manifest.pull_request)),
     #("files", json.array(manifest.files, of: planned_file_to_json)),
     #("commit_stack", option_commit_stack_to_json(manifest.commit_stack)),
+    #("work", work_to_json(manifest.work)),
   ])
 }
 
 pub fn manifest_to_string(manifest: DryRunPublicationManifest) -> String {
   manifest |> manifest_to_json |> json.to_string
+}
+
+fn work_to_json(work: PublicationWork) -> json.Json {
+  json.object([
+    #("kind", json.string(work_kind_to_string(work.kind))),
+    #("id", json.string(work.id)),
+    #("identifier", json.string(work.identifier)),
+    #("slug", json.string(work.slug)),
+    #("title", planner_support.option_string_to_json(work.title)),
+    #("url", planner_support.option_string_to_json(work.url)),
+  ])
 }
 
 type ResolvedGithubRepository {
@@ -1348,6 +1370,13 @@ fn base_template_locals(
     #("work.id", template.VString(work.id)),
     #("work.identifier", template.VString(work.identifier)),
     #("work.slug", template.VString(work.slug)),
+    #("work.title", planner_support.option_string_to_template_value(work.title)),
+    #("work.url", planner_support.option_string_to_template_value(work.url)),
+    #(
+      "work.source_url",
+      planner_support.option_string_to_template_value(work.url),
+    ),
+    #("source.url", planner_support.option_string_to_template_value(work.url)),
     #("workflow.id", template.VString(workflow_id)),
     #("run.id", template.VString(run_id)),
     #("publication.id", template.VString(publication_id)),

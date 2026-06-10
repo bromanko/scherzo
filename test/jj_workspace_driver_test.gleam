@@ -151,6 +151,7 @@ fn write_fake_gh(path: String, log: String) -> Nil {
         <> "\n"
         <> "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then if [ -n \"${SCHERZO_FAKE_GH_VIEW_URL:-}\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_URL\"; exit 0; fi; exit 1; fi\n"
         <> "if [ \"$1\" = pr ] && [ \"$2\" = create ]; then echo https://github.com/example/repo/pull/1; exit 0; fi\n"
+        <> "if [ \"$1\" = pr ] && [ \"$2\" = edit ]; then exit 0; fi\n"
         <> "exit 1\n",
     )
   test_helpers.chmod_executable(path)
@@ -949,6 +950,38 @@ pub fn jj_driver_publish_uses_github_repository_when_remote_repo_unparseable_tes
 
   assert_exit(artifact, 0)
   assert string.contains(log_text(log), "--repo github/env-repo")
+}
+
+pub fn jj_driver_publish_existing_pr_edits_title_and_body_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-existing-pr-edit"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/title.txt", "Updated PR title\n")
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/body.txt", "Updated body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_existing_pr_edit",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_VIEW_URL", "https://github.com/example/repo/pull/1"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stdout, "\"updated\":true")
+  let logged = log_text(log)
+  assert string.contains(
+    logged,
+    "gh: pr edit scherzo/test/updated-pr-title-commit --repo example/repo --title Updated PR title --body-file body.txt",
+  )
+  assert !string.contains(logged, "gh: pr create")
 }
 
 pub fn jj_driver_publish_legacy_remote_without_canonical_fails_closed_test() {

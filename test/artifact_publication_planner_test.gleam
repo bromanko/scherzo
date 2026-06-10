@@ -45,6 +45,8 @@ pub fn plans_leaf_output_publication_manifest_test() {
   let assert Some(body) = manifest.pull_request.body
   assert string.contains(body, "docs/plans/LIV-761.md")
   assert string.contains(body, manifest.version_id)
+  assert string.contains(body, "Plan publication metadata")
+  assert string.contains(body, "https://linear.example/LIV-761")
 
   let json = artifact_publication_planner.manifest_to_string(manifest)
   assert string.contains(json, "\"dry_run\":true")
@@ -53,6 +55,36 @@ pub fn plans_leaf_output_publication_manifest_test() {
   assert !string.contains(json, "\"commit_sha\"")
   assert !string.contains(json, "\"push_result\"")
   assert !string.contains(json, "\"mutation_status\"")
+}
+
+pub fn non_linear_publication_templates_render_unavailable_source_metadata_test() {
+  let store =
+    store_with_contents([
+      #(plan_ref(), plan_contents()),
+    ])
+  let template =
+    "Title {% if work.title %}{{ work.title }}{% else %}Unavailable{% endif %}\nURL {% if work.url %}{{ work.url }}{% else %}Unavailable{% endif %}"
+  let route =
+    leaf_route_with_title(
+      "{{ work.identifier }}: implement {% if work.title %}{{ work.title }}{% else %}implementation changes{% endif %}",
+    )
+
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      route,
+      store,
+      scheduled_work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", template)]),
+    )
+
+  assert manifest.pull_request.title
+    == Some("nightly-job: implement implementation changes")
+  let assert Some(body) = manifest.pull_request.body
+  assert string.contains(body, "Title Unavailable")
+  assert string.contains(body, "URL Unavailable")
 }
 
 pub fn plans_artifact_set_entry_publication_test() {
@@ -509,10 +541,39 @@ pub fn commit_stack_manifest_round_trips_through_decoder_test() {
   assert decoded_stack.manifest_ref == commit_stack_ref()
   assert decoded_stack.stack.head_sha == commit_stack_head_sha()
   assert decoded_stack.stack.carrier.ref == commit_stack_carrier_ref()
+  assert decoded.work.title == Some("Plan publication metadata")
+  assert decoded.work.url == Some("https://linear.example/LIV-761")
   let assert artifact_publication_planner.ExistingPrBranchTargetPlan(target) =
     decoded.target
   assert target.pr_number == 42
   assert target.pr_url == "https://example.test/pr/42"
+}
+
+pub fn legacy_manifest_without_work_decodes_with_fallback_work_test() {
+  let store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Ok(manifest) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  let json = artifact_publication_planner.manifest_to_string(manifest)
+  let legacy_json = manifest_json_without_work(json)
+  let assert Ok(decoded) =
+    artifact_publication_planner_decode.decode_manifest_json(legacy_json)
+
+  assert decoded.publication_id == manifest.publication_id
+  assert decoded.work.kind == artifact_publication_planner.ScheduledWork
+  assert decoded.work.id == ""
+  assert decoded.work.identifier == ""
+  assert decoded.work.slug == ""
+  assert decoded.work.title == None
+  assert decoded.work.url == None
 }
 
 pub fn commit_stack_stable_branch_target_plans_driver_publication_test() {
@@ -542,6 +603,8 @@ pub fn commit_stack_stable_branch_target_plans_driver_publication_test() {
   assert manifest.pull_request.title == Some("LIV-761 publication")
   let assert Some(body) = manifest.pull_request.body
   assert string.contains(body, manifest.version_id)
+  assert string.contains(body, "Plan publication metadata")
+  assert string.contains(body, "https://linear.example/LIV-761")
   let assert artifact_publication_planner.StableBranchTargetPlan =
     manifest.target
   let assert Some(_) = manifest.commit_stack
@@ -1212,11 +1275,38 @@ fn work() -> artifact_publication_planner.PublicationWork {
     id: "task-1",
     identifier: "LIV-761",
     slug: "LIV-761",
+    title: Some("Plan publication metadata"),
+    url: Some("https://linear.example/LIV-761"),
+  )
+}
+
+fn scheduled_work() -> artifact_publication_planner.PublicationWork {
+  artifact_publication_planner.PublicationWork(
+    kind: artifact_publication_planner.ScheduledWork,
+    id: "schedule-1",
+    identifier: "nightly-job",
+    slug: "nightly-job",
+    title: None,
+    url: None,
   )
 }
 
 fn leaf_route() -> artifact_publication_config.PublicationRoute {
   leaf_route_with_selector("review_doc", None)
+}
+
+fn leaf_route_with_title(
+  title: String,
+) -> artifact_publication_config.PublicationRoute {
+  artifact_publication_config.PublicationRoute(
+    ..leaf_route(),
+    pull_request: Some(
+      artifact_publication_config.PublicationPullRequestOverride(
+        title: Some(title),
+        body_template: Some("templates/publication.md"),
+      ),
+    ),
+  )
 }
 
 fn commit_stack_existing_route() -> artifact_publication_config.PublicationRoute {
@@ -2271,8 +2361,14 @@ fn bytes_of(contents: String) -> Int {
   bit_array.byte_size(bit_array.from_string(contents))
 }
 
+fn manifest_json_without_work(payload: String) -> String {
+  let assert Ok(#(prefix, _work_json)) =
+    string.split_once(payload, on: ",\"work\":")
+  prefix <> "}"
+}
+
 fn body_template() -> String {
-  "Version {{ publication.version_id }}\n{{ publication.files_markdown }}"
+  "Work {{ work.title }} {{ work.url }}\nVersion {{ publication.version_id }}\n{{ publication.files_markdown }}"
 }
 
 fn store_with_contents(
