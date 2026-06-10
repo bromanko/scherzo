@@ -33,9 +33,9 @@ type HistoryEntry {
     decision: Option(String),
     summary: Option(String),
     reason: Option(String),
-    retry_attempt_index: Option(Int),
-    retry_attempt_artifact_ref: Option(String),
-    retry_result: Option(String),
+    recheck_attempt_index: Option(Int),
+    recheck_attempt_artifact_ref: Option(String),
+    recheck_result: Option(String),
     final_workflow_outcome: Option(String),
   )
 }
@@ -51,7 +51,7 @@ pub opaque type LoadError {
 
 type SessionTarget {
   FailedAttemptTarget(run_id: String, step_id: String, attempt_index: Int)
-  RetryAttemptTarget(run_id: String, step_id: String, attempt_index: Int)
+  RecheckAttemptTarget(run_id: String, step_id: String, attempt_index: Int)
   RecoveryTarget(
     run_id: String,
     step_id: String,
@@ -65,7 +65,7 @@ type RecoveryFinishData {
     result: String,
     summary: String,
     reason: String,
-    retry_attempt_index: Option(Int),
+    recheck_attempt_index: Option(Int),
   )
 }
 
@@ -195,7 +195,7 @@ fn history_entry(
   folded: projection.Projection,
 ) -> HistoryEntry {
   case finish {
-    Some(RecoveryFinishData(result, summary, reason, retry_attempt_index)) ->
+    Some(RecoveryFinishData(result, summary, reason, recheck_attempt_index)) ->
       HistoryEntry(
         run_id: run_id,
         workflow_id: workflow_id,
@@ -219,13 +219,18 @@ fn history_entry(
         decision: Some(result),
         summary: optional_text(summary),
         reason: optional_text(reason),
-        retry_attempt_index: retry_attempt_index,
-        retry_attempt_artifact_ref: retry_attempt_artifact_ref(
+        recheck_attempt_index: recheck_attempt_index,
+        recheck_attempt_artifact_ref: recheck_attempt_artifact_ref(
           run_id,
           step_id,
-          retry_attempt_index,
+          recheck_attempt_index,
         ),
-        retry_result: retry_result(folded, run_id, step_id, retry_attempt_index),
+        recheck_result: recheck_result(
+          folded,
+          run_id,
+          step_id,
+          recheck_attempt_index,
+        ),
         final_workflow_outcome: final_workflow_outcome(folded, run_id),
       )
     None ->
@@ -246,9 +251,9 @@ fn history_entry(
         decision: None,
         summary: None,
         reason: None,
-        retry_attempt_index: None,
-        retry_attempt_artifact_ref: None,
-        retry_result: None,
+        recheck_attempt_index: None,
+        recheck_attempt_artifact_ref: None,
+        recheck_result: None,
         final_workflow_outcome: final_workflow_outcome(folded, run_id),
       )
   }
@@ -277,7 +282,7 @@ fn session_targets(
         case operator_session_id == session_id {
           True ->
             unique_target_insert(
-              RetryAttemptTarget(run_id, step_id, attempt_index),
+              RecheckAttemptTarget(run_id, step_id, attempt_index),
               unique_target_insert(
                 FailedAttemptTarget(run_id, step_id, attempt_index),
                 acc,
@@ -299,7 +304,7 @@ fn session_targets(
         case continuation_session_id == session_id {
           True ->
             unique_target_insert(
-              RetryAttemptTarget(run_id, step_id, attempt_index),
+              RecheckAttemptTarget(run_id, step_id, attempt_index),
               unique_target_insert(
                 FailedAttemptTarget(run_id, step_id, attempt_index),
                 acc,
@@ -369,7 +374,7 @@ fn recovery_finish_index(
           result,
           summary,
           reason,
-          retry_attempt_index,
+          recheck_attempt_index,
         ),
       ) -> {
         let key =
@@ -390,7 +395,7 @@ fn recovery_finish_index(
                 result: result,
                 summary: summary,
                 reason: reason,
-                retry_attempt_index: retry_attempt_index,
+                recheck_attempt_index: recheck_attempt_index,
               ),
             )
         }
@@ -414,10 +419,10 @@ fn matches_any_target(
         target_run_id == run_id
         && target_step_id == step_id
         && attempt_index == failed_attempt_index
-      RetryAttemptTarget(target_run_id, target_step_id, attempt_index) ->
+      RecheckAttemptTarget(target_run_id, target_step_id, attempt_index) ->
         target_run_id == run_id
         && target_step_id == step_id
-        && retry_attempt_matches(finish, attempt_index)
+        && recheck_attempt_matches(finish, attempt_index)
       RecoveryTarget(
         target_run_id,
         target_step_id,
@@ -432,30 +437,32 @@ fn matches_any_target(
   })
 }
 
-fn retry_attempt_matches(
+fn recheck_attempt_matches(
   finish: Option(RecoveryFinishData),
   attempt_index: Int,
 ) -> Bool {
   case finish {
-    Some(RecoveryFinishData(retry_attempt_index: Some(retry_attempt_index), ..)) ->
-      retry_attempt_index == attempt_index
+    Some(RecoveryFinishData(
+      recheck_attempt_index: Some(recheck_attempt_index),
+      ..,
+    )) -> recheck_attempt_index == attempt_index
     _ -> False
   }
 }
 
-fn retry_result(
+fn recheck_result(
   folded: projection.Projection,
   run_id: String,
   step_id: String,
-  retry_attempt_index: Option(Int),
+  recheck_attempt_index: Option(Int),
 ) -> Option(String) {
-  case retry_attempt_index {
+  case recheck_attempt_index {
     None -> None
-    Some(retry_attempt_index) ->
+    Some(recheck_attempt_index) ->
       case
         dict.get(
           folded.step_attempts,
-          projection.step_attempt_key(run_id, step_id, retry_attempt_index),
+          projection.step_attempt_key(run_id, step_id, recheck_attempt_index),
         )
       {
         Ok(projection.StepAttemptPending(..)) -> Some("pending")
@@ -469,14 +476,14 @@ fn retry_result(
   }
 }
 
-fn retry_attempt_artifact_ref(
+fn recheck_attempt_artifact_ref(
   run_id: String,
   step_id: String,
-  retry_attempt_index: Option(Int),
+  recheck_attempt_index: Option(Int),
 ) -> Option(String) {
-  case retry_attempt_index {
-    Some(retry_attempt_index) ->
-      Some(artifact_store.artifact_ref(run_id, step_id, retry_attempt_index))
+  case recheck_attempt_index {
+    Some(recheck_attempt_index) ->
+      Some(artifact_store.artifact_ref(run_id, step_id, recheck_attempt_index))
     None -> None
   }
 }
@@ -488,7 +495,7 @@ fn recovery_result_artifact_ref(
   recovery_attempt_number: Int,
   result: String,
 ) -> Option(String) {
-  case result == "retry_requested" || result == "gave_up" {
+  case result == "recheck" || result == "gave_up" {
     True ->
       Some(artifact_store.recovery_artifact_ref(
         run_id,
@@ -570,12 +577,15 @@ fn render_entry(entry: HistoryEntry) -> List(String) {
   |> append_optional("    decision: ", entry.decision)
   |> append_optional("    summary: ", entry.summary)
   |> append_optional("    reason: ", entry.reason)
-  |> append_optional_int("    retry_attempt_index: ", entry.retry_attempt_index)
-  |> append_optional(
-    "    retry_attempt_artifact_ref: ",
-    entry.retry_attempt_artifact_ref,
+  |> append_optional_int(
+    "    recheck_attempt_index: ",
+    entry.recheck_attempt_index,
   )
-  |> append_optional("    retry_result: ", entry.retry_result)
+  |> append_optional(
+    "    recheck_attempt_artifact_ref: ",
+    entry.recheck_attempt_artifact_ref,
+  )
+  |> append_optional("    recheck_result: ", entry.recheck_result)
   |> append_optional(
     "    final_workflow_outcome: ",
     entry.final_workflow_outcome,
@@ -604,10 +614,10 @@ fn append_optional_int(
   }
 }
 
-fn result_to_option(value: Result(a, b)) -> Option(a) {
+fn result_to_option(value: Result(a, Nil)) -> Option(a) {
   case value {
     Ok(value) -> Some(value)
-    Error(_) -> None
+    Error(Nil) -> None
   }
 }
 

@@ -13,20 +13,20 @@ pub const failed_after_recovery = "failed_after_recovery"
 pub type RecoveryEvidence {
   NoStepRecovery
   StepRecoveryRan
-  StepRecoveryRetryRequested
+  StepRecoveryRecheckRequested
 }
 
 pub fn terminal_success(recovery_evidence: RecoveryEvidence) -> String {
   case recovery_evidence {
     NoStepRecovery -> completed
-    StepRecoveryRan | StepRecoveryRetryRequested -> succeeded_after_recovery
+    StepRecoveryRan | StepRecoveryRecheckRequested -> succeeded_after_recovery
   }
 }
 
 pub fn terminal_failed_fatal(recovery_evidence: RecoveryEvidence) -> String {
   case recovery_evidence {
     NoStepRecovery -> failed_fatal
-    StepRecoveryRan | StepRecoveryRetryRequested -> failed_after_recovery
+    StepRecoveryRan | StepRecoveryRecheckRequested -> failed_after_recovery
   }
 }
 
@@ -41,7 +41,7 @@ pub fn is_terminal_failure(outcome: String) -> Bool {
 pub fn recovery_attempted(recovery_evidence: RecoveryEvidence) -> Bool {
   case recovery_evidence {
     NoStepRecovery -> False
-    StepRecoveryRan | StepRecoveryRetryRequested -> True
+    StepRecoveryRan | StepRecoveryRecheckRequested -> True
   }
 }
 

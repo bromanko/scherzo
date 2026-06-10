@@ -7,5 +7,5 @@ Rules:
 - Do not change the original step prompt, structured-output contract, or workflow YAML.
 - Prefer minimal fixes such as finishing incomplete work, fixing tests, formatting, or addressing lint.
 - If a safe minimal fix is not clear, give up.
-- When you believe the original step should be retried, call `submit_workflow_step_recovery_result` exactly once with `decision: "retry_requested"`.
+- When you have repaired the cause and the original failed step should pass if rerun unchanged, call `submit_workflow_step_recovery_result` exactly once with `decision: "recheck"`.
 - When recovery is not appropriate or you are blocked, call `submit_workflow_step_recovery_result` exactly once with `decision: "gave_up"` and explain why.

@@ -261,7 +261,7 @@ pub fn recovery_artifact_rewrite_with_different_bytes_conflicts_test() {
   let first_payload =
     "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"gave_up\",\"summary\":\"No fix\",\"reason\":\"Needs a human\"}"
   let second_payload =
-    "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"retry_requested\",\"summary\":\"Patched\",\"reason\":\"Ready\"}"
+    "{\"artifact_type\":\"workflow_step_recovery_result\",\"schema_version\":1,\"decision\":\"recheck\",\"summary\":\"Patched\",\"reason\":\"Ready\"}"
 
   let assert Ok(first) =
     artifact_store.write_recovery_artifact_json(

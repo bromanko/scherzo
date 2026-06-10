@@ -4048,7 +4048,7 @@ pub fn daemon_startup_resume_preserves_recovered_failure_outcome_test() {
       1,
       1,
       "recovery-session-1",
-      "retry_requested",
+      "recheck",
       "summary",
       "reason",
       Some(2),

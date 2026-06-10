@@ -14,7 +14,7 @@ pub fn constants_and_terminal_predicates_test() {
   assert workflow_outcome.terminal_failed_fatal(workflow_outcome.NoStepRecovery)
     == "failed_fatal"
   assert workflow_outcome.terminal_failed_fatal(
-      workflow_outcome.StepRecoveryRetryRequested,
+      workflow_outcome.StepRecoveryRecheckRequested,
     )
     == "failed_after_recovery"
 

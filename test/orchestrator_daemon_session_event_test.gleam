@@ -534,6 +534,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
   let candidate = issue("issue-id", "ABC-123", "Todo")
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
+  let worker_update_sent = process.new_subject()
   let assert Ok(hub_subject) = hub.start(20, fn() { 100 })
   let deps =
     dependencies(
@@ -542,6 +543,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
       hub_subject,
       fn(issue, _, _, _, _, emit_update, _, _) {
         emit_update(issue.id, update("message_update", Some("hello")))
+        process.send(worker_update_sent, Nil)
         test_async.block_until_released(worker_barrier)
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
@@ -557,6 +559,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
+  test_async.expect_message_within(worker_update_sent, 5000)
 
   let assert Ok(page_before_exit) =
     wait_for_event_name(

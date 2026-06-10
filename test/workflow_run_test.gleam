@@ -613,10 +613,14 @@ fn prepare_fake_step(
         Error(_) -> name <> "=missing"
       }
   }
+  let workspace_path =
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
+    <> workspace_ref.name
   process.send(
     subject,
     event_prefix <> ":" <> step_id <> ":" <> workspace_ref.name <> ":" <> source,
   )
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace_path)
   Ok(workspace_run.PreparedStepWorkspace(
     workflow_id: workflow_id,
     run_id: run_id,
@@ -624,8 +628,7 @@ fn prepare_fake_step(
     workflow_bundle_dir: ".scherzo/workflows",
     attempt_index: attempt_index,
     workspace_name: workspace_ref.name,
-    path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
-      <> workspace_ref.name,
+    path: workspace_path,
     source_workspace_name: workspace_ref.from,
     source_workspace_path: case workspace_ref.from {
       None -> None
@@ -6917,7 +6920,7 @@ pub fn resumed_run_without_step_recovery_emits_failed_fatal_terminal_outcome_tes
   assert workflow_finished_outcome(root) == workflow_outcome.failed_fatal
 }
 
-pub fn resumed_run_with_step_recovery_retry_requested_emits_failed_after_recovery_test() {
+pub fn resumed_run_with_step_recovery_recheck_emits_failed_after_recovery_test() {
   let root = "test/tmp/workflow-run/recovered-outcome-recovered-failure"
   let subject = process.new_subject()
   test_helpers.reset_dir(root)
@@ -6931,7 +6934,7 @@ pub fn resumed_run_with_step_recovery_retry_requested_emits_failed_after_recover
       workspaces: dict.new(),
       next_attempt_indexes: dict.from_list([#("collect", 1)]),
       run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
-      recovery_evidence: workflow_outcome.StepRecoveryRetryRequested,
+      recovery_evidence: workflow_outcome.StepRecoveryRecheckRequested,
       pi_session_continuations: dict.new(),
       contract_inputs_recorded: None,
       contract_outputs_recorded: None,
@@ -7132,9 +7135,9 @@ fn first_index_of_kind(
   }
 }
 
-pub fn fatal_command_step_recovery_retries_original_step_test() {
+pub fn fatal_command_step_recovery_repairs_then_rechecks_original_step_test() {
   let subject = process.new_subject()
-  let root = "test/tmp/workflow-run/recovery-command-retry"
+  let root = "test/tmp/workflow-run/recovery-command-recheck"
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -7162,9 +7165,10 @@ pub fn fatal_command_step_recovery_retries_original_step_test() {
             <> ":"
             <> int.to_string(context.attempt_index),
         )
-        let exit_code = case context.attempt_index == 1 {
-          True -> 1
-          False -> 0
+        let marker_path = context.workspace_path <> "/recovery-repaired"
+        let exit_code = case simplifile.is_file(marker_path) {
+          Ok(True) -> 0
+          _ -> 1
         }
         step_artifact.from_command_result(
           context.step_id,
@@ -7210,11 +7214,13 @@ pub fn fatal_command_step_recovery_retries_original_step_test() {
             <> ":"
             <> prompt_text(prompt_mode),
         )
+        let assert Ok(Nil) =
+          simplifile.write(context.workspace_path <> "/recovery-repaired", "ok")
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
@@ -7241,6 +7247,11 @@ pub fn fatal_command_step_recovery_retries_original_step_test() {
   assert string.starts_with(
     recovery_event,
     "agent:fixable:1:repair the workspace",
+  )
+  assert string.contains(recovery_event, "Structured recovery input JSON")
+  assert string.contains(
+    recovery_event,
+    "\"schema_version\":\"scherzo.workflow_recovery_input.v1\"",
   )
   assert receive_event(subject) == "prepare:fixable:main:"
   assert receive_event(subject) == "command:fixable:2"
@@ -7301,11 +7312,27 @@ pub fn fatal_command_step_recovery_retries_original_step_test() {
     1,
     1,
     _,
-    "retry_requested",
+    "recheck",
     "patched",
-    "ready for retry",
+    "ready for recheck",
     Some(2),
   ) = recovery_finished.body
+
+  let assert Ok(input_payload) =
+    simplifile.read(
+      artifact_root(root)
+      <> "/"
+      <> artifact_store.recovery_artifact_ref(
+        "run-1",
+        "fixable",
+        1,
+        1,
+        "workflow_step_recovery_input",
+      ),
+    )
+  assert string.contains(input_payload, "\"step_id\":\"fixable\"")
+  assert string.contains(input_payload, "\"attempt_index\":1")
+  assert string.contains(input_payload, "\"allowed_actions\"")
 }
 
 pub fn continued_failures_do_not_start_step_recovery_test() {
@@ -7343,8 +7370,9 @@ pub fn continued_failures_do_not_start_step_recovery_test() {
   assert recovery_records == []
 }
 
-pub fn disabled_step_recovery_preserves_original_failure_test() {
+pub fn disabled_side_effecting_step_recovery_preserves_original_failure_without_worker_test() {
   let subject = process.new_subject()
+  let agent_subject = process.new_subject()
   let root = "test/tmp/workflow-run/recovery-disabled"
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
@@ -7354,6 +7382,26 @@ pub fn disabled_step_recovery_preserves_original_failure_test() {
   let dependencies =
     workflow_run.Dependencies(
       ..deps(subject, Some("broken")),
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(agent_subject, "recovery-worker-called")
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "recheck",
+            "patched",
+            "ready for recheck",
+          )),
+        )
+      },
       checkpoint: hidden_local_path_checkpoint(root),
     )
 
@@ -7370,6 +7418,16 @@ pub fn disabled_step_recovery_preserves_original_failure_test() {
 
   assert failure.reason == "workflow_step_failed"
   assert_no_recovery_records(root)
+  let started_attempts =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      case ledger_record.body {
+        record.StepAttemptStarted(step_id: "broken", ..) -> True
+        _ -> False
+      }
+    })
+  assert list.length(started_attempts) == 1
+  test_async.assert_no_extra_message_within(agent_subject, 50)
 }
 
 fn assert_no_recovery_records(root: String) {
@@ -7413,6 +7471,19 @@ fn assert_recovery_tool_spec_unavailable_record(
     reason,
     "recovery_tool_spec_unavailable:" <> expected_code,
   )
+  let assert Ok(input_payload) =
+    simplifile.read(
+      artifact_root(root)
+      <> "/"
+      <> artifact_store.recovery_artifact_ref(
+        "run-1",
+        "broken",
+        1,
+        1,
+        "workflow_step_recovery_input",
+      ),
+    )
+  assert string.contains(input_payload, "\"step_id\":\"broken\"")
 }
 
 fn broken_command_recovery_dag(extra_yaml: String) -> workflow_dag.WorkflowDag {
@@ -7595,7 +7666,7 @@ pub fn absent_step_recovery_preserves_original_failure_test() {
 
 pub fn fatal_agent_step_recovery_preserves_original_definition_test() {
   let subject = process.new_subject()
-  let root = "test/tmp/workflow-run/recovery-agent-retry"
+  let root = "test/tmp/workflow-run/recovery-agent-recheck"
   test_helpers.reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -7636,9 +7707,9 @@ pub fn fatal_agent_step_recovery_preserves_original_definition_test() {
           "recovery", _ ->
             Ok(
               success_agent_with_result(workflow_step_recovery_result(
-                "retry_requested",
+                "recheck",
                 "patched",
-                "ready for retry",
+                "ready for recheck",
               )),
             )
           "original", 1 ->
@@ -7716,6 +7787,10 @@ pub fn step_recovery_gave_up_preserves_original_failure_test() {
         secrets,
         limits,
       ) {
+        process.send(
+          subject,
+          "command_attempt:" <> int.to_string(context.attempt_index),
+        )
         step_artifact.from_command_result(
           context.step_id,
           1,
@@ -7782,9 +7857,40 @@ pub fn step_recovery_gave_up_preserves_original_failure_test() {
       record.kind(ledger_record.body) == "workflow_step_recovery_finished"
     })
     |> list.map(fn(ledger_record) { ledger_record.body })
+
+  let started_attempts =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      case ledger_record.body {
+        record.StepAttemptStarted(step_id: "broken", ..) -> True
+        _ -> False
+      }
+    })
+  assert list.length(started_attempts) == 1
+  assert receive_event(subject) == "prepare:broken:main:"
+  assert receive_event(subject) == "command_attempt:1"
+  assert receive_event(subject) == "after:broken"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+
+  let assert Ok(input_payload) =
+    simplifile.read(
+      artifact_root(root)
+      <> "/"
+      <> artifact_store.recovery_artifact_ref(
+        "run-1",
+        "broken",
+        1,
+        1,
+        "workflow_step_recovery_input",
+      ),
+    )
+  assert string.contains(input_payload, "\"step_id\":\"broken\"")
+  assert string.contains(input_payload, "\"forbidden_actions\"")
 }
 
-pub fn recovery_checkpoint_preflight_failure_stops_before_worker_and_retry_test() {
+pub fn recovery_checkpoint_preflight_failure_stops_before_worker_and_recheck_test() {
   let root = "test/tmp/workflow-run/recovery-checkpoint-preflight"
   let subject = process.new_subject()
   test_helpers.reset_dir(root)
@@ -7828,7 +7934,7 @@ pub fn recovery_checkpoint_preflight_failure_stops_before_worker_and_retry_test(
               limits,
             )
           }
-          _, _ -> panic as "unexpected broken retry"
+          _, _ -> panic as "unexpected broken recheck"
         }
       },
       agent_step: fn(
@@ -7845,9 +7951,9 @@ pub fn recovery_checkpoint_preflight_failure_stops_before_worker_and_retry_test(
         process.send(subject, "recovery-worker-called")
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
@@ -7890,7 +7996,7 @@ pub fn recovery_checkpoint_preflight_failure_stops_before_worker_and_retry_test(
   assert string.contains(reason, "hash mismatch")
 }
 
-pub fn recovery_checkpoint_restore_preserves_workspace_edits_before_retry_test() {
+pub fn recovery_checkpoint_restore_preserves_workspace_edits_before_recheck_test() {
   let root = "test/tmp/workflow-run/recovery-checkpoint-restore"
   test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
@@ -7967,9 +8073,9 @@ pub fn recovery_checkpoint_restore_preserves_workspace_edits_before_retry_test()
         let assert Ok(Nil) = simplifile.write(workspace_marker, "marker")
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
@@ -7997,7 +8103,7 @@ pub fn recovery_checkpoint_restore_preserves_workspace_edits_before_retry_test()
       1,
       1,
       _,
-      "retry_requested",
+      "recheck",
       "patched",
       reason,
       Some(2),
@@ -8107,7 +8213,7 @@ pub fn recovery_checkpoint_restores_mutated_input_manifest_test() {
   assert string.contains(reason, "runs/run-1/inputs.v1.json")
 }
 
-pub fn recovery_checkpoint_restore_failure_stops_before_retry_test() {
+pub fn recovery_checkpoint_restore_failure_stops_before_recheck_test() {
   let root = "test/tmp/workflow-run/recovery-checkpoint-restore-failure"
   test_helpers.reset_dir(root)
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
@@ -8153,9 +8259,9 @@ pub fn recovery_checkpoint_restore_failure_stops_before_retry_test() {
         let assert Ok(Nil) = simplifile.create_directory_all(path)
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
@@ -8560,13 +8666,13 @@ pub fn duplicate_recovery_result_preserves_original_failure_test() {
     recovery_result_with_calls([
       recovery_tool_call(
         Some(
-          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"retry_requested\",\"summary\":\"patched\",\"reason\":\"done\"}",
+          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"recheck\",\"summary\":\"patched\",\"reason\":\"done\"}",
         ),
         1,
       ),
       recovery_tool_call(
         Some(
-          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"retry_requested\",\"summary\":\"patched\",\"reason\":\"done\"}",
+          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"recheck\",\"summary\":\"patched\",\"reason\":\"done\"}",
         ),
         1,
       ),
@@ -8597,7 +8703,7 @@ pub fn wrong_recovery_artifact_type_preserves_original_failure_test() {
     recovery_result_with_calls([
       recovery_tool_call(
         Some(
-          "{\"schema_version\":1,\"artifact_type\":\"wrong\",\"decision\":\"retry_requested\",\"summary\":\"patched\",\"reason\":\"done\"}",
+          "{\"schema_version\":1,\"artifact_type\":\"wrong\",\"decision\":\"recheck\",\"summary\":\"patched\",\"reason\":\"done\"}",
         ),
         1,
       ),
@@ -8612,7 +8718,7 @@ pub fn wrong_recovery_schema_version_preserves_original_failure_test() {
     recovery_result_with_calls([
       recovery_tool_call(
         Some(
-          "{\"schema_version\":2,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"retry_requested\",\"summary\":\"patched\",\"reason\":\"done\"}",
+          "{\"schema_version\":2,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"recheck\",\"summary\":\"patched\",\"reason\":\"done\"}",
         ),
         1,
       ),
@@ -8627,7 +8733,7 @@ pub fn sibling_tool_calls_in_recovery_result_preserve_original_failure_test() {
     recovery_result_with_calls([
       recovery_tool_call(
         Some(
-          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"retry_requested\",\"summary\":\"patched\",\"reason\":\"done\"}",
+          "{\"schema_version\":1,\"artifact_type\":\"workflow_step_recovery_result\",\"decision\":\"recheck\",\"summary\":\"patched\",\"reason\":\"done\"}",
         ),
         2,
       ),
@@ -8658,6 +8764,7 @@ fn assert_recovery_artifact_write_failure_preserves_original_failure(
   let subject = process.new_subject()
   test_helpers.reset_dir(root)
   let base = deps(subject, Some("broken"))
+  let checkpoint = hidden_local_path_checkpoint(root)
   let dependencies =
     workflow_run.Dependencies(
       ..base,
@@ -8675,11 +8782,17 @@ fn assert_recovery_artifact_write_failure_preserves_original_failure(
         Ok(success_agent_with_result(result))
       },
       checkpoint: workflow_checkpoint.Writer(
-        ..hidden_local_path_checkpoint(root),
-        write_recovery_artifact: fn(_) {
-          Error(workflow_checkpoint.CheckpointArtifactFailed(
-            "write failed TOP_SECRET /Users/example/project",
-          ))
+        ..checkpoint,
+        write_recovery_artifact: fn(
+          write: workflow_checkpoint.RecoveryArtifactWrite,
+        ) {
+          case write.artifact_name == "workflow_step_recovery_result" {
+            True ->
+              Error(workflow_checkpoint.CheckpointArtifactFailed(
+                "write failed TOP_SECRET /Users/example/project",
+              ))
+            False -> checkpoint.write_recovery_artifact(write)
+          }
         },
       ),
     )
@@ -8737,11 +8850,7 @@ fn assert_recovery_artifact_write_failure_preserves_original_failure(
 pub fn recovery_artifact_write_failure_preserves_original_failure_test() {
   assert_recovery_artifact_write_failure_preserves_original_failure(
     "test/tmp/workflow-run/recovery-artifact-write-failure",
-    workflow_step_recovery_result(
-      "retry_requested",
-      "patched",
-      "ready for retry",
-    ),
+    workflow_step_recovery_result("recheck", "patched", "ready for recheck"),
   )
 }
 
@@ -8750,6 +8859,102 @@ pub fn gave_up_recovery_artifact_write_failure_preserves_original_failure_test()
     "test/tmp/workflow-run/recovery-artifact-write-failure-gave-up",
     workflow_step_recovery_result("gave_up", "not fixable", "needs human help"),
   )
+}
+
+pub fn recovery_input_artifact_write_failure_stops_before_worker_and_preserves_original_failure_test() {
+  let root = "test/tmp/workflow-run/recovery-input-artifact-write-failure"
+  test_helpers.reset_dir(root)
+  let agent_subject = process.new_subject()
+  let base = deps(process.new_subject(), Some("broken"))
+  let checkpoint = hidden_local_path_checkpoint(root)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        _context,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(agent_subject, "agent_called")
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "recheck",
+            "patched",
+            "ready for recheck",
+          )),
+        )
+      },
+      checkpoint: workflow_checkpoint.Writer(
+        ..checkpoint,
+        write_recovery_artifact: fn(
+          write: workflow_checkpoint.RecoveryArtifactWrite,
+        ) {
+          case write.artifact_name == "workflow_step_recovery_input" {
+            True ->
+              Error(workflow_checkpoint.CheckpointArtifactFailed(
+                "input write failed TOP_SECRET /Users/example/project",
+              ))
+            False -> checkpoint.write_recovery_artifact(write)
+          }
+        },
+      ),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      broken_command_recovery_dag(
+        "    recovery:\n      attempts: 1\n      prompt: repair\n",
+      ),
+      orchestrator(),
+      empty_tracker(),
+      ["TOP_SECRET", "/Users/example/project"],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert step_finished_outcome(root, "broken") == workflow_outcome.failed_fatal
+  test_async.assert_no_extra_message_within(agent_subject, 50)
+  let step_attempt_starts =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      case ledger_record.body {
+        record.StepAttemptStarted(step_id: step_id, ..) -> step_id == "broken"
+        _ -> False
+      }
+    })
+  assert list.length(step_attempt_starts) == 1
+  let finished_records =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "broken",
+      1,
+      1,
+      _,
+      "recovery_input_artifact_write_failed",
+      "Recovery input artifact write failed",
+      reason,
+      None,
+    ),
+  ] = finished_records
+  assert string.contains(reason, "recovery_input_artifact_write_failed")
+  assert string.contains(reason, "[REDACTED]")
+  assert !string.contains(reason, "TOP_SECRET")
+  assert !string.contains(reason, "/Users/example/project")
 }
 
 pub fn recovery_started_checkpoint_failure_preserves_original_failure_test() {
@@ -8774,9 +8979,9 @@ pub fn recovery_started_checkpoint_failure_preserves_original_failure_test() {
         process.send(agent_subject, "agent_called")
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
@@ -8819,7 +9024,7 @@ pub fn recovery_tool_spec_build_failure_does_not_launch_agent_test() {
   let assert Ok(Nil) =
     simplifile.write(
       schema_dir <> "/workflow-step-recovery-result.v1.schema.json",
-      "{\"type\":\"object\",\"properties\":{\"decision\":{\"type\":\"string\",\"enum\":[\"retry_requested\"]}}}\n",
+      "{\"type\":\"object\",\"properties\":{\"decision\":{\"type\":\"string\",\"enum\":[\"recheck\"]}}}\n",
     )
   let agent_subject = process.new_subject()
   let base = deps(process.new_subject(), Some("broken"))
@@ -8840,9 +9045,9 @@ pub fn recovery_tool_spec_build_failure_does_not_launch_agent_test() {
         process.send(agent_subject, "agent_called")
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
@@ -8906,9 +9111,9 @@ pub fn recovery_tool_spec_write_failure_does_not_launch_agent_test() {
         process.send(agent_subject, "agent_called")
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
@@ -8956,9 +9161,9 @@ pub fn recovery_finished_checkpoint_failure_preserves_original_failure_test() {
       ) {
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
@@ -9127,9 +9332,9 @@ pub fn exhausted_step_recovery_budget_preserves_original_failure_test() {
         )
         Ok(
           success_agent_with_result(workflow_step_recovery_result(
-            "retry_requested",
+            "recheck",
             "patched",
-            "ready for retry",
+            "ready for recheck",
           )),
         )
       },
