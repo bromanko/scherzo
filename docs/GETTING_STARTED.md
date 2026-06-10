@@ -175,9 +175,6 @@ agents:
   concurrency: 1
   max_turns: 1
   sessions_per_task: 2
-  retries:
-    attempts: 2
-    max_backoff: 5m
   runtime:
     type: pi
     sessions: ephemeral

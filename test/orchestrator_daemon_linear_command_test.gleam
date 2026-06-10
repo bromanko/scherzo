@@ -35,7 +35,6 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
 fn workflow_text_with_limits(
   root: String,
   max_concurrent_agents: Int,
-  max_retry_attempts: Int,
   max_sessions_per_issue: Int,
 ) -> String {
   "version: 1
@@ -52,8 +51,6 @@ workspace:
 agents:
   concurrency: " <> int_to_string(max_concurrent_agents) <> "
   sessions_per_task: " <> int_to_string(max_sessions_per_issue) <> "
-  retries:
-    attempts: " <> int_to_string(max_retry_attempts) <> "
   runtime:
     type: pi
     pi:
@@ -70,7 +67,6 @@ workflows:
 fn write_workflow_with_limits(
   dir: String,
   max_concurrent_agents: Int,
-  max_retry_attempts: Int,
   max_sessions_per_issue: Int,
 ) -> #(String, String) {
   test_helpers.reset_dir(dir)
@@ -81,7 +77,6 @@ fn write_workflow_with_limits(
       workflow_text_with_limits(
         root,
         max_concurrent_agents,
-        max_retry_attempts,
         max_sessions_per_issue,
       ),
     ),
@@ -246,7 +241,6 @@ pub fn retry_artifact_publication_rejects_missing_output_manifest_test() {
       "test/tmp/daemon-artifact-publication-retry-missing-output",
       1,
       3,
-      3,
     )
   seed_failed_publication_without_output_manifest(root)
   let deps =
@@ -276,15 +270,12 @@ pub fn retry_artifact_publication_rejects_missing_output_manifest_test() {
 pub fn retry_issue_identifier_dispatches_tracker_candidate_test() {
   let candidate = issue("retry-identifier-issue", "LIV-724", "Todo")
   let #(workflow_path, _root) =
-    write_workflow_with_limits(
-      "test/tmp/daemon-linear-retry-identifier",
-      1,
-      3,
-      3,
-    )
+    write_workflow_with_limits("test/tmp/daemon-linear-retry-identifier", 1, 3)
+  let run_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let deps =
     dependencies(tracker_with(candidate), fn(_, _, _, _, _, _, _, _) {
+      process.send(run_subject, "agent_run")
       test_async.block_until_released(worker_barrier)
       Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("stopped")),
@@ -304,6 +295,7 @@ pub fn retry_issue_identifier_dispatches_tracker_candidate_test() {
   assert result.command == "retry"
   assert result.status == command.Applied
   assert result.target == Some("LIV-724")
+  assert test_async.expect_message_within(run_subject, 5000) == "agent_run"
 
   test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -315,7 +307,6 @@ pub fn park_and_unpark_issue_identifier_round_trip_test() {
     write_workflow_with_limits(
       "test/tmp/daemon-linear-park-unpark-identifier",
       0,
-      1,
       1,
     )
   let deps =

@@ -70,8 +70,6 @@ workspace:
 agents:
   concurrency: 1
   sessions_per_task: 2
-  retries:
-    attempts: 3
   runtime:
     type: pi
     pi:
@@ -452,7 +450,7 @@ pub fn daemon_records_exhausted_pi_auto_retry_events_in_failed_yaml_step_session
 
   process.send(started.data, daemon.PollTick(1))
 
-  assert wait_for_log(log_subject, "retry_scheduled", 20)
+  assert wait_for_log(log_subject, "worker_exited", 20)
   let step_session_id =
     "workflow-step-ABC-RETRYFAIL-42-1-implement-a1-f9bb818d8483"
   let assert Ok(step_summary) =
@@ -587,10 +585,9 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
   hub.stop(hub_subject)
 }
 
-pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
+pub fn daemon_worker_failure_does_not_create_retry_session_with_same_clock_test() {
   let #(workflow_path, root) = write_workflow("test/tmp/daemon-retry-sessions")
   let first = issue("retry-id", "ABC-RETRY", "Todo")
-  let second = tracker_issue.Issue(..first, title: "retry succeeds")
   let log_subject = process.new_subject()
   let refresh_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
@@ -615,23 +612,12 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
       fn(issue, _, _, _, _, _, _, _) {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
-        case issue.title == "retry succeeds" {
-          False ->
-            Error(agent_types.WorkerFailure(
-              reason: error.PiFailed(error.PiProtocolError("boom")),
-              workspace_path: Some(expected_workspace),
-              tokens: session_tokens.zero_token_totals(),
-              final_issue: None,
-            ))
-          True ->
-            Ok(success(
-              tracker_issue.Issue(
-                ..issue,
-                state: issue_state.from_string_unchecked("Done"),
-              ),
-              expected_workspace,
-            ))
-        }
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("boom")),
+          workspace_path: Some(expected_workspace),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -640,7 +626,7 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   let assert Ok(initial_refresh) =
     process.receive(refresh_subject, within: 1000)
   process.send(initial_refresh, first)
-  assert wait_for_log(log_subject, "retry_scheduled", 20)
+  assert wait_for_log(log_subject, "worker_exited", 20)
 
   let assert Ok(failed_summary) =
     wait_for_session(hub_subject, "ABC-RETRY-42-1", 20)
@@ -648,25 +634,13 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   let assert Ok(failed_page) =
     hub.events_after(hub_subject, "ABC-RETRY-42-1", 0, 20, 1000)
   assert !list.contains(event_names(failed_page.events), "retry_scheduled")
-
-  process.send(started.data, daemon.RetryTick("retry-id", 1))
-  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
-  process.send(retry_refresh, second)
-  assert wait_for_log(log_subject, "worker_exited", 20)
-
-  let assert Ok(succeeded_summary) =
-    wait_for_session(hub_subject, "ABC-RETRY-42-2", 20)
-  assert succeeded_summary.status == event.Exited(reason.Normal)
-  let assert Ok(_) =
-    hub.events_after(hub_subject, "ABC-RETRY-42-1", 0, 20, 1000)
-  let assert Ok(_) =
-    hub.events_after(hub_subject, "ABC-RETRY-42-2", 0, 20, 1000)
+  test_async.assert_no_extra_message_within(refresh_subject, 100)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
 
-pub fn daemon_startup_recovery_attaches_interrupted_metadata_to_retry_session_test() {
+pub fn daemon_startup_recovery_parks_interrupted_run_without_retry_session_test() {
   let #(workflow_path, root) =
     write_workflow("test/tmp/daemon-startup-recovery-session")
   let recovered = issue("recovered-id", "ABC-REC", "Todo")
@@ -715,23 +689,9 @@ pub fn daemon_startup_recovery_attaches_interrupted_metadata_to_retry_session_te
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
-  process.send(started.data, daemon.RetryTick("recovered-id", 1))
-  assert wait_for_log(log_subject, "worker_exited", 20)
-
-  let assert Ok(summary) = wait_for_session(hub_subject, "ABC-REC-42-1", 20)
-  let assert Some(recovery) = summary.recovery
-  assert recovery.status == event.Interrupted
-  assert recovery.source == "projection.run_running"
-  assert recovery.workflow_run_id == Some("old-run")
-  assert summary.status == event.Exited(reason.Normal)
-
-  let assert Ok(page) =
-    hub.events_after(hub_subject, "ABC-REC-42-1", 0, 20, 1000)
-  let assert Some(recovery_event) =
-    find_event(page.events, "recovery_interrupted")
-  let assert Some(event_recovery) = recovery_event.payload.recovery
-  assert event_recovery.status == event.Interrupted
-  assert event_recovery.workflow_run_id == Some("old-run")
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert snapshot.counts.parked_tasks == 1
+  assert snapshot.counts.retry_tasks == 0
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -921,7 +881,7 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "retry_scheduled", 20)
+  assert wait_for_log(log_subject, "worker_exited", 20)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-DOWN-42-1", 20)
   assert summary.status == event.Exited(reason.Failed)

@@ -408,7 +408,7 @@ pub fn apply_workflow_success(
 
 pub fn apply_task_workflow_success(
   state: orchestrator_state.RuntimeState,
-  _config: config_types.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   ref: task.TaskRef,
   issue_id: String,
   final_issue: tracker_issue.Issue,
@@ -417,14 +417,22 @@ pub fn apply_task_workflow_success(
   cleanup: WorkflowCleanupPolicy,
 ) -> Transition {
   let base = state_after_task_worker_exit(state, ref, final_issue, tokens)
-  let cleanup_effect_list = case cleanup {
-    AlreadyCleaned -> []
-    CleanupWorkflowWorkspace(path) -> cleanup_effects(path)
+  case is_terminal(config, final_issue.state) {
+    True -> {
+      let cleanup_effect_list = case cleanup {
+        AlreadyCleaned -> []
+        CleanupWorkflowWorkspace(path) -> cleanup_effects(path)
+      }
+      Transition(
+        state: release_task_claim(base, ref),
+        effects: list.append(cleanup_effect_list, [ReleaseClaim(issue_id)]),
+      )
+    }
+    False ->
+      Transition(state: release_task_claim(base, ref), effects: [
+        ReleaseClaim(issue_id),
+      ])
   }
-  Transition(
-    state: release_task_claim(base, ref),
-    effects: list.append(cleanup_effect_list, [ReleaseClaim(issue_id)]),
-  )
 }
 
 pub fn apply_worker_success(
@@ -533,7 +541,7 @@ pub fn apply_worker_failure(
 
 pub fn apply_task_worker_failure(
   state: orchestrator_state.RuntimeState,
-  config: config_types.EffectiveConfig,
+  _config: config_types.EffectiveConfig,
   ref: task.TaskRef,
   issue_id: String,
   baseline_issue: tracker_issue.Issue,
@@ -551,23 +559,7 @@ pub fn apply_task_worker_failure(
   let counter =
     orchestrator_state.IssueCounter(..counter, failure_attempts: failures)
   let state = put_task_counter(state, ref, counter)
-  case
-    recovery_policy.completed_attempts_exhausted(
-      failures,
-      config.agent.max_retry_attempts,
-    )
-  {
-    True ->
-      park_task(state, ref, baseline_issue, reason.ParkMaxRetryAttempts, now_ms)
-    False ->
-      schedule_task_retry(
-        state,
-        ref,
-        issue_id,
-        backoff_delay(failures, config.agent.max_retry_backoff_ms),
-        reason.RetryAfterFailure,
-      )
-  }
+  park_task(state, ref, baseline_issue, reason.ParkWorkerFailure, now_ms)
 }
 
 fn issue_with_lifecycle_id(
@@ -780,7 +772,7 @@ pub fn schedule_retry_with_backoff(
 
 fn retry_backoff_delay(
   state: orchestrator_state.RuntimeState,
-  config: config_types.EffectiveConfig,
+  _config: config_types.EffectiveConfig,
   issue_id: String,
 ) -> Int {
   let identity = orchestrator_state.linear_issue_id_identity(issue_id)
@@ -788,7 +780,10 @@ fn retry_backoff_delay(
     Ok(entry) -> recovery_policy.next_attempt_index(entry.timer_generation)
     Error(Nil) -> recovery_policy.first_attempt_index()
   }
-  recovery_policy.backoff_delay(attempt, config.agent.max_retry_backoff_ms)
+  recovery_policy.backoff_delay(
+    attempt,
+    recovery_policy.default_max_backoff_ms(),
+  )
 }
 
 pub fn reconcile_issue(
@@ -894,6 +889,10 @@ pub fn unpark_if_issue_changed(
 
 pub fn backoff_delay(attempt: Int, max_ms: Int) -> Int {
   recovery_policy.backoff_delay(attempt, max_ms)
+}
+
+pub fn default_max_backoff_ms() -> Int {
+  recovery_policy.default_max_backoff_ms()
 }
 
 pub fn add_tokens(

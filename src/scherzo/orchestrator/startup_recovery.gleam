@@ -183,8 +183,6 @@ pub fn recover_scheduled_runtime(
         effects,
         bundle.orchestrator.scheduled_jobs,
         now_ms,
-        bundle.effective.agent.max_retry_attempts,
-        bundle.effective.agent.max_retry_backoff_ms,
         status,
       )
     })
@@ -238,8 +236,6 @@ fn recover_scheduled_status(
   effects: List(ScheduledRecoveryEffect),
   jobs: List(config_types.ScheduledJobConfig),
   now_ms: Int,
-  max_retry_attempts: Int,
-  max_retry_backoff_ms: Int,
   status: projection.ScheduledJobStatus,
 ) -> #(scheduled_runtime.Runtime, List(ScheduledRecoveryEffect)) {
   case scheduled_job_by_id(jobs, status.job_id), status.current_run {
@@ -252,8 +248,6 @@ fn recover_scheduled_status(
             runtime,
             effects,
             now_ms,
-            max_retry_attempts,
-            max_retry_backoff_ms,
             job,
             status,
             run,
@@ -269,8 +263,6 @@ fn recover_enabled_scheduled_run(
   runtime: scheduled_runtime.Runtime,
   effects: List(ScheduledRecoveryEffect),
   now_ms: Int,
-  max_retry_attempts: Int,
-  max_retry_backoff_ms: Int,
   job: config_types.ScheduledJobConfig,
   status: projection.ScheduledJobStatus,
   run: projection.ScheduledRunSummary,
@@ -295,17 +287,9 @@ fn recover_enabled_scheduled_run(
       effects,
     )
     projection.ScheduledActive ->
-      recover_interrupted_scheduled_run(
-        runtime,
-        effects,
-        now_ms,
-        max_retry_attempts,
-        max_retry_backoff_ms,
-        job,
-        run,
-      )
+      recover_interrupted_scheduled_run(runtime, effects, now_ms, job, run)
     projection.ScheduledRetryWaiting ->
-      recover_scheduled_retry_waiting(runtime, effects, job, run)
+      recover_scheduled_retry_waiting(runtime, effects, now_ms, job, run)
     projection.ScheduledReportRetryWaiting ->
       recover_scheduled_report_retry_waiting(
         runtime,
@@ -340,23 +324,41 @@ fn optional_string_or_default(
 fn recover_scheduled_retry_waiting(
   runtime: scheduled_runtime.Runtime,
   effects: List(ScheduledRecoveryEffect),
+  now_ms: Int,
   job: config_types.ScheduledJobConfig,
   run: projection.ScheduledRunSummary,
 ) -> #(scheduled_runtime.Runtime, List(ScheduledRecoveryEffect)) {
-  let #(runtime, actions) =
-    scheduled_runtime.schedule_retry(
-      runtime,
-      job.id,
-      job.workflow,
-      run.due_at_ms,
-      run.run_id,
-      0,
-      normalized_scheduled_attempt(run.attempt),
-      "recovered_retry_waiting",
-      0,
+  let attempt = normalized_scheduled_attempt(run.attempt)
+  let reason = optional_string_or_default(run.reason, "whole_run_retry_removed")
+  let request =
+    scheduled_runtime.FailureReportRequest(
+      job_id: job.id,
+      workflow_id: job.workflow,
+      due_at_ms: run.due_at_ms,
+      run_id: run.run_id,
+      attempt: attempt,
+      reason: reason,
+      run_root: run.run_root,
+      session_id: run.session_id,
     )
   #(runtime, [
-    ApplyScheduledRuntimeActions(actions: actions, append_retry_record: False),
+    BeginFailureReport(request: request),
+    AppendLedger(
+      record_bodies: [
+        record.ScheduledRunFailed(
+          job.id,
+          job.workflow,
+          run.due_at_ms,
+          run.run_id,
+          attempt,
+          now_ms,
+          reason,
+          True,
+          run.run_root,
+        ),
+      ],
+      failure_event: "scheduled_recovery_append_failed",
+    ),
     ..effects
   ])
 }
@@ -464,8 +466,6 @@ fn recover_interrupted_scheduled_run(
   runtime: scheduled_runtime.Runtime,
   effects: List(ScheduledRecoveryEffect),
   now_ms: Int,
-  max_retry_attempts: Int,
-  max_retry_backoff_ms: Int,
   job: config_types.ScheduledJobConfig,
   run: projection.ScheduledRunSummary,
 ) -> #(scheduled_runtime.Runtime, List(ScheduledRecoveryEffect)) {
@@ -481,13 +481,7 @@ fn recover_interrupted_scheduled_run(
       "daemon_restart",
       run.run_root,
       run.session_id,
-      max_retry_attempts,
-      max_retry_backoff_ms,
     )
-  let retry_exhausted = case follow_up {
-    scheduled_runtime.WorkerFailureReport(_) -> True
-    scheduled_runtime.WorkerFailureRetry(_) -> False
-  }
   let effects = [
     AppendLedger(
       record_bodies: [
@@ -499,7 +493,7 @@ fn recover_interrupted_scheduled_run(
           attempt,
           now_ms,
           "daemon_restart",
-          retry_exhausted,
+          True,
           run.run_root,
         ),
       ],
@@ -510,10 +504,6 @@ fn recover_interrupted_scheduled_run(
   case follow_up {
     scheduled_runtime.WorkerFailureReport(request) -> #(runtime, [
       BeginFailureReport(request: request),
-      ..effects
-    ])
-    scheduled_runtime.WorkerFailureRetry(actions) -> #(runtime, [
-      ApplyScheduledRuntimeActions(actions: actions, append_retry_record: True),
       ..effects
     ])
   }

@@ -1,12 +1,12 @@
 import gleam/dict
 import gleam/erlang/process
-import gleam/int
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/orchestrator/daemon
+import scherzo/result_artifact
 import scherzo/session/hub
 import scherzo/session/tokens as session_tokens
 import scherzo/tracker
@@ -28,7 +28,7 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   }
 }
 
-fn workflow_text(root: String, max_retry_attempts: Int) -> String {
+fn workflow_text(root: String) -> String {
   "version: 1
 tracker:
   linear:
@@ -43,8 +43,6 @@ workspace:
 agents:
   concurrency: 1
   sessions_per_task: 3
-  retries:
-    attempts: " <> int.to_string(max_retry_attempts) <> "
   runtime:
     type: pi
     pi:
@@ -62,10 +60,10 @@ workflows:
 "
 }
 
-fn write_workflow(dir: String, max_retry_attempts: Int) -> #(String, String) {
+fn write_workflow(dir: String) -> #(String, String) {
   test_helpers.reset_dir(dir)
   let root = dir <> "/workspaces"
-  #(write_workflow_files(dir, workflow_text(root, max_retry_attempts)), root)
+  #(write_workflow_files(dir, workflow_text(root)), root)
 }
 
 fn write_workflow_files(dir: String, config_text: String) -> String {
@@ -186,7 +184,7 @@ fn record_agent_refresh(
 
 pub fn fake_non_linear_adapter_dispatches_validates_and_hands_off_test() {
   let #(workflow_path, _root) =
-    write_workflow("test/tmp/daemon-fake-adapter-dispatch", 2)
+    write_workflow("test/tmp/daemon-fake-adapter-dispatch")
   let handoff_subject = process.new_subject()
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
@@ -223,80 +221,54 @@ pub fn fake_non_linear_adapter_dispatches_validates_and_hands_off_test() {
   let assert Ok(adapter.HandoffFailure(task: failed_task, ..)) =
     process.receive(handoff_subject, within: 5000)
   assert failed_task.ref == fake_tracker_adapter.task_ref()
+  let assert Ok(failed_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.values(failed_snapshot.retry_attempts) == []
+  let assert [parked] = dict.values(failed_snapshot.parked)
+  assert parked.task_ref == fake_tracker_adapter.task_ref()
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
-pub fn fake_non_linear_retry_survives_startup_recovery_and_refreshes_test() {
+pub fn fake_non_linear_active_workflow_success_releases_without_retry_test() {
   let #(workflow_path, _root) =
-    write_workflow("test/tmp/daemon-fake-adapter-recovery", 3)
-  let first_handoff_subject = process.new_subject()
-  let first_log_subject = process.new_subject()
-  let first_deps =
+    write_workflow("test/tmp/daemon-fake-adapter-active-success")
+  let handoff_subject = process.new_subject()
+  let log_subject = process.new_subject()
+  let deps =
     dependencies(
-      first_handoff_subject,
-      first_log_subject,
+      handoff_subject,
+      log_subject,
       fn(issue, _, _, _, tracker_client, _, _, _) {
-        record_agent_refresh(first_log_subject, tracker_client, issue)
-        process.send(first_log_subject, "agent_run:" <> issue.id)
-        Error(agent_types.WorkerFailure(
-          reason: error.PiFailed(error.PiProtocolError("first failure")),
-          workspace_path: None,
+        record_agent_refresh(log_subject, tracker_client, issue)
+        process.send(log_subject, "agent_run:" <> issue.id)
+        Ok(agent_types.WorkerSuccess(
+          final_issue: Some(issue),
+          final_classification: agent_types.FinalActive,
+          workspace_path: "test/tmp/fake-adapter-active-workspace",
           tokens: session_tokens.zero_token_totals(),
-          final_issue: None,
+          turns: 1,
+          result: result_artifact.from_final_response(
+            Some("active"),
+            False,
+            "test",
+          ),
         ))
       },
     )
-  let assert Ok(first) = daemon.start(Some(workflow_path), first_deps)
-  process.send(first.data, daemon.PollTick(1))
-  let assert Ok(adapter.HandoffClaim(task: first_claimed_task, ..)) =
-    process.receive(first_handoff_subject, within: 5000)
-  assert first_claimed_task.ref == fake_tracker_adapter.task_ref()
-  assert wait_for_log(first_log_subject, "agent_refresh:card-1", 50)
-  assert wait_for_log(first_log_subject, "agent_run:card-1", 50)
-  assert wait_for_log(first_log_subject, "retry_scheduled", 50)
-  let assert Ok(first_snapshot) = daemon.get_snapshot(first.data, 1000)
-  let assert [first_retry] = dict.values(first_snapshot.retry_attempts)
-  assert first_retry.task_ref == fake_tracker_adapter.task_ref()
-  assert daemon.shutdown(first.data, 1000) == Ok(Nil)
-
-  let second_handoff_subject = process.new_subject()
-  let second_log_subject = process.new_subject()
-  let worker_barrier = test_async.new_barrier()
-  let second_deps =
-    dependencies(
-      second_handoff_subject,
-      second_log_subject,
-      fn(issue, _, _, _, tracker_client, _, _, _) {
-        record_agent_refresh(second_log_subject, tracker_client, issue)
-        process.send(second_log_subject, "agent_run:" <> issue.id)
-        test_async.block_until_released(worker_barrier)
-        Error(agent_types.WorkerFailure(
-          reason: error.PiFailed(error.PiProtocolError("released")),
-          workspace_path: None,
-          tokens: session_tokens.zero_token_totals(),
-          final_issue: None,
-        ))
-      },
-    )
-  let assert Ok(second) = daemon.start(Some(workflow_path), second_deps)
-  let assert Ok(recovered_snapshot) = daemon.get_snapshot(second.data, 1000)
-  let assert [recovered_retry] = dict.values(recovered_snapshot.retry_attempts)
-
-  process.send(
-    second.data,
-    daemon.RetryTick(recovered_retry.issue_id, recovered_retry.timer_generation),
-  )
-  let assert Ok(adapter.HandoffClaim(task: retried_task, ..)) =
-    process.receive(second_handoff_subject, within: 5000)
-  assert retried_task.ref == fake_tracker_adapter.task_ref()
-  assert wait_for_log(second_log_subject, "agent_refresh:card-1", 50)
-  assert wait_for_log(second_log_subject, "agent_run:card-1", 50)
-  let assert Ok(running_snapshot) = daemon.get_snapshot(second.data, 1000)
-  let assert [running] = dict.values(running_snapshot.running)
-  assert running.task.ref == fake_tracker_adapter.task_ref()
-
-  test_async.release_barrier_if_waiting(worker_barrier)
-  assert daemon.shutdown(second.data, 1000) == Ok(Nil)
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  process.send(started.data, daemon.PollTick(1))
+  let assert Ok(adapter.HandoffClaim(task: claimed_task, ..)) =
+    process.receive(handoff_subject, within: 5000)
+  assert claimed_task.ref == fake_tracker_adapter.task_ref()
+  assert wait_for_log(log_subject, "agent_refresh:card-1", 50)
+  assert wait_for_log(log_subject, "agent_run:card-1", 50)
+  let assert Ok(adapter.HandoffSuccess(success_task, _, _, _)) =
+    process.receive(handoff_subject, within: 5000)
+  assert success_task.ref == fake_tracker_adapter.task_ref()
+  assert !wait_for_log(log_subject, "retry_scheduled", 1)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.values(snapshot.retry_attempts) == []
+  assert dict.values(snapshot.running) == []
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
 fn wait_for_log(

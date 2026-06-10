@@ -4,6 +4,8 @@ const base_backoff_ms = 10_000
 
 const default_defer_ms = 1000
 
+const default_max_backoff_ms_value = 300_000
+
 pub type TimerTick {
   TimerMissing
   TimerGenerationMismatch(stored_generation: Int, tick_generation: Int)
@@ -77,6 +79,10 @@ pub fn classify_timer_tick(
 
 pub fn backoff_delay(attempt_index: Int, max_backoff_ms: Int) -> Int {
   backoff_delay_loop(base_backoff_ms, attempt_index - 1, max_backoff_ms)
+}
+
+pub fn default_max_backoff_ms() -> Int {
+  default_max_backoff_ms_value
 }
 
 pub fn defer_delay_ms() -> Int {

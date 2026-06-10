@@ -37,27 +37,6 @@ pub fn hooks_timeout_ms(root: yay.Node) -> Result(Int, error.ConfigError) {
   )
 }
 
-pub fn agent_max_retry_backoff_ms(
-  root: yay.Node,
-) -> Result(Int, error.ConfigError) {
-  let agent = get_map(root, "agent")
-  let agents = get_map(root, "agents")
-  let retries = get_map(agents, "retries")
-  get_duration_ms_from_sources(
-    [
-      DurationField(retries, "max_backoff", "agents.retries.max_backoff"),
-      DurationField(agent, "max_retry_backoff", "agent.max_retry_backoff"),
-      LegacyMillisecondsField(
-        agent,
-        "max_retry_backoff_ms",
-        "agent.max_retry_backoff_ms",
-      ),
-    ],
-    300_000,
-    False,
-  )
-}
-
 pub fn pi_turn_timeout_ms(root: yay.Node) -> Result(Int, error.ConfigError) {
   let pi = get_map(root, "pi")
   let runtime = runtime_config(root)

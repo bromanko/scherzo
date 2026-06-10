@@ -42,8 +42,6 @@ fn config() -> config_types.EffectiveConfig {
     agent: config_types.AgentConfig(
       max_concurrent_agents: 2,
       max_turns: 20,
-      max_retry_backoff_ms: 40_000,
-      max_retry_attempts: 3,
       max_sessions_per_issue: 2,
       context_recovery_max_attempts: 1,
       context_recovery_prompt_char_limit: 40_000,
@@ -149,6 +147,30 @@ fn config_with_failure_state(
         cancellation_state: None,
         workflows: dict.new(),
       )),
+    ),
+  )
+}
+
+fn retry_waiting_state(
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
+  delay_ms: Int,
+) -> orchestrator_state.RuntimeState {
+  let base = core.new_state(config)
+  let task_ref = orchestrator_state.linear_issue_id_ref(issue.id)
+  let identity = orchestrator_state.task_ref_identity(task_ref)
+  orchestrator_state.RuntimeState(
+    ..base,
+    claimed: dict.insert(base.claimed, identity, issue.identifier),
+    retry_attempts: dict.insert(
+      base.retry_attempts,
+      identity,
+      orchestrator_state.RetryEntry(
+        task_ref: task_ref,
+        issue_id: issue.id,
+        delay_ms: delay_ms,
+        timer_generation: 1,
+      ),
     ),
   )
 }
@@ -320,7 +342,7 @@ pub fn worker_success_uses_task_ref_with_duplicate_remote_ids_test() {
   assert effects == [core.ReleaseClaim(memory_issue.id)]
 }
 
-pub fn worker_failure_retry_uses_task_ref_with_duplicate_remote_ids_test() {
+pub fn worker_failure_parks_task_ref_with_duplicate_remote_ids_test() {
   let linear_issue = issue("shared", "ABC-1", "Todo", Some(1))
   let memory_task = task_item("test-memory", "shared", "MEM-1", "Todo")
   let task.Task(ref: memory_ref, ..) = memory_task
@@ -345,16 +367,12 @@ pub fn worker_failure_retry_uses_task_ref_with_duplicate_remote_ids_test() {
   assert dict.has_key(next.running, linear_identity)
   assert !dict.has_key(next.running, memory_identity)
   assert !dict.has_key(next.retry_attempts, linear_identity)
-  assert dict.has_key(next.retry_attempts, memory_identity)
+  assert !dict.has_key(next.retry_attempts, memory_identity)
+  assert dict.has_key(next.parked, memory_identity)
   assert effects
     == [
-      core.ScheduleRetry(
-        memory_issue.id,
-        10_000,
-        1,
-        reason.RetryAfterFailure,
-        previous_retry: None,
-      ),
+      core.ParkIssue(memory_issue.id, reason.ParkWorkerFailure),
+      core.ReleaseClaim(memory_issue.id),
     ]
 }
 
@@ -511,14 +529,7 @@ pub fn dispatch_preconditions_skip_parked_before_workflow_reporting_test() {
 
 pub fn retry_policy_invalid_can_stop_retry_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
-  let running =
-    core.apply_worker_start(
-      core.new_state(enforcing_config()),
-      issue,
-      "/tmp/ws",
-    )
-  let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(running, enforcing_config(), "a", issue, 100)
+  let retry_state = retry_waiting_state(enforcing_config(), issue, 10_000)
   assert core.retry_candidate_precondition_failure(
       retry_state,
       enforcing_config(),
@@ -1006,44 +1017,35 @@ pub fn worker_success_in_progress_remains_lifecycle_active_test() {
     ]
 }
 
-pub fn worker_failure_backoff_and_retry_cap_test() {
+pub fn worker_failure_parks_without_scheduling_full_retry_test() {
   assert core.backoff_delay(1, 40_000) == 10_000
   assert core.backoff_delay(2, 40_000) == 20_000
   assert core.backoff_delay(3, 40_000) == 40_000
   assert core.backoff_delay(1000, 40_000) == 40_000
 
-  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let initial = issue("a", "ABC-1", "Todo", Some(1))
+  let latest = tracker_issue.Issue(..initial, title: "Latest failure title")
   let state =
-    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
-  let core.Transition(state: one, effects: effects1) =
-    core.apply_worker_failure(state, config(), "a", issue, 100)
-  assert effects1
-    == [
-      core.ScheduleRetry(
-        "a",
-        10_000,
-        1,
-        reason.RetryAfterFailure,
-        previous_retry: None,
-      ),
-    ]
-  let state = core.apply_worker_start(one, issue, "/tmp/ws")
-  let core.Transition(state: two, effects: _) =
-    core.apply_worker_failure(state, config(), "a", issue, 200)
-  let latest = tracker_issue.Issue(..issue, title: "Latest failure title")
-  let state = core.apply_worker_start(two, issue, "/tmp/ws")
-  let core.Transition(state: parked, effects: effects3) =
-    core.apply_worker_failure(state, config(), "a", latest, 300)
-  let identity = orchestrator_state.issue_identity(issue)
+    core.apply_worker_start(core.new_state(config()), initial, "/tmp/ws")
+  let core.Transition(state: parked, effects:) =
+    core.apply_worker_failure(state, config(), "a", latest, 100)
+  let identity = orchestrator_state.issue_identity(initial)
+
+  assert !dict.has_key(parked.retry_attempts, identity)
   assert dict.has_key(parked.parked, identity)
   let assert Ok(parked_entry) = dict.get(parked.parked, identity)
+  assert parked_entry.reason == reason.ParkWorkerFailure
   assert parked_entry.release_policy
     == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(latest))
   assert parked_entry.release_policy
-    != orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
-  assert effects3
+    != orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(
+      initial,
+    ))
+  let assert Ok(counter) = dict.get(parked.issue_counters, identity)
+  assert counter.failure_attempts == 1
+  assert effects
     == [
-      core.ParkIssue("a", reason.ParkMaxRetryAttempts),
+      core.ParkIssue("a", reason.ParkWorkerFailure),
       core.ReleaseClaim("a"),
     ]
 }
@@ -1057,22 +1059,11 @@ pub fn worker_failure_uses_dispatched_issue_id_for_lifecycle_test() {
       identifier: "ABC-999",
       title: "Different issue",
     )
-  let retry_cap_config =
-    config_types.EffectiveConfig(
-      ..config(),
-      agent: config_types.AgentConfig(..config().agent, max_retry_attempts: 1),
-    )
   let state =
-    core.apply_worker_start(core.new_state(retry_cap_config), issue, "/tmp/ws")
+    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
 
   let core.Transition(state: parked, effects:) =
-    core.apply_worker_failure(
-      state,
-      retry_cap_config,
-      "a",
-      mismatched_final_issue,
-      100,
-    )
+    core.apply_worker_failure(state, config(), "a", mismatched_final_issue, 100)
 
   let identity = orchestrator_state.issue_identity(issue)
   assert !dict.has_key(parked.running, identity)
@@ -1087,17 +1078,14 @@ pub fn worker_failure_uses_dispatched_issue_id_for_lifecycle_test() {
   )
   assert effects
     == [
-      core.ParkIssue("a", reason.ParkMaxRetryAttempts),
+      core.ParkIssue("a", reason.ParkWorkerFailure),
       core.ReleaseClaim("a"),
     ]
 }
 
 pub fn retry_candidate_can_dispatch_self_claimed_issue_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
-  let state =
-    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
-  let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config(), "a", issue, 100)
+  let retry_state = retry_waiting_state(config(), issue, 10_000)
 
   let updated = tracker_issue.Issue(..issue, title: "Updated title")
   let core.Transition(state: next, effects: effects) =
@@ -1163,10 +1151,7 @@ pub fn continuation_retry_can_dispatch_self_claimed_issue_test() {
 
 pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
-  let state =
-    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
-  let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config(), "a", issue, 100)
+  let retry_state = retry_waiting_state(config(), issue, 10_000)
   let done =
     tracker_issue.Issue(
       ..issue,
@@ -1199,9 +1184,7 @@ pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
 pub fn retry_candidate_non_dispatch_failure_state_can_dispatch_test() {
   let config = config_with_failure_state("Triage")
   let issue = issue("a", "ABC-1", "Todo", Some(1))
-  let state = core.apply_worker_start(core.new_state(config), issue, "/tmp/ws")
-  let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config, "a", issue, 100)
+  let retry_state = retry_waiting_state(config, issue, 10_000)
   let triage =
     tracker_issue.Issue(
       ..issue,
@@ -1234,9 +1217,7 @@ pub fn retry_candidate_non_dispatch_failure_state_can_dispatch_test() {
 pub fn retry_candidate_non_retryable_state_clears_retry_test() {
   let config = config_with_failure_state("Triage")
   let issue = issue("a", "ABC-1", "Todo", Some(1))
-  let state = core.apply_worker_start(core.new_state(config), issue, "/tmp/ws")
-  let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config, "a", issue, 100)
+  let retry_state = retry_waiting_state(config, issue, 10_000)
   let backlog =
     tracker_issue.Issue(
       ..issue,
@@ -1277,14 +1258,7 @@ pub fn retry_candidate_without_slot_capacity_retries_no_slots_test() {
         max_concurrent_agents: 1,
       ),
     )
-  let state =
-    core.apply_worker_start(
-      core.new_state(one_slot_config),
-      retry_issue,
-      "/tmp/a",
-    )
-  let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, one_slot_config, "a", retry_issue, 100)
+  let retry_state = retry_waiting_state(one_slot_config, retry_issue, 10_000)
   let full_state = core.apply_worker_start(retry_state, running_issue, "/tmp/b")
 
   let core.Transition(state: next, effects: effects) =
@@ -1317,10 +1291,7 @@ pub fn retry_candidate_without_slot_capacity_retries_no_slots_test() {
 
 pub fn retry_timer_handling_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
-  let state =
-    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
-  let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config(), "a", issue, 100)
+  let retry_state = retry_waiting_state(config(), issue, 10_000)
   let core.Transition(effects: poll_failed, state: kept) =
     core.handle_retry_candidate(retry_state, config(), "a", Error("tracker"))
   assert dict.has_key(kept.claimed, orchestrator_state.issue_identity(issue))
@@ -1384,10 +1355,7 @@ pub fn retry_timer_handling_test() {
 pub fn retry_candidate_without_slots_uses_backoff_test() {
   let retry_issue = issue("a", "ABC-1", "Todo", Some(1))
   let occupying_issue = issue("b", "ABC-2", "Todo", Some(2))
-  let state =
-    core.apply_worker_start(core.new_state(config()), retry_issue, "/tmp/a")
-  let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config(), "a", retry_issue, 100)
+  let retry_state = retry_waiting_state(config(), retry_issue, 10_000)
   let occupied = core.apply_worker_start(retry_state, occupying_issue, "/tmp/b")
 
   let core.Transition(state: _, effects: effects) =

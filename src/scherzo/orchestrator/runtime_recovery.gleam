@@ -82,6 +82,7 @@ fn runtime_with_parked_issue(
 
 fn park_reason_from_string(text: String) -> reason.ParkReason {
   case text {
+    "worker_failure" -> reason.ParkWorkerFailure
     "max_retry_attempts" -> reason.ParkMaxRetryAttempts
     "max_sessions_per_issue" -> reason.ParkMaxSessionsPerIssue
     other -> reason.ParkOperator(other)
