@@ -20,10 +20,10 @@ Retry one failed retryable publication:
 
     direnv exec . gleam run -m scherzo ctl artifact publication retry --run <run-id> --publication <publication-id>
 
-For same-repository GitHub publication, retry the configured `mode: commit_stack`
-publication. Checked-in dogfood ExecPlan authoring and revision workflows retain
-review docs as workflow outputs only; they no longer publish a single review-doc
-file to GitHub.
+For same-repository GitHub repository-change publication, retry the configured
+`mode: commit_stack` publication. Review-doc helper output is outside the
+artifact-publication retry lane; use retained workflow output manifests and driver
+diagnostics rather than a single `execplan_review_doc` publication route.
 
 Retry every latest failed retryable publication for the run:
 
@@ -39,8 +39,10 @@ When a daemon control file is available, retry goes through the control/daemon o
 - `publication_retry_output_manifest_missing`: the run no longer has the retained output manifest required for replay.
 - `publication_retry_config_drift`: the current workflow publication route/config no longer matches the retained failed attempt.
 
-## GitHub publication scope
+## Publication boundary
 
-Current same-repository GitHub publication is `mode: commit_stack` publication through the selected workspace driver (the bundled `dogfood-jj` driver advertises `publish-commit-stack`). Workflow helpers should materialize retained commit-stack artifacts and PR metadata for Scherzo core; they must not run workflow-local `jj git push`, `gh pr create`, or single-file GitHub publication commands.
+Same-repository repository-change publication is workspace-driver-backed. Commit-stack routes publish from the retained workflow workspace through the selected driver (`publish-commit-stack` or the migration-compatible `publish-change` capability), and retry reuses that retained workspace boundary.
 
-The old Scherzo-managed checkout path under `.scherzo-state/artifact-repositories/github/<hash>` is not an active same-repository GitHub publication model. If an operator is inspecting a historical retained attempt that mentions that path, treat it as legacy state: collect evidence, avoid cleaning the active workflow workspace, and prefer rerunning or retrying through the current commit-stack publication route.
+GitHub file artifact publication no longer has a Scherzo-managed checkout implementation. Routes that still use `files:` for a GitHub repository fail with `file_publication_unsupported` and do not clone, reset, clean, or lock hidden repositories. Publish file-style review documents from an explicit workflow command/driver step, or convert repository changes to `mode: commit_stack`.
+
+The old Scherzo-managed checkout path under `.scherzo-state/artifact-repositories/github/<hash>` is legacy state, not an active same-repository GitHub publication model. Do not manually reset or clean active agent workspaces as publication recovery. For commit-stack failures, inspect the retained workspace and driver diagnostics, then retry or abandon through the artifact publication commands.

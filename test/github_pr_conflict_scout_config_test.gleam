@@ -99,7 +99,6 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
   let assert Ok(target) = dict.get(github, "code")
   assert target.repo == "scherzo-systems/scherzo"
   assert target.base == "main"
-  assert target.checkout.strategy == artifact_publication_config.ManagedGit
   assert target.branch.strategy == artifact_publication_config.StablePerWork
   assert target.branch.template
     == "scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}"

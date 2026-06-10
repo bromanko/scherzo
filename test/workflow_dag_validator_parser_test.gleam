@@ -364,8 +364,7 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   let revision = parse_ok(revision_source)
   assert revision.publication_routes == []
 
-  let assert Error(Nil) =
-    workflow_dag.step_by_id(drafting, "publish_review_doc")
+  let assert Ok(_) = workflow_dag.step_by_id(drafting, "publish_review_doc")
   let assert Ok(materialize_bundle) =
     workflow_dag.step_by_id(drafting, "materialize_bundle")
   let assert Ok(None) =

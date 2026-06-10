@@ -4,7 +4,7 @@ id: execplan-revision
 description: Revise a previously retained ExecPlan bundle from review feedback and emit a superseding exec_plan_bundle.
 workspace:
   driver: dogfood-jj
-  requires: [status, diff, changed-files, refresh-base]
+  requires: [status, diff, changed-files, refresh-base, publish-change]
 concurrency: 1
 contract:
   version: 1
@@ -107,9 +107,16 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-pack --review-doc-path-file tmp/execplan-review-doc.path --submission-step revise_plan --submission-artifact implementation_pack_submission --output tmp/execplan-implementation-pack.json'
     run_in: main
 
-  - id: materialize_revision
+  - id: publish_review_doc
     kind: command
     depends_on: [materialize_pack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" materialize-revision --previous-bundle tmp/execplan-previous-bundle.json --review-doc-path-file tmp/execplan-review-doc.path --pack tmp/execplan-implementation-pack.json --status auto --output tmp/execplan-bundle.json'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" publish-review-doc --review-doc-path-file tmp/execplan-review-doc.path --publish-context tmp/execplan-publish-context.json --previous-bundle tmp/execplan-previous-bundle.json --pack tmp/execplan-implementation-pack.json --skip-if-unchanged'
+    timeout: 5m
+    run_in: main
+
+  - id: materialize_revision
+    kind: command
+    depends_on: [publish_review_doc]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" materialize-revision --previous-bundle tmp/execplan-previous-bundle.json --review-doc-path-file tmp/execplan-review-doc.path --pack tmp/execplan-implementation-pack.json --publish-context tmp/execplan-publish-context.json --status auto --output tmp/execplan-bundle.json'
     timeout: 5m
     run_in: main

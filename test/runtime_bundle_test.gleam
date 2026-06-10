@@ -836,12 +836,14 @@ fn assert_dogfood_workflows_select_profile(
           config_types.WorkspaceStatus,
           config_types.WorkspaceDiff,
           config_types.WorkspaceChangedFiles,
+          config_types.WorkspacePublishChange,
         ]
         "execplan-revision" -> [
           config_types.WorkspaceStatus,
           config_types.WorkspaceDiff,
           config_types.WorkspaceChangedFiles,
           config_types.WorkspaceRefreshBase,
+          config_types.WorkspacePublishChange,
         ]
         "merge-conflict-resolution" -> [
           config_types.WorkspaceStatus,

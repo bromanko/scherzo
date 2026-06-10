@@ -367,14 +367,21 @@ artifacts:
           draft: false
 ```
 
+These repository targets are metadata for commit-stack routing, file-publication
+planning, and future external publication lanes. Current GitHub `files:` runtime
+publication is intentionally unsupported: matching workflow routes record
+`file_publication_unsupported` and do not create hidden
+`.scherzo-state/artifact-repositories/github/<hash>` clones. Publish same-repo
+repository changes with `mode: commit_stack`.
+
 `repo` is an `owner/repo` string. `base` is the target branch. Defaults are
-`checkout.strategy: managed_git`, `branch.strategy: stable_per_work`,
+`branch.strategy: stable_per_work`,
 `branch.template: scherzo/{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}`,
 `pull_request.enabled: true`,
 `pull_request.strategy: update_existing`, and `pull_request.draft: false`.
-The managed-checkout default is parser compatibility for older file-publication
-configuration; it is not an active same-repository GitHub publication fallback.
-`pull_request.body_template`, when present, must be a repository-relative path.
+`checkout.strategy` was removed and must not be used as a same-repository GitHub
+publication fallback. `pull_request.body_template`, when present, must be a
+repository-relative path.
 Publication templates support interpolation variables (`{{ ... }}`) only; control
 flow tags such as `{% if %}` are not accepted in this config surface.
 This schema slice only parses and validates configuration; runtime publication,

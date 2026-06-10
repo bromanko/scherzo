@@ -15,7 +15,6 @@ import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/query/types as query_types
 import scherzo/ctl
-import scherzo/ctl/artifact_publication as ctl_artifact_publication
 import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/hash
 import scherzo/path
@@ -1678,51 +1677,25 @@ pub fn artifact_publication_list_and_show_offline_state_test() {
   )
 }
 
-pub fn artifact_publication_retry_replays_retained_manifest_with_commands_test() {
+pub fn artifact_publication_retry_reports_file_publication_unsupported_test() {
   let root = "test/tmp/ctl-artifact-publication-retry/workspaces"
   test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry")
   seed_failed_retry_publication_state(root)
-  let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication_retry.retry_with_runner(
+  let assert Error(#(code, message)) =
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
-      True,
+      False,
       "run-1",
       Some("execplan_review_doc"),
       retry_publish_runner(command_subject),
-      subject_line(subject),
+      subject_line(process.new_subject()),
     )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(
-    transcript,
-    "\"publication_id\":\"execplan_review_doc\"",
-  )
-  assert string.contains(transcript, "\"status\":\"published\"")
-  assert string.contains(transcript, "\"commit_sha\":\"deadbeef\"")
-  assert string.contains(
-    transcript,
-    "\"branch\":\"scherzo/workflow.execplan/LIV-739/execplan_review_doc\"",
-  )
-  assert !string.contains(transcript, "\"recorded_at_ms\":0")
-  let commands = drain_output(command_subject)
-  assert string.contains(commands, "git fetch origin main")
-  assert string.contains(commands, "git commit -m scherzo publication")
-  assert string.contains(commands, "gh pr create")
-
-  let show_subject = process.new_subject()
-  assert ctl_artifact_publication.show(
-      root,
-      True,
-      "run-1",
-      "execplan_review_doc",
-      subject_line(show_subject),
-    )
-    == Ok(Nil)
-  let show_transcript = drain_output(show_subject)
-  assert string.contains(show_transcript, "\"attempt_count\":2")
-  assert string.contains(show_transcript, "\"status\":\"published\"")
+  assert code == "publication_retry_attempt_failed"
+  assert string.contains(message, "execplan_review_doc")
+  assert string.contains(message, "file_publication_unsupported")
+  assert drain_output(command_subject) == ""
 }
 
 pub fn artifact_publication_retry_uses_retained_workspace_driver_for_commit_stack_test() {
@@ -1766,66 +1739,24 @@ pub fn artifact_publication_retry_uses_retained_workspace_driver_for_commit_stac
   assert !string.contains(commands, ".scherzo-state/artifact-repositories")
 }
 
-pub fn artifact_publication_retry_replays_failed_execution_matrix_test() {
-  assert_retry_replays_failed_execution("commit", "git_commit_failed")
-  assert_retry_replays_failed_execution("push", "git_push_failed")
-  assert_retry_replays_failed_execution("pr-create", "pr_create_failed")
-  assert_retry_replays_failed_execution("dirty", "dirty_checkout")
-}
-
-pub fn artifact_publication_retry_replans_pre_execution_failure_test() {
+pub fn artifact_publication_retry_replans_pre_execution_file_failure_to_unsupported_test() {
   let root = "test/tmp/ctl-artifact-publication-retry-replans/workspaces"
   test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-replans")
   seed_pre_execution_failed_publication_state(root)
-  let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication_retry.retry_with_runner(
+  let assert Error(#(code, message)) =
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
-      True,
+      False,
       "run-1",
       Some("execplan_review_doc"),
       retry_publish_runner(command_subject),
-      subject_line(subject),
+      subject_line(process.new_subject()),
     )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"status\":\"published\"")
-  assert string.contains(transcript, "\"version_id\":\"")
-
-  let commands = drain_output(command_subject)
-  assert string.contains(commands, "git fetch origin main")
-  assert string.contains(commands, "git commit -m scherzo publication")
-}
-
-pub fn artifact_publication_retry_recovers_body_template_read_failure_after_config_fix_test() {
-  let base = "test/tmp/ctl-artifact-publication-retry-template-fix"
-  let root = base <> "/workspaces"
-  test_helpers.reset_dir(base)
-  seed_body_template_preplan_failed_publication_state(
-    root,
-    "missing/publication.md",
-  )
-  let _ = write_retry_publication_config(root)
-  let subject = process.new_subject()
-  let command_subject = process.new_subject()
-
-  assert ctl_artifact_publication_retry.retry_with_runner(
-      root,
-      True,
-      "run-1",
-      Some("execplan_review_doc"),
-      retry_publish_runner(command_subject),
-      subject_line(subject),
-    )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"status\":\"published\"")
-  assert string.contains(transcript, "\"version_id\":\"")
-
-  let commands = drain_output(command_subject)
-  assert string.contains(commands, "git fetch origin main")
-  assert string.contains(commands, "git commit -m scherzo publication")
+  assert code == "publication_retry_attempt_failed"
+  assert string.contains(message, "file_publication_unsupported")
+  assert drain_output(command_subject) == ""
 }
 
 pub fn artifact_publication_retry_rejects_tampered_output_manifest_test() {
@@ -1901,60 +1832,6 @@ pub fn artifact_publication_retry_all_rejects_retryable_attempt_without_replan_e
   assert drain_output(command_subject) == ""
 }
 
-pub fn artifact_publication_retry_accepts_unchanged_missing_pr_attempt_test() {
-  let root = "test/tmp/ctl-artifact-publication-retry-missing-pr/workspaces"
-  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-missing-pr")
-  seed_unchanged_missing_pr_publication_state(root)
-  let subject = process.new_subject()
-  let command_subject = process.new_subject()
-
-  assert ctl_artifact_publication_retry.retry_with_runner(
-      root,
-      True,
-      "run-1",
-      Some("execplan_review_doc"),
-      retry_publish_runner(command_subject),
-      subject_line(subject),
-    )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"status\":\"published\"")
-  assert string.contains(transcript, "\"pr_url\":\"https://example.test/pr/1\"")
-}
-
-pub fn artifact_publication_retry_reports_failed_replay_as_error_test() {
-  let root = "test/tmp/ctl-artifact-publication-retry-fails/workspaces"
-  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-fails")
-  seed_failed_retry_publication_state(root)
-  let command_subject = process.new_subject()
-
-  let assert Error(#(code, message)) =
-    ctl_artifact_publication_retry.retry_with_runner(
-      root,
-      False,
-      "run-1",
-      Some("execplan_review_doc"),
-      retry_push_failure_runner(command_subject),
-      subject_line(process.new_subject()),
-    )
-  assert code == "publication_retry_attempt_failed"
-  assert string.contains(message, "execplan_review_doc")
-  assert string.contains(message, "git_push_failed")
-
-  let show_subject = process.new_subject()
-  assert ctl_artifact_publication.show(
-      root,
-      True,
-      "run-1",
-      "execplan_review_doc",
-      subject_line(show_subject),
-    )
-    == Ok(Nil)
-  let show_transcript = drain_output(show_subject)
-  assert string.contains(show_transcript, "\"attempt_count\":2")
-  assert string.contains(show_transcript, "\"status\":\"failed\"")
-}
-
 pub fn artifact_publication_retry_rejects_unknown_publication_id_test() {
   let root =
     "test/tmp/ctl-artifact-publication-retry-missing-publication/workspaces"
@@ -1989,115 +1866,24 @@ pub fn artifact_publication_retry_rejects_non_retryable_latest_statuses_test() {
   )
 }
 
-pub fn artifact_publication_retry_uses_workspace_state_root_for_terminal_attempts_test() {
-  let root = "test/tmp/ctl-artifact-publication-retry-state-root/workspaces"
-  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-state-root")
-  seed_failed_retry_publication_state_with_prior_success(root)
-  let subject = process.new_subject()
-  let command_subject = process.new_subject()
-
-  assert ctl_artifact_publication_retry.retry_with_runner(
-      root,
-      True,
-      "run-1",
-      Some("execplan_review_doc"),
-      retry_publish_runner(command_subject),
-      subject_line(subject),
-    )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"status\":\"published\"")
-  assert drain_output(command_subject) == ""
-}
-
-pub fn artifact_publication_retry_does_not_reuse_success_missing_pr_test() {
-  let root = "test/tmp/ctl-artifact-publication-retry-stale-success/workspaces"
-  test_helpers.reset_dir(
-    "test/tmp/ctl-artifact-publication-retry-stale-success",
-  )
-  seed_failed_retry_publication_state_with_prior_success_missing_pr(root)
-  let subject = process.new_subject()
-  let command_subject = process.new_subject()
-
-  assert ctl_artifact_publication_retry.retry_with_runner(
-      root,
-      True,
-      "run-1",
-      Some("execplan_review_doc"),
-      retry_publish_runner(command_subject),
-      subject_line(subject),
-    )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"status\":\"published\"")
-  assert string.contains(transcript, "\"pr_url\":\"https://example.test/pr/1\"")
-  assert string.contains(drain_output(command_subject), "gh pr create")
-}
-
-pub fn artifact_publication_retry_without_publication_retries_all_failed_targets_test() {
+pub fn artifact_publication_retry_without_publication_reports_file_publication_unsupported_test() {
   let root = "test/tmp/ctl-artifact-publication-retry-all/workspaces"
   test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-all")
   seed_failed_retry_publication_state(root)
-  let subject = process.new_subject()
   let command_subject = process.new_subject()
 
-  assert ctl_artifact_publication_retry.retry_with_runner(
+  let assert Error(#(code, message)) =
+    ctl_artifact_publication_retry.retry_with_runner(
       root,
-      True,
+      False,
       "run-1",
       None,
       retry_publish_runner(command_subject),
-      subject_line(subject),
+      subject_line(process.new_subject()),
     )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"publication_id\":null")
-  assert string.contains(transcript, "\"attempts\":[")
-  assert string.contains(
-    transcript,
-    "\"publication_id\":\"execplan_review_doc\"",
-  )
-  assert string.contains(transcript, "\"status\":\"published\"")
-
-  let commands = drain_output(command_subject)
-  assert string.contains(commands, "git fetch origin main")
-  assert string.contains(commands, "git commit -m scherzo publication")
-}
-
-pub fn artifact_publication_retry_all_selects_multiple_failed_and_skips_nonretryable_test() {
-  let root = "test/tmp/ctl-artifact-publication-retry-all-mixed/workspaces"
-  test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-all-mixed")
-  seed_mixed_retry_publication_state(root)
-  let subject = process.new_subject()
-  let command_subject = process.new_subject()
-
-  assert ctl_artifact_publication_retry.retry_with_runner(
-      root,
-      True,
-      "run-1",
-      None,
-      retry_publish_runner(command_subject),
-      subject_line(subject),
-    )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"publication_id\":null")
-  assert string.contains(
-    transcript,
-    "\"publication_id\":\"execplan_review_doc\"",
-  )
-  assert string.contains(transcript, "\"publication_id\":\"release_notes\"")
-  assert !string.contains(transcript, "\"publication_id\":\"skipped_doc\"")
-  assert !string.contains(transcript, "\"publication_id\":\"published_doc\"")
-  let commands = drain_output(command_subject)
-  assert string.contains(
-    commands,
-    "scherzo/workflow.execplan/LIV-739/execplan_review_doc",
-  )
-  assert string.contains(
-    commands,
-    "scherzo/workflow.execplan/LIV-739/release_notes",
-  )
+  assert code == "publication_retry_attempt_failed"
+  assert string.contains(message, "file_publication_unsupported")
+  assert drain_output(command_subject) == ""
 }
 
 pub fn artifact_publication_retry_requires_output_manifest_test() {
@@ -2807,93 +2593,6 @@ fn seed_latest_publication_state(
   ])
 }
 
-fn seed_mixed_retry_publication_state(root: String) -> Nil {
-  let config_path = write_multi_retry_publication_config(root)
-  let plans = seeded_publication_plans_from_config(root, config_path)
-  let review_doc = planned_publication_by_id(plans, "execplan_review_doc")
-  let release_notes = planned_publication_by_id(plans, "release_notes")
-  let skipped_doc = planned_publication_by_id(plans, "skipped_doc")
-  let published_doc = planned_publication_by_id(plans, "published_doc")
-  let #(review_ref, review_sha, review_bytes) =
-    write_seeded_publication_manifest(
-      root,
-      review_doc,
-      "review-failed-1",
-      1020,
-      "failed",
-    )
-  let #(release_ref, release_sha, release_bytes) =
-    write_seeded_publication_manifest(
-      root,
-      release_notes,
-      "release-failed-1",
-      1030,
-      "failed",
-    )
-  let #(skipped_ref, skipped_sha, skipped_bytes) =
-    write_seeded_publication_manifest(
-      root,
-      skipped_doc,
-      "skipped-failed-1",
-      1040,
-      "failed",
-    )
-  let #(published_ref, published_sha, published_bytes) =
-    write_seeded_publication_manifest(
-      root,
-      published_doc,
-      "published-1",
-      1050,
-      "published",
-    )
-  append_publication_seed_records(root, [
-    publication_attempt_record(
-      review_doc,
-      "review-failed-1",
-      1020,
-      "failed",
-      True,
-      True,
-      Some(review_ref),
-      Some(review_sha),
-      Some(review_bytes),
-    ),
-    publication_attempt_record(
-      release_notes,
-      "release-failed-1",
-      1030,
-      "failed",
-      True,
-      True,
-      Some(release_ref),
-      Some(release_sha),
-      Some(release_bytes),
-    ),
-    publication_attempt_record(
-      skipped_doc,
-      "skipped-failed-1",
-      1040,
-      "failed",
-      False,
-      True,
-      Some(skipped_ref),
-      Some(skipped_sha),
-      Some(skipped_bytes),
-    ),
-    publication_attempt_record(
-      published_doc,
-      "published-1",
-      1050,
-      "published",
-      False,
-      True,
-      Some(published_ref),
-      Some(published_sha),
-      Some(published_bytes),
-    ),
-  ])
-}
-
 fn seed_failed_retry_publication_state(root: String) -> Nil {
   seed_failed_retry_publication_state_with_error(
     root,
@@ -3081,34 +2780,6 @@ fn add_cleanup_diagnostics(
   }
 }
 
-fn seed_unchanged_missing_pr_publication_state(root: String) -> Nil {
-  let planned = seeded_publication_plan(root)
-  let ref = "runs/run-1/publications/execplan_review_doc/unchanged-1.json"
-  let manifest =
-    artifact_publication_manifest.unchanged_manifest(
-      planned,
-      "unchanged-1",
-      1020,
-      Some("deadbeef"),
-      None,
-      [],
-    )
-  let #(sha, bytes) = write_publication_manifest(root, ref, manifest)
-  append_publication_seed_records(root, [
-    publication_attempt_record(
-      planned,
-      "unchanged-1",
-      1020,
-      "unchanged",
-      False,
-      True,
-      Some(ref),
-      Some(sha),
-      Some(bytes),
-    ),
-  ])
-}
-
 fn seed_pre_execution_failed_publication_state(root: String) -> Nil {
   let planned = seeded_publication_plan(root)
   let series_id = "issue-1:execplan:" <> planned.publication_id
@@ -3155,179 +2826,6 @@ fn seed_pre_execution_failed_publication_state(root: String) -> Nil {
       ),
     ),
   ])
-}
-
-fn seed_body_template_preplan_failed_publication_state(
-  root: String,
-  bad_template_path: String,
-) -> Nil {
-  let _ =
-    write_retry_publication_config_with_body_template(root, bad_template_path)
-  let publication_id = "execplan_review_doc"
-  let series_id = "issue-1:execplan:" <> publication_id
-  let failed_ref =
-    "runs/run-1/publications/execplan_review_doc/failed-template.json"
-  let error =
-    artifact_publication_manifest.PublicationErrorInfo(
-      code: "publication_body_template_read_failed",
-      message: bad_template_path,
-    )
-  let failed_manifest =
-    artifact_publication_manifest.failed_manifest(
-      "run-1",
-      "execplan",
-      publication_id,
-      series_id,
-      True,
-      "failed-template",
-      1020,
-      error,
-    )
-  let #(failed_sha, failed_bytes) =
-    write_publication_manifest(root, failed_ref, failed_manifest)
-  write_seed_artifact(root, "runs/run-1/outputs/review_doc.md", "# Review\n")
-  append_publication_seed_records(root, [
-    record.with_id(
-      "publication-template-preplan-failed",
-      1020,
-      record.PublicationAttemptRecorded(
-        run_id: "run-1",
-        workflow_id: "execplan",
-        publication_id: publication_id,
-        series_id: series_id,
-        attempt_id: "failed-template",
-        status: "failed",
-        required: True,
-        retryable: True,
-        retry_execution_available: False,
-        version_id: None,
-        manifest_ref: Some(failed_ref),
-        manifest_sha256: Some(failed_sha),
-        manifest_bytes: Some(failed_bytes),
-        error_code: Some(error.code),
-        error_message: Some(error.message),
-      ),
-    ),
-  ])
-}
-
-fn seed_failed_retry_publication_state_with_prior_success(root: String) -> Nil {
-  seed_failed_retry_publication_state_with_prior_success_pr(
-    root,
-    Some("https://example.test/pr/1"),
-  )
-}
-
-fn seed_failed_retry_publication_state_with_prior_success_missing_pr(
-  root: String,
-) -> Nil {
-  seed_failed_retry_publication_state_with_prior_success_pr(root, None)
-}
-
-fn seed_failed_retry_publication_state_with_prior_success_pr(
-  root: String,
-  pr_url: Option(String),
-) -> Nil {
-  let planned = seeded_publication_plan(root)
-  let success_ref =
-    "runs/run-1/publications/execplan_review_doc/published-1.json"
-  let success_manifest =
-    artifact_publication_manifest.published_manifest(
-      planned,
-      "published-1",
-      1010,
-      "deadbeef",
-      pr_url,
-      ["docs/plans/LIV-739.md"],
-      [],
-    )
-  let #(success_sha, success_bytes) =
-    write_publication_manifest(root, success_ref, success_manifest)
-  let failed_ref = "runs/run-1/publications/execplan_review_doc/failed-1.json"
-  let failed_manifest =
-    artifact_publication_manifest.failed_from_planned_manifest(
-      planned,
-      "failed-1",
-      1020,
-      True,
-      Some(planned.branch),
-      None,
-      None,
-      ["docs/plans/LIV-739.md"],
-      [],
-      artifact_publication_manifest.PublicationErrorInfo(
-        code: "git_push_failed",
-        message: "previous push failed",
-      ),
-    )
-  let #(failed_sha, failed_bytes) =
-    write_publication_manifest(root, failed_ref, failed_manifest)
-  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
-  let assert Ok(Nil) =
-    ledger.append_many(
-      ledger_path,
-      [
-        record.with_id(
-          "workflow-started",
-          1000,
-          record.WorkflowRunStarted(
-            run_id: "run-1",
-            workflow_id: "execplan",
-            workflow_fingerprint: "wf-1",
-            issue_id: "issue-1",
-            issue_identifier: "LIV-739",
-            issue_fingerprint: "issue-fingerprint",
-            observed_updated_at_ms: 999,
-            run_root: root <> "/runs/run-1",
-          ),
-        ),
-        seeded_output_manifest_record(root),
-        record.with_id(
-          "publication-published",
-          1010,
-          record.PublicationAttemptRecorded(
-            run_id: "run-1",
-            workflow_id: "execplan",
-            publication_id: "execplan_review_doc",
-            series_id: planned.series_id,
-            attempt_id: "published-1",
-            status: "published",
-            required: True,
-            retryable: False,
-            retry_execution_available: True,
-            version_id: Some(planned.version_id),
-            manifest_ref: Some(success_ref),
-            manifest_sha256: Some(success_sha),
-            manifest_bytes: Some(success_bytes),
-            error_code: None,
-            error_message: None,
-          ),
-        ),
-        record.with_id(
-          "publication-failed",
-          1020,
-          record.PublicationAttemptRecorded(
-            run_id: "run-1",
-            workflow_id: "execplan",
-            publication_id: "execplan_review_doc",
-            series_id: planned.series_id,
-            attempt_id: "failed-1",
-            status: "failed",
-            required: True,
-            retryable: True,
-            retry_execution_available: True,
-            version_id: Some(planned.version_id),
-            manifest_ref: Some(failed_ref),
-            manifest_sha256: Some(failed_sha),
-            manifest_bytes: Some(failed_bytes),
-            error_code: Some("git_push_failed"),
-            error_message: Some("previous push failed"),
-          ),
-        ),
-      ],
-      True,
-    )
-  Nil
 }
 
 fn seed_failed_retry_publication_state_without_output_manifest(
@@ -3564,71 +3062,6 @@ fn seeded_publication_plans_from_config(
   })
 }
 
-fn planned_publication_by_id(
-  plans: List(artifact_publication_planner.DryRunPublicationManifest),
-  publication_id: String,
-) -> artifact_publication_planner.DryRunPublicationManifest {
-  let assert Ok(planned) =
-    list.find(plans, fn(plan) { plan.publication_id == publication_id })
-  planned
-}
-
-fn assert_retry_replays_failed_execution(
-  suffix: String,
-  error_code: String,
-) -> Nil {
-  let root =
-    "test/tmp/ctl-artifact-publication-retry-matrix/" <> suffix <> "/workspaces"
-  test_helpers.reset_dir(
-    "test/tmp/ctl-artifact-publication-retry-matrix/" <> suffix,
-  )
-  let cleanup = case error_code == "dirty_checkout" {
-    True ->
-      Some(artifact_publication_manifest.CleanupDiagnostics(
-        checkout_path: root
-          <> "/.scherzo-state/artifact-repositories/github/example",
-        pre_cleanup_status: Some("M docs/plans/LIV-739.md"),
-        reset_summary: Some("exit=1 diagnostics=reset failed"),
-        clean_summary: Some("exit=0"),
-        post_cleanup_status: Some("M docs/plans/LIV-739.md"),
-        cleanup_succeeded: False,
-      ))
-    False ->
-      Some(artifact_publication_manifest.CleanupDiagnostics(
-        checkout_path: root
-          <> "/.scherzo-state/artifact-repositories/github/example",
-        pre_cleanup_status: Some("M docs/plans/LIV-739.md"),
-        reset_summary: Some("exit=0"),
-        clean_summary: Some("exit=0"),
-        post_cleanup_status: Some(""),
-        cleanup_succeeded: True,
-      ))
-  }
-  seed_failed_retry_publication_state_with_error(
-    root,
-    error_code,
-    "previous failure: " <> error_code,
-    cleanup,
-  )
-  let subject = process.new_subject()
-  let command_subject = process.new_subject()
-
-  assert ctl_artifact_publication_retry.retry_with_runner(
-      root,
-      True,
-      "run-1",
-      Some("execplan_review_doc"),
-      retry_publish_runner(command_subject),
-      subject_line(subject),
-    )
-    == Ok(Nil)
-  let transcript = drain_output(subject)
-  assert string.contains(transcript, "\"status\":\"published\"")
-  let commands = drain_output(command_subject)
-  assert string.contains(commands, "git fetch origin main")
-  assert string.contains(commands, "git commit -m scherzo publication")
-}
-
 fn seeded_output_manifest() -> workflow_contract_manifest.ContractOutputManifest {
   let body = "# Review\n"
   let written =
@@ -3855,13 +3288,6 @@ fn write_retry_publication_config_with_body_template(
   )
 }
 
-fn write_multi_retry_publication_config(root: String) -> String {
-  write_retry_publication_config_with_workflow(
-    root,
-    "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: materialize\n        path: tmp/review_doc.md\nartifacts:\n  publications:\n    - id: execplan_review_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} review publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: release_notes\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} release notes publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: skipped_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} skipped publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\n    - id: published_doc\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} already published'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/plans/{{ work.identifier }}-{{ publication.id }}{{ artifact.default_extension }}\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
-  )
-}
-
 fn write_retry_publication_config_with_workflow(
   root: String,
   workflow_yaml: String,
@@ -3884,7 +3310,7 @@ fn write_retry_publication_config_with_workflow(
       config_path,
       "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
         <> root
-        <> "\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  retries:\n    attempts: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        checkout:\n          strategy: managed_git\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
+        <> "\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  retries:\n    attempts: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
     )
   config_path
 }
@@ -3919,12 +3345,6 @@ fn retry_publish_runner(
   subject: process.Subject(OutMsg),
 ) -> command_runner.Runner {
   retry_runner(subject, False)
-}
-
-fn retry_push_failure_runner(
-  subject: process.Subject(OutMsg),
-) -> command_runner.Runner {
-  retry_runner(subject, True)
 }
 
 fn retained_workspace_publish_runner(

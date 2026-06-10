@@ -161,7 +161,7 @@ pub fn orchestrator_config_rejects_legacy_publication_draft_pr_test() {
 pub fn orchestrator_config_parses_artifact_publication_repository_explicit_defaults_test() {
   let source =
     base_config(
-      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        checkout:\n          strategy: managed_git\n        branch:\n          strategy: stable_per_work\n          template: scherzo/{{ workflow.id }}/drafts/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: \"Review {{ publication.id }}\"\n          body_template: docs/pr-body.md\n",
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/{{ workflow.id }}/drafts/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: \"Review {{ publication.id }}\"\n          body_template: docs/pr-body.md\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -173,7 +173,6 @@ pub fn orchestrator_config_parses_artifact_publication_repository_explicit_defau
   let artifact_publication_config.ArtifactRepositories(github: github) =
     orchestrator.artifact_repositories
   let assert Ok(target) = dict.get(github, "docs")
-  assert target.checkout.strategy == artifact_publication_config.ManagedGit
   assert target.branch.strategy == artifact_publication_config.StablePerWork
   assert target.branch.template
     == "scherzo/{{ workflow.id }}/drafts/{{ publication.id }}"
@@ -201,19 +200,19 @@ pub fn orchestrator_config_rejects_invalid_artifact_publication_repository_value
     "artifacts.repositories.github.docs.repo must be owner/repo",
   )
 
-  let invalid_checkout =
+  let removed_checkout =
     base_config(
       "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        checkout:\n          strategy: shared_git\n",
     )
-  let assert Error(error.InvalidConfig(invalid_checkout_message)) =
+  let assert Error(error.InvalidConfig(removed_checkout_message)) =
     config.resolve_orchestrator_root(
-      root(invalid_checkout),
+      root(removed_checkout),
       "test/tmp/config/scherzo.yaml",
       env,
     )
   assert string.contains(
-    invalid_checkout_message,
-    "artifacts.repositories.github.docs.checkout.strategy must be managed_git",
+    removed_checkout_message,
+    "artifacts.repositories.github.docs.checkout was removed",
   )
 
   let invalid_branch_strategy =
