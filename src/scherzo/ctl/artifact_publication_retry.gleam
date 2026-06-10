@@ -700,13 +700,20 @@ fn publication_workflow_identity(
       issue_id: issue_id,
       issue_identifier: issue_identifier,
       ..,
-    ) ->
+    ) -> {
+      let source_url = case projection.workflow_task_ref(projected, run_id) {
+        Ok(task_ref) -> task_ref.task_url
+        Error(_) -> None
+      }
       Ok(artifact_publication_planner.PublicationWork(
         kind: artifact_publication_planner.TaskWork,
         id: issue_id,
         identifier: issue_identifier,
         slug: issue_identifier,
+        title: None,
+        url: source_url,
       ))
+    }
     projection.WorkflowRunFinished(issue_id: issue_id, ..)
     | projection.WorkflowRunInterrupted(issue_id: issue_id, ..)
     | projection.WorkflowRunSuperseded(issue_id: issue_id, ..) -> {
@@ -729,6 +736,8 @@ fn publication_workflow_identity(
         id: issue_id,
         identifier: issue_identifier,
         slug: issue_identifier,
+        title: None,
+        url: task_ref.task_url,
       ))
     }
   }

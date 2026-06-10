@@ -359,6 +359,10 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
     == workflow_dag.PromptFile("prompts/execplan-recover-failed-step.md")
 
   assert drafting.publication_routes == []
+  let assert Ok(revision_source) =
+    simplifile.read(".scherzo/workflows/execplan-revision.yaml")
+  let revision = parse_ok(revision_source)
+  assert revision.publication_routes == []
 
   let assert Ok(_) = workflow_dag.step_by_id(drafting, "publish_review_doc")
   let assert Ok(materialize_bundle) =

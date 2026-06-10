@@ -1260,7 +1260,6 @@ fn validate_template_variables(
   allowed: List(String),
   path: String,
 ) -> Result(Nil, PublicationConfigError) {
-  use _ <- result.try(validate_interpolation_only_template(value, path))
   validate_template_variable_list(
     template.referenced_variables(value),
     allowed,
@@ -1378,6 +1377,10 @@ fn publication_template_variables() -> List(String) {
     "work.id",
     "work.identifier",
     "work.slug",
+    "work.title",
+    "work.url",
+    "work.source_url",
+    "source.url",
     "workflow.id",
     "run.id",
     "publication.id",

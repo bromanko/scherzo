@@ -37,6 +37,8 @@ pub fn retained_run_driver_uses_manifest_workspace_and_configured_profile_test()
         id: "issue-1",
         identifier: "LIV-917",
         slug: "LIV-917",
+        title: Some("Retained driver"),
+        url: Some("https://linear.example/LIV-917"),
       ),
     )
 

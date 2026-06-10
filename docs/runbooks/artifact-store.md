@@ -95,16 +95,26 @@ Operators can inspect that state without a running daemon by using:
 ExecPlan authoring and revision publish their review document through explicit
 workflow driver commands before retaining the canonical `exec_plan_bundle`; the
 bundle remains the implementation handoff while GitHub stays a derived review
-surface.
+surface. These workflows do not use a single-file artifact publication route for
+that review document.
 
 Same-repository repository-change publication is workspace-driver-backed through
 `commit_stack` routes. GitHub `files:` publication is intentionally unsupported
 until a driver-owned or external replacement exists; it records
-`file_publication_unsupported` without creating hidden repository clones.
+`file_publication_unsupported` without creating hidden repository clones. The old
+Scherzo-owned managed checkout under
+`.scherzo-state/artifact-repositories/github/<hash>` is legacy state for same-repo
+GitHub publication, not the active path for current dogfood workflows.
 
 `retryable` reports whether a failed planning or execution attempt can be replayed
 from retained artifacts. `retry_execution_available` becomes `true` once Scherzo has
 recorded the retained manifest and current publication config needed for replay.
+
 For commit-stack publication, retry reuses the retained workflow workspace and the
 configured workspace driver. Do not reset or clean active workflow workspaces as
 artifact publication recovery; retry or abandon through `scripts/scherzoctl artifact publication ...`.
+
+When operators encounter a historical dirty managed-checkout attempt, do not reset
+or clean the active workflow workspace as part of recovery. Preserve the retained
+manifest diagnostics and retry through the current commit-stack publication route
+when the workflow still has one configured.

@@ -106,6 +106,12 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
   assert target.pull_request.strategy
     == artifact_publication_config.UpdateExisting
   assert target.pull_request.draft == False
+  assert target.pull_request.title
+    == Some(
+      "{{ work.identifier }}: implement {% if work.title %}{{ work.title }}{% else %}implementation changes{% endif %}",
+    )
+  assert target.pull_request.body_template
+    == Some("workflows/prompts/implementation-publication-pr-body.md")
 }
 
 pub fn checked_in_origin_sync_schedule_loads_test() {
@@ -210,8 +216,24 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   assert resolver.workspace_profile == Some("isolated")
   assert list.contains(
     resolver.workspace_capabilities,
-    config_types.WorkspacePublishChange,
+    config_types.WorkspacePublishCommitStack,
   )
+  let assert [route] = resolver.publication_routes
+  assert route.id == "merge_conflict_resolution_commit_stack"
+  assert route.repository == "github.code"
+  assert route.required == True
+  assert route.mode == artifact_publication_config.CommitStackPublication
+  let assert Some(commit_stack) = route.commit_stack
+  let artifact_publication_config.PublicationCommitStackRoute(selector:) =
+    commit_stack
+  let artifact_publication_config.PublicationCommitStackSelector(output:) =
+    selector
+  assert output == "commit_stack"
+  let assert artifact_publication_config.ExistingPrBranchTarget(source:) =
+    route.target
+  let artifact_publication_config.PublicationTargetSource(output: target_output) =
+    source
+  assert target_output == "merge_target"
   let assert [prepare, resolve, validate, project_validation, publish] =
     resolver.steps
   let prepare_run =
@@ -268,7 +290,7 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   let publish_run =
     assert_command_step(
       publish,
-      "publish_resolution",
+      "materialize_commit_stack",
       ["project_validation"],
       Some("main"),
       300_000,

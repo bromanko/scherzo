@@ -1,13 +1,18 @@
+import gleam/bit_array
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/artifact_publication_config
+import scherzo/commit_stack_artifact
 import scherzo/error
+import scherzo/hash
 import scherzo/json_value
 import scherzo/state/artifact_store
 import scherzo/template
 import scherzo/workflow_contract
+import scherzo/workflow_contract_manifest
 
 pub fn render_template(
   source: String,
@@ -206,6 +211,167 @@ fn json_value_template_locals(
     json_value.JString(text) -> [#(prefix, template.VString(text))]
     _ -> []
   }
+}
+
+pub type TargetSelectionError {
+  TargetSelectionError(code: String, message: String)
+}
+
+pub fn target_selection_error_code(error: TargetSelectionError) -> String {
+  let TargetSelectionError(code: code, ..) = error
+  code
+}
+
+pub fn target_selection_error_message(error: TargetSelectionError) -> String {
+  let TargetSelectionError(message: message, ..) = error
+  message
+}
+
+pub fn select_existing_pr_branch_target(
+  manifest: workflow_contract_manifest.ContractOutputManifest,
+  output: String,
+  store: artifact_store.Store,
+) -> Result(commit_stack_artifact.ExistingPrBranchTarget, TargetSelectionError) {
+  use named <- result.try(find_named_output(manifest.outputs, output))
+  case named.value.status {
+    workflow_contract_manifest.Absent ->
+      target_error("absent_output", "publication output is absent: " <> output)
+    workflow_contract_manifest.Present -> {
+      use contents <- result.try(read_retained_output_text(
+        output,
+        named.value,
+        store,
+      ))
+      commit_stack_artifact.parse_existing_pr_branch_target(contents)
+      |> result.map_error(commit_stack_parse_error_to_target_error)
+    }
+  }
+}
+
+fn find_named_output(
+  outputs: List(workflow_contract_manifest.NamedManifestValue),
+  name: String,
+) -> Result(workflow_contract_manifest.NamedManifestValue, TargetSelectionError) {
+  case outputs {
+    [] -> target_error("unknown_output", "unknown publication output: " <> name)
+    [output, ..rest] ->
+      case output.name == name {
+        True -> Ok(output)
+        False -> find_named_output(rest, name)
+      }
+  }
+}
+
+fn read_retained_output_text(
+  output: String,
+  value: workflow_contract_manifest.ManifestValue,
+  store: artifact_store.Store,
+) -> Result(String, TargetSelectionError) {
+  use ref <- result.try(require_option(
+    value.ref,
+    "missing_ref",
+    "publication output is missing a retained artifact ref: " <> output,
+  ))
+  use sha256 <- result.try(require_option(
+    value.sha256,
+    "missing_ref",
+    "publication output is missing a retained artifact sha256: " <> output,
+  ))
+  use bytes <- result.try(require_option(
+    value.bytes,
+    "missing_ref",
+    "publication output is missing a retained artifact byte count: " <> output,
+  ))
+  use contents <- result.try(read_artifact_text(ref, store))
+  use Nil <- result.try(verify_text_contents(ref, contents, sha256, bytes))
+  Ok(contents)
+}
+
+fn read_artifact_text(
+  ref: String,
+  store: artifact_store.Store,
+) -> Result(String, TargetSelectionError) {
+  case artifact_store.read_artifact_unverified(store, ref) {
+    Ok(contents) -> Ok(contents)
+    Error(read_error) ->
+      target_error(
+        "missing_artifact_bytes",
+        "artifact bytes could not be read for ref: "
+          <> ref
+          <> " ("
+          <> artifact_error_summary(read_error)
+          <> ")",
+      )
+  }
+}
+
+fn verify_text_contents(
+  ref: String,
+  contents: String,
+  expected_sha256: String,
+  expected_bytes: Int,
+) -> Result(Nil, TargetSelectionError) {
+  let actual_sha256 = hash.sha256_hex(contents)
+  let actual_bytes = bit_array.byte_size(bit_array.from_string(contents))
+  use Nil <- result.try(check_sha256(ref, actual_sha256, expected_sha256))
+  check_bytes(ref, actual_bytes, expected_bytes)
+}
+
+fn check_sha256(
+  ref: String,
+  actual: String,
+  expected: String,
+) -> Result(Nil, TargetSelectionError) {
+  case actual == expected {
+    True -> Ok(Nil)
+    False ->
+      target_error(
+        "hash_mismatch",
+        "artifact sha256 did not match for ref: " <> ref,
+      )
+  }
+}
+
+fn check_bytes(
+  ref: String,
+  actual: Int,
+  expected: Int,
+) -> Result(Nil, TargetSelectionError) {
+  case actual == expected {
+    True -> Ok(Nil)
+    False ->
+      target_error(
+        "byte_count_mismatch",
+        "artifact byte count did not match for ref: " <> ref,
+      )
+  }
+}
+
+fn require_option(
+  value: Option(a),
+  code: String,
+  text: String,
+) -> Result(a, TargetSelectionError) {
+  case value {
+    Some(value) -> Ok(value)
+    None -> target_error(code, text)
+  }
+}
+
+fn commit_stack_parse_error_to_target_error(
+  parse_error: commit_stack_artifact.ArtifactParseError,
+) -> TargetSelectionError {
+  TargetSelectionError(
+    code: commit_stack_artifact.error_code(parse_error),
+    message: commit_stack_artifact.error_message(parse_error),
+  )
+}
+
+fn target_error(
+  code: String,
+  message: String,
+) -> Result(a, TargetSelectionError) {
+  Error(TargetSelectionError(code:, message:))
 }
 
 fn has_parent_segment(value: String) -> Bool {

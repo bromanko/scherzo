@@ -20,8 +20,10 @@ Retry one failed retryable publication:
 
     direnv exec . gleam run -m scherzo ctl artifact publication retry --run <run-id> --publication <publication-id>
 
-For ExecPlan review docs, use `--publication execplan_review_doc` to replay the
-retained canonical plan artifact without rerunning the authoring or revision steps.
+For same-repository GitHub repository-change publication, retry the configured
+`mode: commit_stack` publication. Review-doc helper output is outside the
+artifact-publication retry lane; use retained workflow output manifests and driver
+diagnostics rather than a single `execplan_review_doc` publication route.
 
 Retry every latest failed retryable publication for the run:
 
@@ -43,4 +45,4 @@ Same-repository repository-change publication is workspace-driver-backed. Commit
 
 GitHub file artifact publication no longer has a Scherzo-managed checkout implementation. Routes that still use `files:` for a GitHub repository fail with `file_publication_unsupported` and do not clone, reset, clean, or lock hidden repositories. Publish file-style review documents from an explicit workflow command/driver step, or convert repository changes to `mode: commit_stack`.
 
-Do not manually reset or clean active agent workspaces as publication recovery. For commit-stack failures, inspect the retained workspace and driver diagnostics, then retry or abandon through the artifact publication commands.
+The old Scherzo-managed checkout path under `.scherzo-state/artifact-repositories/github/<hash>` is legacy state, not an active same-repository GitHub publication model. Do not manually reset or clean active agent workspaces as publication recovery. For commit-stack failures, inspect the retained workspace and driver diagnostics, then retry or abandon through the artifact publication commands.

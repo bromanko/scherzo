@@ -1552,6 +1552,29 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
             updated = False
     if not pr_url and not branch_only_commit_stack:
         json_failure(status="publication_failed", failure_code="pr_url_missing", message=f"failed to create or locate hosted review URL for {branch}")
+    if pr_url and not created and not values.get("target-pr") and not values.get("target-branch") and not branch_only_commit_stack:
+        edit = run_capture(
+            [
+                "gh",
+                "pr",
+                "edit",
+                branch,
+                "--repo",
+                repo,
+                "--title",
+                title_text,
+                "--body-file",
+                values["body-file"],
+            ],
+            root,
+        )
+        if edit.returncode != 0:
+            json_failure(
+                status="publication_failed",
+                failure_code="pr_edit_failed",
+                message=(edit.stderr or edit.stdout or "gh pr edit failed").strip(),
+            )
+        updated = True
 
     json_dump({
         "version": 1,
