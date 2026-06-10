@@ -1483,9 +1483,12 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
 
     change_id = revision_value(root, "@", "change_id.short()", default="change")
     branch = values.get("target-branch") or f"{values['branch-prefix'].rstrip('/')}/{sanitize_ref_part(title_text)[:60]}-{change_id}"
-    describe = run_jj_proc(root, ["describe", "-m", title_text])
-    if describe.returncode != 0:
-        json_failure(status="publication_failed", failure_code="describe_failed", message=(describe.stderr or describe.stdout or "jj describe failed").strip())
+    # publish-commit-stack receives an already-selected commit_stack head;
+    # describing it here would rewrite the commit object and break head checks.
+    if operation == "publish-change":
+        describe = run_jj_proc(root, ["describe", "-m", title_text])
+        if describe.returncode != 0:
+            json_failure(status="publication_failed", failure_code="describe_failed", message=(describe.stderr or describe.stdout or "jj describe failed").strip())
     bookmark_args = ["bookmark", "set"]
     if values.get("target-branch"):
         # Merge-conflict resolution publishes intentionally retarget an existing
