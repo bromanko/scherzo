@@ -22,6 +22,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from scherzo_workflow import commit_stack as commit_stack_helper
+
 TMP_DIR = Path("tmp")
 RUN_STATE_DIR = (
     Path(os.environ["SCHERZO_RUN_ROOT"]).resolve() / "artifacts" / "merge-conflict"
@@ -39,8 +41,6 @@ PR_COMMENT_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-pr-comment.md"
 TARGET_ARTIFACT_PATH = TMP_DIR / "scherzo-merge-conflict-target.json"
 COMMIT_STACK_PATH = TMP_DIR / "scherzo-merge-conflict-commit-stack.json"
 COMMIT_STACK_CARRIER_NAME = "scherzo-merge-conflict-commit-stack.bundle"
-COMMIT_STACK_CARRIER_PATH = TMP_DIR / COMMIT_STACK_CARRIER_NAME
-COMMIT_STACK_MAX_CARRIER_BYTES = 104_857_600
 RETENTION_MARKER = ".scherzo-keep-workspace"
 CONFLICT_MARKER_RE = re.compile(r"^(<<<<<<<|>>>>>>>|%%%%%%%|\+{7}|\\{7})", re.MULTILINE)
 JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
@@ -84,7 +84,9 @@ extract-target-issue <json-file> [repo]
     )
 
 
-def fail(message: str) -> None:
+def fail(message: str, *, code: str | None = None) -> None:
+    if code:
+        print(f"SCHERZO_FAILURE_CODE={code}", file=sys.stderr)
     print(f"scherzo-merge-conflict: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -155,87 +157,6 @@ def load_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-
-
-def require_artifact_run_id(value: str) -> str:
-    run_id = value.strip() or "local-run"
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_id):
-        return run_id
-    fail("SCHERZO_RUN_ID contains characters that cannot be used in artifact refs")
-
-
-def run_id_for_artifacts() -> str:
-    return require_artifact_run_id(os.environ.get("SCHERZO_RUN_ID", "local-run"))
-
-
-def run_artifact_dir(run_id: str) -> Path | None:
-    explicit = os.environ.get("SCHERZO_RUN_ARTIFACT_DIR", "").strip()
-    if explicit:
-        return Path(explicit)
-
-    candidates = run_artifact_dir_candidates(run_id)
-    if candidates:
-        return candidates[0]
-    return None
-
-
-def run_artifact_dir_candidates(run_id: str) -> list[Path]:
-    candidates: list[Path] = []
-    seen: set[str] = set()
-
-    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
-    if run_root:
-        append_artifact_dir_candidate(candidates, seen, Path(run_root), run_id)
-
-    repo_root = os.environ.get("SCHERZO_REPO_ROOT", "").strip()
-    if repo_root:
-        append_artifact_dir_candidate(candidates, seen, Path(repo_root), run_id)
-
-    for root in state_root_search_paths():
-        append_artifact_dir_candidate(candidates, seen, root, run_id)
-
-    return candidates
-
-
-def state_root_search_paths() -> list[Path]:
-    roots: list[Path] = []
-    seen: set[str] = set()
-    starts = [Path.cwd()]
-    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
-    if run_root:
-        starts.append(Path(run_root))
-
-    for start in starts:
-        for root in [start, *start.parents]:
-            key = str(root)
-            if key in seen:
-                continue
-            seen.add(key)
-            if (root / ".scherzo-state").is_dir():
-                roots.append(root)
-    return roots
-
-
-def append_artifact_dir_candidate(
-    candidates: list[Path], seen: set[str], root: Path, run_id: str
-) -> None:
-    candidate = root / ".scherzo-state" / "artifacts" / "runs" / run_id
-    key = str(candidate)
-    if key not in seen:
-        seen.add(key)
-        candidates.append(candidate)
-
-
-def artifact_output_ref(run_id: str, name: str) -> str:
-    return f"runs/{run_id}/outputs/{name}"
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def workspace_driver_command() -> str | None:
@@ -681,107 +602,33 @@ def current_commit_short(rev: str) -> str:
     return run(["jj", "log", "-r", rev, "--no-graph", "-T", "commit_id.short()", "--color=never"]).strip()
 
 
-def require_git_oid(value: str, *, label: str) -> str:
-    oid = value.strip().lower()
-    if re.fullmatch(r"[0-9a-f]{40}", oid):
-        return oid
-    fail(f"{label} did not resolve to a 40-character Git object ID")
-
-
-def jj_commit_oid(revision: str) -> str:
-    return require_git_oid(current_commit(revision), label=f"jj revision {revision}")
-
-
-def jj_tree_oid(revision: str) -> str:
-    commit = jj_commit_oid(revision)
-    proc = run_proc(["jj", "debug", "object", "commit", commit])
-    if proc.returncode != 0:
-        fail(f"could not inspect Git tree for jj revision {revision}")
-    match = re.search(r'TreeId\(\s*"([0-9a-f]{40})"\s*,?\s*\)', proc.stdout)
-    if not match:
-        fail(f"jj revision {revision} did not expose a 40-character Git tree ID")
-    return require_git_oid(match.group(1), label=f"tree for jj revision {revision}")
-
-
-def commit_stack_bundle_ref(run_id: str, head_oid: str) -> str:
-    run_hash = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
-    return f"refs/scherzo/merge-conflict-commit-stack/{run_hash}/{head_oid}"
-
-
-def unique_git_oids(values: list[str]) -> list[str]:
-    oids: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        oid = require_git_oid(value, label="commit_stack bundle prerequisite")
-        if oid not in seen:
-            seen.add(oid)
-            oids.append(oid)
-    return oids
-
-
-def write_commit_stack_carrier(
-    *, run_id: str, prerequisite_oids: list[str], head_oid: str
-) -> tuple[str, str, int]:
-    require_command("git")
-    artifact_dir = run_artifact_dir(run_id)
-    if artifact_dir is None:
-        carrier_path = COMMIT_STACK_CARRIER_PATH
-        carrier_ref = str(carrier_path)
-    else:
-        carrier_path = artifact_dir / "outputs" / COMMIT_STACK_CARRIER_NAME
-        carrier_ref = artifact_output_ref(run_id, COMMIT_STACK_CARRIER_NAME)
-    carrier_path.parent.mkdir(parents=True, exist_ok=True)
-    if carrier_path.exists():
-        carrier_path.unlink()
-
-    prerequisites = [f"^{oid}" for oid in unique_git_oids(prerequisite_oids)]
-    bundle_ref = commit_stack_bundle_ref(run_id, head_oid)
-    try:
-        run(["git", "update-ref", bundle_ref, head_oid])
-        run(["git", "bundle", "create", str(carrier_path), bundle_ref, *prerequisites])
-        run(["git", "bundle", "verify", str(carrier_path)])
-    finally:
-        run(["git", "update-ref", "-d", bundle_ref], check=False)
-
-    carrier_bytes = carrier_path.stat().st_size
-    if carrier_bytes > COMMIT_STACK_MAX_CARRIER_BYTES:
-        fail(
-            "commit_stack carrier bundle exceeds maximum supported size "
-            f"({carrier_bytes} bytes > {COMMIT_STACK_MAX_CARRIER_BYTES} bytes)"
-        )
-    return carrier_ref, file_sha256(carrier_path), carrier_bytes
+def commit_stack_description_title(metadata: dict[str, Any]) -> str:
+    identifier = str(metadata.get("linear_issue_identifier") or "merge-conflict")
+    branch = str(metadata.get("head_branch") or "target branch")
+    return f"Resolve merge conflicts for {identifier}: {branch}"
 
 
 def materialize_commit_stack_artifact(metadata: dict[str, Any]) -> dict[str, Any]:
-    run_id = run_id_for_artifacts()
-    target_head_oid = require_git_oid(
-        metadata["head_commit_at_prepare"], label="target branch head at prepare"
-    )
-    base_branch_oid = require_git_oid(
-        metadata["base_commit_at_prepare"], label="base branch head at prepare"
-    )
-    head_oid = jj_commit_oid("@")
-    head_tree_oid = jj_tree_oid("@")
-    carrier_ref, carrier_sha256, carrier_bytes = write_commit_stack_carrier(
-        run_id=run_id,
-        prerequisite_oids=[target_head_oid, base_branch_oid],
-        head_oid=head_oid,
-    )
-    artifact = {
-        "schema_version": 1,
-        "artifact_type": "scherzo.git_commit_stack.v1",
-        "repository": {"repo": metadata["repo"]},
-        "base": {"ref": metadata["head_branch"], "sha": target_head_oid},
-        "head": {"sha": head_oid, "tree": head_tree_oid},
-        "carrier": {
-            "ref": carrier_ref,
-            "sha256": carrier_sha256,
-            "bytes": carrier_bytes,
-            "media_type": "application/vnd.git.bundle",
-        },
-    }
-    write_json(COMMIT_STACK_PATH, artifact)
-    return artifact
+    try:
+        target_head_oid = commit_stack_helper.require_git_oid(
+            metadata["head_commit_at_prepare"], label="target branch head at prepare"
+        )
+        base_branch_oid = commit_stack_helper.require_git_oid(
+            metadata["base_commit_at_prepare"], label="base branch head at prepare"
+        )
+        return commit_stack_helper.materialize_commit_stack_artifact(
+            repository=metadata["repo"],
+            base_ref=metadata["head_branch"],
+            base_oid=target_head_oid,
+            prerequisite_oids=[target_head_oid, base_branch_oid],
+            output_path=COMMIT_STACK_PATH,
+            carrier_name=COMMIT_STACK_CARRIER_NAME,
+            description_title=commit_stack_description_title(metadata),
+            bundle_ref_namespace="merge-conflict-commit-stack",
+            tmp_dir=TMP_DIR,
+        )
+    except commit_stack_helper.CommitStackError as exc:
+        fail(exc.message, code=exc.code)
 
 
 def target_artifact(metadata: dict[str, Any]) -> dict[str, Any]:

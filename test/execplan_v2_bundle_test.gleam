@@ -143,16 +143,20 @@ fn write_fake_commit_stack_jj(path: String) -> Nil {
     simplifile.write(
       path,
       "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> jj.log\n"
+        <> "if [ \"$1\" = describe ]; then touch .fake-described; exit 0; fi\n"
         <> "if [ \"$1\" = log ]; then\n"
         <> "  rev=\n"
+        <> "  template=\n"
         <> "  prev=\n"
         <> "  for arg in \"$@\"; do\n"
         <> "    if [ \"$prev\" = -r ]; then rev=$arg; fi\n"
+        <> "    if [ \"$prev\" = -T ]; then template=$arg; fi\n"
         <> "    prev=$arg\n"
         <> "  done\n"
         <> "  case \"$rev\" in\n"
-        <> "    @-) echo 2222222222222222222222222222222222222222; exit 0;;\n"
-        <> "    @) echo 3333333333333333333333333333333333333333; exit 0;;\n"
+        <> "    @-) case \"$template\" in *commit_id*) echo 2222222222222222222222222222222222222222;; *) echo parentdescription;; esac; exit 0;;\n"
+        <> "    @) case \"$template\" in *description*) if [ \"${SCHERZO_FAKE_EMPTY_DESCRIPTION:-}\" = 1 ] && [ ! -f .fake-described ]; then printf '\\n'; else echo currentdescription; fi;; *commit_id*) if [ -f .fake-described ]; then echo 5555555555555555555555555555555555555555; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "  esac\n"
         <> "fi\n"
         <> "if [ \"$1\" = debug ] && [ \"$2\" = object ] && [ \"$3\" = commit ]; then\n"
@@ -2339,6 +2343,46 @@ pub fn materialize_commit_stack_writes_manifest_test() {
   assert string.contains(
     commit_stack,
     "\"tree\": \"4444444444444444444444444444444444444444\"",
+  )
+}
+
+pub fn materialize_commit_stack_describes_empty_head_before_manifest_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-empty-description"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_FAKE_EMPTY_DESCRIPTION=1 SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "log -r @ --no-graph -T description")
+  assert string.contains(
+    jj_log,
+    "describe -m ExecPlan review doc: docs/plans/LIV-910-plan.md",
+  )
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/execplan-commit-stack.json")
+  assert string.contains(
+    commit_stack,
+    "\"sha\": \"5555555555555555555555555555555555555555\"",
+  )
+  assert !string.contains(
+    commit_stack,
+    "\"sha\": \"3333333333333333333333333333333333333333\"",
   )
 }
 

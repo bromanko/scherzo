@@ -77,9 +77,11 @@ fn write_fake_jj(path: String) -> Nil {
         <> "fi\n"
         <> "if [ \"$1\" = log ]; then\n"
         <> "  revision=\n"
+        <> "  template=\n"
         <> "  while [ $# -gt 0 ]; do\n"
         <> "    case \"$1\" in\n"
         <> "      -r) revision=$2; shift 2 ;;\n"
+        <> "      -T) template=$2; shift 2 ;;\n"
         <> "      *) shift ;;\n"
         <> "    esac\n"
         <> "  done\n"
@@ -87,6 +89,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  for missing in ${SCHERZO_FAKE_JJ_MISSING_REVISIONS:-}; do\n"
         <> "    if [ \"$revision\" = \"$missing\" ]; then exit 1; fi\n"
         <> "  done\n"
+        <> "  if [ \"$template\" = description ] && [ -n \"${SCHERZO_FAKE_JJ_DESCRIPTION_OUTPUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_JJ_DESCRIPTION_OUTPUT\"; exit 0; fi\n"
         <> "  printf '%s\\n' \"${SCHERZO_FAKE_JJ_LOG_OUTPUT:-commit}\"\n"
         <> "  exit 0\n"
         <> "fi\n"
@@ -1373,6 +1376,43 @@ pub fn jj_driver_publish_commit_stack_push_auth_failure_with_existing_pr_reports
     logged,
     "git push --remote origin --bookmark " <> branch <> " --allow-new",
   )
+  assert !string.contains(logged, "gh: pr create")
+}
+
+pub fn jj_driver_publish_commit_stack_empty_head_description_fails_before_push_test() {
+  let dir =
+    "test/tmp/jj-workspace-driver-publish-commit-stack-empty-description"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-936/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_empty_description",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_JJ_DESCRIPTION_OUTPUT", " "),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stdout, "\"status\":\"invalid_commit_stack\"")
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"commit_stack_head_description_empty\"",
+  )
+  assert string.contains(artifact.stdout, "empty jj description")
+  let logged = log_text(log)
+  assert string.contains(logged, "log -r @ --no-graph -T description")
+  assert !string.contains(logged, "git push")
   assert !string.contains(logged, "gh: pr create")
 }
 
