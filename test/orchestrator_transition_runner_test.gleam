@@ -14,6 +14,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/result_artifact
 import scherzo/runtime/identity
 import scherzo/runtime/state as orchestrator_state
+import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
@@ -532,6 +533,61 @@ pub fn yaml_step_cleanup_removes_pure_route_test() {
   assert dict.get(next.workers.yaml_step_runs, "step-session") == Error(Nil)
   assert interpreter.data(shell)
     == ["yaml_start:step-session", "yaml_finish:step-session"]
+}
+
+pub fn worker_down_clears_yaml_step_directory_for_run_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+
+  let transition_runner.RunResult(state: next, exhausted: exhausted, ..) =
+    invariant_helpers.run_and_assert(
+      state: state_with_running_worker(issue),
+      shell: event_shell(),
+      messages: [
+        transition_types.YamlStepStarted(
+          identity.session_id_from_string("step-session"),
+          identity.run_id_from_string("run-1"),
+        ),
+        transition_types.WorkerDown(
+          transition_types.KnownWorkerDown(
+            identity.issue_id_from_string(issue.id),
+            identity.run_id_from_string("run-1"),
+            identity.session_id_from_string("session-1"),
+          ),
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert dict.get(next.workers.yaml_step_runs, "step-session") == Error(Nil)
+  assert dict.get(next.workers.stopped_yaml_runs, "run-1") == Error(Nil)
+}
+
+pub fn worker_stop_clears_yaml_step_directory_for_run_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+
+  let transition_runner.RunResult(state: next, exhausted: exhausted, ..) =
+    invariant_helpers.run_and_assert(
+      state: state_with_running_worker(issue),
+      shell: event_shell(),
+      messages: [
+        transition_types.YamlStepStarted(
+          identity.session_id_from_string("step-session"),
+          identity.run_id_from_string("run-1"),
+        ),
+        transition_types.WorkerStopRequested(
+          identity.session_id_from_string("session-1"),
+          session_reason.OperatorAbort,
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert dict.get(next.workers.yaml_step_runs, "step-session") == Error(Nil)
+  assert dict.get(next.workers.stopped_yaml_runs, "run-1") == Error(Nil)
 }
 
 pub fn startup_recovery_schedules_retry_cleanup_and_park_effects_test() {

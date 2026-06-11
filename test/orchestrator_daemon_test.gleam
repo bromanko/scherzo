@@ -280,6 +280,45 @@ steps:
   config_path
 }
 
+fn write_scheduled_parallel_failure_workflow(dir: String) -> String {
+  test_helpers.reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      workflow_text(root, 1)
+        <> "schedules:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
+    )
+  let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+concurrency: 2
+steps:
+  - id: active_agent
+    kind: agent
+    prompt: prompts/task.md
+    run_in: alpha
+  - id: failing_command
+    kind: command
+    run: exit 1
+    run_in: beta
+  - id: terminal_join
+    kind: command
+    depends_on: [active_agent, failing_command]
+    run: echo joined
+    run_in: main
+",
+    )
+  config_path
+}
+
 fn write_scheduled_capacity_workflow(
   dir: String,
   max_concurrent: Int,
@@ -1123,6 +1162,61 @@ fn blocking_command_ready_workflow_run_dependencies(
       Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError(
           "stopped:" <> context.step_id,
+        )),
+        workspace_path: Some(context.workspace_path),
+        tokens: session_tokens.zero_token_totals(),
+        final_issue: Some(issue),
+      ))
+    },
+  )
+}
+
+fn scheduled_parallel_failure_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+  command_barrier: test_async.Barrier,
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    command_step: fn(
+      context: workflow_run.StepContext,
+      _command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
+      test_async.block_until_released(command_barrier)
+      process.send(log_subject, "yaml_command_failed:" <> context.step_id)
+      step_artifact.from_command_result(
+        context.step_id,
+        1,
+        "",
+        "forced scheduled failure",
+        False,
+        secrets,
+        limits,
+      )
+    },
+    agent_step: fn(
+      issue,
+      context: workflow_run.StepContext,
+      _prompt_mode,
+      _attempt_context,
+      _effective,
+      _tracker,
+      _emit_update,
+      command_ready,
+      _record_pi_session,
+    ) {
+      let command_subject = process.new_subject()
+      command_ready(command_subject)
+      process.send(log_subject, "agent_ready")
+      test_async.block_until_released(barrier)
+      process.send(log_subject, "agent_survived")
+      Error(agent_types.WorkerFailure(
+        reason: error.PiFailed(error.PiProtocolError(
+          "survived:" <> context.step_id,
         )),
         workspace_path: Some(context.workspace_path),
         tokens: session_tokens.zero_token_totals(),
@@ -2527,6 +2621,62 @@ pub fn daemon_yaml_operator_prompt_routes_to_agent_step_session_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_stale_worker_finished_keeps_active_worker_commandable_test() {
+  let dir = "test/tmp/daemon-stale-worker-finished"
+  let workflow_path = write_yaml_agent_workflow(dir)
+  let candidate =
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+    )
+  let log_subject = process.new_subject()
+  let log_fields_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: command_ready_workflow_run_dependencies(
+        log_subject,
+      ),
+      logger: fn(_, event, fields, _) {
+        process.send(log_subject, event)
+        process.send(log_fields_subject, #(event, fields))
+        Ok(Nil)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(log_subject, "agent_ready", 20)
+  process.send(
+    started.data,
+    daemon.WorkerFinished(
+      "issue-id",
+      "stale-run",
+      Error(agent_types.WorkerFailure(
+        reason: error.PiFailed(error.PiProtocolError("stale finish")),
+        workspace_path: Some("stale-workspace"),
+        tokens: session_tokens.zero_token_totals(),
+        final_issue: Some(candidate),
+      )),
+    ),
+  )
+
+  let assert Ok(fields) =
+    wait_for_log_fields(log_fields_subject, "worker_finished_stale", 20)
+  let field_map = dict.from_list(fields)
+  assert dict.get(field_map, "issue_id") == Ok("issue-id")
+  assert dict.get(field_map, "run_id") == Ok("stale-run")
+  let result = prompt_until_queued(started.data, "ABC-1-42-1", 20)
+  assert result.status == command.Queued
+  assert wait_for_event(log_subject, "worker_exited", 20)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn daemon_yaml_parent_prompt_rejects_multiple_active_step_routes_test() {
   let dir = "test/tmp/daemon-yaml-parent-command-multiple"
   let workflow_path = write_parallel_yaml_agent_workflow(dir)
@@ -2787,6 +2937,78 @@ pub fn daemon_scheduled_due_tick_runs_command_workflow_test() {
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_failure_cleans_active_yaml_step_child_test() {
+  let dir = "test/tmp/daemon-scheduled-yaml-child-cleanup"
+  let workflow_path = write_scheduled_parallel_failure_workflow(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let command_barrier = test_async.new_barrier()
+  let assert Ok(event_hub) = hub.start(50, fn() { 42 })
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: scheduled_parallel_failure_workflow_run_dependencies(
+        log_subject,
+        worker_barrier,
+        command_barrier,
+      ),
+      now_ms: fn() { clock_now(clock) },
+      start_event_hub: fn() { Ok(event_hub) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(log_subject, "agent_ready", 20)
+  test_async.release_barrier(command_barrier)
+  assert wait_for_event(log_subject, "yaml_command_failed:failing_command", 20)
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_started(records, run_id) },
+    20,
+  )
+  let assert Ok(sessions) = hub.list_sessions(event_hub, 1000)
+  let step_sessions =
+    list.filter(sessions, fn(summary) {
+      string.starts_with(
+        summary.session_id,
+        "workflow-step-" <> run_id <> "-active_agent-a1-",
+      )
+    })
+  let assert [step_session] = step_sessions
+  assert wait_for_session_status(
+    event_hub,
+    step_session.session_id,
+    event.Exited(reason.Stopped),
+    20,
+  )
+  let assert Ok(prompt_result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.PromptSession(step_session.session_id, "after cleanup"),
+      1000,
+    )
+  assert prompt_result.status == command.NotFound
+  let assert Ok(metrics) =
+    wait_for_metrics(started.data, 20, fn(metrics) {
+      metrics.active_sessions == 0 && metrics.running_scheduled_workers == 0
+    })
+  assert metrics.token_totals.total == 0
+  let post_cleanup_logs = test_async.drain_subject(log_subject)
+  assert !list.contains(post_cleanup_logs, "agent_survived")
+  test_async.release_barrier_if_waiting_within(worker_barrier, 100)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+  hub.stop(event_hub)
 }
 
 pub fn daemon_scheduled_startup_clamps_legacy_persisted_due_after_clock_baseline_change_test() {
