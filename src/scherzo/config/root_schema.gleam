@@ -28,6 +28,7 @@ pub fn reject_removed_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
   use _ <- result.try(reject_removed_scheduled_job_keys(root))
   use _ <- result.try(reject_removed_artifact_limit_keys(root))
   use _ <- result.try(reject_removed_agent_keys(root))
+  use _ <- result.try(reject_removed_agents_retry_keys(root))
   use _ <- result.try(reject_removed_pi_keys(root))
   reject_removed_tracker_state_keys(root)
 }
@@ -495,18 +496,36 @@ fn reject_removed_agent_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {
   }
 }
 
+fn reject_removed_agents_retry_keys(
+  root: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  let agents = get_map(root, "agents")
+  case get_node(agents, "retries") {
+    Some(_) ->
+      Error(removal_hint(
+        "agents.retries",
+        removed_whole_workflow_retry_replacement(),
+      ))
+    None -> Ok(Nil)
+  }
+}
+
 fn agent_migration_hints() -> List(#(String, String)) {
   [
     #("max_concurrent_agents", "agents.concurrency"),
     #("max_concurrent_agents_by_state", "agents.concurrency.by_state"),
     #("max_turns", "agents.max_turns"),
-    #("max_retry_attempts", "agents.retries.attempts"),
-    #("max_retry_backoff_ms", "agents.retries.max_backoff"),
-    #("max_retry_backoff", "agents.retries.max_backoff"),
+    #("max_retry_attempts", removed_whole_workflow_retry_replacement()),
+    #("max_retry_backoff_ms", removed_whole_workflow_retry_replacement()),
+    #("max_retry_backoff", removed_whole_workflow_retry_replacement()),
     #("max_sessions_per_issue", "agents.sessions_per_task"),
     #("context_recovery_max_attempts", "agents.recovery.attempts"),
     #("context_recovery_prompt_char_limit", "agents.recovery.prompt_char_limit"),
   ]
+}
+
+fn removed_whole_workflow_retry_replacement() -> String {
+  "Automatic whole-workflow retries were removed; use agents.runtime.auto_retry for same-session provider retry or operator retry-step/full retry commands when safe"
 }
 
 fn reject_removed_pi_keys(root: yay.Node) -> Result(Nil, error.ConfigError) {

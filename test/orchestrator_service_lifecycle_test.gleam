@@ -30,8 +30,6 @@ workspace:
 agents:
   concurrency: 0
   sessions_per_task: 1
-  retries:
-    attempts: 1
   runtime:
     type: pi
     pi:

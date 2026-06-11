@@ -70,8 +70,6 @@ fn config(
     agent: config_types.AgentConfig(
       max_concurrent_agents: 1,
       max_turns: max_turns,
-      max_retry_backoff_ms: 300_000,
-      max_retry_attempts: 5,
       max_sessions_per_issue: 3,
       context_recovery_max_attempts: 1,
       context_recovery_prompt_char_limit: 40_000,

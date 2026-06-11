@@ -110,8 +110,6 @@ workspace:
 agents:
   concurrency: " <> int_to_string(max_concurrent) <> "
   sessions_per_task: 2
-  retries:
-    attempts: 3
   runtime:
     type: pi
     pi:
@@ -418,20 +416,6 @@ steps:
 ",
     )
   config_path
-}
-
-fn success(
-  final: tracker_issue.Issue,
-  workspace_path: String,
-) -> agent_types.WorkerSuccess {
-  agent_types.WorkerSuccess(
-    final_issue: Some(final),
-    final_classification: agent_types.FinalTerminal,
-    workspace_path: workspace_path,
-    tokens: session_tokens.zero_token_totals(),
-    turns: 1,
-    result: result_artifact.from_final_response(None, False, "none"),
-  )
 }
 
 fn base_dependencies(
@@ -1880,21 +1864,6 @@ fn scheduled_started_count(records: List(record.LedgerRecord)) -> Int {
   |> list.length
 }
 
-fn scheduled_blocked_count(
-  records: List(record.LedgerRecord),
-  reason: String,
-) -> Int {
-  records
-  |> list.filter(fn(entry) {
-    case entry.body {
-      record.ScheduledRunPendingBlocked(_, _, _, _, body_reason, _) ->
-        body_reason == reason
-      _ -> False
-    }
-  })
-  |> list.length
-}
-
 fn has_scheduled_succeeded(
   records: List(record.LedgerRecord),
   run_id: String,
@@ -1904,21 +1873,6 @@ fn has_scheduled_succeeded(
     case entry.body {
       record.ScheduledRunSucceeded(_, _, _, body_run_id, _, _, _, _) ->
         body_run_id == run_id
-      _ -> False
-    }
-  })
-}
-
-fn has_scheduled_started_attempt(
-  records: List(record.LedgerRecord),
-  run_id: String,
-  attempt: Int,
-) -> Bool {
-  records
-  |> list.any(fn(entry) {
-    case entry.body {
-      record.ScheduledRunStarted(_, _, _, _, body_run_id, body_attempt, _, _) ->
-        body_run_id == run_id && body_attempt == attempt
       _ -> False
     }
   })
@@ -1947,6 +1901,20 @@ fn has_scheduled_failed(
         body_run_id == run_id
         && body_reason == reason
         && body_retry_exhausted == retry_exhausted
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_failed_run(
+  records: List(record.LedgerRecord),
+  run_id: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledRunFailed(_, _, _, body_run_id, _, _, _, _, _) ->
+        body_run_id == run_id
       _ -> False
     }
   })
@@ -2472,21 +2440,9 @@ pub fn daemon_final_validation_allows_terminal_blocker_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
-pub fn daemon_retry_refresh_dependency_blocked_cancels_retry_test() {
+pub fn daemon_worker_failure_parks_without_retry_refresh_test() {
   let workflow_path = write_workflow("test/tmp/daemon-retry-dependency", 1)
   let retried = issue("retry-id", "ABC-2", "Todo")
-  let blocked =
-    tracker_issue.Issue(
-      ..retried,
-      blocked_by: [
-        tracker_issue.BlockerRef(
-          id: Some("blocker-id"),
-          identifier: Some("ABC-0"),
-          state: Some(issue_state.from_string_unchecked("Todo")),
-        ),
-      ],
-      blocked_by_complete: False,
-    )
   let refresh_subject = process.new_subject()
   let client =
     tracker.Client(
@@ -2533,16 +2489,14 @@ pub fn daemon_retry_refresh_dependency_blocked_cancels_retry_test() {
   let assert Ok(initial_refresh) =
     process.receive(refresh_subject, within: 1000)
   process.send(initial_refresh, retried)
-  assert wait_for_event(log_subject, "retry_scheduled", 20)
+  assert wait_for_event(log_subject, "issue_parked", 20)
 
-  process.send(started.data, daemon.RetryTick("retry-id", 1))
-  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
-  process.send(retry_refresh, blocked)
-  assert wait_for_event(log_subject, "linear_dependency_retry_blocked", 20)
   let identity = orchestrator_state.issue_identity(retried)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert !dict.has_key(snapshot.retry_attempts, identity)
   assert !dict.has_key(snapshot.claimed, identity)
+  assert dict.has_key(snapshot.parked, identity)
+  test_async.assert_no_extra_message_within(refresh_subject, 100)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -3122,7 +3076,7 @@ pub fn daemon_scheduled_overlap_records_skip_without_second_start_test() {
   process.send(clock, StopClock)
 }
 
-pub fn daemon_scheduled_capacity_starts_one_and_leaves_retry_headroom_test() {
+pub fn daemon_scheduled_capacity_starts_after_issue_failures_park_test() {
   let dir = "test/tmp/daemon-scheduled-capacity-headroom"
   let workflow_path = write_scheduled_capacity_workflow(dir, 4)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
@@ -3181,8 +3135,8 @@ pub fn daemon_scheduled_capacity_starts_one_and_leaves_retry_headroom_test() {
     ],
     20,
   )
-  assert wait_for_event(log_subject, "retry_scheduled", 20)
-  assert wait_for_event(log_subject, "retry_scheduled", 20)
+  assert wait_for_event(log_subject, "issue_parked", 20)
+  assert wait_for_event(log_subject, "issue_parked", 20)
   let _ = test_async.drain_subject(command_subject)
   let _ = test_async.drain_subject(log_subject)
 
@@ -3192,30 +3146,10 @@ pub fn daemon_scheduled_capacity_starts_one_and_leaves_retry_headroom_test() {
     wait_for_event_prefix(command_subject, "scheduled_command:", 20)
   assert wait_for_records(
     root,
-    fn(records) {
-      scheduled_started_count(records) == 1
-      && scheduled_blocked_count(records, "waiting_for_global_slot") == 2
-    },
+    fn(records) { scheduled_started_count(records) >= 1 },
     20,
   )
   let _ = test_async.drain_subject(log_subject)
-
-  process.send(started.data, daemon.RetryTick("retry-a", 1))
-  assert wait_for_event_without_event(
-    log_subject,
-    "retry_scheduled",
-    "retry_deferred_dispatch_unavailable",
-    20,
-  )
-  let _ = test_async.drain_subject(log_subject)
-
-  process.send(started.data, daemon.RetryTick("retry-b", 1))
-  assert wait_for_event_without_event(
-    log_subject,
-    "retry_scheduled",
-    "retry_deferred_dispatch_unavailable",
-    20,
-  )
 
   test_async.release_barrier(barrier)
   test_async.release_barrier(barrier)
@@ -3224,7 +3158,7 @@ pub fn daemon_scheduled_capacity_starts_one_and_leaves_retry_headroom_test() {
   process.send(clock, StopClock)
 }
 
-pub fn daemon_scheduled_startup_recovers_active_run_with_retry_test() {
+pub fn daemon_scheduled_startup_records_active_run_failure_without_retry_test() {
   let dir = "test/tmp/daemon-scheduled-recover-active"
   let workflow_path = write_scheduled_command_workflow(dir, 1)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
@@ -3250,25 +3184,20 @@ pub fn daemon_scheduled_startup_recovers_active_run_with_retry_test() {
   assert wait_for_records(
     root,
     fn(records) {
-      has_scheduled_failed(records, run_id, "daemon_restart", False)
-      && has_scheduled_retry_scheduled(records, run_id, 2)
+      has_scheduled_failed(records, run_id, "daemon_restart", True)
+      && !has_scheduled_retry_scheduled(records, run_id, 2)
     },
     20,
   )
 
   process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
-  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_started_attempt(records, run_id, 2) },
-    20,
-  )
+  test_async.assert_no_extra_message_within(command_subject, 100)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
 }
 
-pub fn daemon_scheduled_failure_reports_after_retry_exhaustion_test() {
+pub fn daemon_scheduled_failure_reports_without_workflow_retry_test() {
   let dir = "test/tmp/daemon-scheduled-report"
   let workflow_path = write_scheduled_reporting_workflow(dir)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
@@ -3301,27 +3230,13 @@ pub fn daemon_scheduled_failure_reports_after_retry_exhaustion_test() {
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_retry_scheduled(records, run_id, 2) },
-    20,
-  )
-  test_async.assert_no_extra_message_within(report_subject, 50)
-
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_retry_scheduled(records, run_id, 3) },
-    20,
-  )
-  test_async.assert_no_extra_message_within(report_subject, 50)
-
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
   let assert Ok(_request) = process.receive(report_subject, within: 1000)
   assert wait_for_records(
     root,
     fn(records) {
-      has_scheduled_failure_reported(records, run_id, "lin-scheduled")
+      has_scheduled_failed_run(records, run_id)
+      && has_scheduled_failure_reported(records, run_id, "lin-scheduled")
+      && !has_scheduled_retry_scheduled(records, run_id, 2)
     },
     20,
   )
@@ -3363,18 +3278,6 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_retry_scheduled(records, run_id, 2) },
-    20,
-  )
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_retry_scheduled(records, run_id, 3) },
-    20,
-  )
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
     process.receive(report_subject, within: 1000)
   process.send(first_reply, ScheduledReportError)
@@ -3436,18 +3339,6 @@ pub fn daemon_scheduled_report_retry_logs_projection_failure_test() {
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_retry_scheduled(records, run_id, 2) },
-    20,
-  )
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_retry_scheduled(records, run_id, 3) },
-    20,
-  )
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
     process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportError)
@@ -3504,18 +3395,6 @@ pub fn daemon_scheduled_report_retry_blocks_new_intervals_until_reported_test() 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_retry_scheduled(records, run_id, 2) },
-    20,
-  )
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_retry_scheduled(records, run_id, 3) },
-    20,
-  )
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
     process.receive(report_subject, within: 1000)
   process.send(first_reply, ScheduledReportError)
@@ -3540,7 +3419,7 @@ pub fn daemon_scheduled_report_retry_blocks_new_intervals_until_reported_test() 
   process.send(clock, StopClock)
 }
 
-pub fn daemon_scheduled_startup_restores_retry_waiting_timer_test() {
+pub fn daemon_scheduled_startup_removes_retry_waiting_timer_test() {
   let dir = "test/tmp/daemon-scheduled-recover-retry"
   let workflow_path = write_scheduled_command_workflow(dir, 1)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
@@ -3563,13 +3442,15 @@ pub fn daemon_scheduled_startup_restores_retry_waiting_timer_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
-  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
-  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
   assert wait_for_records(
     root,
-    fn(records) { has_scheduled_started_attempt(records, run_id, 2) },
+    fn(records) {
+      has_scheduled_failed(records, run_id, "workflow_command_failed", True)
+    },
     20,
   )
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
+  test_async.assert_no_extra_message_within(command_subject, 100)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
@@ -3734,14 +3615,9 @@ pub fn daemon_side_effect_crash_does_not_stall_future_polls_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
-pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test() {
+pub fn daemon_failed_issue_parks_without_rescheduling_test() {
   let workflow_path = write_workflow("test/tmp/daemon-retry-terminal", 1)
   let retried = issue("retry-id", "ABC-2", "Todo")
-  let done =
-    tracker_issue.Issue(
-      ..retried,
-      state: issue_state.from_string_unchecked("Done"),
-    )
   let log_subject = process.new_subject()
   let refresh_subject = process.new_subject()
   let client =
@@ -3789,21 +3665,19 @@ pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test(
   let assert Ok(initial_refresh) =
     process.receive(refresh_subject, within: 1000)
   process.send(initial_refresh, retried)
-  assert wait_for_event(log_subject, "retry_scheduled", 20)
+  assert wait_for_event(log_subject, "issue_parked", 20)
 
-  process.send(started.data, daemon.RetryTick("retry-id", 1))
-  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
-  process.send(retry_refresh, done)
-  assert wait_for_event(log_subject, "claim_released", 20)
-  process.send(started.data, daemon.RetryTick("retry-id", 2))
-  assert wait_for_event(log_subject, "retry_timer_stale", 10)
+  let identity = orchestrator_state.issue_identity(retried)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(snapshot.parked, identity)
+  assert !dict.has_key(snapshot.retry_attempts, identity)
+  test_async.assert_no_extra_message_within(refresh_subject, 100)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
-pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
+pub fn daemon_failed_worker_runs_once_without_retry_timer_test() {
   let workflow_path = write_workflow("test/tmp/daemon-retry", 1)
   let first = issue("retry-id", "ABC-2", "Todo")
-  let second = tracker_issue.Issue(..first, title: "retry succeeds")
   let log_subject = process.new_subject()
   let refresh_subject = process.new_subject()
   let client =
@@ -3825,7 +3699,7 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
       workflow_run_dependencies: workflow_run.Dependencies(
         ..fake_workflow_run_dependencies(log_subject),
         agent_step: fn(
-          issue: tracker_issue.Issue,
+          _issue: tracker_issue.Issue,
           context: workflow_run.StepContext,
           _,
           _,
@@ -3836,23 +3710,12 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
           _,
         ) {
           process.send(log_subject, "agent_run")
-          case issue.title == "retry succeeds" {
-            False ->
-              Error(agent_types.WorkerFailure(
-                reason: error.PiFailed(error.PiProtocolError("boom")),
-                workspace_path: Some(context.workspace_path),
-                tokens: session_tokens.zero_token_totals(),
-                final_issue: None,
-              ))
-            True ->
-              Ok(success(
-                tracker_issue.Issue(
-                  ..issue,
-                  state: issue_state.from_string_unchecked("Done"),
-                ),
-                context.workspace_path,
-              ))
-          }
+          Error(agent_types.WorkerFailure(
+            reason: error.PiFailed(error.PiProtocolError("boom")),
+            workspace_path: Some(context.workspace_path),
+            tokens: session_tokens.zero_token_totals(),
+            final_issue: None,
+          ))
         },
       ),
     )
@@ -3862,20 +3725,17 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
   let assert Ok(initial_refresh) =
     process.receive(refresh_subject, within: 1000)
   process.send(initial_refresh, first)
-  assert wait_for_event(log_subject, "retry_scheduled", 20)
+  assert wait_for_event(log_subject, "issue_parked", 20)
+  test_async.assert_no_extra_message_within(refresh_subject, 100)
 
-  process.send(started.data, daemon.RetryTick("retry-id", 99))
-  assert wait_for_event(log_subject, "retry_timer_stale", 10)
-  process.send(started.data, daemon.RetryTick("retry-id", 1))
-  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
-  process.send(retry_refresh, second)
-  assert wait_for_event(log_subject, "worker_exited", 20)
-  process.send(started.data, daemon.RetryTick("retry-id", 1))
-  assert wait_for_event(log_subject, "retry_timer_stale", 10)
+  let identity = orchestrator_state.issue_identity(first)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(snapshot.parked, identity)
+  assert !dict.has_key(snapshot.retry_attempts, identity)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
-pub fn daemon_startup_recovers_interrupted_run_retry_generation_test() {
+pub fn daemon_startup_parks_interrupted_run_without_retry_generation_test() {
   let dir = "test/tmp/daemon-startup-interrupted-retry"
   let workflow_path = write_workflow(dir, 1)
   let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
@@ -3901,14 +3761,10 @@ pub fn daemon_startup_recovers_interrupted_run_retry_generation_test() {
   let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
-  assert wait_for_event(log_subject, "recovered_retry_scheduled", 20)
-  process.send(started.data, daemon.RetryTick("retry-id", 99))
-  assert wait_for_event(log_subject, "retry_timer_stale", 10)
-
-  process.send(started.data, daemon.RetryTick("retry-id", 1))
-  assert wait_for_event(log_subject, "worker_exited", 20)
-  process.send(started.data, daemon.RetryTick("retry-id", 1))
-  assert wait_for_event(log_subject, "retry_timer_stale", 10)
+  let identity = orchestrator_state.issue_identity(candidate)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(snapshot.parked, identity)
+  assert !dict.has_key(snapshot.retry_attempts, identity)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 

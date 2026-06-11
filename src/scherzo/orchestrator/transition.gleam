@@ -1369,8 +1369,7 @@ fn schedule_retry_with_backoff(
     Ok(entry) -> entry.timer_generation + 1
     Error(Nil) -> 1
   }
-  let delay_ms =
-    core.backoff_delay(attempt, context.effective.agent.max_retry_backoff_ms)
+  let delay_ms = core.backoff_delay(attempt, core.default_max_backoff_ms())
   let core.Transition(state: runtime, effects: core_effects) =
     core.schedule_task_retry(
       state.runtime,

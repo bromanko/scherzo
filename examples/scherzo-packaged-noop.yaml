@@ -26,9 +26,6 @@ agents:
   concurrency: 1
   max_turns: 20
   sessions_per_task: 3
-  retries:
-    max_backoff: 5m
-    attempts: 5
   runtime:
     type: pi
     pi:

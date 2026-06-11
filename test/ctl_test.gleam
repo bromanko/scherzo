@@ -3280,7 +3280,7 @@ fn write_commit_stack_retry_publication_config(root: String) -> String {
       config_path,
       "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
         <> root
-        <> "\n  driver: retained\n  drivers:\n    retained:\n      type: custom\n      command: scripts/retained-driver\n      timeout: 1234ms\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  retries:\n    attempts: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: implementation\nartifacts:\n  repositories:\n    github:\n      code:\n        repo: scherzo-systems/scherzo\n        base: main\nworkflows:\n  implementation: workflows/implementation.yaml\n",
+        <> "\n  driver: retained\n  drivers:\n    retained:\n      type: custom\n      command: scripts/retained-driver\n      timeout: 1234ms\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: implementation\nartifacts:\n  repositories:\n    github:\n      code:\n        repo: scherzo-systems/scherzo\n        base: main\nworkflows:\n  implementation: workflows/implementation.yaml\n",
     )
   config_path
 }
@@ -3358,7 +3358,7 @@ fn write_retry_publication_config_with_workflow(
       config_path,
       "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
         <> root
-        <> "\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  retries:\n    attempts: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
+        <> "\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
     )
   config_path
 }

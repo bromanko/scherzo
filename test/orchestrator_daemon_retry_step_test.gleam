@@ -1092,8 +1092,6 @@ workspace:
 agents:
   concurrency: 1
   sessions_per_task: 3
-  retries:
-    attempts: 3
   runtime:
     type: pi
     pi:
@@ -1147,8 +1145,6 @@ workspace:
 agents:
   concurrency: 1
   sessions_per_task: 3
-  retries:
-    attempts: 3
   runtime:
     type: pi
     pi:
@@ -1204,8 +1200,6 @@ workspace:
 agents:
   concurrency: 1
   sessions_per_task: 3
-  retries:
-    attempts: 3
   runtime:
     type: pi
     pi:

@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/orchestrator/core
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/startup_recovery
+import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
 import scherzo/state/ledger
@@ -57,8 +58,6 @@ workspace:
 agents:
   concurrency: 1
   sessions_per_task: 2
-  retries:
-    attempts: 3
   runtime:
     type: pi
     pi:
@@ -268,7 +267,7 @@ pub fn current_workflow_observation_uses_default_workflow_for_unlabelled_issue_t
   assert workflow_id == "implementation"
 }
 
-pub fn load_recovers_interrupted_run_retry_metadata_test() {
+pub fn load_recovers_interrupted_run_as_parked_issue_test() {
   let bundle =
     write_bundle("test/tmp/startup-recovery-interrupted-run", "prompts/task.md")
   let candidate = issue("issue-1", "ABC-1")
@@ -291,15 +290,10 @@ pub fn load_recovers_interrupted_run_retry_metadata_test() {
       [],
     )
 
-  let assert [
-    recovery.RecoveredRetry(
-      issue_id: "issue-1",
-      issue_identifier: "ABC-1",
-      generation: 1,
-      reason: "failure",
-      ..,
-    ),
-  ] = loaded.retry_timers
+  assert loaded.retry_timers == []
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  let assert Ok(parked) = dict.get(loaded.runtime.parked, identity)
+  assert parked.reason == reason.ParkWorkerFailure
   assert dict.has_key(loaded.recovery_by_issue, "issue-1")
   assert list.any(load_records(workspace_root), fn(entry) {
     case entry.body {
@@ -518,6 +512,58 @@ pub fn recover_scheduled_runtime_restores_report_retry_timer_test() {
         run_id: "run-report",
         generation: 4,
         delay_ms: 500,
+      ),
+    ]
+}
+
+pub fn recover_scheduled_runtime_reports_enabled_retry_waiting_as_failed_test() {
+  let bundle =
+    scheduled_bundle("test/tmp/startup-recovery-enabled-scheduled-retry", [
+      scheduled_entry("scheduled-job", True),
+    ])
+  let run = scheduled_run("run-retry", 0)
+
+  let recovery =
+    startup_recovery.recover_scheduled_runtime(bundle, 7000, [
+      scheduled_status(
+        "scheduled-job",
+        projection.ScheduledRetryWaiting,
+        run,
+        None,
+      ),
+    ])
+
+  assert scheduled_runtime.pending_starts(recovery.runtime) == []
+  assert scheduled_runtime.retry_run_ids(recovery.runtime) == []
+  assert recovery.effects
+    == [
+      startup_recovery.AppendLedger(
+        record_bodies: [
+          record.ScheduledRunFailed(
+            "scheduled-job",
+            "implementation",
+            5000,
+            "run-retry",
+            1,
+            7000,
+            "whole_run_retry_removed",
+            True,
+            Some("/tmp/run-retry"),
+          ),
+        ],
+        failure_event: "scheduled_recovery_append_failed",
+      ),
+      startup_recovery.BeginFailureReport(
+        scheduled_runtime.FailureReportRequest(
+          job_id: "scheduled-job",
+          workflow_id: "implementation",
+          due_at_ms: 5000,
+          run_id: "run-retry",
+          attempt: 1,
+          reason: "whole_run_retry_removed",
+          run_root: Some("/tmp/run-retry"),
+          session_id: Some("session-run-retry"),
+        ),
       ),
     ]
 }
