@@ -1483,6 +1483,33 @@ pub fn driver_backed_publish_pr_draft_true_prepares_core_publication_test() {
   assert read_or_empty(dir <> "/gh.log") == ""
 }
 
+pub fn driver_backed_publish_describes_empty_head_before_commit_stack_artifact_test() {
+  let dir = "test/tmp/implementation-helper-driver-publish-empty-description"
+  let artifact =
+    run_driver_backed_publish_with_env(dir, "SCHERZO_FAKE_EMPTY_DESCRIPTION=1 ")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "log -r @ --no-graph -T description")
+  assert string.contains(jj_log, "describe -m Implement SCH-123: Fix publish")
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-commit-stack.json")
+  assert string.contains(
+    commit_stack,
+    "\"sha\": \"5555555555555555555555555555555555555555\"",
+  )
+  assert !string.contains(
+    commit_stack,
+    "\"sha\": \"3333333333333333333333333333333333333333\"",
+  )
+  let assert Ok(publish_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
+  assert string.contains(
+    publish_json,
+    "\"commit_stack_head_revision\": \"5555555555555555555555555555555555555555\"",
+  )
+}
+
 pub fn driver_backed_publish_pr_draft_false_prepares_core_publication_test() {
   let dir = "test/tmp/implementation-helper-driver-publish-draft-false"
   let artifact = run_driver_backed_publish_with_pr_draft(dir, "false")
@@ -2387,7 +2414,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  if [ \"${SCHERZO_FAKE_JJ_REBASE_FAIL:-}\" = 1 ]; then echo 'simulated rebase conflict' >&2; exit 1; fi\n"
         <> "  exit 0\n"
         <> "fi\n"
-        <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = describe ]; then touch .fake-described; exit 0; fi\n"
         <> "if [ \"$1\" = bookmark ]; then exit 0; fi\n"
         <> "if [ \"$1\" = status ]; then exit 0; fi\n"
         <> "if [ \"$1\" = debug ] && [ \"$2\" = object ] && [ \"$3\" = commit ]; then printf '%s\n' 'Commit {' '  root_tree: Resolved(' '    TreeId(' '      \"4444444444444444444444444444444444444444\",' '    ),' '  ),' '}'; exit 0; fi\n"
@@ -2403,7 +2430,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  case \"$rev\" in\n"
         <> "    main@origin) case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo remotecommit;; esac; exit 0;;\n"
         <> "    @-) case \"$template\" in *commit_id*) echo 2222222222222222222222222222222222222222;; *) echo localparentcommit;; esac; exit 0;;\n"
-        <> "    @) case \"$template\" in *change_id.short*) echo publishchange;; *commit_id*) if [ \"${SCHERZO_FAKE_INVALID_COMMIT_ID:-}\" = 1 ]; then echo not-a-git-oid; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
+        <> "    @) case \"$template\" in *change_id.short*) echo publishchange;; *description*) if [ \"${SCHERZO_FAKE_EMPTY_DESCRIPTION:-}\" = 1 ] && [ ! -f .fake-described ]; then printf '\\n'; else echo currentdescription; fi;; *commit_id*) if [ \"${SCHERZO_FAKE_INVALID_COMMIT_ID:-}\" = 1 ]; then echo not-a-git-oid; elif [ -f .fake-described ]; then echo 5555555555555555555555555555555555555555; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "    conflicts*) exit 0;;\n"
         <> "    remote_bookmarks*) exit 0;;\n"
         <> "    *) exit 1;;\n"
@@ -2436,7 +2463,7 @@ fn write_fake_refresh_jj(path: String) -> Nil {
         <> "  if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT:-}\" = 1 ] || [ -f .fake-conflict ]; then echo 'src/conflicted.gleam    2-sided conflict'; exit 0; fi\n"
         <> "  exit 0\n"
         <> "fi\n"
-        <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = describe ]; then touch .fake-described; exit 0; fi\n"
         <> "if [ \"$1\" = bookmark ]; then exit 0; fi\n"
         <> "if [ \"$1\" = status ]; then exit 0; fi\n"
         <> "if [ \"$1\" = debug ] && [ \"$2\" = object ] && [ \"$3\" = commit ]; then printf '%s\n' 'Commit {' '  root_tree: Resolved(' '    TreeId(' '      \"4444444444444444444444444444444444444444\",' '    ),' '  ),' '}'; exit 0; fi\n"
@@ -2453,7 +2480,7 @@ fn write_fake_refresh_jj(path: String) -> Nil {
         <> "    main@origin) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo remotecommit;; esac; exit 0;;\n"
         <> "    main) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo localfallbackcommit;; esac; exit 0;;\n"
         <> "    @-) case \"$template\" in *change_id*) echo refreshed-base-change;; *commit_id*) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ]; then echo 1111111111111111111111111111111111111111; else echo 2222222222222222222222222222222222222222; fi;; *) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ]; then echo remotecommit; else echo localparentcommit; fi;; esac; exit 0;;\n"
-        <> "    @) case \"$template\" in *change_id.short*) echo refreshchange;; *commit_id*) if [ \"${SCHERZO_FAKE_INVALID_COMMIT_ID:-}\" = 1 ]; then echo not-a-git-oid; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
+        <> "    @) case \"$template\" in *change_id.short*) echo refreshchange;; *description*) if [ \"${SCHERZO_FAKE_EMPTY_DESCRIPTION:-}\" = 1 ] && [ ! -f .fake-described ]; then printf '\\n'; else echo currentdescription; fi;; *commit_id*) if [ \"${SCHERZO_FAKE_INVALID_COMMIT_ID:-}\" = 1 ]; then echo not-a-git-oid; elif [ -f .fake-described ]; then echo 5555555555555555555555555555555555555555; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "    conflicts*) if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT:-}\" = 1 ] || [ -f .fake-conflict ]; then echo conflictchange; fi; exit 0;;\n"
         <> "    remote_bookmarks*) exit 0;;\n"
         <> "    *) exit 1;;\n"

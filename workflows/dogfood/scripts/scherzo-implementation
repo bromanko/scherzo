@@ -3132,6 +3132,42 @@ def jj_commit_oid(revision: str) -> str:
     return require_git_oid(value, label=f"jj revision {revision}")
 
 
+def jj_description(revision: str) -> str:
+    return run([
+        "jj",
+        "log",
+        "-r",
+        revision,
+        "--no-graph",
+        "-T",
+        "description",
+        "--color=never",
+    ]).strip()
+
+
+def ensure_publication_commit_description(title: str) -> None:
+    if jj_description("@"):
+        return
+    description = title.strip() or "Scherzo publication"
+    describe = run_proc(["jj", "describe", "-m", description])
+    if describe.returncode != 0:
+        details = subprocess_failure_details(
+            describe.stdout,
+            describe.stderr,
+            describe.returncode,
+        )
+        fail(
+            "could not set a jj description before materializing commit_stack publication\n"
+            + details,
+            failure_code="commit_stack_description_failed",
+        )
+    if not jj_description("@"):
+        fail(
+            "jj describe completed but the selected commit still has an empty description",
+            failure_code="commit_stack_description_failed",
+        )
+
+
 def jj_tree_oid(revision: str, _head_oid: str) -> str:
     commit = jj_commit_oid(revision)
     proc = run_proc(["jj", "debug", "object", "commit", commit])
@@ -3294,6 +3330,7 @@ def publish_command() -> None:
         pr_title,
         body,
     )
+    ensure_publication_commit_description(pr_title)
     repository = default_repo(configured_publication_remote())
     commit_stack = materialize_commit_stack_artifact(
         repository=repository,
