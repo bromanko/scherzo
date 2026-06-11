@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/artifact_publication_config
 import scherzo/path
 import scherzo/structured_output_source
 import scherzo/workflow_contract
@@ -344,10 +345,12 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
     simplifile.read(".scherzo/workflows/execplan.yaml")
   let drafting = parse_ok(drafting_source)
   let assert Some(contract) = drafting.contract
-  let assert [plan, implementation_pack, exec_plan_bundle] = contract.outputs
+  let assert [plan, implementation_pack, exec_plan_bundle, commit_stack] =
+    contract.outputs
   assert plan.type_ == workflow_contract.ExecPlan
   assert implementation_pack.type_ == workflow_contract.ImplementationPack
   assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
+  assert commit_stack.type_ == workflow_contract.CommitStack
 
   let assert Ok(validate_review_doc) =
     workflow_dag.step_by_id(drafting, "validate_review_doc")
@@ -358,13 +361,28 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   assert recovery_config.prompt
     == workflow_dag.PromptFile("prompts/execplan-recover-failed-step.md")
 
-  assert drafting.publication_routes == []
+  let assert [drafting_route] = drafting.publication_routes
+  assert drafting_route.id == "execplan_review_doc"
+  assert drafting_route.repository == "github.code"
+  let assert Some(draft_commit_stack) = drafting_route.commit_stack
+  assert draft_commit_stack.selector.output == "commit_stack"
+  let assert artifact_publication_config.StableBranchTarget =
+    drafting_route.target
+
   let assert Ok(revision_source) =
     simplifile.read(".scherzo/workflows/execplan-revision.yaml")
   let revision = parse_ok(revision_source)
-  assert revision.publication_routes == []
+  let assert [revision_route] = revision.publication_routes
+  assert revision_route.id == "execplan_review_doc"
+  assert revision_route.repository == "github.code"
+  let assert Some(revision_commit_stack) = revision_route.commit_stack
+  assert revision_commit_stack.selector.output == "commit_stack"
+  let assert artifact_publication_config.SourcedTarget(source) =
+    revision_route.target
+  assert source.output == "publication_target"
 
-  let assert Ok(_) = workflow_dag.step_by_id(drafting, "publish_review_doc")
+  let assert Ok(_) =
+    workflow_dag.step_by_id(drafting, "materialize_commit_stack")
   let assert Ok(materialize_bundle) =
     workflow_dag.step_by_id(drafting, "materialize_bundle")
   let assert Ok(None) =

@@ -98,6 +98,98 @@ fn write_valid_review_doc(path: String) -> Nil {
   Nil
 }
 
+fn write_fake_commit_stack_driver(path: String, review_path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "if [ \"$1\" = changed-files ]; then\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"files\":[{\"path\":\""
+        <> review_path
+        <> "\",\"status\":\"modified\"}]}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "printf 'unexpected driver command: %s\\n' \"$*\" >&2\n"
+        <> "exit 2\n",
+    )
+  Nil
+}
+
+fn write_fake_commit_stack_driver_with_extra_path(
+  path: String,
+  review_path: String,
+  extra_path: String,
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "if [ \"$1\" = changed-files ]; then\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"files\":[{\"path\":\""
+        <> review_path
+        <> "\",\"status\":\"modified\"},{\"path\":\""
+        <> extra_path
+        <> "\",\"status\":\"modified\"}]}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "printf 'unexpected driver command: %s\\n' \"$*\" >&2\n"
+        <> "exit 2\n",
+    )
+  Nil
+}
+
+fn write_fake_commit_stack_jj(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "if [ \"$1\" = log ]; then\n"
+        <> "  rev=\n"
+        <> "  prev=\n"
+        <> "  for arg in \"$@\"; do\n"
+        <> "    if [ \"$prev\" = -r ]; then rev=$arg; fi\n"
+        <> "    prev=$arg\n"
+        <> "  done\n"
+        <> "  case \"$rev\" in\n"
+        <> "    @-) echo 2222222222222222222222222222222222222222; exit 0;;\n"
+        <> "    @) echo 3333333333333333333333333333333333333333; exit 0;;\n"
+        <> "  esac\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = debug ] && [ \"$2\" = object ] && [ \"$3\" = commit ]; then\n"
+        <> "  printf '%s\\n' 'Commit {' '  root_tree: Resolved(' '    TreeId(' '      \"4444444444444444444444444444444444444444\",' '    ),' '  ),' '}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_fake_commit_stack_git(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "if [ \"$1\" = update-ref ]; then exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'bundle create' ]; then mkdir -p \"$(dirname \"$3\")\"; printf 'fake bundle for %s\\n' \"$*\" > \"$3\"; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'bundle verify' ]; then test -s \"$3\"; exit $?; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_fake_commit_stack_git_with_oversized_bundle(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "if [ \"$1\" = update-ref ]; then exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'bundle create' ]; then mkdir -p \"$(dirname \"$3\")\"; python3 -c 'import sys; open(sys.argv[1], \"wb\").truncate(104857601)' \"$3\"; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'bundle verify' ]; then test -e \"$3\"; exit $?; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
 fn mutated_bundle(dir: String, each old: String, with new: String) -> String {
   test_helpers.reset_dir(dir)
   let assert Ok(source) =
@@ -2202,6 +2294,238 @@ pub fn materialize_pack_discovers_latest_structured_submission_test() {
   let assert Ok(pack) = simplifile.read(output)
   assert string.contains(pack, "Latest Pack")
   assert !string.contains(pack, "Old Pack")
+}
+
+pub fn materialize_commit_stack_writes_manifest_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/execplan-commit-stack.json")
+  assert string.contains(
+    commit_stack,
+    "\"artifact_type\": \"scherzo.git_commit_stack.v1\"",
+  )
+  assert string.contains(
+    commit_stack,
+    "\"ref\": \"tmp/execplan-review-doc.bundle\"",
+  )
+  assert string.contains(
+    commit_stack,
+    "\"sha\": \"2222222222222222222222222222222222222222\"",
+  )
+  assert string.contains(
+    commit_stack,
+    "\"sha\": \"3333333333333333333333333333333333333333\"",
+  )
+  assert string.contains(
+    commit_stack,
+    "\"tree\": \"4444444444444444444444444444444444444444\"",
+  )
+}
+
+pub fn materialize_commit_stack_writes_retained_carrier_ref_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-retained-carrier"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 SCHERZO_RUN_ARTIFACT_DIR=artifacts/runs/run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/execplan-commit-stack.json")
+  assert string.contains(
+    commit_stack,
+    "\"ref\": \"runs/run-1/outputs/execplan-review-doc.bundle\"",
+  )
+  let assert Ok(True) =
+    simplifile.is_file(
+      dir <> "/artifacts/runs/run-1/outputs/execplan-review-doc.bundle",
+    )
+}
+
+pub fn materialize_commit_stack_removes_oversized_carrier_on_failure_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-oversized"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git_with_oversized_bundle(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(artifact.stderr, "commit_stack carrier bundle exceeds")
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/tmp/execplan-review-doc.bundle")
+}
+
+pub fn materialize_commit_stack_rejects_unrelated_changed_files_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-extra"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver_with_extra_path(
+    dir <> "/bin/fake-driver",
+    review_path,
+    "src/unrelated.gleam",
+  )
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(
+    artifact.stderr,
+    "workspace changed-files must contain only the review doc change",
+  )
+  assert string.contains(artifact.stderr, "src/unrelated.gleam")
+}
+
+pub fn materialize_commit_stack_revision_writes_existing_pr_publication_target_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-target"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+  let previous_bundle =
+    tmp_repo_path("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --previous-bundle "
+        <> test_helpers.shell_quote(previous_bundle)
+        <> " --target-output tmp/execplan-publication-target.json --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(target) =
+    simplifile.read(dir <> "/tmp/execplan-publication-target.json")
+  assert string.contains(
+    target,
+    "\"artifact_type\": \"scherzo.github_publication_target.v1\"",
+  )
+  assert string.contains(target, "\"kind\": \"existing_pr_branch\"")
+  assert string.contains(target, "\"branch\": \"execplan/liv-314\"")
+  assert string.contains(
+    target,
+    "\"url\": \"https://github.com/living-systems/scherzo/pull/314\"",
+  )
+  assert string.contains(
+    target,
+    "\"sha\": \"2222222222222222222222222222222222222222\"",
+  )
+}
+
+pub fn materialize_commit_stack_revision_falls_back_to_stable_branch_target_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-stable-target"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+  let assert Ok(source_bundle) =
+    simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+  let previous_bundle = dir <> "/previous-bundle.json"
+  let without_pr =
+    source_bundle
+    |> string.replace(
+      each: "    \"branch\": \"execplan/liv-314\",\n",
+      with: "    \"branch\": null,\n",
+    )
+    |> string.replace(
+      each: "    \"pr_url\": \"https://github.com/living-systems/scherzo/pull/314\",\n",
+      with: "    \"pr_url\": null,\n",
+    )
+  let assert Ok(Nil) = simplifile.write(previous_bundle, without_pr)
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --previous-bundle "
+        <> test_helpers.shell_quote("previous-bundle.json")
+        <> " --target-output tmp/execplan-publication-target.json --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(target) =
+    simplifile.read(dir <> "/tmp/execplan-publication-target.json")
+  assert string.contains(
+    target,
+    "\"artifact_type\": \"scherzo.github_publication_target.v1\"",
+  )
+  assert string.contains(target, "\"kind\": \"stable_branch\"")
+  assert !string.contains(target, "existing_pr_branch")
 }
 
 pub fn publish_review_doc_command_is_removed_test() {
