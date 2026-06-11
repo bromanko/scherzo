@@ -522,40 +522,65 @@ fn begin_claim_for_workflow(
       let recovery =
         dict.get(context.recovery_by_issue, issue.id)
         |> option.from_result
-      let pending =
-        transition_types.PendingClaim(
-          task_ref: task_ref,
-          issue_id: issue.id,
-          run_id: identity.run_id_to_string(identity.run_id_from_string(run_id)),
-          session_id: identity.session_id_to_string(
-            identity.session_id_from_string(session_id),
-          ),
-          workspace_path: workspace_path,
-          workflow_id: workflow_id,
-          command_route_id: "worker:"
-            <> run_id
-            <> ":"
-            <> int.to_string(sequence),
-          route_label: issue.identifier,
-          issue: issue,
-          recovery: recovery,
-          remaining_candidates: remaining_candidates,
-          dispatch_context: context,
-          previous_retry_generation: previous_retry_generation,
-          retry_cancellation: retry_cancellation,
-        )
-      transition_types.Outcome(
-        state: transition_types.State(
-          ..state,
-          pending_claims: dict.insert(state.pending_claims, identity, pending),
-          next_session_sequence: sequence + 1,
-        )
-          |> sync_state,
-        effects: [
-          effects_types.ReserveSessionSequence(sequence),
-          effects_types.ClaimIssue(task_ref, issue, workspace_path, run_id),
-        ],
-      )
+      case
+        helpers.workflow_snapshot_for_claim(context, issue, workflow_id, run_id)
+      {
+        Error(#(code, message)) -> {
+          let outcome = dispatch(remaining_candidates, state, context)
+          transition_types.Outcome(state: outcome.state, effects: [
+            effects_types.Log("warn", "workflow_route_snapshot_failed", [
+              #("issue_id", issue.id),
+              #("workflow_id", workflow_id),
+              #("error", code),
+              #("message", message),
+            ]),
+            ..outcome.effects
+          ])
+        }
+        Ok(workflow_snapshot) -> {
+          let pending =
+            transition_types.PendingClaim(
+              task_ref: task_ref,
+              issue_id: issue.id,
+              run_id: identity.run_id_to_string(identity.run_id_from_string(
+                run_id,
+              )),
+              session_id: identity.session_id_to_string(
+                identity.session_id_from_string(session_id),
+              ),
+              workspace_path: workspace_path,
+              workflow_id: workflow_id,
+              workflow_snapshot: workflow_snapshot,
+              command_route_id: "worker:"
+                <> run_id
+                <> ":"
+                <> int.to_string(sequence),
+              route_label: issue.identifier,
+              issue: issue,
+              recovery: recovery,
+              remaining_candidates: remaining_candidates,
+              dispatch_context: context,
+              previous_retry_generation: previous_retry_generation,
+              retry_cancellation: retry_cancellation,
+            )
+          transition_types.Outcome(
+            state: transition_types.State(
+              ..state,
+              pending_claims: dict.insert(
+                state.pending_claims,
+                identity,
+                pending,
+              ),
+              next_session_sequence: sequence + 1,
+            )
+              |> sync_state,
+            effects: [
+              effects_types.ReserveSessionSequence(sequence),
+              effects_types.ClaimIssue(task_ref, issue, workspace_path, run_id),
+            ],
+          )
+        }
+      }
     }
   }
 }
@@ -962,6 +987,7 @@ fn start_worker(
       issue: pending.issue,
       workspace_path: pending.workspace_path,
       workflow_id: pending.workflow_id,
+      workflow_snapshot: Some(pending.workflow_snapshot),
       command_route_id: pending.command_route_id,
       status: transition_types.WorkerStarting,
       recovery: pending.recovery,
@@ -1015,6 +1041,7 @@ fn start_worker(
       issue: pending.issue,
       workspace_path: pending.workspace_path,
       workflow_id: pending.workflow_id,
+      workflow_snapshot: Some(pending.workflow_snapshot),
       route_label: pending.route_label,
       recovery: pending.recovery,
     )),

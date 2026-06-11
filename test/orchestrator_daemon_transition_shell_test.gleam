@@ -740,6 +740,7 @@ fn worker_start(issue: tracker_issue.Issue) -> effects_types.WorkerStart {
     issue: issue,
     workspace_path: "test/tmp/workspaces/ABC-1",
     workflow_id: "default",
+    workflow_snapshot: None,
     route_label: "default",
     recovery: None,
   )

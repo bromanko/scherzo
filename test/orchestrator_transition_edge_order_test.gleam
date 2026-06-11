@@ -665,6 +665,7 @@ fn state_with_worker(
       issue: issue,
       workspace_path: "test/tmp/workspaces/ABC-1",
       workflow_id: "default",
+      workflow_snapshot: None,
       command_route_id: "worker:run-1:1",
       status: status,
       recovery: None,

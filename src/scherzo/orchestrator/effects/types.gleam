@@ -3,6 +3,7 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/log
+import scherzo/orchestrator/workflow_snapshot
 import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
 import scherzo/runtime/reason
@@ -188,6 +189,7 @@ pub type WorkerStart {
     issue: tracker_issue.Issue,
     workspace_path: String,
     workflow_id: String,
+    workflow_snapshot: Option(workflow_snapshot.Snapshot),
     route_label: String,
     recovery: Option(session_event.RecoveryInfo),
   )

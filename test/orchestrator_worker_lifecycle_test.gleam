@@ -1,6 +1,8 @@
 import gleam/dict
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
+import gleam/string
+import orchestrator_transition_test
 import scherzo/agent/types as agent_types
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
@@ -8,6 +10,7 @@ import scherzo/orchestrator/worker_lifecycle
 import scherzo/orchestrator/worker_registry
 import scherzo/result_artifact
 import scherzo/runtime/identity
+import scherzo/runtime_bundle
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
@@ -128,6 +131,41 @@ fn receive_needs_human_call(
 ) -> NeedsHumanCall {
   let assert Ok(call) = process.receive(subject, within: 100)
   call
+}
+
+pub fn worker_lifecycle_rebuilds_missing_workflow_snapshot_for_start_test() {
+  let orchestrator = orchestrator_transition_test.fixture_orchestrator()
+  let bundle =
+    runtime_bundle.RuntimeBundle(
+      config_path: "scherzo.yaml",
+      config_contents: "",
+      dependencies: [],
+      effective: orchestrator.effective,
+      orchestrator: orchestrator,
+      workflows: dict.from_list([
+        #(
+          "default",
+          orchestrator_transition_test.fixture_workflow_dag("default"),
+        ),
+      ]),
+      secrets: [],
+    )
+
+  let assert Ok(snapshot) =
+    worker_lifecycle.workflow_snapshot_for_start(
+      None,
+      bundle,
+      issue("1", "ABC-1"),
+      "default",
+      "run-1",
+    )
+
+  assert worker_lifecycle.workflow_snapshot_dag(snapshot).id == "default"
+  assert worker_lifecycle.workflow_snapshot_fingerprint(snapshot) != ""
+  assert string.contains(
+    worker_lifecycle.workflow_snapshot_run_root(snapshot),
+    "default/ABC-1/run-1",
+  )
 }
 
 pub fn worker_lifecycle_handle_worker_command_ready_registers_subject_test() {

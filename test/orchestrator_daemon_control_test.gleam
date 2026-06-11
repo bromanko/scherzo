@@ -151,6 +151,101 @@ steps:
   config_path
 }
 
+fn reload_snapshot_workflow_text(
+  root: String,
+  default_workflow: Option(String),
+) -> String {
+  let default_line = case default_workflow {
+    Some(workflow_id) -> "    default_workflow: " <> workflow_id <> "\n"
+    None -> ""
+  }
+  "version: 1
+tracker:
+  linear:
+    api_key_env: HOME
+    project: TEST
+  states:
+    ready: [Todo]
+    active: [Todo]
+    terminal: [Done]
+workspace:
+  root: " <> root <> "
+agents:
+  concurrency: 1
+  sessions_per_task: 1
+  runtime:
+    type: pi
+    pi:
+      executable: fake
+task_routing:
+  labels:
+    require_exactly_one: false
+" <> default_line <> "workflows:
+  implementation: workflows/implementation.yaml
+  review: workflows/review.yaml
+"
+}
+
+fn write_reload_snapshot_workflow(
+  dir: String,
+  default_workflow: Option(String),
+) -> #(String, String) {
+  test_helpers.reset_dir(dir)
+  let root = dir <> "/workspaces"
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      prompt_dir <> "/implementation.md",
+      "Implementation Prompt",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(prompt_dir <> "/review.md", "Review Prompt")
+  write_reload_snapshot_workflow_file(
+    workflow_dir <> "/implementation.yaml",
+    "implementation",
+    "prompts/implementation.md",
+  )
+  write_reload_snapshot_workflow_file(
+    workflow_dir <> "/review.yaml",
+    "review",
+    "prompts/review.md",
+  )
+  overwrite_reload_snapshot_config(config_path, root, default_workflow)
+  #(config_path, root)
+}
+
+fn write_reload_snapshot_workflow_file(
+  path: String,
+  workflow_id: String,
+  prompt_path: String,
+) -> Nil {
+  let assert Ok(Nil) = simplifile.write(path, "version: 1
+id: " <> workflow_id <> "
+steps:
+  - id: run
+    kind: agent
+    prompt: " <> prompt_path <> "
+    run_in: main
+")
+  Nil
+}
+
+fn overwrite_reload_snapshot_config(
+  config_path: String,
+  root: String,
+  default_workflow: Option(String),
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      reload_snapshot_workflow_text(root, default_workflow),
+    )
+  Nil
+}
+
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
     id: id,
@@ -599,6 +694,35 @@ fn active_success_agent(
       tokens: session_tokens.zero_token_totals(),
       turns: 1,
       result: result_artifact.from_final_response(Some("active"), False, "test"),
+    ))
+  }
+}
+
+fn prompt_logging_agent(
+  log_subject: process.Subject(String),
+) -> fn(
+  tracker_issue.Issue,
+  Option(Int),
+  String,
+  config_types.EffectiveConfig,
+  tracker.Client,
+  fn(String, agent_types.RunnerUpdate) -> Nil,
+  process.Subject(worker_command.Command),
+  fn() -> Nil,
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
+  fn(issue: tracker_issue.Issue, _, prompt, _, _, _, _, _) {
+    process.send(log_subject, "agent_prompt:" <> prompt)
+    Ok(agent_types.WorkerSuccess(
+      final_issue: Some(issue),
+      final_classification: agent_types.FinalActive,
+      workspace_path: "test/tmp/reload-snapshot-workspace",
+      tokens: session_tokens.zero_token_totals(),
+      turns: 1,
+      result: result_artifact.from_final_response(
+        Some("reload snapshot"),
+        False,
+        "test",
+      ),
     ))
   }
 }
@@ -1056,6 +1180,80 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
   assert wait_for_log(log_subject, "dispatch_started", 20)
 
   test_async.release_barrier(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn workflow_reload_changed_route_preserves_pending_claim_snapshot_test() {
+  let candidate = issue("reload-changed", "ABC-RELOAD", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let dir = "test/tmp/daemon-control-reload-changed-route"
+  let #(workflow_path, root) =
+    write_reload_snapshot_workflow(dir, Some("implementation"))
+  let ledger_root = dir <> "/" <> root
+  let log_subject = process.new_subject()
+  let claim_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      blocking_handoff(log_subject, claim_barrier),
+      hub_subject,
+      prompt_logging_agent(log_subject),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "claim_started", 20)
+
+  overwrite_reload_snapshot_config(workflow_path, root, Some("review"))
+  process.send(started.data, daemon.PollTick(2))
+  assert wait_for_log(log_subject, "workflow_reloaded", 20)
+
+  test_async.release_barrier(claim_barrier)
+  assert wait_for_log(log_subject, "agent_prompt:Implementation Prompt", 20)
+  assert has_workflow_started(
+    ledger_bodies(ledger_root),
+    "implementation",
+    "implementation/ABC-RELOAD",
+  )
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn workflow_reload_removed_route_preserves_pending_claim_snapshot_test() {
+  let candidate = issue("reload-removed", "ABC-REMOVED", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let dir = "test/tmp/daemon-control-reload-removed-route"
+  let #(workflow_path, root) =
+    write_reload_snapshot_workflow(dir, Some("implementation"))
+  let ledger_root = dir <> "/" <> root
+  let log_subject = process.new_subject()
+  let claim_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      blocking_handoff(log_subject, claim_barrier),
+      hub_subject,
+      prompt_logging_agent(log_subject),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "claim_started", 20)
+
+  overwrite_reload_snapshot_config(workflow_path, root, None)
+  process.send(started.data, daemon.PollTick(2))
+  assert wait_for_log(log_subject, "workflow_reloaded", 20)
+
+  test_async.release_barrier(claim_barrier)
+  assert wait_for_log(log_subject, "agent_prompt:Implementation Prompt", 20)
+  assert has_workflow_started(
+    ledger_bodies(ledger_root),
+    "implementation",
+    "implementation/ABC-REMOVED",
+  )
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -1949,6 +2147,37 @@ fn probed_tracker_adapter(
     smoke: None,
     attachments: None,
   )
+}
+
+fn ledger_bodies(root: String) -> List(record.RecordBody) {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(read) = ledger.read_records(ledger_path)
+  list.map(read.records, fn(ledger_record) { ledger_record.body })
+}
+
+fn has_workflow_started(
+  bodies: List(record.RecordBody),
+  workflow_id: String,
+  run_root_fragment: String,
+) -> Bool {
+  list.any(bodies, fn(body) {
+    case body {
+      record.WorkflowRunStartedWithTask(
+        _,
+        started_workflow_id,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        run_root,
+      ) ->
+        started_workflow_id == workflow_id
+        && string.contains(run_root, run_root_fragment)
+      _ -> False
+    }
+  })
 }
 
 fn wait_for_log(

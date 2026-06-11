@@ -470,6 +470,7 @@ fn worker_directory_for(
       issue: issue,
       workspace_path: "test/tmp/workspaces/" <> issue.identifier,
       workflow_id: "default",
+      workflow_snapshot: None,
       command_route_id: "worker:" <> issue.id,
       status: status,
       recovery: None,

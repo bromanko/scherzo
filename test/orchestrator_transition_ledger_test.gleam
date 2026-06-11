@@ -61,6 +61,13 @@ pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
         issue: issue,
         workspace_path: "test/tmp/workspaces/ABC-1",
         workflow_id: "default",
+        workflow_snapshot: Some(
+          orchestrator_transition_test.fixture_workflow_snapshot(
+            "default",
+            issue,
+            "run-1",
+          ),
+        ),
         route_label: "ABC-1",
         recovery: None,
       )),
@@ -427,6 +434,7 @@ fn running_worker_state_with_counter(
       issue: issue,
       workspace_path: "test/tmp/workspaces/ABC-1",
       workflow_id: "default",
+      workflow_snapshot: None,
       command_route_id: "worker:run-1:1",
       status: transition_types.WorkerRunning,
       recovery: None,
