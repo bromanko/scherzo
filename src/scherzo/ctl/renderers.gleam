@@ -153,6 +153,10 @@ pub fn print_query_metrics(
     metrics.retry_refresh_in_flight_count,
     output_line,
   )
+  output_line(
+    "lifecycle_projection_failed: "
+    <> bool_string(metrics.lifecycle_projection_failed),
+  )
   print_int("scheduled_due_count", metrics.scheduled_due_count, output_line)
   print_int(
     "scheduled_next_due_count",

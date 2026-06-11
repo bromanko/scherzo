@@ -55,6 +55,7 @@ pub fn snapshot_preserves_cache_token_totals_exactly_test() {
         running_workers: 4,
         pending_dispatch_validations: 5,
         pending_review_lane_preflights: 6,
+        lifecycle_projection_failed: True,
       ),
     )
     |> read_model.update_dispatch_paused(dispatch_paused: True)
@@ -77,6 +78,7 @@ pub fn snapshot_preserves_cache_token_totals_exactly_test() {
   assert metrics.running_workers == 4
   assert metrics.pending_dispatch_validations == 5
   assert metrics.pending_review_lane_preflights == 6
+  assert metrics.lifecycle_projection_failed
   assert metrics.token_totals
     == query_types.TokenTotalsDto(
       input: 10,

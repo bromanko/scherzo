@@ -1,6 +1,10 @@
 import birl.{type Time}
 import gleam/dict.{type Dict}
+import gleam/int
+import gleam/list
 import gleam/option.{type Option, None}
+import gleam/order.{type Order, Eq}
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/runtime/identity
 import scherzo/runtime/reason
@@ -28,6 +32,7 @@ pub fn new(config: config_types.EffectiveConfig) -> RuntimeState {
     invalid_workflow_reports: dict.new(),
     blocked_dependency_reports: dict.new(),
     completed: dict.new(),
+    completed_at_ms: dict.new(),
     aggregate_pi_totals: session_tokens.zero_token_totals(),
     latest_rate_limit_payload: None,
   )
@@ -117,6 +122,107 @@ pub fn new_issue_counter() -> IssueCounter {
   IssueCounter(failure_attempts: 0, worker_sessions: 0)
 }
 
+const completed_cache_limit = 1024
+
+pub fn cache_completed_task(
+  state: RuntimeState,
+  task_identity: identity.TaskIdentity,
+  issue: tracker_issue.Issue,
+  completed_at_ms: Int,
+) -> RuntimeState {
+  RuntimeState(
+    ..state,
+    completed: dict.insert(state.completed, task_identity, issue),
+    completed_at_ms: dict.insert(
+      state.completed_at_ms,
+      task_identity,
+      completed_at_ms,
+    ),
+  )
+  |> trim_completed_cache
+}
+
+fn trim_completed_cache(state: RuntimeState) -> RuntimeState {
+  case dict.size(state.completed) <= completed_cache_limit {
+    True -> state
+    False -> {
+      let kept_entries =
+        state.completed
+        |> dict.to_list
+        |> list.sort(by: fn(a, b) {
+          compare_completed_entries(a, b, state.completed_at_ms)
+        })
+        |> list.take(completed_cache_limit)
+      let kept_completed_at_ms =
+        kept_entries
+        |> list.map(fn(entry) {
+          let #(task_identity, _) = entry
+          #(
+            task_identity,
+            completed_at_for_identity(state.completed_at_ms, task_identity),
+          )
+        })
+        |> dict.from_list
+      RuntimeState(
+        ..state,
+        completed: dict.from_list(kept_entries),
+        completed_at_ms: kept_completed_at_ms,
+      )
+    }
+  }
+}
+
+fn compare_completed_entries(
+  a: #(identity.TaskIdentity, tracker_issue.Issue),
+  b: #(identity.TaskIdentity, tracker_issue.Issue),
+  completed_at_ms: Dict(identity.TaskIdentity, Int),
+) -> Order {
+  let #(a_id, _) = a
+  let #(b_id, _) = b
+  case
+    int.compare(
+      completed_at_for_identity(completed_at_ms, b_id),
+      completed_at_for_identity(completed_at_ms, a_id),
+    )
+  {
+    Eq -> string.compare(identity.to_string(a_id), identity.to_string(b_id))
+    order -> order
+  }
+}
+
+fn completed_at_for_identity(
+  completed_at_ms: Dict(identity.TaskIdentity, Int),
+  task_identity: identity.TaskIdentity,
+) -> Int {
+  case dict.get(completed_at_ms, task_identity) {
+    Ok(at_ms) -> at_ms
+    Error(Nil) -> 0
+  }
+}
+
+pub fn release_task_claim(
+  state: RuntimeState,
+  ref: task.TaskRef,
+) -> RuntimeState {
+  let task_identity = task_ref_identity(ref)
+  RuntimeState(
+    ..state,
+    claimed: dict.delete(state.claimed, task_identity),
+    retry_attempts: dict.delete(state.retry_attempts, task_identity),
+  )
+}
+
+pub fn release_successful_task_claim(
+  state: RuntimeState,
+  ref: task.TaskRef,
+) -> RuntimeState {
+  let task_identity = task_ref_identity(ref)
+  RuntimeState(
+    ..release_task_claim(state, ref),
+    issue_counters: dict.delete(state.issue_counters, task_identity),
+  )
+}
+
 pub type ParkReleasePolicy {
   ExplicitUnparkOnly
   AutoUnparkOnIssueChange(issue_fingerprint: String)
@@ -182,6 +288,7 @@ pub type RuntimeState {
     invalid_workflow_reports: Dict(identity.TaskIdentity, InvalidWorkflowReport),
     blocked_dependency_reports: Dict(String, BlockedDependencyReport),
     completed: Dict(identity.TaskIdentity, tracker_issue.Issue),
+    completed_at_ms: Dict(identity.TaskIdentity, Int),
     aggregate_pi_totals: session_tokens.TokenTotals,
     latest_rate_limit_payload: Option(String),
   )

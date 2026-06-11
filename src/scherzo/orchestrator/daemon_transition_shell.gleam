@@ -4,6 +4,8 @@ import scherzo/control/command
 import scherzo/log
 import scherzo/orchestrator/effects/interpreter as transition_interpreter
 import scherzo/orchestrator/effects/types as transition_effects
+import scherzo/orchestrator/task_lifecycle
+import scherzo/orchestrator/task_lifecycle_legacy
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/runtime/identity
@@ -17,6 +19,22 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
 const transition_runner_message_limit = 128
+
+pub fn lifecycle_projection_failed(state: transition_types.State) -> Bool {
+  case task_lifecycle_legacy.from_transition_state(state) {
+    Ok(_) -> False
+    Error(error) -> projection_failed(error)
+  }
+}
+
+fn projection_failed(error: task_lifecycle_legacy.LifecycleError) -> Bool {
+  case error {
+    task_lifecycle.ConflictingLifecycleSources(_, _, _)
+    | task_lifecycle.MissingClaimedLifecycle(_)
+    | task_lifecycle.MissingRetryWaitingForRefresh(_, _)
+    | task_lifecycle.RunningWorkerMismatch(_) -> True
+  }
+}
 
 pub opaque type ShellHandlers(state) {
   ShellHandlers(

@@ -420,6 +420,7 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
   let running_workers = dict.size(state.runtime.running)
   let running_scheduled_workers =
     worker_registry.scheduled_worker_count(state.registry)
+  let now_ms = state.dependencies.now_ms()
   read_model.RuntimeCounts(
     workflow_count: dict.size(state.workflow.bundle.workflows),
     scheduled_job_count: list.length(
@@ -446,10 +447,11 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
     retry_refresh_in_flight_count: retry_scheduler.refresh_in_flight_count(
       state.retry,
     ),
-    scheduled_due_count: scheduled_runtime.due_count(
-      state.scheduled_runtime,
-      state.dependencies.now_ms(),
+    lifecycle_projection_failed: daemon_transition_shell.lifecycle_projection_failed(
+      transition_state_from_daemon(state),
     ),
+    scheduled_due_count: state.scheduled_runtime
+      |> scheduled_runtime.due_count(now_ms),
     scheduled_next_due_count: scheduled_runtime.next_due_count(
       state.scheduled_runtime,
     ),
@@ -466,10 +468,8 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
 }
 
 fn metrics_token_totals(state: State) -> session_tokens.TokenTotals {
-  session_tokens.add(
-    state.runtime.aggregate_pi_totals,
-    session_metrics.total(state.yaml_step_tokens),
-  )
+  session_metrics.total(state.yaml_step_tokens)
+  |> session_tokens.add(state.runtime.aggregate_pi_totals)
 }
 
 fn refresh_read_model(state: State) -> State {
