@@ -3,16 +3,21 @@ import gleam/list
 import gleam/option.{None, Some}
 import orchestrator_transition_invariant_helpers as invariant_helpers
 import orchestrator_transition_test
+import scherzo/agent/types as agent_types
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
+import scherzo/result_artifact
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
+import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 import scherzo/state/record
 import scherzo/task
+import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/state as issue_state
 
 pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
   let issue = orchestrator_transition_test.fixture_issue()
@@ -137,6 +142,64 @@ pub fn ledger_spawn_continuation_failure_schedules_recovery_retry_test() {
   assert !list.any(effects, fn(effect) {
     case effect {
       effects_types.ScheduleRetryTimer(_, _, _, _) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn terminal_worker_success_appends_counter_reset_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let terminal =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let state =
+    running_worker_state_with_counter(
+      issue,
+      orchestrator_state.IssueCounter(failure_attempts: 1, worker_sessions: 1),
+    )
+  let success =
+    agent_types.WorkerSuccess(
+      final_issue: Some(terminal),
+      final_classification: agent_types.FinalTerminal,
+      workspace_path: "test/tmp/workspaces/ABC-1",
+      tokens: session_tokens.zero_token_totals(),
+      turns: 1,
+      result: result_artifact.empty(),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.WorkerFinished(
+        identity.issue_id_from_string(issue.id),
+        identity.run_id_from_string("run-1"),
+        Ok(success),
+        lifecycle_context(789),
+      ),
+      state,
+    )
+
+  assert dict.get(next.runtime.issue_counters, task_identity) == Error(Nil)
+  assert list.any(effects, fn(effect) {
+    case effect {
+      effects_types.AppendLedger(effects_types.LedgerAppend(
+        correlation_id: "worker_finish:issue-1:run-1",
+        batch: batch,
+        ..,
+      )) ->
+        ledger_batch.to_bodies(batch)
+        == [
+          record.IssueCounterUpdated(
+            issue_id: "issue-1",
+            issue_identifier: "ABC-1",
+            failure_attempts: 0,
+            worker_sessions: 0,
+            observed_updated_at_ms: 789,
+            source_run_id: Some("run-1"),
+          ),
+        ]
       _ -> False
     }
   })
@@ -330,4 +393,61 @@ pub fn claim_requested_missing_workflow_start_does_not_emit_append_or_start_work
         #("correlation_id", "claim:issue-1:run-1"),
       ]),
     ]
+}
+
+fn running_worker_state_with_counter(
+  issue: tracker_issue.Issue,
+  counter: orchestrator_state.IssueCounter,
+) -> transition_types.State {
+  let task_ref = task.from_legacy_issue(issue).ref
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      running: dict.from_list([
+        #(
+          task_identity,
+          orchestrator_state.RunningEntry(
+            task: task.from_legacy_issue(issue),
+            issue: issue,
+            workspace_path: "test/tmp/workspaces/ABC-1",
+            session: None,
+          ),
+        ),
+      ]),
+      claimed: dict.from_list([#(task_identity, issue.identifier)]),
+      issue_counters: dict.from_list([#(task_identity, counter)]),
+    )
+  let worker =
+    transition_types.WorkerEntry(
+      task_ref: task_ref,
+      issue_id: issue.id,
+      run_id: "run-1",
+      session_id: "session-1",
+      issue: issue,
+      workspace_path: "test/tmp/workspaces/ABC-1",
+      workflow_id: "default",
+      command_route_id: "worker:run-1:1",
+      status: transition_types.WorkerRunning,
+      recovery: None,
+    )
+  transition_types.State(
+    ..orchestrator_transition_test.fixture_state(),
+    runtime: runtime,
+    workers: transition_types.WorkerDirectory(
+      by_issue: dict.from_list([#(task_identity, worker)]),
+      by_session: dict.from_list([#("session-1", task_identity)]),
+      route_to_session: dict.from_list([#("worker:run-1:1", "session-1")]),
+      yaml_step_runs: dict.new(),
+      stopped_yaml_runs: dict.new(),
+    ),
+  )
+}
+
+fn lifecycle_context(now_ms: Int) -> transition_types.WorkerLifecycleContext {
+  transition_types.WorkerLifecycleContext(
+    effective: orchestrator_transition_test.fixture_effective(),
+    now_ms: now_ms,
+    secrets: [],
+  )
 }

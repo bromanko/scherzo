@@ -66,6 +66,7 @@ pub fn runtime_state_holds_scheduler_collections_test() {
       invalid_workflow_reports: dict.new(),
       blocked_dependency_reports: dict.new(),
       completed: dict.new(),
+      completed_at_ms: dict.new(),
       aggregate_pi_totals: session_tokens.zero_token_totals(),
       latest_rate_limit_payload: None,
     )

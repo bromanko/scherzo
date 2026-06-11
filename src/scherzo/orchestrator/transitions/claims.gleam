@@ -37,10 +37,17 @@ pub type Callbacks {
 pub fn sync_outcome(
   outcome: transition_types.Outcome,
 ) -> transition_types.Outcome {
-  transition_types.Outcome(
-    state: sync_state(outcome.state),
-    effects: outcome.effects,
-  )
+  case sync_state_result(outcome.state) {
+    Ok(state) ->
+      transition_types.Outcome(state: state, effects: outcome.effects)
+    Error(error) ->
+      transition_types.Outcome(
+        state: outcome.state,
+        effects: list.append(outcome.effects, [
+          lifecycle_projection_failed_log(error),
+        ]),
+      )
+  }
 }
 
 pub fn has_dispatch_blocker(
@@ -59,7 +66,7 @@ pub fn has_tracker_claim(
 
 pub fn pending_count_for_state(
   state: transition_types.State,
-  normalized_state,
+  normalized_state: task_lifecycle_legacy.IssueStateKey,
 ) -> Int {
   task_lifecycle_legacy.pending_count_for_state(state, normalized_state)
 }
@@ -139,19 +146,19 @@ pub fn complete_runtime_failure(
   task_identity: identity.TaskIdentity,
   issue: tracker_issue.Issue,
   tokens: session_tokens.TokenTotals,
+  now_ms: Int,
 ) -> transition_types.State {
-  transition_types.State(
-    ..state,
-    runtime: orchestrator_state.RuntimeState(
+  let runtime =
+    orchestrator_state.RuntimeState(
       ..state.runtime,
       running: dict.delete(state.runtime.running, task_identity),
-      completed: dict.insert(state.runtime.completed, task_identity, issue),
       aggregate_pi_totals: session_tokens.add(
         state.runtime.aggregate_pi_totals,
         tokens,
       ),
-    ),
-  )
+    )
+    |> orchestrator_state.cache_completed_task(task_identity, issue, now_ms)
+  transition_types.State(..state, runtime: runtime)
   |> sync_state
 }
 
@@ -833,10 +840,29 @@ fn clear_pending_claim(
 }
 
 fn sync_state(state: transition_types.State) -> transition_types.State {
-  case task_lifecycle_legacy.from_transition_state(state) {
-    Ok(directory) -> transition_types.State(..state, lifecycle: directory)
-    Error(_) -> state
+  case sync_state_result(state) {
+    Ok(state) -> state
+    Error(error) ->
+      task_lifecycle_legacy.keep_state_after_projection_error(state, error)
   }
+}
+
+fn sync_state_result(
+  state: transition_types.State,
+) -> Result(transition_types.State, task_lifecycle_legacy.LifecycleError) {
+  case task_lifecycle_legacy.from_transition_state(state) {
+    Ok(directory) -> Ok(transition_types.State(..state, lifecycle: directory))
+    Error(error) -> Error(error)
+  }
+}
+
+fn lifecycle_projection_failed_log(
+  error: task_lifecycle_legacy.LifecycleError,
+) -> effects_types.Effect {
+  effects_types.Log("error", "task_lifecycle_projection_failed", [
+    #("fail_closed", "true"),
+    ..task_lifecycle_legacy.error_fields(error)
+  ])
 }
 
 fn claim_started_batch_is_valid(

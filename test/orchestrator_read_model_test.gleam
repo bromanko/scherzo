@@ -53,6 +53,7 @@ pub fn snapshot_preserves_cache_token_totals_exactly_test() {
         workflow_count: 2,
         active_sessions: 3,
         running_workers: 4,
+        lifecycle_projection_failed: True,
       ),
     )
     |> read_model.update_dispatch_paused(dispatch_paused: True)
@@ -73,6 +74,7 @@ pub fn snapshot_preserves_cache_token_totals_exactly_test() {
   assert metrics.workflow_count == 2
   assert metrics.active_sessions == 3
   assert metrics.running_workers == 4
+  assert metrics.lifecycle_projection_failed
   assert metrics.token_totals
     == query_types.TokenTotalsDto(
       input: 10,

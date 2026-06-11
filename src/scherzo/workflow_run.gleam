@@ -1,6 +1,7 @@
 import birl
 import gleam/dict.{type Dict}
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -2217,6 +2218,15 @@ fn run_prepared_batch(
 ) -> Result(StepBatchOutcome, StepBatchError) {
   step_worker_pool.run_prepared_batch(
     starts,
+    prepared_batch_timeout_ms(starts, orchestrator),
+    fn(step_id, duration_ms) {
+      step_batch_timeout_artifact(
+        step_id,
+        duration_ms,
+        secrets,
+        orchestrator.artifact_limits,
+      )
+    },
     fn(step, workspace) {
       start_prepared_step(
         step,
@@ -2244,6 +2254,108 @@ fn run_prepared_batch(
       #(result.artifact, result.tokens, result.final_issue, result.turns)
     },
   )
+}
+
+fn step_batch_timeout_artifact(
+  step_id: String,
+  duration_ms: Int,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+) -> step_artifact.StepArtifact {
+  let stderr =
+    "SCHERZO_FAILURE_CODE="
+    <> step_worker_pool.step_batch_timeout_failure_code
+    <> "\nstep batch deadline exceeded after "
+    <> int.to_string(duration_ms)
+    <> "ms\n"
+  step_artifact.from_command_result_with_metadata(
+    step_id,
+    None,
+    124,
+    Some(duration_ms),
+    None,
+    "",
+    stderr,
+    True,
+    secrets,
+    limits,
+    False,
+    False,
+  )
+}
+
+const command_step_default_timeout_ms = 60_000
+
+const step_batch_watchdog_grace_ms = 5000
+
+const agent_step_watchdog_margin_ms = 60_000
+
+fn prepared_batch_timeout_ms(
+  starts: List(PreparedStart),
+  orchestrator: config_types.OrchestratorConfig,
+) -> Int {
+  max_prepared_step_timeout_ms(starts, orchestrator, 0)
+  + step_batch_watchdog_grace_ms
+}
+
+fn max_prepared_step_timeout_ms(
+  starts: List(PreparedStart),
+  orchestrator: config_types.OrchestratorConfig,
+  max_ms: Int,
+) -> Int {
+  case starts {
+    [] -> max_ms
+    [start, ..rest] -> {
+      let step = step_worker_pool.prepared_start_step(start)
+      max_prepared_step_timeout_ms(
+        rest,
+        orchestrator,
+        max_int(max_ms, step_watchdog_timeout_ms(step, orchestrator)),
+      )
+    }
+  }
+}
+
+fn step_watchdog_timeout_ms(
+  step: workflow_dag.WorkflowStep,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Int {
+  case step.kind {
+    workflow_dag.CommandStep(_, timeout_ms) ->
+      max_int(
+        0,
+        optional_timeout_ms(timeout_ms, command_step_default_timeout_ms),
+      )
+    workflow_dag.AgentStep(..) -> agent_step_watchdog_timeout_ms(orchestrator)
+  }
+}
+
+fn optional_timeout_ms(timeout_ms: Option(Int), default_ms: Int) -> Int {
+  case timeout_ms {
+    Some(value) -> value
+    None -> default_ms
+  }
+}
+
+fn agent_step_watchdog_timeout_ms(
+  orchestrator: config_types.OrchestratorConfig,
+) -> Int {
+  let pi = orchestrator.effective.pi
+  let agent = orchestrator.effective.agent
+  let per_turn_ms =
+    max_int(0, pi.turn_timeout_ms)
+    + max_int(0, pi.read_timeout_ms)
+    + max_int(0, pi.stall_timeout_ms)
+    + max_int(0, pi.ui_request_timeout_ms)
+  let turn_budget_ms = max_int(1, agent.max_turns) * per_turn_ms
+  turn_budget_ms + agent_step_watchdog_margin_ms
+}
+
+fn max_int(left: Int, right: Int) -> Int {
+  case left > right {
+    True -> left
+    False -> right
+  }
 }
 
 fn start_prepared_step(

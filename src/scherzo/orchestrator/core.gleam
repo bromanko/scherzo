@@ -413,10 +413,11 @@ pub fn apply_task_workflow_success(
   issue_id: String,
   final_issue: tracker_issue.Issue,
   tokens: session_tokens.TokenTotals,
-  _now_ms: Int,
+  now_ms: Int,
   cleanup: WorkflowCleanupPolicy,
 ) -> Transition {
-  let base = state_after_task_worker_exit(state, ref, final_issue, tokens)
+  let base =
+    state_after_task_worker_exit(state, ref, final_issue, tokens, now_ms)
   case is_terminal(config, final_issue.state) {
     True -> {
       let cleanup_effect_list = case cleanup {
@@ -424,14 +425,15 @@ pub fn apply_task_workflow_success(
         CleanupWorkflowWorkspace(path) -> cleanup_effects(path)
       }
       Transition(
-        state: release_task_claim(base, ref),
+        state: orchestrator_state.release_successful_task_claim(base, ref),
         effects: list.append(cleanup_effect_list, [ReleaseClaim(issue_id)]),
       )
     }
     False ->
-      Transition(state: release_task_claim(base, ref), effects: [
-        ReleaseClaim(issue_id),
-      ])
+      Transition(
+        state: orchestrator_state.release_task_claim(base, ref),
+        effects: [ReleaseClaim(issue_id)],
+      )
   }
 }
 
@@ -494,11 +496,12 @@ pub fn apply_task_worker_success_with_workspace_path(
       }
     False -> workspace_path
   }
-  let base = state_after_task_worker_exit(state, ref, final_issue, tokens)
+  let base =
+    state_after_task_worker_exit(state, ref, final_issue, tokens, now_ms)
   case is_terminal(config, final_issue.state) {
     True ->
       Transition(
-        state: release_task_claim(base, ref),
+        state: orchestrator_state.release_successful_task_claim(base, ref),
         effects: list.append(cleanup_effects(workspace_path), [
           ReleaseClaim(issue_id),
         ]),
@@ -506,9 +509,10 @@ pub fn apply_task_worker_success_with_workspace_path(
     False ->
       case is_active(config, final_issue.state) {
         False ->
-          Transition(state: release_task_claim(base, ref), effects: [
-            ReleaseClaim(issue_id),
-          ])
+          Transition(
+            state: orchestrator_state.release_task_claim(base, ref),
+            effects: [ReleaseClaim(issue_id)],
+          )
         True ->
           continue_or_park_task(
             base,
@@ -617,14 +621,15 @@ fn state_after_task_worker_exit(
   ref: task.TaskRef,
   final_issue: tracker_issue.Issue,
   tokens: session_tokens.TokenTotals,
+  now_ms: Int,
 ) -> orchestrator_state.RuntimeState {
   let identity = orchestrator_state.task_ref_identity(ref)
   orchestrator_state.RuntimeState(
     ..state,
     running: dict.delete(state.running, identity),
-    completed: dict.insert(state.completed, identity, final_issue),
     aggregate_pi_totals: add_tokens(state.aggregate_pi_totals, tokens),
   )
+  |> orchestrator_state.cache_completed_task(identity, final_issue, now_ms)
 }
 
 pub fn schedule_retry(
@@ -812,7 +817,7 @@ pub fn reconcile_task_issue(
       case is_terminal(config, refreshed.state) {
         True ->
           Transition(
-            state: release_task_claim(
+            state: orchestrator_state.release_task_claim(
               orchestrator_state.RuntimeState(
                 ..state,
                 running: dict.delete(state.running, identity),
@@ -847,7 +852,7 @@ pub fn reconcile_task_issue(
             }
             False ->
               Transition(
-                state: release_task_claim(
+                state: orchestrator_state.release_task_claim(
                   orchestrator_state.RuntimeState(
                     ..state,
                     running: dict.delete(state.running, identity),
@@ -1314,18 +1319,9 @@ fn release_claim(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> orchestrator_state.RuntimeState {
-  release_task_claim(state, orchestrator_state.linear_issue_id_ref(issue_id))
-}
-
-fn release_task_claim(
-  state: orchestrator_state.RuntimeState,
-  ref: task.TaskRef,
-) -> orchestrator_state.RuntimeState {
-  let identity = orchestrator_state.task_ref_identity(ref)
-  orchestrator_state.RuntimeState(
-    ..state,
-    claimed: dict.delete(state.claimed, identity),
-    retry_attempts: dict.delete(state.retry_attempts, identity),
+  orchestrator_state.release_task_claim(
+    state,
+    orchestrator_state.linear_issue_id_ref(issue_id),
   )
 }
 

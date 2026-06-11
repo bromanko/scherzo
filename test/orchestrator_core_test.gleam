@@ -1,5 +1,6 @@
 import birl
 import gleam/dict
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
@@ -196,6 +197,33 @@ fn issue(
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )
+}
+
+fn complete_numbered_issues(
+  state: orchestrator_state.RuntimeState,
+  current: Int,
+  last: Int,
+) -> orchestrator_state.RuntimeState {
+  case current > last {
+    True -> state
+    False -> {
+      let suffix = int.to_string(current)
+      let item =
+        issue("issue-" <> suffix, "ABC-" <> suffix, "Done", Some(current))
+      let state = core.apply_worker_start(state, item, "/tmp/ws-" <> suffix)
+      let core.Transition(state: state, effects: _) =
+        core.apply_workflow_success(
+          state,
+          config(),
+          item.id,
+          item,
+          session_tokens.zero_token_totals(),
+          current,
+          core.AlreadyCleaned,
+        )
+      complete_numbered_issues(state, current + 1, last)
+    }
+  }
 }
 
 fn task_item(
@@ -931,6 +959,51 @@ pub fn workflow_success_active_state_completes_without_retry_test() {
   assert next.aggregate_pi_totals.input == 1
   assert !dict.has_key(next.retry_attempts, identity)
   assert effects == [core.ReleaseClaim("a")]
+}
+
+pub fn workflow_success_terminal_clears_issue_counter_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let terminal =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
+  let identity = orchestrator_state.issue_identity(issue)
+  let started =
+    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
+  let state =
+    orchestrator_state.RuntimeState(
+      ..started,
+      issue_counters: dict.from_list([
+        #(identity, orchestrator_state.IssueCounter(1, 1)),
+      ]),
+    )
+
+  let core.Transition(state: next, effects: _) =
+    core.apply_workflow_success(
+      state,
+      config(),
+      "a",
+      terminal,
+      session_tokens.zero_token_totals(),
+      100,
+      core.AlreadyCleaned,
+    )
+
+  assert dict.get(next.issue_counters, identity) == Error(Nil)
+}
+
+pub fn completed_cache_trims_oldest_completed_tasks_test() {
+  let next = complete_numbered_issues(core.new_state(config()), 0, 1024)
+  let evicted = orchestrator_state.linear_issue_id_identity("issue-0")
+  let retained = orchestrator_state.linear_issue_id_identity("issue-1024")
+
+  assert dict.size(next.completed) == 1024
+  assert dict.size(next.completed_at_ms) == 1024
+  assert dict.get(next.completed, evicted) == Error(Nil)
+  assert dict.get(next.completed_at_ms, evicted) == Error(Nil)
+  assert dict.has_key(next.completed, retained)
+  assert dict.get(next.completed_at_ms, retained) == Ok(1024)
 }
 
 pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {

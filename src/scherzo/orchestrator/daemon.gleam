@@ -414,6 +414,7 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
   let running_workers = dict.size(state.runtime.running)
   let running_scheduled_workers =
     worker_registry.scheduled_worker_count(state.registry)
+  let now_ms = state.dependencies.now_ms()
   read_model.RuntimeCounts(
     workflow_count: dict.size(state.workflow.bundle.workflows),
     scheduled_job_count: list.length(
@@ -437,10 +438,11 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
     retry_refresh_in_flight_count: retry_scheduler.refresh_in_flight_count(
       state.retry,
     ),
-    scheduled_due_count: scheduled_runtime.due_count(
-      state.scheduled_runtime,
-      state.dependencies.now_ms(),
+    lifecycle_projection_failed: daemon_transition_shell.lifecycle_projection_failed(
+      transition_state_from_daemon(state),
     ),
+    scheduled_due_count: state.scheduled_runtime
+      |> scheduled_runtime.due_count(now_ms),
     scheduled_next_due_count: scheduled_runtime.next_due_count(
       state.scheduled_runtime,
     ),
@@ -457,10 +459,8 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
 }
 
 fn metrics_token_totals(state: State) -> session_tokens.TokenTotals {
-  session_tokens.add(
-    state.runtime.aggregate_pi_totals,
-    session_metrics.total(state.yaml_step_tokens),
-  )
+  session_metrics.total(state.yaml_step_tokens)
+  |> session_tokens.add(state.runtime.aggregate_pi_totals)
 }
 
 fn refresh_read_model(state: State) -> State {
@@ -1353,7 +1353,18 @@ fn handle_scheduled_worker_finished(
       run_id,
       result,
     )
-  finalize_yaml_step_tokens_for_scheduled_result(state, run_id, result)
+  let state =
+    finalize_yaml_step_tokens_for_scheduled_result(state, run_id, result)
+  case result {
+    Ok(_) -> state
+    Error(failure) ->
+      cleanup_orphaned_yaml_children_after_parent_stop(
+        state,
+        run_id,
+        workflow_run.failure_report(failure),
+        None,
+      )
+  }
 }
 
 fn finalize_yaml_step_tokens_for_issue_result(
@@ -1608,27 +1619,44 @@ fn handle_yaml_step_started(
   run_id: String,
 ) -> State {
   let parent_session_id = parent_session_id_for_run(state, run_id)
-  let state =
-    State(
-      ..state,
-      registry: worker_registry.register_active_yaml_step_started(
-        state.registry,
-        session_id,
-        run_id,
-      ),
-      yaml_step_tokens: session_metrics.register_step(
+  let registry =
+    worker_registry.register_active_yaml_step_started(
+      state.registry,
+      session_id,
+      run_id,
+    )
+  let registered =
+    list.contains(
+      worker_registry.active_yaml_step_sessions_for_run(registry, run_id),
+      session_id,
+    )
+  let yaml_step_tokens = case registered {
+    True ->
+      session_metrics.register_step(
         state.yaml_step_tokens,
         session_id,
         run_id,
         parent_session_id,
-      ),
-    )
-  run_transition_messages(state, [
-    transition_types.YamlStepStarted(
-      identity.session_id_from_string(session_id),
-      identity.run_id_from_string(run_id),
-    ),
-  ])
+      )
+    False -> state.yaml_step_tokens
+  }
+  let state =
+    State(..state, registry: registry, yaml_step_tokens: yaml_step_tokens)
+  case registered {
+    True ->
+      run_transition_messages(state, [
+        transition_types.YamlStepStarted(
+          identity.session_id_from_string(session_id),
+          identity.run_id_from_string(run_id),
+        ),
+      ])
+    False ->
+      transition_finish_yaml_step_session(
+        state,
+        identity.session_id_from_string(session_id),
+        session_reason.Stopped,
+      )
+  }
 }
 
 fn handle_yaml_step_finished(
@@ -1687,13 +1715,11 @@ fn finish_yaml_step_sessions_for_run(
     )
     hub.finish_session(state.event_hub, session_id, reason)
   })
-  State(
-    ..state,
-    registry: worker_registry.delete_yaml_step_sessions(
-      state.registry,
-      session_ids,
-    ),
-  )
+  let registry =
+    state.registry
+    |> worker_registry.delete_yaml_step_sessions(session_ids)
+    |> worker_registry.clear_yaml_run_stopping(run_id)
+  State(..state, registry: registry)
 }
 
 fn registry_down_resolution_context(
@@ -1734,8 +1760,10 @@ fn registry_down_resolution_context(
         handle,
       )
     },
-    scheduled_worker_down_stale: fn(state, registry, _run_id) {
-      log_state(state, "warn", "scheduled_worker_down_stale", [])
+    scheduled_worker_down_stale: fn(state, registry, run_id) {
+      log_state(state, "warn", "scheduled_worker_down_stale", [
+        #("run_id", run_id),
+      ])
       State(..state, registry: registry)
     },
   )
@@ -2196,7 +2224,7 @@ fn cleanup_orphan_steps_for_operator(
             False ->
               case cleanup_orphaned_yaml_children_from_plan(state, plan, None) {
                 Ok(state) -> #(
-                  state,
+                  remove_yaml_step_tokens_for_run(state, plan.run_id),
                   command.applied(operator_command, Some(message)),
                 )
                 Error(Nil) -> #(
@@ -2352,16 +2380,7 @@ fn cleanup_orphaned_yaml_children_from_plan(
           session_reason.Stopped,
         )
       let state = clear_yaml_step_command_routes_for_run(state, plan.run_id)
-      Ok(
-        State(
-          ..state,
-          registry: worker_registry.mark_yaml_run_stopping(
-            state.registry,
-            plan.run_id,
-            session_reason.Stopped,
-          ),
-        ),
-      )
+      Ok(state)
     }
   }
 }
@@ -2428,10 +2447,10 @@ fn worker_run_id_from_resolution(
 ) -> Option(String) {
   case resolution {
     worker_registry.WorkerDown(_, _, handle) -> Some(handle.run_id)
+    worker_registry.ScheduledWorkerDown(_, run_id, _) -> Some(run_id)
     worker_registry.UnknownDown(_)
     | worker_registry.StepCommandDown(_, _)
     | worker_registry.WorkerDownStale(_, _)
-    | worker_registry.ScheduledWorkerDown(_, _, _)
     | worker_registry.ScheduledWorkerDownStale(_, _) -> None
   }
 }
@@ -2745,6 +2764,13 @@ fn schedule_run_now_for_enabled_job(
   }
 }
 
+fn route_worker_command_session_id(state: State, session_id: String) -> String {
+  case dict.get(state.workers.route_to_session, session_id) {
+    Ok(routed_session_id) -> routed_session_id
+    Error(Nil) -> session_id
+  }
+}
+
 fn route_worker_command_sync(
   state: State,
   operator_command: command.OperatorCommand,
@@ -2755,6 +2781,7 @@ fn route_worker_command_sync(
     process.Subject(worker_command.Reply),
   ) -> Nil,
 ) -> #(State, command.CommandResult) {
+  let session_id = route_worker_command_session_id(state, session_id)
   case worker_for_session(state, session_id) {
     Error(Nil) ->
       route_step_command_sync(
@@ -2882,6 +2909,7 @@ fn abort_session_for_operator_sync(
   session_id: String,
   timeout_ms: Int,
 ) -> #(State, command.CommandResult) {
+  let session_id = route_worker_command_session_id(state, session_id)
   case worker_for_session(state, session_id) {
     Error(Nil) ->
       abort_step_session_for_operator_sync(
@@ -3672,8 +3700,14 @@ fn transition_remove_worker(
   demonitor: Bool,
 ) -> State {
   let run_id = identity.run_id_to_string(identity.run_id)
-  case worker_registry.worker_for_task_ref(state.registry, identity.task_ref) {
-    Error(Nil) ->
+  case
+    worker_registry.resolve_worker_run(
+      state.registry,
+      identity.task_ref,
+      run_id,
+    )
+  {
+    worker_registry.WorkerMissing ->
       State(
         ..state,
         registry: worker_registry.forget_task_ref_session(
@@ -3681,8 +3715,16 @@ fn transition_remove_worker(
           identity.task_ref,
         ),
       )
-    Ok(handle) -> {
-      case handle.run_id == run_id && demonitor {
+    worker_registry.WorkerStale(handle) -> {
+      log_state(state, "warn", "worker_remove_stale", [
+        #("issue_id", handle.issue_id),
+        #("expected_run_id", handle.run_id),
+        #("remove_run_id", run_id),
+      ])
+      state
+    }
+    worker_registry.WorkerCurrent(handle) -> {
+      case demonitor {
         True -> process.demonitor_process(handle.monitor)
         False -> Nil
       }
@@ -3854,9 +3896,24 @@ fn transition_stop_worker(
   reason: session_reason.WorkerExitReason,
 ) -> State {
   let reason_text = session_reason.to_string(reason)
-  case worker_registry.worker_for_task_ref(state.registry, identity.task_ref) {
-    Error(Nil) -> state
-    Ok(handle) -> {
+  let run_id = identity.run_id_to_string(identity.run_id)
+  case
+    worker_registry.resolve_worker_run(
+      state.registry,
+      identity.task_ref,
+      run_id,
+    )
+  {
+    worker_registry.WorkerMissing -> state
+    worker_registry.WorkerStale(handle) -> {
+      log_state(state, "warn", "worker_stop_stale", [
+        #("issue_id", handle.issue_id),
+        #("expected_run_id", handle.run_id),
+        #("stop_run_id", run_id),
+      ])
+      state
+    }
+    worker_registry.WorkerCurrent(handle) -> {
       hub.update_status(
         state.event_hub,
         handle.session_id,
@@ -3876,7 +3933,7 @@ fn transition_stop_worker(
       )
       hub.finish_session(state.event_hub, handle.session_id, reason)
       process.demonitor_process(handle.monitor)
-      stop_worker(handle)
+      kill_worker(handle)
       State(
         ..state,
         registry: worker_registry.remove_worker_handle(state.registry, handle),
@@ -3892,16 +3949,31 @@ fn transition_stop_worker_after_issue_refresh(
 ) -> State {
   let reason_text = orchestrator_reason.stop_to_string(reason)
   let run_id = identity.run_id_to_string(identity.run_id)
-  let state =
-    cleanup_orphaned_yaml_children_after_parent_stop(
-      state,
+  case
+    worker_registry.resolve_worker_run(
+      state.registry,
+      identity.task_ref,
       run_id,
-      reason_text,
-      Some(issue_state.to_string(identity.issue.state)),
     )
-  case worker_registry.worker_for_task_ref(state.registry, identity.task_ref) {
-    Error(Nil) -> state
-    Ok(handle) -> {
+  {
+    worker_registry.WorkerMissing -> state
+    worker_registry.WorkerStale(handle) -> {
+      log_state(state, "warn", "worker_stop_stale", [
+        #("issue_id", handle.issue_id),
+        #("expected_run_id", handle.run_id),
+        #("stop_run_id", run_id),
+      ])
+      state
+    }
+    worker_registry.WorkerCurrent(handle) -> {
+      let state =
+        cleanup_orphaned_yaml_children_after_parent_stop(
+          state,
+          run_id,
+          reason_text,
+          Some(issue_state.to_string(identity.issue.state)),
+        )
+      let state = remove_yaml_step_tokens_for_run(state, run_id)
       hub.update_status(
         state.event_hub,
         handle.session_id,
@@ -3914,7 +3986,7 @@ fn transition_stop_worker_after_issue_refresh(
         Some(reason_text),
       )
       process.demonitor_process(handle.monitor)
-      stop_worker(handle)
+      kill_worker(handle)
       event_publisher.lifecycle(
         state.event_hub,
         handle.session_id,
@@ -3995,11 +4067,9 @@ fn transition_finish_yaml_step_sessions_for_run(
   run_id: identity.RunId,
   reason: session_reason.WorkerExitReason,
 ) -> State {
-  finish_yaml_step_sessions_for_run(
-    state,
-    identity.run_id_to_string(run_id),
-    reason,
-  )
+  let run_id = identity.run_id_to_string(run_id)
+  finish_yaml_step_sessions_for_run(state, run_id, reason)
+  |> remove_yaml_step_tokens_for_run(run_id)
 }
 
 fn transition_clear_yaml_step_routes_for_run(
@@ -5897,13 +5967,16 @@ fn worker_down_context(
           resolution,
         )
       case cleanup_run_id {
-        Some(run_id) ->
-          cleanup_orphaned_yaml_children_after_parent_stop(
-            state,
-            run_id,
-            "worker_down",
-            issue_state_name,
-          )
+        Some(run_id) -> {
+          let state =
+            cleanup_orphaned_yaml_children_after_parent_stop(
+              state,
+              run_id,
+              "worker_down",
+              issue_state_name,
+            )
+          remove_yaml_step_tokens_for_run(state, run_id)
+        }
         None -> state
       }
     },
@@ -6415,25 +6488,11 @@ fn park_release_policy_to_string(
   }
 }
 
-fn stop_worker(handle: worker_registry.WorkerHandle) -> Nil {
-  case handle.command_subject {
-    Some(subject) -> {
-      let reply = process.new_subject()
-      process.send(subject, worker_command.Abort(reply))
-    }
-    None -> Nil
-  }
+fn kill_worker(handle: worker_registry.WorkerHandle) -> Nil {
   process.kill(handle.pid)
 }
 
-fn stop_scheduled_worker(handle: worker_registry.ScheduledWorkerHandle) -> Nil {
-  case handle.command_subject {
-    Some(subject) -> {
-      let reply = process.new_subject()
-      process.send(subject, worker_command.Abort(reply))
-    }
-    None -> Nil
-  }
+fn kill_scheduled_worker(handle: worker_registry.ScheduledWorkerHandle) -> Nil {
   process.kill(handle.pid)
 }
 
@@ -6566,9 +6625,9 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
     retry_scheduler.cancel_all(state.retry, state.dependencies.cancel_timer)
   append_shutdown_step_attempt_interruptions(state)
   worker_registry.worker_handles(state.registry)
-  |> list.each(fn(handle) { stop_worker(handle) })
+  |> list.each(fn(handle) { kill_worker(handle) })
   worker_registry.scheduled_worker_handles(state.registry)
-  |> list.each(fn(handle) { stop_scheduled_worker(handle) })
+  |> list.each(fn(handle) { kill_scheduled_worker(handle) })
   state.scheduled_retry_timers
   |> dict.values
   |> list.each(state.dependencies.cancel_timer)

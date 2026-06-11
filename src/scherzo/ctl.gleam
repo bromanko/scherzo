@@ -1,4 +1,5 @@
 import gleam/dynamic
+import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
@@ -14,6 +15,8 @@ import scherzo/control/query/types as query_types
 import scherzo/ctl/artifact_publication as ctl_artifact_publication
 import scherzo/ctl/artifact_publication_abandon as ctl_artifact_publication_abandon
 import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
+import scherzo/ctl/command_registry
+import scherzo/ctl/command_spec
 import scherzo/ctl/parser
 import scherzo/ctl/renderers as ctl_renderers
 import scherzo/ctl/schedules as ctl_schedules
@@ -206,11 +209,12 @@ pub fn main(args: List(String)) -> Result(Nil, Error) {
 
 pub fn parse(args: List(String)) -> Result(Command, Error) {
   case args {
-    [] | ["--help"] | ["-h"] -> Ok(Help)
-    [name, ..rest] ->
-      case parser.parse_flags(rest, parser.default_flags()) {
-        Error(error) -> Error(UsageError(parser.error_message(error)))
-        Ok(flags) -> command_from(name, flags)
+    [] -> Ok(Help)
+    _ ->
+      case command_registry.parse(args) {
+        Ok(command_spec.HelpRequested) -> Ok(Help)
+        Ok(command_spec.Parsed(parsed)) -> build_command(parsed)
+        Error(error) -> Error(UsageError(command_spec.error_message(error)))
       }
   }
 }
@@ -219,309 +223,636 @@ pub fn usage() -> String {
   ctl_usage.text()
 }
 
-fn option_with_default(value: Option(a), default: a) -> a {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
-fn command_from(name: String, flags: parser.Flags) -> Result(Command, Error) {
-  case name, flags.positional {
-    "--help", _ | "-h", _ -> Ok(Help)
-    _, ["--help"] -> Ok(Help)
-    "ping", [] -> Ok(Ping(flags.control_file, flags.json))
-    "ps", [] -> Ok(Ps(flags.control_file, flags.json))
-    "query", ["status"] ->
-      Ok(Query(flags.control_file, flags.json, query_types.Status))
-    "query", ["metrics"] ->
-      Ok(Query(flags.control_file, flags.json, query_types.Metrics))
-    "task", ["list"] ->
-      Ok(TaskList(
-        flags.control_file,
-        flags.json,
-        flags.state_filters,
-        option_with_default(flags.limit, 50),
-        flags.cursor,
+fn build_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case parsed.handler {
+    command_registry.PingKey ->
+      Ok(Ping(control_file_option(parsed), json_output(parsed)))
+    command_registry.PsKey ->
+      Ok(Ps(control_file_option(parsed), json_output(parsed)))
+    command_registry.QueryStatusKey ->
+      Ok(Query(
+        control_file_option(parsed),
+        json_output(parsed),
+        query_types.Status,
       ))
-    "task", ["show", ref] -> {
+    command_registry.QueryMetricsKey ->
+      Ok(Query(
+        control_file_option(parsed),
+        json_output(parsed),
+        query_types.Metrics,
+      ))
+    command_registry.TaskListKey ->
+      Ok(TaskList(
+        control_file_option(parsed),
+        json_output(parsed),
+        task_states(parsed),
+        int_option_with_default(parsed, "--limit", 50),
+        command_spec.option_value(parsed, "--cursor"),
+      ))
+    command_registry.TaskShowKey -> {
       use ref <- try_ctl(
-        parser.task_query_ref(ref)
+        parser.task_query_ref(first_positional(parsed, parsed.usage))
         |> result.map_error(fn(error) {
           UsageError(parser.error_message(error))
         }),
       )
-      Ok(TaskShow(flags.control_file, flags.json, ref))
+      Ok(TaskShow(control_file_option(parsed), json_output(parsed), ref))
     }
-    "task", _ ->
-      Error(UsageError(
-        "task usage: task list [--state <state>] [--limit <n>] [--cursor <cursor>] | task show <task-or-id:<remote-id>>",
+    command_registry.SessionKey ->
+      Ok(Session(
+        control_file_option(parsed),
+        json_output(parsed),
+        first_positional(parsed, parsed.usage),
       ))
-    "session", [session_id] ->
-      Ok(Session(flags.control_file, flags.json, session_id))
-    "events", [session_id] -> {
-      use mode <- try_ctl(events_mode(flags))
+    command_registry.EventsKey -> {
+      use mode <- try_ctl(parsed_events_mode(parsed))
       Ok(Events(
-        flags.control_file,
+        control_file_option(parsed),
         mode,
-        events_color(mode, flags.color),
-        flags.since_cursor,
-        flags.verbose,
-        session_id,
+        events_color(mode, parsed_color(parsed)),
+        int_option_with_default(parsed, "--since-cursor", 0),
+        command_spec.has_flag(parsed, "--verbose"),
+        first_positional(parsed, parsed.usage),
       ))
     }
-    "attach", [session_id] -> {
-      use mode <- try_ctl(attach_mode(flags))
+    command_registry.AttachKey -> {
+      use mode <- try_ctl(parsed_attach_mode(parsed))
       Ok(Attach(
-        flags.control_file,
+        control_file_option(parsed),
         mode,
-        attach_color(mode, flags.color),
-        case flags.no_follow {
+        attach_color(mode, parsed_color(parsed)),
+        case command_spec.has_flag(parsed, "--no-follow") {
           True -> NoFollow
           False -> Follow
         },
-        flags.since_cursor,
-        flags.verbose,
-        session_id,
+        int_option_with_default(parsed, "--since-cursor", 0),
+        command_spec.has_flag(parsed, "--verbose"),
+        first_positional(parsed, parsed.usage),
       ))
     }
-    "attach", _ ->
-      Error(UsageError(
-        "attach usage: attach [--raw|--json|--pretty] <session-ref>",
-      ))
-    "pause", [] -> Ok(operator(flags, control_command.PauseDispatch))
-    "resume", [] -> Ok(operator(flags, control_command.ResumeDispatch))
-    "reload", [] -> Ok(operator(flags, control_command.ReloadWorkflow))
-    "retry", [issue] ->
-      Ok(operator(flags, control_command.RetryIssue(issue_ref(issue))))
-    "retry-step", [target] ->
-      Ok(operator(
-        flags,
-        control_command.RetryWorkflowStep(
-          retry_workflow_step_target(target),
-          flags.step,
+    command_registry.PauseKey ->
+      Ok(operator_command(parsed, control_command.PauseDispatch))
+    command_registry.ResumeKey ->
+      Ok(operator_command(parsed, control_command.ResumeDispatch))
+    command_registry.ReloadKey ->
+      Ok(operator_command(parsed, control_command.ReloadWorkflow))
+    command_registry.RetryKey ->
+      Ok(operator_command(
+        parsed,
+        control_command.RetryIssue(
+          issue_ref(first_positional(parsed, parsed.usage)),
         ),
       ))
-    "recovery", ["cleanup-orphan-steps", target] ->
-      case recovery_cleanup_run_id(target), flags.yes, flags.dry_run {
-        Error(message), _, _ -> Error(UsageError(message))
-        Ok(_), True, True ->
-          Error(UsageError(
-            "recovery cleanup-orphan-steps --yes cannot be combined with --dry-run",
-          ))
-        Ok(run_id), yes, _ ->
-          Ok(operator(flags, control_command.CleanupOrphanSteps(run_id, !yes)))
-      }
-    "park", [issue] ->
-      case flags.reason, flags.yes {
-        Some(reason), True ->
-          Ok(operator(
-            flags,
-            control_command.ParkIssue(issue_ref(issue), reason),
-          ))
-        None, _ -> Error(UsageError("park requires --reason <text>"))
-        Some(_), False -> Error(UsageError("park requires --yes"))
-      }
-    "unpark", [issue] ->
-      Ok(operator(flags, control_command.UnparkIssue(issue_ref(issue))))
-    "abort", [session_id] ->
-      case flags.yes {
-        True -> Ok(operator(flags, control_command.AbortSession(session_id)))
-        False -> Error(UsageError("abort requires --yes"))
-      }
-    "stop-after-turn", [session_id] ->
-      case flags.yes {
-        True ->
-          Ok(operator(flags, control_command.StopAfterCurrentTurn(session_id)))
-        False -> Error(UsageError("stop-after-turn requires --yes"))
-      }
-    "prompt", [session_id, message] ->
-      Ok(operator(flags, control_command.PromptSession(session_id, message)))
-    "ui", ["respond", session_id, request_id] ->
-      case flags.cancel, flags.value {
-        True, None ->
-          Ok(operator(
-            flags,
-            control_command.RespondUi(
-              session_id,
-              request_id,
-              control_command.UiCancel,
-            ),
-          ))
-        False, Some(value) ->
-          Ok(operator(
-            flags,
-            control_command.RespondUi(
-              session_id,
-              request_id,
-              control_command.UiValue(value),
-            ),
-          ))
-        True, Some(_) ->
-          Error(UsageError(
-            "ui respond requires exactly one of --cancel or --value",
-          ))
-        False, None ->
-          Error(UsageError("ui respond requires --cancel or --value <text>"))
-      }
-    "cleanup", [] ->
-      case flags.yes, flags.dry_run {
-        True, True ->
-          Error(UsageError("cleanup --yes cannot be combined with --dry-run"))
-        True, False ->
-          Ok(Cleanup(flags.control_file, flags.root, flags.json, False, True))
-        False, _ ->
-          Ok(Cleanup(flags.control_file, flags.root, flags.json, True, False))
-      }
-    "schedules", ["status"] ->
-      Ok(SchedulesStatus(flags.control_file, flags.root, flags.json, None))
-    "schedules", ["status", job_id] ->
+    command_registry.RetryStepKey ->
+      Ok(operator_command(
+        parsed,
+        control_command.RetryWorkflowStep(
+          retry_workflow_step_target(first_positional(parsed, parsed.usage)),
+          command_spec.option_value(parsed, "--step"),
+        ),
+      ))
+    command_registry.RecoveryCleanupOrphanStepsKey ->
+      build_recovery_cleanup_command(parsed)
+    command_registry.ParkKey -> build_park_command(parsed)
+    command_registry.UnparkKey ->
+      Ok(operator_command(
+        parsed,
+        control_command.UnparkIssue(
+          issue_ref(first_positional(parsed, parsed.usage)),
+        ),
+      ))
+    command_registry.AbortKey -> build_abort_command(parsed)
+    command_registry.StopAfterTurnKey -> build_stop_after_turn_command(parsed)
+    command_registry.PromptKey ->
+      Ok(operator_command(
+        parsed,
+        control_command.PromptSession(
+          first_positional(parsed, parsed.usage),
+          second_positional(parsed, parsed.usage),
+        ),
+      ))
+    command_registry.UiRespondKey -> build_ui_respond_command(parsed)
+    command_registry.CleanupKey -> build_cleanup_command(parsed)
+    command_registry.SchedulesStatusKey ->
       Ok(SchedulesStatus(
-        flags.control_file,
-        flags.root,
-        flags.json,
-        Some(job_id),
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
+        optional_first_positional(parsed),
       ))
-    "schedules", ["history", job_id] ->
-      Ok(SchedulesHistory(flags.control_file, flags.root, flags.json, job_id))
-    "schedules", ["logs", job_id] ->
-      case flags.last {
-        True ->
-          Ok(SchedulesLogs(
-            flags.control_file,
-            flags.root,
-            flags.json,
-            flags.color,
-            flags.verbose,
-            job_id,
-          ))
-        False -> Error(UsageError("schedules logs requires --last"))
-      }
-    "schedules", ["doctor", job_id] ->
-      Ok(SchedulesDoctor(flags.control_file, flags.root, flags.json, job_id))
-    "schedules", ["run", job_id] ->
-      case flags.now {
-        True -> Ok(operator(flags, control_command.RunScheduleNow(job_id)))
-        False -> Error(UsageError("schedules run requires --now"))
-      }
-    "schedules", _ ->
-      Error(UsageError(
-        "schedules usage: schedules status [job] | history <job> | logs <job> --last | doctor <job> | run <job> --now",
+    command_registry.SchedulesHistoryKey ->
+      Ok(SchedulesHistory(
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
+        first_positional(parsed, parsed.usage),
       ))
-    "workstream", args ->
+    command_registry.SchedulesLogsKey -> build_schedules_logs_command(parsed)
+    command_registry.SchedulesDoctorKey ->
+      Ok(SchedulesDoctor(
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
+        first_positional(parsed, parsed.usage),
+      ))
+    command_registry.SchedulesRunKey -> build_schedules_run_command(parsed)
+    command_registry.WorkstreamKey ->
       case
-        ctl_workstream.parse(args, flags.control_file, flags.root, flags.json)
+        ctl_workstream.parse(
+          parsed.positionals,
+          control_file_option(parsed),
+          root_option_value(parsed),
+          json_output(parsed),
+        )
       {
         Ok(command) -> Ok(Workstream(command))
         Error(message) -> Error(UsageError(message))
       }
-    "artifact", ["publication", "list"] -> {
-      use run_id <- try_ctl(required_run_id(flags))
+    command_registry.ArtifactPublicationListKey -> {
+      use run_id <- try_ctl(required_run_id_from_parsed(parsed))
       Ok(ArtifactPublicationList(
-        flags.control_file,
-        flags.root,
-        flags.json,
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
         run_id,
       ))
     }
-    "artifact", ["publication", "show"] -> {
-      use run_id <- try_ctl(required_run_id(flags))
-      use publication_id <- try_ctl(required_publication_id(flags))
+    command_registry.ArtifactPublicationShowKey -> {
+      use run_id <- try_ctl(required_run_id_from_parsed(parsed))
+      use publication_id <- try_ctl(required_publication_id_from_parsed(parsed))
       Ok(ArtifactPublicationShow(
-        flags.control_file,
-        flags.root,
-        flags.json,
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
         run_id,
         publication_id,
       ))
     }
-    "artifact", ["publication", "retry"] -> {
-      use run_id <- try_ctl(required_run_id(flags))
+    command_registry.ArtifactPublicationRetryKey -> {
+      use run_id <- try_ctl(required_run_id_from_parsed(parsed))
       Ok(ArtifactPublicationRetry(
-        flags.control_file,
-        flags.root,
-        flags.json,
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
         run_id,
-        flags.publication_id,
+        command_spec.option_value(parsed, "--publication"),
       ))
     }
-    "artifact", ["publication", "abandon"] -> {
-      use run_id <- try_ctl(required_run_id(flags))
-      use publication_id <- try_ctl(required_publication_id_for_abandon(flags))
-      use reason <- try_ctl(required_reason_for_abandon(flags))
-      case flags.yes {
-        True ->
+    command_registry.ArtifactPublicationAbandonKey ->
+      build_artifact_publication_abandon_command(parsed)
+    command_registry.StateStatusKey -> {
+      use root <- try_ctl(required_root_from_parsed(parsed))
+      Ok(StateStatus(root, json_output(parsed)))
+    }
+    command_registry.StateArchiveOldKey -> {
+      use root <- try_ctl(required_root_from_parsed(parsed))
+      Ok(StateArchiveOld(
+        root,
+        json_output(parsed),
+        command_spec.has_flag(parsed, "--yes"),
+      ))
+    }
+    command_registry.StateDiscardOldKey -> {
+      use root <- try_ctl(required_root_from_parsed(parsed))
+      Ok(StateDiscardOld(
+        root,
+        json_output(parsed),
+        command_spec.has_flag(parsed, "--yes"),
+      ))
+    }
+    command_registry.StateReinitializeKey -> {
+      use root <- try_ctl(required_root_from_parsed(parsed))
+      Ok(StateReinitialize(
+        root,
+        json_output(parsed),
+        command_spec.has_flag(parsed, "--yes"),
+      ))
+    }
+    command_registry.StateCompactKey -> build_state_compact_command(parsed)
+    command_registry.StateRepairRunProvenanceKey ->
+      build_state_repair_run_provenance_command(parsed)
+  }
+}
+
+fn control_file_option(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Option(String) {
+  command_spec.option_value(parsed, "--control-file")
+}
+
+fn root_option_value(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Option(String) {
+  command_spec.option_value(parsed, "--root")
+}
+
+fn json_output(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Bool {
+  command_spec.has_flag(parsed, "--json")
+}
+
+fn parsed_color(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> style.ColorMode {
+  case command_spec.option_value(parsed, "--color") {
+    Some(value) ->
+      case style.parse_color_mode(value) {
+        Ok(mode) -> mode
+        Error(_) -> style.ColorAuto
+      }
+    None -> style.ColorAuto
+  }
+}
+
+fn int_option_with_default(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+  name: String,
+  default: Int,
+) -> Int {
+  case command_spec.option_value(parsed, name) {
+    Some(value) ->
+      case int.parse(value) {
+        Ok(parsed_value) -> parsed_value
+        Error(_) -> default
+      }
+    None -> default
+  }
+}
+
+fn task_states(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> List(task_output.StateCategory) {
+  task_states_loop(command_spec.option_values(parsed, "--state"), [])
+}
+
+fn task_states_loop(
+  values: List(String),
+  acc: List(task_output.StateCategory),
+) -> List(task_output.StateCategory) {
+  case values {
+    [] -> list.reverse(acc)
+    [value, ..rest] ->
+      case task_output.state_category_from_string(value) {
+        Ok(state) -> task_states_loop(rest, [state, ..acc])
+        Error(_) -> task_states_loop(rest, acc)
+      }
+  }
+}
+
+fn first_positional(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+  usage: String,
+) -> String {
+  case parsed.positionals {
+    [value, ..] -> value
+    [] -> usage
+  }
+}
+
+fn second_positional(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+  usage: String,
+) -> String {
+  case parsed.positionals {
+    [_, value, ..] -> value
+    _ -> usage
+  }
+}
+
+fn optional_first_positional(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Option(String) {
+  case parsed.positionals {
+    [value, ..] -> Some(value)
+    [] -> None
+  }
+}
+
+fn parsed_attach_mode(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(OutputMode, Error) {
+  let pretty = command_spec.has_flag(parsed, "--pretty")
+  let raw = command_spec.has_flag(parsed, "--raw")
+  let json = command_spec.has_flag(parsed, "--json")
+  case pretty, raw, json {
+    True, True, _ | True, _, True ->
+      Error(UsageError("choose only one of --pretty, --raw, or --json"))
+    _, True, True -> Ok(Json)
+    True, False, False -> Ok(Pretty)
+    False, True, False -> Ok(Raw)
+    False, False, True -> Ok(Json)
+    False, False, False -> Ok(Pretty)
+  }
+}
+
+fn parsed_events_mode(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(OutputMode, Error) {
+  let pretty = command_spec.has_flag(parsed, "--pretty")
+  let raw = command_spec.has_flag(parsed, "--raw")
+  let json = command_spec.has_flag(parsed, "--json")
+  case pretty, raw, json {
+    True, True, _ | True, _, True | False, True, True ->
+      Error(UsageError("choose only one of --pretty, --raw, or --json"))
+    True, False, False -> Ok(Pretty)
+    False, _, True -> Ok(Json)
+    False, _, False -> Ok(Raw)
+  }
+}
+
+fn operator_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+  command: control_command.OperatorCommand,
+) -> Command {
+  Operator(control_file_option(parsed), json_output(parsed), command)
+}
+
+fn build_recovery_cleanup_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case
+    recovery_cleanup_run_id(first_positional(parsed, parsed.usage)),
+    command_spec.has_flag(parsed, "--yes"),
+    command_spec.has_flag(parsed, "--dry-run")
+  {
+    Error(message), _, _ -> Error(UsageError(message))
+    Ok(_), True, True ->
+      Error(UsageError(
+        "recovery cleanup-orphan-steps --yes cannot be combined with --dry-run",
+      ))
+    Ok(run_id), yes, _ ->
+      Ok(operator_command(
+        parsed,
+        control_command.CleanupOrphanSteps(run_id, !yes),
+      ))
+  }
+}
+
+fn build_park_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case
+    command_spec.option_value(parsed, "--reason"),
+    command_spec.has_flag(parsed, "--yes")
+  {
+    Some(reason), True ->
+      Ok(operator_command(
+        parsed,
+        control_command.ParkIssue(
+          issue_ref(first_positional(parsed, parsed.usage)),
+          reason,
+        ),
+      ))
+    None, _ -> Error(UsageError("park requires --reason <text>"))
+    Some(_), False -> Error(UsageError("park requires --yes"))
+  }
+}
+
+fn build_abort_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case command_spec.has_flag(parsed, "--yes") {
+    True ->
+      Ok(operator_command(
+        parsed,
+        control_command.AbortSession(first_positional(parsed, parsed.usage)),
+      ))
+    False -> Error(UsageError("abort requires --yes"))
+  }
+}
+
+fn build_stop_after_turn_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case command_spec.has_flag(parsed, "--yes") {
+    True ->
+      Ok(operator_command(
+        parsed,
+        control_command.StopAfterCurrentTurn(first_positional(
+          parsed,
+          parsed.usage,
+        )),
+      ))
+    False -> Error(UsageError("stop-after-turn requires --yes"))
+  }
+}
+
+fn build_ui_respond_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  let session_id = first_positional(parsed, parsed.usage)
+  let request_id = second_positional(parsed, parsed.usage)
+  case
+    command_spec.has_flag(parsed, "--cancel"),
+    command_spec.option_value(parsed, "--value")
+  {
+    True, None ->
+      Ok(operator_command(
+        parsed,
+        control_command.RespondUi(
+          session_id,
+          request_id,
+          control_command.UiCancel,
+        ),
+      ))
+    False, Some(value) ->
+      Ok(operator_command(
+        parsed,
+        control_command.RespondUi(
+          session_id,
+          request_id,
+          control_command.UiValue(value),
+        ),
+      ))
+    True, Some(_) ->
+      Error(UsageError("ui respond requires exactly one of --cancel or --value"))
+    False, None ->
+      Error(UsageError("ui respond requires --cancel or --value <text>"))
+  }
+}
+
+fn build_cleanup_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case
+    command_spec.has_flag(parsed, "--yes"),
+    command_spec.has_flag(parsed, "--dry-run")
+  {
+    True, True ->
+      Error(UsageError("cleanup --yes cannot be combined with --dry-run"))
+    True, False ->
+      Ok(Cleanup(
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
+        False,
+        True,
+      ))
+    False, _ ->
+      Ok(Cleanup(
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
+        True,
+        False,
+      ))
+  }
+}
+
+fn build_schedules_logs_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case command_spec.has_flag(parsed, "--last") {
+    True ->
+      Ok(SchedulesLogs(
+        control_file_option(parsed),
+        root_option_value(parsed),
+        json_output(parsed),
+        parsed_color(parsed),
+        command_spec.has_flag(parsed, "--verbose"),
+        first_positional(parsed, parsed.usage),
+      ))
+    False -> Error(UsageError("schedules logs requires --last"))
+  }
+}
+
+fn build_schedules_run_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case command_spec.has_flag(parsed, "--now") {
+    True ->
+      Ok(operator_command(
+        parsed,
+        control_command.RunScheduleNow(first_positional(parsed, parsed.usage)),
+      ))
+    False -> Error(UsageError("schedules run requires --now"))
+  }
+}
+
+fn required_root_from_parsed(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(String, Error) {
+  case root_option_value(parsed) {
+    Some(root) -> Ok(root)
+    None -> Error(UsageError("state commands require --root <workspace-root>"))
+  }
+}
+
+fn required_run_id_from_parsed(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(String, Error) {
+  case command_spec.option_value(parsed, "--run") {
+    Some(run_id) -> Ok(run_id)
+    None ->
+      Error(UsageError("artifact publication commands require --run <run-id>"))
+  }
+}
+
+fn required_publication_id_from_parsed(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(String, Error) {
+  case command_spec.option_value(parsed, "--publication") {
+    Some(publication_id) -> Ok(publication_id)
+    None ->
+      Error(UsageError(
+        "artifact publication show requires --publication <publication-id>",
+      ))
+  }
+}
+
+fn build_artifact_publication_abandon_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case
+    command_spec.option_value(parsed, "--reason"),
+    command_spec.has_flag(parsed, "--yes")
+  {
+    Some(reason), True ->
+      case
+        required_run_id_from_parsed(parsed),
+        command_spec.option_value(parsed, "--publication")
+      {
+        Ok(run_id), Some(publication_id) ->
           Ok(ArtifactPublicationAbandon(
-            flags.control_file,
-            flags.root,
-            flags.json,
+            control_file_option(parsed),
+            root_option_value(parsed),
+            json_output(parsed),
             run_id,
             publication_id,
             reason,
           ))
-        False ->
-          Error(UsageError("artifact publication abandon requires --yes"))
+        Error(error), _ -> Error(error)
+        _, None ->
+          Error(UsageError(
+            "artifact publication abandon requires --publication <publication-id>",
+          ))
       }
-    }
-    "artifact", _ ->
+    None, _ ->
+      Error(UsageError("artifact publication abandon requires --reason <text>"))
+    Some(_), False ->
+      Error(UsageError("artifact publication abandon requires --yes"))
+  }
+}
+
+fn build_state_compact_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case
+    command_spec.has_flag(parsed, "--yes"),
+    command_spec.has_flag(parsed, "--dry-run")
+  {
+    True, True ->
       Error(UsageError(
-        "artifact usage: artifact publication list --run <run-id> | artifact publication show --run <run-id> --publication <publication-id> | artifact publication retry --run <run-id> [--publication <publication-id>] | artifact publication abandon --run <run-id> --publication <publication-id> --reason <text> --yes",
+        "state compact requires exactly one of --dry-run or --yes",
       ))
-    "state", ["status"] -> {
-      use root <- try_ctl(required_root(flags))
-      Ok(StateStatus(root, flags.json))
-    }
-    "state", ["archive-old"] -> {
-      use root <- try_ctl(required_root(flags))
-      Ok(StateArchiveOld(root, flags.json, flags.yes))
-    }
-    "state", ["discard-old"] -> {
-      use root <- try_ctl(required_root(flags))
-      Ok(StateDiscardOld(root, flags.json, flags.yes))
-    }
-    "state", ["reinitialize"] -> {
-      use root <- try_ctl(required_root(flags))
-      Ok(StateReinitialize(root, flags.json, flags.yes))
-    }
-    "state", ["compact"] -> {
-      use root <- try_ctl(required_root(flags))
-      case flags.yes, flags.dry_run {
-        True, True ->
-          Error(UsageError(
-            "state compact requires exactly one of --dry-run or --yes",
+    False, False ->
+      Error(UsageError("state compact requires --dry-run or --yes"))
+    _, _ ->
+      case required_root_from_parsed(parsed) {
+        Ok(root) ->
+          Ok(StateCompact(
+            root,
+            json_output(parsed),
+            command_spec.has_flag(parsed, "--dry-run"),
+            command_spec.has_flag(parsed, "--yes"),
           ))
-        False, False ->
-          Error(UsageError("state compact requires --dry-run or --yes"))
-        _, _ -> Ok(StateCompact(root, flags.json, flags.dry_run, flags.yes))
+        Error(error) -> Error(error)
       }
-    }
-    "state", ["repair-run-provenance", target] -> {
-      use root <- try_ctl(required_root(flags))
-      use run_id <- try_ctl(repair_run_provenance_target(target))
-      case flags.yes, flags.dry_run {
-        True, True ->
-          Error(UsageError(
-            "state repair-run-provenance requires exactly one of --dry-run or --yes",
-          ))
-        False, False ->
-          Error(UsageError(
-            "state repair-run-provenance requires --dry-run or --yes",
-          ))
-        _, _ ->
+  }
+}
+
+fn build_state_repair_run_provenance_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  let run_target = first_positional(parsed, parsed.usage)
+  use run_id <- try_ctl(repair_run_provenance_target(run_target))
+  case
+    command_spec.has_flag(parsed, "--yes"),
+    command_spec.has_flag(parsed, "--dry-run")
+  {
+    True, True ->
+      Error(UsageError(
+        "state repair-run-provenance requires exactly one of --dry-run or --yes",
+      ))
+    False, False ->
+      Error(UsageError(
+        "state repair-run-provenance requires --dry-run or --yes",
+      ))
+    _, _ ->
+      case required_root_from_parsed(parsed) {
+        Ok(root) ->
           Ok(StateRepairRunProvenance(
             root,
-            flags.json,
+            json_output(parsed),
             run_id,
-            flags.dry_run,
-            flags.yes,
+            command_spec.has_flag(parsed, "--dry-run"),
+            command_spec.has_flag(parsed, "--yes"),
           ))
+        Error(error) -> Error(error)
       }
-    }
-    "state", _ ->
-      Error(UsageError(
-        "state usage: state status|archive-old|discard-old|reinitialize|compact|repair-run-provenance --root <workspace-root>",
-      ))
-    _, _ -> Error(UsageError("unknown or invalid ctl command: " <> name))
   }
 }
 
@@ -533,73 +864,6 @@ fn recovery_cleanup_run_id(target: String) -> Result(String, String) {
         run_id -> Ok(run_id)
       }
     False -> Error("recovery cleanup-orphan-steps requires run:<run-id>")
-  }
-}
-
-fn required_root(flags: parser.Flags) -> Result(String, Error) {
-  case flags.root {
-    Some(root) -> Ok(root)
-    None -> Error(UsageError("state commands require --root <workspace-root>"))
-  }
-}
-
-fn required_run_id(flags: parser.Flags) -> Result(String, Error) {
-  case flags.run_id {
-    Some(run_id) -> Ok(run_id)
-    None ->
-      Error(UsageError("artifact publication commands require --run <run-id>"))
-  }
-}
-
-fn required_publication_id(flags: parser.Flags) -> Result(String, Error) {
-  case flags.publication_id {
-    Some(publication_id) -> Ok(publication_id)
-    None ->
-      Error(UsageError(
-        "artifact publication show requires --publication <publication-id>",
-      ))
-  }
-}
-
-fn required_publication_id_for_abandon(
-  flags: parser.Flags,
-) -> Result(String, Error) {
-  case flags.publication_id {
-    Some(publication_id) -> Ok(publication_id)
-    None ->
-      Error(UsageError(
-        "artifact publication abandon requires --publication <publication-id>",
-      ))
-  }
-}
-
-fn required_reason_for_abandon(flags: parser.Flags) -> Result(String, Error) {
-  case flags.reason {
-    Some(reason) -> Ok(reason)
-    None ->
-      Error(UsageError("artifact publication abandon requires --reason <text>"))
-  }
-}
-
-fn attach_mode(flags: parser.Flags) -> Result(OutputMode, Error) {
-  case flags.pretty, flags.raw, flags.json {
-    True, True, _ | True, _, True ->
-      Error(UsageError("choose only one of --pretty, --raw, or --json"))
-    _, True, True -> Ok(Json)
-    True, False, False -> Ok(Pretty)
-    False, True, False -> Ok(Raw)
-    False, False, True -> Ok(Json)
-    False, False, False -> Ok(Pretty)
-  }
-}
-
-fn events_mode(flags: parser.Flags) -> Result(OutputMode, Error) {
-  case flags.pretty, flags.raw, flags.json {
-    True, True, _ | True, _, True | False, True, True ->
-      Error(UsageError("choose only one of --pretty, --raw, or --json"))
-    True, False, False -> Ok(Pretty)
-    False, _, True -> Ok(Json)
-    False, _, False -> Ok(Raw)
   }
 }
 
@@ -625,13 +889,6 @@ fn pretty_options(
     True -> render.verbose_options(color)
     False -> render.default_options(color)
   }
-}
-
-fn operator(
-  flags: parser.Flags,
-  command: control_command.OperatorCommand,
-) -> Command {
-  Operator(flags.control_file, flags.json, command)
 }
 
 fn issue_ref(value: String) -> control_command.IssueRef {

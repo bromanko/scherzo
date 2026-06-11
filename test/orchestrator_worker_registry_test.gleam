@@ -193,6 +193,62 @@ pub fn worker_registry_registers_and_clears_step_command_route_test() {
     == Error(Nil)
 }
 
+pub fn worker_registry_duplicate_worker_registration_ignores_stale_monitor_down_test() {
+  let old_handle = worker_handle("1", "run-old", "session-old")
+  let replacement_handle = worker_handle("1", "run-new", "session-new")
+  let registry =
+    worker_registry.new()
+    |> worker_registry.register_worker(old_handle)
+    |> worker_registry.register_worker(replacement_handle)
+
+  let assert worker_registry.UnknownDown(registry) =
+    worker_registry.resolve_down(registry, old_handle.monitor)
+  let assert Ok(active) =
+    worker_registry.worker_for_session(registry, "session-new")
+  assert active.run_id == "run-new"
+  let assert worker_registry.WorkerDown(_, "1", down_handle) =
+    worker_registry.resolve_down(registry, replacement_handle.monitor)
+  assert down_handle.run_id == "run-new"
+  process.demonitor_process(old_handle.monitor)
+  process.demonitor_process(replacement_handle.monitor)
+}
+
+pub fn worker_registry_duplicate_scheduled_registration_ignores_stale_monitor_down_test() {
+  let old_handle = scheduled_handle("scheduled-run", "scheduled-old")
+  let replacement_handle = scheduled_handle("scheduled-run", "scheduled-new")
+  let registry =
+    worker_registry.new()
+    |> worker_registry.register_scheduled_worker(old_handle)
+    |> worker_registry.register_scheduled_worker(replacement_handle)
+
+  let assert worker_registry.UnknownDown(registry) =
+    worker_registry.resolve_down(registry, old_handle.monitor)
+  let assert Ok(active) =
+    worker_registry.scheduled_worker_for_run(registry, "scheduled-run")
+  assert active.session_id == "scheduled-new"
+  let assert worker_registry.ScheduledWorkerDown(_, run_id, down_handle) =
+    worker_registry.resolve_down(registry, replacement_handle.monitor)
+  assert run_id == "scheduled-run"
+  assert down_handle.session_id == "scheduled-new"
+  process.demonitor_process(old_handle.monitor)
+  process.demonitor_process(replacement_handle.monitor)
+}
+
+pub fn worker_registry_resolves_run_mismatch_as_stale_test() {
+  let handle = worker_handle("1", "run-new", "session-new")
+  let registry =
+    worker_registry.new()
+    |> worker_registry.register_worker(handle)
+
+  let assert worker_registry.WorkerStale(active) =
+    worker_registry.resolve_worker_run(registry, handle.task_ref, "run-old")
+  assert active.run_id == "run-new"
+  let assert Ok(still_active) =
+    worker_registry.worker_for_task_ref(registry, handle.task_ref)
+  assert still_active.session_id == "session-new"
+  process.demonitor_process(handle.monitor)
+}
+
 pub fn worker_registry_resolves_worker_and_step_command_downs_test() {
   let handle = worker_handle("1", "run-1", "session-1")
   let registry =

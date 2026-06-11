@@ -1592,8 +1592,9 @@ fn stop_worker_after_issue_refresh(
     Error(Nil) -> transition_types.Outcome(state: state, effects: [])
     Ok(entry) -> {
       let identity = worker_identity(entry)
+      let state = remove_worker_from_directory(state, entry)
       transition_types.Outcome(
-        state: remove_worker_from_directory(state, entry),
+        state: remove_yaml_step_runs_for_run(state, entry.run_id),
         effects: [effects_types.StopWorkerAfterIssueRefresh(identity, reason)],
       )
     }
@@ -2085,6 +2086,7 @@ fn handle_worker_finished_result(
     Ok(entry) -> {
       let identity = worker_identity(entry)
       let state = remove_worker_from_directory(state, entry)
+      let state = remove_yaml_step_runs_for_run(state, entry.run_id)
       let remove_effect = effects_types.RemoveWorker(identity, True)
       let transition_types.Outcome(state: state, effects: effects) =
         finish_worker_entry(state, entry, identity, result, context)
@@ -2478,10 +2480,9 @@ fn finish_operator_worker_failure_entry(
       runtime_identity,
       final_issue,
       failure.tokens,
+      context.now_ms,
     )
-  let state =
-    park_runtime(
-      state,
+    |> park_runtime(
       entry.task_ref,
       final_issue,
       orchestrator_reason.ParkOperator(reason_text),
@@ -2627,18 +2628,7 @@ fn stop_worker_entry(
 ) -> transition_types.Outcome {
   let reason_text = session_reason.to_string(reason)
   let state = remove_worker_from_directory(state, entry)
-  let state =
-    transition_types.State(
-      ..state,
-      workers: transition_types.WorkerDirectory(
-        ..state.workers,
-        stopped_yaml_runs: dict.insert(
-          state.workers.stopped_yaml_runs,
-          entry.run_id,
-          reason,
-        ),
-      ),
-    )
+  let state = remove_yaml_step_runs_for_run(state, entry.run_id)
   let state =
     park_runtime(
       state,
@@ -2661,10 +2651,6 @@ fn stop_worker_entry(
       failure_event: "workflow_terminal_append_failed",
       policy: effects_types.ContinueRegardless,
     )),
-    effects_types.MarkYamlRunStopping(
-      identity.run_id_from_string(entry.run_id),
-      reason,
-    ),
     effects_types.StopWorker(identity, reason),
     effects_types.FinishYamlStepSessionsForRun(
       identity.run_id_from_string(entry.run_id),
@@ -2687,9 +2673,10 @@ fn handle_yaml_step_started(
   let run_id_text = identity.run_id_to_string(run_id)
   case dict.get(state.workers.stopped_yaml_runs, run_id_text) {
     Ok(reason) ->
-      transition_types.Outcome(state: state, effects: [
-        effects_types.FinishYamlStepSession(session_id, reason),
-      ])
+      transition_types.Outcome(
+        state: clear_stopped_yaml_run(state, run_id_text),
+        effects: [effects_types.FinishYamlStepSession(session_id, reason)],
+      )
     Error(Nil) ->
       case worker_for_run(state.workers, run_id_text) {
         Error(Nil) -> transition_types.Outcome(state: state, effects: [])
@@ -2832,6 +2819,39 @@ fn remove_worker_from_directory(
         state.workers.route_to_session,
         entry.command_route_id,
       ),
+    )
+  transition_types.State(..state, workers: workers)
+}
+
+fn remove_yaml_step_runs_for_run(
+  state: transition_types.State,
+  run_id: String,
+) -> transition_types.State {
+  let yaml_step_runs =
+    state.workers.yaml_step_runs
+    |> dict.to_list
+    |> list.filter(fn(entry) {
+      let #(_, step_run_id) = entry
+      step_run_id != run_id
+    })
+    |> dict.from_list
+  let workers =
+    transition_types.WorkerDirectory(
+      ..state.workers,
+      yaml_step_runs: yaml_step_runs,
+      stopped_yaml_runs: dict.delete(state.workers.stopped_yaml_runs, run_id),
+    )
+  transition_types.State(..state, workers: workers)
+}
+
+fn clear_stopped_yaml_run(
+  state: transition_types.State,
+  run_id: String,
+) -> transition_types.State {
+  let workers =
+    transition_types.WorkerDirectory(
+      ..state.workers,
+      stopped_yaml_runs: dict.delete(state.workers.stopped_yaml_runs, run_id),
     )
   transition_types.State(..state, workers: workers)
 }

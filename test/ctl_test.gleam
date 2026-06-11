@@ -16,6 +16,7 @@ import scherzo/control/protocol
 import scherzo/control/query/types as query_types
 import scherzo/ctl
 import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
+import scherzo/ctl/command_registry
 import scherzo/hash
 import scherzo/path
 import scherzo/runtime_bundle
@@ -187,6 +188,7 @@ fn query_metrics_response() -> query_types.QueryResponse {
     poll_timer_active: True,
     retry_timer_count: 11,
     retry_refresh_in_flight_count: 12,
+    lifecycle_projection_failed: True,
     scheduled_due_count: 13,
     scheduled_next_due_count: 19,
     scheduled_pending_count: 14,
@@ -386,6 +388,7 @@ pub fn query_metrics_human_executes_query_and_formats_metrics_test() {
   assert string.contains(transcript, "active_sessions: 3")
   assert string.contains(transcript, "running_workers: 2")
   assert string.contains(transcript, "scheduled_next_due_count: 19")
+  assert string.contains(transcript, "lifecycle_projection_failed: true")
   assert string.contains(transcript, "token_total: 42")
 }
 
@@ -695,6 +698,7 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     ))
   assert ctl.parse(["schedules", "doctor", "nightly", "--root", "work"])
     == Ok(ctl.SchedulesDoctor(None, Some("work"), False, "nightly"))
+  let assert Ok(ctl.Workstream(_)) = ctl.parse(["workstream", "list", "LIV-1"])
   assert ctl.parse(["artifact", "publication", "list", "--run", "run-1"])
     == Ok(ctl.ArtifactPublicationList(None, None, False, "run-1"))
   assert ctl.parse([
@@ -942,6 +946,40 @@ pub fn parse_rejects_usage_errors_test() {
   let assert Error(ctl.UsageError(_)) = ctl.parse(["unknown"])
 }
 
+pub fn parse_rejects_irrelevant_command_options_test() {
+  assert ctl.parse(["ping", "--yes"])
+    == Error(ctl.UsageError("unsupported option for ping: --yes"))
+  assert ctl.parse(["task", "show", "LIV-1", "--state", "ready"])
+    == Error(ctl.UsageError("unsupported option for task show: --state"))
+  assert ctl.parse(["schedules", "logs", "nightly", "--now"])
+    == Error(ctl.UsageError("unsupported option for schedules logs: --now"))
+  assert ctl.parse([
+      "artifact",
+      "publication",
+      "list",
+      "--run",
+      "run-1",
+      "--publication",
+      "extra",
+    ])
+    == Error(ctl.UsageError(
+      "unsupported option for artifact publication list: --publication",
+    ))
+}
+
+pub fn parse_rejects_duplicate_singleton_options_test() {
+  assert ctl.parse([
+      "artifact",
+      "publication",
+      "list",
+      "--run",
+      "run-1",
+      "--run",
+      "run-2",
+    ])
+    == Error(ctl.UsageError("option may only be supplied once: --run"))
+}
+
 pub fn usage_mentions_commands_and_options_test() {
   let usage = ctl.usage()
   assert string.contains(usage, "ping")
@@ -997,6 +1035,12 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "--cursor <cursor>")
   assert string.contains(usage, "--dry-run")
   assert string.contains(usage, "--step <step-id>")
+}
+
+pub fn usage_contains_every_registered_command_line_test() {
+  let usage = ctl.usage()
+  let lines = command_registry.usage_lines()
+  assert list.all(lines, fn(line) { string.contains(usage, line) })
 }
 
 pub fn schedules_logs_last_replays_retained_session_events_test() {

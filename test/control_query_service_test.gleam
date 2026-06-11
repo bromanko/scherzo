@@ -199,6 +199,7 @@ fn metrics_response() -> types.QueryResponse {
     poll_timer_active: True,
     retry_timer_count: 0,
     retry_refresh_in_flight_count: 0,
+    lifecycle_projection_failed: False,
     scheduled_due_count: 0,
     scheduled_next_due_count: 0,
     scheduled_pending_count: 0,

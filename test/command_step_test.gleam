@@ -104,6 +104,54 @@ pub fn command_step_timeout_returns_failed_artifact_test() {
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(124)
   assert artifact.timed_out == True
+  assert artifact.failure_code == Some(command_step.timeout_failure_code)
+}
+
+pub fn command_step_timeout_overrides_child_failure_code_test() {
+  let dir = "test/tmp/command-step-timeout-failure-code"
+  test_helpers.reset_dir(dir)
+  let artifact =
+    command_step.run(
+      "slow",
+      "printf 'SCHERZO_FAILURE_CODE=child_error\\n' >&2; sleep 1",
+      dir,
+      100,
+      [],
+      diagnostic_limits(),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(124)
+  assert artifact.timed_out == True
+  assert artifact.failure_code == Some(command_step.timeout_failure_code)
+  assert string.contains(artifact.stderr, "SCHERZO_FAILURE_CODE=child_error")
+  let assert Some(diagnostic_path) = artifact.diagnostic_path
+  let assert Ok(body) = simplifile.read(diagnostic_path)
+  assert string.contains(body, "failure_code: command_step_timeout")
+}
+
+pub fn command_step_wall_clock_timeout_stops_chatty_command_test() {
+  let dir = "test/tmp/command-step-chatty-timeout"
+  test_helpers.reset_dir(dir)
+  let artifact =
+    command_step.run(
+      "chatty",
+      "while true; do printf 'tick\\n'; sleep 0.01; done",
+      dir,
+      80,
+      [],
+      diagnostic_limits(),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(124)
+  assert artifact.timed_out == True
+  assert artifact.failure_code == Some(command_step.timeout_failure_code)
+  let assert Some(duration_ms) = artifact.duration_ms
+  assert duration_ms < 2000
+  let assert Some(diagnostic_path) = artifact.diagnostic_path
+  let assert Ok(body) = simplifile.read(diagnostic_path)
+  assert string.contains(body, "failure_code: command_step_timeout")
 }
 
 pub fn command_step_env_is_available_to_helpers_test() {
