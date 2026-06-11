@@ -358,6 +358,30 @@ pub fn mutation_request_builders_and_response_parsing_test() {
     )
 }
 
+pub fn issue_comment_marker_lookup_finds_existing_scherzo_outbox_comment_test() {
+  let marker = "claim:linear:issue-id:run-1"
+  let body =
+    "{\"data\":{\"issue\":{\"comments\":{\"nodes\":[{\"id\":\"comment-1\",\"body\":\"ordinary comment\",\"bodyData\":\"{\\\"type\\\":\\\"doc\\\",\\\"content\\\":[]}\"},{\"id\":\"comment-2\",\"body\":\"claimed\\n\\n<!-- scherzo:outbox:claim:linear:issue-id:run-1 -->\",\"bodyData\":\"{\\\"type\\\":\\\"doc\\\",\\\"content\\\":[]}\"}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}"
+  let captured = process.new_subject()
+  let transport = fn(request: linear.Request) {
+    process.send(captured, request.body)
+    Ok(linear.Response(status: 200, body: body))
+  }
+
+  let assert Ok(Some(comment)) =
+    linear.find_issue_comment_by_marker(
+      tracker_config(),
+      transport,
+      "issue-id",
+      marker,
+    )
+  let assert Ok(request_body) = process.receive(captured, within: 100)
+  assert string.contains(request_query(request_body), "ScherzoIssueComments")
+  assert string_variable(request_body, "issueId") == "issue-id"
+  assert comment.id == "comment-2"
+  assert string.contains(comment.body, "scherzo:outbox:" <> marker)
+}
+
 pub fn missing_end_cursor_is_error_test() {
   let transport = fn(_request: linear.Request) {
     Ok(linear.Response(

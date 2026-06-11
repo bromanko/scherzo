@@ -189,7 +189,7 @@ fn handle_startup_recovery_applied(
   state: transition_types.State,
   retry_timers: List(recovery.RecoveredRetry),
   cleanup_workspaces: List(recovery.CleanupRequest),
-  _outbox_to_replay: List(recovery.OutboxReplay),
+  outbox_to_replay: List(recovery.OutboxReplay),
   park_reports: List(adapter.ParkReport),
   warnings: List(String),
   secrets: List(String),
@@ -200,8 +200,11 @@ fn handle_startup_recovery_applied(
       list.append(
         startup_cleanup_effects(cleanup_workspaces),
         list.append(
-          startup_park_report_effects(park_reports),
-          startup_warning_effects(warnings, secrets),
+          startup_outbox_replay_effects(outbox_to_replay),
+          list.append(
+            startup_park_report_effects(park_reports),
+            startup_warning_effects(warnings, secrets),
+          ),
         ),
       ),
     )
@@ -262,6 +265,31 @@ fn startup_cleanup_effects(
         #("workspace_path", workspace_path),
       ]),
       effects_types.CleanupWorkspace(workspace_path),
+    ]
+  })
+}
+
+fn startup_outbox_replay_effects(
+  outbox_to_replay: List(recovery.OutboxReplay),
+) -> List(effects_types.Effect) {
+  list.flat_map(outbox_to_replay, fn(outbox) {
+    let recovery.OutboxReplay(outbox_id, task_ref, outbox_kind, dedupe_key, _) =
+      outbox
+    let issue_identifier = case task_ref.task_key {
+      Some(value) -> value
+      None -> ""
+    }
+    [
+      effects_types.Log("info", "workflow_recovery_status", [
+        #("issue_id", task_ref.task_remote_id),
+        #("issue_identifier", issue_identifier),
+        #("status", "replay"),
+        #("source", "recovery.outbox"),
+        #("outbox_id", outbox_id),
+        #("outbox_kind", outbox_kind),
+        #("dedupe_key", dedupe_key),
+      ]),
+      effects_types.ReplayOutbox(outbox),
     ]
   })
 }

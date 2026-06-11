@@ -1,5 +1,7 @@
 import scherzo/error
 import scherzo/orchestrator/effect_runner
+import scherzo/orchestrator/outbox_effects
+import scherzo/state/recovery
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 
@@ -29,22 +31,41 @@ pub opaque type ResultHandlers(state) {
     ) -> state,
     handoff_claim_finished: fn(
       state,
+      outbox_effects.Intent,
       String,
       String,
       Result(Nil, error.TrackerError),
     ) -> state,
-    handoff_success_finished: fn(state, String, Result(Nil, error.TrackerError)) ->
+    handoff_success_finished: fn(
       state,
-    handoff_failure_finished: fn(state, String, Result(Nil, error.TrackerError)) ->
+      outbox_effects.Intent,
+      String,
+      Result(Nil, error.TrackerError),
+    ) -> state,
+    handoff_failure_finished: fn(
       state,
-    handoff_park_finished: fn(state, String, Result(Nil, error.TrackerError)) ->
+      outbox_effects.Intent,
+      String,
+      Result(Nil, error.TrackerError),
+    ) -> state,
+    handoff_park_finished: fn(
       state,
+      outbox_effects.Intent,
+      String,
+      Result(Nil, error.TrackerError),
+    ) -> state,
     invalid_workflow_report_finished: fn(
       state,
+      outbox_effects.Intent,
       String,
       String,
       String,
       Result(effect_runner.InvalidWorkflowReportOutcome, error.TrackerError),
+    ) -> state,
+    outbox_replay_finished: fn(
+      state,
+      recovery.OutboxReplay,
+      Result(Nil, error.TrackerError),
     ) -> state,
     scheduled_failure_report_finished: fn(
       state,
@@ -82,31 +103,41 @@ pub fn result_handlers(
   ) -> state,
   handoff_claim_finished handoff_claim_finished: fn(
     state,
+    outbox_effects.Intent,
     String,
     String,
     Result(Nil, error.TrackerError),
   ) -> state,
   handoff_success_finished handoff_success_finished: fn(
     state,
+    outbox_effects.Intent,
     String,
     Result(Nil, error.TrackerError),
   ) -> state,
   handoff_failure_finished handoff_failure_finished: fn(
     state,
+    outbox_effects.Intent,
     String,
     Result(Nil, error.TrackerError),
   ) -> state,
   handoff_park_finished handoff_park_finished: fn(
     state,
+    outbox_effects.Intent,
     String,
     Result(Nil, error.TrackerError),
   ) -> state,
   invalid_workflow_report_finished invalid_workflow_report_finished: fn(
     state,
+    outbox_effects.Intent,
     String,
     String,
     String,
     Result(effect_runner.InvalidWorkflowReportOutcome, error.TrackerError),
+  ) -> state,
+  outbox_replay_finished outbox_replay_finished: fn(
+    state,
+    recovery.OutboxReplay,
+    Result(Nil, error.TrackerError),
   ) -> state,
   scheduled_failure_report_finished scheduled_failure_report_finished: fn(
     state,
@@ -130,6 +161,7 @@ pub fn result_handlers(
     handoff_failure_finished: handoff_failure_finished,
     handoff_park_finished: handoff_park_finished,
     invalid_workflow_report_finished: invalid_workflow_report_finished,
+    outbox_replay_finished: outbox_replay_finished,
     scheduled_failure_report_finished: scheduled_failure_report_finished,
     cleanup_finished: cleanup_finished,
   )
@@ -206,30 +238,35 @@ pub fn crash_result_for_effect(
           )),
         ),
       )
-    effect_runner.ClaimIssue(_, issue, _, run_id, _) ->
+    effect_runner.ClaimIssue(outbox, _, issue, _, run_id, _) ->
       effect_runner.HandoffClaimFinished(
+        outbox,
         issue.id,
         run_id,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportSuccess(_, issue_id, _, _, run_id, _, _) ->
+    effect_runner.ReportSuccess(outbox, _, issue_id, _, _, run_id, _, _) ->
       effect_runner.HandoffSuccessFinished(
+        outbox,
         issue_id,
         run_id,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportFailure(_, issue_id, _, _, run_id, _, _) ->
+    effect_runner.ReportFailure(outbox, _, issue_id, _, _, run_id, _, _) ->
       effect_runner.HandoffFailureFinished(
+        outbox,
         issue_id,
         run_id,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportPark(report, _) ->
+    effect_runner.ReportPark(outbox, report, _) ->
       effect_runner.HandoffParkFinished(
+        outbox,
         report.task.remote_id,
         Error(error.LinearApiRequest(reason)),
       )
     effect_runner.ReportInvalidWorkflow(
+      outbox,
       issue,
       _,
       violation_fingerprint,
@@ -239,9 +276,15 @@ pub fn crash_result_for_effect(
       _,
     ) ->
       effect_runner.InvalidWorkflowReportFinished(
+        outbox,
         issue.id,
         violation_fingerprint,
         reporting_policy_fingerprint,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.ReplayOutbox(outbox_replay, _, _) ->
+      effect_runner.OutboxReplayFinished(
+        outbox_replay,
         Error(error.LinearApiRequest(reason)),
       )
     effect_runner.ReportScheduledFailure(generation, publication, _) ->
@@ -282,15 +325,22 @@ fn handle_result(
         generation,
         result,
       )
-    effect_runner.HandoffClaimFinished(issue_id, run_id, result) ->
-      handlers.handoff_claim_finished(context.state, issue_id, run_id, result)
-    effect_runner.HandoffSuccessFinished(issue_id, _run_id, result) ->
-      handlers.handoff_success_finished(context.state, issue_id, result)
-    effect_runner.HandoffFailureFinished(issue_id, _run_id, result) ->
-      handlers.handoff_failure_finished(context.state, issue_id, result)
-    effect_runner.HandoffParkFinished(issue_id, result) ->
-      handlers.handoff_park_finished(context.state, issue_id, result)
+    effect_runner.HandoffClaimFinished(outbox, issue_id, run_id, result) ->
+      handlers.handoff_claim_finished(
+        context.state,
+        outbox,
+        issue_id,
+        run_id,
+        result,
+      )
+    effect_runner.HandoffSuccessFinished(outbox, issue_id, _run_id, result) ->
+      handlers.handoff_success_finished(context.state, outbox, issue_id, result)
+    effect_runner.HandoffFailureFinished(outbox, issue_id, _run_id, result) ->
+      handlers.handoff_failure_finished(context.state, outbox, issue_id, result)
+    effect_runner.HandoffParkFinished(outbox, issue_id, result) ->
+      handlers.handoff_park_finished(context.state, outbox, issue_id, result)
     effect_runner.InvalidWorkflowReportFinished(
+      outbox,
       issue_id,
       violation_fingerprint,
       reporting_policy_fingerprint,
@@ -298,11 +348,14 @@ fn handle_result(
     ) ->
       handlers.invalid_workflow_report_finished(
         context.state,
+        outbox,
         issue_id,
         violation_fingerprint,
         reporting_policy_fingerprint,
         result,
       )
+    effect_runner.OutboxReplayFinished(outbox_replay, result) ->
+      handlers.outbox_replay_finished(context.state, outbox_replay, result)
     effect_runner.ScheduledFailureReportFinished(generation, request, result) ->
       handlers.scheduled_failure_report_finished(
         context.state,

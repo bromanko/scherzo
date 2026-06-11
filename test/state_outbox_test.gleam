@@ -11,7 +11,7 @@ pub fn decode_payload_returns_typed_invalid_error_test() {
     == "invalid outbox payload JSON"
 }
 
-pub fn linear_command_ack_payload_decodes_but_is_not_replayed_test() {
+pub fn linear_command_ack_payload_decodes_and_is_replayed_test() {
   let assert Ok(outbox.Payload(
     kind: "linear_command_ack",
     body: "ack",
@@ -24,11 +24,14 @@ pub fn linear_command_ack_payload_decodes_but_is_not_replayed_test() {
       "{\"type\":\"linear_command_ack\",\"source_comment_id\":\"comment-1\",\"body\":\"ack\"}",
     )
 
-  let assert Error(outbox.UnsupportedOutboxKind("linear_command_ack")) =
-    outbox.recovery_replay_error("linear_command_ack", "linear_command_ack")
+  assert outbox.recovery_replay_error(
+      "linear_command_ack",
+      "linear_command_ack",
+    )
+    == Ok(Nil)
 }
 
-pub fn remote_command_ack_payload_decodes_but_is_not_replayed_test() {
+pub fn remote_command_ack_payload_decodes_and_is_replayed_test() {
   let assert Ok(outbox.Payload(
     kind: "remote_command_ack",
     body: "ack",
@@ -47,8 +50,11 @@ pub fn remote_command_ack_payload_decodes_but_is_not_replayed_test() {
       ),
     )
 
-  let assert Error(outbox.UnsupportedOutboxKind("remote_command_ack")) =
-    outbox.recovery_replay_error("remote_command_ack", "remote_command_ack")
+  assert outbox.recovery_replay_error(
+      "remote_command_ack",
+      "remote_command_ack",
+    )
+    == Ok(Nil)
 }
 
 pub fn legacy_remote_command_ack_payload_backend_kind_decodes_test() {
@@ -66,12 +72,12 @@ pub fn legacy_remote_command_ack_payload_backend_kind_decodes_test() {
 }
 
 pub fn replay_kind_mismatch_returns_typed_error_with_stable_code_test() {
-  let assert Error(outbox.UnsupportedOutboxKind("linear_comment")) =
-    outbox.recovery_replay_error("linear_comment", "linear_comment")
+  assert outbox.recovery_replay_error("linear_comment", "linear_comment")
+    == Ok(Nil)
 
-  let unsupported_kind = outbox.UnsupportedOutboxKind("linear_comment")
+  let unsupported_kind = outbox.UnsupportedOutboxKind("other_kind")
   assert outbox.replay_error_code(unsupported_kind)
-    == "unsupported_outbox_kind:linear_comment"
+    == "unsupported_outbox_kind:other_kind"
   assert outbox.describe_replay_error(unsupported_kind)
-    == "unsupported outbox kind: linear_comment"
+    == "unsupported outbox kind: other_kind"
 }

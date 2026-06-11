@@ -391,7 +391,7 @@ pub fn load_replays_claim_start_append_failure_retry_test() {
   assert dict.has_key(loaded.recovery_by_issue, "issue-1")
 }
 
-pub fn load_marks_pending_command_outbox_failed_test() {
+pub fn load_replays_pending_command_outbox_test() {
   let bundle =
     write_bundle("test/tmp/startup-recovery-outbox", "prompts/task.md")
   let workspace_root = bundle.effective.workspace.root
@@ -414,20 +414,20 @@ pub fn load_marks_pending_command_outbox_failed_test() {
       [],
     )
 
-  assert loaded.outbox_to_replay == []
-  assert list.contains(
-    loaded.warnings,
-    "outbox_replay_failed:comment-1:unsupported_outbox_kind:linear_command_ack",
-  )
-  assert list.any(load_records(workspace_root), fn(entry) {
+  assert loaded.outbox_to_replay
+    == [
+      recovery.OutboxReplay(
+        "comment-1",
+        record.linear_task_ref_fields("issue-1", None, None),
+        "linear_command_ack",
+        "linear_command_ack:comment-1",
+        outbox.linear_command_ack_payload("comment-1", "ack", []),
+      ),
+    ]
+  assert loaded.warnings == []
+  assert !list.any(load_records(workspace_root), fn(entry) {
     case entry.body {
-      record.OutboxFailedWithTask(
-        outbox_id: outbox_id,
-        error_code: error_code,
-        ..,
-      ) ->
-        outbox_id == "comment-1"
-        && error_code == "unsupported_outbox_kind:linear_command_ack"
+      record.OutboxFailedWithTask(outbox_id: "comment-1", ..) -> True
       _ -> False
     }
   })

@@ -113,11 +113,14 @@ fn capture_failure_comment(
 ) -> String {
   let subject = process.new_subject()
   let transport = fn(request: linear.Request) {
-    process.send(subject, request.body)
-    Ok(linear.Response(
-      status: 200,
-      body: "{\"data\":{\"commentCreate\":{\"success\":true}}}",
-    ))
+    case string.contains(request.body, "ScherzoIssueComments") {
+      True ->
+        Ok(linear.Response(status: 200, body: issue_comments_empty_response()))
+      False -> {
+        process.send(subject, request.body)
+        Ok(linear.Response(status: 200, body: comment_create_response()))
+      }
+    }
   }
   let client =
     handoff.linear_client(tracker_config(), handoff_config(), transport)
@@ -130,18 +133,21 @@ fn capture_failure_comment(
 pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   let subject = process.new_subject()
   let transport = fn(request: linear.Request) {
-    process.send(subject, request.body)
-    case string.contains(request.body, "issueUpdate") {
+    case string.contains(request.body, "ScherzoIssueComments") {
       True ->
-        Ok(linear.Response(
-          status: 200,
-          body: "{\"data\":{\"issueUpdate\":{\"success\":true}}}",
-        ))
-      False ->
-        Ok(linear.Response(
-          status: 200,
-          body: "{\"data\":{\"commentCreate\":{\"success\":true}}}",
-        ))
+        Ok(linear.Response(status: 200, body: issue_comments_empty_response()))
+      False -> {
+        process.send(subject, request.body)
+        case string.contains(request.body, "issueUpdate") {
+          True ->
+            Ok(linear.Response(
+              status: 200,
+              body: "{\"data\":{\"issueUpdate\":{\"success\":true}}}",
+            ))
+          False ->
+            Ok(linear.Response(status: 200, body: comment_create_response()))
+        }
+      }
     }
   }
   let client =
@@ -152,11 +158,19 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   let assert Ok(claim_state) = process.receive(subject, within: 100)
   assert string.contains(claim_comment, "ABC-1")
   assert string.contains(claim_comment, "run-1")
+  assert string.contains(
+    claim_comment,
+    "scherzo:outbox:claim:linear:issue-id:run-1",
+  )
   assert string.contains(claim_state, "claim-state")
 
   assert client.report_success(issue(), success(), "run-2") == Ok(Nil)
   let assert Ok(success_comment) = process.receive(subject, within: 100)
   assert string.contains(success_comment, "run-2")
+  assert string.contains(
+    success_comment,
+    "scherzo:outbox:report_success:linear:issue-id:run-2:",
+  )
   assert string.contains(success_comment, "## What Scherzo did")
   assert string.contains(success_comment, "Implemented [REDACTED]")
   assert string.contains(success_comment, "| Classification | `terminal` |")
@@ -176,6 +190,10 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   assert client.report_failure(issue(), failure, "run-3") == Ok(Nil)
   let assert Ok(failure_comment) = process.receive(subject, within: 100)
   assert string.contains(failure_comment, "run-3")
+  assert string.contains(
+    failure_comment,
+    "scherzo:outbox:report_failure:linear:issue-id:run-3:",
+  )
   assert string.contains(failure_comment, "Failure diagnostics")
   assert string.contains(failure_comment, "agent_pi_failed")
   assert string.contains(failure_comment, "pi_protocol_error")
@@ -192,6 +210,10 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
     == Ok(Nil)
   let assert Ok(park_comment) = process.receive(subject, within: 100)
   assert string.contains(park_comment, "⏸️ Scherzo parked this issue")
+  assert string.contains(
+    park_comment,
+    "scherzo:outbox:park:linear:issue-id:run-4",
+  )
   assert string.contains(park_comment, "| Reason | operator [REDACTED] hold |")
   assert string.contains(
     park_comment,
@@ -430,11 +452,14 @@ pub fn workflow_command_failure_handoff_renders_plan_completion_recovery_action_
 pub fn success_handoff_posts_single_structured_result_comment_test() {
   let subject = process.new_subject()
   let transport = fn(request: linear.Request) {
-    process.send(subject, request.body)
-    Ok(linear.Response(
-      status: 200,
-      body: "{\"data\":{\"commentCreate\":{\"success\":true}}}",
-    ))
+    case string.contains(request.body, "ScherzoIssueComments") {
+      True ->
+        Ok(linear.Response(status: 200, body: issue_comments_empty_response()))
+      False -> {
+        process.send(subject, request.body)
+        Ok(linear.Response(status: 200, body: comment_create_response()))
+      }
+    }
   }
   let no_state =
     config_types.HandoffConfig(
@@ -814,22 +839,25 @@ fn success_transport(
   states_response: String,
 ) -> linear.Transport {
   fn(request: linear.Request) {
-    process.send(subject, request.body)
-    case string.contains(request.body, "ScherzoIssueTeamStates") {
-      True -> Ok(linear.Response(status: 200, body: states_response))
-      False ->
-        case string.contains(request.body, "ScherzoIssueUpdateState") {
-          True ->
-            Ok(linear.Response(
-              status: 200,
-              body: "{\"data\":{\"issueUpdate\":{\"success\":true}}}",
-            ))
+    case string.contains(request.body, "ScherzoIssueComments") {
+      True ->
+        Ok(linear.Response(status: 200, body: issue_comments_empty_response()))
+      False -> {
+        process.send(subject, request.body)
+        case string.contains(request.body, "ScherzoIssueTeamStates") {
+          True -> Ok(linear.Response(status: 200, body: states_response))
           False ->
-            Ok(linear.Response(
-              status: 200,
-              body: "{\"data\":{\"commentCreate\":{\"success\":true}}}",
-            ))
+            case string.contains(request.body, "ScherzoIssueUpdateState") {
+              True ->
+                Ok(linear.Response(
+                  status: 200,
+                  body: "{\"data\":{\"issueUpdate\":{\"success\":true}}}",
+                ))
+              False ->
+                Ok(linear.Response(status: 200, body: comment_create_response()))
+            }
         }
+      }
     }
   }
 }
@@ -886,33 +914,47 @@ fn attachment_deps(
 ) -> linear_attachment.Dependencies {
   linear_attachment.Dependencies(
     graphql_transport: fn(request) {
-      process.send(graphql_subject, request.body)
-      case string.contains(request.body, "ScherzoCommentCreate") {
+      case string.contains(request.body, "ScherzoIssueComments") {
         True ->
-          Ok(linear.Response(status: 200, body: comment_create_response()))
-        False ->
-          case string.contains(request.body, "ScherzoCommentFetch") {
+          Ok(linear.Response(status: 200, body: issue_comments_empty_response()))
+        False -> {
+          process.send(graphql_subject, request.body)
+          case string.contains(request.body, "ScherzoCommentCreate") {
             True ->
-              Ok(linear.Response(status: 200, body: comment_fetch_response()))
+              Ok(linear.Response(status: 200, body: comment_create_response()))
             False ->
-              case string.contains(request.body, "ScherzoFileUpload") {
+              case string.contains(request.body, "ScherzoCommentFetch") {
                 True ->
-                  Ok(linear.Response(status: 200, body: file_upload_response()))
+                  Ok(linear.Response(
+                    status: 200,
+                    body: comment_fetch_response(),
+                  ))
                 False ->
-                  case string.contains(request.body, "ScherzoCommentUpdate") {
+                  case string.contains(request.body, "ScherzoFileUpload") {
                     True ->
                       Ok(linear.Response(
                         status: 200,
-                        body: comment_update_response(),
+                        body: file_upload_response(),
                       ))
                     False ->
-                      Ok(linear.Response(
-                        status: 200,
-                        body: "{\"data\":{\"issueUpdate\":{\"success\":true}}}",
-                      ))
+                      case
+                        string.contains(request.body, "ScherzoCommentUpdate")
+                      {
+                        True ->
+                          Ok(linear.Response(
+                            status: 200,
+                            body: comment_update_response(),
+                          ))
+                        False ->
+                          Ok(linear.Response(
+                            status: 200,
+                            body: "{\"data\":{\"issueUpdate\":{\"success\":true}}}",
+                          ))
+                      }
                   }
               }
           }
+        }
       }
     },
     upload_transport: fn(request) {
@@ -925,6 +967,10 @@ fn attachment_deps(
     now_ms: fn() { 123 },
     nonce: fn() { "abc" },
   )
+}
+
+fn issue_comments_empty_response() -> String {
+  "{\"data\":{\"issue\":{\"comments\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}"
 }
 
 fn comment_create_response() -> String {

@@ -10,6 +10,7 @@ import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
+import scherzo/state/recovery
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
@@ -42,6 +43,7 @@ pub opaque type ShellState(shell) {
       String,
       String,
     ) -> shell,
+    replay_outbox: fn(shell, recovery.OutboxReplay) -> shell,
     remove_retry_timer: fn(shell, String) -> shell,
     finish_retry_refresh: fn(shell, String) -> shell,
     defer_retry_timer: fn(shell, String, Int, Int) -> shell,
@@ -148,6 +150,7 @@ pub fn new_shell_state(
     reserve_session_sequence: fn(started_workers, _) { started_workers },
     claim_issue: fn(started_workers, _, _, _, _) { started_workers },
     report_invalid_workflow: fn(started_workers, _, _, _, _) { started_workers },
+    replay_outbox: fn(started_workers, _) { started_workers },
     remove_retry_timer: fn(started_workers, _) { started_workers },
     finish_retry_refresh: fn(started_workers, _) { started_workers },
     defer_retry_timer: fn(started_workers, _, _, _) { started_workers },
@@ -228,6 +231,7 @@ pub fn new_production_shell_state(
     String,
     String,
   ) -> shell,
+  replay_outbox replay_outbox: fn(shell, recovery.OutboxReplay) -> shell,
   remove_retry_timer remove_retry_timer: fn(shell, String) -> shell,
   finish_retry_refresh finish_retry_refresh: fn(shell, String) -> shell,
   defer_retry_timer defer_retry_timer: fn(shell, String, Int, Int) -> shell,
@@ -346,6 +350,7 @@ pub fn new_production_shell_state(
     reserve_session_sequence: reserve_session_sequence,
     claim_issue: claim_issue,
     report_invalid_workflow: report_invalid_workflow,
+    replay_outbox: replay_outbox,
     remove_retry_timer: remove_retry_timer,
     finish_retry_refresh: finish_retry_refresh,
     defer_retry_timer: defer_retry_timer,
@@ -505,6 +510,11 @@ fn apply_loop(
               violation_fingerprint,
               reporting_policy_fingerprint,
             )
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReplayOutbox(outbox) -> {
+          let data = shell.replay_outbox(shell.data, outbox)
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }

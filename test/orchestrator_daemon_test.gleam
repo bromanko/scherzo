@@ -587,18 +587,21 @@ fn adapter_with_invalid_comment_subject(
   adapter.TrackerAdapter(
     ..legacy_adapter(client),
     comments: Some(
-      adapter.CommentCapability(post_or_update: fn(request) {
-        process.send(
-          subject,
-          "triage:" <> request.task.remote_id <> ":missing_workflow_label",
-        )
-        Ok(adapter.CommentReceipt(
-          id: "invalid-workflow-comment",
-          task: request.task,
-          url: None,
-          created: True,
-        ))
-      }),
+      adapter.CommentCapability(
+        post_or_update: fn(request) {
+          process.send(
+            subject,
+            "triage:" <> request.task.remote_id <> ":missing_workflow_label",
+          )
+          Ok(adapter.CommentReceipt(
+            id: "invalid-workflow-comment",
+            task: request.task,
+            url: None,
+            created: True,
+          ))
+        },
+        find_by_marker: fn(_) { Ok(None) },
+      ),
     ),
   )
 }

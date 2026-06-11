@@ -13,6 +13,7 @@ import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
+import scherzo/state/recovery
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
@@ -59,6 +60,7 @@ pub opaque type ShellHandlers(state) {
       String,
       String,
     ) -> state,
+    replay_outbox: fn(state, recovery.OutboxReplay) -> state,
     remove_retry_timer: fn(state, String) -> state,
     finish_retry_refresh: fn(state, String) -> state,
     defer_retry_timer: fn(state, String, Int, Int) -> state,
@@ -166,6 +168,7 @@ pub fn shell_handlers(
     String,
     String,
   ) -> state,
+  replay_outbox replay_outbox: fn(state, recovery.OutboxReplay) -> state,
   remove_retry_timer remove_retry_timer: fn(state, String) -> state,
   finish_retry_refresh finish_retry_refresh: fn(state, String) -> state,
   defer_retry_timer defer_retry_timer: fn(state, String, Int, Int) -> state,
@@ -286,6 +289,7 @@ pub fn shell_handlers(
     reserve_session_sequence: reserve_session_sequence,
     claim_issue: claim_issue,
     report_invalid_workflow: report_invalid_workflow,
+    replay_outbox: replay_outbox,
     remove_retry_timer: remove_retry_timer,
     finish_retry_refresh: finish_retry_refresh,
     defer_retry_timer: defer_retry_timer,
@@ -415,6 +419,7 @@ fn transition_shell(
     reserve_session_sequence: handlers.reserve_session_sequence,
     claim_issue: handlers.claim_issue,
     report_invalid_workflow: handlers.report_invalid_workflow,
+    replay_outbox: handlers.replay_outbox,
     remove_retry_timer: handlers.remove_retry_timer,
     finish_retry_refresh: handlers.finish_retry_refresh,
     defer_retry_timer: handlers.defer_retry_timer,

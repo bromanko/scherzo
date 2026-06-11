@@ -6,6 +6,7 @@ import scherzo/config
 import scherzo/error
 import scherzo/orchestrator/effect_completion_handler
 import scherzo/orchestrator/effect_runner
+import scherzo/orchestrator/outbox_effects
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/task
@@ -66,7 +67,12 @@ pub fn handle_completed_dispatches_finished_variants_test() {
       state,
       effect_runner.Finished(
         5,
-        effect_runner.HandoffClaimFinished("issue-1", "run-1", Ok(Nil)),
+        effect_runner.HandoffClaimFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "claim"),
+          "issue-1",
+          "run-1",
+          Ok(Nil),
+        ),
       ),
     )
   let state =
@@ -74,7 +80,12 @@ pub fn handle_completed_dispatches_finished_variants_test() {
       state,
       effect_runner.Finished(
         6,
-        effect_runner.HandoffSuccessFinished("issue-1", "run-1", Ok(Nil)),
+        effect_runner.HandoffSuccessFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "success"),
+          "issue-1",
+          "run-1",
+          Ok(Nil),
+        ),
       ),
     )
   let state =
@@ -82,7 +93,12 @@ pub fn handle_completed_dispatches_finished_variants_test() {
       state,
       effect_runner.Finished(
         7,
-        effect_runner.HandoffFailureFinished("issue-1", "run-1", Ok(Nil)),
+        effect_runner.HandoffFailureFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "failure"),
+          "issue-1",
+          "run-1",
+          Ok(Nil),
+        ),
       ),
     )
   let state =
@@ -90,7 +106,11 @@ pub fn handle_completed_dispatches_finished_variants_test() {
       state,
       effect_runner.Finished(
         8,
-        effect_runner.HandoffParkFinished("issue-1", Ok(Nil)),
+        effect_runner.HandoffParkFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "park"),
+          "issue-1",
+          Ok(Nil),
+        ),
       ),
     )
   let state =
@@ -99,6 +119,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
       effect_runner.Finished(
         9,
         effect_runner.InvalidWorkflowReportFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
           "issue-1",
           "missing_workflow_label",
           "policy",
@@ -150,6 +171,7 @@ pub fn handle_completed_logs_crashes_before_dispatch_test() {
       effect_runner.Crashed(
         1,
         effect_runner.ReportFailure(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "failure"),
           issue_task_ref("issue-1", "ABC-1"),
           "issue-1",
           issue("issue-1", "ABC-1"),
@@ -174,6 +196,7 @@ pub fn handle_completed_crash_paths_match_daemon_error_outcomes_test() {
       effect_runner.Crashed(
         1,
         effect_runner.ReportSuccess(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "success"),
           issue_task_ref("issue-1", "ABC-1"),
           "issue-1",
           issue("issue-1", "ABC-1"),
@@ -191,6 +214,7 @@ pub fn handle_completed_crash_paths_match_daemon_error_outcomes_test() {
       effect_runner.Crashed(
         2,
         effect_runner.ReportFailure(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "failure"),
           issue_task_ref("issue-1", "ABC-1"),
           "issue-1",
           issue("issue-1", "ABC-1"),
@@ -207,7 +231,11 @@ pub fn handle_completed_crash_paths_match_daemon_error_outcomes_test() {
       new_state(),
       effect_runner.Crashed(
         3,
-        effect_runner.ReportPark(park_report(), handoff),
+        effect_runner.ReportPark(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "park"),
+          park_report(),
+          handoff,
+        ),
         "boom",
       ),
     )
@@ -225,6 +253,7 @@ pub fn handle_completed_invalid_workflow_outcomes_match_daemon_behavior_test() {
       effect_runner.Finished(
         1,
         effect_runner.InvalidWorkflowReportFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
           "issue-1",
           "missing_workflow_label",
           "policy",
@@ -238,6 +267,7 @@ pub fn handle_completed_invalid_workflow_outcomes_match_daemon_behavior_test() {
       effect_runner.Finished(
         2,
         effect_runner.InvalidWorkflowReportFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
           "issue-1",
           "missing_workflow_label",
           "policy",
@@ -251,6 +281,7 @@ pub fn handle_completed_invalid_workflow_outcomes_match_daemon_behavior_test() {
       effect_runner.Finished(
         3,
         effect_runner.InvalidWorkflowReportFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
           "issue-1",
           "missing_workflow_label",
           "policy",
@@ -264,6 +295,7 @@ pub fn handle_completed_invalid_workflow_outcomes_match_daemon_behavior_test() {
       effect_runner.Finished(
         4,
         effect_runner.InvalidWorkflowReportFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
           "issue-1",
           "missing_workflow_label",
           "policy",
@@ -277,6 +309,7 @@ pub fn handle_completed_invalid_workflow_outcomes_match_daemon_behavior_test() {
       effect_runner.Finished(
         5,
         effect_runner.InvalidWorkflowReportFinished(
+          outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
           "issue-1",
           "missing_workflow_label",
           "policy",
@@ -421,6 +454,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ClaimIssue(
+        outbox: outbox(issue_task_ref("issue-1", "ABC-1"), "claim"),
         task_ref: issue_task_ref("issue-1", "ABC-1"),
         issue: issue("issue-1", "ABC-1"),
         workspace_path: "test/tmp/workspaces/ABC-1",
@@ -430,12 +464,14 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
       reason,
     )
     == effect_runner.HandoffClaimFinished(
+      outbox(issue_task_ref("issue-1", "ABC-1"), "claim"),
       "issue-1",
       "run-1",
       Error(error.LinearApiRequest(reason)),
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ReportSuccess(
+        outbox(issue_task_ref("issue-1", "ABC-1"), "success"),
         issue_task_ref("issue-1", "ABC-1"),
         "issue-1",
         issue("issue-1", "ABC-1"),
@@ -447,12 +483,14 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
       reason,
     )
     == effect_runner.HandoffSuccessFinished(
+      outbox(issue_task_ref("issue-1", "ABC-1"), "success"),
       "issue-1",
       "run-1",
       Error(error.LinearApiRequest(reason)),
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ReportFailure(
+        outbox(issue_task_ref("issue-1", "ABC-1"), "failure"),
         issue_task_ref("issue-1", "ABC-1"),
         "issue-1",
         issue("issue-1", "ABC-1"),
@@ -464,20 +502,27 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
       reason,
     )
     == effect_runner.HandoffFailureFinished(
+      outbox(issue_task_ref("issue-1", "ABC-1"), "failure"),
       "issue-1",
       "run-1",
       Error(error.LinearApiRequest(reason)),
     )
   assert effect_completion_handler.crash_result_for_effect(
-      effect_runner.ReportPark(park_report(), handoff),
+      effect_runner.ReportPark(
+        outbox(issue_task_ref("issue-1", "ABC-1"), "park"),
+        park_report(),
+        handoff,
+      ),
       reason,
     )
     == effect_runner.HandoffParkFinished(
+      outbox(issue_task_ref("issue-1", "ABC-1"), "park"),
       "issue-1",
       Error(error.LinearApiRequest(reason)),
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ReportInvalidWorkflow(
+        outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
         issue("issue-1", "ABC-1"),
         workflow_policy.MissingWorkflowLabel,
         "missing_workflow_label",
@@ -489,6 +534,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
       reason,
     )
     == effect_runner.InvalidWorkflowReportFinished(
+      outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
       "issue-1",
       "missing_workflow_label",
       "policy",
@@ -561,20 +607,23 @@ fn context(state: TestState) -> effect_completion_handler.Context(TestState) {
       dispatch_claim_validation_finished: fn(state, _, _, _) {
         append_event(state, "dispatch_validation")
       },
-      handoff_claim_finished: fn(state, _, _, _) {
+      handoff_claim_finished: fn(state, _, _, _, _) {
         append_event(state, "handoff_claim")
       },
-      handoff_success_finished: fn(state, _, _) {
+      handoff_success_finished: fn(state, _, _, _) {
         append_event(state, "handoff_success")
       },
-      handoff_failure_finished: fn(state, _, _) {
+      handoff_failure_finished: fn(state, _, _, _) {
         append_event(state, "handoff_failure")
       },
-      handoff_park_finished: fn(state, _, _) {
+      handoff_park_finished: fn(state, _, _, _) {
         append_event(state, "handoff_park")
       },
-      invalid_workflow_report_finished: fn(state, _, _, _, _) {
+      invalid_workflow_report_finished: fn(state, _, _, _, _, _) {
         append_event(state, "invalid_workflow")
+      },
+      outbox_replay_finished: fn(state, _, _) {
+        append_event(state, "outbox_replay")
       },
       scheduled_failure_report_finished: fn(state, _, _, _) {
         append_event(state, "scheduled_failure")
@@ -595,26 +644,26 @@ fn daemon_context(
       running_refresh_finished: fn(state, _, _) { state },
       retry_refresh_finished: fn(state, _, _, _) { state },
       dispatch_claim_validation_finished: fn(state, _, _, _) { state },
-      handoff_claim_finished: fn(state, _, _, _) { state },
-      handoff_success_finished: fn(state, _, result) {
+      handoff_claim_finished: fn(state, _, _, _, _) { state },
+      handoff_success_finished: fn(state, _, _, result) {
         case result {
           Ok(Nil) -> state
           Error(_) -> append_event(state, "handoff_success_failed")
         }
       },
-      handoff_failure_finished: fn(state, _, result) {
+      handoff_failure_finished: fn(state, _, _, result) {
         case result {
           Ok(Nil) -> state
           Error(_) -> append_event(state, "handoff_failure_failed")
         }
       },
-      handoff_park_finished: fn(state, _, result) {
+      handoff_park_finished: fn(state, _, _, result) {
         case result {
           Ok(Nil) -> state
           Error(_) -> append_event(state, "handoff_park_failed")
         }
       },
-      invalid_workflow_report_finished: fn(state, _, _, _, result) {
+      invalid_workflow_report_finished: fn(state, _, _, _, _, result) {
         case result {
           Ok(effect_runner.InvalidWorkflowReportNoop) ->
             append_event(state, "invalid_workflow_report_noop")
@@ -625,6 +674,12 @@ fn daemon_context(
                 <> invalid_workflow_outcome_name(outcome),
             )
           Error(_) -> append_event(state, "invalid_workflow_report_failed")
+        }
+      },
+      outbox_replay_finished: fn(state, _, result) {
+        case result {
+          Ok(Nil) -> append_event(state, "outbox_replay_finished")
+          Error(_) -> append_event(state, "outbox_replay_failed")
         }
       },
       scheduled_failure_report_finished: fn(state, _, _, result) {
@@ -690,6 +745,16 @@ fn issue_task_ref(remote_id: String, key: String) -> task.TaskRef {
     remote_id: remote_id,
     key: Some(key),
     url: None,
+  )
+}
+
+fn outbox(task_ref: task.TaskRef, kind: String) -> outbox_effects.Intent {
+  outbox_effects.Intent(
+    outbox_id: "outbox-" <> kind,
+    task_ref: outbox_effects.task_ref_fields(task_ref),
+    outbox_kind: kind,
+    dedupe_key: "test:" <> kind,
+    payload_json: "{}",
   )
 }
 

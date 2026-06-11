@@ -1248,11 +1248,87 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "OutboxAttempted",
+      "outbox_attempted",
+      record.with_id(
+        "record-outbox-attempted",
+        1039,
+        record.OutboxAttempted(
+          outbox_id: "outbox-3",
+          issue_id: "issue-3",
+          outbox_kind: "linear_comment",
+          dedupe_key: "run-3:success",
+          payload_json: "{\"body\":\"attempted\"}",
+          attempt_count: 1,
+        ),
+      ),
+    ),
+    LedgerExample(
+      "OutboxAttemptedWithTask",
+      "outbox_attempted",
+      record.with_id(
+        "record-outbox-attempted-with-task",
+        1039,
+        record.OutboxAttemptedWithTask(
+          outbox_id: "outbox-3-task",
+          task_ref: record.linear_task_ref_fields(
+            "issue-3-task",
+            Some("LIV-3"),
+            None,
+          ),
+          outbox_kind: "linear_comment",
+          dedupe_key: "run-3-task:success",
+          payload_json: "{\"body\":\"attempted\"}",
+          attempt_count: 2,
+        ),
+      ),
+    ),
+    LedgerExample(
+      "OutboxRetryScheduled",
+      "outbox_retry_scheduled",
+      record.with_id(
+        "record-outbox-retry-scheduled",
+        1040,
+        record.OutboxRetryScheduled(
+          outbox_id: "outbox-4",
+          issue_id: "issue-4",
+          outbox_kind: "linear_comment",
+          dedupe_key: "run-4:success",
+          payload_json: "{\"body\":\"retry\"}",
+          error_code: "http_429",
+          attempt_count: 2,
+          next_attempt_at_ms: 2040,
+        ),
+      ),
+    ),
+    LedgerExample(
+      "OutboxRetryScheduledWithTask",
+      "outbox_retry_scheduled",
+      record.with_id(
+        "record-outbox-retry-scheduled-with-task",
+        1040,
+        record.OutboxRetryScheduledWithTask(
+          outbox_id: "outbox-4-task",
+          task_ref: record.linear_task_ref_fields(
+            "issue-4-task",
+            Some("LIV-4"),
+            None,
+          ),
+          outbox_kind: "linear_comment",
+          dedupe_key: "run-4-task:success",
+          payload_json: "{\"body\":\"retry\"}",
+          error_code: "http_429",
+          attempt_count: 3,
+          next_attempt_at_ms: 2041,
+        ),
+      ),
+    ),
+    LedgerExample(
       "OutboxCompleted",
       "outbox_completed",
       record.with_id(
         "record-outbox-completed",
-        1039,
+        1041,
         record.OutboxCompleted(
           outbox_id: "outbox-1",
           issue_id: "issue-1",
@@ -1265,7 +1341,7 @@ fn ledger_examples() -> List(LedgerExample) {
       "outbox_completed",
       record.with_id(
         "record-outbox-completed-with-task",
-        1039,
+        1041,
         record.OutboxCompletedWithTask(
           outbox_id: "outbox-2-task",
           task_ref: record.linear_task_ref_fields(
@@ -1282,9 +1358,9 @@ fn ledger_examples() -> List(LedgerExample) {
       "outbox_failed",
       record.with_id(
         "record-outbox-failed",
-        1040,
+        1042,
         record.OutboxFailed(
-          outbox_id: "outbox-3",
+          outbox_id: "outbox-5",
           issue_id: "issue-2",
           outbox_kind: "linear_comment",
           error_code: "http_500",
@@ -1296,16 +1372,50 @@ fn ledger_examples() -> List(LedgerExample) {
       "outbox_failed",
       record.with_id(
         "record-outbox-failed-with-task",
-        1040,
+        1042,
         record.OutboxFailedWithTask(
-          outbox_id: "outbox-4-task",
+          outbox_id: "outbox-5-task",
           task_ref: record.linear_task_ref_fields(
-            "issue-4",
-            Some("LIV-4"),
+            "issue-5",
+            Some("LIV-5"),
             None,
           ),
           outbox_kind: "linear_comment",
           error_code: "http_500",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "OutboxPermanentlyFailed",
+      "outbox_permanently_failed",
+      record.with_id(
+        "record-outbox-permanently-failed",
+        1043,
+        record.OutboxPermanentlyFailed(
+          outbox_id: "outbox-6",
+          issue_id: "issue-6",
+          outbox_kind: "linear_comment",
+          error_code: "unauthorized",
+          attempt_count: 4,
+        ),
+      ),
+    ),
+    LedgerExample(
+      "OutboxPermanentlyFailedWithTask",
+      "outbox_permanently_failed",
+      record.with_id(
+        "record-outbox-permanently-failed-with-task",
+        1043,
+        record.OutboxPermanentlyFailedWithTask(
+          outbox_id: "outbox-6-task",
+          task_ref: record.linear_task_ref_fields(
+            "issue-6-task",
+            Some("LIV-6"),
+            None,
+          ),
+          outbox_kind: "linear_comment",
+          error_code: "unauthorized",
+          attempt_count: 5,
         ),
       ),
     ),

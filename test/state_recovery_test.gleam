@@ -888,7 +888,7 @@ pub fn payload_less_pending_outbox_is_marked_failed_test() {
   )
 }
 
-pub fn unsupported_pending_outbox_payload_is_marked_failed_test() {
+pub fn supported_pending_outbox_payload_is_replayed_test() {
   let projection =
     projection.fold([
       record.with_id(
@@ -906,12 +906,17 @@ pub fn unsupported_pending_outbox_payload_is_marked_failed_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
 
-  assert plan.outbox_to_replay == []
-  assert has_outbox_failed(
-    plan.records_to_append,
-    "outbox-comment",
-    "unsupported_outbox_kind:linear_comment",
-  )
+  assert plan.outbox_to_replay
+    == [
+      recovery.OutboxReplay(
+        "outbox-comment",
+        record.linear_task_ref_fields("issue-1", None, None),
+        "linear_comment",
+        "comment",
+        "{\"type\":\"linear_comment\",\"body\":\"hello\"}",
+      ),
+    ]
+  assert plan.records_to_append == []
 }
 
 pub fn invalid_pending_outbox_payload_is_marked_failed_test() {
@@ -940,7 +945,7 @@ pub fn invalid_pending_outbox_payload_is_marked_failed_test() {
   )
 }
 
-pub fn linear_command_ack_outbox_is_marked_failed_test() {
+pub fn linear_command_ack_outbox_is_replayed_test() {
   let projection =
     projection.fold([
       record.with_id(
@@ -958,15 +963,20 @@ pub fn linear_command_ack_outbox_is_marked_failed_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
 
-  assert plan.outbox_to_replay == []
-  assert has_outbox_failed(
-    plan.records_to_append,
-    "outbox-ack",
-    "unsupported_outbox_kind:linear_command_ack",
-  )
+  assert plan.outbox_to_replay
+    == [
+      recovery.OutboxReplay(
+        "outbox-ack",
+        record.linear_task_ref_fields("issue-1", None, None),
+        "linear_command_ack",
+        "ack",
+        "{\"type\":\"linear_command_ack\",\"body\":\"ack\"}",
+      ),
+    ]
+  assert plan.records_to_append == []
 }
 
-pub fn remote_command_ack_outbox_is_marked_failed_test() {
+pub fn remote_command_ack_outbox_is_replayed_test() {
   let payload =
     outbox.remote_command_ack_payload(
       "linear",
@@ -992,12 +1002,17 @@ pub fn remote_command_ack_outbox_is_marked_failed_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
 
-  assert plan.outbox_to_replay == []
-  assert has_outbox_failed(
-    plan.records_to_append,
-    "comment-1",
-    "unsupported_outbox_kind:remote_command_ack",
-  )
+  assert plan.outbox_to_replay
+    == [
+      recovery.OutboxReplay(
+        "comment-1",
+        record.linear_task_ref_fields("issue-1", None, None),
+        "remote_command_ack",
+        "remote_command_ack:comment-1",
+        payload,
+      ),
+    ]
+  assert plan.records_to_append == []
 }
 
 pub fn remote_command_ack_failure_dedupes_by_task_ref_and_event_test() {
@@ -1040,19 +1055,17 @@ pub fn remote_command_ack_failure_dedupes_by_task_ref_and_event_test() {
 
   let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
 
-  assert plan.outbox_to_replay == []
-  let assert [
-    record.LedgerRecord(
-      body: record.OutboxFailedWithTask(
-        outbox_id: "event-1-other",
-        task_ref: failed_task_ref,
-        error_code: "unsupported_outbox_kind:remote_command_ack",
-        ..,
+  assert plan.outbox_to_replay
+    == [
+      recovery.OutboxReplay(
+        "event-1-other",
+        other_task_ref,
+        "remote_command_ack",
+        "remote_command_ack:github:octo/repo#2:event-1",
+        remote_ack_payload("github", "event-1", "octo/repo#2"),
       ),
-      ..,
-    ),
-  ] = plan.records_to_append
-  assert failed_task_ref == other_task_ref
+    ]
+  assert plan.records_to_append == []
 }
 
 pub fn failed_task_ref_outbox_recovery_records_task_ref_test() {

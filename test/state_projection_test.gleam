@@ -658,6 +658,107 @@ pub fn pending_outbox_replays_are_chronological_test() {
   ]) = projection.pending_outbox_replays(folded)
 }
 
+pub fn in_flight_and_due_retryable_outbox_replays_are_ready_but_future_retry_waits_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "outbox-attempted",
+        2000,
+        record.OutboxAttempted(
+          outbox_id: "outbox-attempted",
+          issue_id: "issue-attempted",
+          outbox_kind: "claim",
+          dedupe_key: "claim:linear:issue-attempted:run-1",
+          payload_json: "{\"type\":\"claim\",\"body\":\"attempted\"}",
+          attempt_count: 1,
+        ),
+      ),
+      record.with_id(
+        "outbox-retry-due",
+        1000,
+        record.OutboxRetryScheduled(
+          outbox_id: "outbox-retry-due",
+          issue_id: "issue-due",
+          outbox_kind: "park",
+          dedupe_key: "park:linear:issue-due:run-1",
+          payload_json: "{\"type\":\"park\",\"body\":\"due\"}",
+          error_code: "http_429",
+          attempt_count: 2,
+          next_attempt_at_ms: 6000,
+        ),
+      ),
+      record.with_id(
+        "outbox-retry-future",
+        1500,
+        record.OutboxRetryScheduled(
+          outbox_id: "outbox-retry-future",
+          issue_id: "issue-future",
+          outbox_kind: "report_failure",
+          dedupe_key: "report_failure:linear:issue-future:run-1:wf-1",
+          payload_json: "{\"type\":\"report_failure\",\"body\":\"future\"}",
+          error_code: "http_429",
+          attempt_count: 2,
+          next_attempt_at_ms: 9000,
+        ),
+      ),
+    ])
+
+  let assert Ok([
+    projection.OutboxReplay(outbox_id: "outbox-retry-due", ..),
+    projection.OutboxReplay(outbox_id: "outbox-attempted", ..),
+  ]) = projection.pending_outbox_replays_at(folded, 7000)
+}
+
+pub fn completed_and_permanent_outbox_statuses_suppress_replay_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "outbox-completed-pending",
+        1000,
+        record.OutboxPendingV2(
+          outbox_id: "outbox-completed",
+          issue_id: "issue-completed",
+          outbox_kind: "report_success",
+          dedupe_key: "report_success:linear:issue-completed:run-1:wf-1",
+          payload_json: "{\"type\":\"report_success\",\"body\":\"ok\"}",
+        ),
+      ),
+      record.with_id(
+        "outbox-completed-done",
+        2000,
+        record.OutboxCompleted(
+          outbox_id: "outbox-completed",
+          issue_id: "issue-completed",
+          outbox_kind: "report_success",
+        ),
+      ),
+      record.with_id(
+        "outbox-permanent-pending",
+        1100,
+        record.OutboxPendingV2(
+          outbox_id: "outbox-permanent",
+          issue_id: "issue-permanent",
+          outbox_kind: "invalid_workflow",
+          dedupe_key: "invalid_workflow:linear:issue-permanent:violation",
+          payload_json: "{\"type\":\"invalid_workflow\",\"body\":\"bad\"}",
+        ),
+      ),
+      record.with_id(
+        "outbox-permanent-failed",
+        2100,
+        record.OutboxPermanentlyFailed(
+          outbox_id: "outbox-permanent",
+          issue_id: "issue-permanent",
+          outbox_kind: "invalid_workflow",
+          error_code: "linear_unauthorized",
+          attempt_count: 4,
+        ),
+      ),
+    ])
+
+  let assert Ok([]) = projection.pending_outbox_replays_at(folded, 7000)
+}
+
 pub fn scheduled_records_fold_into_status_test() {
   let run_id = "schedule-repair-20260505T120000Z"
   let folded =
