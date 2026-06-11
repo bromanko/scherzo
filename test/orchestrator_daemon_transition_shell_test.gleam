@@ -30,7 +30,7 @@ pub fn run_applies_effects_and_merges_transition_state_test() {
 
   let next =
     daemon_transition_shell.run(context(state, 8), [
-      claim_ledger_append_requested(),
+      handoff_claim_succeeded(),
     ])
 
   assert next.events == ["append:claim:issue-1:run-1", "start:run-1"]
@@ -58,7 +58,7 @@ pub fn run_respects_shell_state_override_test() {
 
   let next =
     daemon_transition_shell.run(context(state, 8), [
-      claim_ledger_append_requested(),
+      handoff_claim_succeeded(),
     ])
 
   assert next.events == ["append:claim:issue-1:run-1", "start:run-1"]
@@ -73,7 +73,7 @@ pub fn run_logs_exhaustion_with_configured_limit_test() {
 
   let next =
     daemon_transition_shell.run(context(state, 1), [
-      claim_ledger_append_requested(),
+      handoff_claim_succeeded(),
     ])
 
   assert next.events == ["append:claim:issue-1:run-1"]
@@ -297,7 +297,7 @@ pub fn interpret_effects_surfaces_ledger_append_failure_test() {
     == [
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
-        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
+        continuation: transition_types.SpawnClaimedWorkerAfterAppend(
           task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
           issue_id: identity.issue_id_from_string("issue-1"),
           run_id: identity.run_id_from_string("run-1"),
@@ -797,14 +797,12 @@ fn append_event(state: ShellState, event: String) -> ShellState {
   ShellState(..state, events: list.append(state.events, [event]))
 }
 
-fn claim_ledger_append_requested() -> transition_types.Message {
-  transition_types.ClaimLedgerAppendRequested(
-    correlation_id: "claim:issue-1:run-1",
+fn handoff_claim_succeeded() -> transition_types.Message {
+  transition_types.HandoffClaimCompleted(
     task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
     issue_id: identity.issue_id_from_string("issue-1"),
     run_id: identity.run_id_from_string("run-1"),
-    session_id: identity.session_id_from_string("session-1"),
-    batch: ledger_batch.claim_started(
+    result: transition_types.HandoffClaimSucceeded(ledger_batch.claim_started(
       record.WorkflowRunStartedWithTask(
         "run-1",
         "default",
@@ -822,7 +820,6 @@ fn claim_ledger_append_requested() -> transition_types.Message {
       0,
       1,
       456,
-    ),
-    failure_event: "ledger_append_failed",
+    )),
   )
 }

@@ -74,7 +74,7 @@ pub fn operator_pause_append_success_sets_paused_and_finishes_test() {
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "operator_dispatch_pause:paused",
-        continuation: effects_types.SetOperatorPausedAfterAppend(
+        continuation: transition_types.SetOperatorPausedAfterAppend(
           True,
           request,
           success_result,
@@ -108,7 +108,7 @@ pub fn operator_pause_append_failure_keeps_runtime_paused_and_rejects_test() {
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "operator_dispatch_pause:paused",
-        continuation: effects_types.SetOperatorPausedAfterAppend(
+        continuation: transition_types.SetOperatorPausedAfterAppend(
           True,
           request,
           success_result,
@@ -142,7 +142,7 @@ pub fn operator_resume_append_failure_does_not_resume_and_rejects_test() {
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "operator_dispatch_pause:resumed",
-        continuation: effects_types.SetOperatorPausedAfterAppend(
+        continuation: transition_types.SetOperatorPausedAfterAppend(
           False,
           request,
           success_result,
@@ -179,7 +179,7 @@ pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
-        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
+        continuation: transition_types.SpawnClaimedWorkerAfterAppend(
           task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
           issue_id: identity.issue_id_from_string("issue-1"),
           run_id: identity.run_id_from_string("run-1"),
@@ -234,7 +234,7 @@ pub fn ledger_spawn_continuation_failure_schedules_recovery_retry_test() {
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
-        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
+        continuation: transition_types.SpawnClaimedWorkerAfterAppend(
           task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
           issue_id: identity.issue_id_from_string("issue-1"),
           run_id: identity.run_id_from_string("run-1"),
@@ -417,7 +417,7 @@ pub fn claim_start_recovery_retry_after_prior_retry_increments_generation_test()
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:" <> pending.run_id,
-        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
+        continuation: transition_types.SpawnClaimedWorkerAfterAppend(
           task_identity: task_identity,
           issue_id: identity.issue_id_from_string("issue-1"),
           run_id: identity.run_id_from_string(pending.run_id),
@@ -492,14 +492,11 @@ pub fn claim_requested_empty_batch_does_not_emit_append_or_start_worker_test() {
 
   let transition_types.Outcome(state: next, effects: effects) =
     transition.handle(
-      transition_types.ClaimLedgerAppendRequested(
-        correlation_id: "claim:issue-1:run-1",
+      transition_types.HandoffClaimCompleted(
         task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
         issue_id: identity.issue_id_from_string("issue-1"),
         run_id: identity.run_id_from_string("run-1"),
-        session_id: identity.session_id_from_string("session-1"),
-        batch: ledger_batch.empty(),
-        failure_event: "ledger_append_failed",
+        result: transition_types.HandoffClaimSucceeded(ledger_batch.empty()),
       ),
       state,
     )
@@ -522,22 +519,21 @@ pub fn claim_requested_missing_workflow_start_does_not_emit_append_or_start_work
 
   let transition_types.Outcome(state: next, effects: effects) =
     transition.handle(
-      transition_types.ClaimLedgerAppendRequested(
-        correlation_id: "claim:issue-1:run-1",
+      transition_types.HandoffClaimCompleted(
         task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
         issue_id: identity.issue_id_from_string("issue-1"),
         run_id: identity.run_id_from_string("run-1"),
-        session_id: identity.session_id_from_string("session-1"),
-        batch: ledger_batch.step_attempt_started(
-          "run-1",
-          "default",
-          "build",
-          1,
-          "session-1",
-          None,
-          True,
+        result: transition_types.HandoffClaimSucceeded(
+          ledger_batch.step_attempt_started(
+            "run-1",
+            "default",
+            "build",
+            1,
+            "session-1",
+            None,
+            True,
+          ),
         ),
-        failure_event: "ledger_append_failed",
       ),
       state,
     )

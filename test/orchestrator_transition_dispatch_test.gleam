@@ -1161,7 +1161,6 @@ pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
       issue: candidate,
       remaining_candidates: [],
       generation: 1,
-      requested_at_ms: 123,
     )
   let state =
     transition_types.State(
@@ -1215,7 +1214,6 @@ fn state_with_pending_dispatch_validation(
           issue: candidate,
           remaining_candidates: [],
           generation: 1,
-          requested_at_ms: 123,
         ),
       ),
     ]),

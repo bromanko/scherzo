@@ -38,7 +38,7 @@ pub fn transition_runner_applies_effects_and_follow_ups_in_order_test() {
     invariant_helpers.run_and_assert(
       state: state,
       shell: shell,
-      messages: [claim_ledger_append_requested()],
+      messages: [handoff_claim_succeeded()],
       max_messages: 8,
     )
 
@@ -225,7 +225,7 @@ pub fn transition_runner_stops_at_message_limit_test() {
     transition_runner.run(
       state: state,
       shell: shell,
-      messages: [claim_ledger_append_requested()],
+      messages: [handoff_claim_succeeded()],
       max_messages: 1,
     )
 
@@ -246,7 +246,7 @@ pub fn worker_start_success_registers_worker_directory_test() {
     transition_runner.run(
       state: state,
       shell: event_shell(),
-      messages: [claim_ledger_append_requested()],
+      messages: [handoff_claim_succeeded()],
       max_messages: 8,
     )
 
@@ -291,7 +291,7 @@ pub fn worker_start_failure_clears_runtime_and_route_test() {
     transition_runner.run(
       state: state,
       shell: start_failure_shell(),
-      messages: [claim_ledger_append_requested()],
+      messages: [handoff_claim_succeeded()],
       max_messages: 8,
     )
 
@@ -1037,14 +1037,12 @@ fn bool_string(value: Bool) -> String {
   }
 }
 
-fn claim_ledger_append_requested() -> transition_types.Message {
-  transition_types.ClaimLedgerAppendRequested(
-    correlation_id: "claim:issue-1:run-1",
+fn handoff_claim_succeeded() -> transition_types.Message {
+  transition_types.HandoffClaimCompleted(
     task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
     issue_id: identity.issue_id_from_string("issue-1"),
     run_id: identity.run_id_from_string("run-1"),
-    session_id: identity.session_id_from_string("session-1"),
-    batch: ledger_batch.claim_started(
+    result: transition_types.HandoffClaimSucceeded(ledger_batch.claim_started(
       record.WorkflowRunStartedWithTask(
         "run-1",
         "default",
@@ -1062,7 +1060,6 @@ fn claim_ledger_append_requested() -> transition_types.Message {
       0,
       1,
       456,
-    ),
-    failure_event: "ledger_append_failed",
+    )),
   )
 }

@@ -272,7 +272,6 @@ pub fn default_dependencies() -> RuntimeDependencies {
         logger,
         remote_command_runtime.control_dependencies(
           apply_operator_command: apply_operator_command,
-          execute_query: execute_query,
           get_remote_dispatch_paused: get_remote_dispatch_paused,
         ),
       )

@@ -2,7 +2,6 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/result
 import scherzo/config/types as config_types
-import scherzo/control/query/types as query_types
 import scherzo/control/remote/credential_store
 import scherzo/control/remote/ui_websocket_client
 import scherzo/control/remote/url
@@ -27,26 +26,12 @@ pub fn start(
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
-  start_with_control(
-    effective,
-    event_hub,
-    fn(_, _) {
-      Error(query_types.QueryError(
-        query_types.QueryShutdown,
-        "remote control disabled",
-      ))
-    },
-    fn(_) { Ok(False) },
-    secrets,
-    logger,
-  )
+  start_with_control(effective, event_hub, fn(_) { Ok(False) }, secrets, logger)
 }
 
 pub fn start_with_control(
   effective: config_types.EffectiveConfig,
   event_hub: process.Subject(hub.Message),
-  _execute_query: fn(query_types.QueryRequest, Int) ->
-    Result(query_types.QueryResponse, query_types.QueryError),
   dispatch_paused: fn(Int) -> Result(Bool, Nil),
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),

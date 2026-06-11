@@ -334,7 +334,7 @@ pub fn schedule_retry_append_failure_without_previous_retry_does_not_leave_timer
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "retry_schedule:issue-1:1",
-        continuation: effects_types.ScheduleRetryTimerAfterAppend(
+        continuation: transition_types.ScheduleRetryTimerAfterAppend(
           issue_id: "issue-1",
           delay_ms: 10_000,
           generation: 1,
@@ -401,7 +401,7 @@ pub fn schedule_retry_append_failure_without_previous_retry_cleans_non_linear_id
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "retry_schedule:issue-1:1",
-        continuation: effects_types.ScheduleRetryTimerAfterAppend(
+        continuation: transition_types.ScheduleRetryTimerAfterAppend(
           issue_id: "issue-1",
           delay_ms: 10_000,
           generation: 1,
@@ -430,7 +430,7 @@ pub fn cancel_retry_append_success_emits_cancel_timer_test() {
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "retry_cancel:issue-1:3",
-        continuation: effects_types.CancelRetryTimerAfterAppend(
+        continuation: transition_types.CancelRetryTimerAfterAppend(
           issue_id: "issue-1",
           generation: 3,
           cancel_reason: "operator",
@@ -459,7 +459,7 @@ pub fn cancel_retry_append_failure_restores_previous_retry_and_defers_timer_test
     transition.handle(
       transition_types.LedgerAppendCompleted(
         correlation_id: "retry_cancel:issue-1:3",
-        continuation: effects_types.CancelRetryTimerAfterAppend(
+        continuation: transition_types.CancelRetryTimerAfterAppend(
           issue_id: "issue-1",
           generation: 3,
           cancel_reason: "operator",

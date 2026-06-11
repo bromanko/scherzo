@@ -24,7 +24,7 @@ pub fn append_ledger_claim_spawn_success_returns_follow_up_message_test() {
     == [
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
-        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
+        continuation: transition_types.SpawnClaimedWorkerAfterAppend(
           task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
           issue_id: identity.issue_id_from_string("issue-1"),
           run_id: identity.run_id_from_string("run-1"),
@@ -54,7 +54,7 @@ pub fn append_ledger_claim_spawn_failure_returns_follow_up_message_test() {
     == [
       transition_types.LedgerAppendCompleted(
         correlation_id: "claim:issue-1:run-1",
-        continuation: effects_types.SpawnClaimedWorkerAfterAppend(
+        continuation: transition_types.SpawnClaimedWorkerAfterAppend(
           task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
           issue_id: identity.issue_id_from_string("issue-1"),
           run_id: identity.run_id_from_string("run-1"),
