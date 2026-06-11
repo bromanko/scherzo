@@ -11,17 +11,17 @@
 
 buildNpmPackage rec {
   pname = "pi";
-  version = "0.75.4-0759f68d";
+  version = "0.79.1-7e717acc";
 
   src = fetchFromGitHub {
     owner = "scherzo-systems";
     repo = "pi";
-    rev = "0759f68d53627a0f32590696f58f39a7b2c9016f";
-    hash = "sha256-FZrR4Zu/gbyEDUwXR2ppdsuZL1fHWyZQmh+0cbqzAA4=";
+    rev = "7e717acc41d161710d834ce94e7ac82cd2852266";
+    hash = "sha256-F+7An+Pys9DJreSWQ4nxF8bo+ii5mc9o+2t3GIEDjpQ=";
   };
 
   nodejs = nodejs_22;
-  npmDepsHash = "sha256-E+8ygf0gQgoYXC4cLq45j2zCDQ5Bj1RIvauGIN19H7M=";
+  npmDepsHash = "sha256-Tf7QT1fRhX8rXj4Jnhsk++pYnvfu0eaPInWSBtJkO0I=";
   npmDepsFetcherVersion = 2;
   makeCacheWritable = true;
   npmRebuildFlags = [ "--ignore-scripts" ];
