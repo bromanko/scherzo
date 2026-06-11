@@ -383,6 +383,9 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     begin_dispatch_validation: fn(state, issue_id, _) {
       append_event(state, "validate:" <> issue_id)
     },
+    begin_review_lane_preflight: fn(state, request) {
+      append_event(state, "preflight:" <> request.issue_id)
+    },
     reserve_session_sequence: fn(state, sequence) {
       append_event(state, "reserve:" <> int.to_string(sequence))
     },
@@ -607,6 +610,9 @@ fn failing_handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     },
     begin_dispatch_validation: fn(state, issue_id, _) {
       append_event(state, "validate:" <> issue_id)
+    },
+    begin_review_lane_preflight: fn(state, request) {
+      append_event(state, "preflight:" <> request.issue_id)
     },
     reserve_session_sequence: fn(state, _) { state },
     claim_issue: fn(state, _, issue, _, _) {

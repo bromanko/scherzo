@@ -179,14 +179,15 @@ fn query_metrics_response() -> query_types.QueryResponse {
     running_scheduled_workers: 1,
     queued_claims: 4,
     pending_dispatch_validations: 5,
-    claimed_tasks: 6,
-    retry_tasks: 7,
-    parked_tasks: 8,
-    completed_tasks: 9,
-    pending_outbox_count: 10,
-    in_flight_outbox_count: 11,
-    retryable_outbox_count: 12,
-    permanent_outbox_count: 13,
+    pending_review_lane_preflights: 6,
+    claimed_tasks: 7,
+    retry_tasks: 8,
+    parked_tasks: 9,
+    completed_tasks: 10,
+    pending_outbox_count: 11,
+    in_flight_outbox_count: 12,
+    retryable_outbox_count: 13,
+    permanent_outbox_count: 14,
     poll_generation: 10,
     poll_in_flight: False,
     poll_timer_active: True,
@@ -391,6 +392,7 @@ pub fn query_metrics_human_executes_query_and_formats_metrics_test() {
   assert string.contains(transcript, "daemon_id: daemon-query")
   assert string.contains(transcript, "active_sessions: 3")
   assert string.contains(transcript, "running_workers: 2")
+  assert string.contains(transcript, "pending_review_lane_preflights: 6")
   assert string.contains(transcript, "scheduled_next_due_count: 19")
   assert string.contains(transcript, "lifecycle_projection_failed: true")
   assert string.contains(transcript, "token_total: 42")

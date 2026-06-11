@@ -884,6 +884,9 @@ fn shell_with_append_and_start_result(
     begin_dispatch_validation: fn(events, issue_id, _) {
       list.append(events, ["validate:" <> issue_id])
     },
+    begin_review_lane_preflight: fn(events, request) {
+      list.append(events, ["preflight:" <> request.issue_id])
+    },
     reserve_session_sequence: fn(events, sequence) {
       list.append(events, ["reserve:" <> int.to_string(sequence)])
     },

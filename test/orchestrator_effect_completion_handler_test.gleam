@@ -1,13 +1,17 @@
 import birl
 import gleam/list
 import gleam/option.{None, Some}
+import orchestrator_transition_test
 import scherzo/agent/types as agent_types
 import scherzo/config
 import scherzo/error
 import scherzo/orchestrator/effect_completion_handler
 import scherzo/orchestrator/effect_runner
+import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/outbox_effects
 import scherzo/result_artifact
+import scherzo/review_lane_preflight
+import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/adapter
@@ -67,6 +71,20 @@ pub fn handle_completed_dispatches_finished_variants_test() {
       state,
       effect_runner.Finished(
         5,
+        effect_runner.ReviewLanePreflightFinished(
+          task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
+          issue_id: "issue-1",
+          generation: 5,
+          workflow_id: "implementation",
+          result: review_lane_preflight.passed("cache-key"),
+        ),
+      ),
+    )
+  let state =
+    apply_completion(
+      state,
+      effect_runner.Finished(
+        6,
         effect_runner.HandoffClaimFinished(
           outbox(issue_task_ref("issue-1", "ABC-1"), "claim"),
           "issue-1",
@@ -79,7 +97,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
     apply_completion(
       state,
       effect_runner.Finished(
-        6,
+        7,
         effect_runner.HandoffSuccessFinished(
           outbox(issue_task_ref("issue-1", "ABC-1"), "success"),
           "issue-1",
@@ -92,7 +110,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
     apply_completion(
       state,
       effect_runner.Finished(
-        7,
+        8,
         effect_runner.HandoffFailureFinished(
           outbox(issue_task_ref("issue-1", "ABC-1"), "failure"),
           "issue-1",
@@ -105,7 +123,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
     apply_completion(
       state,
       effect_runner.Finished(
-        8,
+        9,
         effect_runner.HandoffParkFinished(
           outbox(issue_task_ref("issue-1", "ABC-1"), "park"),
           "issue-1",
@@ -117,7 +135,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
     apply_completion(
       state,
       effect_runner.Finished(
-        9,
+        10,
         effect_runner.InvalidWorkflowReportFinished(
           outbox(issue_task_ref("issue-1", "ABC-1"), "invalid-workflow"),
           "issue-1",
@@ -131,7 +149,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
     apply_completion(
       state,
       effect_runner.Finished(
-        10,
+        11,
         effect_runner.ScheduledFailureReportFinished(
           10,
           publication,
@@ -143,7 +161,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
     apply_completion(
       state,
       effect_runner.Finished(
-        11,
+        12,
         effect_runner.CleanupFinished("test/tmp/workspaces/ABC-1", Ok(Nil)),
       ),
     )
@@ -154,6 +172,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
       "running_refresh",
       "retry_refresh",
       "dispatch_validation",
+      "review_lane_preflight",
       "handoff_claim",
       "handoff_success",
       "handoff_failure",
@@ -452,6 +471,23 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
         )),
       ),
     )
+  let preflight_request = review_lane_preflight_request()
+  assert effect_completion_handler.crash_result_for_effect(
+      effect_runner.ReviewLanePreflight(preflight_request),
+      reason,
+    )
+    == effect_runner.ReviewLanePreflightFinished(
+      task_identity: preflight_request.task_identity,
+      issue_id: preflight_request.issue_id,
+      generation: preflight_request.generation,
+      workflow_id: preflight_request.workflow_id,
+      result: review_lane_preflight.failed(
+        "review-lane-preflight-crashed:" <> preflight_request.workflow_id,
+        "review_lane_preflight_effect_crashed",
+        "review-lane preflight side effect crashed: " <> reason,
+        True,
+      ),
+    )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ClaimIssue(
         outbox: outbox(issue_task_ref("issue-1", "ABC-1"), "claim"),
@@ -607,6 +643,9 @@ fn context(state: TestState) -> effect_completion_handler.Context(TestState) {
       dispatch_claim_validation_finished: fn(state, _, _, _) {
         append_event(state, "dispatch_validation")
       },
+      review_lane_preflight_finished: fn(state, _, _, _, _, _) {
+        append_event(state, "review_lane_preflight")
+      },
       handoff_claim_finished: fn(state, _, _, _, _) {
         append_event(state, "handoff_claim")
       },
@@ -644,6 +683,7 @@ fn daemon_context(
       running_refresh_finished: fn(state, _, _) { state },
       retry_refresh_finished: fn(state, _, _, _) { state },
       dispatch_claim_validation_finished: fn(state, _, _, _) { state },
+      review_lane_preflight_finished: fn(state, _, _, _, _, _) { state },
       handoff_claim_finished: fn(state, _, _, _, _) { state },
       handoff_success_finished: fn(state, _, _, result) {
         case result {
@@ -755,6 +795,25 @@ fn outbox(task_ref: task.TaskRef, kind: String) -> outbox_effects.Intent {
     outbox_kind: kind,
     dedupe_key: "test:" <> kind,
     payload_json: "{}",
+  )
+}
+
+fn review_lane_preflight_request() -> transition_effects.ReviewLanePreflightRequest {
+  let context = orchestrator_transition_test.fixture_context()
+  transition_effects.ReviewLanePreflightRequest(
+    task_identity: orchestrator_state.linear_issue_id_identity("issue-1"),
+    issue_id: "issue-1",
+    generation: 5,
+    workflow_id: "implementation",
+    workflow_dag: orchestrator_transition_test.fixture_workflow_dag(
+      "implementation",
+    ),
+    config_dir: ".scherzo",
+    workflow_path: ".scherzo/workflows/implementation.yaml",
+    state_root: "test/tmp/.scherzo-state",
+    effective: context.effective,
+    policy: context.review_lane_preflight.policy,
+    now_ms: 123,
   )
 }
 

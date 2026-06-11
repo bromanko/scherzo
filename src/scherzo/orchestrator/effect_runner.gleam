@@ -9,13 +9,17 @@ import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/error
 import scherzo/orchestrator/effects/interpreter as transition_interpreter
+import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
+import scherzo/review_lane_preflight
+import scherzo/runtime/identity
 import scherzo/runtime/state as orchestrator_state
 import scherzo/state/outbox
 import scherzo/state/recovery
+import scherzo/structured_output
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/idempotency
@@ -39,6 +43,7 @@ pub type Effect {
     generation: Int,
     tracker_adapter: adapter.TrackerAdapter,
   )
+  ReviewLanePreflight(request: transition_effects.ReviewLanePreflightRequest)
   ClaimIssue(
     outbox: outbox_effects.Intent,
     task_ref: task.TaskRef,
@@ -134,6 +139,13 @@ pub type EffectResult {
     generation: Int,
     result: Result(tracker_issue.Issue, DispatchClaimValidationError),
   )
+  ReviewLanePreflightFinished(
+    task_identity: identity.TaskIdentity,
+    issue_id: String,
+    generation: Int,
+    workflow_id: String,
+    result: review_lane_preflight.PreflightResult,
+  )
   HandoffClaimFinished(
     outbox: outbox_effects.Intent,
     issue_id: String,
@@ -193,6 +205,7 @@ pub fn reply_snapshot(
       workers: transition_types.new_worker_directory(),
       pending_claims: dict.new(),
       pending_dispatch_validations: dict.new(),
+      pending_review_lane_preflights: dict.new(),
       lifecycle: task_lifecycle.new(),
       retry_refresh_generations: dict.new(),
       next_dispatch_validation_generation: 1,
@@ -213,6 +226,7 @@ pub fn reply_snapshot(
       schedule_next_poll: fn(data) { data },
       fetch_candidates: fn(data, _) { data },
       begin_dispatch_validation: fn(data, _, _) { data },
+      begin_review_lane_preflight: fn(data, _) { data },
       reserve_session_sequence: fn(data, _) { data },
       claim_issue: fn(data, _, _, _, _) { data },
       report_invalid_workflow: fn(data, _, _, _, _) { data },
@@ -378,6 +392,7 @@ pub fn effect_kind(effect: Effect) -> String {
     RefreshRunning(_, _, _) -> "refresh_running"
     RefreshRetry(_, _, _) -> "refresh_retry"
     ValidateDispatchClaim(_, _, _) -> "validate_dispatch_claim"
+    ReviewLanePreflight(_) -> "review_lane_preflight"
     ClaimIssue(_, _, _, _, _, _) -> "claim_issue"
     ReportSuccess(_, _, _, _, _, _, _, _) -> "report_success"
     ReportFailure(_, _, _, _, _, _, _, _) -> "report_failure"
@@ -423,9 +438,9 @@ fn drain(state: State) -> State {
   case dict.size(state.in_flight) >= state.max_concurrent {
     True -> state
     False ->
-      case state.queue {
-        [] -> state
-        [queued, ..rest] -> {
+      case next_startable_effect(state.queue, preflight_in_flight(state)) {
+        Error(Nil) -> state
+        Ok(#(queued, rest)) -> {
           let #(pid, monitor) = spawn_effect_worker(state.subject, queued)
           let in_flight =
             InFlightEffect(
@@ -444,6 +459,50 @@ fn drain(state: State) -> State {
         }
       }
   }
+}
+
+fn next_startable_effect(
+  queue: List(QueuedEffect),
+  review_lane_preflight_busy: Bool,
+) -> Result(#(QueuedEffect, List(QueuedEffect)), Nil) {
+  next_startable_effect_loop(queue, review_lane_preflight_busy, [])
+}
+
+fn next_startable_effect_loop(
+  queue: List(QueuedEffect),
+  review_lane_preflight_busy: Bool,
+  skipped: List(QueuedEffect),
+) -> Result(#(QueuedEffect, List(QueuedEffect)), Nil) {
+  case queue {
+    [] -> Error(Nil)
+    [queued, ..rest] ->
+      case effect_startable(queued.effect, review_lane_preflight_busy) {
+        True -> Ok(#(queued, list.append(list.reverse(skipped), rest)))
+        False ->
+          next_startable_effect_loop(rest, review_lane_preflight_busy, [
+            queued,
+            ..skipped
+          ])
+      }
+  }
+}
+
+fn effect_startable(effect: Effect, review_lane_preflight_busy: Bool) -> Bool {
+  case effect, review_lane_preflight_busy {
+    ReviewLanePreflight(_), True -> False
+    _, _ -> True
+  }
+}
+
+fn preflight_in_flight(state: State) -> Bool {
+  state.in_flight
+  |> dict.values
+  |> list.any(fn(in_flight) {
+    case in_flight.effect {
+      ReviewLanePreflight(_) -> True
+      _ -> False
+    }
+  })
 }
 
 fn spawn_effect_worker(
@@ -848,6 +907,27 @@ fn try_tracker_adapter(
   }
 }
 
+fn run_review_lane_preflight(
+  request: transition_effects.ReviewLanePreflightRequest,
+) -> EffectResult {
+  ReviewLanePreflightFinished(
+    task_identity: request.task_identity,
+    issue_id: request.issue_id,
+    generation: request.generation,
+    workflow_id: request.workflow_id,
+    result: review_lane_preflight.for_workflow(
+      request.workflow_id,
+      request.workflow_dag,
+      structured_output.validator_repo_root(request.config_dir, "."),
+      request.workflow_path,
+      request.state_root,
+      request.effective,
+      request.policy,
+      request.now_ms,
+    ),
+  )
+}
+
 fn run_side_effect(effect: Effect) -> EffectResult {
   case effect {
     FetchCandidates(generation, tracker_adapter) ->
@@ -875,6 +955,7 @@ fn run_side_effect(effect: Effect) -> EffectResult {
           refresh_issue_states_by_ids(tracker_adapter, [issue_id]),
         ),
       )
+    ReviewLanePreflight(request) -> run_review_lane_preflight(request)
     ClaimIssue(outbox, task_ref, issue, workspace_path, run_id, capability) ->
       HandoffClaimFinished(
         outbox,

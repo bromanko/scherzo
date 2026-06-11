@@ -97,7 +97,12 @@ pub fn fixture_context() -> transition_types.DispatchContext {
       workflow_dags: dict.from_list([
         #("default", fixture_workflow_dag("default")),
       ]),
-      policy: review_lane_preflight_policy.default(),
+      policy: review_lane_preflight_policy.Policy(
+        mode: review_lane_preflight_policy.Off,
+        cache_ttl_seconds: 86_400,
+        park_on_failure: True,
+        strict_live_model_checks: False,
+      ),
       override: None,
     ),
   )
@@ -134,6 +139,7 @@ pub fn fixture_state() -> transition_types.State {
     workers: transition_types.new_worker_directory(),
     pending_claims: dict.new(),
     pending_dispatch_validations: dict.new(),
+    pending_review_lane_preflights: dict.new(),
     lifecycle: task_lifecycle.new(),
     retry_refresh_generations: dict.new(),
     next_dispatch_validation_generation: 1,

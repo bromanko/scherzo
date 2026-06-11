@@ -168,6 +168,47 @@ pub fn pending_dispatch_validation_claimed_conflict_reports_clear_error_test() {
   )
 }
 
+pub fn pending_review_lane_preflight_generation_unreserved_reports_clear_error_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let state = state_with_pending_review_lane_preflight(issue, 1, 1)
+
+  invariant_helpers.assert_state_error(
+    state,
+    "pending_review_lane_preflight_generation_unreserved",
+  )
+}
+
+pub fn pending_review_lane_preflight_claimed_retry_state_is_allowed_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let state = state_with_pending_review_lane_preflight(issue, 1, 2)
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let state =
+    transition_types.State(
+      ..state,
+      runtime: orchestrator_state.RuntimeState(
+        ..state.runtime,
+        claimed: dict.from_list([#(task_identity, issue.identifier)]),
+      ),
+    )
+
+  invariant_helpers.assert_valid_state(state)
+}
+
+pub fn pending_review_lane_preflight_counts_toward_slot_overcommit_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let state = state_with_pending_review_lane_preflight(issue, 1, 2)
+  let state =
+    transition_types.State(
+      ..state,
+      runtime: orchestrator_state.RuntimeState(
+        ..state.runtime,
+        max_concurrent_agents: 0,
+      ),
+    )
+
+  invariant_helpers.assert_state_error(state, "pending_slot_overcommit")
+}
+
 pub fn pending_slot_overcommit_reports_clear_error_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let other_issue =
@@ -254,20 +295,53 @@ fn state_with_pending_dispatch_validation(
         ),
       ),
     ]),
-    lifecycle: {
-      let assert Ok(directory) =
-        task_lifecycle.put(
-          task_lifecycle.new(),
-          task_lifecycle.Validating(
-            task_ref: task_ref,
-            issue: issue,
-            generation: generation,
-          ),
-        )
-      directory
-    },
+    lifecycle: validating_lifecycle(task_ref, issue, generation),
     next_dispatch_validation_generation: next_generation,
   )
+}
+
+fn state_with_pending_review_lane_preflight(
+  issue: tracker_issue.Issue,
+  generation: Int,
+  next_generation: Int,
+) -> transition_types.State {
+  let task_ref = task.from_legacy_issue(issue).ref
+  transition_types.State(
+    ..orchestrator_transition_test.fixture_state(),
+    pending_review_lane_preflights: dict.from_list([
+      #(
+        orchestrator_state.task_ref_identity(task_ref),
+        transition_types.PendingReviewLanePreflight(
+          task_ref: task_ref,
+          issue: issue,
+          remaining_candidates: [],
+          generation: generation,
+          workflow_id: "default",
+          previous_retry_generation: 0,
+          retry_cancellation: None,
+        ),
+      ),
+    ]),
+    lifecycle: validating_lifecycle(task_ref, issue, generation),
+    next_dispatch_validation_generation: next_generation,
+  )
+}
+
+fn validating_lifecycle(
+  task_ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  generation: Int,
+) -> task_lifecycle.TaskDirectory {
+  let assert Ok(directory) =
+    task_lifecycle.put(
+      task_lifecycle.new(),
+      task_lifecycle.Validating(
+        task_ref: task_ref,
+        issue: issue,
+        generation: generation,
+      ),
+    )
+  directory
 }
 
 fn state_with_running_worker(

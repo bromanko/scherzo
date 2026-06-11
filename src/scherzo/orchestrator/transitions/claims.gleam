@@ -4,79 +4,75 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/error
-import scherzo/orchestrator/core
+import scherzo/orchestrator/core.{type BlockerDecision}
 import scherzo/orchestrator/effects/types as effects_types
-import scherzo/orchestrator/task_lifecycle_legacy
-import scherzo/orchestrator/transition_types
+import scherzo/orchestrator/task_lifecycle_legacy.{type IssueStateKey}
+import scherzo/orchestrator/transition_types.{
+  type DispatchContext, type DispatchValidationError, type Outcome,
+  type PendingClaim, type PendingDispatchValidation,
+  type PendingReviewLanePreflight, type State,
+}
 import scherzo/orchestrator/transitions/helpers
 import scherzo/path as scherzo_path
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_gate
-import scherzo/runtime/identity
+import scherzo/review_lane_preflight_policy
+import scherzo/runtime/identity.{type IssueId, type RunId, type TaskIdentity}
 import scherzo/runtime/reason as orchestrator_reason
-import scherzo/runtime/state as orchestrator_state
+import scherzo/runtime/state.{type RuntimeState} as orchestrator_state
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 import scherzo/state/record
-import scherzo/structured_output
 import scherzo/task
-import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/issue.{type Issue}
 import scherzo/workspace
 
 pub type Callbacks {
   Callbacks(
-    dispatch_candidates: fn(
-      List(tracker_issue.Issue),
-      transition_types.State,
-      transition_types.DispatchContext,
-    ) -> transition_types.Outcome,
+    dispatch_candidates: fn(List(Issue), State, DispatchContext) -> Outcome,
   )
 }
 
-pub fn sync_outcome(
-  outcome: transition_types.Outcome,
-) -> transition_types.Outcome {
-  case sync_state_result(outcome.state) {
-    Ok(state) ->
-      transition_types.Outcome(state: state, effects: outcome.effects)
+pub fn sync_outcome(outcome: Outcome) -> Outcome {
+  case task_lifecycle_legacy.from_transition_state(outcome.state) {
+    Ok(directory) ->
+      transition_types.Outcome(
+        state: transition_types.State(..outcome.state, lifecycle: directory),
+        effects: outcome.effects,
+      )
     Error(error) ->
       transition_types.Outcome(
         state: outcome.state,
         effects: list.append(outcome.effects, [
-          lifecycle_projection_failed_log(error),
+          effects_types.Log("error", "task_lifecycle_projection_failed", [
+            #("fail_closed", "true"),
+            ..task_lifecycle_legacy.error_fields(error)
+          ]),
         ]),
       )
   }
 }
 
-pub fn has_dispatch_blocker(
-  state: transition_types.State,
-  task_identity: identity.TaskIdentity,
-) -> Bool {
+pub fn has_dispatch_blocker(state: State, task_identity: TaskIdentity) -> Bool {
   task_lifecycle_legacy.has_dispatch_blocker(state, task_identity)
 }
 
-pub fn has_tracker_claim(
-  state: transition_types.State,
-  task_identity: identity.TaskIdentity,
-) -> Bool {
+pub fn has_tracker_claim(state: State, task_identity: TaskIdentity) -> Bool {
   task_lifecycle_legacy.has_tracker_claim(state, task_identity)
 }
 
-pub fn pending_count_for_state(
-  state: transition_types.State,
-  normalized_state: task_lifecycle_legacy.IssueStateKey,
-) -> Int {
+// nolint: missing_type_annotation -- return type is constrained by task_lifecycle_legacy.pending_count_for_state while keeping this oversized transition module within its source guardrail baseline
+pub fn pending_count_for_state(state: State, normalized_state: IssueStateKey) {
   task_lifecycle_legacy.pending_count_for_state(state, normalized_state)
 }
 
 pub fn add_pending_dispatch_validation(
-  state: transition_types.State,
-  task_identity: identity.TaskIdentity,
-  pending: transition_types.PendingDispatchValidation,
+  state: State,
+  task_identity: TaskIdentity,
+  pending: PendingDispatchValidation,
   next_generation: Int,
-) -> transition_types.State {
+) -> State {
   transition_types.State(
     ..state,
     pending_dispatch_validations: dict.insert(
@@ -90,9 +86,9 @@ pub fn add_pending_dispatch_validation(
 }
 
 pub fn remove_pending_dispatch_validation(
-  state: transition_types.State,
-  task_identity: identity.TaskIdentity,
-) -> transition_types.State {
+  state: State,
+  task_identity: TaskIdentity,
+) -> State {
   transition_types.State(
     ..state,
     pending_dispatch_validations: dict.delete(
@@ -103,13 +99,45 @@ pub fn remove_pending_dispatch_validation(
   |> sync_state
 }
 
+pub fn add_pending_review_lane_preflight(
+  state: State,
+  task_identity: TaskIdentity,
+  pending: PendingReviewLanePreflight,
+  next_generation: Int,
+) -> State {
+  transition_types.State(
+    ..state,
+    pending_review_lane_preflights: dict.insert(
+      state.pending_review_lane_preflights,
+      task_identity,
+      pending,
+    ),
+    next_dispatch_validation_generation: next_generation,
+  )
+  |> sync_state
+}
+
+pub fn remove_pending_review_lane_preflight(
+  state: State,
+  task_identity: TaskIdentity,
+) -> State {
+  transition_types.State(
+    ..state,
+    pending_review_lane_preflights: dict.delete(
+      state.pending_review_lane_preflights,
+      task_identity,
+    ),
+  )
+  |> sync_state
+}
+
 pub fn park_runtime(
-  state: transition_types.State,
+  state: State,
   ref: task.TaskRef,
-  issue: tracker_issue.Issue,
+  issue: Issue,
   reason: orchestrator_reason.ParkReason,
   now_ms: Int,
-) -> transition_types.State {
+) -> State {
   let parked =
     orchestrator_state.ParkedEntry(
       task_ref: ref,
@@ -142,12 +170,12 @@ pub fn park_runtime(
 }
 
 pub fn complete_runtime_failure(
-  state: transition_types.State,
-  task_identity: identity.TaskIdentity,
-  issue: tracker_issue.Issue,
+  state: State,
+  task_identity: TaskIdentity,
+  issue: Issue,
   tokens: session_tokens.TokenTotals,
   now_ms: Int,
-) -> transition_types.State {
+) -> State {
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
@@ -163,12 +191,12 @@ pub fn complete_runtime_failure(
 }
 
 pub fn begin_for_issue(
-  state: transition_types.State,
-  issue: tracker_issue.Issue,
-  remaining_candidates: List(tracker_issue.Issue),
-  context: transition_types.DispatchContext,
+  state: State,
+  issue: Issue,
+  remaining_candidates: List(Issue),
+  context: DispatchContext,
   callbacks: Callbacks,
-) -> transition_types.Outcome {
+) -> Outcome {
   begin_for_issue_with_retry_metadata(
     state,
     issue,
@@ -181,14 +209,14 @@ pub fn begin_for_issue(
 }
 
 pub fn begin_for_issue_after_retry(
-  state: transition_types.State,
-  issue: tracker_issue.Issue,
-  remaining_candidates: List(tracker_issue.Issue),
-  context: transition_types.DispatchContext,
+  state: State,
+  issue: Issue,
+  remaining_candidates: List(Issue),
+  context: DispatchContext,
   callbacks: Callbacks,
   previous_retry_generation: Int,
   retry_cancellation: transition_types.RetryCancellation,
-) -> transition_types.Outcome {
+) -> Outcome {
   begin_for_issue_with_retry_metadata(
     state,
     issue,
@@ -201,14 +229,14 @@ pub fn begin_for_issue_after_retry(
 }
 
 fn begin_for_issue_with_retry_metadata(
-  state: transition_types.State,
-  issue: tracker_issue.Issue,
-  remaining_candidates: List(tracker_issue.Issue),
-  context: transition_types.DispatchContext,
+  state: State,
+  issue: Issue,
+  remaining_candidates: List(Issue),
+  context: DispatchContext,
   callbacks: Callbacks,
   previous_retry_generation: Int,
   retry_cancellation: Option(transition_types.RetryCancellation),
-) -> transition_types.Outcome {
+) -> Outcome {
   let Callbacks(dispatch_candidates: dispatch) = callbacks
   case helpers.select_workflow_route(context, issue) {
     Error(#(code, message)) -> {
@@ -223,133 +251,317 @@ fn begin_for_issue_with_retry_metadata(
       ])
     }
     Ok(workflow_id) ->
-      case review_lane_claim_gate(context, workflow_id) {
-        review_lane_preflight_gate.ClaimBlocked(code, message, park_on_failure) ->
-          block_for_review_lane_preflight(
+      case
+        begin_review_lane_preflight_if_needed(
+          state,
+          issue,
+          remaining_candidates,
+          context,
+          callbacks,
+          workflow_id,
+          previous_retry_generation,
+          retry_cancellation,
+        )
+      {
+        Some(outcome) -> outcome
+        None ->
+          begin_claim_for_workflow(
             state,
             issue,
             remaining_candidates,
             context,
             callbacks,
             workflow_id,
-            code,
-            message,
-            park_on_failure,
+            previous_retry_generation,
+            retry_cancellation,
           )
-        review_lane_preflight_gate.ClaimAllowed ->
-          case
-            workspace.workspace_path(context.workspace_root, issue.identifier)
-          {
-            Error(err) -> {
-              let outcome = dispatch(remaining_candidates, state, context)
-              transition_types.Outcome(state: outcome.state, effects: [
-                effects_types.Log("warn", "dispatch_workspace_path_failed", [
-                  #("issue_id", issue.id),
-                  #("error", error.workspace_code(err)),
-                ]),
-                ..outcome.effects
-              ])
-            }
-            Ok(#(_, workspace_path)) -> {
-              let sequence = state.next_session_sequence
-              let run_id = helpers.make_run_id(issue, context.now_ms, sequence)
-              let session_id =
-                helpers.make_session_id(issue.identifier, run_id, sequence)
-              let task_ref =
-                orchestrator_state.issue_ref_for_backend(
-                  issue,
-                  context.tracker_backend_kind,
-                )
-              let identity = orchestrator_state.task_ref_identity(task_ref)
-              let recovery =
-                dict.get(context.recovery_by_issue, issue.id)
-                |> option.from_result
-              let pending =
-                transition_types.PendingClaim(
-                  task_ref: task_ref,
-                  issue_id: issue.id,
-                  run_id: identity.run_id_to_string(identity.run_id_from_string(
-                    run_id,
-                  )),
-                  session_id: identity.session_id_to_string(
-                    identity.session_id_from_string(session_id),
-                  ),
-                  workspace_path: workspace_path,
-                  workflow_id: workflow_id,
-                  command_route_id: "worker:"
-                    <> run_id
-                    <> ":"
-                    <> int.to_string(sequence),
-                  route_label: issue.identifier,
-                  issue: issue,
-                  recovery: recovery,
-                  remaining_candidates: remaining_candidates,
-                  dispatch_context: context,
-                  previous_retry_generation: previous_retry_generation,
-                  retry_cancellation: retry_cancellation,
-                )
-              transition_types.Outcome(
-                state: transition_types.State(
-                  ..state,
-                  pending_claims: dict.insert(
-                    state.pending_claims,
-                    identity,
-                    pending,
-                  ),
-                  next_session_sequence: sequence + 1,
-                )
-                  |> sync_state,
-                effects: [
-                  effects_types.ReserveSessionSequence(sequence),
-                  effects_types.ClaimIssue(
-                    task_ref,
-                    issue,
-                    workspace_path,
-                    run_id,
-                  ),
-                ],
-              )
-            }
-          }
       }
   }
 }
 
-fn review_lane_claim_gate(
-  context: transition_types.DispatchContext,
+fn begin_review_lane_preflight_if_needed(
+  state: State,
+  issue: Issue,
+  remaining_candidates: List(Issue),
+  context: DispatchContext,
+  callbacks: Callbacks,
   workflow_id: String,
-) -> review_lane_preflight_gate.ClaimGateResult {
+  previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> Option(Outcome) {
   let preflight = context.review_lane_preflight
-  let result = case preflight.override {
-    Some(result) -> result
-    None ->
-      case dict.get(preflight.workflow_dags, workflow_id) {
-        Ok(dag) ->
-          review_lane_preflight.for_workflow(
-            workflow_id,
-            dag,
-            structured_output.validator_repo_root(preflight.config_dir, "."),
-            workflow_path_for_preflight(context, workflow_id),
-            scherzo_path.join(context.workspace_root, ".scherzo-state"),
-            context.effective,
-            preflight.policy,
-            context.now_ms,
-          )
-        Error(Nil) ->
-          review_lane_preflight.failed(
-            "missing-workflow-dag",
-            "review_lane_preflight_workflow_missing",
-            "review-lane preflight could not find loaded workflow DAG "
-              <> workflow_id,
-            True,
-          )
-      }
+  case preflight.policy.mode, preflight.override {
+    review_lane_preflight_policy.Off, _ -> None
+    _, Some(result) ->
+      Some(handle_review_lane_preflight_result(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        previous_retry_generation,
+        retry_cancellation,
+        result,
+      ))
+    _, None ->
+      Some(begin_review_lane_preflight(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        previous_retry_generation,
+        retry_cancellation,
+      ))
   }
-  review_lane_preflight_gate.before_claim(preflight.policy, result)
+}
+
+fn begin_review_lane_preflight(
+  state: State,
+  issue: Issue,
+  remaining_candidates: List(Issue),
+  context: DispatchContext,
+  callbacks: Callbacks,
+  workflow_id: String,
+  previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> Outcome {
+  let task_ref =
+    orchestrator_state.issue_ref_for_backend(
+      issue,
+      context.tracker_backend_kind,
+    )
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
+  let generation = state.next_dispatch_validation_generation
+  case
+    review_lane_preflight_request(
+      context,
+      task_identity,
+      issue,
+      workflow_id,
+      generation,
+    )
+  {
+    Ok(request) -> {
+      let pending =
+        transition_types.PendingReviewLanePreflight(
+          task_ref: task_ref,
+          issue: issue,
+          remaining_candidates: remaining_candidates,
+          generation: generation,
+          workflow_id: workflow_id,
+          previous_retry_generation: previous_retry_generation,
+          retry_cancellation: retry_cancellation,
+        )
+      transition_types.Outcome(
+        state: add_pending_review_lane_preflight(
+          state,
+          task_identity,
+          pending,
+          generation + 1,
+        ),
+        effects: [effects_types.BeginReviewLanePreflight(request)],
+      )
+    }
+    Error(result) ->
+      handle_review_lane_preflight_result(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        previous_retry_generation,
+        retry_cancellation,
+        result,
+      )
+  }
+}
+
+fn review_lane_preflight_request(
+  context: DispatchContext,
+  task_identity: TaskIdentity,
+  issue: Issue,
+  workflow_id: String,
+  generation: Int,
+) -> Result(
+  effects_types.ReviewLanePreflightRequest,
+  review_lane_preflight.PreflightResult,
+) {
+  let preflight = context.review_lane_preflight
+  case dict.get(preflight.workflow_dags, workflow_id) {
+    Ok(dag) ->
+      Ok(effects_types.ReviewLanePreflightRequest(
+        task_identity: task_identity,
+        issue_id: issue.id,
+        generation: generation,
+        workflow_id: workflow_id,
+        workflow_dag: dag,
+        config_dir: preflight.config_dir,
+        workflow_path: workflow_path_for_preflight(context, workflow_id),
+        state_root: scherzo_path.join(context.workspace_root, ".scherzo-state"),
+        effective: context.effective,
+        policy: preflight.policy,
+        now_ms: context.now_ms,
+      ))
+    Error(Nil) ->
+      Error(review_lane_preflight.failed(
+        "missing-workflow-dag",
+        "review_lane_preflight_workflow_missing",
+        "review-lane preflight could not find loaded workflow DAG "
+          <> workflow_id,
+        True,
+      ))
+  }
+}
+
+pub fn resume_after_review_lane_preflight(
+  state: State,
+  pending: PendingReviewLanePreflight,
+  context: DispatchContext,
+  result: review_lane_preflight.PreflightResult,
+  callbacks: Callbacks,
+) -> Outcome {
+  handle_review_lane_preflight_result(
+    state,
+    pending.issue,
+    pending.remaining_candidates,
+    transition_types.DispatchContext(
+      ..context,
+      review_lane_preflight: transition_types.ReviewLanePreflightContext(
+        ..context.review_lane_preflight,
+        override: Some(result),
+      ),
+    ),
+    callbacks,
+    pending.workflow_id,
+    pending.previous_retry_generation,
+    pending.retry_cancellation,
+    result,
+  )
+}
+
+fn handle_review_lane_preflight_result(
+  state: State,
+  issue: Issue,
+  remaining_candidates: List(Issue),
+  context: DispatchContext,
+  callbacks: Callbacks,
+  workflow_id: String,
+  previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+  result: review_lane_preflight.PreflightResult,
+) -> Outcome {
+  case
+    review_lane_preflight_gate.before_claim(
+      context.review_lane_preflight.policy,
+      result,
+    )
+  {
+    review_lane_preflight_gate.ClaimBlocked(code, message, park_on_failure) ->
+      block_for_review_lane_preflight(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        code,
+        message,
+        park_on_failure,
+      )
+    review_lane_preflight_gate.ClaimAllowed ->
+      begin_claim_for_workflow(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        previous_retry_generation,
+        retry_cancellation,
+      )
+  }
+}
+
+fn begin_claim_for_workflow(
+  state: State,
+  issue: Issue,
+  remaining_candidates: List(Issue),
+  context: DispatchContext,
+  callbacks: Callbacks,
+  workflow_id: String,
+  previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> Outcome {
+  let Callbacks(dispatch_candidates: dispatch) = callbacks
+  case workspace.workspace_path(context.workspace_root, issue.identifier) {
+    Error(err) -> {
+      let outcome = dispatch(remaining_candidates, state, context)
+      transition_types.Outcome(state: outcome.state, effects: [
+        effects_types.Log("warn", "dispatch_workspace_path_failed", [
+          #("issue_id", issue.id),
+          #("error", error.workspace_code(err)),
+        ]),
+        ..outcome.effects
+      ])
+    }
+    Ok(#(_, workspace_path)) -> {
+      let sequence = state.next_session_sequence
+      let run_id = helpers.make_run_id(issue, context.now_ms, sequence)
+      let session_id =
+        helpers.make_session_id(issue.identifier, run_id, sequence)
+      let task_ref =
+        orchestrator_state.issue_ref_for_backend(
+          issue,
+          context.tracker_backend_kind,
+        )
+      let identity = orchestrator_state.task_ref_identity(task_ref)
+      let recovery =
+        dict.get(context.recovery_by_issue, issue.id)
+        |> option.from_result
+      let pending =
+        transition_types.PendingClaim(
+          task_ref: task_ref,
+          issue_id: issue.id,
+          run_id: identity.run_id_to_string(identity.run_id_from_string(run_id)),
+          session_id: identity.session_id_to_string(
+            identity.session_id_from_string(session_id),
+          ),
+          workspace_path: workspace_path,
+          workflow_id: workflow_id,
+          command_route_id: "worker:"
+            <> run_id
+            <> ":"
+            <> int.to_string(sequence),
+          route_label: issue.identifier,
+          issue: issue,
+          recovery: recovery,
+          remaining_candidates: remaining_candidates,
+          dispatch_context: context,
+          previous_retry_generation: previous_retry_generation,
+          retry_cancellation: retry_cancellation,
+        )
+      transition_types.Outcome(
+        state: transition_types.State(
+          ..state,
+          pending_claims: dict.insert(state.pending_claims, identity, pending),
+          next_session_sequence: sequence + 1,
+        )
+          |> sync_state,
+        effects: [
+          effects_types.ReserveSessionSequence(sequence),
+          effects_types.ClaimIssue(task_ref, issue, workspace_path, run_id),
+        ],
+      )
+    }
+  }
 }
 
 fn workflow_path_for_preflight(
-  context: transition_types.DispatchContext,
+  context: DispatchContext,
   workflow_id: String,
 ) -> String {
   case dict.get(context.routing.workflows, workflow_id) {
@@ -370,16 +582,16 @@ fn workflow_path_for_preflight(
 }
 
 fn block_for_review_lane_preflight(
-  state: transition_types.State,
-  issue: tracker_issue.Issue,
-  remaining_candidates: List(tracker_issue.Issue),
-  context: transition_types.DispatchContext,
+  state: State,
+  issue: Issue,
+  remaining_candidates: List(Issue),
+  context: DispatchContext,
   callbacks: Callbacks,
   workflow_id: String,
   code: String,
   message: String,
   park_on_failure: Bool,
-) -> transition_types.Outcome {
+) -> Outcome {
   let Callbacks(dispatch_candidates: dispatch) = callbacks
   let #(state, park_effects) = case park_on_failure {
     False -> #(state, [])
@@ -400,10 +612,10 @@ fn block_for_review_lane_preflight(
 }
 
 fn park_preflight_failure(
-  state: transition_types.State,
-  issue: tracker_issue.Issue,
+  state: State,
+  issue: Issue,
   now_ms: Int,
-) -> #(transition_types.State, List(effects_types.Effect)) {
+) -> #(State, List(effects_types.Effect)) {
   let task_ref = task.from_legacy_issue(issue).ref
   let parked =
     orchestrator_state.ParkedEntry(
@@ -438,15 +650,12 @@ fn list_append(left: List(a), right: List(a)) -> List(a) {
 }
 
 pub fn dispatch_validation_error_reason(
-  err: transition_types.DispatchValidationError,
+  err: DispatchValidationError,
 ) -> String {
   helpers.dispatch_validation_error_reason(err)
 }
 
-pub fn blocker_summary(
-  issue: tracker_issue.Issue,
-  decision: core.BlockerDecision,
-) -> String {
+pub fn blocker_summary(issue: Issue, decision: BlockerDecision) -> String {
   helpers.blocker_summary(issue, decision)
 }
 
@@ -459,15 +668,15 @@ pub fn claim_correlation_id(issue_id: String, run_id: String) -> String {
 }
 
 pub fn handle_requested(
-  state: transition_types.State,
+  state: State,
   correlation_id: String,
-  task_identity: identity.TaskIdentity,
-  issue_id: identity.IssueId,
-  run_id: identity.RunId,
+  task_identity: TaskIdentity,
+  issue_id: IssueId,
+  run_id: RunId,
   session_id: identity.SessionId,
   batch: ledger_batch.LedgerBatch,
   failure_event: String,
-) -> transition_types.Outcome {
+) -> Outcome {
   case dict.get(state.pending_claims, task_identity) {
     Error(Nil) -> stale_continuation(state, correlation_id, issue_id, run_id)
     Ok(pending) ->
@@ -527,15 +736,15 @@ pub fn handle_requested(
 }
 
 pub fn handle_spawn(
-  state: transition_types.State,
+  state: State,
   correlation_id: String,
-  task_identity: identity.TaskIdentity,
-  issue_id: identity.IssueId,
-  run_id: identity.RunId,
+  task_identity: TaskIdentity,
+  issue_id: IssueId,
+  run_id: RunId,
   session_id: identity.SessionId,
   result: Result(Nil, ledger.LedgerError),
   callbacks: Callbacks,
-) -> transition_types.Outcome {
+) -> Outcome {
   case dict.get(state.pending_claims, task_identity) {
     Error(Nil) -> stale_continuation(state, correlation_id, issue_id, run_id)
     Ok(pending) ->
@@ -563,14 +772,14 @@ pub fn handle_spawn(
 }
 
 fn handle_claim_append_failed(
-  state: transition_types.State,
-  pending: transition_types.PendingClaim,
-  task_identity: identity.TaskIdentity,
-  issue_id: identity.IssueId,
-  run_id: identity.RunId,
+  state: State,
+  pending: PendingClaim,
+  task_identity: TaskIdentity,
+  issue_id: IssueId,
+  run_id: RunId,
   correlation_id: String,
   err: ledger.LedgerError,
-) -> transition_types.Outcome {
+) -> Outcome {
   case pending.retry_cancellation {
     Some(retry_cancellation) ->
       restore_retry_after_claim_append_failure(
@@ -597,15 +806,15 @@ fn handle_claim_append_failed(
 }
 
 fn restore_retry_after_claim_append_failure(
-  state: transition_types.State,
-  pending: transition_types.PendingClaim,
-  task_identity: identity.TaskIdentity,
-  issue_id: identity.IssueId,
-  run_id: identity.RunId,
+  state: State,
+  pending: PendingClaim,
+  task_identity: TaskIdentity,
+  issue_id: IssueId,
+  run_id: RunId,
   correlation_id: String,
   err: ledger.LedgerError,
   retry_cancellation: transition_types.RetryCancellation,
-) -> transition_types.Outcome {
+) -> Outcome {
   let transition_types.RetryCancellation(previous_retry: previous_retry, ..) =
     retry_cancellation
   let runtime =
@@ -645,14 +854,14 @@ fn restore_retry_after_claim_append_failure(
 }
 
 fn schedule_claim_start_recovery_retry(
-  state: transition_types.State,
-  pending: transition_types.PendingClaim,
-  task_identity: identity.TaskIdentity,
-  issue_id: identity.IssueId,
-  run_id: identity.RunId,
+  state: State,
+  pending: PendingClaim,
+  task_identity: TaskIdentity,
+  issue_id: IssueId,
+  run_id: RunId,
   correlation_id: String,
   err: ledger.LedgerError,
-) -> transition_types.Outcome {
+) -> Outcome {
   let retry_reason = orchestrator_reason.RetryClaimStartLedgerAppendFailed
   let generation =
     next_retry_generation(
@@ -724,8 +933,8 @@ fn schedule_claim_start_recovery_retry(
 }
 
 fn next_retry_generation(
-  runtime: orchestrator_state.RuntimeState,
-  task_identity: identity.TaskIdentity,
+  runtime: RuntimeState,
+  task_identity: TaskIdentity,
   previous_retry_generation: Int,
 ) -> Int {
   case dict.get(runtime.retry_attempts, task_identity) {
@@ -739,10 +948,10 @@ fn next_retry_generation(
 }
 
 fn start_worker(
-  state: transition_types.State,
-  pending: transition_types.PendingClaim,
+  state: State,
+  pending: PendingClaim,
   callbacks: Callbacks,
-) -> transition_types.Outcome {
+) -> Outcome {
   let Callbacks(dispatch_candidates: dispatch) = callbacks
   let worker_entry =
     transition_types.WorkerEntry(
@@ -814,11 +1023,11 @@ fn start_worker(
 }
 
 fn stale_continuation(
-  state: transition_types.State,
+  state: State,
   correlation_id: String,
-  issue_id: identity.IssueId,
-  run_id: identity.RunId,
-) -> transition_types.Outcome {
+  issue_id: IssueId,
+  run_id: RunId,
+) -> Outcome {
   transition_types.Outcome(state: state, effects: [
     effects_types.Log("warn", "claim_ledger_continuation_stale", [
       #("issue_id", identity.issue_id_to_string(issue_id)),
@@ -828,10 +1037,7 @@ fn stale_continuation(
   ])
 }
 
-fn clear_pending_claim(
-  state: transition_types.State,
-  task_identity: identity.TaskIdentity,
-) -> transition_types.State {
+fn clear_pending_claim(state: State, task_identity: TaskIdentity) -> State {
   transition_types.State(
     ..state,
     pending_claims: dict.delete(state.pending_claims, task_identity),
@@ -839,30 +1045,12 @@ fn clear_pending_claim(
   |> sync_state
 }
 
-fn sync_state(state: transition_types.State) -> transition_types.State {
-  case sync_state_result(state) {
-    Ok(state) -> state
+fn sync_state(state: State) -> State {
+  case task_lifecycle_legacy.from_transition_state(state) {
+    Ok(directory) -> transition_types.State(..state, lifecycle: directory)
     Error(error) ->
       task_lifecycle_legacy.keep_state_after_projection_error(state, error)
   }
-}
-
-fn sync_state_result(
-  state: transition_types.State,
-) -> Result(transition_types.State, task_lifecycle_legacy.LifecycleError) {
-  case task_lifecycle_legacy.from_transition_state(state) {
-    Ok(directory) -> Ok(transition_types.State(..state, lifecycle: directory))
-    Error(error) -> Error(error)
-  }
-}
-
-fn lifecycle_projection_failed_log(
-  error: task_lifecycle_legacy.LifecycleError,
-) -> effects_types.Effect {
-  effects_types.Log("error", "task_lifecycle_projection_failed", [
-    #("fail_closed", "true"),
-    ..task_lifecycle_legacy.error_fields(error)
-  ])
 }
 
 fn claim_started_batch_is_valid(

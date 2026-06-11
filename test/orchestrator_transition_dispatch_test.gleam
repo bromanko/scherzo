@@ -708,6 +708,172 @@ pub fn review_lane_preflight_cached_blocking_failure_blocks_claim_test() {
   assert has_preflight_failure_log(effects)
 }
 
+pub fn review_lane_preflight_without_override_starts_effect_before_claim_test() {
+  let candidate = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let context =
+    context_requiring_preflight(review_lane_preflight_policy.Policy(
+      mode: review_lane_preflight_policy.OfflineRequired,
+      cache_ttl_seconds: 86_400,
+      park_on_failure: True,
+      strict_live_model_checks: False,
+    ))
+  let state = state_with_pending_dispatch_validation(candidate)
+  let identity = orchestrator_state.issue_identity(candidate)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.DispatchValidationCompleted(
+        candidate.id,
+        1,
+        Ok(candidate),
+        context,
+      ),
+      state,
+    )
+
+  assert dict.size(next.pending_claims) == 0
+  assert dict.has_key(next.pending_review_lane_preflights, identity)
+  assert !has_claim_issue(effects)
+  assert has_begin_review_lane_preflight(effects)
+}
+
+pub fn review_lane_preflight_completion_allows_claim_test() {
+  let candidate = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let context =
+    context_requiring_preflight(review_lane_preflight_policy.Policy(
+      mode: review_lane_preflight_policy.OfflineRequired,
+      cache_ttl_seconds: 86_400,
+      park_on_failure: True,
+      strict_live_model_checks: False,
+    ))
+  let identity = orchestrator_state.issue_identity(candidate)
+  let transition_types.Outcome(state: waiting, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.DispatchValidationCompleted(
+        candidate.id,
+        1,
+        Ok(candidate),
+        context,
+      ),
+      state_with_pending_dispatch_validation(candidate),
+    )
+  let assert Ok(pending) =
+    dict.get(waiting.pending_review_lane_preflights, identity)
+  let completion_context =
+    transition_types.DispatchContext(..context, now_ms: 999)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.ReviewLanePreflightCompleted(
+        identity,
+        candidate.id,
+        pending.generation,
+        "implementation",
+        completion_context,
+        review_lane_preflight.passed("cache-key"),
+      ),
+      waiting,
+    )
+
+  assert dict.size(next.pending_review_lane_preflights) == 0
+  let assert Ok(pending_claim) = dict.get(next.pending_claims, identity)
+  assert pending_claim.run_id == "ABC-1-999-1"
+  assert has_claim_issue(effects)
+}
+
+pub fn review_lane_preflight_completion_blocking_failure_parks_test() {
+  let candidate = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let context =
+    context_requiring_preflight(review_lane_preflight_policy.Policy(
+      mode: review_lane_preflight_policy.OfflineRequired,
+      cache_ttl_seconds: 86_400,
+      park_on_failure: True,
+      strict_live_model_checks: False,
+    ))
+  let identity = orchestrator_state.issue_identity(candidate)
+  let transition_types.Outcome(state: waiting, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.DispatchValidationCompleted(
+        candidate.id,
+        1,
+        Ok(candidate),
+        context,
+      ),
+      state_with_pending_dispatch_validation(candidate),
+    )
+  let assert Ok(pending) =
+    dict.get(waiting.pending_review_lane_preflights, identity)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.ReviewLanePreflightCompleted(
+        identity,
+        candidate.id,
+        pending.generation,
+        "implementation",
+        context,
+        review_lane_preflight.failed(
+          "cache-key",
+          "structured_output_tool_spec_provider_incompatible_schema",
+          "provider rejected enum",
+          True,
+        ),
+      ),
+      waiting,
+    )
+
+  assert dict.size(next.pending_review_lane_preflights) == 0
+  assert dict.size(next.pending_claims) == 0
+  assert dict.has_key(next.runtime.parked, identity)
+  assert !has_claim_issue(effects)
+  assert !has_start_worker(effects)
+  assert has_park_issue(effects)
+  assert has_preflight_failure_log(effects)
+}
+
+pub fn review_lane_preflight_stale_completion_does_not_claim_test() {
+  let candidate = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let context =
+    context_requiring_preflight(review_lane_preflight_policy.Policy(
+      mode: review_lane_preflight_policy.OfflineRequired,
+      cache_ttl_seconds: 86_400,
+      park_on_failure: True,
+      strict_live_model_checks: False,
+    ))
+  let identity = orchestrator_state.issue_identity(candidate)
+  let transition_types.Outcome(state: waiting, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.DispatchValidationCompleted(
+        candidate.id,
+        1,
+        Ok(candidate),
+        context,
+      ),
+      state_with_pending_dispatch_validation(candidate),
+    )
+  let assert Ok(pending) =
+    dict.get(waiting.pending_review_lane_preflights, identity)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.ReviewLanePreflightCompleted(
+        identity,
+        candidate.id,
+        pending.generation + 1,
+        "implementation",
+        context,
+        review_lane_preflight.passed("cache-key"),
+      ),
+      waiting,
+    )
+
+  assert dict.has_key(next.pending_review_lane_preflights, identity)
+  assert dict.size(next.pending_claims) == 0
+  assert !has_claim_issue(effects)
+  assert !has_park_issue(effects)
+  assert has_preflight_stale_log(effects)
+}
+
 pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
   let candidate = labelled_issue("issue-1", "ABC-1", "workflow:review")
   let context =
@@ -735,7 +901,12 @@ pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
             orchestrator_transition_test.fixture_workflow_dag("review"),
           ),
         ]),
-        policy: review_lane_preflight_policy.default(),
+        policy: review_lane_preflight_policy.Policy(
+          mode: review_lane_preflight_policy.Off,
+          cache_ttl_seconds: 86_400,
+          park_on_failure: True,
+          strict_live_model_checks: False,
+        ),
         override: None,
       ),
       now_ms: 456,
@@ -1035,6 +1206,19 @@ fn context_with_preflight(
   policy: review_lane_preflight_policy.Policy,
   result: review_lane_preflight.PreflightResult,
 ) -> transition_types.DispatchContext {
+  let context = context_requiring_preflight(policy)
+  transition_types.DispatchContext(
+    ..context,
+    review_lane_preflight: transition_types.ReviewLanePreflightContext(
+      ..context.review_lane_preflight,
+      override: Some(result),
+    ),
+  )
+}
+
+fn context_requiring_preflight(
+  policy: review_lane_preflight_policy.Policy,
+) -> transition_types.DispatchContext {
   transition_types.DispatchContext(
     ..orchestrator_transition_test.fixture_context(),
     routing: config_types.RoutingConfig(
@@ -1055,7 +1239,7 @@ fn context_with_preflight(
         ),
       ]),
       policy: policy,
-      override: Some(result),
+      override: None,
     ),
   )
 }
@@ -1125,6 +1309,26 @@ fn has_preflight_failure_log(effects: List(effects_types.Effect)) -> Bool {
   list.any(effects, fn(effect) {
     case effect {
       effects_types.Log(_, "review_infrastructure_preflight_failed", _) -> True
+      _ -> False
+    }
+  })
+}
+
+fn has_preflight_stale_log(effects: List(effects_types.Effect)) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.Log(_, "review_lane_preflight_stale", _) -> True
+      _ -> False
+    }
+  })
+}
+
+fn has_begin_review_lane_preflight(
+  effects: List(effects_types.Effect),
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.BeginReviewLanePreflight(_) -> True
       _ -> False
     }
   })

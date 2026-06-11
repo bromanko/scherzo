@@ -836,6 +836,9 @@ fn edge_shell() -> interpreter.ShellState(List(String)) {
     begin_dispatch_validation: fn(events, issue_id, _) {
       append_event(events, "validate:" <> issue_id)
     },
+    begin_review_lane_preflight: fn(events, request) {
+      append_event(events, "preflight:" <> request.issue_id)
+    },
     reserve_session_sequence: fn(events, sequence) {
       append_event(events, "reserve:" <> int.to_string(sequence))
     },

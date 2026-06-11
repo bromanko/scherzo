@@ -135,6 +135,11 @@ pub fn print_query_metrics(
     metrics.pending_dispatch_validations,
     output_line,
   )
+  print_int(
+    "pending_review_lane_preflights",
+    metrics.pending_review_lane_preflights,
+    output_line,
+  )
   print_int("claimed_tasks", metrics.claimed_tasks, output_line)
   print_int("retry_tasks", metrics.retry_tasks, output_line)
   print_int("parked_tasks", metrics.parked_tasks, output_line)

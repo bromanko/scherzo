@@ -47,6 +47,8 @@ import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
 import scherzo/orchestrator/yaml_step_orphans
 import scherzo/orchestrator/yaml_workflow_lifecycle
+import scherzo/review_lane_preflight
+import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
@@ -191,6 +193,10 @@ type State {
     pending_dispatch_validations: Dict(
       identity.TaskIdentity,
       transition_types.PendingDispatchValidation,
+    ),
+    pending_review_lane_preflights: Dict(
+      identity.TaskIdentity,
+      transition_types.PendingReviewLanePreflight,
     ),
     next_dispatch_validation_generation: Int,
     recovery_by_issue: Dict(String, session_event.RecoveryInfo),
@@ -434,6 +440,9 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
     running_scheduled_workers: running_scheduled_workers,
     queued_claims: dict.size(state.pending_claims),
     pending_dispatch_validations: dict.size(state.pending_dispatch_validations),
+    pending_review_lane_preflights: dict.size(
+      state.pending_review_lane_preflights,
+    ),
     claimed_tasks: dict.size(state.runtime.claimed),
     retry_tasks: dict.size(state.runtime.retry_attempts),
     parked_tasks: dict.size(state.runtime.parked),
@@ -863,6 +872,7 @@ pub fn start(
                           yaml_step_tokens: session_metrics.new(),
                           pending_claims: dict.new(),
                           pending_dispatch_validations: dict.new(),
+                          pending_review_lane_preflights: dict.new(),
                           next_dispatch_validation_generation: 1,
                           recovery_by_issue: startup_recovery.recovery_by_issue,
                           effect_runner: effect_runner_handle,
@@ -2533,6 +2543,7 @@ fn issue_is_active_or_pending(state: State, issue_id: String) -> Bool {
   has_active_run(state, issue_id)
   || dict.has_key(state.pending_claims, identity)
   || dict.has_key(state.pending_dispatch_validations, identity)
+  || dict.has_key(state.pending_review_lane_preflights, identity)
   || dict.has_key(state.runtime.claimed, identity)
   || dict.has_key(state.runtime.retry_attempts, identity)
   || dict.has_key(state.runtime.parked, identity)
@@ -3131,9 +3142,13 @@ fn issue_for_id(
           case dict.get(state.pending_dispatch_validations, identity) {
             Ok(pending) -> Ok(pending.issue)
             Error(Nil) ->
-              case dict.get(state.runtime.completed, identity) {
-                Ok(issue) -> Ok(issue)
-                Error(Nil) -> fetch_issue_by_id(state, issue_id)
+              case dict.get(state.pending_review_lane_preflights, identity) {
+                Ok(pending) -> Ok(pending.issue)
+                Error(Nil) ->
+                  case dict.get(state.runtime.completed, identity) {
+                    Ok(issue) -> Ok(issue)
+                    Error(Nil) -> fetch_issue_by_id(state, issue_id)
+                  }
               }
           }
       }
@@ -3177,10 +3192,20 @@ fn local_issues_with_identifier(
     state.pending_dispatch_validations
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
+  let pending_preflights =
+    state.pending_review_lane_preflights
+    |> dict.values
+    |> list.map(fn(entry) { entry.issue })
   let completed = state.runtime.completed |> dict.values
   list.append(
     running,
-    list.append(pending, list.append(pending_validations, completed)),
+    list.append(
+      pending,
+      list.append(
+        pending_validations,
+        list.append(pending_preflights, completed),
+      ),
+    ),
   )
   |> list.filter(fn(issue) { issue.identifier == identifier })
 }
@@ -3475,6 +3500,7 @@ fn transition_dispatch_context(
     state.dependencies.now_ms(),
     state.recovery_by_issue,
     state.workflow.bundle.orchestrator.config_dir,
+    review_lane_preflight_policy.from_env(),
   )
 }
 
@@ -3484,6 +3510,7 @@ fn transition_state_from_daemon(state: State) -> transition_types.State {
     workers: state.workers,
     pending_claims: state.pending_claims,
     pending_dispatch_validations: state.pending_dispatch_validations,
+    pending_review_lane_preflights: state.pending_review_lane_preflights,
     lifecycle: transition_types.empty_lifecycle(),
     retry_refresh_generations: dict.from_list(
       retry_scheduler.refresh_generations(state.retry),
@@ -3506,6 +3533,7 @@ fn merge_transition_state(
         workers: transition_state.workers,
         pending_claims: transition_state.pending_claims,
         pending_dispatch_validations: transition_state.pending_dispatch_validations,
+        pending_review_lane_preflights: transition_state.pending_review_lane_preflights,
         next_dispatch_validation_generation: transition_state.next_dispatch_validation_generation,
         shell_state_overrides_transition: False,
       )
@@ -3573,6 +3601,9 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
           tracker_adapter: state.tracker_adapter,
         ),
       )
+    },
+    begin_review_lane_preflight: fn(state, request) {
+      enqueue_side_effect(state, effect_runner.ReviewLanePreflight(request))
     },
     reserve_session_sequence: transition_reserve_session_sequence,
     claim_issue: fn(state, task_ref, issue, workspace_path, run_id) {
@@ -4690,6 +4721,7 @@ fn scheduled_slot_available_for_start(state: State) -> Bool {
   active_run_count(state)
   + dict.size(state.pending_claims)
   + dict.size(state.pending_dispatch_validations)
+  + dict.size(state.pending_review_lane_preflights)
   + list.length(worker_registry.scheduled_worker_handles(state.registry))
   + pending_issue_retry_headroom(state)
   < state.workflow.effective.agent.max_concurrent_agents
@@ -6145,6 +6177,7 @@ fn effect_completion_context(
       running_refresh_finished: handle_running_refresh_finished,
       retry_refresh_finished: handle_retry_refresh_finished,
       dispatch_claim_validation_finished: handle_dispatch_claim_validation_finished,
+      review_lane_preflight_finished: handle_review_lane_preflight_finished,
       handoff_claim_finished: handle_handoff_claim_finished,
       handoff_success_finished: handle_handoff_success_finished,
       handoff_failure_finished: handle_handoff_failure_finished,
@@ -6176,6 +6209,26 @@ fn handle_dispatch_claim_validation_finished(
       generation,
       result,
       transition_dispatch_context(state),
+    ),
+  ])
+}
+
+fn handle_review_lane_preflight_finished(
+  state: State,
+  task_identity: identity.TaskIdentity,
+  issue_id: String,
+  generation: Int,
+  workflow_id: String,
+  result: review_lane_preflight.PreflightResult,
+) -> State {
+  run_transition_messages(state, [
+    transition_types.ReviewLanePreflightCompleted(
+      task_identity,
+      issue_id,
+      generation,
+      workflow_id,
+      transition_dispatch_context(state),
+      result,
     ),
   ])
 }
@@ -6904,6 +6957,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
     workers: transition_types.new_worker_directory(),
     pending_claims: dict.new(),
     pending_dispatch_validations: dict.new(),
+    pending_review_lane_preflights: dict.new(),
     scheduled_runtime: scheduled_runtime.new(),
     scheduled_retry_timers: dict.new(),
     scheduled_report_retry_timers: dict.new(),
