@@ -188,6 +188,7 @@ fn query_metrics_response() -> query_types.QueryResponse {
     poll_timer_active: True,
     retry_timer_count: 11,
     retry_refresh_in_flight_count: 12,
+    lifecycle_projection_failed: True,
     scheduled_due_count: 13,
     scheduled_next_due_count: 19,
     scheduled_pending_count: 14,
@@ -387,6 +388,7 @@ pub fn query_metrics_human_executes_query_and_formats_metrics_test() {
   assert string.contains(transcript, "active_sessions: 3")
   assert string.contains(transcript, "running_workers: 2")
   assert string.contains(transcript, "scheduled_next_due_count: 19")
+  assert string.contains(transcript, "lifecycle_projection_failed: true")
   assert string.contains(transcript, "token_total: 42")
 }
 

@@ -5,8 +5,10 @@ import orchestrator_transition_invariant_helpers as invariant_helpers
 import orchestrator_transition_test
 import scherzo/config/types as config_types
 import scherzo/control/command
+import scherzo/orchestrator/daemon_transition_shell
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/task_lifecycle
+import scherzo/orchestrator/task_lifecycle_legacy
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight
@@ -49,6 +51,50 @@ pub fn initial_dispatch_skips_non_dispatch_state_test() {
 
   assert dict.size(next.pending_dispatch_validations) == 0
   assert effects == []
+}
+
+pub fn conflicting_lifecycle_sources_fail_closed_and_log_test() {
+  assert_lifecycle_projection_error_blocks_dispatch(
+    state_with_conflicting_lifecycle_sources(),
+    "conflicting_lifecycle_sources",
+  )
+}
+
+pub fn missing_claimed_lifecycle_fails_closed_and_logs_test() {
+  assert_lifecycle_projection_error_blocks_dispatch(
+    state_with_missing_claimed_lifecycle(),
+    "missing_claimed_lifecycle",
+  )
+}
+
+pub fn missing_retry_waiting_for_refresh_fails_closed_and_logs_test() {
+  assert_lifecycle_projection_error_blocks_dispatch(
+    state_with_missing_retry_waiting_for_refresh(),
+    "missing_retry_waiting_for_refresh",
+  )
+}
+
+pub fn running_worker_mismatch_fails_closed_and_logs_test() {
+  assert_lifecycle_projection_error_blocks_dispatch(
+    state_with_running_worker_mismatch(),
+    "running_worker_mismatch",
+  )
+}
+
+pub fn mixed_retry_refresh_identity_projects_without_fail_closed_test() {
+  let issue = lifecycle_projection_error_issue()
+  let state = state_with_retry_refresh_identity_mismatch(issue)
+  let task_ref = task.from_legacy_issue(issue).ref
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
+
+  assert !daemon_transition_shell.lifecycle_projection_failed(state)
+  let assert Ok(directory) = task_lifecycle_legacy.from_transition_state(state)
+  let assert Ok(lifecycle) = task_lifecycle.get(directory, task_identity)
+  let assert task_lifecycle.RetryRefreshing(_, issue_id, generation, delay_ms) =
+    lifecycle
+  assert issue_id == issue.id
+  assert generation == 7
+  assert delay_ms == 1000
 }
 
 pub fn automatic_retry_non_dispatch_state_dispatches_test() {
@@ -775,6 +821,140 @@ fn state_with_pending_dispatch_validation(
   )
 }
 
+fn assert_lifecycle_projection_error_blocks_dispatch(
+  state: transition_types.State,
+  expected_error_code: String,
+) {
+  assert daemon_transition_shell.lifecycle_projection_failed(state)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.DispatchCandidates(
+        [dispatch_candidate_issue()],
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state,
+    )
+
+  assert dict.size(next.pending_dispatch_validations) == 0
+  assert !has_begin_dispatch_validation(effects)
+  assert !has_claim_issue(effects)
+  assert has_lifecycle_projection_error_log(effects, expected_error_code)
+}
+
+fn state_with_conflicting_lifecycle_sources() -> transition_types.State {
+  let issue = lifecycle_projection_error_issue()
+  let base = orchestrator_transition_test.state_with_pending_claim(issue)
+  let task_ref = task.from_legacy_issue(issue).ref
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
+  transition_types.State(
+    ..base,
+    runtime: orchestrator_state.RuntimeState(
+      ..base.runtime,
+      retry_attempts: dict.from_list([
+        #(
+          task_identity,
+          orchestrator_state.RetryEntry(
+            task_ref: task_ref,
+            issue_id: issue.id,
+            delay_ms: 1000,
+            timer_generation: 1,
+          ),
+        ),
+      ]),
+    ),
+  )
+}
+
+fn state_with_missing_claimed_lifecycle() -> transition_types.State {
+  let issue = lifecycle_projection_error_issue()
+  transition_types.State(
+    ..orchestrator_transition_test.fixture_state(),
+    runtime: orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      claimed: dict.from_list([
+        #(orchestrator_state.issue_identity(issue), issue.identifier),
+      ]),
+    ),
+  )
+}
+
+fn state_with_missing_retry_waiting_for_refresh() -> transition_types.State {
+  let issue = lifecycle_projection_error_issue()
+  transition_types.State(
+    ..orchestrator_transition_test.fixture_state(),
+    retry_refresh_generations: dict.from_list([
+      #(orchestrator_state.issue_identity(issue), 7),
+    ]),
+  )
+}
+
+fn state_with_running_worker_mismatch() -> transition_types.State {
+  let issue = lifecycle_projection_error_issue()
+  let task_value = task.from_legacy_issue(issue)
+  let task_identity = orchestrator_state.task_ref_identity(task_value.ref)
+  transition_types.State(
+    ..orchestrator_transition_test.fixture_state(),
+    runtime: orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      running: dict.from_list([
+        #(
+          task_identity,
+          orchestrator_state.RunningEntry(
+            task: task_value,
+            issue: issue,
+            workspace_path: "test/tmp/workspaces/" <> issue.identifier,
+            session: None,
+          ),
+        ),
+      ]),
+    ),
+  )
+}
+
+fn state_with_retry_refresh_identity_mismatch(
+  issue: tracker_issue.Issue,
+) -> transition_types.State {
+  let task_ref = task.from_legacy_issue(issue).ref
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
+  transition_types.State(
+    ..orchestrator_transition_test.fixture_state(),
+    runtime: orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      retry_attempts: dict.from_list([
+        #(
+          task_identity,
+          orchestrator_state.RetryEntry(
+            task_ref: task_ref,
+            issue_id: issue.id,
+            delay_ms: 1000,
+            timer_generation: 7,
+          ),
+        ),
+      ]),
+    ),
+    retry_refresh_generations: dict.from_list([
+      #(orchestrator_state.linear_issue_id_identity(issue.id), 7),
+    ]),
+  )
+}
+
+fn lifecycle_projection_error_issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
+    ..orchestrator_transition_test.fixture_issue(),
+    id: "projection-error-issue",
+    identifier: "ABC-PROJECTION",
+  )
+}
+
+fn dispatch_candidate_issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
+    ..orchestrator_transition_test.fixture_issue(),
+    id: "dispatch-candidate-issue",
+    identifier: "ABC-CANDIDATE",
+  )
+}
+
 fn state_with_retry(issue: tracker_issue.Issue) -> transition_types.State {
   let runtime =
     orchestrator_state.RuntimeState(
@@ -886,6 +1066,40 @@ fn has_claim_issue(effects: List(effects_types.Effect)) -> Bool {
       effects_types.ClaimIssue(_, _, _, _) -> True
       _ -> False
     }
+  })
+}
+
+fn has_begin_dispatch_validation(effects: List(effects_types.Effect)) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.BeginDispatchValidation(_, _) -> True
+      _ -> False
+    }
+  })
+}
+
+fn has_lifecycle_projection_error_log(
+  effects: List(effects_types.Effect),
+  expected_error_code: String,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.Log("error", "task_lifecycle_projection_failed", fields) ->
+        field_equals(fields, "error_code", expected_error_code)
+        && field_equals(fields, "fail_closed", "true")
+      _ -> False
+    }
+  })
+}
+
+fn field_equals(
+  fields: List(#(String, String)),
+  expected_key: String,
+  expected_value: String,
+) -> Bool {
+  list.any(fields, fn(field) {
+    let #(key, value) = field
+    key == expected_key && value == expected_value
   })
 }
 

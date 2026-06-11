@@ -732,6 +732,7 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
   assert metrics.running_workers == 1
   assert metrics.running_scheduled_workers == 0
   assert metrics.queued_claims == 0
+  assert !metrics.lifecycle_projection_failed
   assert metrics.token_totals.total == 0
 
   test_async.release_barrier(worker_barrier)
@@ -835,7 +836,7 @@ pub fn daemon_status_and_metrics_queries_stay_bounded_with_large_retained_histor
   assert metrics.active_sessions == 0
   assert metrics.running_workers == 0
   assert string.length(encoded_status) < 300
-  assert string.length(encoded_metrics) < 900
+  assert string.length(encoded_metrics) < 1000
   assert !string.contains(encoded_status, large_history_marker())
   assert !string.contains(encoded_metrics, large_history_marker())
 
