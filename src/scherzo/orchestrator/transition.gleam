@@ -2481,10 +2481,9 @@ fn finish_operator_worker_failure_entry(
       runtime_identity,
       final_issue,
       failure.tokens,
+      context.now_ms,
     )
-  let state =
-    park_runtime(
-      state,
+    |> park_runtime(
       entry.task_ref,
       final_issue,
       orchestrator_reason.ParkOperator(reason_text),

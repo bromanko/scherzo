@@ -2745,9 +2745,11 @@ fn recover_one_interrupted_run(
             build,
             projection,
             issue,
+            run_id,
             issue_id,
             issue_identifier,
             workspace_path,
+            now_ms,
           )
         False ->
           case recovery_policy.is_active(config, issue.state) {
@@ -2771,9 +2773,11 @@ fn recover_terminal_interrupted(
   build: Build,
   projection: projection.Projection,
   issue: tracker_issue.Issue,
+  run_id: String,
   issue_id: String,
   issue_identifier: String,
   workspace_path: String,
+  now_ms: Int,
 ) -> Build {
   let workspace_path = case string.trim(workspace_path) == "" {
     True -> workspace_for_issue(projection, issue_id)
@@ -2786,17 +2790,43 @@ fn recover_terminal_interrupted(
       ..build.cleanup_workspaces
     ]
   }
-  let identity = orchestrator_state.issue_identity(issue)
+  let task_ref = orchestrator_state.linear_issue_id_ref(issue_id)
+  let identity = orchestrator_state.task_ref_identity(task_ref)
+  let reset_counter = terminal_counter_reset_needed(build.runtime, identity)
+  let runtime =
+    build.runtime
+    |> orchestrator_state.release_successful_task_claim(task_ref)
+    |> orchestrator_state.cache_completed_task(identity, issue, now_ms)
+  let record_bodies = case reset_counter {
+    True -> [
+      record.IssueCounterUpdated(
+        issue_id,
+        issue_identifier,
+        0,
+        0,
+        now_ms,
+        Some(run_id),
+      ),
+      ..build.record_bodies
+    ]
+    False -> build.record_bodies
+  }
   Build(
     ..build,
-    runtime: orchestrator_state.RuntimeState(
-      ..build.runtime,
-      completed: dict.insert(build.runtime.completed, identity, issue),
-      claimed: dict.delete(build.runtime.claimed, identity),
-      retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
-    ),
+    runtime: runtime,
+    record_bodies: record_bodies,
     cleanup_workspaces: cleanup_workspaces,
   )
+}
+
+fn terminal_counter_reset_needed(
+  runtime: orchestrator_state.RuntimeState,
+  task_identity: orchestrator_state.TaskIdentity,
+) -> Bool {
+  case dict.get(runtime.issue_counters, task_identity) {
+    Ok(counter) -> counter.failure_attempts != 0 || counter.worker_sessions != 0
+    Error(Nil) -> False
+  }
 }
 
 fn recover_active_interrupted(
