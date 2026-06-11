@@ -12,6 +12,7 @@ import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/claims
 import scherzo/orchestrator/transitions/commands
+import scherzo/review_lane_preflight
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
@@ -91,6 +92,23 @@ pub fn handle(
         generation,
         result,
         context,
+      )
+    transition_types.ReviewLanePreflightCompleted(
+      task_identity,
+      issue_id,
+      generation,
+      workflow_id,
+      context,
+      result,
+    ) ->
+      handle_review_lane_preflight_completed(
+        state,
+        task_identity,
+        issue_id,
+        generation,
+        workflow_id,
+        context,
+        result,
       )
     transition_types.HandoffClaimCompleted(
       task_identity,
@@ -318,6 +336,7 @@ fn handle_shutdown_requested(
       workers: transition_types.new_worker_directory(),
       pending_claims: dict.new(),
       pending_dispatch_validations: dict.new(),
+      pending_review_lane_preflights: dict.new(),
       lifecycle: transition_types.empty_lifecycle(),
       retry_refresh_generations: dict.new(),
     ),
@@ -723,6 +742,49 @@ fn stale_dispatch_validation(
 ) -> transition_types.Outcome {
   transition_types.Outcome(state: state, effects: [
     effects_types.Log("info", "dispatch_validation_stale", [
+      #("issue_id", issue_id),
+      #("generation", int.to_string(generation)),
+    ]),
+  ])
+}
+
+fn handle_review_lane_preflight_completed(
+  state: transition_types.State,
+  task_identity: identity.TaskIdentity,
+  issue_id: String,
+  generation: Int,
+  workflow_id: String,
+  context: transition_types.DispatchContext,
+  result: review_lane_preflight.PreflightResult,
+) -> transition_types.Outcome {
+  case dict.get(state.pending_review_lane_preflights, task_identity) {
+    Error(Nil) -> stale_review_lane_preflight(state, issue_id, generation)
+    Ok(pending) ->
+      case
+        pending.issue.id != issue_id
+        || pending.generation != generation
+        || pending.workflow_id != workflow_id
+      {
+        True -> stale_review_lane_preflight(state, issue_id, generation)
+        False ->
+          claims.resume_after_review_lane_preflight(
+            claims.remove_pending_review_lane_preflight(state, task_identity),
+            pending,
+            context,
+            result,
+            claim_callbacks(),
+          )
+      }
+  }
+}
+
+fn stale_review_lane_preflight(
+  state: transition_types.State,
+  issue_id: String,
+  generation: Int,
+) -> transition_types.Outcome {
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("info", "review_lane_preflight_stale", [
       #("issue_id", issue_id),
       #("generation", int.to_string(generation)),
     ]),
@@ -3211,6 +3273,7 @@ fn dispatch_slots_used(
   list.length(active_issue_ids(state, context))
   + dict.size(state.pending_claims)
   + dict.size(state.pending_dispatch_validations)
+  + dict.size(state.pending_review_lane_preflights)
   + context.reserved_non_issue_slots
 }
 

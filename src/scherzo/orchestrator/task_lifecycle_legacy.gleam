@@ -184,50 +184,60 @@ fn from_transition_sources(
             Error(error) -> Error(error)
             Ok(directory) ->
               case
-                insert_pending_claim_entries(
-                  dict.to_list(state.pending_claims),
+                insert_pending_review_lane_preflight_entries(
+                  dict.to_list(state.pending_review_lane_preflights),
                   directory,
+                  dict.keys(state.runtime.claimed),
                 )
               {
                 Error(error) -> Error(error)
                 Ok(directory) ->
                   case
-                    insert_retry_entries(
-                      retry_entries,
+                    insert_pending_claim_entries(
+                      dict.to_list(state.pending_claims),
                       directory,
-                      refresh_generations,
                     )
                   {
                     Error(error) -> Error(error)
                     Ok(directory) ->
                       case
-                        insert_parked_entries(
-                          dict.to_list(state.runtime.parked),
+                        insert_retry_entries(
+                          retry_entries,
                           directory,
+                          refresh_generations,
                         )
                       {
                         Error(error) -> Error(error)
                         Ok(directory) ->
                           case
-                            insert_completed_entries(
-                              dict.to_list(state.runtime.completed),
+                            insert_parked_entries(
+                              dict.to_list(state.runtime.parked),
                               directory,
                             )
                           {
                             Error(error) -> Error(error)
                             Ok(directory) ->
                               case
-                                ensure_refresh_entries(
-                                  refresh_generations,
+                                insert_completed_entries(
+                                  dict.to_list(state.runtime.completed),
                                   directory,
                                 )
                               {
                                 Error(error) -> Error(error)
                                 Ok(directory) ->
-                                  ensure_claimed_entries(
-                                    dict.keys(state.runtime.claimed),
-                                    directory,
-                                  )
+                                  case
+                                    ensure_refresh_entries(
+                                      refresh_generations,
+                                      directory,
+                                    )
+                                  {
+                                    Error(error) -> Error(error)
+                                    Ok(directory) ->
+                                      ensure_claimed_entries(
+                                        dict.keys(state.runtime.claimed),
+                                        directory,
+                                      )
+                                  }
                               }
                           }
                       }
@@ -366,6 +376,40 @@ fn insert_pending_dispatch_validation_entries(
         Error(error) -> Error(error)
         Ok(next) -> insert_pending_dispatch_validation_entries(rest, next)
       }
+  }
+}
+
+fn insert_pending_review_lane_preflight_entries(
+  entries: List(
+    #(identity.TaskIdentity, transition_types.PendingReviewLanePreflight),
+  ),
+  directory: task_lifecycle.TaskDirectory,
+  claimed: List(identity.TaskIdentity),
+) -> Result(task_lifecycle.TaskDirectory, task_lifecycle.LifecycleError) {
+  case entries {
+    [] -> Ok(directory)
+    [#(task_identity, pending), ..rest] -> {
+      let lifecycle = case list.contains(claimed, task_identity) {
+        True ->
+          task_lifecycle.RetryRefreshing(
+            task_ref: pending.task_ref,
+            issue_id: pending.issue.id,
+            generation: pending.generation,
+            delay_ms: 0,
+          )
+        False ->
+          task_lifecycle.Validating(
+            task_ref: pending.task_ref,
+            issue: pending.issue,
+            generation: pending.generation,
+          )
+      }
+      case task_lifecycle.put(directory, lifecycle) {
+        Error(error) -> Error(error)
+        Ok(next) ->
+          insert_pending_review_lane_preflight_entries(rest, next, claimed)
+      }
+    }
   }
 }
 

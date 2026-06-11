@@ -31,6 +31,7 @@ fn errors(state: transition_types.State) -> List(InvariantError) {
     worker_directory_errors(state),
     pending_claim_errors(state),
     pending_dispatch_validation_errors(state),
+    pending_review_lane_preflight_errors(state),
     dispatch_slot_errors(state),
   ])
 }
@@ -240,12 +241,13 @@ fn claimed_state_errors(state: transition_types.State) -> List(InvariantError) {
       dict.has_key(state.runtime.running, task_identity)
       || dict.has_key(state.runtime.retry_attempts, task_identity)
       || dict.has_key(state.pending_claims, task_identity)
+      || dict.has_key(state.pending_review_lane_preflights, task_identity)
     when(
       !has_lifecycle_entry,
       invariant(
         "claimed_lifecycle_missing",
         task_identity,
-        "runtime.claimed entry is not backed by runtime.running, runtime.retry_attempts, or pending_claims",
+        "runtime.claimed entry is not backed by runtime.running, runtime.retry_attempts, pending_claims, or pending_review_lane_preflights",
       ),
     )
   })
@@ -756,10 +758,114 @@ fn pending_dispatch_validation_errors(
   })
 }
 
+fn pending_review_lane_preflight_errors(
+  state: transition_types.State,
+) -> List(InvariantError) {
+  state.pending_review_lane_preflights
+  |> dict.to_list
+  |> list.flat_map(fn(pair) {
+    let #(task_identity, pending) = pair
+    let expected_identity =
+      orchestrator_state.task_ref_identity(pending.task_ref)
+    // Pending review-lane preflights can belong to a claimed retry refresh, so
+    // runtime.claimed is intentionally not treated as a conflict here.
+    list.flatten([
+      when(
+        expected_identity != task_identity,
+        invariant(
+          "pending_review_lane_preflight_key_mismatch",
+          task_identity,
+          "pending_review_lane_preflights key does not match pending task ref "
+            <> identity.to_string(expected_identity),
+        ),
+      ),
+      when(
+        pending.issue.id != pending.task_ref.remote_id,
+        invariant(
+          "pending_review_lane_preflight_issue_mismatch",
+          task_identity,
+          "pending review-lane preflight issue id "
+            <> pending.issue.id
+            <> " does not match task ref remote id "
+            <> pending.task_ref.remote_id,
+        ),
+      ),
+      when(
+        pending.generation <= 0,
+        invariant(
+          "pending_review_lane_preflight_generation_invalid",
+          task_identity,
+          "pending review-lane preflight generation must be positive",
+        ),
+      ),
+      when(
+        pending.generation >= state.next_dispatch_validation_generation,
+        invariant(
+          "pending_review_lane_preflight_generation_unreserved",
+          task_identity,
+          "pending review-lane preflight generation "
+            <> int.to_string(pending.generation)
+            <> " is not below next_dispatch_validation_generation "
+            <> int.to_string(state.next_dispatch_validation_generation),
+        ),
+      ),
+      when(
+        dict.has_key(state.runtime.running, task_identity),
+        invariant(
+          "pending_review_lane_preflight_running_conflict",
+          task_identity,
+          "task is present in both pending_review_lane_preflights and runtime.running",
+        ),
+      ),
+      when(
+        dict.has_key(state.pending_claims, task_identity),
+        invariant(
+          "pending_review_lane_preflight_pending_claim_conflict",
+          task_identity,
+          "task is present in both pending_review_lane_preflights and pending_claims",
+        ),
+      ),
+      when(
+        dict.has_key(state.pending_dispatch_validations, task_identity),
+        invariant(
+          "pending_review_lane_preflight_dispatch_validation_conflict",
+          task_identity,
+          "task is present in both pending_review_lane_preflights and pending_dispatch_validations",
+        ),
+      ),
+      when(
+        dict.has_key(state.runtime.retry_attempts, task_identity),
+        invariant(
+          "pending_review_lane_preflight_retry_conflict",
+          task_identity,
+          "task is present in both pending_review_lane_preflights and runtime.retry_attempts",
+        ),
+      ),
+      when(
+        dict.has_key(state.runtime.parked, task_identity),
+        invariant(
+          "pending_review_lane_preflight_parked_conflict",
+          task_identity,
+          "task is present in both pending_review_lane_preflights and runtime.parked",
+        ),
+      ),
+      when(
+        dict.has_key(state.workers.by_issue, task_identity),
+        invariant(
+          "pending_review_lane_preflight_worker_conflict",
+          task_identity,
+          "task is present in both pending_review_lane_preflights and workers.by_issue",
+        ),
+      ),
+    ])
+  })
+}
+
 fn dispatch_slot_errors(state: transition_types.State) -> List(InvariantError) {
   let pending_slots =
     dict.size(state.pending_claims)
     + dict.size(state.pending_dispatch_validations)
+    + dict.size(state.pending_review_lane_preflights)
   let running_slots = dict.size(state.runtime.running)
   let max_slots = state.runtime.max_concurrent_agents
   case max_slots <= 0 {

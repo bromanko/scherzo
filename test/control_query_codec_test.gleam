@@ -211,6 +211,8 @@ pub fn metrics_dto_uses_narrow_non_secret_source_test() {
       remote_client_status: "connected",
       workflow_count: 2,
       active_sessions: 1,
+      pending_dispatch_validations: 3,
+      pending_review_lane_preflights: 4,
       aggregate_tokens: session_tokens.TokenTotals(
         input: 10,
         output: 20,
@@ -226,6 +228,8 @@ pub fn metrics_dto_uses_narrow_non_secret_source_test() {
   assert string.contains(encoded, "\"daemon_id\":\"daemon-1\"")
   assert string.contains(encoded, "\"schema_version\":1")
   assert string.contains(encoded, "\"active_sessions\":1")
+  assert string.contains(encoded, "\"pending_dispatch_validations\":3")
+  assert string.contains(encoded, "\"pending_review_lane_preflights\":4")
   assert string.contains(encoded, "\"scheduled_next_due_count\":0")
   assert string.contains(encoded, "\"lifecycle_projection_failed\":false")
   assert string.contains(encoded, "\"total\":37")

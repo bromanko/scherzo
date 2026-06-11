@@ -190,6 +190,7 @@ fn metrics_response() -> types.QueryResponse {
     running_scheduled_workers: 0,
     queued_claims: 0,
     pending_dispatch_validations: 0,
+    pending_review_lane_preflights: 0,
     claimed_tasks: 0,
     retry_tasks: 0,
     parked_tasks: 0,
