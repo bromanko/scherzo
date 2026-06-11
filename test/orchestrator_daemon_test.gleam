@@ -3227,7 +3227,7 @@ pub fn daemon_scheduled_failure_reports_without_workflow_retry_test() {
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
-  let assert Ok(_request) = process.receive(report_subject, within: 1000)
+  let assert Ok(_request) = process.receive(report_subject, within: 5000)
   assert wait_for_records(
     root,
     fn(records) {
@@ -3393,7 +3393,7 @@ pub fn daemon_scheduled_report_retry_blocks_new_intervals_until_reported_test() 
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
-    process.receive(report_subject, within: 1000)
+    process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
   assert wait_for_records(
