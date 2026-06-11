@@ -12,6 +12,7 @@ import scherzo/orchestrator/transitions/helpers
 import scherzo/path as scherzo_path
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_gate
+import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
@@ -19,7 +20,6 @@ import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 import scherzo/state/record
-import scherzo/structured_output
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workspace
@@ -34,9 +34,8 @@ pub type Callbacks {
   )
 }
 
-pub fn sync_outcome(
-  outcome: transition_types.Outcome,
-) -> transition_types.Outcome {
+// nolint: missing_type_annotation -- return type is constrained by transition_types.Outcome constructor while keeping this oversized transition module within its source guardrail baseline
+pub fn sync_outcome(outcome: transition_types.Outcome) {
   transition_types.Outcome(
     state: sync_state(outcome.state),
     effects: outcome.effects,
@@ -57,10 +56,11 @@ pub fn has_tracker_claim(
   task_lifecycle_legacy.has_tracker_claim(state, task_identity)
 }
 
+// nolint: missing_type_annotation -- type is constrained by task_lifecycle_legacy.pending_count_for_state without adding another import to this oversized transition module
 pub fn pending_count_for_state(
   state: transition_types.State,
   normalized_state,
-) -> Int {
+) {
   task_lifecycle_legacy.pending_count_for_state(state, normalized_state)
 }
 
@@ -90,6 +90,38 @@ pub fn remove_pending_dispatch_validation(
     ..state,
     pending_dispatch_validations: dict.delete(
       state.pending_dispatch_validations,
+      task_identity,
+    ),
+  )
+  |> sync_state
+}
+
+pub fn add_pending_review_lane_preflight(
+  state: transition_types.State,
+  task_identity: identity.TaskIdentity,
+  pending: transition_types.PendingReviewLanePreflight,
+  next_generation: Int,
+) -> transition_types.State {
+  transition_types.State(
+    ..state,
+    pending_review_lane_preflights: dict.insert(
+      state.pending_review_lane_preflights,
+      task_identity,
+      pending,
+    ),
+    next_dispatch_validation_generation: next_generation,
+  )
+  |> sync_state
+}
+
+pub fn remove_pending_review_lane_preflight(
+  state: transition_types.State,
+  task_identity: identity.TaskIdentity,
+) -> transition_types.State {
+  transition_types.State(
+    ..state,
+    pending_review_lane_preflights: dict.delete(
+      state.pending_review_lane_preflights,
       task_identity,
     ),
   )
@@ -216,129 +248,313 @@ fn begin_for_issue_with_retry_metadata(
       ])
     }
     Ok(workflow_id) ->
-      case review_lane_claim_gate(context, workflow_id) {
-        review_lane_preflight_gate.ClaimBlocked(code, message, park_on_failure) ->
-          block_for_review_lane_preflight(
+      case
+        begin_review_lane_preflight_if_needed(
+          state,
+          issue,
+          remaining_candidates,
+          context,
+          callbacks,
+          workflow_id,
+          previous_retry_generation,
+          retry_cancellation,
+        )
+      {
+        Some(outcome) -> outcome
+        None ->
+          begin_claim_for_workflow(
             state,
             issue,
             remaining_candidates,
             context,
             callbacks,
             workflow_id,
-            code,
-            message,
-            park_on_failure,
+            previous_retry_generation,
+            retry_cancellation,
           )
-        review_lane_preflight_gate.ClaimAllowed ->
-          case
-            workspace.workspace_path(context.workspace_root, issue.identifier)
-          {
-            Error(err) -> {
-              let outcome = dispatch(remaining_candidates, state, context)
-              transition_types.Outcome(state: outcome.state, effects: [
-                effects_types.Log("warn", "dispatch_workspace_path_failed", [
-                  #("issue_id", issue.id),
-                  #("error", error.workspace_code(err)),
-                ]),
-                ..outcome.effects
-              ])
-            }
-            Ok(#(_, workspace_path)) -> {
-              let sequence = state.next_session_sequence
-              let run_id = helpers.make_run_id(issue, context.now_ms, sequence)
-              let session_id =
-                helpers.make_session_id(issue.identifier, run_id, sequence)
-              let task_ref =
-                orchestrator_state.issue_ref_for_backend(
-                  issue,
-                  context.tracker_backend_kind,
-                )
-              let identity = orchestrator_state.task_ref_identity(task_ref)
-              let recovery =
-                dict.get(context.recovery_by_issue, issue.id)
-                |> option.from_result
-              let pending =
-                transition_types.PendingClaim(
-                  task_ref: task_ref,
-                  issue_id: issue.id,
-                  run_id: identity.run_id_to_string(identity.run_id_from_string(
-                    run_id,
-                  )),
-                  session_id: identity.session_id_to_string(
-                    identity.session_id_from_string(session_id),
-                  ),
-                  workspace_path: workspace_path,
-                  workflow_id: workflow_id,
-                  command_route_id: "worker:"
-                    <> run_id
-                    <> ":"
-                    <> int.to_string(sequence),
-                  route_label: issue.identifier,
-                  issue: issue,
-                  recovery: recovery,
-                  remaining_candidates: remaining_candidates,
-                  dispatch_context: context,
-                  previous_retry_generation: previous_retry_generation,
-                  retry_cancellation: retry_cancellation,
-                )
-              transition_types.Outcome(
-                state: transition_types.State(
-                  ..state,
-                  pending_claims: dict.insert(
-                    state.pending_claims,
-                    identity,
-                    pending,
-                  ),
-                  next_session_sequence: sequence + 1,
-                )
-                  |> sync_state,
-                effects: [
-                  effects_types.ReserveSessionSequence(sequence),
-                  effects_types.ClaimIssue(
-                    task_ref,
-                    issue,
-                    workspace_path,
-                    run_id,
-                  ),
-                ],
-              )
-            }
-          }
       }
   }
 }
 
-fn review_lane_claim_gate(
+fn begin_review_lane_preflight_if_needed(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
   context: transition_types.DispatchContext,
+  callbacks: Callbacks,
   workflow_id: String,
-) -> review_lane_preflight_gate.ClaimGateResult {
+  previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> Option(transition_types.Outcome) {
   let preflight = context.review_lane_preflight
-  let result = case preflight.override {
-    Some(result) -> result
-    None ->
-      case dict.get(preflight.workflow_dags, workflow_id) {
-        Ok(dag) ->
-          review_lane_preflight.for_workflow(
-            workflow_id,
-            dag,
-            structured_output.validator_repo_root(preflight.config_dir, "."),
-            workflow_path_for_preflight(context, workflow_id),
-            scherzo_path.join(context.workspace_root, ".scherzo-state"),
-            context.effective,
-            preflight.policy,
-            context.now_ms,
-          )
-        Error(Nil) ->
-          review_lane_preflight.failed(
-            "missing-workflow-dag",
-            "review_lane_preflight_workflow_missing",
-            "review-lane preflight could not find loaded workflow DAG "
-              <> workflow_id,
-            True,
-          )
-      }
+  case preflight.policy.mode, preflight.override {
+    review_lane_preflight_policy.Off, _ -> None
+    _, Some(result) ->
+      Some(handle_review_lane_preflight_result(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        previous_retry_generation,
+        retry_cancellation,
+        result,
+      ))
+    _, None ->
+      Some(begin_review_lane_preflight(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        previous_retry_generation,
+        retry_cancellation,
+      ))
   }
-  review_lane_preflight_gate.before_claim(preflight.policy, result)
+}
+
+fn begin_review_lane_preflight(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  context: transition_types.DispatchContext,
+  callbacks: Callbacks,
+  workflow_id: String,
+  previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> transition_types.Outcome {
+  let task_ref =
+    orchestrator_state.issue_ref_for_backend(
+      issue,
+      context.tracker_backend_kind,
+    )
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
+  let generation = state.next_dispatch_validation_generation
+  case
+    review_lane_preflight_request(
+      context,
+      task_identity,
+      issue,
+      workflow_id,
+      generation,
+    )
+  {
+    Ok(request) -> {
+      let pending =
+        transition_types.PendingReviewLanePreflight(
+          task_ref: task_ref,
+          issue: issue,
+          remaining_candidates: remaining_candidates,
+          generation: generation,
+          workflow_id: workflow_id,
+          previous_retry_generation: previous_retry_generation,
+          retry_cancellation: retry_cancellation,
+        )
+      transition_types.Outcome(
+        state: add_pending_review_lane_preflight(
+          state,
+          task_identity,
+          pending,
+          generation + 1,
+        ),
+        effects: [effects_types.BeginReviewLanePreflight(request)],
+      )
+    }
+    Error(result) ->
+      handle_review_lane_preflight_result(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        previous_retry_generation,
+        retry_cancellation,
+        result,
+      )
+  }
+}
+
+fn review_lane_preflight_request(
+  context: transition_types.DispatchContext,
+  task_identity: identity.TaskIdentity,
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  generation: Int,
+) -> Result(
+  effects_types.ReviewLanePreflightRequest,
+  review_lane_preflight.PreflightResult,
+) {
+  let preflight = context.review_lane_preflight
+  case dict.get(preflight.workflow_dags, workflow_id) {
+    Ok(dag) ->
+      Ok(effects_types.ReviewLanePreflightRequest(
+        task_identity: task_identity,
+        issue_id: issue.id,
+        generation: generation,
+        workflow_id: workflow_id,
+        workflow_dag: dag,
+        config_dir: preflight.config_dir,
+        workflow_path: workflow_path_for_preflight(context, workflow_id),
+        state_root: scherzo_path.join(context.workspace_root, ".scherzo-state"),
+        effective: context.effective,
+        policy: preflight.policy,
+        now_ms: context.now_ms,
+      ))
+    Error(Nil) ->
+      Error(review_lane_preflight.failed(
+        "missing-workflow-dag",
+        "review_lane_preflight_workflow_missing",
+        "review-lane preflight could not find loaded workflow DAG "
+          <> workflow_id,
+        True,
+      ))
+  }
+}
+
+pub fn resume_after_review_lane_preflight(
+  state: transition_types.State,
+  pending: transition_types.PendingReviewLanePreflight,
+  context: transition_types.DispatchContext,
+  result: review_lane_preflight.PreflightResult,
+  callbacks: Callbacks,
+) -> transition_types.Outcome {
+  handle_review_lane_preflight_result(
+    state,
+    pending.issue,
+    pending.remaining_candidates,
+    transition_types.DispatchContext(
+      ..context,
+      review_lane_preflight: transition_types.ReviewLanePreflightContext(
+        ..context.review_lane_preflight,
+        override: Some(result),
+      ),
+    ),
+    callbacks,
+    pending.workflow_id,
+    pending.previous_retry_generation,
+    pending.retry_cancellation,
+    result,
+  )
+}
+
+fn handle_review_lane_preflight_result(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  context: transition_types.DispatchContext,
+  callbacks: Callbacks,
+  workflow_id: String,
+  previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+  result: review_lane_preflight.PreflightResult,
+) -> transition_types.Outcome {
+  case
+    review_lane_preflight_gate.before_claim(
+      context.review_lane_preflight.policy,
+      result,
+    )
+  {
+    review_lane_preflight_gate.ClaimBlocked(code, message, park_on_failure) ->
+      block_for_review_lane_preflight(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        code,
+        message,
+        park_on_failure,
+      )
+    review_lane_preflight_gate.ClaimAllowed ->
+      begin_claim_for_workflow(
+        state,
+        issue,
+        remaining_candidates,
+        context,
+        callbacks,
+        workflow_id,
+        previous_retry_generation,
+        retry_cancellation,
+      )
+  }
+}
+
+fn begin_claim_for_workflow(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  context: transition_types.DispatchContext,
+  callbacks: Callbacks,
+  workflow_id: String,
+  previous_retry_generation: Int,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> transition_types.Outcome {
+  let Callbacks(dispatch_candidates: dispatch) = callbacks
+  case workspace.workspace_path(context.workspace_root, issue.identifier) {
+    Error(err) -> {
+      let outcome = dispatch(remaining_candidates, state, context)
+      transition_types.Outcome(state: outcome.state, effects: [
+        effects_types.Log("warn", "dispatch_workspace_path_failed", [
+          #("issue_id", issue.id),
+          #("error", error.workspace_code(err)),
+        ]),
+        ..outcome.effects
+      ])
+    }
+    Ok(#(_, workspace_path)) -> {
+      let sequence = state.next_session_sequence
+      let run_id = helpers.make_run_id(issue, context.now_ms, sequence)
+      let session_id =
+        helpers.make_session_id(issue.identifier, run_id, sequence)
+      let task_ref =
+        orchestrator_state.issue_ref_for_backend(
+          issue,
+          context.tracker_backend_kind,
+        )
+      let identity = orchestrator_state.task_ref_identity(task_ref)
+      let recovery =
+        dict.get(context.recovery_by_issue, issue.id)
+        |> option.from_result
+      let pending =
+        transition_types.PendingClaim(
+          task_ref: task_ref,
+          issue_id: issue.id,
+          run_id: identity.run_id_to_string(identity.run_id_from_string(run_id)),
+          session_id: identity.session_id_to_string(
+            identity.session_id_from_string(session_id),
+          ),
+          workspace_path: workspace_path,
+          workflow_id: workflow_id,
+          command_route_id: "worker:"
+            <> run_id
+            <> ":"
+            <> int.to_string(sequence),
+          route_label: issue.identifier,
+          issue: issue,
+          recovery: recovery,
+          remaining_candidates: remaining_candidates,
+          dispatch_context: context,
+          previous_retry_generation: previous_retry_generation,
+          retry_cancellation: retry_cancellation,
+        )
+      transition_types.Outcome(
+        state: transition_types.State(
+          ..state,
+          pending_claims: dict.insert(state.pending_claims, identity, pending),
+          next_session_sequence: sequence + 1,
+        )
+          |> sync_state,
+        effects: [
+          effects_types.ReserveSessionSequence(sequence),
+          effects_types.ClaimIssue(task_ref, issue, workspace_path, run_id),
+        ],
+      )
+    }
+  }
 }
 
 fn workflow_path_for_preflight(

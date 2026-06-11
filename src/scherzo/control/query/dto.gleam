@@ -47,6 +47,7 @@ pub fn operational_metrics_from_source(
     running_scheduled_workers: running_scheduled_workers,
     queued_claims: queued_claims,
     pending_dispatch_validations: pending_dispatch_validations,
+    pending_review_lane_preflights: pending_review_lane_preflights,
     claimed_tasks: claimed_tasks,
     retry_tasks: retry_tasks,
     parked_tasks: parked_tasks,
@@ -81,6 +82,7 @@ pub fn operational_metrics_from_source(
     running_scheduled_workers: running_scheduled_workers,
     queued_claims: queued_claims,
     pending_dispatch_validations: pending_dispatch_validations,
+    pending_review_lane_preflights: pending_review_lane_preflights,
     claimed_tasks: claimed_tasks,
     retry_tasks: retry_tasks,
     parked_tasks: parked_tasks,
@@ -145,6 +147,10 @@ pub fn operational_metrics_to_json(
     #(
       "pending_dispatch_validations",
       json.int(metrics.pending_dispatch_validations),
+    ),
+    #(
+      "pending_review_lane_preflights",
+      json.int(metrics.pending_review_lane_preflights),
     ),
     #("claimed_tasks", json.int(metrics.claimed_tasks)),
     #("retry_tasks", json.int(metrics.retry_tasks)),
@@ -246,6 +252,11 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
     "pending_dispatch_validations",
     decode.int,
   )
+  use pending_review_lane_preflights <- decode.optional_field(
+    "pending_review_lane_preflights",
+    0,
+    decode.int,
+  )
   use claimed_tasks <- decode.field("claimed_tasks", decode.int)
   use retry_tasks <- decode.field("retry_tasks", decode.int)
   use parked_tasks <- decode.field("parked_tasks", decode.int)
@@ -297,6 +308,7 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
     running_scheduled_workers: running_scheduled_workers,
     queued_claims: queued_claims,
     pending_dispatch_validations: pending_dispatch_validations,
+    pending_review_lane_preflights: pending_review_lane_preflights,
     claimed_tasks: claimed_tasks,
     retry_tasks: retry_tasks,
     parked_tasks: parked_tasks,

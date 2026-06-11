@@ -1,5 +1,7 @@
 import scherzo/error
 import scherzo/orchestrator/effect_runner
+import scherzo/review_lane_preflight
+import scherzo/runtime/identity
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 
@@ -26,6 +28,14 @@ pub opaque type ResultHandlers(state) {
       String,
       Int,
       Result(tracker_issue.Issue, effect_runner.DispatchClaimValidationError),
+    ) -> state,
+    review_lane_preflight_finished: fn(
+      state,
+      identity.TaskIdentity,
+      String,
+      Int,
+      String,
+      review_lane_preflight.PreflightResult,
     ) -> state,
     handoff_claim_finished: fn(
       state,
@@ -80,6 +90,14 @@ pub fn result_handlers(
     Int,
     Result(tracker_issue.Issue, effect_runner.DispatchClaimValidationError),
   ) -> state,
+  review_lane_preflight_finished review_lane_preflight_finished: fn(
+    state,
+    identity.TaskIdentity,
+    String,
+    Int,
+    String,
+    review_lane_preflight.PreflightResult,
+  ) -> state,
   handoff_claim_finished handoff_claim_finished: fn(
     state,
     String,
@@ -125,6 +143,7 @@ pub fn result_handlers(
     running_refresh_finished: running_refresh_finished,
     retry_refresh_finished: retry_refresh_finished,
     dispatch_claim_validation_finished: dispatch_claim_validation_finished,
+    review_lane_preflight_finished: review_lane_preflight_finished,
     handoff_claim_finished: handoff_claim_finished,
     handoff_success_finished: handoff_success_finished,
     handoff_failure_finished: handoff_failure_finished,
@@ -206,6 +225,19 @@ pub fn crash_result_for_effect(
           )),
         ),
       )
+    effect_runner.ReviewLanePreflight(request) ->
+      effect_runner.ReviewLanePreflightFinished(
+        task_identity: request.task_identity,
+        issue_id: request.issue_id,
+        generation: request.generation,
+        workflow_id: request.workflow_id,
+        result: review_lane_preflight.failed(
+          "review-lane-preflight-crashed:" <> request.workflow_id,
+          "review_lane_preflight_effect_crashed",
+          "review-lane preflight side effect crashed: " <> reason,
+          True,
+        ),
+      )
     effect_runner.ClaimIssue(_, issue, _, run_id, _) ->
       effect_runner.HandoffClaimFinished(
         issue.id,
@@ -280,6 +312,21 @@ fn handle_result(
         context.state,
         issue_id,
         generation,
+        result,
+      )
+    effect_runner.ReviewLanePreflightFinished(
+      task_identity,
+      issue_id,
+      generation,
+      workflow_id,
+      result,
+    ) ->
+      handlers.review_lane_preflight_finished(
+        context.state,
+        task_identity,
+        issue_id,
+        generation,
+        workflow_id,
         result,
       )
     effect_runner.HandoffClaimFinished(issue_id, run_id, result) ->

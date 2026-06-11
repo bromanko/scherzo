@@ -27,6 +27,10 @@ pub type State {
       identity.TaskIdentity,
       PendingDispatchValidation,
     ),
+    pending_review_lane_preflights: dict.Dict(
+      identity.TaskIdentity,
+      PendingReviewLanePreflight,
+    ),
     lifecycle: task_lifecycle.TaskDirectory,
     retry_refresh_generations: dict.Dict(identity.TaskIdentity, Int),
     next_dispatch_validation_generation: Int,
@@ -73,6 +77,14 @@ pub type Message {
     generation: Int,
     result: Result(tracker_issue.Issue, DispatchValidationError),
     context: DispatchContext,
+  )
+  ReviewLanePreflightCompleted(
+    task_identity: identity.TaskIdentity,
+    issue_id: String,
+    generation: Int,
+    workflow_id: String,
+    context: DispatchContext,
+    result: review_lane_preflight.PreflightResult,
   )
   HandoffClaimCompleted(
     task_identity: identity.TaskIdentity,
@@ -253,6 +265,18 @@ pub type PendingDispatchValidation {
   )
 }
 
+pub type PendingReviewLanePreflight {
+  PendingReviewLanePreflight(
+    task_ref: task.TaskRef,
+    issue: tracker_issue.Issue,
+    remaining_candidates: List(tracker_issue.Issue),
+    generation: Int,
+    workflow_id: String,
+    previous_retry_generation: Int,
+    retry_cancellation: Option(RetryCancellation),
+  )
+}
+
 pub type PollSnapshot {
   PollSnapshot(generation: Int, in_flight: Option(Int))
 }
@@ -298,6 +322,7 @@ pub fn dispatch_context(
   now_ms: Int,
   recovery_by_issue: dict.Dict(String, session_event.RecoveryInfo),
   config_dir: String,
+  review_lane_preflight_policy: review_lane_preflight_policy.Policy,
 ) -> DispatchContext {
   DispatchContext(
     effective: effective,
@@ -315,6 +340,7 @@ pub fn dispatch_context(
     review_lane_preflight: review_lane_preflight_context(
       config_dir,
       workflow_dags,
+      review_lane_preflight_policy,
     ),
   )
 }
@@ -322,11 +348,12 @@ pub fn dispatch_context(
 pub fn review_lane_preflight_context(
   config_dir: String,
   workflow_dags: dict.Dict(String, workflow_dag.WorkflowDag),
+  policy: review_lane_preflight_policy.Policy,
 ) -> ReviewLanePreflightContext {
   ReviewLanePreflightContext(
     config_dir: config_dir,
     workflow_dags: workflow_dags,
-    policy: review_lane_preflight_policy.from_env(),
+    policy: policy,
     override: None,
   )
 }

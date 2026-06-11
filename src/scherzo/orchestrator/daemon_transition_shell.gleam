@@ -31,6 +31,10 @@ pub opaque type ShellHandlers(state) {
     schedule_next_poll: fn(state) -> state,
     fetch_candidates: fn(state, Int) -> state,
     begin_dispatch_validation: fn(state, String, Int) -> state,
+    begin_review_lane_preflight: fn(
+      state,
+      transition_effects.ReviewLanePreflightRequest,
+    ) -> state,
     reserve_session_sequence: fn(state, Int) -> state,
     claim_issue: fn(state, task.TaskRef, tracker_issue.Issue, String, String) ->
       state,
@@ -133,6 +137,10 @@ pub fn shell_handlers(
   fetch_candidates fetch_candidates: fn(state, Int) -> state,
   begin_dispatch_validation begin_dispatch_validation: fn(state, String, Int) ->
     state,
+  begin_review_lane_preflight begin_review_lane_preflight: fn(
+    state,
+    transition_effects.ReviewLanePreflightRequest,
+  ) -> state,
   reserve_session_sequence reserve_session_sequence: fn(state, Int) -> state,
   claim_issue claim_issue: fn(
     state,
@@ -265,6 +273,7 @@ pub fn shell_handlers(
     schedule_next_poll: schedule_next_poll,
     fetch_candidates: fetch_candidates,
     begin_dispatch_validation: begin_dispatch_validation,
+    begin_review_lane_preflight: begin_review_lane_preflight,
     reserve_session_sequence: reserve_session_sequence,
     claim_issue: claim_issue,
     report_invalid_workflow: report_invalid_workflow,
@@ -394,6 +403,7 @@ fn transition_shell(
     schedule_next_poll: handlers.schedule_next_poll,
     fetch_candidates: handlers.fetch_candidates,
     begin_dispatch_validation: handlers.begin_dispatch_validation,
+    begin_review_lane_preflight: handlers.begin_review_lane_preflight,
     reserve_session_sequence: handlers.reserve_session_sequence,
     claim_issue: handlers.claim_issue,
     report_invalid_workflow: handlers.report_invalid_workflow,

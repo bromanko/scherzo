@@ -1,7 +1,9 @@
 import gleam/option.{type Option}
 import scherzo/agent/types as agent_types
+import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/log
+import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
 import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
@@ -12,6 +14,7 @@ import scherzo/state/ledger_batch
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_dag
 import scherzo/workflow_policy
 
 pub type Effect {
@@ -23,6 +26,7 @@ pub type Effect {
   ScheduleNextPoll
   FetchCandidates(generation: Int)
   BeginDispatchValidation(issue_id: String, generation: Int)
+  BeginReviewLanePreflight(request: ReviewLanePreflightRequest)
   ReserveSessionSequence(sequence: Int)
   ClaimIssue(
     task_ref: task.TaskRef,
@@ -103,6 +107,22 @@ pub type Effect {
     reason: String,
     release_policy: String,
     source_run_id: Option(String),
+  )
+}
+
+pub type ReviewLanePreflightRequest {
+  ReviewLanePreflightRequest(
+    task_identity: identity.TaskIdentity,
+    issue_id: String,
+    generation: Int,
+    workflow_id: String,
+    workflow_dag: workflow_dag.WorkflowDag,
+    config_dir: String,
+    workflow_path: String,
+    state_root: String,
+    effective: config_types.EffectiveConfig,
+    policy: review_lane_preflight_policy.Policy,
+    now_ms: Int,
   )
 }
 

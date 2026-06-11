@@ -32,6 +32,10 @@ pub opaque type ShellState(shell) {
     schedule_next_poll: fn(shell) -> shell,
     fetch_candidates: fn(shell, Int) -> shell,
     begin_dispatch_validation: fn(shell, String, Int) -> shell,
+    begin_review_lane_preflight: fn(
+      shell,
+      effects_types.ReviewLanePreflightRequest,
+    ) -> shell,
     reserve_session_sequence: fn(shell, Int) -> shell,
     claim_issue: fn(shell, task.TaskRef, tracker_issue.Issue, String, String) ->
       shell,
@@ -145,6 +149,7 @@ pub fn new_shell_state(
     schedule_next_poll: fn(started_workers) { started_workers },
     fetch_candidates: fn(started_workers, _) { started_workers },
     begin_dispatch_validation: fn(started_workers, _, _) { started_workers },
+    begin_review_lane_preflight: fn(started_workers, _) { started_workers },
     reserve_session_sequence: fn(started_workers, _) { started_workers },
     claim_issue: fn(started_workers, _, _, _, _) { started_workers },
     report_invalid_workflow: fn(started_workers, _, _, _, _) { started_workers },
@@ -213,6 +218,10 @@ pub fn new_production_shell_state(
   fetch_candidates fetch_candidates: fn(shell, Int) -> shell,
   begin_dispatch_validation begin_dispatch_validation: fn(shell, String, Int) ->
     shell,
+  begin_review_lane_preflight begin_review_lane_preflight: fn(
+    shell,
+    effects_types.ReviewLanePreflightRequest,
+  ) -> shell,
   reserve_session_sequence reserve_session_sequence: fn(shell, Int) -> shell,
   claim_issue claim_issue: fn(
     shell,
@@ -343,6 +352,7 @@ pub fn new_production_shell_state(
     schedule_next_poll: schedule_next_poll,
     fetch_candidates: fetch_candidates,
     begin_dispatch_validation: begin_dispatch_validation,
+    begin_review_lane_preflight: begin_review_lane_preflight,
     reserve_session_sequence: reserve_session_sequence,
     claim_issue: claim_issue,
     report_invalid_workflow: report_invalid_workflow,
@@ -471,6 +481,11 @@ fn apply_loop(
         effects_types.BeginDispatchValidation(issue_id, generation) -> {
           let data =
             shell.begin_dispatch_validation(shell.data, issue_id, generation)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.BeginReviewLanePreflight(request) -> {
+          let data = shell.begin_review_lane_preflight(shell.data, request)
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }
