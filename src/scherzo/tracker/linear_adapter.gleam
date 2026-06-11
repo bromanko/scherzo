@@ -12,6 +12,7 @@ import scherzo/scheduled_failure_reporter
 import scherzo/smoke
 import scherzo/task
 import scherzo/tracker/adapter
+import scherzo/tracker/idempotency
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
@@ -508,9 +509,14 @@ fn comment_capability(
   config: config_types.TrackerConfig,
   transport: linear.Transport,
 ) -> adapter.CommentCapability {
-  adapter.CommentCapability(post_or_update: fn(request) {
-    post_or_update_comment(config, transport, request)
-  })
+  adapter.CommentCapability(
+    post_or_update: fn(request) {
+      post_or_update_comment(config, transport, request)
+    },
+    find_by_marker: fn(request) {
+      find_comment_by_marker(config, transport, request)
+    },
+  )
 }
 
 fn post_or_update_comment(
@@ -522,9 +528,74 @@ fn post_or_update_comment(
   use issue_id <- try_adapter_result(require_linear_ref(task_ref))
   case mode {
     adapter.CreateOnly ->
-      create_comment(config, transport, task_ref, issue_id, body)
-    adapter.UpdateExisting(comment_id: comment_id, ..) ->
-      update_comment(config, transport, task_ref, comment_id, body)
+      case idempotency.extract_key(body) {
+        Ok(marker) ->
+          upsert_comment_by_marker(
+            config,
+            transport,
+            task_ref,
+            issue_id,
+            marker,
+            body,
+          )
+        Error(Nil) ->
+          create_comment(config, transport, task_ref, issue_id, body)
+      }
+    adapter.UpdateExisting(
+      comment_id: comment_id,
+      allow_create_fallback: allow_create_fallback,
+    ) ->
+      case update_comment(config, transport, task_ref, comment_id, body) {
+        Ok(receipt) -> Ok(receipt)
+        Error(err) ->
+          case allow_create_fallback {
+            True -> create_comment(config, transport, task_ref, issue_id, body)
+            False -> Error(err)
+          }
+      }
+  }
+}
+
+fn find_comment_by_marker(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  request: adapter.CommentLookup,
+) -> Result(Option(adapter.CommentReceipt), adapter.TrackerError) {
+  let adapter.CommentLookup(task: task_ref, marker: marker) = request
+  use issue_id <- try_adapter_result(require_linear_ref(task_ref))
+  use found <- try_adapter(linear.find_issue_comment_by_marker(
+    config,
+    transport,
+    issue_id,
+    marker,
+  ))
+  Ok(
+    option_map(found, fn(comment) {
+      adapter.CommentReceipt(
+        id: comment.id,
+        task: task_ref,
+        url: task_ref.url,
+        created: False,
+      )
+    }),
+  )
+}
+
+fn upsert_comment_by_marker(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  task_ref: task.TaskRef,
+  issue_id: String,
+  marker: String,
+  body: String,
+) -> Result(adapter.CommentReceipt, adapter.TrackerError) {
+  case
+    linear.find_issue_comment_by_marker(config, transport, issue_id, marker)
+  {
+    Ok(Some(comment)) ->
+      update_comment(config, transport, task_ref, comment.id, body)
+    Ok(None) -> create_comment(config, transport, task_ref, issue_id, body)
+    Error(err) -> Error(map_tracker_error(err))
   }
 }
 

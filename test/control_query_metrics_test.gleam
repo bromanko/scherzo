@@ -53,6 +53,10 @@ pub fn execute_metrics_uses_read_model_snapshot_test() {
         workflow_count: 2,
         active_sessions: 3,
         lifecycle_projection_failed: True,
+        pending_outbox_count: 4,
+        in_flight_outbox_count: 5,
+        retryable_outbox_count: 6,
+        permanent_outbox_count: 7,
       ),
     )
     |> read_model.snapshot(sampled_at_ms: 123)
@@ -67,4 +71,8 @@ pub fn execute_metrics_uses_read_model_snapshot_test() {
   assert metrics_response.workflow_count == 2
   assert metrics_response.active_sessions == 3
   assert metrics_response.lifecycle_projection_failed
+  assert metrics_response.pending_outbox_count == 4
+  assert metrics_response.in_flight_outbox_count == 5
+  assert metrics_response.retryable_outbox_count == 6
+  assert metrics_response.permanent_outbox_count == 7
 }

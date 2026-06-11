@@ -71,12 +71,12 @@ pub fn append_retry_cancelled(
   generation: Int,
   reason: String,
 ) -> LedgerBatch {
+  append_body(batch, record.RetryCancelled(issue_id, generation, reason))
+}
+
+pub fn append_body(batch: LedgerBatch, body: record.RecordBody) -> LedgerBatch {
   let LedgerBatch(bodies) = batch
-  LedgerBatch(
-    list.append(bodies, [
-      record.RetryCancelled(issue_id, generation, reason),
-    ]),
-  )
+  LedgerBatch(list.append(bodies, [body]))
 }
 
 // Workflow execution checkpoints own current workflow_run terminal records.

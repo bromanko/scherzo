@@ -52,6 +52,10 @@ pub fn operational_metrics_from_source(
     retry_tasks: retry_tasks,
     parked_tasks: parked_tasks,
     completed_tasks: completed_tasks,
+    pending_outbox_count: pending_outbox_count,
+    in_flight_outbox_count: in_flight_outbox_count,
+    retryable_outbox_count: retryable_outbox_count,
+    permanent_outbox_count: permanent_outbox_count,
     poll_generation: poll_generation,
     poll_in_flight: poll_in_flight,
     poll_timer_active: poll_timer_active,
@@ -88,6 +92,10 @@ pub fn operational_metrics_from_source(
     retry_tasks: retry_tasks,
     parked_tasks: parked_tasks,
     completed_tasks: completed_tasks,
+    pending_outbox_count: pending_outbox_count,
+    in_flight_outbox_count: in_flight_outbox_count,
+    retryable_outbox_count: retryable_outbox_count,
+    permanent_outbox_count: permanent_outbox_count,
     poll_generation: poll_generation,
     poll_in_flight: poll_in_flight,
     poll_timer_active: poll_timer_active,
@@ -158,6 +166,10 @@ pub fn operational_metrics_to_json(
     #("retry_tasks", json.int(metrics.retry_tasks)),
     #("parked_tasks", json.int(metrics.parked_tasks)),
     #("completed_tasks", json.int(metrics.completed_tasks)),
+    #("pending_outbox_count", json.int(metrics.pending_outbox_count)),
+    #("in_flight_outbox_count", json.int(metrics.in_flight_outbox_count)),
+    #("retryable_outbox_count", json.int(metrics.retryable_outbox_count)),
+    #("permanent_outbox_count", json.int(metrics.permanent_outbox_count)),
     #("poll_generation", json.int(metrics.poll_generation)),
     #("poll_in_flight", json.bool(metrics.poll_in_flight)),
     #("poll_timer_active", json.bool(metrics.poll_timer_active)),
@@ -267,6 +279,19 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
   use retry_tasks <- decode.field("retry_tasks", decode.int)
   use parked_tasks <- decode.field("parked_tasks", decode.int)
   use completed_tasks <- decode.field("completed_tasks", decode.int)
+  use pending_outbox_count <- decode.field("pending_outbox_count", decode.int)
+  use in_flight_outbox_count <- decode.field(
+    "in_flight_outbox_count",
+    decode.int,
+  )
+  use retryable_outbox_count <- decode.field(
+    "retryable_outbox_count",
+    decode.int,
+  )
+  use permanent_outbox_count <- decode.field(
+    "permanent_outbox_count",
+    decode.int,
+  )
   use poll_generation <- decode.field("poll_generation", decode.int)
   use poll_in_flight <- decode.field("poll_in_flight", decode.bool)
   use poll_timer_active <- decode.field("poll_timer_active", decode.bool)
@@ -324,6 +349,10 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
     retry_tasks: retry_tasks,
     parked_tasks: parked_tasks,
     completed_tasks: completed_tasks,
+    pending_outbox_count: pending_outbox_count,
+    in_flight_outbox_count: in_flight_outbox_count,
+    retryable_outbox_count: retryable_outbox_count,
+    permanent_outbox_count: permanent_outbox_count,
     poll_generation: poll_generation,
     poll_in_flight: poll_in_flight,
     poll_timer_active: poll_timer_active,

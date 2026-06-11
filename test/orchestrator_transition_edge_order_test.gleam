@@ -848,6 +848,7 @@ fn edge_shell() -> interpreter.ShellState(List(String)) {
     report_invalid_workflow: fn(events, issue, _, _, _) {
       append_event(events, "invalid:" <> issue.id)
     },
+    replay_outbox: fn(events, _) { events },
     remove_retry_timer: fn(events, issue_id) {
       append_event(events, "retry:remove:" <> issue_id)
     },

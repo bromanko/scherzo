@@ -647,6 +647,8 @@ pub fn startup_recovery_schedules_retry_cleanup_and_park_effects_test() {
       "log:workflow_recovery_status",
       "log:recovered_workspace_cleanup",
       "cleanup:test/tmp/workspaces/ABC-2",
+      "log:workflow_recovery_status",
+      "replay_outbox:linear_command_ack:issue-3",
       "report_park:issue-4",
       "log:workflow_recovery_status",
       "log:startup_recovery_warning",
@@ -893,6 +895,12 @@ fn shell_with_append_and_start_result(
     },
     report_invalid_workflow: fn(events, issue, _, _, _) {
       list.append(events, ["invalid:" <> issue.id])
+    },
+    replay_outbox: fn(events, outbox_replay) {
+      let recovery.OutboxReplay(_, task_ref, outbox_kind, _, _) = outbox_replay
+      list.append(events, [
+        "replay_outbox:" <> outbox_kind <> ":" <> task_ref.task_remote_id,
+      ])
     },
     remove_retry_timer: fn(events, issue_id) {
       list.append(events, ["retry:remove:" <> issue_id])

@@ -495,6 +495,42 @@ pub type RecordBody {
     dedupe_key: String,
     payload_json: String,
   )
+  OutboxAttempted(
+    outbox_id: String,
+    issue_id: String,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    attempt_count: Int,
+  )
+  OutboxAttemptedWithTask(
+    outbox_id: String,
+    task_ref: TaskRefFields,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    attempt_count: Int,
+  )
+  OutboxRetryScheduled(
+    outbox_id: String,
+    issue_id: String,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    error_code: String,
+    attempt_count: Int,
+    next_attempt_at_ms: Int,
+  )
+  OutboxRetryScheduledWithTask(
+    outbox_id: String,
+    task_ref: TaskRefFields,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    error_code: String,
+    attempt_count: Int,
+    next_attempt_at_ms: Int,
+  )
   OutboxCompleted(outbox_id: String, issue_id: String, outbox_kind: String)
   OutboxCompletedWithTask(
     outbox_id: String,
@@ -512,6 +548,20 @@ pub type RecordBody {
     task_ref: TaskRefFields,
     outbox_kind: String,
     error_code: String,
+  )
+  OutboxPermanentlyFailed(
+    outbox_id: String,
+    issue_id: String,
+    outbox_kind: String,
+    error_code: String,
+    attempt_count: Int,
+  )
+  OutboxPermanentlyFailedWithTask(
+    outbox_id: String,
+    task_ref: TaskRefFields,
+    outbox_kind: String,
+    error_code: String,
+    attempt_count: Int,
   )
   WorkstreamCreated(
     workstream_id: String,
@@ -645,6 +695,8 @@ type RecordFields {
     dedupe_key: Option(String),
     payload_json: Option(String),
     error_code: Option(String),
+    attempt_count: Option(Int),
+    next_attempt_at_ms: Option(Int),
     job_id: Option(String),
     due_at_ms: Option(Int),
     trigger: Option(String),
@@ -773,8 +825,13 @@ pub fn kind(body: RecordBody) -> String {
     ScheduledFailureReportFailed(..) -> "scheduled_failure_report_failed"
     OutboxPending(..) -> "outbox_pending"
     OutboxPendingV2(..) | OutboxPendingV2WithTask(..) -> "outbox_pending_v2"
+    OutboxAttempted(..) | OutboxAttemptedWithTask(..) -> "outbox_attempted"
+    OutboxRetryScheduled(..) | OutboxRetryScheduledWithTask(..) ->
+      "outbox_retry_scheduled"
     OutboxCompleted(..) | OutboxCompletedWithTask(..) -> "outbox_completed"
     OutboxFailed(..) | OutboxFailedWithTask(..) -> "outbox_failed"
+    OutboxPermanentlyFailed(..) | OutboxPermanentlyFailedWithTask(..) ->
+      "outbox_permanently_failed"
     WorkstreamCreated(..) -> "workstream_created"
     WorkstreamAssigned(..) -> "workstream_assigned"
     WorkstreamArtifactRecorded(..) -> "workstream_artifact_recorded"
@@ -1630,6 +1687,78 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         dedupe_key,
         payload_json,
       )
+    OutboxAttempted(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      attempt_count,
+    ) ->
+      outbox_record.attempted_entries(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        attempt_count,
+      )
+    OutboxAttemptedWithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      attempt_count,
+    ) ->
+      outbox_record.attempted_with_task_entries(
+        outbox_id,
+        task_ref_entries(task_ref),
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        attempt_count,
+      )
+    OutboxRetryScheduled(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      error_code,
+      attempt_count,
+      next_attempt_at_ms,
+    ) ->
+      outbox_record.retry_scheduled_entries(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        error_code,
+        attempt_count,
+        next_attempt_at_ms,
+      )
+    OutboxRetryScheduledWithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      error_code,
+      attempt_count,
+      next_attempt_at_ms,
+    ) ->
+      outbox_record.retry_scheduled_with_task_entries(
+        outbox_id,
+        task_ref_entries(task_ref),
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        error_code,
+        attempt_count,
+        next_attempt_at_ms,
+      )
     OutboxCompleted(outbox_id, issue_id, outbox_kind) ->
       outbox_record.completed_entries(outbox_id, issue_id, outbox_kind)
     OutboxCompletedWithTask(outbox_id, task_ref, outbox_kind) ->
@@ -1646,6 +1775,34 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         task_ref_entries(task_ref),
         outbox_kind,
         error_code,
+      )
+    OutboxPermanentlyFailed(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      error_code,
+      attempt_count,
+    ) ->
+      outbox_record.permanently_failed_entries(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        error_code,
+        attempt_count,
+      )
+    OutboxPermanentlyFailedWithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      error_code,
+      attempt_count,
+    ) ->
+      outbox_record.permanently_failed_with_task_entries(
+        outbox_id,
+        task_ref_entries(task_ref),
+        outbox_kind,
+        error_code,
+        attempt_count,
       )
     WorkstreamCreated(workstream_id, task_ref, idempotency_key) ->
       workstream_record.created_with_task_entries(
@@ -3005,6 +3162,108 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         }
       }
     }
+    "outbox_attempted" -> {
+      use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
+      use outbox_kind <- result.try(required_string(
+        fields.outbox_kind,
+        "outbox_kind",
+      ))
+      use dedupe_key <- result.try(required_string(
+        fields.dedupe_key,
+        "dedupe_key",
+      ))
+      use payload_json <- result.try(required_string(
+        fields.payload_json,
+        "payload_json",
+      ))
+      use attempt_count <- result.try(required_int(
+        fields.attempt_count,
+        "attempt_count",
+      ))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(OutboxAttemptedWithTask(
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            attempt_count,
+          ))
+        None -> {
+          use issue_id <- result.try(required_string(
+            fields.issue_id,
+            "issue_id",
+          ))
+          Ok(OutboxAttempted(
+            outbox_id,
+            issue_id,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            attempt_count,
+          ))
+        }
+      }
+    }
+    "outbox_retry_scheduled" -> {
+      use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
+      use outbox_kind <- result.try(required_string(
+        fields.outbox_kind,
+        "outbox_kind",
+      ))
+      use dedupe_key <- result.try(required_string(
+        fields.dedupe_key,
+        "dedupe_key",
+      ))
+      use payload_json <- result.try(required_string(
+        fields.payload_json,
+        "payload_json",
+      ))
+      use error_code <- result.try(required_string(
+        fields.error_code,
+        "error_code",
+      ))
+      use attempt_count <- result.try(required_int(
+        fields.attempt_count,
+        "attempt_count",
+      ))
+      use next_attempt_at_ms <- result.try(required_int(
+        fields.next_attempt_at_ms,
+        "next_attempt_at_ms",
+      ))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(OutboxRetryScheduledWithTask(
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            error_code,
+            attempt_count,
+            next_attempt_at_ms,
+          ))
+        None -> {
+          use issue_id <- result.try(required_string(
+            fields.issue_id,
+            "issue_id",
+          ))
+          Ok(OutboxRetryScheduled(
+            outbox_id,
+            issue_id,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            error_code,
+            attempt_count,
+            next_attempt_at_ms,
+          ))
+        }
+      }
+    }
     "outbox_completed" -> {
       use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
       use outbox_kind <- result.try(required_string(
@@ -3044,6 +3303,45 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
             "issue_id",
           ))
           Ok(OutboxFailed(outbox_id, issue_id, outbox_kind, error_code))
+        }
+      }
+    }
+    "outbox_permanently_failed" -> {
+      use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
+      use outbox_kind <- result.try(required_string(
+        fields.outbox_kind,
+        "outbox_kind",
+      ))
+      use error_code <- result.try(required_string(
+        fields.error_code,
+        "error_code",
+      ))
+      use attempt_count <- result.try(required_int(
+        fields.attempt_count,
+        "attempt_count",
+      ))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(OutboxPermanentlyFailedWithTask(
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            error_code,
+            attempt_count,
+          ))
+        None -> {
+          use issue_id <- result.try(required_string(
+            fields.issue_id,
+            "issue_id",
+          ))
+          Ok(OutboxPermanentlyFailed(
+            outbox_id,
+            issue_id,
+            outbox_kind,
+            error_code,
+            attempt_count,
+          ))
         }
       }
     }
@@ -3402,6 +3700,16 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use attempt_count <- decode.optional_field(
+    "attempt_count",
+    None,
+    decode.optional(decode.int),
+  )
+  use next_attempt_at_ms <- decode.optional_field(
+    "next_attempt_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
   use job_id <- decode.optional_field(
     "job_id",
     None,
@@ -3716,6 +4024,8 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     dedupe_key: dedupe_key,
     payload_json: payload_json,
     error_code: error_code,
+    attempt_count: attempt_count,
+    next_attempt_at_ms: next_attempt_at_ms,
     job_id: job_id,
     due_at_ms: due_at_ms,
     trigger: trigger,
@@ -3929,6 +4239,22 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
         dedupe_key,
         safe_payload(payload_json, secrets),
       )
+    OutboxAttempted(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      attempt_count,
+    ) ->
+      OutboxAttempted(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        safe_payload(payload_json, secrets),
+        attempt_count,
+      )
     OutboxPendingV2WithTask(
       outbox_id,
       task_ref,
@@ -3942,6 +4268,62 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
         outbox_kind,
         dedupe_key,
         safe_payload(payload_json, secrets),
+      )
+    OutboxAttemptedWithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      attempt_count,
+    ) ->
+      OutboxAttemptedWithTask(
+        outbox_id,
+        task_ref,
+        outbox_kind,
+        dedupe_key,
+        safe_payload(payload_json, secrets),
+        attempt_count,
+      )
+    OutboxRetryScheduled(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      error_code,
+      attempt_count,
+      next_attempt_at_ms,
+    ) ->
+      OutboxRetryScheduled(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        safe_payload(payload_json, secrets),
+        error_code,
+        attempt_count,
+        next_attempt_at_ms,
+      )
+    OutboxRetryScheduledWithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      error_code,
+      attempt_count,
+      next_attempt_at_ms,
+    ) ->
+      OutboxRetryScheduledWithTask(
+        outbox_id,
+        task_ref,
+        outbox_kind,
+        dedupe_key,
+        safe_payload(payload_json, secrets),
+        error_code,
+        attempt_count,
+        next_attempt_at_ms,
       )
     ScheduledFailureReportFailed(
       job_id,

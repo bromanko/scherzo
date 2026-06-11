@@ -389,6 +389,42 @@ pub type OutboxStatus {
     payload_json: String,
     pending_at_ms: Int,
   )
+  OutboxAttempted(
+    issue_id: String,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    attempt_count: Int,
+    attempted_at_ms: Int,
+  )
+  OutboxAttemptedWithTask(
+    task_ref: record.TaskRefFields,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    attempt_count: Int,
+    attempted_at_ms: Int,
+  )
+  OutboxRetryScheduled(
+    issue_id: String,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    error_code: String,
+    attempt_count: Int,
+    next_attempt_at_ms: Int,
+    failed_at_ms: Int,
+  )
+  OutboxRetryScheduledWithTask(
+    task_ref: record.TaskRefFields,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    error_code: String,
+    attempt_count: Int,
+    next_attempt_at_ms: Int,
+    failed_at_ms: Int,
+  )
   OutboxCompleted(issue_id: String, outbox_kind: String, completed_at_ms: Int)
   OutboxCompletedWithTask(
     task_ref: record.TaskRefFields,
@@ -405,6 +441,20 @@ pub type OutboxStatus {
     task_ref: record.TaskRefFields,
     outbox_kind: String,
     error_code: String,
+    failed_at_ms: Int,
+  )
+  OutboxPermanentlyFailed(
+    issue_id: String,
+    outbox_kind: String,
+    error_code: String,
+    attempt_count: Int,
+    failed_at_ms: Int,
+  )
+  OutboxPermanentlyFailedWithTask(
+    task_ref: record.TaskRefFields,
+    outbox_kind: String,
+    error_code: String,
+    attempt_count: Int,
     failed_at_ms: Int,
   )
 }
@@ -1959,6 +2009,106 @@ pub fn apply(
           ),
         ),
       )
+    record.OutboxAttempted(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      attempt_count,
+    ) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxAttempted(
+            issue_id,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            attempt_count,
+            at_ms,
+          ),
+        ),
+      )
+    record.OutboxAttemptedWithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      attempt_count,
+    ) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxAttemptedWithTask(
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            attempt_count,
+            at_ms,
+          ),
+        ),
+      )
+    record.OutboxRetryScheduled(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      error_code,
+      attempt_count,
+      next_attempt_at_ms,
+    ) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxRetryScheduled(
+            issue_id,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            error_code,
+            attempt_count,
+            next_attempt_at_ms,
+            at_ms,
+          ),
+        ),
+      )
+    record.OutboxRetryScheduledWithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      error_code,
+      attempt_count,
+      next_attempt_at_ms,
+    ) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxRetryScheduledWithTask(
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            error_code,
+            attempt_count,
+            next_attempt_at_ms,
+            at_ms,
+          ),
+        ),
+      )
     record.OutboxCompleted(outbox_id, issue_id, outbox_kind) ->
       Projection(
         ..projection,
@@ -1993,6 +2143,48 @@ pub fn apply(
           projection.outbox,
           outbox_id,
           OutboxFailedWithTask(task_ref, outbox_kind, error_code, at_ms),
+        ),
+      )
+    record.OutboxPermanentlyFailed(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      error_code,
+      attempt_count,
+    ) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxPermanentlyFailed(
+            issue_id,
+            outbox_kind,
+            error_code,
+            attempt_count,
+            at_ms,
+          ),
+        ),
+      )
+    record.OutboxPermanentlyFailedWithTask(
+      outbox_id,
+      task_ref,
+      outbox_kind,
+      error_code,
+      attempt_count,
+    ) ->
+      Projection(
+        ..projection,
+        outbox: outbox_projection.insert_status(
+          projection.outbox,
+          outbox_id,
+          OutboxPermanentlyFailedWithTask(
+            task_ref,
+            outbox_kind,
+            error_code,
+            attempt_count,
+            at_ms,
+          ),
         ),
       )
     record.WorkstreamCreated(workstream_id, task_ref, _) ->
@@ -3212,11 +3404,18 @@ pub fn retry_due_at_ms(status: RetryStatus) -> Result(Int, Nil) {
 pub fn pending_outbox_replays(
   projection: Projection,
 ) -> Result(List(OutboxReplay), PendingOutboxError) {
+  pending_outbox_replays_at(projection, projection_latest_at_ms(projection))
+}
+
+pub fn pending_outbox_replays_at(
+  projection: Projection,
+  now_ms: Int,
+) -> Result(List(OutboxReplay), PendingOutboxError) {
   let entries =
     projection.outbox
     |> dict.to_list
     |> list.sort(by: compare_outbox_entries_by_time)
-  pending_outbox_replays_loop(entries, [])
+  pending_outbox_replays_loop(entries, now_ms, [])
 }
 
 pub fn to_json(projection: Projection) -> json.Json {
@@ -4214,6 +4413,92 @@ fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
           #("pending_at_ms", json.int(pending_at_ms)),
         ]),
       ))
+    OutboxAttempted(
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      attempt_count,
+      attempted_at_ms,
+    ) ->
+      json.object([
+        #("outbox_id", json.string(outbox_id)),
+        #("status", json.string("attempted")),
+        #("issue_id", json.string(issue_id)),
+        #("outbox_kind", json.string(outbox_kind)),
+        #("dedupe_key", json.string(dedupe_key)),
+        #("payload_json", json.string(payload_json)),
+        #("attempt_count", json.int(attempt_count)),
+        #("attempted_at_ms", json.int(attempted_at_ms)),
+      ])
+    OutboxAttemptedWithTask(
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      attempt_count,
+      attempted_at_ms,
+    ) ->
+      json.object(list.append(
+        [
+          #("outbox_id", json.string(outbox_id)),
+          #("status", json.string("attempted")),
+        ],
+        list.append(task_ref_entries(task_ref), [
+          #("outbox_kind", json.string(outbox_kind)),
+          #("dedupe_key", json.string(dedupe_key)),
+          #("payload_json", json.string(payload_json)),
+          #("attempt_count", json.int(attempt_count)),
+          #("attempted_at_ms", json.int(attempted_at_ms)),
+        ]),
+      ))
+    OutboxRetryScheduled(
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      error_code,
+      attempt_count,
+      next_attempt_at_ms,
+      failed_at_ms,
+    ) ->
+      json.object([
+        #("outbox_id", json.string(outbox_id)),
+        #("status", json.string("retry_scheduled")),
+        #("issue_id", json.string(issue_id)),
+        #("outbox_kind", json.string(outbox_kind)),
+        #("dedupe_key", json.string(dedupe_key)),
+        #("payload_json", json.string(payload_json)),
+        #("error_code", json.string(error_code)),
+        #("attempt_count", json.int(attempt_count)),
+        #("next_attempt_at_ms", json.int(next_attempt_at_ms)),
+        #("failed_at_ms", json.int(failed_at_ms)),
+      ])
+    OutboxRetryScheduledWithTask(
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      error_code,
+      attempt_count,
+      next_attempt_at_ms,
+      failed_at_ms,
+    ) ->
+      json.object(list.append(
+        [
+          #("outbox_id", json.string(outbox_id)),
+          #("status", json.string("retry_scheduled")),
+        ],
+        list.append(task_ref_entries(task_ref), [
+          #("outbox_kind", json.string(outbox_kind)),
+          #("dedupe_key", json.string(dedupe_key)),
+          #("payload_json", json.string(payload_json)),
+          #("error_code", json.string(error_code)),
+          #("attempt_count", json.int(attempt_count)),
+          #("next_attempt_at_ms", json.int(next_attempt_at_ms)),
+          #("failed_at_ms", json.int(failed_at_ms)),
+        ]),
+      ))
     OutboxCompleted(issue_id, outbox_kind, completed_at_ms) ->
       json.object([
         #("outbox_id", json.string(outbox_id)),
@@ -4251,6 +4536,41 @@ fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
         list.append(task_ref_entries(task_ref), [
           #("outbox_kind", json.string(outbox_kind)),
           #("error_code", json.string(error_code)),
+          #("failed_at_ms", json.int(failed_at_ms)),
+        ]),
+      ))
+    OutboxPermanentlyFailed(
+      issue_id,
+      outbox_kind,
+      error_code,
+      attempt_count,
+      failed_at_ms,
+    ) ->
+      json.object([
+        #("outbox_id", json.string(outbox_id)),
+        #("status", json.string("permanently_failed")),
+        #("issue_id", json.string(issue_id)),
+        #("outbox_kind", json.string(outbox_kind)),
+        #("error_code", json.string(error_code)),
+        #("attempt_count", json.int(attempt_count)),
+        #("failed_at_ms", json.int(failed_at_ms)),
+      ])
+    OutboxPermanentlyFailedWithTask(
+      task_ref,
+      outbox_kind,
+      error_code,
+      attempt_count,
+      failed_at_ms,
+    ) ->
+      json.object(list.append(
+        [
+          #("outbox_id", json.string(outbox_id)),
+          #("status", json.string("permanently_failed")),
+        ],
+        list.append(task_ref_entries(task_ref), [
+          #("outbox_kind", json.string(outbox_kind)),
+          #("error_code", json.string(error_code)),
+          #("attempt_count", json.int(attempt_count)),
           #("failed_at_ms", json.int(failed_at_ms)),
         ]),
       ))
@@ -5440,6 +5760,142 @@ fn outbox_snapshot_decoder() -> decode.Decoder(OutboxSnapshot) {
         None, None -> outbox_snapshot_decode_failure()
       }
     }
+    "attempted" -> {
+      use issue_id <- decode.optional_field(
+        "issue_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_backend_kind <- decode.optional_field(
+        "task_backend_kind",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_remote_id <- decode.optional_field(
+        "task_remote_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_key <- decode.optional_field(
+        "task_key",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_url <- decode.optional_field(
+        "task_url",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_ref <- outbox_task_ref_from_snapshot_decoder(
+        task_backend_kind,
+        task_remote_id,
+        task_key,
+        task_url,
+      )
+      use outbox_kind <- decode.field("outbox_kind", decode.string)
+      use dedupe_key <- decode.field("dedupe_key", decode.string)
+      use payload_json <- decode.field("payload_json", decode.string)
+      use attempt_count <- decode.field("attempt_count", decode.int)
+      use attempted_at_ms <- decode.field("attempted_at_ms", decode.int)
+      case task_ref, issue_id {
+        Some(task_ref), _ ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxAttemptedWithTask(
+              task_ref,
+              outbox_kind,
+              dedupe_key,
+              payload_json,
+              attempt_count,
+              attempted_at_ms,
+            ),
+          ))
+        None, Some(issue_id) ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxAttempted(
+              issue_id,
+              outbox_kind,
+              dedupe_key,
+              payload_json,
+              attempt_count,
+              attempted_at_ms,
+            ),
+          ))
+        None, None -> outbox_snapshot_decode_failure()
+      }
+    }
+    "retry_scheduled" -> {
+      use issue_id <- decode.optional_field(
+        "issue_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_backend_kind <- decode.optional_field(
+        "task_backend_kind",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_remote_id <- decode.optional_field(
+        "task_remote_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_key <- decode.optional_field(
+        "task_key",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_url <- decode.optional_field(
+        "task_url",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_ref <- outbox_task_ref_from_snapshot_decoder(
+        task_backend_kind,
+        task_remote_id,
+        task_key,
+        task_url,
+      )
+      use outbox_kind <- decode.field("outbox_kind", decode.string)
+      use dedupe_key <- decode.field("dedupe_key", decode.string)
+      use payload_json <- decode.field("payload_json", decode.string)
+      use error_code <- decode.field("error_code", decode.string)
+      use attempt_count <- decode.field("attempt_count", decode.int)
+      use next_attempt_at_ms <- decode.field("next_attempt_at_ms", decode.int)
+      use failed_at_ms <- decode.field("failed_at_ms", decode.int)
+      case task_ref, issue_id {
+        Some(task_ref), _ ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxRetryScheduledWithTask(
+              task_ref,
+              outbox_kind,
+              dedupe_key,
+              payload_json,
+              error_code,
+              attempt_count,
+              next_attempt_at_ms,
+              failed_at_ms,
+            ),
+          ))
+        None, Some(issue_id) ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxRetryScheduled(
+              issue_id,
+              outbox_kind,
+              dedupe_key,
+              payload_json,
+              error_code,
+              attempt_count,
+              next_attempt_at_ms,
+              failed_at_ms,
+            ),
+          ))
+        None, None -> outbox_snapshot_decode_failure()
+      }
+    }
     "completed" -> {
       use issue_id <- decode.optional_field(
         "issue_id",
@@ -5542,13 +5998,75 @@ fn outbox_snapshot_decoder() -> decode.Decoder(OutboxSnapshot) {
         None, None -> outbox_snapshot_decode_failure()
       }
     }
+    "permanently_failed" -> {
+      use issue_id <- decode.optional_field(
+        "issue_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_backend_kind <- decode.optional_field(
+        "task_backend_kind",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_remote_id <- decode.optional_field(
+        "task_remote_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_key <- decode.optional_field(
+        "task_key",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_url <- decode.optional_field(
+        "task_url",
+        None,
+        decode.optional(decode.string),
+      )
+      use task_ref <- outbox_task_ref_from_snapshot_decoder(
+        task_backend_kind,
+        task_remote_id,
+        task_key,
+        task_url,
+      )
+      use outbox_kind <- decode.field("outbox_kind", decode.string)
+      use error_code <- decode.field("error_code", decode.string)
+      use attempt_count <- decode.field("attempt_count", decode.int)
+      use failed_at_ms <- decode.field("failed_at_ms", decode.int)
+      case task_ref, issue_id {
+        Some(task_ref), _ ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxPermanentlyFailedWithTask(
+              task_ref,
+              outbox_kind,
+              error_code,
+              attempt_count,
+              failed_at_ms,
+            ),
+          ))
+        None, Some(issue_id) ->
+          decode.success(OutboxSnapshot(
+            outbox_id,
+            OutboxPermanentlyFailed(
+              issue_id,
+              outbox_kind,
+              error_code,
+              attempt_count,
+              failed_at_ms,
+            ),
+          ))
+        None, None -> outbox_snapshot_decode_failure()
+      }
+    }
     _ -> outbox_snapshot_decode_failure()
   }
 }
 
 fn outbox_snapshot_decode_failure() -> decode.Decoder(OutboxSnapshot) {
   decode.failure(
-    OutboxSnapshot("", OutboxFailed("", "", "", 0)),
+    OutboxSnapshot("", OutboxPermanentlyFailed("", "", "", 0, 0)),
     expected: "OutboxSnapshot",
   )
 }
@@ -5956,10 +6474,19 @@ fn outbox_status_task_ref(status: OutboxStatus) -> record.TaskRefFields {
     OutboxPendingV2(issue_id, _, _, _, _) ->
       linear_task_ref_for_issue_id(issue_id)
     OutboxPendingV2WithTask(task_ref, _, _, _, _) -> task_ref
+    OutboxAttempted(issue_id, _, _, _, _, _) ->
+      linear_task_ref_for_issue_id(issue_id)
+    OutboxAttemptedWithTask(task_ref, _, _, _, _, _) -> task_ref
+    OutboxRetryScheduled(issue_id, _, _, _, _, _, _, _) ->
+      linear_task_ref_for_issue_id(issue_id)
+    OutboxRetryScheduledWithTask(task_ref, _, _, _, _, _, _, _) -> task_ref
     OutboxCompleted(issue_id, _, _) -> linear_task_ref_for_issue_id(issue_id)
     OutboxCompletedWithTask(task_ref, _, _) -> task_ref
     OutboxFailed(issue_id, _, _, _) -> linear_task_ref_for_issue_id(issue_id)
     OutboxFailedWithTask(task_ref, _, _, _) -> task_ref
+    OutboxPermanentlyFailed(issue_id, _, _, _, _) ->
+      linear_task_ref_for_issue_id(issue_id)
+    OutboxPermanentlyFailedWithTask(task_ref, _, _, _, _) -> task_ref
   }
 }
 
@@ -6012,6 +6539,7 @@ fn insert_unique_string(values: List(String), value: String) -> List(String) {
 
 fn pending_outbox_replays_loop(
   entries: List(#(String, OutboxStatus)),
+  now_ms: Int,
   acc: List(OutboxReplay),
 ) -> Result(List(OutboxReplay), PendingOutboxError) {
   case entries {
@@ -6019,40 +6547,80 @@ fn pending_outbox_replays_loop(
     [entry, ..rest] -> {
       let #(outbox_id, status) = entry
       case status {
-        OutboxPending(_, _, _, _) -> pending_outbox_replays_loop(rest, acc)
-        OutboxPendingV2(issue_id, outbox_kind, dedupe_key, payload_json, _) ->
-          pending_outbox_replays_loop(rest, [
-            OutboxReplay(
-              outbox_id,
-              linear_task_ref_for_issue_id(issue_id),
-              outbox_kind,
-              dedupe_key,
-              payload_json,
-            ),
-            ..acc
-          ])
+        OutboxPending(_, _, _, _) ->
+          pending_outbox_replays_loop(rest, now_ms, acc)
+        OutboxPendingV2(issue_id, outbox_kind, dedupe_key, payload_json, _)
+        | OutboxAttempted(issue_id, outbox_kind, dedupe_key, payload_json, _, _)
+        | OutboxRetryScheduled(
+            issue_id,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            _,
+            _,
+            _,
+            _,
+          ) ->
+          case outbox_status_is_ready(status, now_ms) {
+            True ->
+              pending_outbox_replays_loop(rest, now_ms, [
+                OutboxReplay(
+                  outbox_id,
+                  linear_task_ref_for_issue_id(issue_id),
+                  outbox_kind,
+                  dedupe_key,
+                  payload_json,
+                ),
+                ..acc
+              ])
+            False -> pending_outbox_replays_loop(rest, now_ms, acc)
+          }
         OutboxPendingV2WithTask(
           task_ref,
           outbox_kind,
           dedupe_key,
           payload_json,
           _,
-        ) ->
-          pending_outbox_replays_loop(rest, [
-            OutboxReplay(
-              outbox_id,
-              task_ref,
-              outbox_kind,
-              dedupe_key,
-              payload_json,
-            ),
-            ..acc
-          ])
+        )
+        | OutboxAttemptedWithTask(
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            _,
+            _,
+          )
+        | OutboxRetryScheduledWithTask(
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            _,
+            _,
+            _,
+            _,
+          ) ->
+          case outbox_status_is_ready(status, now_ms) {
+            True ->
+              pending_outbox_replays_loop(rest, now_ms, [
+                OutboxReplay(
+                  outbox_id,
+                  task_ref,
+                  outbox_kind,
+                  dedupe_key,
+                  payload_json,
+                ),
+                ..acc
+              ])
+            False -> pending_outbox_replays_loop(rest, now_ms, acc)
+          }
         OutboxCompleted(_, _, _)
         | OutboxCompletedWithTask(_, _, _)
         | OutboxFailed(_, _, _, _)
-        | OutboxFailedWithTask(_, _, _, _) ->
-          pending_outbox_replays_loop(rest, acc)
+        | OutboxFailedWithTask(_, _, _, _)
+        | OutboxPermanentlyFailed(_, _, _, _, _)
+        | OutboxPermanentlyFailedWithTask(_, _, _, _, _) ->
+          pending_outbox_replays_loop(rest, now_ms, acc)
       }
     }
   }
@@ -6075,11 +6643,44 @@ fn outbox_status_time(status: OutboxStatus) -> Int {
     OutboxPending(_, _, _, pending_at_ms) -> pending_at_ms
     OutboxPendingV2(_, _, _, _, pending_at_ms) -> pending_at_ms
     OutboxPendingV2WithTask(_, _, _, _, pending_at_ms) -> pending_at_ms
+    OutboxAttempted(_, _, _, _, _, attempted_at_ms) -> attempted_at_ms
+    OutboxAttemptedWithTask(_, _, _, _, _, attempted_at_ms) -> attempted_at_ms
+    OutboxRetryScheduled(_, _, _, _, _, _, _, failed_at_ms) -> failed_at_ms
+    OutboxRetryScheduledWithTask(_, _, _, _, _, _, _, failed_at_ms) ->
+      failed_at_ms
     OutboxCompleted(_, _, completed_at_ms) -> completed_at_ms
     OutboxCompletedWithTask(_, _, completed_at_ms) -> completed_at_ms
     OutboxFailed(_, _, _, failed_at_ms) -> failed_at_ms
     OutboxFailedWithTask(_, _, _, failed_at_ms) -> failed_at_ms
+    OutboxPermanentlyFailed(_, _, _, _, failed_at_ms) -> failed_at_ms
+    OutboxPermanentlyFailedWithTask(_, _, _, _, failed_at_ms) -> failed_at_ms
   }
+}
+
+fn outbox_status_is_ready(status: OutboxStatus, now_ms: Int) -> Bool {
+  case status {
+    OutboxRetryScheduled(_, _, _, _, _, _, next_attempt_at_ms, _)
+    | OutboxRetryScheduledWithTask(_, _, _, _, _, _, next_attempt_at_ms, _) ->
+      next_attempt_at_ms <= now_ms
+    OutboxPending(_, _, _, _)
+    | OutboxPendingV2(_, _, _, _, _)
+    | OutboxPendingV2WithTask(_, _, _, _, _)
+    | OutboxAttempted(_, _, _, _, _, _)
+    | OutboxAttemptedWithTask(_, _, _, _, _, _) -> True
+    OutboxCompleted(_, _, _)
+    | OutboxCompletedWithTask(_, _, _)
+    | OutboxFailed(_, _, _, _)
+    | OutboxFailedWithTask(_, _, _, _)
+    | OutboxPermanentlyFailed(_, _, _, _, _)
+    | OutboxPermanentlyFailedWithTask(_, _, _, _, _) -> False
+  }
+}
+
+fn projection_latest_at_ms(projection: Projection) -> Int {
+  projection.outbox
+  |> dict.values
+  |> list.map(outbox_status_time)
+  |> list.fold(0, int.max)
 }
 
 pub fn describe_pending_outbox_error(error: PendingOutboxError) -> String {

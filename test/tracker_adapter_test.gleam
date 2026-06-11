@@ -154,41 +154,47 @@ fn handoff_comments_requirements() -> adapter.TrackerRequirements {
 }
 
 fn comment_capability() -> adapter.CommentCapability {
-  adapter.CommentCapability(post_or_update: fn(request) {
-    let adapter.CommentRequest(task: requested_task, ..) = request
+  adapter.CommentCapability(
+    post_or_update: fn(request) {
+      let adapter.CommentRequest(task: requested_task, ..) = request
 
-    Ok(adapter.CommentReceipt(
-      id: "comment-1",
-      task: requested_task,
-      url: None,
-      created: True,
-    ))
-  })
+      Ok(adapter.CommentReceipt(
+        id: "comment-1",
+        task: requested_task,
+        url: None,
+        created: True,
+      ))
+    },
+    find_by_marker: fn(_) { Ok(None) },
+  )
 }
 
 fn comment_capability_without_update() -> adapter.CommentCapability {
-  adapter.CommentCapability(post_or_update: fn(request) {
-    let adapter.CommentRequest(task: requested_task, mode: mode, ..) = request
+  adapter.CommentCapability(
+    post_or_update: fn(request) {
+      let adapter.CommentRequest(task: requested_task, mode: mode, ..) = request
 
-    case mode {
-      adapter.CreateOnly ->
-        Ok(adapter.CommentReceipt(
-          id: "comment-new",
-          task: requested_task,
-          url: None,
-          created: True,
-        ))
-      adapter.UpdateExisting(allow_create_fallback: True, ..) ->
-        Ok(adapter.CommentReceipt(
-          id: "comment-new",
-          task: requested_task,
-          url: None,
-          created: True,
-        ))
-      adapter.UpdateExisting(allow_create_fallback: False, ..) ->
-        Error(adapter.UnsupportedCapability("comments.update"))
-    }
-  })
+      case mode {
+        adapter.CreateOnly ->
+          Ok(adapter.CommentReceipt(
+            id: "comment-new",
+            task: requested_task,
+            url: None,
+            created: True,
+          ))
+        adapter.UpdateExisting(allow_create_fallback: True, ..) ->
+          Ok(adapter.CommentReceipt(
+            id: "comment-new",
+            task: requested_task,
+            url: None,
+            created: True,
+          ))
+        adapter.UpdateExisting(allow_create_fallback: False, ..) ->
+          Error(adapter.UnsupportedCapability("comments.update"))
+      }
+    },
+    find_by_marker: fn(_) { Ok(None) },
+  )
 }
 
 fn remote_command_capability() -> adapter.RemoteCommandCapability {
@@ -418,7 +424,7 @@ pub fn handoff_comments_requires_handoff_capability_not_comments_test() {
 }
 
 pub fn comment_update_without_fallback_reports_unsupported_test() {
-  let adapter.CommentCapability(post_or_update: post_or_update) =
+  let adapter.CommentCapability(post_or_update: post_or_update, ..) =
     comment_capability_without_update()
 
   assert post_or_update(adapter.CommentRequest(
@@ -433,7 +439,7 @@ pub fn comment_update_without_fallback_reports_unsupported_test() {
 }
 
 pub fn comment_update_with_fallback_creates_new_receipt_test() {
-  let adapter.CommentCapability(post_or_update: post_or_update) =
+  let adapter.CommentCapability(post_or_update: post_or_update, ..) =
     comment_capability_without_update()
   let assert Ok(receipt) =
     post_or_update(adapter.CommentRequest(

@@ -2197,7 +2197,25 @@ fn recover_outbox_entry(
       dedupe_key,
       payload_json,
       _,
-    ) ->
+    )
+    | projection.OutboxAttempted(
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        _,
+        _,
+      )
+    | projection.OutboxRetryScheduled(
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        _,
+        _,
+        _,
+        _,
+      ) ->
       recover_pending_outbox(
         recovery,
         projection,
@@ -2213,7 +2231,25 @@ fn recover_outbox_entry(
       dedupe_key,
       payload_json,
       _,
-    ) ->
+    )
+    | projection.OutboxAttemptedWithTask(
+        task_ref,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        _,
+        _,
+      )
+    | projection.OutboxRetryScheduledWithTask(
+        task_ref,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        _,
+        _,
+        _,
+        _,
+      ) ->
       recover_pending_outbox(
         recovery,
         projection,
@@ -2226,7 +2262,9 @@ fn recover_outbox_entry(
     projection.OutboxCompleted(_, _, _)
     | projection.OutboxCompletedWithTask(_, _, _)
     | projection.OutboxFailed(_, _, _, _)
-    | projection.OutboxFailedWithTask(_, _, _, _) -> recovery
+    | projection.OutboxFailedWithTask(_, _, _, _)
+    | projection.OutboxPermanentlyFailed(_, _, _, _, _)
+    | projection.OutboxPermanentlyFailedWithTask(_, _, _, _, _) -> recovery
   }
 }
 
@@ -2364,10 +2402,21 @@ fn outbox_status_time(status: projection.OutboxStatus) -> Int {
     projection.OutboxPendingV2(_, _, _, _, pending_at_ms) -> pending_at_ms
     projection.OutboxPendingV2WithTask(_, _, _, _, pending_at_ms) ->
       pending_at_ms
+    projection.OutboxAttempted(_, _, _, _, _, attempted_at_ms) ->
+      attempted_at_ms
+    projection.OutboxAttemptedWithTask(_, _, _, _, _, attempted_at_ms) ->
+      attempted_at_ms
+    projection.OutboxRetryScheduled(_, _, _, _, _, _, _, failed_at_ms) ->
+      failed_at_ms
+    projection.OutboxRetryScheduledWithTask(_, _, _, _, _, _, _, failed_at_ms) ->
+      failed_at_ms
     projection.OutboxCompleted(_, _, completed_at_ms) -> completed_at_ms
     projection.OutboxCompletedWithTask(_, _, completed_at_ms) -> completed_at_ms
     projection.OutboxFailed(_, _, _, failed_at_ms) -> failed_at_ms
     projection.OutboxFailedWithTask(_, _, _, failed_at_ms) -> failed_at_ms
+    projection.OutboxPermanentlyFailed(_, _, _, _, failed_at_ms) -> failed_at_ms
+    projection.OutboxPermanentlyFailedWithTask(_, _, _, _, failed_at_ms) ->
+      failed_at_ms
   }
 }
 

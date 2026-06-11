@@ -8,6 +8,7 @@ import scherzo/handoff_format
 import scherzo/linear
 import scherzo/linear_attachment
 import scherzo/result_artifact
+import scherzo/tracker/idempotency
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_completion_policy
 
@@ -159,6 +160,7 @@ fn claim_issue(
       run_id,
       tracker_secrets(tracker_config),
     ),
+    claim_marker(issue.id, run_id),
   ))
   run_optional_state_ref_update(
     tracker_config,
@@ -204,6 +206,7 @@ fn report_success(
           tracking_state,
           secrets,
         ),
+        report_marker("report_success", issue.id, run_id, workflow_id),
       ))
       run_success_state_update(
         tracker_config,
@@ -223,6 +226,7 @@ fn report_success(
         options,
         tracking_state,
         secrets,
+        report_marker("report_success", issue.id, run_id, workflow_id),
       ))
       use _ <- try_tracker(maybe_attach_success_result(
         tracker_config,
@@ -270,6 +274,7 @@ fn report_failure(
       tracking_state,
       tracker_secrets(tracker_config),
     ),
+    report_marker("report_failure", issue.id, run_id, workflow_id),
   ))
   run_failure_state_update(
     tracker_config,
@@ -298,6 +303,7 @@ fn report_park(
       report.run_id,
       tracker_secrets(tracker_config),
     ),
+    park_marker(report),
   )
 }
 
@@ -310,10 +316,9 @@ fn create_success_comment(
   options: handoff_format.SuccessCommentOptions,
   tracking_state: Option(String),
   secrets: List(String),
+  marker: String,
 ) -> Result(linear.LinearCommentDocument, error.TrackerError) {
-  use request <- try_tracker(linear.build_comment_create_request(
-    tracker_config,
-    issue.id,
+  let body =
     handoff_format.success_comment_with_tracking(
       issue,
       success,
@@ -321,10 +326,15 @@ fn create_success_comment(
       options,
       tracking_state,
       secrets,
-    ),
-  ))
-  use response <- try_tracker(transport(request))
-  linear.parse_comment_create_response(response)
+    )
+    |> idempotency.append_marker(marker)
+  upsert_linear_comment_by_marker(
+    tracker_config,
+    transport,
+    issue.id,
+    body,
+    marker,
+  )
 }
 
 fn success_attachment_filename(
@@ -576,17 +586,54 @@ fn run_comment(
   transport: linear.Transport,
   issue_id: String,
   body: String,
+  marker: String,
 ) -> Result(Nil, error.TrackerError) {
   case enabled {
     False -> Ok(Nil)
     True -> {
+      use _ <- try_tracker(upsert_linear_comment_by_marker(
+        tracker_config,
+        transport,
+        issue_id,
+        idempotency.append_marker(body, marker),
+        marker,
+      ))
+      Ok(Nil)
+    }
+  }
+}
+
+fn upsert_linear_comment_by_marker(
+  tracker_config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  body: String,
+  marker: String,
+) -> Result(linear.LinearCommentDocument, error.TrackerError) {
+  use found <- try_tracker(linear.find_issue_comment_by_marker(
+    tracker_config,
+    transport,
+    issue_id,
+    marker,
+  ))
+  case found {
+    Some(comment) -> {
+      use request <- try_tracker(linear.build_comment_update_body_request(
+        tracker_config,
+        comment.id,
+        body,
+      ))
+      use response <- try_tracker(transport(request))
+      linear.parse_comment_update_response(response)
+    }
+    None -> {
       use request <- try_tracker(linear.build_comment_create_request(
         tracker_config,
         issue_id,
         body,
       ))
       use response <- try_tracker(transport(request))
-      linear.parse_mutation_response(response, "commentCreate")
+      linear.parse_comment_create_response(response)
     }
   }
 }
@@ -609,6 +656,27 @@ fn run_state_update(
       linear.parse_mutation_response(response, "issueUpdate")
     }
   }
+}
+
+fn claim_marker(issue_id: String, run_id: String) -> String {
+  "claim:linear:" <> issue_id <> ":" <> run_id
+}
+
+fn report_marker(
+  kind: String,
+  issue_id: String,
+  run_id: String,
+  workflow_id: String,
+) -> String {
+  kind <> ":linear:" <> issue_id <> ":" <> run_id <> ":" <> workflow_id
+}
+
+fn park_marker(report: ParkReport) -> String {
+  let source = case report.run_id {
+    Some(value) -> value
+    None -> report.reason |> string.replace(":", "_")
+  }
+  "park:linear:" <> report.issue_id <> ":" <> source
 }
 
 fn tracker_secrets(tracker_config: config_types.TrackerConfig) -> List(String) {

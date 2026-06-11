@@ -395,6 +395,7 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     report_invalid_workflow: fn(state, issue, _, _, _) {
       append_event(state, "invalid:" <> issue.id)
     },
+    replay_outbox: fn(state, _) { state },
     remove_retry_timer: fn(state, issue_id) {
       append_event(state, "retry_remove:" <> issue_id)
     },
@@ -620,6 +621,7 @@ fn failing_handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     report_invalid_workflow: fn(state, issue, _, _, _) {
       append_event(state, "invalid:" <> issue.id)
     },
+    replay_outbox: fn(state, _) { state },
     remove_retry_timer: fn(state, _) { state },
     finish_retry_refresh: fn(state, issue_id) {
       append_event(state, "retry_finish:" <> issue_id)

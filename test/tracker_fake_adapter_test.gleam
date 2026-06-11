@@ -222,7 +222,7 @@ pub fn fake_adapter_comment_remote_handoff_transition_and_scheduled_failure_seam
   let tracker = fake_tracker_adapter.seam_adapter()
   let ref = fake_tracker_adapter.task_ref()
 
-  let assert Some(adapter.CommentCapability(post_or_update: post_or_update)) =
+  let assert Some(adapter.CommentCapability(post_or_update: post_or_update, ..)) =
     tracker.comments
   let assert Ok(comment_receipt) =
     post_or_update(adapter.CommentRequest(

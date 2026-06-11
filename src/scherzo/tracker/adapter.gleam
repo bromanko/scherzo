@@ -73,6 +73,10 @@ pub type CommentRequest {
   CommentRequest(task: task.TaskRef, body: String, mode: CommentWriteMode)
 }
 
+pub type CommentLookup {
+  CommentLookup(task: task.TaskRef, marker: String)
+}
+
 pub type CommentReceipt {
   CommentReceipt(
     id: String,
@@ -85,6 +89,8 @@ pub type CommentReceipt {
 pub type CommentCapability {
   CommentCapability(
     post_or_update: fn(CommentRequest) -> Result(CommentReceipt, TrackerError),
+    find_by_marker: fn(CommentLookup) ->
+      Result(Option(CommentReceipt), TrackerError),
   )
 }
 

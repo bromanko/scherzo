@@ -32,6 +32,7 @@ import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/operator_runtime
+import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/read_model
 import scherzo/orchestrator/remote_command_runtime
@@ -421,6 +422,12 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
   let running_scheduled_workers =
     worker_registry.scheduled_worker_count(state.registry)
   let now_ms = state.dependencies.now_ms()
+  let #(
+    pending_outbox_count,
+    in_flight_outbox_count,
+    retryable_outbox_count,
+    permanent_outbox_count,
+  ) = outbox_counts_for_metrics(state)
   read_model.RuntimeCounts(
     workflow_count: dict.size(state.workflow.bundle.workflows),
     scheduled_job_count: list.length(
@@ -440,6 +447,10 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
     retry_tasks: dict.size(state.runtime.retry_attempts),
     parked_tasks: dict.size(state.runtime.parked),
     completed_tasks: dict.size(state.runtime.completed),
+    pending_outbox_count: pending_outbox_count,
+    in_flight_outbox_count: in_flight_outbox_count,
+    retryable_outbox_count: retryable_outbox_count,
+    permanent_outbox_count: permanent_outbox_count,
     poll_generation: poll_scheduler.generation(state.poll),
     poll_in_flight: poll_scheduler.in_flight(state.poll) != None,
     poll_timer_active: poll_scheduler.timer(state.poll) != None,
@@ -465,6 +476,53 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
       state.scheduled_report_retry_timers,
     ),
   )
+}
+
+fn outbox_counts_for_metrics(state: State) -> #(Int, Int, Int, Int) {
+  case ledger.path_for_workspace_root(state.workflow.effective.workspace.root) {
+    Error(_) -> #(0, 0, 0, 0)
+    Ok(ledger_path) ->
+      case ledger.load_projection(ledger_path) {
+        Error(_) -> #(0, 0, 0, 0)
+        Ok(loaded) ->
+          loaded.outbox
+          |> dict.values
+          |> list.fold(#(0, 0, 0, 0), fn(counts, status) {
+            let #(pending, in_flight, retryable, permanent) = counts
+            case status {
+              projection.OutboxPendingV2(_, _, _, _, _)
+              | projection.OutboxPendingV2WithTask(_, _, _, _, _) -> #(
+                pending + 1,
+                in_flight,
+                retryable,
+                permanent,
+              )
+              projection.OutboxAttempted(_, _, _, _, _, _)
+              | projection.OutboxAttemptedWithTask(_, _, _, _, _, _) -> #(
+                pending,
+                in_flight + 1,
+                retryable,
+                permanent,
+              )
+              projection.OutboxRetryScheduled(_, _, _, _, _, _, _, _)
+              | projection.OutboxRetryScheduledWithTask(_, _, _, _, _, _, _, _) -> #(
+                pending,
+                in_flight,
+                retryable + 1,
+                permanent,
+              )
+              projection.OutboxPermanentlyFailed(_, _, _, _, _)
+              | projection.OutboxPermanentlyFailedWithTask(_, _, _, _, _) -> #(
+                pending,
+                in_flight,
+                retryable,
+                permanent + 1,
+              )
+              _ -> counts
+            }
+          })
+      }
+  }
 }
 
 fn metrics_token_totals(state: State) -> session_tokens.TokenTotals {
@@ -3549,16 +3607,24 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
     },
     reserve_session_sequence: transition_reserve_session_sequence,
     claim_issue: fn(state, task_ref, issue, workspace_path, run_id) {
-      enqueue_side_effect(
-        state,
+      let intent =
+        outbox_effects.claim_intent(
+          task_ref,
+          issue,
+          run_id,
+          state.workflow.effective.handoff,
+          tracker_secrets(state),
+        )
+      enqueue_outbox_side_effect(state, intent, fn(intent) {
         effect_runner.ClaimIssue(
+          outbox: intent,
           task_ref: task_ref,
           issue: issue,
           workspace_path: workspace_path,
           run_id: run_id,
           capability: require_handoff_capability(state),
-        ),
-      )
+        )
+      })
     },
     report_invalid_workflow: fn(
       state,
@@ -3567,9 +3633,18 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
       violation_fingerprint,
       reporting_policy_fingerprint,
     ) {
-      enqueue_side_effect(
-        state,
+      let intent =
+        outbox_effects.invalid_workflow_intent(
+          issue,
+          violation,
+          violation_fingerprint,
+          reporting_policy_fingerprint,
+          state.workflow.effective.linear_contract,
+          tracker_secrets(state),
+        )
+      enqueue_outbox_side_effect(state, intent, fn(intent) {
         effect_runner.ReportInvalidWorkflow(
+          outbox: intent,
           issue: issue,
           violation: violation,
           violation_fingerprint: violation_fingerprint,
@@ -3577,8 +3652,23 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
           contract_config: state.workflow.effective.linear_contract,
           comments: state.tracker_adapter.comments,
           state_transitions: state.tracker_adapter.state_transitions,
-        ),
-      )
+        )
+      })
+    },
+    replay_outbox: fn(state, outbox_replay) {
+      let intent = outbox_effects.recovered_intent(outbox_replay)
+      case append_outbox_attempt(state, intent) {
+        True ->
+          enqueue_side_effect(
+            state,
+            effect_runner.ReplayOutbox(
+              outbox: outbox_replay,
+              comments: state.tracker_adapter.comments,
+              state_transitions: state.tracker_adapter.state_transitions,
+            ),
+          )
+        False -> state
+      }
     },
     remove_retry_timer: fn(state, issue_id) {
       State(..state, retry: retry_scheduler.remove_timer(state.retry, issue_id))
@@ -3797,18 +3887,29 @@ fn transition_report_worker_success(
     Some(issue) -> issue
     None -> identity.issue
   }
-  enqueue_side_effect(
-    state,
+  let run_id = identity.run_id_to_string(identity.run_id)
+  let intent =
+    outbox_effects.success_intent(
+      identity.task_ref,
+      final_issue,
+      success,
+      run_id,
+      identity.workflow_id,
+      state.workflow.effective.handoff,
+      tracker_secrets(state),
+    )
+  enqueue_outbox_side_effect(state, intent, fn(intent) {
     effect_runner.ReportSuccess(
+      outbox: intent,
       task_ref: identity.task_ref,
       issue_id: identity.issue_id_to_string(identity.issue_id),
       issue: final_issue,
       success: success,
-      run_id: identity.run_id_to_string(identity.run_id),
+      run_id: run_id,
       workflow_id: identity.workflow_id,
       capability: require_handoff_capability(state),
-    ),
-  )
+    )
+  })
 }
 
 fn transition_report_worker_failure(
@@ -3816,18 +3917,29 @@ fn transition_report_worker_failure(
   identity: transition_effects.WorkerIdentity,
   failure: agent_types.WorkerFailure,
 ) -> State {
-  enqueue_side_effect(
-    state,
+  let run_id = identity.run_id_to_string(identity.run_id)
+  let intent =
+    outbox_effects.failure_intent(
+      identity.task_ref,
+      identity.issue,
+      failure,
+      run_id,
+      identity.workflow_id,
+      state.workflow.effective.handoff,
+      tracker_secrets(state),
+    )
+  enqueue_outbox_side_effect(state, intent, fn(intent) {
     effect_runner.ReportFailure(
+      outbox: intent,
       task_ref: identity.task_ref,
       issue_id: identity.issue_id_to_string(identity.issue_id),
       issue: identity.issue,
       failure: failure,
-      run_id: identity.run_id_to_string(identity.run_id),
+      run_id: run_id,
       workflow_id: identity.workflow_id,
       capability: require_handoff_capability(state),
-    ),
-  )
+    )
+  })
 }
 
 fn transition_cleanup_workspace(state: State, workspace_path: String) -> State {
@@ -3847,10 +3959,10 @@ fn transition_cleanup_workspace(state: State, workspace_path: String) -> State {
 }
 
 fn transition_report_park(state: State, report: adapter.ParkReport) -> State {
-  enqueue_side_effect(
-    state,
-    effect_runner.ReportPark(report, require_handoff_capability(state)),
-  )
+  let intent = outbox_effects.park_report_intent(report, tracker_secrets(state))
+  enqueue_outbox_side_effect(state, intent, fn(intent) {
+    effect_runner.ReportPark(intent, report, require_handoff_capability(state))
+  })
 }
 
 fn transition_park_issue(
@@ -3904,21 +4016,15 @@ fn enqueue_parked_entry_report(
   reason_text: String,
   source_run_id: Option(String),
 ) -> State {
-  enqueue_side_effect(
-    state,
-    effect_runner.ReportPark(
-      adapter.ParkReport(
-        task: parked.task_ref,
-        issue_identifier: parked.identifier,
-        reason: reason_text,
-        release_policy: Some(park_release_policy_to_string(
-          parked.release_policy,
-        )),
-        run_id: source_run_id,
-      ),
-      require_handoff_capability(state),
-    ),
-  )
+  let report =
+    adapter.ParkReport(
+      task: parked.task_ref,
+      issue_identifier: parked.identifier,
+      reason: reason_text,
+      release_policy: Some(park_release_policy_to_string(parked.release_policy)),
+      run_id: source_run_id,
+    )
+  transition_report_park(state, report)
 }
 
 fn transition_stop_worker(
@@ -6077,6 +6183,7 @@ fn effect_completion_context(
       handoff_failure_finished: handle_handoff_failure_finished,
       handoff_park_finished: handle_handoff_park_finished,
       invalid_workflow_report_finished: handle_invalid_workflow_report_finished,
+      outbox_replay_finished: handle_outbox_replay_finished,
       scheduled_failure_report_finished: handle_scheduled_failure_report_finished,
       cleanup_finished: handle_cleanup_finished,
     ),
@@ -6145,10 +6252,15 @@ fn dispatch_validation_error_to_transition(
 
 fn handle_handoff_claim_finished(
   state: State,
+  outbox: outbox_effects.Intent,
   issue_id: String,
   run_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  let state = case result {
+    Ok(Nil) -> state
+    Error(err) -> append_outbox_failure(state, outbox, err)
+  }
   let task_identity =
     orchestrator_state.issue_id_identity_for_backend(
       issue_id,
@@ -6159,13 +6271,20 @@ fn handle_handoff_claim_finished(
       task_identity,
       identity.issue_id_from_string(issue_id),
       identity.run_id_from_string(run_id),
-      handoff_claim_result_for_transition(state, issue_id, run_id, result),
+      handoff_claim_result_for_transition(
+        state,
+        outbox,
+        issue_id,
+        run_id,
+        result,
+      ),
     ),
   ])
 }
 
 fn handoff_claim_result_for_transition(
   state: State,
+  outbox: outbox_effects.Intent,
   issue_id: String,
   run_id: String,
   result: Result(Nil, error.TrackerError),
@@ -6186,7 +6305,7 @@ fn handoff_claim_result_for_transition(
         Ok(pending) ->
           case pending.run_id == run_id {
             False -> transition_types.HandoffClaimFailed("stale")
-            True -> claim_ledger_batch_for_pending(state, pending)
+            True -> claim_ledger_batch_for_pending(state, pending, outbox)
           }
       }
   }
@@ -6195,6 +6314,7 @@ fn handoff_claim_result_for_transition(
 fn claim_ledger_batch_for_pending(
   state: State,
   pending: transition_types.PendingClaim,
+  outbox: outbox_effects.Intent,
 ) -> transition_types.HandoffClaimResult {
   let post_spawn_runtime =
     core.apply_task_ref_start(
@@ -6232,6 +6352,8 @@ fn claim_ledger_batch_for_pending(
           )
         None -> batch
       }
+      let batch =
+        ledger_batch.append_body(batch, outbox_effects.completed_body(outbox))
       transition_types.HandoffClaimSucceeded(batch)
     }
   }
@@ -6239,9 +6361,11 @@ fn claim_ledger_batch_for_pending(
 
 fn handle_handoff_success_finished(
   state: State,
+  outbox: outbox_effects.Intent,
   issue_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  let state = append_outbox_result(state, outbox, result)
   case result {
     Ok(Nil) -> state
     Error(err) -> {
@@ -6256,9 +6380,11 @@ fn handle_handoff_success_finished(
 
 fn handle_handoff_failure_finished(
   state: State,
+  outbox: outbox_effects.Intent,
   issue_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  let state = append_outbox_result(state, outbox, result)
   case result {
     Ok(Nil) -> state
     Error(err) -> {
@@ -6273,9 +6399,11 @@ fn handle_handoff_failure_finished(
 
 fn handle_handoff_park_finished(
   state: State,
+  outbox: outbox_effects.Intent,
   issue_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  let state = append_outbox_result(state, outbox, result)
   case result {
     Ok(Nil) -> state
     Error(err) -> {
@@ -6290,11 +6418,13 @@ fn handle_handoff_park_finished(
 
 fn handle_invalid_workflow_report_finished(
   state: State,
+  outbox: outbox_effects.Intent,
   issue_id: String,
   violation_fingerprint: String,
   reporting_policy_fingerprint: String,
   result: Result(effect_runner.InvalidWorkflowReportOutcome, error.TrackerError),
 ) -> State {
+  let state = append_outbox_result(state, outbox, result)
   case result {
     Ok(effect_runner.InvalidWorkflowReportNoop) -> {
       log_state(state, "info", "invalid_workflow_report_noop", [
@@ -6357,6 +6487,41 @@ fn invalid_workflow_outcome_to_string(
   }
 }
 
+fn handle_outbox_replay_finished(
+  state: State,
+  outbox_replay: recovery.OutboxReplay,
+  result: Result(Nil, error.TrackerError),
+) -> State {
+  let recovery.OutboxReplay(outbox_id, task_ref, outbox_kind, _, _) =
+    outbox_replay
+  let intent = outbox_effects.recovered_intent(outbox_replay)
+  case result {
+    Ok(Nil) -> {
+      append_ledger_bodies_best_effort(
+        state,
+        [outbox_effects.completed_body(intent)],
+        "outbox_replay_completion_append_failed",
+      )
+      log_state(state, "info", "outbox_replay_completed", [
+        #("outbox_id", outbox_id),
+        #("outbox_kind", outbox_kind),
+        #("task_remote_id", task_ref.task_remote_id),
+      ])
+      state
+    }
+    Error(err) -> {
+      let state = append_outbox_failure(state, intent, err)
+      log_state(state, "warn", "outbox_replay_failed", [
+        #("outbox_id", outbox_id),
+        #("outbox_kind", outbox_kind),
+        #("task_remote_id", task_ref.task_remote_id),
+        #("error", error.tracker_code(err)),
+      ])
+      state
+    }
+  }
+}
+
 fn handle_cleanup_finished(
   state: State,
   workspace_path: String,
@@ -6398,6 +6563,98 @@ fn require_handoff_capability(state: State) -> adapter.HandoffCapability {
 fn enqueue_side_effect(state: State, effect: effect_runner.Effect) -> State {
   effect_runner.enqueue(state.effect_runner, effect)
   state
+}
+
+fn enqueue_outbox_side_effect(
+  state: State,
+  intent: outbox_effects.Intent,
+  make_effect: fn(outbox_effects.Intent) -> effect_runner.Effect,
+) -> State {
+  case append_outbox_attempt(state, intent) {
+    True -> enqueue_side_effect(state, make_effect(intent))
+    False -> state
+  }
+}
+
+fn append_outbox_attempt(state: State, intent: outbox_effects.Intent) -> Bool {
+  append_ledger_bodies(
+    state,
+    [
+      outbox_effects.pending_body(intent),
+      outbox_effects.attempted_body(intent, 1),
+    ],
+    "outbox_ledger_append_failed",
+  )
+}
+
+fn append_outbox_result(
+  state: State,
+  intent: outbox_effects.Intent,
+  result: Result(a, error.TrackerError),
+) -> State {
+  case result {
+    Ok(_) -> {
+      append_ledger_bodies_best_effort(
+        state,
+        [outbox_effects.completed_body(intent)],
+        "outbox_ledger_append_failed",
+      )
+      state
+    }
+    Error(err) -> append_outbox_failure(state, intent, err)
+  }
+}
+
+fn append_outbox_failure(
+  state: State,
+  intent: outbox_effects.Intent,
+  err: error.TrackerError,
+) -> State {
+  let error_code = error.tracker_code(err)
+  let body = case tracker_error_retryable(err) {
+    True -> {
+      log_state(state, "warn", "outbox_retry_scheduled", [
+        #("outbox_id", intent.outbox_id),
+        #("outbox_kind", intent.outbox_kind),
+        #("error", error_code),
+      ])
+      outbox_effects.retry_scheduled_body(
+        intent,
+        error_code,
+        1,
+        state.dependencies.now_ms() + 60_000,
+      )
+    }
+    False -> {
+      log_state(state, "error", "outbox_permanently_failed", [
+        #("outbox_id", intent.outbox_id),
+        #("outbox_kind", intent.outbox_kind),
+        #("error", error_code),
+      ])
+      outbox_effects.permanently_failed_body(intent, error_code, 1)
+    }
+  }
+  append_ledger_bodies_best_effort(state, [body], "outbox_ledger_append_failed")
+  state
+}
+
+fn tracker_error_retryable(err: error.TrackerError) -> Bool {
+  case err {
+    error.LinearApiStatus(status) -> status >= 500
+    error.LinearApiRequest(_) -> True
+    error.LinearUploadStatus(status) -> status >= 500
+    error.LinearGraphqlErrors(_)
+    | error.LinearUnknownPayload(_)
+    | error.LinearMissingEndCursor
+    | error.LinearAttachmentError(_) -> False
+  }
+}
+
+fn tracker_secrets(state: State) -> List(String) {
+  case state.workflow.effective.tracker.api_key {
+    Some(value) -> [value]
+    None -> []
+  }
 }
 
 fn append_ledger_bodies_best_effort(
@@ -6511,24 +6768,20 @@ fn enqueue_park_report(
   release_policy: String,
   source_run_id: Option(String),
 ) -> State {
-  enqueue_side_effect(
-    state,
-    effect_runner.ReportPark(
-      adapter.ParkReport(
-        task: task.TaskRef(
-          backend_kind: state.tracker_adapter.kind,
-          remote_id: issue_id,
-          key: Some(issue_identifier),
-          url: None,
-        ),
-        issue_identifier: issue_identifier,
-        reason: reason,
-        release_policy: Some(release_policy),
-        run_id: source_run_id,
+  let report =
+    adapter.ParkReport(
+      task: task.TaskRef(
+        backend_kind: state.tracker_adapter.kind,
+        remote_id: issue_id,
+        key: Some(issue_identifier),
+        url: None,
       ),
-      require_handoff_capability(state),
-    ),
-  )
+      issue_identifier: issue_identifier,
+      reason: reason,
+      release_policy: Some(release_policy),
+      run_id: source_run_id,
+    )
+  transition_report_park(state, report)
 }
 
 fn park_release_policy_to_string(

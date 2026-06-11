@@ -11,6 +11,7 @@ import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger_batch
+import scherzo/state/recovery
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
@@ -40,6 +41,7 @@ pub type Effect {
     violation_fingerprint: String,
     reporting_policy_fingerprint: String,
   )
+  ReplayOutbox(outbox: recovery.OutboxReplay)
   RemoveRetryTimer(issue_id: String)
   FinishRetryRefresh(issue_id: String)
   DeferRetryTimer(issue_id: String, generation: Int, delay_ms: Int)
