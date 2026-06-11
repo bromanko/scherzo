@@ -5,6 +5,7 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/orchestrator/effect_runner
+import scherzo/orchestrator/outbox_effects
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/task
@@ -13,6 +14,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 import support/expected_crash
+import test_async
 
 fn hooks() -> config_types.HooksConfig {
   config_types.HooksConfig(
@@ -66,6 +68,16 @@ fn worker_failure() -> agent_types.WorkerFailure {
   )
 }
 
+fn outbox(task_ref: task.TaskRef, kind: String) -> outbox_effects.Intent {
+  outbox_effects.Intent(
+    outbox_id: "outbox-" <> kind,
+    task_ref: outbox_effects.task_ref_fields(task_ref),
+    outbox_kind: kind,
+    dedupe_key: "test:" <> kind,
+    payload_json: "{}",
+  )
+}
+
 fn start_runner(
   completions: process.Subject(effect_runner.Completion),
 ) -> effect_runner.Handle {
@@ -112,6 +124,7 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
   effect_runner.enqueue(
     runner,
     effect_runner.ClaimIssue(
+      outbox: outbox(expected_task.ref, "claim"),
       task_ref: expected_task.ref,
       issue: issue,
       workspace_path: "workspace/main",
@@ -124,13 +137,14 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
   assert claim_task.ref == expected_task.ref
   let assert Ok(effect_runner.Finished(
     _,
-    effect_runner.HandoffClaimFinished("issue-id", "run-claim", Ok(Nil)),
+    effect_runner.HandoffClaimFinished(_, "issue-id", "run-claim", Ok(Nil)),
   )) = process.receive(completions, within: 1000)
 
   let success = worker_success(issue)
   effect_runner.enqueue(
     runner,
     effect_runner.ReportSuccess(
+      outbox: outbox(expected_task.ref, "success"),
       task_ref: expected_task.ref,
       issue_id: issue.id,
       issue: issue,
@@ -150,13 +164,14 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
   assert observed_success.workspace_path == success.workspace_path
   let assert Ok(effect_runner.Finished(
     _,
-    effect_runner.HandoffSuccessFinished("issue-id", "run-success", Ok(Nil)),
+    effect_runner.HandoffSuccessFinished(_, "issue-id", "run-success", Ok(Nil)),
   )) = process.receive(completions, within: 1000)
 
   let failure = worker_failure()
   effect_runner.enqueue(
     runner,
     effect_runner.ReportFailure(
+      outbox: outbox(expected_task.ref, "failure"),
       task_ref: expected_task.ref,
       issue_id: issue.id,
       issue: issue,
@@ -176,7 +191,7 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
   assert observed_failure.workspace_path == failure.workspace_path
   let assert Ok(effect_runner.Finished(
     _,
-    effect_runner.HandoffFailureFinished("issue-id", "run-failure", Ok(Nil)),
+    effect_runner.HandoffFailureFinished(_, "issue-id", "run-failure", Ok(Nil)),
   )) = process.receive(completions, within: 1000)
 
   let park_report =
@@ -189,14 +204,18 @@ pub fn effect_runner_emits_generic_handoff_events_test() {
     )
   effect_runner.enqueue(
     runner,
-    effect_runner.ReportPark(park_report, capability),
+    effect_runner.ReportPark(
+      outbox: outbox(expected_task.ref, "park"),
+      report: park_report,
+      capability: capability,
+    ),
   )
   let assert Ok(adapter.HandoffPark(observed_park)) =
     process.receive(events, within: 1000)
   assert observed_park == park_report
   let assert Ok(effect_runner.Finished(
     _,
-    effect_runner.HandoffParkFinished("issue-id", Ok(Nil)),
+    effect_runner.HandoffParkFinished(_, "issue-id", Ok(Nil)),
   )) = process.receive(completions, within: 1000)
 
   assert effect_runner.shutdown(runner, 1000) == Ok(Nil)
@@ -228,6 +247,7 @@ pub fn effect_runner_uses_state_name_for_invalid_workflow_transition_test() {
   effect_runner.enqueue(
     runner,
     effect_runner.ReportInvalidWorkflow(
+      outbox: outbox(task.from_legacy_issue(issue()).ref, "invalid-workflow"),
       issue: issue(),
       violation: workflow_policy.MissingWorkflowLabel,
       violation_fingerprint: "violation-fingerprint",
@@ -251,6 +271,7 @@ pub fn effect_runner_uses_state_name_for_invalid_workflow_transition_test() {
   let assert Ok(effect_runner.Finished(
     _,
     effect_runner.InvalidWorkflowReportFinished(
+      _,
       "issue-id",
       "violation-fingerprint",
       "policy-fingerprint",
@@ -287,6 +308,7 @@ pub fn effect_runner_keeps_id_shaped_invalid_workflow_state_names_name_only_test
   effect_runner.enqueue(
     runner,
     effect_runner.ReportInvalidWorkflow(
+      outbox: outbox(task.from_legacy_issue(issue()).ref, "invalid-workflow"),
       issue: issue(),
       violation: workflow_policy.MissingWorkflowLabel,
       violation_fingerprint: "violation-fingerprint",
@@ -308,6 +330,7 @@ pub fn effect_runner_keeps_id_shaped_invalid_workflow_state_names_name_only_test
   let assert Ok(effect_runner.Finished(
     _,
     effect_runner.InvalidWorkflowReportFinished(
+      _,
       "issue-id",
       "violation-fingerprint",
       "policy-fingerprint",
@@ -352,6 +375,7 @@ pub fn effect_runner_uses_legacy_invalid_workflow_state_ids_when_explicit_test()
   effect_runner.enqueue(
     runner,
     effect_runner.ReportInvalidWorkflow(
+      outbox: outbox(task.from_legacy_issue(issue()).ref, "invalid-workflow"),
       issue: issue(),
       violation: workflow_policy.MissingWorkflowLabel,
       violation_fingerprint: "violation-fingerprint",
@@ -373,6 +397,7 @@ pub fn effect_runner_uses_legacy_invalid_workflow_state_ids_when_explicit_test()
   let assert Ok(effect_runner.Finished(
     _,
     effect_runner.InvalidWorkflowReportFinished(
+      _,
       "issue-id",
       "violation-fingerprint",
       "policy-fingerprint",
@@ -462,4 +487,100 @@ pub fn effect_runner_reports_crash_and_drains_queue_test() {
     effect_runner.CleanupFinished("second", Ok(Nil)),
   )) = process.receive(completions, within: 1000)
   assert effect_runner.shutdown(runner, 1000) == Ok(Nil)
+}
+
+pub fn effect_runner_shutdown_waits_for_in_flight_effect_test() {
+  let completions = process.new_subject()
+  let runner = start_runner(completions)
+  let barrier = test_async.new_barrier()
+  let started = process.new_subject()
+  let shutdown_result = process.new_subject()
+
+  effect_runner.enqueue(
+    runner,
+    effect_runner.CleanupWorkspace(
+      root: "root",
+      workspace_path: "slow",
+      hooks: hooks(),
+      cleanup: fn(_, _, _) {
+        process.send(started, "slow_started")
+        test_async.block_until_released(barrier)
+        Ok(Nil)
+      },
+    ),
+  )
+
+  assert process.receive(started, within: 1000) == Ok("slow_started")
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(shutdown_result, effect_runner.shutdown(runner, 1000))
+    })
+
+  case process.receive(shutdown_result, within: 50) {
+    Error(_) -> Nil
+    Ok(_) -> panic as "shutdown returned before in-flight effect completed"
+  }
+
+  test_async.release_barrier(barrier)
+
+  let assert Ok(effect_runner.Finished(
+    _,
+    effect_runner.CleanupFinished("slow", Ok(Nil)),
+  )) = process.receive(completions, within: 1000)
+  assert process.receive(shutdown_result, within: 1000) == Ok(Ok(Nil))
+}
+
+pub fn effect_runner_shutdown_drops_queued_effects_test() {
+  let completions = process.new_subject()
+  let runner = start_runner(completions)
+  let barrier = test_async.new_barrier()
+  let started = process.new_subject()
+  let shutdown_result = process.new_subject()
+
+  effect_runner.enqueue(
+    runner,
+    effect_runner.CleanupWorkspace(
+      root: "root",
+      workspace_path: "first",
+      hooks: hooks(),
+      cleanup: fn(_, _, _) {
+        process.send(started, "first_started")
+        test_async.block_until_released(barrier)
+        Ok(Nil)
+      },
+    ),
+  )
+  effect_runner.enqueue(
+    runner,
+    effect_runner.CleanupWorkspace(
+      root: "root",
+      workspace_path: "second",
+      hooks: hooks(),
+      cleanup: fn(_, _, _) {
+        process.send(started, "second_started")
+        Ok(Nil)
+      },
+    ),
+  )
+
+  assert process.receive(started, within: 1000) == Ok("first_started")
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(shutdown_result, effect_runner.shutdown(runner, 1000))
+    })
+
+  case process.receive(started, within: 50) {
+    Error(_) -> Nil
+    Ok(_) -> panic as "unexpected queued effect start"
+  }
+
+  test_async.release_barrier(barrier)
+
+  let assert Ok(effect_runner.Finished(
+    _,
+    effect_runner.CleanupFinished("first", Ok(Nil)),
+  )) = process.receive(completions, within: 1000)
+  assert process.receive(shutdown_result, within: 1000) == Ok(Ok(Nil))
+  test_async.assert_no_extra_message(started)
+  test_async.assert_no_extra_message(completions)
 }

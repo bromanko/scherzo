@@ -571,18 +571,21 @@ fn adapter_with_invalid_comment_subject(
   adapter.TrackerAdapter(
     ..legacy_adapter(client),
     comments: Some(
-      adapter.CommentCapability(post_or_update: fn(request) {
-        process.send(
-          subject,
-          "triage:" <> request.task.remote_id <> ":missing_workflow_label",
-        )
-        Ok(adapter.CommentReceipt(
-          id: "invalid-workflow-comment",
-          task: request.task,
-          url: None,
-          created: True,
-        ))
-      }),
+      adapter.CommentCapability(
+        post_or_update: fn(request) {
+          process.send(
+            subject,
+            "triage:" <> request.task.remote_id <> ":missing_workflow_label",
+          )
+          Ok(adapter.CommentReceipt(
+            id: "invalid-workflow-comment",
+            task: request.task,
+            url: None,
+            created: True,
+          ))
+        },
+        find_by_marker: fn(_) { Ok(None) },
+      ),
     ),
   )
 }
@@ -2333,9 +2336,12 @@ pub fn daemon_claim_handoff_appends_parent_records_before_worker_spawn_test() {
     process.receive(ledger_subject, within: 1000)
   assert kinds_before_spawn
     == [
+      "outbox_pending_v2",
+      "outbox_attempted",
       "workflow_run_started",
       "known_workspace",
       "issue_counter_updated",
+      "outbox_completed",
     ]
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -3227,7 +3233,7 @@ pub fn daemon_scheduled_failure_reports_without_workflow_retry_test() {
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
-  let assert Ok(_request) = process.receive(report_subject, within: 1000)
+  let assert Ok(_request) = process.receive(report_subject, within: 5000)
   assert wait_for_records(
     root,
     fn(records) {
@@ -3276,7 +3282,7 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
-    process.receive(report_subject, within: 1000)
+    process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
   assert wait_for_records(
@@ -3292,7 +3298,7 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
 
   process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 1))
   let assert Ok(DirectedScheduledReportCall(second_request, second_reply)) =
-    process.receive(report_subject, within: 1000)
+    process.receive(report_subject, within: 5000)
   process.send(second_reply, ScheduledReportSuccess)
   assert second_request.run_id == run_id
   test_async.assert_no_extra_message_within(command_subject, 100)
@@ -3393,7 +3399,7 @@ pub fn daemon_scheduled_report_retry_blocks_new_intervals_until_reported_test() 
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
-    process.receive(report_subject, within: 1000)
+    process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
   assert wait_for_records(

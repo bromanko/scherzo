@@ -15,6 +15,7 @@ import scherzo/scheduled_failure_reporter as reporter
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/adapter as tracker_adapter
+import scherzo/tracker/idempotency
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
@@ -200,6 +201,83 @@ pub fn linear_adapter_fetch_candidates_matches_linear_issue_decoder_test() {
   assert task.label_names(candidate) == ["workflow:execplan"]
   assert candidate.blockers == []
   assert candidate.blockers_complete == True
+}
+
+pub fn linear_adapter_comment_create_only_with_marker_updates_existing_comment_test() {
+  let marker = "claim:linear:issue-1:run-1"
+  let requests = process.new_subject()
+  let responses = process.new_subject()
+  process.send(
+    responses,
+    linear.Response(
+      status: 200,
+      body: issue_comments_response([
+        comment_node(
+          "comment-existing",
+          "old body\n\n" <> idempotency.marker(marker),
+        ),
+      ]),
+    ),
+  )
+  process.send(
+    responses,
+    linear.Response(
+      status: 200,
+      body: comment_update_response(
+        "comment-existing",
+        "updated body\n\n" <> idempotency.marker(marker),
+      ),
+    ),
+  )
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      process.send(requests, CapturedRequest(request.body))
+      let assert Ok(response) = process.receive(responses, within: 1000)
+      Ok(response)
+    })
+  let assert Some(comments) = linear_tracker.comments
+
+  let assert Ok(receipt) =
+    comments.post_or_update(tracker_adapter.CommentRequest(
+      task: linear_task_ref(),
+      body: "updated body\n\n" <> idempotency.marker(marker),
+      mode: tracker_adapter.CreateOnly,
+    ))
+
+  let first_request = receive_request(requests)
+  assert string.contains(first_request, "ScherzoIssueComments")
+  let second_request = receive_request(requests)
+  assert string.contains(second_request, "ScherzoCommentUpdate")
+  assert string.contains(second_request, "comment-existing")
+  assert receipt.id == "comment-existing"
+  assert receipt.created == False
+}
+
+pub fn linear_adapter_comment_find_by_marker_returns_existing_receipt_test() {
+  let marker = "park:linear:issue-1:run-1"
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoIssueComments")
+      Ok(linear.Response(
+        status: 200,
+        body: issue_comments_response([
+          comment_node(
+            "comment-park",
+            "parked\n\n" <> idempotency.marker(marker),
+          ),
+        ]),
+      ))
+    })
+  let assert Some(comments) = linear_tracker.comments
+
+  let assert Ok(Some(receipt)) =
+    comments.find_by_marker(tracker_adapter.CommentLookup(
+      task: linear_task_ref(),
+      marker: marker,
+    ))
+
+  assert receipt.id == "comment-park"
+  assert receipt.created == False
 }
 
 pub fn linear_adapter_lookup_operator_ref_falls_back_to_candidate_identifier_test() {
@@ -533,6 +611,7 @@ pub fn linear_adapter_posts_comment_with_existing_linear_body_test() {
     })
   let assert Some(tracker_adapter.CommentCapability(
     post_or_update: post_or_update,
+    ..,
   )) = linear_tracker.comments
 
   let assert Ok(receipt) =
@@ -564,18 +643,27 @@ pub fn linear_adapter_generic_handoff_events_preserve_linear_behavior_test() {
     linear_adapter.from_effective_config(
       handoff_effective_config(),
       fn(request) {
-        process.send(captured, CapturedRequest(request.body))
-        case string.contains(request.body, "issueUpdate") {
+        case string.contains(request.body, "ScherzoIssueComments") {
           True ->
             Ok(linear.Response(
               status: 200,
-              body: mutation_success_response("issueUpdate"),
+              body: issue_comments_empty_response(),
             ))
-          False ->
-            Ok(linear.Response(
-              status: 200,
-              body: comment_create_response("comment-handoff"),
-            ))
+          False -> {
+            process.send(captured, CapturedRequest(request.body))
+            case string.contains(request.body, "issueUpdate") {
+              True ->
+                Ok(linear.Response(
+                  status: 200,
+                  body: mutation_success_response("issueUpdate"),
+                ))
+              False ->
+                Ok(linear.Response(
+                  status: 200,
+                  body: comment_create_response("comment-handoff"),
+                ))
+            }
+          }
         }
       },
     )
@@ -850,6 +938,48 @@ fn task_query_missing_end_cursor_response() -> String {
   "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-ready-1\",\"identifier\":\"LIV-770\",\"title\":\"Implement task queries\",\"priority\":2,\"branchName\":\"liv-770-task-queries\",\"url\":\"https://linear.app/living-systems/issue/LIV-770\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[]}}],\"pageInfo\":{\"hasNextPage\":true,\"endCursor\":null}}}}"
 }
 
+fn issue_comments_empty_response() -> String {
+  issue_comments_response([])
+}
+
+fn issue_comments_response(comments: List(json.Json)) -> String {
+  json.to_string(
+    json.object([
+      #(
+        "data",
+        json.object([
+          #(
+            "issue",
+            json.object([
+              #(
+                "comments",
+                json.object([
+                  #("nodes", json.array(comments, of: fn(comment) { comment })),
+                  #(
+                    "pageInfo",
+                    json.object([
+                      #("hasNextPage", json.bool(False)),
+                      #("endCursor", json.null()),
+                    ]),
+                  ),
+                ]),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  )
+}
+
+fn comment_node(comment_id: String, body: String) -> json.Json {
+  json.object([
+    #("id", json.string(comment_id)),
+    #("body", json.string(body)),
+    #("bodyData", json.string(empty_body_data())),
+  ])
+}
+
 fn mutation_success_response(field: String) -> String {
   json.to_string(
     json.object([
@@ -862,30 +992,34 @@ fn mutation_success_response(field: String) -> String {
 }
 
 fn comment_create_response(comment_id: String) -> String {
+  comment_payload_response("commentCreate", comment_id, "hello from adapter")
+}
+
+fn comment_update_response(comment_id: String, body: String) -> String {
+  comment_payload_response("commentUpdate", comment_id, body)
+}
+
+fn comment_payload_response(
+  field: String,
+  comment_id: String,
+  body: String,
+) -> String {
   json.to_string(
     json.object([
       #(
         "data",
         json.object([
           #(
-            "commentCreate",
+            field,
             json.object([
               #("success", json.bool(True)),
-              #("comment", comment_json(comment_id)),
+              #("comment", comment_node(comment_id, body)),
             ]),
           ),
         ]),
       ),
     ]),
   )
-}
-
-fn comment_json(comment_id: String) -> json.Json {
-  json.object([
-    #("id", json.string(comment_id)),
-    #("body", json.string("hello from adapter")),
-    #("bodyData", json.string(empty_body_data())),
-  ])
 }
 
 fn empty_body_data() -> String {

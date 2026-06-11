@@ -204,25 +204,38 @@ fn option_equals(value: Option(String), expected: String) -> Bool {
 }
 
 fn comment_capability() -> adapter.CommentCapability {
-  adapter.CommentCapability(post_or_update: fn(request) {
-    let adapter.CommentRequest(task: requested_task, mode: mode, ..) = request
-    case mode {
-      adapter.CreateOnly ->
-        Ok(adapter.CommentReceipt(
+  adapter.CommentCapability(
+    post_or_update: fn(request) {
+      let adapter.CommentRequest(task: requested_task, mode: mode, ..) = request
+      case mode {
+        adapter.CreateOnly ->
+          Ok(adapter.CommentReceipt(
+            id: "fake-comment-1",
+            task: requested_task,
+            url: requested_task.url,
+            created: True,
+          ))
+        adapter.UpdateExisting(comment_id: comment_id, ..) ->
+          Ok(adapter.CommentReceipt(
+            id: comment_id,
+            task: requested_task,
+            url: requested_task.url,
+            created: False,
+          ))
+      }
+    },
+    find_by_marker: fn(request) {
+      let adapter.CommentLookup(task: requested_task, ..) = request
+      Ok(
+        Some(adapter.CommentReceipt(
           id: "fake-comment-1",
           task: requested_task,
           url: requested_task.url,
-          created: True,
-        ))
-      adapter.UpdateExisting(comment_id: comment_id, ..) ->
-        Ok(adapter.CommentReceipt(
-          id: comment_id,
-          task: requested_task,
-          url: requested_task.url,
           created: False,
-        ))
-    }
-  })
+        )),
+      )
+    },
+  )
 }
 
 fn state_transition_capability() -> adapter.StateTransitionCapability {
