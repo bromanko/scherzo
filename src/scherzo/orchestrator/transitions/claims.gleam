@@ -139,19 +139,19 @@ pub fn complete_runtime_failure(
   task_identity: identity.TaskIdentity,
   issue: tracker_issue.Issue,
   tokens: session_tokens.TokenTotals,
+  now_ms: Int,
 ) -> transition_types.State {
-  transition_types.State(
-    ..state,
-    runtime: orchestrator_state.RuntimeState(
+  let runtime =
+    orchestrator_state.RuntimeState(
       ..state.runtime,
       running: dict.delete(state.runtime.running, task_identity),
-      completed: dict.insert(state.runtime.completed, task_identity, issue),
       aggregate_pi_totals: session_tokens.add(
         state.runtime.aggregate_pi_totals,
         tokens,
       ),
-    ),
-  )
+    )
+    |> orchestrator_state.cache_completed_task(task_identity, issue, now_ms)
+  transition_types.State(..state, runtime: runtime)
   |> sync_state
 }
 

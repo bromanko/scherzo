@@ -1,7 +1,7 @@
 import birl
 import gleam/dict
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import legacy_ledger_fixtures
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
@@ -293,6 +293,90 @@ pub fn unfinished_run_terminal_issue_cleans_known_workspace_test() {
     ),
   ] = plan.cleanup_workspaces
   assert !has_retry(plan.runtime, "issue-1")
+}
+
+pub fn unfinished_run_terminal_issue_resets_stale_counter_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "counter",
+        900,
+        record.IssueCounterUpdated(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          failure_attempts: 2,
+          worker_sessions: 1,
+          observed_updated_at_ms: 900,
+          source_run_id: None,
+        ),
+      ),
+      record.with_id(
+        "run-started",
+        1000,
+        record.RunStarted(
+          run_id: "run-1",
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          workspace_path: ".scherzo/workspaces/ABC-1",
+        ),
+      ),
+    ])
+  let refreshed = issue("issue-1", "ABC-1", "Done")
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
+
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  assert !dict.has_key(plan.runtime.issue_counters, identity)
+  assert dict.get(plan.runtime.completed_at_ms, identity) == Ok(7000)
+  assert has_counter_reset(
+    plan.records_to_append,
+    "issue-1",
+    "ABC-1",
+    7000,
+    Some("run-1"),
+  )
+}
+
+pub fn terminal_interrupted_run_with_reset_counter_does_not_repeat_reset_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "run-started",
+        1000,
+        record.RunStarted(
+          run_id: "run-1",
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          workspace_path: ".scherzo/workspaces/ABC-1",
+        ),
+      ),
+      record.with_id(
+        "run-interrupted",
+        1100,
+        record.RunInterrupted(
+          run_id: "run-1",
+          issue_id: "issue-1",
+          reason: "daemon_restart",
+        ),
+      ),
+      record.with_id(
+        "counter-reset",
+        1200,
+        record.IssueCounterUpdated(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          failure_attempts: 0,
+          worker_sessions: 0,
+          observed_updated_at_ms: 1200,
+          source_run_id: Some("run-1"),
+        ),
+      ),
+    ])
+  let refreshed = issue("issue-1", "ABC-1", "Done")
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
+
+  assert !has_record_kind(plan.records_to_append, "issue_counter_updated")
 }
 
 pub fn parked_issue_survives_restart_test() {
@@ -1364,6 +1448,34 @@ fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
 fn has_record_kind(records: List(record.LedgerRecord), kind: String) -> Bool {
   list.any(records, fn(ledger_record) {
     record.kind(ledger_record.body) == kind
+  })
+}
+
+fn has_counter_reset(
+  records: List(record.LedgerRecord),
+  issue_id: String,
+  issue_identifier: String,
+  observed_updated_at_ms: Int,
+  source_run_id: Option(String),
+) -> Bool {
+  list.any(records, fn(ledger_record) {
+    case ledger_record.body {
+      record.IssueCounterUpdated(
+        issue_id: updated_issue_id,
+        issue_identifier: updated_issue_identifier,
+        failure_attempts: failure_attempts,
+        worker_sessions: worker_sessions,
+        observed_updated_at_ms: updated_observed_updated_at_ms,
+        source_run_id: updated_source_run_id,
+      ) ->
+        updated_issue_id == issue_id
+        && updated_issue_identifier == issue_identifier
+        && failure_attempts == 0
+        && worker_sessions == 0
+        && updated_observed_updated_at_ms == observed_updated_at_ms
+        && updated_source_run_id == source_run_id
+      _ -> False
+    }
   })
 }
 
