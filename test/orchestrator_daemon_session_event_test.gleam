@@ -959,7 +959,11 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
   assert !list.contains(event_names(page.events), "retry_scheduled")
 
   test_async.release_barrier_if_waiting(worker_barrier)
-  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  // Stopping a running worker can leave tracker outbox effects flushing after
+  // the session has already reached its terminal event, especially on loaded CI
+  // runners. Give daemon shutdown enough room for its nested graceful cleanup
+  // timeouts instead of racing the fixed 1s helper budget.
+  assert daemon.shutdown(started.data, 5000) == Ok(Nil)
   hub.stop(hub_subject)
 }
 
