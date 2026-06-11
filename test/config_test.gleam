@@ -83,8 +83,6 @@ pub fn default_values_test() {
   let agent = config.default_agent_config()
   assert agent.max_concurrent_agents == 1
   assert agent.max_turns == 20
-  assert agent.max_retry_backoff_ms == 300_000
-  assert agent.max_retry_attempts == 5
   assert agent.max_sessions_per_issue == 3
   assert agent.context_recovery_max_attempts == 1
   assert agent.context_recovery_prompt_char_limit == 40_000
@@ -113,13 +111,12 @@ pub fn default_values_test() {
 
 pub fn duration_string_fields_parse_to_milliseconds_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\nagents:\n  retries:\n    max_backoff: 5m\n  runtime:\n    type: pi\n    turn_timeout: 1h\n    read_timeout: 5s\n    stall_timeout: 0ms\n    ui_request_timeout: 10m\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\nagents:\n  runtime:\n    type: pi\n    turn_timeout: 1h\n    read_timeout: 5s\n    stall_timeout: 0ms\n    ui_request_timeout: 10m\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
   assert configured.polling.interval_ms == 45_000
   assert configured.hooks.timeout_ms == 90_000
-  assert configured.agent.max_retry_backoff_ms == 300_000
   assert configured.pi.turn_timeout_ms == 3_600_000
   assert configured.pi.read_timeout_ms == 5000
   assert configured.pi.stall_timeout_ms == 0
@@ -150,20 +147,19 @@ pub fn duration_string_fields_reject_invalid_values_test() {
 
   let zero_positive_field =
     invalid_config_message(
-      minimal_front() <> "agents:\n  retries:\n    max_backoff: 0s\n",
+      "tracker:\n  linear:\n    project: TEST\nhooks:\n  before_run: test -d .git\n  timeout: 0s\n",
     )
   assert string.contains(zero_positive_field, "must be positive")
 }
 
 pub fn legacy_non_polling_duration_ms_fields_remain_supported_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 2345ms\nagents:\n  retries:\n    max_backoff: 3456ms\n  runtime:\n    type: pi\n    turn_timeout: 4567ms\n    read_timeout: 5678ms\n    stall_timeout: 0ms\n    ui_request_timeout: 6789ms\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 2345ms\nagents:\n  runtime:\n    type: pi\n    turn_timeout: 4567ms\n    read_timeout: 5678ms\n    stall_timeout: 0ms\n    ui_request_timeout: 6789ms\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
   assert configured.polling.interval_ms == 45_000
   assert configured.hooks.timeout_ms == 2345
-  assert configured.agent.max_retry_backoff_ms == 3456
   assert configured.pi.turn_timeout_ms == 4567
   assert configured.pi.read_timeout_ms == 5678
   assert configured.pi.stall_timeout_ms == 0
@@ -172,13 +168,12 @@ pub fn legacy_non_polling_duration_ms_fields_remain_supported_test() {
 
 pub fn duration_string_fields_take_precedence_over_legacy_ms_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 2s\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout: 999ms\nagents:\n  retries:\n    max_backoff: 4s\n  runtime:\n    type: pi\n    turn_timeout: 5s\n    read_timeout: 6s\n    stall_timeout: 0ms\n    ui_request_timeout: 7s\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 2s\nhooks:\n  before_run: test -d .git\n  timeout: 3s\n  timeout: 999ms\nagents:\n  runtime:\n    type: pi\n    turn_timeout: 5s\n    read_timeout: 6s\n    stall_timeout: 0ms\n    ui_request_timeout: 7s\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
   assert configured.polling.interval_ms == 2000
   assert configured.hooks.timeout_ms == 3000
-  assert configured.agent.max_retry_backoff_ms == 4000
   assert configured.pi.turn_timeout_ms == 5000
   assert configured.pi.read_timeout_ms == 6000
   assert configured.pi.stall_timeout_ms == 0
@@ -929,7 +924,7 @@ pub fn hooks_and_agent_limit_validation_test() {
 
   let paused_front =
     minimal_front()
-    <> "agents:\n  concurrency:\n    default: 0\n    by_state:\n      todo: 2\n      bad: 0\n  max_turns: 1\n  retries:\n    attempts: 1\n  sessions_per_task: 1\n"
+    <> "agents:\n  concurrency:\n    default: 0\n    by_state:\n      todo: 2\n      bad: 0\n  max_turns: 1\n  sessions_per_task: 1\n"
   let assert Ok(paused) =
     config.resolve_with_env(
       definition(paused_front),
@@ -1144,6 +1139,20 @@ pub fn old_agent_and_pi_keys_fail_with_migration_hints_test() {
   assert string.contains(old_agent, "agent.max_concurrent_agents")
   assert string.contains(old_agent, "agents.concurrency")
   assert string.contains(old_agent, "SCHERZO_YAML_SIMPLIFIED_V1")
+
+  let old_retry =
+    invalid_config_message(
+      minimal_front() <> "agent:\n  max_retry_attempts: 2\n",
+    )
+  assert string.contains(old_retry, "agent.max_retry_attempts was removed")
+  assert string.contains(old_retry, "Automatic whole-workflow retries")
+
+  let removed_retry =
+    invalid_config_message(
+      minimal_front() <> "agents:\n  retries:\n    attempts: 2\n",
+    )
+  assert string.contains(removed_retry, "agents.retries was removed")
+  assert string.contains(removed_retry, "agents.runtime.auto_retry")
 
   let old_pi =
     invalid_config_message(minimal_front() <> "pi:\n  command: pi --mode rpc\n")

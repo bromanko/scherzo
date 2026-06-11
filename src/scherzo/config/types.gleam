@@ -59,8 +59,6 @@ pub type AgentConfig {
   AgentConfig(
     max_concurrent_agents: Int,
     max_turns: Int,
-    max_retry_backoff_ms: Int,
-    max_retry_attempts: Int,
     max_sessions_per_issue: Int,
     context_recovery_max_attempts: Int,
     context_recovery_prompt_char_limit: Int,

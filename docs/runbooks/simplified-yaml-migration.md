@@ -61,8 +61,6 @@ workspace:
 agent:
   max_concurrent_agents: 2
   max_turns: 1
-  max_retry_attempts: 2
-  max_retry_backoff_ms: 300000
   max_sessions_per_issue: 2
 
 pi:
@@ -128,9 +126,6 @@ agents:
   concurrency: 2
   max_turns: 1
   sessions_per_task: 2
-  retries:
-    attempts: 2
-    max_backoff: 5m
   runtime:
     type: pi
     sessions: ephemeral
@@ -234,8 +229,8 @@ A step with `prompt` is inferred to be an agent step, and a step with `run` is i
 | `workspace.profiles.<name>.driver.timeout_ms` | `workspace.drivers.<name>.timeout` |
 | `agent.max_concurrent_agents` | `agents.concurrency` |
 | `agent.max_turns` | `agents.max_turns` |
-| `agent.max_retry_attempts` | `agents.retries.attempts` |
-| `agent.max_retry_backoff_ms` | `agents.retries.max_backoff` |
+| `agent.max_retry_attempts` | Removed; automatic whole-workflow retries are no longer supported. |
+| `agent.max_retry_backoff_ms` | Removed; automatic whole-workflow retries are no longer supported. |
 | `agent.max_sessions_per_issue` | `agents.sessions_per_task` |
 | top-level `pi` | `agents.runtime` |
 | `pi.command` / `pi.argv` | `agents.runtime.pi.executable` and `agents.runtime.pi.args`; Scherzo owns protocol flags. |

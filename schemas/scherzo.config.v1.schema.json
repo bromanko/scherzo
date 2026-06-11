@@ -402,14 +402,6 @@
         "sessions_per_task": { "type": "integer", "minimum": 1 },
         "model": { "type": "string" },
         "thinking": { "type": "string" },
-        "retries": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "attempts": { "type": "integer", "minimum": 1 },
-            "max_backoff": { "$ref": "#/$defs/Duration" }
-          }
-        },
         "recovery": {
           "type": "object",
           "additionalProperties": false,

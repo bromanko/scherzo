@@ -50,9 +50,6 @@ agents:
   # workflow explicitly needs same-session continuation turns before handoff.
   max_turns: 1
   sessions_per_task: 2
-  retries:
-    max_backoff: 5m
-    attempts: 2
   runtime:
     type: pi
     sessions: persistent

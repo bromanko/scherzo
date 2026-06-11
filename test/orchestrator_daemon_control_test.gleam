@@ -21,6 +21,7 @@ import scherzo/orchestrator/daemon
 import scherzo/orchestrator/daemon_remote_client
 import scherzo/orchestrator/read_model
 import scherzo/path
+import scherzo/result_artifact
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event
 import scherzo/session/hub
@@ -51,13 +52,12 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
 }
 
 fn workflow_text(root: String) -> String {
-  workflow_text_with_extra_config(root, 0, 1, 1, "")
+  workflow_text_with_extra_config(root, 0, 1, "")
 }
 
 fn workflow_text_with_extra_config(
   root: String,
   max_concurrent_agents: Int,
-  max_retry_attempts: Int,
   max_sessions_per_issue: Int,
   extra_config: String,
 ) -> String {
@@ -75,8 +75,6 @@ workspace:
 agents:
   concurrency: " <> int_to_string(max_concurrent_agents) <> "
   sessions_per_task: " <> int_to_string(max_sessions_per_issue) <> "
-  retries:
-    attempts: " <> int_to_string(max_retry_attempts) <> "
   runtime:
     type: pi
     pi:
@@ -99,13 +97,11 @@ fn write_workflow(dir: String) -> #(String, String) {
 fn write_workflow_with_limits(
   dir: String,
   max_concurrent_agents: Int,
-  max_retry_attempts: Int,
   max_sessions_per_issue: Int,
 ) -> #(String, String) {
   write_workflow_with_extra_config(
     dir,
     max_concurrent_agents,
-    max_retry_attempts,
     max_sessions_per_issue,
     "",
   )
@@ -114,7 +110,6 @@ fn write_workflow_with_limits(
 fn write_workflow_with_extra_config(
   dir: String,
   max_concurrent_agents: Int,
-  max_retry_attempts: Int,
   max_sessions_per_issue: Int,
   extra_config: String,
 ) -> #(String, String) {
@@ -126,7 +121,6 @@ fn write_workflow_with_extra_config(
       workflow_text_with_extra_config(
         root,
         max_concurrent_agents,
-        max_retry_attempts,
         max_sessions_per_issue,
         extra_config,
       ),
@@ -261,7 +255,6 @@ fn overwrite_workflow_config(
       workflow_text_with_extra_config(
         root,
         0,
-        1,
         1,
         ui_server_config_text(ui_server_enabled),
       ),
@@ -585,6 +578,31 @@ fn failing_agent(
   }
 }
 
+fn active_success_agent(
+  log_subject: process.Subject(String),
+) -> fn(
+  tracker_issue.Issue,
+  Option(Int),
+  String,
+  config_types.EffectiveConfig,
+  tracker.Client,
+  fn(String, agent_types.RunnerUpdate) -> Nil,
+  process.Subject(worker_command.Command),
+  fn() -> Nil,
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
+  fn(issue: tracker_issue.Issue, _, _, _, _, _, _, _) {
+    process.send(log_subject, "agent_run:" <> issue.id)
+    Ok(agent_types.WorkerSuccess(
+      final_issue: Some(issue),
+      final_classification: agent_types.FinalActive,
+      workspace_path: "test/tmp/active-workspace",
+      tokens: session_tokens.zero_token_totals(),
+      turns: 1,
+      result: result_artifact.from_final_response(Some("active"), False, "test"),
+    ))
+  }
+}
+
 fn fail_original_then_block_agent(
   log_subject: process.Subject(String),
   barrier: test_async.Barrier,
@@ -677,7 +695,7 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
   let candidate = issue("metrics-issue", "ABC-METRICS", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-metrics", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-metrics", 1, 3)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
@@ -744,7 +762,7 @@ pub fn daemon_metrics_count_active_yaml_child_steps_and_child_tokens_test() {
   let candidate = issue("yaml-metrics-issue", "ABC-YAML", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-yaml-metrics", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-yaml-metrics", 1, 3)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
@@ -849,7 +867,6 @@ pub fn daemon_read_model_reports_remote_client_retrying_when_start_fails_test() 
     write_workflow_with_extra_config(
       "test/tmp/daemon-control-remote-client-retrying",
       0,
-      1,
       1,
       "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n",
     )
@@ -963,7 +980,7 @@ pub fn pause_command_suppresses_dispatch_and_resume_allows_it_test() {
   let candidate = issue("pause-issue", "ABC-PAUSE", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-pause", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-pause", 1, 3)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
@@ -1003,7 +1020,7 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
   let candidate = issue("retry-issue", "ABC-RETRY", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-retry", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-retry", 1, 3)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
@@ -1043,11 +1060,11 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
   hub.stop(hub_subject)
 }
 
-pub fn retry_rejects_active_pending_and_claimed_issues_test() {
+pub fn retry_rejects_active_pending_and_dispatches_inactive_issues_test() {
   let active = issue("active-issue", "ABC-ACTIVE", "Todo")
   let tracker_client = tracker_with(active)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-retry-active", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-retry-active", 1, 3)
   let log_subject = process.new_subject()
   let active_worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
@@ -1077,7 +1094,7 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
   let pending = issue("pending-issue", "ABC-PENDING", "Todo")
   let tracker_client = tracker_with(pending)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-retry-pending", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-retry-pending", 1, 3)
   let log_subject = process.new_subject()
   let claim_barrier = test_async.new_barrier()
   let pending_worker_barrier = test_async.new_barrier()
@@ -1109,7 +1126,7 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
   let claimed = issue("claimed-issue", "ABC-CLAIMED", "Todo")
   let tracker_client = tracker_with(claimed)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-retry-claimed", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-retry-claimed", 1, 3)
   let log_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
@@ -1118,15 +1135,16 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
       tracker_client,
       disabled_handoff(),
       hub_subject,
-      failing_agent(log_subject),
+      active_success_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "retry_scheduled", 20)
+  assert wait_for_log(log_subject, "worker_exited", 20)
   let claimed_identity = orchestrator_state.issue_identity(claimed)
   let assert Ok(claimed_snapshot) = daemon.get_snapshot(started.data, 1000)
-  assert dict.has_key(claimed_snapshot.claimed, claimed_identity)
+  assert !dict.has_key(claimed_snapshot.claimed, claimed_identity)
   assert !dict.has_key(claimed_snapshot.running, claimed_identity)
+  assert !dict.has_key(claimed_snapshot.retry_attempts, claimed_identity)
 
   let assert Ok(claimed_retry) =
     daemon.apply_operator_command(
@@ -1134,16 +1152,17 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
       command.RetryIssue(command.IssueId("claimed-issue")),
       1000,
     )
-  assert command.status_to_string(claimed_retry.status) == "rejected"
+  assert command.status_to_string(claimed_retry.status) == "applied"
+  assert wait_for_log(log_subject, "dispatch_started", 20)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
 
-pub fn park_rejects_claimed_issues_test() {
+pub fn park_inactive_issue_without_retry_queue_test() {
   let candidate = issue("park-claimed", "ABC-PARK-CLAIMED", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-park-claimed", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-park-claimed", 1, 3)
   let log_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
@@ -1152,11 +1171,11 @@ pub fn park_rejects_claimed_issues_test() {
       tracker_client,
       disabled_handoff(),
       hub_subject,
-      failing_agent(log_subject),
+      active_success_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "retry_scheduled", 20)
+  assert wait_for_log(log_subject, "worker_exited", 20)
 
   let assert Ok(parked) =
     daemon.apply_operator_command(
@@ -1164,15 +1183,16 @@ pub fn park_rejects_claimed_issues_test() {
       command.ParkIssue(command.IssueId("park-claimed"), "manual"),
       1000,
     )
-  assert command.status_to_string(parked.status) == "rejected"
+  assert command.status_to_string(parked.status) == "applied"
   let claimed_identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   let assert Ok(read_snapshot) =
     daemon.get_read_model_snapshot(started.data, 1000)
-  assert dict.has_key(snapshot.claimed, claimed_identity)
-  assert !dict.has_key(snapshot.parked, claimed_identity)
-  assert read_snapshot.counts.retry_tasks == 1
-  assert read_snapshot.counts.claimed_tasks == 1
+  assert !dict.has_key(snapshot.claimed, claimed_identity)
+  assert dict.has_key(snapshot.parked, claimed_identity)
+  assert read_snapshot.counts.retry_tasks == 0
+  assert read_snapshot.counts.claimed_tasks == 0
+  assert read_snapshot.counts.parked_tasks == 1
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -1183,7 +1203,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   let changed = tracker_issue.Issue(..candidate, title: "Changed title")
   let tracker_server = start_control_tracker_server(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-auto-park", 1, 1, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-auto-park", 1, 3)
   let log_subject = process.new_subject()
   let park_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
@@ -1210,7 +1230,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
     ))
   assert process.receive(park_subject, within: 1000)
     == Ok(
-      "park:auto-park:ABC-AUTO:max_retry_attempts:auto_unpark_on_issue_change:ABC-AUTO-42-1",
+      "park:auto-park:ABC-AUTO:worker_failure:auto_unpark_on_issue_change:ABC-AUTO-42-1",
     )
   let _ = test_async.drain_subject(log_subject)
 
@@ -1230,7 +1250,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
 pub fn startup_recovery_of_parked_issue_does_not_repost_park_comment_test() {
   let candidate = issue("recovered-park", "ABC-RECOVER", "Todo")
   let dir = "test/tmp/daemon-control-park-recovery"
-  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 3, 3)
+  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 3)
   let assert Ok(ledger_path) =
     ledger.path_for_workspace_root(dir <> "/" <> root)
   let assert Ok(Nil) =
@@ -1281,7 +1301,7 @@ pub fn startup_recovery_of_parked_issue_does_not_repost_park_comment_test() {
 pub fn startup_recovery_new_park_posts_park_comment_test() {
   let candidate = issue("recovery-new-park", "ABC-NEWREC", "Todo")
   let dir = "test/tmp/daemon-control-park-recovery-new"
-  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 1, 3)
+  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 3)
   let assert Ok(ledger_path) =
     ledger.path_for_workspace_root(dir <> "/" <> root)
   let assert Ok(Nil) =
@@ -1320,7 +1340,7 @@ pub fn startup_recovery_new_park_posts_park_comment_test() {
   )
   assert process.receive(park_subject, within: 1000)
     == Ok(
-      "park:recovery-new-park:ABC-NEWREC:max_retry_attempts:auto_unpark_on_issue_change:ABC-NEWREC-42-1",
+      "park:recovery-new-park:ABC-NEWREC:worker_failure:auto_unpark_on_issue_change:ABC-NEWREC-42-1",
     )
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -1332,7 +1352,6 @@ pub fn reload_workflow_starts_remote_client_after_enabling_ui_server_test() {
     write_workflow_with_extra_config(
       "test/tmp/daemon-control-reload-ui-enable",
       0,
-      1,
       1,
       ui_server_config_text(False),
     )
@@ -1369,7 +1388,6 @@ pub fn reload_workflow_stops_remote_client_after_disabling_ui_server_test() {
       "test/tmp/daemon-control-reload-ui-disable",
       0,
       1,
-      1,
       ui_server_config_text(True),
     )
   let log_subject = process.new_subject()
@@ -1405,7 +1423,6 @@ pub fn reload_workflow_restarts_remote_client_when_ui_server_is_still_enabled_te
       "test/tmp/daemon-control-reload-ui-restart",
       0,
       1,
-      1,
       ui_server_config_text(True),
     )
   let log_subject = process.new_subject()
@@ -1438,7 +1455,6 @@ pub fn poll_tick_restarts_remote_client_after_changed_config_reload_test() {
       "test/tmp/daemon-control-reload-ui-poll",
       0,
       1,
-      1,
       ui_server_config_text(True),
     )
   let log_subject = process.new_subject()
@@ -1468,7 +1484,7 @@ pub fn poll_tick_restarts_remote_client_after_changed_config_reload_test() {
 
 pub fn reload_workflow_command_reports_success_and_missing_file_failure_test() {
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-reload", 0, 1, 1)
+    write_workflow_with_limits("test/tmp/daemon-control-reload", 0, 1)
   let log_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(10, fn() { 42 })
   let deps =
@@ -1507,7 +1523,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
   let candidate = issue("prompt-live-issue", "ABC-LIVE", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-live-prompt", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-live-prompt", 1, 3)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
@@ -1556,12 +1572,7 @@ pub fn prompt_command_reports_worker_timeout_with_existing_status_reason_and_mes
   let candidate = issue("prompt-timeout-issue", "ABC-PROMPT-TIMEOUT", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits(
-      "test/tmp/daemon-control-prompt-timeout",
-      1,
-      3,
-      3,
-    )
+    write_workflow_with_limits("test/tmp/daemon-control-prompt-timeout", 1, 3)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
@@ -1610,7 +1621,7 @@ pub fn prompt_and_respond_ui_commands_reject_workers_without_command_subject_tes
   let candidate = issue("prompt-issue", "ABC-PROMPT", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
-    write_workflow_with_limits("test/tmp/daemon-control-prompt", 1, 3, 3)
+    write_workflow_with_limits("test/tmp/daemon-control-prompt", 1, 3)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
@@ -1673,7 +1684,7 @@ fn assert_session_stop_command(
   reason: session_reason.WorkerExitReason,
 ) -> Nil {
   let tracker_client = tracker_with(candidate)
-  let #(workflow_path, _root) = write_workflow_with_limits(dir, 1, 3, 3)
+  let #(workflow_path, _root) = write_workflow_with_limits(dir, 1, 3)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })

@@ -415,9 +415,6 @@ Fields:
   - Default: `20`
   - Limits the number of coding-agent turns within one worker session.
   - Invalid values fail configuration validation.
-- `max_retry_backoff_ms` (integer)
-  - Default: `300000` (5 minutes)
-  - Changes SHOULD be re-applied at runtime and affect future retry scheduling.
 - `max_concurrent_agents_by_state` (map `state_name -> positive integer`)
   - Default: empty map.
   - State keys are normalized (`lowercase`) for lookup.
@@ -584,7 +581,6 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.timeout_ms`: integer, default `60000`
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
-- `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
@@ -670,7 +666,7 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - `Worker Exit (abnormal)`
   - Remove running entry.
   - Update aggregate runtime totals.
-  - Schedule exponential-backoff retry.
+  - Report, park, or transition according to failure policy without automatically retrying the full workflow.
 
 - `Codex Update Event`
   - Update live session fields, token counters, and rate limits.
@@ -682,7 +678,7 @@ Distinct terminal reasons are important because retry logic and logs differ.
   - Stop runs whose issue states are terminal or no longer active.
 
 - `Stall Timeout`
-  - Kill worker and schedule retry.
+  - Kill worker and handle it as a top-level worker failure without automatically retrying the full workflow.
 
 ### 7.4 Idempotency and Recovery Rules
 
@@ -758,8 +754,8 @@ Retry entry creation:
 Backoff formula:
 
 - Normal continuation retries after a clean worker exit use a short fixed delay of `1000` ms.
-- Failure-driven retries use `delay = min(10000 * 2^(attempt - 1), agent.max_retry_backoff_ms)`.
-- Power is capped by the configured max retry backoff (default `300000` / 5m).
+- Top-level worker failures do not schedule automatic whole-workflow retries; failure handling reports, parks, or transitions according to policy.
+- Internal retry requeues (for example retry polling or temporary slot exhaustion) use bounded implementation-defined backoff.
 
 Retry handling behavior:
 
@@ -1235,14 +1231,14 @@ instructions for:
 
 - first run (`attempt` null or absent)
 - continuation run after a successful prior session
-- retry after error/timeout/stall
+- explicit operator retry after error/timeout/stall
 
 ### 12.4 Failure Semantics
 
 If prompt rendering fails:
 
 - Fail the run attempt immediately.
-- Let the orchestrator treat it like any other worker failure and decide retry behavior.
+- Let the orchestrator treat it like any other worker failure; Scherzo must not automatically rerun the full workflow.
 
 ## 13. Logging, Status, and Observability
 
@@ -1988,10 +1984,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Terminal state stops running agent and cleans workspace
 - Reconciliation with no running issues is a no-op
 - Normal worker exit schedules a short continuation retry (attempt 1)
-- Abnormal worker exit increments retries with 10s-based exponential backoff
-- Retry backoff cap uses configured `agent.max_retry_backoff_ms`
+- Abnormal worker exit does not schedule an automatic whole-workflow retry
 - Retry queue entries include attempt, due time, identifier, and error
-- Stall detection kills stalled sessions and schedules retry
+- Stall detection kills stalled sessions and handles them as worker failures without automatic full-workflow retry
 - Slot exhaustion requeues retries with explicit error reason
 - If a snapshot API is implemented, it returns running rows, retry rows, token totals, and rate
   limits
@@ -2081,8 +2076,7 @@ Use the same validation profiles as Section 17:
 - Coding-agent app-server subprocess client with JSON line protocol
 - Codex launch command config (`codex.command`, default `codex app-server`)
 - Strict prompt rendering with `issue` and `attempt` variables
-- Exponential retry queue with continuation retries after normal exit
-- Configurable retry backoff cap (`agent.max_retry_backoff_ms`, default 5m)
+- Retry queue support for continuation retries after normal exit and internal requeues
 - Reconciliation that stops runs on terminal/non-active tracker states
 - Workspace cleanup for terminal issues (startup sweep + active transition)
 - Structured logs with `issue_id`, `issue_identifier`, and `session_id`

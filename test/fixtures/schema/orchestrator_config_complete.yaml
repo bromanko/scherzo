@@ -30,9 +30,6 @@ agents:
   sessions_per_task: 2
   model: github-copilot/gpt-5.1-codex
   thinking: high
-  retries:
-    max_backoff: 1m
-    attempts: 2
   runtime:
     type: pi
     sessions: persistent

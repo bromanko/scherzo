@@ -869,11 +869,7 @@ fn schedule_claim_start_recovery_retry(
       task_identity,
       pending.previous_retry_generation,
     )
-  let delay_ms =
-    core.backoff_delay(
-      generation,
-      pending.dispatch_context.effective.agent.max_retry_backoff_ms,
-    )
+  let delay_ms = core.backoff_delay(generation, core.default_max_backoff_ms())
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
