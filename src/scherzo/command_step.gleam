@@ -13,6 +13,8 @@ type DiagnosticsCapture {
   DiagnosticsCapture(stdout_path: String, artifact_path: String)
 }
 
+pub const timeout_failure_code = "command_step_timeout"
+
 pub fn run(
   step_id: String,
   command: String,
@@ -73,6 +75,7 @@ pub fn run_with_env(
         command,
         process,
         timeout_ms,
+        started_ms + timeout_ms,
         started_ms,
         secrets,
         limits,
@@ -87,7 +90,8 @@ fn read_loop(
   step_id: String,
   command: String,
   process: port.Process,
-  timeout_ms: Int,
+  idle_timeout_ms: Int,
+  deadline_ms: Int,
   started_ms: Int,
   secrets: List(String),
   limits: config_types.ArtifactLimits,
@@ -95,7 +99,53 @@ fn read_loop(
   stdout_truncated: Bool,
   diagnostics: Option(DiagnosticsCapture),
 ) -> step_artifact.StepArtifact {
-  case port.read_stdout_line(process, timeout_ms) {
+  let read_timeout_ms = min_int(idle_timeout_ms, deadline_ms - monotonic_ms())
+  case read_timeout_ms <= 0 {
+    True ->
+      finish_timeout(
+        step_id,
+        command,
+        process,
+        started_ms,
+        secrets,
+        limits,
+        stdout,
+        stdout_truncated,
+        diagnostics,
+      )
+    False ->
+      read_next_line(
+        step_id,
+        command,
+        process,
+        idle_timeout_ms,
+        deadline_ms,
+        started_ms,
+        secrets,
+        limits,
+        stdout,
+        stdout_truncated,
+        diagnostics,
+        read_timeout_ms,
+      )
+  }
+}
+
+fn read_next_line(
+  step_id: String,
+  command: String,
+  process: port.Process,
+  idle_timeout_ms: Int,
+  deadline_ms: Int,
+  started_ms: Int,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  stdout: String,
+  stdout_truncated: Bool,
+  diagnostics: Option(DiagnosticsCapture),
+  read_timeout_ms: Int,
+) -> step_artifact.StepArtifact {
+  case port.read_stdout_line(process, read_timeout_ms) {
     Ok(line) -> {
       let #(stdout, stdout_truncated) =
         append_capped(
@@ -108,7 +158,8 @@ fn read_loop(
         step_id,
         command,
         process,
-        timeout_ms,
+        idle_timeout_ms,
+        deadline_ms,
         started_ms,
         secrets,
         limits,
@@ -153,24 +204,18 @@ fn read_loop(
         diagnostics,
       )
     }
-    Error(port.ReadTimeout) -> {
-      let _timeout_cleanup_result = port.terminate(process)
-      let stderr = read_diagnostics_or_error(process)
-      finish_command(
+    Error(port.ReadTimeout) ->
+      finish_timeout(
         step_id,
         command,
+        process,
         started_ms,
-        124,
-        stdout,
-        stderr,
-        True,
         secrets,
         limits,
+        stdout,
         stdout_truncated,
-        False,
         diagnostics,
       )
-    }
     Error(err) -> {
       let stderr = read_diagnostics_or_error(process)
       let _cleanup_result = port.terminate(process)
@@ -189,6 +234,44 @@ fn read_loop(
         diagnostics,
       )
     }
+  }
+}
+
+fn finish_timeout(
+  step_id: String,
+  command: String,
+  process: port.Process,
+  started_ms: Int,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  stdout: String,
+  stdout_truncated: Bool,
+  diagnostics: Option(DiagnosticsCapture),
+) -> step_artifact.StepArtifact {
+  let _timeout_cleanup_result = port.terminate(process)
+  let stderr =
+    read_diagnostics_or_error(process) |> prepend_timeout_failure_code
+  finish_command(
+    step_id,
+    command,
+    started_ms,
+    124,
+    stdout,
+    stderr,
+    True,
+    secrets,
+    limits,
+    stdout_truncated,
+    False,
+    diagnostics,
+  )
+}
+
+fn prepend_timeout_failure_code(stderr: String) -> String {
+  let failure_line = "SCHERZO_FAILURE_CODE=" <> timeout_failure_code <> "\n"
+  case stderr == "" {
+    True -> failure_line
+    False -> failure_line <> stderr
   }
 }
 
@@ -429,9 +512,7 @@ fn diagnostic_body(
   stderr_truncated: Bool,
   secrets: List(String),
 ) -> String {
-  let failure_code = case
-    step_artifact.failure_code_from_streams(stdout, stderr)
-  {
+  let failure_code = case command_failure_code(timed_out, stdout, stderr) {
     Some(code) -> "\nfailure_code: " <> code
     None -> ""
   }
@@ -457,6 +538,17 @@ fn diagnostic_body(
   <> log.redact("command_step_artifact", stderr, secrets)
 }
 
+fn command_failure_code(
+  timed_out: Bool,
+  stdout: String,
+  stderr: String,
+) -> Option(String) {
+  case timed_out {
+    True -> Some(timeout_failure_code)
+    False -> step_artifact.failure_code_from_streams(stdout, stderr)
+  }
+}
+
 fn shell_quote(value: String) -> String {
   "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
@@ -470,6 +562,13 @@ fn bool_to_string(value: Bool) -> String {
 
 fn max_int(left: Int, right: Int) -> Int {
   case left > right {
+    True -> left
+    False -> right
+  }
+}
+
+fn min_int(left: Int, right: Int) -> Int {
+  case left < right {
     True -> left
     False -> right
   }

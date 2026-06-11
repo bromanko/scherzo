@@ -1,8 +1,9 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{type Option, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/process_ext
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
@@ -51,6 +52,8 @@ pub opaque type StepBatchError {
 type StepBatchFailure {
   StepBatchFailure(reason: String)
 }
+
+pub const step_batch_timeout_failure_code = "step_batch_timeout"
 
 pub opaque type AfterStepError {
   AfterStepExitedWithoutResult(step_id: String)
@@ -129,6 +132,8 @@ pub fn fold_step_batch_outcome(
 
 pub fn run_prepared_batch(
   starts: List(PreparedStart),
+  batch_timeout_ms: Int,
+  timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
   start_step: fn(workflow_dag.WorkflowStep, workspace_run.PreparedStepWorkspace) ->
     Result(Nil, String),
   run_step: fn(workflow_dag.WorkflowStep, workspace_run.PreparedStepWorkspace) ->
@@ -141,6 +146,7 @@ pub fn run_prepared_batch(
 ) -> Result(StepBatchOutcome, StepBatchError) {
   let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
+  let batch_started_ms = monotonic_ms()
   let spawned = spawn_prepared_steps(starts, subject, start_step, run_step)
   case spawned {
     Error(error) -> {
@@ -160,6 +166,9 @@ pub fn run_prepared_batch(
           monitor_to_step(workers, dict.new()),
           step_to_monitor(workers, dict.new()),
           monitor_to_pid(workers, dict.new()),
+          batch_started_ms,
+          batch_started_ms + max_int(0, batch_timeout_ms),
+          timeout_artifact,
           failure_policy_by_step(starts, dict.new()),
           [],
         )
@@ -319,14 +328,24 @@ fn collect_step_results(
   monitor_to_step: Dict(process.Monitor, String),
   step_to_monitor: Dict(String, process.Monitor),
   monitor_to_pid: Dict(process.Monitor, process.Pid),
+  batch_started_ms: Int,
+  batch_deadline_ms: Int,
+  timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
   acc: List(StepExecutionResult),
 ) -> Result(StepBatchOutcome, StepBatchFailure) {
   case remaining <= 0 {
     True -> Ok(StepBatchCompleted(acc))
     False ->
-      case process.selector_receive_forever(selector) {
-        StepBatchResult(result) ->
+      case receive_batch_message(selector, batch_deadline_ms) {
+        Error(Nil) ->
+          Ok(batch_timeout_outcome(
+            monitor_to_step,
+            monitor_to_pid,
+            batch_started_ms,
+            timeout_artifact,
+          ))
+        Ok(StepBatchResult(result)) ->
           case dict.get(step_to_monitor, result.step_id) {
             Error(Nil) ->
               collect_step_results(
@@ -335,6 +354,9 @@ fn collect_step_results(
                 monitor_to_step,
                 step_to_monitor,
                 monitor_to_pid,
+                batch_started_ms,
+                batch_deadline_ms,
+                timeout_artifact,
                 failure_policies,
                 acc,
               )
@@ -355,13 +377,16 @@ fn collect_step_results(
                     monitor_to_step,
                     step_to_monitor,
                     monitor_to_pid,
+                    batch_started_ms,
+                    batch_deadline_ms,
+                    timeout_artifact,
                     failure_policies,
                     [result, ..acc],
                   )
               }
             }
           }
-        StepBatchDown(down) ->
+        Ok(StepBatchDown(down)) ->
           handle_step_worker_down(
             down,
             selector,
@@ -369,16 +394,22 @@ fn collect_step_results(
             monitor_to_step,
             step_to_monitor,
             monitor_to_pid,
+            batch_started_ms,
+            batch_deadline_ms,
+            timeout_artifact,
             failure_policies,
             acc,
           )
-        StepBatchLinkedExit ->
+        Ok(StepBatchLinkedExit) ->
           collect_step_results(
             remaining,
             selector,
             monitor_to_step,
             step_to_monitor,
             monitor_to_pid,
+            batch_started_ms,
+            batch_deadline_ms,
+            timeout_artifact,
             failure_policies,
             acc,
           )
@@ -393,6 +424,9 @@ fn handle_step_worker_down(
   monitor_to_step: Dict(process.Monitor, String),
   step_to_monitor: Dict(String, process.Monitor),
   monitor_to_pid: Dict(process.Monitor, process.Pid),
+  batch_started_ms: Int,
+  batch_deadline_ms: Int,
+  timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
   acc: List(StepExecutionResult),
 ) -> Result(StepBatchOutcome, StepBatchFailure) {
@@ -406,6 +440,9 @@ fn handle_step_worker_down(
             monitor_to_step,
             step_to_monitor,
             monitor_to_pid,
+            batch_started_ms,
+            batch_deadline_ms,
+            timeout_artifact,
             failure_policies,
             acc,
           )
@@ -421,9 +458,49 @@ fn handle_step_worker_down(
         monitor_to_step,
         step_to_monitor,
         monitor_to_pid,
+        batch_started_ms,
+        batch_deadline_ms,
+        timeout_artifact,
         failure_policies,
         acc,
       )
+  }
+}
+
+fn receive_batch_message(
+  selector: process.Selector(StepBatchMessage),
+  batch_deadline_ms: Int,
+) -> Result(StepBatchMessage, Nil) {
+  let timeout_ms = batch_deadline_ms - monotonic_ms()
+  case timeout_ms <= 0 {
+    True -> Error(Nil)
+    False -> process.selector_receive(selector, within: timeout_ms)
+  }
+}
+
+fn batch_timeout_outcome(
+  monitor_to_step: Dict(process.Monitor, String),
+  monitor_to_pid: Dict(process.Monitor, process.Pid),
+  batch_started_ms: Int,
+  timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
+) -> StepBatchOutcome {
+  terminate_step_workers(monitor_to_pid)
+  let step_id = timeout_step_id(monitor_to_step)
+  let duration_ms = max_int(0, monotonic_ms() - batch_started_ms)
+  StepBatchFatal(StepExecutionResult(
+    step_id: step_id,
+    artifact: timeout_artifact(step_id, duration_ms),
+    tokens: session_tokens.zero_token_totals(),
+    final_issue: None,
+    turns: 0,
+  ))
+}
+
+fn timeout_step_id(monitor_to_step: Dict(process.Monitor, String)) -> String {
+  let step_ids = dict.values(monitor_to_step) |> list.sort(by: string.compare)
+  case step_ids {
+    [step_id, ..] -> step_id
+    [] -> "unknown_step"
   }
 }
 
@@ -557,3 +634,13 @@ pub fn describe_after_step_error(error: AfterStepError) -> String {
     AfterStepMonitorDown(step_id) -> "after_step_monitor_down:" <> step_id
   }
 }
+
+fn max_int(left: Int, right: Int) -> Int {
+  case left > right {
+    True -> left
+    False -> right
+  }
+}
+
+@external(erlang, "scherzo_time_ffi", "monotonic_ms")
+fn monotonic_ms() -> Int
