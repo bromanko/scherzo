@@ -52,6 +52,7 @@ pub fn execute_metrics_uses_read_model_snapshot_test() {
         ..read_model.empty_runtime_counts(),
         workflow_count: 2,
         active_sessions: 3,
+        lifecycle_projection_failed: True,
       ),
     )
     |> read_model.snapshot(sampled_at_ms: 123)
@@ -65,4 +66,5 @@ pub fn execute_metrics_uses_read_model_snapshot_test() {
   assert metrics_response.remote_client_status == "connected"
   assert metrics_response.workflow_count == 2
   assert metrics_response.active_sessions == 3
+  assert metrics_response.lifecycle_projection_failed
 }

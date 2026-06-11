@@ -56,6 +56,7 @@ pub fn operational_metrics_from_source(
     poll_timer_active: poll_timer_active,
     retry_timer_count: retry_timer_count,
     retry_refresh_in_flight_count: retry_refresh_in_flight_count,
+    lifecycle_projection_failed: lifecycle_projection_failed,
     scheduled_due_count: scheduled_due_count,
     scheduled_next_due_count: scheduled_next_due_count,
     scheduled_pending_count: scheduled_pending_count,
@@ -90,6 +91,7 @@ pub fn operational_metrics_from_source(
     poll_timer_active: poll_timer_active,
     retry_timer_count: retry_timer_count,
     retry_refresh_in_flight_count: retry_refresh_in_flight_count,
+    lifecycle_projection_failed: lifecycle_projection_failed,
     scheduled_due_count: scheduled_due_count,
     scheduled_next_due_count: scheduled_next_due_count,
     scheduled_pending_count: scheduled_pending_count,
@@ -157,6 +159,10 @@ pub fn operational_metrics_to_json(
     #(
       "retry_refresh_in_flight_count",
       json.int(metrics.retry_refresh_in_flight_count),
+    ),
+    #(
+      "lifecycle_projection_failed",
+      json.bool(metrics.lifecycle_projection_failed),
     ),
     #("scheduled_due_count", json.int(metrics.scheduled_due_count)),
     #("scheduled_next_due_count", json.int(metrics.scheduled_next_due_count)),
@@ -258,6 +264,11 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
     "retry_refresh_in_flight_count",
     decode.int,
   )
+  use lifecycle_projection_failed <- decode.optional_field(
+    "lifecycle_projection_failed",
+    False,
+    decode.bool,
+  )
   use scheduled_due_count <- decode.field("scheduled_due_count", decode.int)
   use scheduled_next_due_count <- decode.optional_field(
     "scheduled_next_due_count",
@@ -306,6 +317,7 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
     poll_timer_active: poll_timer_active,
     retry_timer_count: retry_timer_count,
     retry_refresh_in_flight_count: retry_refresh_in_flight_count,
+    lifecycle_projection_failed: lifecycle_projection_failed,
     scheduled_due_count: scheduled_due_count,
     scheduled_next_due_count: scheduled_next_due_count,
     scheduled_pending_count: scheduled_pending_count,

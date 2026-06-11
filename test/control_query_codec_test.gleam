@@ -52,6 +52,7 @@ pub fn metrics_query_response_roundtrip_test() {
   assert string.contains(encoded, "\"ok\":true")
   assert string.contains(encoded, "\"type\":\"metrics\"")
   assert string.contains(encoded, "\"schema_version\":1")
+  assert string.contains(encoded, "\"lifecycle_projection_failed\":false")
   let assert Ok(decoded) = codec.decode_response(encoded)
   assert decoded == response
 }
@@ -226,6 +227,7 @@ pub fn metrics_dto_uses_narrow_non_secret_source_test() {
   assert string.contains(encoded, "\"schema_version\":1")
   assert string.contains(encoded, "\"active_sessions\":1")
   assert string.contains(encoded, "\"scheduled_next_due_count\":0")
+  assert string.contains(encoded, "\"lifecycle_projection_failed\":false")
   assert string.contains(encoded, "\"total\":37")
   assert !string.contains(encoded, "local_control_token")
   assert !string.contains(encoded, "enrollment_token")
