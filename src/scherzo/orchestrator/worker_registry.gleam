@@ -104,20 +104,48 @@ pub fn reserve_session_sequence(registry: Registry) -> #(Registry, Int) {
   )
 }
 
+pub type WorkerRunResolution {
+  WorkerMissing
+  WorkerCurrent(WorkerHandle)
+  WorkerStale(WorkerHandle)
+}
+
 pub fn next_session_sequence(registry: Registry) -> Int {
   registry.next_session_sequence
 }
 
+pub fn resolve_worker_run(
+  registry: Registry,
+  ref: task.TaskRef,
+  run_id: String,
+) -> WorkerRunResolution {
+  case worker_for_task_ref(registry, ref) {
+    Error(Nil) -> WorkerMissing
+    Ok(handle) ->
+      case handle.run_id == run_id {
+        True -> WorkerCurrent(handle)
+        False -> WorkerStale(handle)
+      }
+  }
+}
+
 pub fn register_worker(registry: Registry, handle: WorkerHandle) -> Registry {
   let identity = worker_identity(handle)
+  let worker_monitors = case dict.get(registry.workers, identity) {
+    Error(Nil) -> registry.worker_monitors
+    Ok(existing) ->
+      case existing.monitor == handle.monitor {
+        True -> registry.worker_monitors
+        False -> {
+          process.demonitor_process(existing.monitor)
+          dict.delete(registry.worker_monitors, existing.monitor)
+        }
+      }
+  }
   Registry(
     ..registry,
     workers: dict.insert(registry.workers, identity, handle),
-    worker_monitors: dict.insert(
-      registry.worker_monitors,
-      handle.monitor,
-      identity,
-    ),
+    worker_monitors: dict.insert(worker_monitors, handle.monitor, identity),
     issue_sessions: dict.insert(
       registry.issue_sessions,
       identity,
@@ -130,6 +158,19 @@ pub fn register_scheduled_worker(
   registry: Registry,
   handle: ScheduledWorkerHandle,
 ) -> Registry {
+  let scheduled_worker_monitors = case
+    dict.get(registry.scheduled_workers, handle.run_id)
+  {
+    Error(Nil) -> registry.scheduled_worker_monitors
+    Ok(existing) ->
+      case existing.monitor == handle.monitor {
+        True -> registry.scheduled_worker_monitors
+        False -> {
+          process.demonitor_process(existing.monitor)
+          dict.delete(registry.scheduled_worker_monitors, existing.monitor)
+        }
+      }
+  }
   Registry(
     ..registry,
     scheduled_workers: dict.insert(
@@ -138,7 +179,7 @@ pub fn register_scheduled_worker(
       handle,
     ),
     scheduled_worker_monitors: dict.insert(
-      registry.scheduled_worker_monitors,
+      scheduled_worker_monitors,
       handle.monitor,
       handle.run_id,
     ),
@@ -542,6 +583,13 @@ pub fn stopped_yaml_run_reason(
   dict.get(registry.stopped_yaml_runs, run_id)
 }
 
+pub fn clear_yaml_run_stopping(registry: Registry, run_id: String) -> Registry {
+  Registry(
+    ..registry,
+    stopped_yaml_runs: dict.delete(registry.stopped_yaml_runs, run_id),
+  )
+}
+
 pub fn register_yaml_step_command_subject(
   registry: Registry,
   session_id: String,
@@ -661,11 +709,25 @@ pub fn resolve_down(
     Ok(task_identity) ->
       case dict.get(registry.workers, task_identity) {
         Ok(handle) ->
-          WorkerDown(
-            remove_worker_handle(registry, handle),
-            handle.issue_id,
-            handle,
-          )
+          case handle.monitor == monitor {
+            True ->
+              WorkerDown(
+                remove_worker_handle(registry, handle),
+                handle.issue_id,
+                handle,
+              )
+            False ->
+              WorkerDownStale(
+                Registry(
+                  ..registry,
+                  worker_monitors: dict.delete(
+                    registry.worker_monitors,
+                    monitor,
+                  ),
+                ),
+                handle.issue_id,
+              )
+          }
         Error(Nil) ->
           WorkerDownStale(
             Registry(
@@ -684,11 +746,25 @@ pub fn resolve_down(
         Ok(run_id) ->
           case dict.get(registry.scheduled_workers, run_id) {
             Ok(handle) ->
-              ScheduledWorkerDown(
-                remove_scheduled_worker_handle(registry, handle),
-                run_id,
-                handle,
-              )
+              case handle.monitor == monitor {
+                True ->
+                  ScheduledWorkerDown(
+                    remove_scheduled_worker_handle(registry, handle),
+                    run_id,
+                    handle,
+                  )
+                False ->
+                  ScheduledWorkerDownStale(
+                    Registry(
+                      ..registry,
+                      scheduled_worker_monitors: dict.delete(
+                        registry.scheduled_worker_monitors,
+                        monitor,
+                      ),
+                    ),
+                    run_id,
+                  )
+              }
             Error(Nil) ->
               ScheduledWorkerDownStale(
                 Registry(
