@@ -7,6 +7,7 @@ pub type RetryReason {
 }
 
 pub type ParkReason {
+  ParkWorkerFailure
   ParkMaxRetryAttempts
   ParkMaxSessionsPerIssue
   ParkOperator(reason: String)
@@ -29,6 +30,7 @@ pub fn retry_to_string(reason: RetryReason) -> String {
 
 pub fn park_to_string(reason: ParkReason) -> String {
   case reason {
+    ParkWorkerFailure -> "worker_failure"
     ParkMaxRetryAttempts -> "max_retry_attempts"
     ParkMaxSessionsPerIssue -> "max_sessions_per_issue"
     ParkOperator(reason) -> reason

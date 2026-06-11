@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import legacy_ledger_fixtures
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
+import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/session/recovery as session_recovery
@@ -140,7 +141,7 @@ pub fn current_projection_sources_emit_only_backed_recovery_metadata_test() {
   assert session_recovery.interrupted_run("run-4", finished, None) == None
 }
 
-pub fn unfinished_run_becomes_interrupted_retry_test() {
+pub fn unfinished_run_becomes_interrupted_park_test() {
   let projection =
     projection.fold([
       record.with_id(
@@ -164,16 +165,15 @@ pub fn unfinished_run_becomes_interrupted_retry_test() {
     == 1
   assert has_record_kind(plan.records_to_append, "run_interrupted")
   assert has_record_kind(plan.records_to_append, "issue_counter_updated")
-  assert has_record_kind(plan.records_to_append, "retry_scheduled")
-  let assert [
-    recovery.RecoveredRetry(
-      issue_id: "issue-1",
-      issue_identifier: "ABC-1",
-      delay_ms: 10_000,
-      generation: 1,
-      reason: "failure",
-    ),
-  ] = plan.retry_timers
+  assert has_record_kind(plan.records_to_append, "issue_parked_v2")
+  assert plan.retry_timers == []
+  assert !has_retry(plan.runtime, "issue-1")
+  let assert Ok(parked) =
+    dict.get(
+      plan.runtime.parked,
+      orchestrator_state.linear_issue_id_identity("issue-1"),
+    )
+  assert parked.reason == reason.ParkWorkerFailure
 }
 
 pub fn interrupted_run_recovery_is_idempotent_test() {
@@ -484,7 +484,7 @@ pub fn auto_parked_issue_with_new_fingerprint_unparks_test() {
           issue_identifier: "ABC-1",
           delay_ms: 1000,
           generation: 1,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
       record.with_id(
@@ -528,7 +528,7 @@ pub fn overdue_retry_is_scheduled_immediately_test() {
           issue_identifier: "ABC-1",
           delay_ms: 5000,
           generation: 2,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
     ])
@@ -557,7 +557,7 @@ pub fn future_retry_keeps_remaining_delay_test() {
           issue_identifier: "ABC-1",
           delay_ms: 5000,
           generation: 2,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
     ])
@@ -573,6 +573,45 @@ pub fn future_retry_keeps_remaining_delay_test() {
       orchestrator_state.linear_issue_id_identity("issue-1"),
     )
   assert retry.delay_ms == 3000
+}
+
+pub fn failure_retry_is_cancelled_and_issue_parked_during_recovery_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+    ])
+  let refreshed = issue("issue-1", "ABC-1", "Todo")
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
+
+  assert plan.retry_timers == []
+  assert !dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  let assert Ok(parked) =
+    dict.get(
+      plan.runtime.parked,
+      orchestrator_state.linear_issue_id_identity("issue-1"),
+    )
+  assert parked.reason == reason.ParkWorkerFailure
+  assert has_record_kind(plan.records_to_append, "issue_parked_v2")
+  assert has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_failure_retry_removed",
+  )
 }
 
 pub fn mixed_workflow_task_ref_history_restores_non_linear_retry_test() {
@@ -620,7 +659,7 @@ pub fn mixed_workflow_task_ref_history_restores_non_linear_retry_test() {
           issue_identifier: "ABC-1",
           delay_ms: 5000,
           generation: 2,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
     ])
@@ -654,7 +693,7 @@ pub fn retry_for_missing_issue_is_cancelled_during_recovery_test() {
           issue_identifier: "ABC-1",
           delay_ms: 5000,
           generation: 2,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
     ])
@@ -690,7 +729,7 @@ pub fn retry_for_configured_failure_state_is_restored_during_recovery_test() {
           issue_identifier: "ABC-1",
           delay_ms: 5000,
           generation: 2,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
     ])
@@ -734,7 +773,7 @@ pub fn retry_for_non_retryable_issue_is_cancelled_during_recovery_test() {
           issue_identifier: "ABC-1",
           delay_ms: 5000,
           generation: 2,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
     ])
@@ -777,7 +816,7 @@ pub fn retry_for_terminal_issue_is_cancelled_during_recovery_test() {
           issue_identifier: "ABC-1",
           delay_ms: 5000,
           generation: 2,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
     ])
@@ -814,7 +853,7 @@ pub fn active_workflow_run_suppresses_stale_retry_recovery_test() {
           issue_identifier: "ABC-1",
           delay_ms: 5000,
           generation: 2,
-          reason: "failure",
+          reason: "continuation",
         ),
       ),
       record.with_id(
@@ -1329,8 +1368,6 @@ fn config() -> config_types.EffectiveConfig {
     agent: config_types.AgentConfig(
       max_concurrent_agents: 2,
       max_turns: 20,
-      max_retry_backoff_ms: 40_000,
-      max_retry_attempts: 3,
       max_sessions_per_issue: 2,
       context_recovery_max_attempts: 1,
       context_recovery_prompt_char_limit: 40_000,

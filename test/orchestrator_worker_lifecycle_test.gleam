@@ -365,9 +365,6 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_reports_test() {
       begin_failure_report_request: fn(state, _) {
         TestState(..state, report_requests: state.report_requests + 1)
       },
-      apply_scheduled_runtime_actions: fn(state, _) {
-        TestState(..state, action_batches: state.action_batches + 1)
-      },
     )
 
   let state =
@@ -382,7 +379,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_reports_test() {
   process.demonitor_process(handle.monitor)
 }
 
-pub fn worker_lifecycle_finish_scheduled_worker_failure_retries_test() {
+pub fn worker_lifecycle_finish_scheduled_worker_failure_has_no_retry_branch_test() {
   let handle = scheduled_handle()
   let state =
     TestState(
@@ -398,8 +395,22 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_retries_test() {
       log_worker_exited: fn(_, _, _, _) { Nil },
       publish_worker_exited: fn(_, _) { Nil },
       finish_failed_session: fn(_) { Nil },
-      worker_failure_follow_up: fn(state, _, _, _) {
-        #(state, scheduled_runtime.WorkerFailureRetry([]))
+      worker_failure_follow_up: fn(state, _, _, run_root) {
+        #(
+          state,
+          scheduled_runtime.WorkerFailureReport(
+            scheduled_runtime.FailureReportRequest(
+              job_id: "repair",
+              workflow_id: "repair",
+              due_at_ms: 1,
+              run_id: "run-1",
+              attempt: 1,
+              reason: "boom",
+              run_root: run_root,
+              session_id: Some("session-scheduled"),
+            ),
+          ),
+        )
       },
       append_failure_ledger: fn(state, _, _, _, _) {
         let _ = append_event(state, "ledger")
@@ -407,9 +418,6 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_retries_test() {
       },
       begin_failure_report_request: fn(state, _) {
         TestState(..state, report_requests: state.report_requests + 1)
-      },
-      apply_scheduled_runtime_actions: fn(state, _) {
-        TestState(..state, action_batches: state.action_batches + 1)
       },
     )
 
@@ -420,12 +428,12 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_retries_test() {
       workflow_failure(),
     )
 
-  assert state.report_requests == 0
-  assert state.action_batches == 1
+  assert state.report_requests == 1
+  assert state.action_batches == 0
   process.demonitor_process(handle.monitor)
 }
 
-pub fn worker_lifecycle_scheduled_worker_down_starts_pending_after_retry_test() {
+pub fn worker_lifecycle_scheduled_worker_down_starts_pending_after_report_test() {
   let handle = scheduled_handle()
   let state =
     TestState(
@@ -444,15 +452,26 @@ pub fn worker_lifecycle_scheduled_worker_down_starts_pending_after_retry_test() 
       log_worker_down: fn(_, _, _) { Nil },
       publish_worker_down: fn(_) { Nil },
       finish_failed_session: fn(_) { Nil },
-      worker_failure_follow_up: fn(state, _, _, _) {
-        #(state, scheduled_runtime.WorkerFailureRetry([]))
+      worker_failure_follow_up: fn(state, _, _, run_root) {
+        #(
+          state,
+          scheduled_runtime.WorkerFailureReport(
+            scheduled_runtime.FailureReportRequest(
+              job_id: "repair",
+              workflow_id: "repair",
+              due_at_ms: 1,
+              run_id: "run-1",
+              attempt: 1,
+              reason: "worker_down",
+              run_root: run_root,
+              session_id: Some("session-scheduled"),
+            ),
+          ),
+        )
       },
       append_failure_ledger: fn(_, _, _, _, _) { Nil },
       begin_failure_report_request: fn(state, _) {
         TestState(..state, report_requests: state.report_requests + 1)
-      },
-      apply_scheduled_runtime_actions: fn(state, _) {
-        TestState(..state, action_batches: state.action_batches + 1)
       },
       start_pending_scheduled_runs: fn(state) {
         TestState(..state, pending_starts: state.pending_starts + 1)
@@ -468,8 +487,8 @@ pub fn worker_lifecycle_scheduled_worker_down_starts_pending_after_retry_test() 
       handle,
     )
 
-  assert state.report_requests == 0
-  assert state.action_batches == 1
+  assert state.report_requests == 1
+  assert state.action_batches == 0
   assert state.pending_starts == 1
   process.demonitor_process(handle.monitor)
 }

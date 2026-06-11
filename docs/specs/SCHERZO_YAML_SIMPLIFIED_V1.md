@@ -142,10 +142,6 @@ agents:
   model: openai-codex/gpt-5.5:xhigh
   thinking: high
 
-  retries:
-    attempts: 2
-    max_backoff: 5m
-
   recovery:
     attempts: 1
     prompt_char_limit: 40000
@@ -284,8 +280,8 @@ agents:
 ```
 
 `max_turns`, `sessions_per_task`, `model`, and `thinking` define default agent
-execution behavior. `agents.retries.attempts` and `agents.retries.max_backoff` define
-agent retry behavior. `agents.recovery.attempts` and
+execution behavior. Automatic whole-workflow retries are not configurable and are not
+automatically scheduled after worker failure. `agents.recovery.attempts` and
 `agents.recovery.prompt_char_limit` define context recovery behavior.
 
 `agents.runtime.type` is required when the runtime block is present and currently only
@@ -296,7 +292,9 @@ to `ephemeral`.
 `env` adds environment variables to the pi process. Scherzo owns protocol and session
 flags: RPC mode, `--session <file>` for persistent sessions, `--no-session` for
 ephemeral sessions, and RPC message update behavior. User args must not contain
-`--session`, `--no-session`, or `--mode`.
+`--session`, `--no-session`, or `--mode`. `agents.runtime.auto_retry` remains a
+same-session pi/provider retry setting; it does not rerun a full workflow from the
+beginning after a top-level worker failure.
 
 Runtime timeouts use duration strings: `turn_timeout`, `read_timeout`,
 `stall_timeout`, and `ui_request_timeout`. `ui_requests` is one of `cancel`, `fail`,
@@ -548,8 +546,8 @@ drivers, especially `workspace.drivers.<name>.type: custom`.
 | `agent.max_concurrent_agents` | `agents.concurrency` |
 | `agent.max_concurrent_agents_by_state` | `agents.concurrency.by_state` |
 | `agent.max_turns` | `agents.max_turns` |
-| `agent.max_retry_attempts` | `agents.retries.attempts` |
-| `agent.max_retry_backoff_ms` | `agents.retries.max_backoff` |
+| `agent.max_retry_attempts` | Removed; automatic whole-workflow retries are no longer supported. |
+| `agent.max_retry_backoff_ms` | Removed; automatic whole-workflow retries are no longer supported. |
 | `agent.max_sessions_per_issue` | `agents.sessions_per_task` |
 | `agent.context_recovery_max_attempts` | `agents.recovery.attempts` |
 | `agent.context_recovery_prompt_char_limit` | `agents.recovery.prompt_char_limit` |

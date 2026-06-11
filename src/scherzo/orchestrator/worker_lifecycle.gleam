@@ -380,8 +380,6 @@ pub type ScheduledWorkerFailureContext(state) {
       state,
       scheduled_runtime.FailureReportRequest,
     ) -> state,
-    apply_scheduled_runtime_actions: fn(state, List(scheduled_runtime.Action)) ->
-      state,
   )
 }
 
@@ -400,22 +398,11 @@ pub fn finish_scheduled_worker_failure(
   }
   let #(state, follow_up) =
     context.worker_failure_follow_up(context.state, handle, reason, run_root)
-  let retry_exhausted = case follow_up {
-    scheduled_runtime.WorkerFailureReport(_) -> True
-    scheduled_runtime.WorkerFailureRetry(_) -> False
-  }
-  context.append_failure_ledger(
-    state,
-    handle,
-    reason,
-    retry_exhausted,
-    run_root,
-  )
+  context.append_failure_ledger(state, handle, reason, True, run_root)
   continue_scheduled_failure_follow_up(
     state,
     follow_up,
     context.begin_failure_report_request,
-    context.apply_scheduled_runtime_actions,
   )
 }
 
@@ -596,8 +583,6 @@ pub type ScheduledWorkerDownContext(state) {
       state,
       scheduled_runtime.FailureReportRequest,
     ) -> state,
-    apply_scheduled_runtime_actions: fn(state, List(scheduled_runtime.Action)) ->
-      state,
     start_pending_scheduled_runs: fn(state) -> state,
   )
 }
@@ -619,15 +604,11 @@ pub fn scheduled_worker_down(
       "worker_down",
       Some(handle.run_root),
     )
-  let retry_exhausted = case follow_up {
-    scheduled_runtime.WorkerFailureReport(_) -> True
-    scheduled_runtime.WorkerFailureRetry(_) -> False
-  }
   context.append_failure_ledger(
     state,
     handle,
     "worker_down",
-    retry_exhausted,
+    True,
     Some(handle.run_root),
   )
   let state =
@@ -635,7 +616,6 @@ pub fn scheduled_worker_down(
       state,
       follow_up,
       context.begin_failure_report_request,
-      context.apply_scheduled_runtime_actions,
     )
   context.start_pending_scheduled_runs(state)
 }
@@ -647,14 +627,10 @@ fn continue_scheduled_failure_follow_up(
     state,
     scheduled_runtime.FailureReportRequest,
   ) -> state,
-  apply_scheduled_runtime_actions: fn(state, List(scheduled_runtime.Action)) ->
-    state,
 ) -> state {
   case follow_up {
     scheduled_runtime.WorkerFailureReport(request) ->
       begin_failure_report_request(state, request)
-    scheduled_runtime.WorkerFailureRetry(actions) ->
-      apply_scheduled_runtime_actions(state, actions)
   }
 }
 

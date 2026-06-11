@@ -57,7 +57,6 @@ pub type FailureReportRequest {
 }
 
 pub type WorkerFailureFollowUp {
-  WorkerFailureRetry(actions: List(Action))
   WorkerFailureReport(request: FailureReportRequest)
 }
 
@@ -94,6 +93,10 @@ pub type Action {
   )
   PromoteRetryToPending(pending: PendingStart)
   RetryReport(job_id: String, run_id: String)
+}
+
+pub fn default_max_backoff_ms() -> Int {
+  retry_policy.default_max_backoff_ms()
 }
 
 pub fn new() -> Runtime {
@@ -308,40 +311,20 @@ pub fn worker_failure_follow_up(
   reason: String,
   run_root: Option(String),
   session_id: Option(String),
-  max_retry_attempts: Int,
-  max_backoff_ms: Int,
 ) -> #(Runtime, WorkerFailureFollowUp) {
-  let next_attempt = retry_policy.next_attempt_index(attempt)
-  case retry_policy.next_attempt_exhausted(next_attempt, max_retry_attempts) {
-    True -> #(
-      runtime,
-      WorkerFailureReport(FailureReportRequest(
-        job_id: job_id,
-        workflow_id: workflow_id,
-        due_at_ms: due_at_ms,
-        run_id: run_id,
-        attempt: attempt,
-        reason: reason,
-        run_root: run_root,
-        session_id: session_id,
-      )),
-    )
-    False -> {
-      let #(runtime, actions) =
-        schedule_retry(
-          runtime,
-          job_id,
-          workflow_id,
-          due_at_ms,
-          run_id,
-          attempt,
-          next_attempt,
-          reason,
-          max_backoff_ms,
-        )
-      #(runtime, WorkerFailureRetry(actions))
-    }
-  }
+  #(
+    runtime,
+    WorkerFailureReport(FailureReportRequest(
+      job_id: job_id,
+      workflow_id: workflow_id,
+      due_at_ms: due_at_ms,
+      run_id: run_id,
+      attempt: attempt,
+      reason: reason,
+      run_root: run_root,
+      session_id: session_id,
+    )),
+  )
 }
 
 pub fn needs_human_follow_up(

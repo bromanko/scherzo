@@ -249,8 +249,8 @@ pub fn report_retry_generation_mismatch_is_ignored_and_matching_tick_retries_tes
     == schedule_core.Idle
 }
 
-pub fn worker_failure_follow_up_chooses_retry_then_report_test() {
-  let #(runtime, retry_follow_up) =
+pub fn worker_failure_follow_up_reports_without_retry_test() {
+  let #(runtime, follow_up) =
     scheduled_runtime.worker_failure_follow_up(
       scheduled_runtime.new(),
       "scheduled-job",
@@ -261,36 +261,14 @@ pub fn worker_failure_follow_up_chooses_retry_then_report_test() {
       "boom",
       None,
       None,
-      3,
-      60_000,
-    )
-  let assert scheduled_runtime.WorkerFailureRetry(actions) = retry_follow_up
-  let assert [
-    scheduled_runtime.RecordScheduledRetry(generation: 1, ..),
-    scheduled_runtime.ScheduleRetryTimer(generation: 1, ..),
-  ] = actions
-  assert scheduled_runtime.schedule_mode(runtime, "scheduled-job", False)
-    == schedule_core.RetryWaiting
-
-  let #(_, report_follow_up) =
-    scheduled_runtime.worker_failure_follow_up(
-      scheduled_runtime.new(),
-      "scheduled-job",
-      "scheduled-command",
-      ms("2026-05-05T12:15:00Z"),
-      "schedule-scheduled-job-20260505T121500Z",
-      3,
-      "boom",
-      None,
-      None,
-      3,
-      60_000,
     )
   let assert scheduled_runtime.WorkerFailureReport(request: scheduled_runtime.FailureReportRequest(
     reason: "boom",
-    attempt: 3,
+    attempt: 1,
     ..,
-  )) = report_follow_up
+  )) = follow_up
+  assert scheduled_runtime.schedule_mode(runtime, "scheduled-job", False)
+    == schedule_core.Idle
 }
 
 pub fn report_failure_retry_schedules_timer_test() {

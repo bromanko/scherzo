@@ -43,6 +43,10 @@ pub fn backoff_delay(attempt: Int, max_ms: Int) -> Int {
   retry_policy.backoff_delay(attempt, max_ms)
 }
 
+pub fn default_max_backoff_ms() -> Int {
+  retry_policy.default_max_backoff_ms()
+}
+
 pub fn first_attempt_index() -> Int {
   retry_policy.first_attempt_index()
 }

@@ -185,8 +185,6 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
 
   assert effective.agent.max_concurrent_agents == 3
   assert effective.agent.max_turns == 12
-  assert effective.agent.max_retry_backoff_ms == 60_000
-  assert effective.agent.max_retry_attempts == 2
   assert effective.agent.max_sessions_per_issue == 2
   let assert Ok(todo_limit) =
     dict.get(

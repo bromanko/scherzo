@@ -33,6 +33,21 @@ pub type RecoveredRetry {
   )
 }
 
+type RetryRestoreContext {
+  RetryRestoreContext(
+    backend_kind: String,
+    active_workflow_issue_ids: List(String),
+    issue_by_id: Dict(String, tracker_issue.Issue),
+    issue_id: String,
+    issue_identifier: String,
+    generation: Int,
+    reason_text: String,
+    status: projection.RetryStatus,
+    now_ms: Int,
+    recovered_identity: identity.TaskIdentity,
+  )
+}
+
 pub type CleanupRequest {
   CleanupRequest(
     issue_id: String,
@@ -2508,6 +2523,19 @@ fn restore_scheduled_retry(
   let backend_kind = recovered_backend_kind_for_issue(backend_kinds, issue_id)
   let recovered_identity =
     orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
+  let context =
+    RetryRestoreContext(
+      backend_kind: backend_kind,
+      active_workflow_issue_ids: active_workflow_issue_ids,
+      issue_by_id: issue_by_id,
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      generation: generation,
+      reason_text: reason_text,
+      status: status,
+      now_ms: now_ms,
+      recovered_identity: recovered_identity,
+    )
   case list.contains(build.auto_unparked_issue_ids, issue_id) {
     True ->
       cancel_recovered_retry(
@@ -2518,112 +2546,153 @@ fn restore_scheduled_retry(
         "recovery_auto_unparked",
       )
     False ->
-      case list.contains(active_workflow_issue_ids, issue_id) {
-        True ->
-          cancel_recovered_retry(
-            build,
-            issue_id,
-            recovered_identity,
-            generation,
-            "recovery_active_workflow_run",
-          )
-        False ->
-          case dict.has_key(build.runtime.parked, recovered_identity) {
-            True ->
-              cancel_recovered_retry(
-                build,
-                issue_id,
-                recovered_identity,
-                generation,
-                "recovery_parked",
-              )
-            False ->
-              case dict.get(issue_by_id, issue_id) {
-                Error(Nil) ->
-                  cancel_recovered_retry(
+      case reason_text == reason.retry_to_string(reason.RetryAfterFailure) {
+        True -> {
+          let build =
+            cancel_recovered_retry(
+              build,
+              context.issue_id,
+              context.recovered_identity,
+              context.generation,
+              "recovery_failure_retry_removed",
+            )
+          case dict.get(context.issue_by_id, context.issue_id) {
+            Error(Nil) -> build
+            Ok(issue) ->
+              case config_types.retry_state_allowed(config, issue.state) {
+                True ->
+                  ensure_parked_after_worker_failure(
                     build,
-                    issue_id,
-                    recovered_identity,
-                    generation,
-                    "recovery_missing_issue",
+                    issue,
+                    context.issue_identifier,
+                    context.backend_kind,
+                    context.now_ms,
                   )
-                Ok(issue) ->
-                  case recovery_policy.is_terminal(config, issue.state) {
-                    True ->
-                      cancel_recovered_retry(
-                        build,
-                        issue_id,
-                        recovered_identity,
-                        generation,
-                        "recovery_terminal_issue",
-                      )
-                    False ->
-                      case
-                        config_types.retry_state_allowed(config, issue.state)
-                      {
-                        False ->
-                          cancel_recovered_retry(
-                            build,
-                            issue_id,
-                            recovered_identity,
-                            generation,
-                            config_types.recovery_non_retryable_reason(
-                              issue.state,
-                            ),
-                          )
-                        True -> {
-                          let remaining =
-                            workflow_attempt.remaining_retry_delay(
-                              status,
-                              now_ms,
-                            )
-                          let task_ref =
-                            orchestrator_state.issue_ref_for_backend(
-                              issue,
-                              backend_kind,
-                            )
-                          let identity =
-                            orchestrator_state.task_ref_identity(task_ref)
-                          let retry =
-                            orchestrator_state.RetryEntry(
-                              task_ref: task_ref,
-                              issue_id: issue_id,
-                              delay_ms: remaining,
-                              timer_generation: generation,
-                            )
-                          Build(
-                            ..build,
-                            runtime: orchestrator_state.RuntimeState(
-                              ..build.runtime,
-                              retry_attempts: dict.insert(
-                                build.runtime.retry_attempts,
-                                identity,
-                                retry,
-                              ),
-                              claimed: dict.insert(
-                                build.runtime.claimed,
-                                identity,
-                                issue_identifier,
-                              ),
-                            ),
-                            retry_timers: [
-                              RecoveredRetry(
-                                issue_id,
-                                issue_identifier,
-                                remaining,
-                                generation,
-                                reason_text,
-                              ),
-                              ..build.retry_timers
-                            ],
-                          )
-                        }
-                      }
-                  }
+                False -> build
               }
           }
+        }
+        False -> restore_non_failure_scheduled_retry(build, config, context)
       }
   }
+}
+
+fn restore_non_failure_scheduled_retry(
+  build: Build,
+  config: config_types.EffectiveConfig,
+  context: RetryRestoreContext,
+) -> Build {
+  case list.contains(context.active_workflow_issue_ids, context.issue_id) {
+    True ->
+      cancel_recovered_retry(
+        build,
+        context.issue_id,
+        context.recovered_identity,
+        context.generation,
+        "recovery_active_workflow_run",
+      )
+    False -> restore_retry_for_inactive_issue(build, config, context)
+  }
+}
+
+fn restore_retry_for_inactive_issue(
+  build: Build,
+  config: config_types.EffectiveConfig,
+  context: RetryRestoreContext,
+) -> Build {
+  case dict.has_key(build.runtime.parked, context.recovered_identity) {
+    True ->
+      cancel_recovered_retry(
+        build,
+        context.issue_id,
+        context.recovered_identity,
+        context.generation,
+        "recovery_parked",
+      )
+    False ->
+      case dict.get(context.issue_by_id, context.issue_id) {
+        Error(Nil) ->
+          cancel_recovered_retry(
+            build,
+            context.issue_id,
+            context.recovered_identity,
+            context.generation,
+            "recovery_missing_issue",
+          )
+        Ok(issue) -> restore_retry_for_issue(build, config, context, issue)
+      }
+  }
+}
+
+fn restore_retry_for_issue(
+  build: Build,
+  config: config_types.EffectiveConfig,
+  context: RetryRestoreContext,
+  issue: tracker_issue.Issue,
+) -> Build {
+  case recovery_policy.is_terminal(config, issue.state) {
+    True ->
+      cancel_recovered_retry(
+        build,
+        context.issue_id,
+        context.recovered_identity,
+        context.generation,
+        "recovery_terminal_issue",
+      )
+    False ->
+      case config_types.retry_state_allowed(config, issue.state) {
+        False ->
+          cancel_recovered_retry(
+            build,
+            context.issue_id,
+            context.recovered_identity,
+            context.generation,
+            config_types.recovery_non_retryable_reason(issue.state),
+          )
+        True -> restore_retry_timer(build, context, issue)
+      }
+  }
+}
+
+fn restore_retry_timer(
+  build: Build,
+  context: RetryRestoreContext,
+  issue: tracker_issue.Issue,
+) -> Build {
+  let remaining =
+    workflow_attempt.remaining_retry_delay(context.status, context.now_ms)
+  let task_ref =
+    orchestrator_state.issue_ref_for_backend(issue, context.backend_kind)
+  let identity = orchestrator_state.task_ref_identity(task_ref)
+  let retry =
+    orchestrator_state.RetryEntry(
+      task_ref: task_ref,
+      issue_id: context.issue_id,
+      delay_ms: remaining,
+      timer_generation: context.generation,
+    )
+  Build(
+    ..build,
+    runtime: orchestrator_state.RuntimeState(
+      ..build.runtime,
+      retry_attempts: dict.insert(build.runtime.retry_attempts, identity, retry),
+      claimed: dict.insert(
+        build.runtime.claimed,
+        identity,
+        context.issue_identifier,
+      ),
+    ),
+    retry_timers: [
+      RecoveredRetry(
+        context.issue_id,
+        context.issue_identifier,
+        remaining,
+        context.generation,
+        context.reason_text,
+      ),
+      ..build.retry_timers
+    ],
+  )
 }
 
 fn cancel_recovered_retry(
@@ -2832,7 +2901,7 @@ fn terminal_counter_reset_needed(
 fn recover_active_interrupted(
   build: Build,
   projection: projection.Projection,
-  config: config_types.EffectiveConfig,
+  _config: config_types.EffectiveConfig,
   issue: tracker_issue.Issue,
   run_id: String,
   issue_identifier: String,
@@ -2841,11 +2910,11 @@ fn recover_active_interrupted(
   let issue_id = issue.id
   case projection.counter_has_source_run(projection, issue_id, run_id) {
     True ->
-      ensure_retry_or_park_for_counter(
+      ensure_parked_after_worker_failure(
         build,
-        config,
         issue,
         issue_identifier,
+        "linear",
         now_ms,
       )
     False -> {
@@ -2876,137 +2945,63 @@ fn recover_active_interrupted(
             ..build.record_bodies
           ],
         )
-      ensure_retry_or_park_for_counter(
+      ensure_parked_after_worker_failure(
         build,
-        config,
         issue,
         issue_identifier,
+        "linear",
         now_ms,
       )
     }
   }
 }
 
-fn ensure_retry_or_park_for_counter(
+fn ensure_parked_after_worker_failure(
   build: Build,
-  config: config_types.EffectiveConfig,
   issue: tracker_issue.Issue,
   issue_identifier: String,
+  backend_kind: String,
   now_ms: Int,
 ) -> Build {
-  let issue_id = issue.id
-  let counter = counter_for_runtime(build.runtime, issue_id)
-  case counter.failure_attempts >= config.agent.max_retry_attempts {
-    True ->
-      case
-        dict.has_key(
-          build.runtime.parked,
-          orchestrator_state.issue_identity(issue),
+  let task_ref = orchestrator_state.issue_ref_for_backend(issue, backend_kind)
+  let identity = orchestrator_state.task_ref_identity(task_ref)
+  case dict.has_key(build.runtime.parked, identity) {
+    True -> build
+    False -> {
+      let issue_id = issue.id
+      let fingerprint = recovery_policy.issue_fingerprint(issue)
+      let parked =
+        orchestrator_state.ParkedEntry(
+          task_ref: task_ref,
+          issue_id: issue_id,
+          identifier: issue_identifier,
+          reason: reason.ParkWorkerFailure,
+          release_policy: orchestrator_state.AutoUnparkOnIssueChange(
+            fingerprint,
+          ),
+          parked_at_ms: now_ms,
         )
-      {
-        True -> build
-        False -> {
-          let fingerprint = recovery_policy.issue_fingerprint(issue)
-          let task_ref = orchestrator_state.issue_ref(issue)
-          let identity = orchestrator_state.task_ref_identity(task_ref)
-          let parked =
-            orchestrator_state.ParkedEntry(
-              task_ref: task_ref,
-              issue_id: issue_id,
-              identifier: issue_identifier,
-              reason: reason.ParkMaxRetryAttempts,
-              release_policy: orchestrator_state.AutoUnparkOnIssueChange(
-                fingerprint,
-              ),
-              parked_at_ms: now_ms,
-            )
-          Build(
-            ..build,
-            runtime: orchestrator_state.RuntimeState(
-              ..build.runtime,
-              parked: dict.insert(build.runtime.parked, identity, parked),
-              retry_attempts: dict.delete(
-                build.runtime.retry_attempts,
-                identity,
-              ),
-              claimed: dict.delete(build.runtime.claimed, identity),
-            ),
-            record_bodies: [
-              record.IssueParkedV2(
-                issue_id,
-                issue_identifier,
-                reason.park_to_string(reason.ParkMaxRetryAttempts),
-                "auto_unpark_on_issue_change",
-                fingerprint,
-                now_ms,
-              ),
-              ..build.record_bodies
-            ],
-          )
-        }
-      }
-    False ->
-      case
-        dict.has_key(
-          build.runtime.retry_attempts,
-          orchestrator_state.issue_identity(issue),
-        )
-      {
-        True -> build
-        False -> {
-          let delay_ms =
-            recovery_policy.backoff_delay(
-              counter.failure_attempts,
-              config.agent.max_retry_backoff_ms,
-            )
-          let generation = 1
-          let task_ref = orchestrator_state.issue_ref(issue)
-          let identity = orchestrator_state.task_ref_identity(task_ref)
-          let retry =
-            orchestrator_state.RetryEntry(
-              task_ref: task_ref,
-              issue_id: issue_id,
-              delay_ms: delay_ms,
-              timer_generation: generation,
-            )
-          Build(
-            ..build,
-            runtime: orchestrator_state.RuntimeState(
-              ..build.runtime,
-              retry_attempts: dict.insert(
-                build.runtime.retry_attempts,
-                identity,
-                retry,
-              ),
-              claimed: dict.insert(
-                build.runtime.claimed,
-                identity,
-                issue_identifier,
-              ),
-            ),
-            retry_timers: [
-              RecoveredRetry(
-                issue_id,
-                issue_identifier,
-                delay_ms,
-                generation,
-                reason.retry_to_string(reason.RetryAfterFailure),
-              ),
-              ..build.retry_timers
-            ],
-            record_bodies: [
-              record.RetryScheduled(
-                issue_id,
-                issue_identifier,
-                delay_ms,
-                generation,
-                reason.retry_to_string(reason.RetryAfterFailure),
-              ),
-              ..build.record_bodies
-            ],
-          )
-        }
-      }
+      Build(
+        ..build,
+        runtime: orchestrator_state.RuntimeState(
+          ..build.runtime,
+          parked: dict.insert(build.runtime.parked, identity, parked),
+          retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
+          claimed: dict.delete(build.runtime.claimed, identity),
+        ),
+        record_bodies: [
+          record.IssueParkedV2(
+            issue_id,
+            issue_identifier,
+            reason.park_to_string(reason.ParkWorkerFailure),
+            "auto_unpark_on_issue_change",
+            fingerprint,
+            now_ms,
+          ),
+          ..build.record_bodies
+        ],
+      )
+    }
   }
 }
 
@@ -3050,6 +3045,7 @@ fn counter_for_runtime(
 
 fn park_reason_from_string(text: String) -> reason.ParkReason {
   case text {
+    "worker_failure" -> reason.ParkWorkerFailure
     "max_retry_attempts" -> reason.ParkMaxRetryAttempts
     "max_sessions_per_issue" -> reason.ParkMaxSessionsPerIssue
     other -> reason.ParkOperator(other)

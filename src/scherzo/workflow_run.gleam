@@ -2348,10 +2348,7 @@ fn agent_step_watchdog_timeout_ms(
     + max_int(0, pi.stall_timeout_ms)
     + max_int(0, pi.ui_request_timeout_ms)
   let turn_budget_ms = max_int(1, agent.max_turns) * per_turn_ms
-  let retry_budget_ms =
-    max_int(0, agent.max_retry_attempts)
-    * max_int(0, agent.max_retry_backoff_ms)
-  turn_budget_ms + retry_budget_ms + agent_step_watchdog_margin_ms
+  turn_budget_ms + agent_step_watchdog_margin_ms
 }
 
 fn max_int(left: Int, right: Int) -> Int {

@@ -1838,9 +1838,6 @@ fn scheduled_worker_down_context(
       Nil
     },
     begin_failure_report_request: begin_scheduled_failure_report_request,
-    apply_scheduled_runtime_actions: fn(state, actions) {
-      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
-    },
     start_pending_scheduled_runs: start_pending_scheduled_runs,
   )
 }
@@ -5424,9 +5421,6 @@ fn scheduled_worker_failure_context(
     worker_failure_follow_up: scheduled_worker_failure_follow_up,
     append_failure_ledger: scheduled_failure_ledger_append,
     begin_failure_report_request: begin_scheduled_failure_report_request,
-    apply_scheduled_runtime_actions: fn(state, actions) {
-      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
-    },
   )
 }
 
@@ -5447,8 +5441,6 @@ fn scheduled_worker_failure_follow_up(
       reason,
       run_root,
       Some(handle.session_id),
-      state.workflow.effective.agent.max_retry_attempts,
-      state.workflow.effective.agent.max_retry_backoff_ms,
     )
   #(State(..state, scheduled_runtime: runtime), follow_up)
 }
@@ -5543,7 +5535,7 @@ fn begin_scheduled_failure_report_for_job(
           due_at_ms: due_at_ms,
           run_id: run_id,
           attempt: attempt,
-          max_attempts: state.workflow.effective.agent.max_retry_attempts,
+          max_attempts: attempt,
           reason: reason,
           run_root: run_root,
           session_id: session_id,
@@ -5715,7 +5707,7 @@ fn handle_scheduled_failure_report_failure(
       publication.job_id,
       publication.run_id,
       generation,
-      state.workflow.effective.agent.max_retry_backoff_ms,
+      scheduled_runtime.default_max_backoff_ms(),
     )
   let next_retry_at_ms = state.dependencies.now_ms() + delay_ms
   let state = State(..state, scheduled_runtime: runtime)

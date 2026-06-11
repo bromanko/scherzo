@@ -419,14 +419,11 @@ pub fn worker_down_uses_task_ref_with_duplicate_remote_ids_test() {
   assert dict.get(next.runtime.running, memory_identity) == Error(Nil)
   assert dict.has_key(next.workers.by_issue, linear_identity)
   assert dict.get(next.workers.by_issue, memory_identity) == Error(Nil)
-  assert dict.get(next.runtime.retry_attempts, memory_identity)
-    == Ok(orchestrator_state.RetryEntry(
-      task_ref: memory_ref,
-      issue_id: memory_issue.id,
-      delay_ms: 10_000,
-      timer_generation: 1,
-    ))
+  assert dict.get(next.runtime.retry_attempts, memory_identity) == Error(Nil)
   assert dict.get(next.runtime.retry_attempts, linear_identity) == Error(Nil)
+  let assert Ok(parked) = dict.get(next.runtime.parked, memory_identity)
+  assert parked.task_ref == memory_ref
+  assert parked.issue_id == memory_issue.id
 }
 
 pub fn worker_down_known_removes_worker_and_reports_failure_test() {
@@ -458,13 +455,10 @@ pub fn worker_down_known_removes_worker_and_reports_failure_test() {
   let identity = orchestrator_state.issue_identity(issue)
   assert dict.get(next.runtime.running, identity) == Error(Nil)
   assert dict.get(next.workers.by_issue, identity) == Error(Nil)
-  assert dict.get(next.runtime.retry_attempts, identity)
-    == Ok(orchestrator_state.RetryEntry(
-      task_ref: task.from_legacy_issue(issue).ref,
-      issue_id: issue.id,
-      delay_ms: 10_000,
-      timer_generation: 1,
-    ))
+  assert dict.get(next.runtime.retry_attempts, identity) == Error(Nil)
+  let assert Ok(parked) = dict.get(next.runtime.parked, identity)
+  assert parked.task_ref == task.from_legacy_issue(issue).ref
+  assert parked.issue_id == issue.id
   assert interpreter.data(shell)
     == [
       "log:worker_down",
@@ -473,8 +467,8 @@ pub fn worker_down_known_removes_worker_and_reports_failure_test() {
       "publish:issue-1",
       "append:worker_failure:issue-1:run-1",
       "failure:issue-1",
-      "append:retry_schedule:issue-1:1",
-      "retry:schedule:issue-1",
+      "park:issue-1",
+      "release:issue-1",
     ]
 }
 

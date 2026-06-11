@@ -80,8 +80,6 @@ pub fn default_agent_config() -> config_types.AgentConfig {
   config_types.AgentConfig(
     max_concurrent_agents: 1,
     max_turns: 20,
-    max_retry_backoff_ms: 300_000,
-    max_retry_attempts: 5,
     max_sessions_per_issue: 3,
     context_recovery_max_attempts: 1,
     context_recovery_prompt_char_limit: 40_000,
@@ -402,11 +400,6 @@ fn resolve_agent(
   root: yay.Node,
 ) -> Result(config_types.AgentConfig, error.ConfigError) {
   use agents <- result.try(get_map_strict_or_empty(root, "agents", "agents"))
-  use retries <- result.try(get_map_strict_or_empty(
-    agents,
-    "retries",
-    "agents.retries",
-  ))
   use recovery <- result.try(get_map_strict_or_empty(
     agents,
     "recovery",
@@ -415,10 +408,6 @@ fn resolve_agent(
   use concurrency <- result.try(resolve_agent_concurrency(agents))
   let AgentConcurrency(default: max_concurrent_agents, by_state:) = concurrency
   let max_turns = get_int(agents, "max_turns") |> int_default(20)
-  use max_retry_backoff_ms <- result.try(
-    duration_config.agent_max_retry_backoff_ms(root),
-  )
-  let max_retry_attempts = get_int(retries, "attempts") |> int_default(5)
   let max_sessions_per_issue =
     get_int(agents, "sessions_per_task") |> int_default(3)
   let context_recovery_max_attempts =
@@ -434,8 +423,6 @@ fn resolve_agent(
     False ->
       case
         max_turns <= 0
-        || max_retry_backoff_ms <= 0
-        || max_retry_attempts <= 0
         || max_sessions_per_issue <= 0
         || context_recovery_prompt_char_limit <= 0
       {
@@ -444,8 +431,6 @@ fn resolve_agent(
           Ok(config_types.AgentConfig(
             max_concurrent_agents: max_concurrent_agents,
             max_turns: max_turns,
-            max_retry_backoff_ms: max_retry_backoff_ms,
-            max_retry_attempts: max_retry_attempts,
             max_sessions_per_issue: max_sessions_per_issue,
             context_recovery_max_attempts: context_recovery_max_attempts,
             context_recovery_prompt_char_limit: context_recovery_prompt_char_limit,
