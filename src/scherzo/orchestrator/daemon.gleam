@@ -101,7 +101,7 @@ pub type Message {
   ScheduledReportRetryTick(String, Int)
   WorkerUpdate(String, agent_types.RunnerUpdate)
   WorkerCommandReady(String, String, process.Subject(worker_command.Command))
-  YamlStepStarted(String, String)
+  YamlStepStarted(String, String, String, String, Int)
   YamlStepUpdate(String, agent_types.RunnerUpdate)
   YamlStepCommandReady(String, process.Subject(worker_command.Command))
   YamlStepFinished(String, session_tokens.TokenTotals)
@@ -207,6 +207,7 @@ type State {
     control_file_path: Option(String),
     query_service: query_service.Handle,
     read_model: read_model.ReadModel,
+    ledger_projection: projection.Projection,
     remote_client: Option(remote_command_runtime.Handle),
     remote_client_monitor: Option(process.Monitor),
     operator_paused: Bool,
@@ -479,50 +480,42 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
 }
 
 fn outbox_counts_for_metrics(state: State) -> #(Int, Int, Int, Int) {
-  case ledger.path_for_workspace_root(state.workflow.effective.workspace.root) {
-    Error(_) -> #(0, 0, 0, 0)
-    Ok(ledger_path) ->
-      case ledger.load_projection(ledger_path) {
-        Error(_) -> #(0, 0, 0, 0)
-        Ok(loaded) ->
-          loaded.outbox
-          |> dict.values
-          |> list.fold(#(0, 0, 0, 0), fn(counts, status) {
-            let #(pending, in_flight, retryable, permanent) = counts
-            case status {
-              projection.OutboxPendingV2(_, _, _, _, _)
-              | projection.OutboxPendingV2WithTask(_, _, _, _, _) -> #(
-                pending + 1,
-                in_flight,
-                retryable,
-                permanent,
-              )
-              projection.OutboxAttempted(_, _, _, _, _, _)
-              | projection.OutboxAttemptedWithTask(_, _, _, _, _, _) -> #(
-                pending,
-                in_flight + 1,
-                retryable,
-                permanent,
-              )
-              projection.OutboxRetryScheduled(_, _, _, _, _, _, _, _)
-              | projection.OutboxRetryScheduledWithTask(_, _, _, _, _, _, _, _) -> #(
-                pending,
-                in_flight,
-                retryable + 1,
-                permanent,
-              )
-              projection.OutboxPermanentlyFailed(_, _, _, _, _)
-              | projection.OutboxPermanentlyFailedWithTask(_, _, _, _, _) -> #(
-                pending,
-                in_flight,
-                retryable,
-                permanent + 1,
-              )
-              _ -> counts
-            }
-          })
-      }
-  }
+  state.ledger_projection.outbox
+  |> dict.values
+  |> list.fold(#(0, 0, 0, 0), fn(counts, status) {
+    let #(pending, in_flight, retryable, permanent) = counts
+    case status {
+      projection.OutboxPendingV2(_, _, _, _, _)
+      | projection.OutboxPendingV2WithTask(_, _, _, _, _) -> #(
+        pending + 1,
+        in_flight,
+        retryable,
+        permanent,
+      )
+      projection.OutboxAttempted(_, _, _, _, _, _)
+      | projection.OutboxAttemptedWithTask(_, _, _, _, _, _) -> #(
+        pending,
+        in_flight + 1,
+        retryable,
+        permanent,
+      )
+      projection.OutboxRetryScheduled(_, _, _, _, _, _, _, _)
+      | projection.OutboxRetryScheduledWithTask(_, _, _, _, _, _, _, _) -> #(
+        pending,
+        in_flight,
+        retryable + 1,
+        permanent,
+      )
+      projection.OutboxPermanentlyFailed(_, _, _, _, _)
+      | projection.OutboxPermanentlyFailedWithTask(_, _, _, _, _) -> #(
+        pending,
+        in_flight,
+        retryable,
+        permanent + 1,
+      )
+      _ -> counts
+    }
+  })
 }
 
 fn metrics_token_totals(state: State) -> session_tokens.TokenTotals {
@@ -886,6 +879,7 @@ pub fn start(
                             boot_id: daemon_identity.boot_id,
                             ui_server_enabled: effective.ui_server.enabled,
                           ),
+                          ledger_projection: startup_recovery.projection,
                           remote_client: None,
                           remote_client_monitor: None,
                           operator_paused: False,
@@ -967,13 +961,6 @@ pub fn get_read_model_snapshot(
   process.receive(reply, within: timeout_ms)
 }
 
-fn scheduled_projection_for_root(
-  workspace_root: String,
-) -> Result(projection.Projection, ledger.LedgerError) {
-  use ledger_path <- result.try(ledger.path_for_workspace_root(workspace_root))
-  ledger.load_projection(ledger_path)
-}
-
 fn apply_scheduled_startup_recovery(
   state: State,
   scheduled: startup_recovery.ScheduledRecovery,
@@ -988,10 +975,8 @@ fn apply_scheduled_startup_effect(
   effect: startup_recovery.ScheduledRecoveryEffect,
 ) -> State {
   case effect {
-    startup_recovery.AppendLedger(record_bodies, failure_event) -> {
+    startup_recovery.AppendLedger(record_bodies, failure_event) ->
       append_ledger_bodies_best_effort(state, record_bodies, failure_event)
-      state
-    }
     startup_recovery.ApplyScheduledRuntimeActions(actions, append_retry_record) ->
       apply_scheduled_runtime_actions(
         state,
@@ -1555,11 +1540,14 @@ fn handle_message(
           command_subject,
         ),
       )
-    YamlStepStarted(session_id, run_id) ->
+    YamlStepStarted(session_id, run_id, workflow_id, step_id, attempt_index) ->
       continue_with_refreshed_state(handle_yaml_step_started(
         state,
         session_id,
         run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
       ))
     YamlStepUpdate(session_id, update) -> {
       event_publisher.worker_update(state.event_hub, session_id, update)
@@ -1686,6 +1674,9 @@ fn handle_yaml_step_started(
   state: State,
   session_id: String,
   run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
 ) -> State {
   let parent_session_id = parent_session_id_for_run(state, run_id)
   let registry =
@@ -1693,6 +1684,9 @@ fn handle_yaml_step_started(
       state.registry,
       session_id,
       run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
     )
   let registered =
     list.contains(
@@ -1845,11 +1839,15 @@ fn handle_known_worker_down(
   handle: worker_registry.WorkerHandle,
 ) -> State {
   let state = State(..state, registry: registry)
-  case worker_lifecycle.worker_down_matches(state.workers, issue_id, handle) {
-    False -> Nil
+  let state = case
+    worker_lifecycle.worker_down_matches(state.workers, issue_id, handle)
+  {
+    False -> state
     True -> {
-      append_workflow_interrupted_terminal(state, handle, "worker_down")
+      let state =
+        append_workflow_interrupted_terminal(state, handle, "worker_down")
       worker_lifecycle.publish_worker_down(state.event_hub, handle.session_id)
+      state
     }
   }
   run_transition_messages(state, [
@@ -1886,25 +1884,23 @@ fn scheduled_worker_down_context(
     },
     worker_failure_follow_up: scheduled_worker_failure_follow_up,
     append_failure_ledger: fn(state, handle, reason, retry_exhausted, run_root) {
-      let _worker_down_failure_appended =
-        append_ledger_bodies(
-          state,
-          [
-            record.ScheduledRunFailed(
-              handle.job_id,
-              handle.workflow_id,
-              handle.due_at_ms,
-              handle.run_id,
-              handle.attempt,
-              state.dependencies.now_ms(),
-              reason,
-              retry_exhausted,
-              run_root,
-            ),
-          ],
-          "scheduled_worker_down_append_failed",
-        )
-      Nil
+      append_ledger_bodies_best_effort(
+        state,
+        [
+          record.ScheduledRunFailed(
+            handle.job_id,
+            handle.workflow_id,
+            handle.due_at_ms,
+            handle.run_id,
+            handle.attempt,
+            state.dependencies.now_ms(),
+            reason,
+            retry_exhausted,
+            run_root,
+          ),
+        ],
+        "scheduled_worker_down_append_failed",
+      )
     },
     begin_failure_report_request: begin_scheduled_failure_report_request,
     start_pending_scheduled_runs: start_pending_scheduled_runs,
@@ -2176,9 +2172,9 @@ fn continue_retry_workflow_step_for_operator(
                   plan.records_to_append,
                   ledger_record_bodies(finalization.records_to_append),
                 )
-              case
+              let #(state, appended) =
                 append_ledger_bodies(state, bodies, "retry_step_append_failed")
-              {
+              case appended {
                 False -> #(
                   state,
                   command.rejected(
@@ -2201,7 +2197,7 @@ fn continue_retry_workflow_step_for_operator(
               }
             }
             _ -> {
-              let _best_effort_retry_step_rejection_diagnostic_appended =
+              let #(state, _diagnostic_appended) =
                 append_ledger_bodies(
                   state,
                   retry_step_rejection_diagnostic_bodies(finalization),
@@ -2324,32 +2320,27 @@ fn orphan_cleanup_plan_for_run(
   run_id: String,
   parent_state: String,
 ) -> Result(yaml_step_orphans.CleanupPlan, Nil) {
-  let active_session_ids =
-    worker_registry.active_yaml_step_sessions_for_run(state.registry, run_id)
-  case active_session_ids {
-    [] ->
-      Ok(
-        yaml_step_orphans.CleanupPlan(
-          run_id: run_id,
-          parent_state: parent_state,
-          candidates: [],
-        ),
-      )
-    _ ->
-      case replay_projection_for_operator(state) {
-        Error(_) -> Error(Nil)
-        Ok(projected) ->
-          Ok(yaml_step_orphans.CleanupPlan(
-            run_id: run_id,
-            parent_state: parent_state,
-            candidates: yaml_step_orphans.unfinished_candidates(
-              projected,
-              run_id,
-              active_session_ids,
-            ),
-          ))
-      }
-  }
+  Ok(yaml_step_orphans.CleanupPlan(
+    run_id: run_id,
+    parent_state: parent_state,
+    candidates: active_yaml_cleanup_candidates_for_run(state.registry, run_id),
+  ))
+}
+
+fn active_yaml_cleanup_candidates_for_run(
+  registry: worker_registry.Registry,
+  run_id: String,
+) -> List(yaml_step_orphans.CleanupCandidate) {
+  registry
+  |> worker_registry.active_yaml_step_handles_for_run(run_id)
+  |> list.map(fn(handle) {
+    yaml_step_orphans.CleanupCandidate(
+      workflow_id: handle.workflow_id,
+      step_id: handle.step_id,
+      attempt_index: handle.attempt_index,
+      session_id: Some(handle.session_id),
+    )
+  })
 }
 
 fn cleanup_orphaned_yaml_children_after_parent_stop(
@@ -2374,15 +2365,15 @@ fn record_orphaned_yaml_children_from_plan(
   state: State,
   plan: yaml_step_orphans.CleanupPlan,
   issue_state_name: Option(String),
-) -> Bool {
+) -> #(State, Bool) {
   let bodies =
     yaml_step_orphans.interruption_records(
       plan.run_id,
       plan.candidates,
       "orphaned_parent_stopped",
     )
-  let appended = case bodies {
-    [] -> True
+  let #(state, appended) = case bodies {
+    [] -> #(state, True)
     _ ->
       append_ledger_bodies(
         state,
@@ -2416,7 +2407,7 @@ fn record_orphaned_yaml_children_from_plan(
       })
     False -> Nil
   }
-  appended
+  #(state, appended)
 }
 
 fn record_orphaned_yaml_children_after_parent_stop(
@@ -2427,7 +2418,8 @@ fn record_orphaned_yaml_children_after_parent_stop(
   case orphan_cleanup_plan_for_run(state, run_id, "stopping") {
     Error(Nil) -> state
     Ok(plan) -> {
-      record_orphaned_yaml_children_from_plan(state, plan, issue_state_name)
+      let #(state, _) =
+        record_orphaned_yaml_children_from_plan(state, plan, issue_state_name)
       state
     }
   }
@@ -2438,7 +2430,9 @@ fn cleanup_orphaned_yaml_children_from_plan(
   plan: yaml_step_orphans.CleanupPlan,
   issue_state_name: Option(String),
 ) -> Result(State, Nil) {
-  case record_orphaned_yaml_children_from_plan(state, plan, issue_state_name) {
+  let #(state, appended) =
+    record_orphaned_yaml_children_from_plan(state, plan, issue_state_name)
+  case appended {
     False -> Error(Nil)
     True -> {
       request_abort_for_orphaned_yaml_children(state, plan.candidates)
@@ -2778,25 +2772,35 @@ fn schedule_run_now_for_enabled_job(
           attempt: 1,
           blocking_reason: "",
         )
-      append_ledger_bodies_best_effort(
-        state,
-        [record.ScheduledJobDue(job.id, job.workflow, now_ms, run_id, "manual")],
-        "scheduled_due_append_failed",
-      )
-      append_ledger_bodies_best_effort(
-        state,
-        [
-          record.ScheduledRunPending(
-            job.id,
-            job.workflow,
-            now_ms,
-            run_id,
-            "manual",
-            now_ms,
-          ),
-        ],
-        "scheduled_pending_append_failed",
-      )
+      let state =
+        append_ledger_bodies_best_effort(
+          state,
+          [
+            record.ScheduledJobDue(
+              job.id,
+              job.workflow,
+              now_ms,
+              run_id,
+              "manual",
+            ),
+          ],
+          "scheduled_due_append_failed",
+        )
+      let state =
+        append_ledger_bodies_best_effort(
+          state,
+          [
+            record.ScheduledRunPending(
+              job.id,
+              job.workflow,
+              now_ms,
+              run_id,
+              "manual",
+              now_ms,
+            ),
+          ],
+          "scheduled_pending_append_failed",
+        )
       let state =
         State(
           ..state,
@@ -3659,7 +3663,8 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
     },
     replay_outbox: fn(state, outbox_replay) {
       let intent = outbox_effects.recovered_intent(outbox_replay)
-      case append_outbox_attempt(state, intent) {
+      let #(state, appended) = append_outbox_attempt(state, intent)
+      case appended {
         True ->
           enqueue_side_effect(
             state,
@@ -3743,36 +3748,11 @@ fn transition_append_ledger(
   request: transition_effects.LedgerAppend,
 ) -> #(State, Result(Nil, ledger.LedgerError)) {
   let bodies = ledger_batch.to_bodies(request.batch)
-  case bodies {
-    [] -> #(state, Ok(Nil))
-    _ ->
-      case
-        ledger.path_for_workspace_root(state.workflow.effective.workspace.root)
-      {
-        Error(err) -> {
-          log_state(state, "error", request.failure_event, [
-            #("error", ledger_error_message(err)),
-          ])
-          #(state, Error(err))
-        }
-        Ok(ledger_path) ->
-          case
-            ledger.append_many(
-              ledger_path,
-              ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
-              True,
-            )
-          {
-            Ok(Nil) -> #(state, Ok(Nil))
-            Error(err) -> {
-              log_state(state, "error", request.failure_event, [
-                #("error", ledger_error_message(err)),
-              ])
-              #(state, Error(err))
-            }
-          }
-      }
-  }
+  append_ledger_records(
+    state,
+    ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
+    request.failure_event,
+  )
 }
 
 fn transition_start_worker(
@@ -3988,7 +3968,8 @@ fn transition_park_issue(
     #("issue_id", parked.issue_id),
     #("reason", reason_text),
   ])
-  case append_parked_record(state, parked, reason_text) {
+  let #(state, appended) = append_parked_record(state, parked, reason_text)
+  case appended {
     False -> state
     True ->
       enqueue_parked_entry_report(state, parked, reason_text, source_run_id)
@@ -3999,7 +3980,7 @@ fn append_parked_record(
   state: State,
   parked: orchestrator_state.ParkedEntry,
   reason_text: String,
-) -> Bool {
+) -> #(State, Bool) {
   let #(release_policy, issue_fingerprint) = case parked.release_policy {
     orchestrator_state.ExplicitUnparkOnly -> #("explicit_unpark_only", "")
     orchestrator_state.AutoUnparkOnIssueChange(fingerprint) -> #(
@@ -4456,7 +4437,7 @@ fn apply_scheduled_runtime_action(
       due_at_ms,
       run_id,
       trigger,
-    ) -> {
+    ) ->
       append_ledger_bodies_best_effort(
         state,
         [
@@ -4470,9 +4451,7 @@ fn apply_scheduled_runtime_action(
         ],
         "scheduled_due_append_failed",
       )
-      state
-    }
-    scheduled_runtime.RecordScheduledPending(pending) -> {
+    scheduled_runtime.RecordScheduledPending(pending) ->
       append_ledger_bodies_best_effort(
         state,
         [
@@ -4487,8 +4466,6 @@ fn apply_scheduled_runtime_action(
         ],
         "scheduled_pending_append_failed",
       )
-      state
-    }
     scheduled_runtime.RecordScheduledSkipped(
       job_id,
       workflow_id,
@@ -4496,7 +4473,7 @@ fn apply_scheduled_runtime_action(
       run_id,
       reason,
       skipped_count,
-    ) -> {
+    ) ->
       append_ledger_bodies_best_effort(
         state,
         [
@@ -4511,9 +4488,7 @@ fn apply_scheduled_runtime_action(
         ],
         "scheduled_skip_append_failed",
       )
-      state
-    }
-    scheduled_runtime.RecordScheduledPendingBlocked(pending, blocked_at_ms) -> {
+    scheduled_runtime.RecordScheduledPendingBlocked(pending, blocked_at_ms) ->
       append_ledger_bodies_best_effort(
         state,
         [
@@ -4528,8 +4503,6 @@ fn apply_scheduled_runtime_action(
         ],
         "scheduled_pending_blocked_append_failed",
       )
-      state
-    }
     scheduled_runtime.UpdateNextDue(_, _) -> state
     scheduled_runtime.ScheduleRetryTimer(run_id, generation, delay_ms) ->
       schedule_scheduled_retry_timer(state, run_id, generation, delay_ms)
@@ -4546,26 +4519,23 @@ fn apply_scheduled_runtime_action(
       reason,
     ) -> {
       case append_retry_record {
-        True -> {
-          let _retry_scheduled_appended =
-            append_ledger_bodies(
-              state,
-              [
-                record.ScheduledRunRetryScheduled(
-                  job_id,
-                  workflow_id,
-                  due_at_ms,
-                  run_id,
-                  next_attempt,
-                  delay_ms,
-                  generation,
-                  reason,
-                ),
-              ],
-              "scheduled_retry_append_failed",
-            )
-          state
-        }
+        True ->
+          append_ledger_bodies_best_effort(
+            state,
+            [
+              record.ScheduledRunRetryScheduled(
+                job_id,
+                workflow_id,
+                due_at_ms,
+                run_id,
+                next_attempt,
+                delay_ms,
+                generation,
+                reason,
+              ),
+            ],
+            "scheduled_retry_append_failed",
+          )
         False -> state
       }
     }
@@ -4645,20 +4615,21 @@ fn start_pending_scheduled_run(
             )
           {
             Error(runtime_bundle.BundleError(_, _)) -> {
-              append_ledger_bodies_best_effort(
-                state,
-                [
-                  record.ScheduledRunPendingCancelled(
-                    pending.job_id,
-                    pending.workflow_id,
-                    pending.due_at_ms,
-                    pending.run_id,
-                    "workflow_missing",
-                    state.dependencies.now_ms(),
-                  ),
-                ],
-                "scheduled_pending_cancel_append_failed",
-              )
+              let state =
+                append_ledger_bodies_best_effort(
+                  state,
+                  [
+                    record.ScheduledRunPendingCancelled(
+                      pending.job_id,
+                      pending.workflow_id,
+                      pending.due_at_ms,
+                      pending.run_id,
+                      "workflow_missing",
+                      state.dependencies.now_ms(),
+                    ),
+                  ],
+                  "scheduled_pending_cancel_append_failed",
+                )
               State(
                 ..state,
                 scheduled_runtime: scheduled_runtime.remove_pending_start(
@@ -4677,23 +4648,24 @@ fn start_pending_scheduled_run(
                 )
               {
                 Error(err) -> {
-                  append_ledger_bodies_best_effort(
-                    state,
-                    [
-                      record.ScheduledRunFailed(
-                        pending.job_id,
-                        pending.workflow_id,
-                        pending.due_at_ms,
-                        pending.run_id,
-                        pending.attempt,
-                        state.dependencies.now_ms(),
-                        "workspace_failed:" <> error.workspace_code(err),
-                        True,
-                        None,
-                      ),
-                    ],
-                    "scheduled_start_failed_append_failed",
-                  )
+                  let state =
+                    append_ledger_bodies_best_effort(
+                      state,
+                      [
+                        record.ScheduledRunFailed(
+                          pending.job_id,
+                          pending.workflow_id,
+                          pending.due_at_ms,
+                          pending.run_id,
+                          pending.attempt,
+                          state.dependencies.now_ms(),
+                          "workspace_failed:" <> error.workspace_code(err),
+                          True,
+                          None,
+                        ),
+                      ],
+                      "scheduled_start_failed_append_failed",
+                    )
                   State(
                     ..state,
                     scheduled_runtime: scheduled_runtime.remove_pending_start(
@@ -5140,7 +5112,7 @@ fn run_scheduled_workflow_worker(
   let workflow_dependencies =
     workflow_run.Dependencies(
       ..workflow_dependencies,
-      checkpoint: checkpoint_writer_with_corrupt_ledger_fallback(
+      checkpoint: workflow_checkpoint.corrupt_tolerant_ledger_writer(
         bundle.effective.workspace.root,
         now_ms,
       ),
@@ -5170,21 +5142,6 @@ fn run_scheduled_workflow_worker(
       Ok(success)
     }
     Error(failure) -> Error(failure)
-  }
-}
-
-fn checkpoint_writer_with_corrupt_ledger_fallback(
-  workspace_root: String,
-  now_ms: fn() -> Int,
-) -> workflow_checkpoint.Writer {
-  case ledger.path_for_workspace_root(workspace_root) {
-    Ok(ledger_path) ->
-      case ledger.load_projection(ledger_path) {
-        Ok(_) -> workflow_checkpoint.ledger_writer(workspace_root, now_ms)
-        Error(ledger.CorruptRecord(..)) -> workflow_checkpoint.noop_writer()
-        Error(_) -> workflow_checkpoint.ledger_writer(workspace_root, now_ms)
-      }
-    Error(_) -> workflow_checkpoint.ledger_writer(workspace_root, now_ms)
   }
 }
 
@@ -5250,8 +5207,11 @@ fn yaml_step_callbacks(
   daemon_subject: process.Subject(Message),
 ) -> yaml_workflow_lifecycle.LifecycleCallbacks {
   yaml_workflow_lifecycle.LifecycleCallbacks(
-    step_started: fn(session_id, run_id) {
-      process.send(daemon_subject, YamlStepStarted(session_id, run_id))
+    step_started: fn(session_id, run_id, workflow_id, step_id, attempt_index) {
+      process.send(
+        daemon_subject,
+        YamlStepStarted(session_id, run_id, workflow_id, step_id, attempt_index),
+      )
     },
     step_update: fn(session_id, update) {
       process.send(daemon_subject, YamlStepUpdate(session_id, update))
@@ -5581,7 +5541,7 @@ fn scheduled_failure_ledger_append(
   reason: String,
   retry_exhausted: Bool,
   run_root: Option(String),
-) -> Nil {
+) -> State {
   append_ledger_bodies_best_effort(
     state,
     [
@@ -5703,24 +5663,9 @@ fn scheduled_failure_issue_id_for_state(
   state: State,
   job_id: String,
 ) -> Option(String) {
-  case scheduled_projection_for_root(state.workflow.effective.workspace.root) {
-    Error(err) -> {
-      log_state(
-        state,
-        "warn",
-        "scheduled_failure_issue_projection_unavailable",
-        [
-          #("job_id", job_id),
-          #("error", ledger_error_message(err)),
-        ],
-      )
-      None
-    }
-    Ok(projected) ->
-      case projection.scheduled_status_for(projected, job_id) {
-        Ok(status) -> status.failure_issue_id
-        Error(Nil) -> None
-      }
+  case projection.scheduled_status_for(state.ledger_projection, job_id) {
+    Ok(status) -> status.failure_issue_id
+    Error(Nil) -> None
   }
 }
 
@@ -5822,7 +5767,6 @@ fn handle_scheduled_failure_report_success(
     ],
     "scheduled_failure_report_append_failed",
   )
-  state
 }
 
 fn handle_scheduled_failure_report_failure(
@@ -5846,24 +5790,25 @@ fn handle_scheduled_failure_report_failure(
     #("run_id", publication.run_id),
     #("error", error.tracker_code(err)),
   ])
-  append_ledger_bodies_best_effort(
-    state,
-    [
-      record.ScheduledFailureReportFailed(
-        publication.job_id,
-        publication.workflow_id,
-        publication.due_at_ms,
-        publication.run_id,
-        publication.attempt,
-        publication.dedupe_key,
-        error.tracker_code(err),
-        tracker_error_message(err),
-        next_retry_at_ms,
-        generation,
-      ),
-    ],
-    "scheduled_failure_report_failed_append_failed",
-  )
+  let state =
+    append_ledger_bodies_best_effort(
+      state,
+      [
+        record.ScheduledFailureReportFailed(
+          publication.job_id,
+          publication.workflow_id,
+          publication.due_at_ms,
+          publication.run_id,
+          publication.attempt,
+          publication.dedupe_key,
+          error.tracker_code(err),
+          tracker_error_message(err),
+          next_retry_at_ms,
+          generation,
+        ),
+      ],
+      "scheduled_failure_report_failed_append_failed",
+    )
   apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
 }
 
@@ -5902,37 +5847,26 @@ fn retry_scheduled_failure_report_by_identity(
   job_id: String,
   run_id: String,
 ) -> State {
-  case scheduled_projection_for_root(state.workflow.effective.workspace.root) {
-    Error(err) -> {
-      log_state(state, "warn", "scheduled_report_retry_projection_unavailable", [
-        #("job_id", job_id),
-        #("run_id", run_id),
-        #("error", ledger_error_message(err)),
-      ])
-      state
-    }
-    Ok(projected) ->
-      case projection.scheduled_status_for(projected, job_id) {
-        Error(Nil) -> state
-        Ok(status) ->
-          case scheduled_job_by_id(state, job_id), status.current_run {
-            Ok(job), Some(run) ->
-              begin_scheduled_failure_report_for_job(
-                state,
-                job,
-                status.workflow_id,
-                run.due_at_ms,
-                run_id,
-                normalized_scheduled_attempt(run.attempt),
-                optional_string_or_default(
-                  status.last_failure_reason,
-                  "scheduled failure",
-                ),
-                run.run_root,
-                run.session_id,
-              )
-            _, _ -> state
-          }
+  case projection.scheduled_status_for(state.ledger_projection, job_id) {
+    Error(Nil) -> state
+    Ok(status) ->
+      case scheduled_job_by_id(state, job_id), status.current_run {
+        Ok(job), Some(run) ->
+          begin_scheduled_failure_report_for_job(
+            state,
+            job,
+            status.workflow_id,
+            run.due_at_ms,
+            run_id,
+            normalized_scheduled_attempt(run.attempt),
+            optional_string_or_default(
+              status.last_failure_reason,
+              "scheduled failure",
+            ),
+            run.run_root,
+            run.session_id,
+          )
+        _, _ -> state
       }
   }
 }
@@ -5996,7 +5930,7 @@ fn append_workflow_interrupted_terminal(
   state: State,
   handle: worker_registry.WorkerHandle,
   reason: String,
-) -> Nil {
+) -> State {
   case workflow_id_for_handle(state, handle) {
     Error(Nil) -> {
       log_state(state, "warn", "workflow_terminal_append_skipped", [
@@ -6004,9 +5938,9 @@ fn append_workflow_interrupted_terminal(
         #("run_id", handle.run_id),
         #("reason", "workflow_id_unavailable"),
       ])
-      Nil
+      state
     }
-    Ok(workflow_id) -> {
+    Ok(workflow_id) ->
       append_ledger_bodies_best_effort(
         state,
         [
@@ -6019,7 +5953,6 @@ fn append_workflow_interrupted_terminal(
         ],
         "workflow_terminal_append_failed",
       )
-    }
   }
 }
 
@@ -6027,41 +5960,23 @@ fn workflow_id_for_handle(
   state: State,
   handle: worker_registry.WorkerHandle,
 ) -> Result(String, Nil) {
-  case workflow_id_from_projection(state, handle.run_id) {
-    Ok(workflow_id) -> Ok(workflow_id)
-    Error(Nil) ->
-      case runtime_bundle.select_workflow(state.workflow.bundle, handle.issue) {
-        Ok(#(_, dag)) -> Ok(dag.id)
-        Error(runtime_bundle.BundleError(_, _)) -> Error(Nil)
+  case dict.get(state.workers.by_session, handle.session_id) {
+    Ok(worker_identity) ->
+      case dict.get(state.workers.by_issue, worker_identity) {
+        Ok(entry) -> Ok(entry.workflow_id)
+        Error(Nil) -> workflow_id_for_issue_from_bundle(state, handle.issue)
       }
+    Error(Nil) -> workflow_id_for_issue_from_bundle(state, handle.issue)
   }
 }
 
-fn workflow_id_from_projection(
+fn workflow_id_for_issue_from_bundle(
   state: State,
-  run_id: String,
+  issue: tracker_issue.Issue,
 ) -> Result(String, Nil) {
-  case ledger.path_for_workspace_root(state.workflow.effective.workspace.root) {
-    Error(_) -> Error(Nil)
-    Ok(ledger_path) ->
-      case ledger.load_projection(ledger_path) {
-        Error(_) -> Error(Nil)
-        Ok(projection) ->
-          case dict.get(projection.workflow_runs, run_id) {
-            Ok(status) -> Ok(workflow_id_from_status(status))
-            Error(Nil) -> Error(Nil)
-          }
-      }
-  }
-}
-
-fn workflow_id_from_status(status: projection.WorkflowRunStatus) -> String {
-  case status {
-    projection.WorkflowRunActive(workflow_id: workflow_id, ..)
-    | projection.WorkflowRunFinished(workflow_id: workflow_id, ..)
-    | projection.WorkflowRunInterrupted(workflow_id: workflow_id, ..)
-    | projection.WorkflowRunSuperseded(workflow_id: workflow_id, ..) ->
-      workflow_id
+  case runtime_bundle.select_workflow(state.workflow.bundle, issue) {
+    Ok(#(_, dag)) -> Ok(dag.id)
+    Error(runtime_bundle.BundleError(_, _)) -> Error(Nil)
   }
 }
 
@@ -6485,11 +6400,12 @@ fn handle_outbox_replay_finished(
   let intent = outbox_effects.recovered_intent(outbox_replay)
   case result {
     Ok(Nil) -> {
-      append_ledger_bodies_best_effort(
-        state,
-        [outbox_effects.completed_body(intent)],
-        "outbox_replay_completion_append_failed",
-      )
+      let state =
+        append_ledger_bodies_best_effort(
+          state,
+          [outbox_effects.completed_body(intent)],
+          "outbox_replay_completion_append_failed",
+        )
       log_state(state, "info", "outbox_replay_completed", [
         #("outbox_id", outbox_id),
         #("outbox_kind", outbox_kind),
@@ -6558,13 +6474,17 @@ fn enqueue_outbox_side_effect(
   intent: outbox_effects.Intent,
   make_effect: fn(outbox_effects.Intent) -> effect_runner.Effect,
 ) -> State {
-  case append_outbox_attempt(state, intent) {
+  let #(state, appended) = append_outbox_attempt(state, intent)
+  case appended {
     True -> enqueue_side_effect(state, make_effect(intent))
     False -> state
   }
 }
 
-fn append_outbox_attempt(state: State, intent: outbox_effects.Intent) -> Bool {
+fn append_outbox_attempt(
+  state: State,
+  intent: outbox_effects.Intent,
+) -> #(State, Bool) {
   append_ledger_bodies(
     state,
     [
@@ -6581,14 +6501,12 @@ fn append_outbox_result(
   result: Result(a, error.TrackerError),
 ) -> State {
   case result {
-    Ok(_) -> {
+    Ok(_) ->
       append_ledger_bodies_best_effort(
         state,
         [outbox_effects.completed_body(intent)],
         "outbox_ledger_append_failed",
       )
-      state
-    }
     Error(err) -> append_outbox_failure(state, intent, err)
   }
 }
@@ -6623,7 +6541,6 @@ fn append_outbox_failure(
     }
   }
   append_ledger_bodies_best_effort(state, [body], "outbox_ledger_append_failed")
-  state
 }
 
 fn tracker_error_retryable(err: error.TrackerError) -> Bool {
@@ -6649,20 +6566,48 @@ fn append_ledger_bodies_best_effort(
   state: State,
   bodies: List(record.RecordBody),
   event: String,
-) -> Nil {
-  case append_ledger_bodies(state, bodies, event) {
-    True -> Nil
-    False -> Nil
-  }
+) -> State {
+  let #(state, _) = append_ledger_bodies(state, bodies, event)
+  state
 }
 
 fn append_ledger_bodies(
   state: State,
   bodies: List(record.RecordBody),
   event: String,
-) -> Bool {
+) -> #(State, Bool) {
   case bodies {
-    [] -> True
+    [] -> #(state, True)
+    _ ->
+      append_ledger_records(
+        state,
+        ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
+        event,
+      )
+      |> bool_result_from_append
+  }
+}
+
+fn bool_result_from_append(
+  result: #(State, Result(Nil, ledger.LedgerError)),
+) -> #(State, Bool) {
+  let #(state, append_result) = result
+  case append_result {
+    Ok(Nil) -> #(state, True)
+    Error(err) -> {
+      let _message = ledger_error_message(err)
+      #(state, False)
+    }
+  }
+}
+
+fn append_ledger_records(
+  state: State,
+  records: List(record.LedgerRecord),
+  event: String,
+) -> #(State, Result(Nil, ledger.LedgerError)) {
+  case records {
+    [] -> #(state, Ok(Nil))
     _ ->
       case
         ledger.path_for_workspace_root(state.workflow.effective.workspace.root)
@@ -6671,22 +6616,25 @@ fn append_ledger_bodies(
           log_state(state, "error", event, [
             #("error", ledger_error_message(err)),
           ])
-          False
+          #(state, Error(err))
         }
         Ok(ledger_path) ->
-          case
-            ledger.append_many(
-              ledger_path,
-              ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
-              True,
+          case ledger.append_many(ledger_path, records, True) {
+            Ok(Nil) -> #(
+              State(
+                ..state,
+                ledger_projection: projection.fold_from(
+                  state.ledger_projection,
+                  records,
+                ),
+              ),
+              Ok(Nil),
             )
-          {
-            Ok(Nil) -> True
             Error(err) -> {
               log_state(state, "error", event, [
                 #("error", ledger_error_message(err)),
               ])
-              False
+              #(state, Error(err))
             }
           }
       }
@@ -6781,93 +6729,41 @@ fn kill_scheduled_worker(handle: worker_registry.ScheduledWorkerHandle) -> Nil {
 }
 
 fn append_shutdown_step_attempt_interruptions(state: State) -> Nil {
-  case ledger.path_for_workspace_root(state.workflow.effective.workspace.root) {
-    Error(err) ->
-      log_state(state, "warn", "workflow_shutdown_projection_unavailable", [
-        #("error", ledger_error_message(err)),
-      ])
-    Ok(ledger_path) ->
-      case ledger.load_projection(ledger_path) {
-        Error(err) ->
-          log_state(state, "warn", "workflow_shutdown_projection_unavailable", [
-            #("error", ledger_error_message(err)),
-          ])
-        Ok(projection) -> {
-          let bodies =
-            worker_registry.worker_handles(state.registry)
-            |> list.fold([], fn(bodies, handle) {
-              list.append(
-                shutdown_step_attempt_interruption_bodies(
-                  projection,
-                  handle.run_id,
-                ),
-                bodies,
-              )
-            })
-          case bodies {
-            [] -> Nil
-            _ ->
-              append_ledger_bodies_best_effort(
-                state,
-                bodies,
-                "workflow_shutdown_interrupt_append_failed",
-              )
-          }
-        }
-      }
+  let bodies =
+    worker_registry.worker_handles(state.registry)
+    |> list.fold([], fn(bodies, handle) {
+      list.append(
+        shutdown_step_attempt_interruption_bodies(state.registry, handle.run_id),
+        bodies,
+      )
+    })
+  case bodies {
+    [] -> Nil
+    _ -> {
+      let _state =
+        append_ledger_bodies_best_effort(
+          state,
+          bodies,
+          "workflow_shutdown_interrupt_append_failed",
+        )
+      Nil
+    }
   }
 }
 
 fn shutdown_step_attempt_interruption_bodies(
-  projection: projection.Projection,
+  registry: worker_registry.Registry,
   run_id: String,
 ) -> List(record.RecordBody) {
-  projection.step_attempts
-  |> dict.values
-  |> list.fold([], fn(bodies, status) {
-    case status {
-      projection.StepAttemptPending(
-        run_id: status_run_id,
-        workflow_id: workflow_id,
-        step_id: step_id,
-        attempt_index: attempt_index,
-        ..,
-      ) ->
-        case status_run_id == run_id {
-          True -> [
-            record.StepAttemptInterrupted(
-              run_id,
-              workflow_id,
-              step_id,
-              attempt_index,
-              "daemon_shutdown",
-            ),
-            ..bodies
-          ]
-          False -> bodies
-        }
-      projection.StepAttemptRunning(
-        run_id: status_run_id,
-        workflow_id: workflow_id,
-        step_id: step_id,
-        attempt_index: attempt_index,
-        ..,
-      ) ->
-        case status_run_id == run_id {
-          True -> [
-            record.StepAttemptInterrupted(
-              run_id,
-              workflow_id,
-              step_id,
-              attempt_index,
-              "daemon_shutdown",
-            ),
-            ..bodies
-          ]
-          False -> bodies
-        }
-      _ -> bodies
-    }
+  active_yaml_cleanup_candidates_for_run(registry, run_id)
+  |> list.map(fn(candidate) {
+    record.StepAttemptInterrupted(
+      run_id,
+      candidate.workflow_id,
+      candidate.step_id,
+      candidate.attempt_index,
+      "daemon_shutdown",
+    )
   })
 }
 

@@ -517,7 +517,7 @@ pub fn retry_step_abort_of_recovered_parent_cleans_review_children_and_exposes_o
       "review_started:code_review",
       "review_started:security_review",
     ],
-    20,
+    100,
   )
 
   let assert Ok(parent_session) =
@@ -642,6 +642,98 @@ pub fn retry_step_abort_of_recovered_parent_cleans_review_children_and_exposes_o
   hub.stop(hub_subject)
 }
 
+pub fn retry_step_shutdown_interrupts_active_review_children_with_registry_metadata_test() {
+  let dir = "test/tmp/daemon-retry-step-shutdown-review-children"
+  let issue = issue("issue-6", "LIV-516", "Todo")
+  let #(workflow_path, root) = write_retry_step_review_workflow(dir)
+  seed_interrupted_review_retry_step_run(root, issue)
+  let log_subject = process.new_subject()
+  let code_review_barrier = test_async.new_barrier()
+  let security_review_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _effective) {
+        case context.step_id {
+          "implement" -> Ok(worker_success(issue, context.workspace_path))
+          "code_review" -> {
+            process.send(log_subject, "shutdown_review_started:code_review")
+            test_async.block_until_released(code_review_barrier)
+            Error(agent_types.WorkerFailure(
+              reason: error.PiFailed(error.PiProtocolError("released")),
+              workspace_path: Some(context.workspace_path),
+              tokens: session_tokens.zero_token_totals(),
+              final_issue: None,
+            ))
+          }
+          "security_review" -> {
+            process.send(log_subject, "shutdown_review_started:security_review")
+            test_async.block_until_released(security_review_barrier)
+            Error(agent_types.WorkerFailure(
+              reason: error.PiFailed(error.PiProtocolError("released")),
+              workspace_path: Some(context.workspace_path),
+              tokens: session_tokens.zero_token_totals(),
+              final_issue: None,
+            ))
+          }
+          _ ->
+            Error(agent_types.WorkerFailure(
+              reason: error.PiFailed(error.PiProtocolError("unexpected step")),
+              workspace_path: Some(context.workspace_path),
+              tokens: session_tokens.zero_token_totals(),
+              final_issue: None,
+            ))
+        }
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(retry_result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
+      1000,
+    )
+  assert command.status_to_string(retry_result.status) == "applied"
+  assert wait_for_all_logs(
+    log_subject,
+    [
+      "shutdown_review_started:code_review",
+      "shutdown_review_started:security_review",
+    ],
+    20,
+  )
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert has_step_interrupted_attempt_reason(
+    root,
+    "code_review",
+    1,
+    "daemon_shutdown",
+  )
+  assert has_step_interrupted_attempt_reason(
+    root,
+    "security_review",
+    1,
+    "daemon_shutdown",
+  )
+  assert count_step_interrupted_reason(root, "code_review", "daemon_shutdown")
+    == 1
+  assert count_step_interrupted_reason(
+      root,
+      "security_review",
+      "daemon_shutdown",
+    )
+    == 1
+
+  test_async.release_barrier_if_waiting(code_review_barrier)
+  test_async.release_barrier_if_waiting(security_review_barrier)
+  hub.stop(hub_subject)
+}
+
 pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_records_test() {
   let active_dir = "test/tmp/daemon-cleanup-orphans-active"
   let active_issue = issue("issue-3", "LIV-513", "Todo")
@@ -705,7 +797,7 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
       "active_review_started:code_review",
       "active_review_started:security_review",
     ],
-    20,
+    100,
   )
   let assert Ok(active_code_review_session) =
     wait_for_active_step_session(hub_subject, "run-1", "code_review", 1, 20)

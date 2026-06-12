@@ -24,7 +24,7 @@ import scherzo/workflow_run
 
 pub type LifecycleCallbacks {
   LifecycleCallbacks(
-    step_started: fn(String, String) -> Nil,
+    step_started: fn(String, String, String, String, Int) -> Nil,
     step_update: fn(String, agent_types.RunnerUpdate) -> Nil,
     step_command_ready: fn(String, process.Subject(worker_command.Command)) ->
       Nil,
@@ -258,7 +258,13 @@ pub fn run_command_step(
     context.attempt_index,
     now_ms,
   )
-  callbacks.step_started(session_id, run_id)
+  callbacks.step_started(
+    session_id,
+    run_id,
+    context.workflow_id,
+    context.step_id,
+    context.attempt_index,
+  )
   let artifact =
     base.command_step(context, command, timeout_ms, secrets, limits)
   case step_artifact.succeeded(artifact.status) {
@@ -334,7 +340,13 @@ pub fn run_agent_step(
     context.attempt_index,
     now_ms,
   )
-  callbacks.step_started(session_id, run_id)
+  callbacks.step_started(
+    session_id,
+    run_id,
+    context.workflow_id,
+    context.step_id,
+    context.attempt_index,
+  )
   let result =
     base.agent_step(
       issue,

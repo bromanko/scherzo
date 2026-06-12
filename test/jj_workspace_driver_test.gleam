@@ -1,4 +1,5 @@
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -9,12 +10,15 @@ import scherzo/step_artifact
 import simplifile
 import support/test_helpers
 
+@external(erlang, "erlang", "unique_integer")
+fn unique_integer() -> Int
+
 fn tmp_fixture_dir(name: String) -> String {
   let base = case path.env("TMPDIR") {
     Some(value) -> value
     None -> "/tmp"
   }
-  base <> "/scherzo-" <> name
+  base <> "/scherzo-" <> name <> "-" <> int.to_string(unique_integer())
 }
 
 fn absolute(value: String) -> String {
@@ -77,9 +81,11 @@ fn write_fake_jj(path: String) -> Nil {
         <> "fi\n"
         <> "if [ \"$1\" = log ]; then\n"
         <> "  revision=\n"
+        <> "  template=\n"
         <> "  while [ $# -gt 0 ]; do\n"
         <> "    case \"$1\" in\n"
         <> "      -r) revision=$2; shift 2 ;;\n"
+        <> "      -T) template=$2; shift 2 ;;\n"
         <> "      *) shift ;;\n"
         <> "    esac\n"
         <> "  done\n"
@@ -87,6 +93,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  for missing in ${SCHERZO_FAKE_JJ_MISSING_REVISIONS:-}; do\n"
         <> "    if [ \"$revision\" = \"$missing\" ]; then exit 1; fi\n"
         <> "  done\n"
+        <> "  if [ \"$template\" = description ] && [ -n \"${SCHERZO_FAKE_JJ_DESCRIPTION_OUTPUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_JJ_DESCRIPTION_OUTPUT\"; exit 0; fi\n"
         <> "  printf '%s\\n' \"${SCHERZO_FAKE_JJ_LOG_OUTPUT:-commit}\"\n"
         <> "  exit 0\n"
         <> "fi\n"
@@ -155,8 +162,24 @@ fn write_fake_gh(path: String, log: String) -> Nil {
         <> "printf 'gh: %s\\n' \"$*\" >> "
         <> test_helpers.shell_quote(log)
         <> "\n"
-        <> "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then if [ -n \"${SCHERZO_FAKE_GH_VIEW_URL:-}\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_URL\"; exit 0; fi; exit 1; fi\n"
-        <> "if [ \"$1\" = pr ] && [ \"$2\" = create ]; then echo https://github.com/example/repo/pull/1; exit 0; fi\n"
+        <> "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then\n"
+        <> "  view_count=$(grep -c '^gh: pr view' "
+        <> test_helpers.shell_quote(log)
+        <> " 2>/dev/null || printf '%s' 0)\n"
+        <> "  view_after=${SCHERZO_FAKE_GH_VIEW_URL_AFTER:-1}\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_SLEEP_SECONDS:-}\" ]; then sleep \"$SCHERZO_FAKE_GH_VIEW_SLEEP_SECONDS\"; fi\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_URL:-}\" ] && [ \"$view_count\" -ge \"$view_after\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_URL\"; exit 0; fi\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_STDOUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_GH_VIEW_STDOUT\"; exit \"${SCHERZO_FAKE_GH_VIEW_EXIT_CODE:-0}\"; fi\n"
+        <> "  if [ \"${SCHERZO_FAKE_GH_VIEW_EMPTY_SUCCESS:-}\" = 1 ]; then exit 0; fi\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_STDERR:-}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_GH_VIEW_STDERR\" >&2; fi\n"
+        <> "  exit \"${SCHERZO_FAKE_GH_VIEW_EXIT_CODE:-1}\"\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = pr ] && [ \"$2\" = create ]; then\n"
+        <> "  create_exit=${SCHERZO_FAKE_GH_CREATE_EXIT_CODE:-0}\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_GH_CREATE_STDOUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_GH_CREATE_STDOUT\"; elif [ \"$create_exit\" = 0 ]; then echo https://github.com/example/repo/pull/1; fi\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_GH_CREATE_STDERR:-}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_GH_CREATE_STDERR\" >&2; fi\n"
+        <> "  exit \"$create_exit\"\n"
+        <> "fi\n"
         <> "if [ \"$1\" = pr ] && [ \"$2\" = edit ]; then exit 0; fi\n"
         <> "exit 1\n",
     )
@@ -1172,6 +1195,238 @@ pub fn jj_driver_publish_commit_stack_pr_create_preserves_head_test() {
   assert string.contains(logged, "gh: pr create")
 }
 
+pub fn jj_driver_publish_commit_stack_create_failure_reports_gh_diagnostics_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-create-fail"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-1035/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_create_failure",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_CREATE_EXIT_CODE", "1"),
+        #("SCHERZO_FAKE_GH_CREATE_STDERR", "GraphQL: Head sha can't be blank"),
+        #("SCHERZO_FAKE_GH_VIEW_STDERR", "HTTP 404: no pull requests found"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_create_failed\"",
+  )
+  assert string.contains(artifact.stdout, "GraphQL: Head sha can't be blank")
+  assert string.contains(artifact.stdout, "HTTP 404: no pull requests found")
+  assert !string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_url_missing\"",
+  )
+
+  let logged = log_text(log)
+  assert string.contains(
+    logged,
+    "git push --remote origin --bookmark " <> branch <> " --allow-new",
+  )
+  assert string.contains(logged, "gh: pr create --repo example/repo")
+  assert count_log_lines_containing(log, "gh: pr view") > 1
+}
+
+pub fn jj_driver_publish_commit_stack_create_empty_url_reports_specific_failure_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-create-empty"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-1035/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_create_empty",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_CREATE_STDOUT", "   "),
+        #("SCHERZO_FAKE_GH_VIEW_EMPTY_SUCCESS", "1"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_create_url_missing\"",
+  )
+  assert string.contains(artifact.stdout, "gh pr create succeeded")
+  assert string.contains(artifact.stdout, "returned no URL")
+  assert !string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_url_missing\"",
+  )
+  assert count_log_lines_containing(log, "gh: pr view") > 1
+}
+
+pub fn jj_driver_publish_commit_stack_lookup_failure_after_empty_create_reports_lookup_failure_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-lookup-fail"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-1035/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_lookup_failure",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_CREATE_STDOUT", "   "),
+        #("SCHERZO_FAKE_GH_VIEW_STDERR", "gh api timed out"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_lookup_failed\"",
+  )
+  assert string.contains(artifact.stdout, "gh pr create succeeded")
+  assert string.contains(artifact.stdout, "gh api timed out")
+  assert !string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_url_missing\"",
+  )
+  assert count_log_lines_containing(log, "gh: pr view") > 1
+}
+
+pub fn jj_driver_publish_commit_stack_create_failure_adopts_existing_pr_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-create-adopt"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-1035/implementation_commit_stack"
+  let url = "https://github.com/example/repo/pull/1035"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_create_adopt",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_CREATE_EXIT_CODE", "1"),
+        #(
+          "SCHERZO_FAKE_GH_CREATE_STDERR",
+          "GraphQL: pull request already exists",
+        ),
+        #("SCHERZO_FAKE_GH_VIEW_URL", url),
+        #("SCHERZO_FAKE_GH_VIEW_URL_AFTER", "2"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stdout, "\"status\":\"updated\"")
+  assert string.contains(artifact.stdout, "\"url\":\"" <> url <> "\"")
+  assert string.contains(artifact.stdout, "\"created\":false")
+  assert string.contains(artifact.stdout, "\"updated\":true")
+  assert count_log_lines_containing(log, "gh: pr view") > 1
+  assert count_log_lines_containing(log, "gh: pr create") == 1
+}
+
+pub fn jj_driver_publish_commit_stack_create_empty_url_adopts_created_pr_test() {
+  let dir =
+    "test/tmp/jj-workspace-driver-publish-commit-stack-create-empty-adopt"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-1035/implementation_commit_stack"
+  let url = "https://github.com/example/repo/pull/1035"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_create_empty_adopt",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_CREATE_STDOUT", "   "),
+        #("SCHERZO_FAKE_GH_VIEW_URL", url),
+        #("SCHERZO_FAKE_GH_VIEW_URL_AFTER", "2"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stdout, "\"status\":\"published\"")
+  assert string.contains(artifact.stdout, "\"url\":\"" <> url <> "\"")
+  assert string.contains(artifact.stdout, "\"created\":true")
+  assert string.contains(artifact.stdout, "\"updated\":false")
+  let logged = log_text(log)
+  assert string.contains(logged, "gh: pr create --repo example/repo")
+  assert count_log_lines_containing(log, "gh: pr view") > 1
+}
+
+pub fn jj_driver_publish_commit_stack_pr_view_timeout_reports_lookup_failure_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-view-timeout"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-1035/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_view_timeout",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_CREATE_STDOUT", "   "),
+        #("SCHERZO_FAKE_GH_VIEW_SLEEP_SECONDS", "1"),
+        #("SCHERZO_PR_LOOKUP_TIMEOUT_SECONDS", "0.1"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_lookup_failed\"",
+  )
+  assert string.contains(artifact.stdout, "timed out after 0.1 seconds")
+  assert count_log_lines_containing(log, "gh: pr view") > 1
+}
+
 pub fn jj_driver_publish_commit_stack_retry_reuses_stable_branch_pr_test() {
   let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-idempotent"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
@@ -1373,6 +1628,43 @@ pub fn jj_driver_publish_commit_stack_push_auth_failure_with_existing_pr_reports
     logged,
     "git push --remote origin --bookmark " <> branch <> " --allow-new",
   )
+  assert !string.contains(logged, "gh: pr create")
+}
+
+pub fn jj_driver_publish_commit_stack_empty_head_description_fails_before_push_test() {
+  let dir =
+    "test/tmp/jj-workspace-driver-publish-commit-stack-empty-description"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "scherzo/implementation/LIV-936/implementation_commit_stack"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_empty_description",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix "
+        <> branch
+        <> " --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_JJ_DESCRIPTION_OUTPUT", " "),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stdout, "\"status\":\"invalid_commit_stack\"")
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"commit_stack_head_description_empty\"",
+  )
+  assert string.contains(artifact.stdout, "empty jj description")
+  let logged = log_text(log)
+  assert string.contains(logged, "log -r @ --no-graph -T description")
+  assert !string.contains(logged, "git push")
   assert !string.contains(logged, "gh: pr create")
 }
 
