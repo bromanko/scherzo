@@ -4,6 +4,7 @@ import gleam/option.{None, Some}
 import orchestrator_transition_invariant_helpers as invariant_helpers
 import orchestrator_transition_test
 import scherzo/agent/types as agent_types
+import scherzo/control/command
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
@@ -14,10 +15,161 @@ import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+
+pub fn operator_pause_command_appends_durable_pause_record_test() {
+  let request =
+    effects_types.OperatorCommandRequest(
+      source: effects_types.LocalOperatorCommand,
+      operator_command: command.PauseDispatch,
+      timeout_ms: 1000,
+    )
+
+  let transition_types.Outcome(effects: effects, ..) =
+    transition.handle(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: orchestrator_transition_test.fixture_context(),
+        issue_resolution: transition_types.OperatorIssueNotResolved,
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  let assert [
+    effects_types.SetOperatorPaused(True),
+    effects_types.AppendLedger(append),
+  ] = effects
+  assert append.correlation_id == "operator_dispatch_pause:paused"
+  assert append.failure_event == "operator_dispatch_pause_ledger_append_failed"
+  assert ledger_batch.to_bodies(append.batch)
+    == [record.DispatchPauseChanged(paused: True)]
+  let assert effects_types.SetOperatorPausedAfterAppend(
+    True,
+    policy_request,
+    success_result,
+    failure_result,
+  ) = append.policy
+  assert policy_request == request
+  assert command.status_to_string(success_result.status) == "applied"
+  assert command.status_to_string(failure_result.status) == "rejected"
+}
+
+pub fn operator_pause_append_success_sets_paused_and_finishes_test() {
+  let request =
+    effects_types.OperatorCommandRequest(
+      source: effects_types.LocalOperatorCommand,
+      operator_command: command.PauseDispatch,
+      timeout_ms: 1000,
+    )
+  let success_result = command.applied(command.PauseDispatch, Some("paused"))
+  let failure_result =
+    command.rejected(command.PauseDispatch, "ledger_append_failed", None)
+
+  let transition_types.Outcome(effects: effects, ..) =
+    transition.handle(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "operator_dispatch_pause:paused",
+        continuation: effects_types.SetOperatorPausedAfterAppend(
+          True,
+          request,
+          success_result,
+          failure_result,
+        ),
+        result: Ok(Nil),
+        now_ms: 123,
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  assert effects
+    == [
+      effects_types.SetOperatorPaused(True),
+      effects_types.FinishOperatorCommand(request, success_result),
+    ]
+}
+
+pub fn operator_pause_append_failure_keeps_runtime_paused_and_rejects_test() {
+  let request =
+    effects_types.OperatorCommandRequest(
+      source: effects_types.LocalOperatorCommand,
+      operator_command: command.PauseDispatch,
+      timeout_ms: 1000,
+    )
+  let success_result = command.applied(command.PauseDispatch, Some("paused"))
+  let failure_result =
+    command.rejected(command.PauseDispatch, "ledger_append_failed", None)
+
+  let transition_types.Outcome(effects: effects, ..) =
+    transition.handle(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "operator_dispatch_pause:paused",
+        continuation: effects_types.SetOperatorPausedAfterAppend(
+          True,
+          request,
+          success_result,
+          failure_result,
+        ),
+        result: Error(ledger.Io("disk full")),
+        now_ms: 123,
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.SetOperatorPaused(True)
+  })
+  assert has_finished_operator_command(effects, request, failure_result)
+  assert has_dispatch_pause_append_failed_log(effects, "paused")
+}
+
+pub fn operator_resume_append_failure_does_not_resume_and_rejects_test() {
+  let request =
+    effects_types.OperatorCommandRequest(
+      source: effects_types.LocalOperatorCommand,
+      operator_command: command.ResumeDispatch,
+      timeout_ms: 1000,
+    )
+  let success_result = command.applied(command.ResumeDispatch, Some("resumed"))
+  let failure_result =
+    command.rejected(command.ResumeDispatch, "ledger_append_failed", None)
+
+  let transition_types.Outcome(effects: effects, ..) =
+    transition.handle(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "operator_dispatch_pause:resumed",
+        continuation: effects_types.SetOperatorPausedAfterAppend(
+          False,
+          request,
+          success_result,
+          failure_result,
+        ),
+        result: Error(ledger.Io("disk full")),
+        now_ms: 123,
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  assert !list.any(effects, fn(effect) {
+    effect == effects_types.SetOperatorPaused(False)
+  })
+  assert has_finished_operator_command(effects, request, failure_result)
+  assert has_dispatch_pause_append_failed_log(effects, "resumed")
+}
+
+pub fn projection_dispatch_pause_recovers_latest_status_test() {
+  let projected =
+    projection.fold([
+      record.with_id("pause", 1, record.DispatchPauseChanged(True)),
+      record.with_id("resume", 2, record.DispatchPauseChanged(False)),
+    ])
+
+  assert !projection.dispatch_paused(projected)
+}
 
 pub fn ledger_spawn_continuation_success_emits_start_worker_test() {
   let issue = orchestrator_transition_test.fixture_issue()
@@ -400,6 +552,49 @@ pub fn claim_requested_missing_workflow_start_does_not_emit_append_or_start_work
         #("correlation_id", "claim:issue-1:run-1"),
       ]),
     ]
+}
+
+fn has_finished_operator_command(
+  effects: List(effects_types.Effect),
+  expected_request: effects_types.OperatorCommandRequest,
+  expected_result: command.CommandResult,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.FinishOperatorCommand(request, result) ->
+        request == expected_request && result == expected_result
+      _ -> False
+    }
+  })
+}
+
+fn has_dispatch_pause_append_failed_log(
+  effects: List(effects_types.Effect),
+  expected_status: String,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.Log(
+        "warn",
+        "operator_dispatch_pause_ledger_append_failed",
+        fields,
+      ) ->
+        field_equals(fields, "status", expected_status)
+        && field_equals(fields, "error", "io")
+      _ -> False
+    }
+  })
+}
+
+fn field_equals(
+  fields: List(#(String, String)),
+  expected_key: String,
+  expected_value: String,
+) -> Bool {
+  list.any(fields, fn(field) {
+    let #(key, value) = field
+    key == expected_key && value == expected_value
+  })
 }
 
 fn running_worker_state_with_counter(

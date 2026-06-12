@@ -756,7 +756,8 @@ fn append_follow_up(
     effects_types.ScheduleRetryTimerAfterAppend(..)
     | effects_types.CancelRetryTimerAfterAppend(..)
     | effects_types.SpawnClaimedWorkerAfterAppend(..)
-    | effects_types.ReportParkAfterAppend(..) -> [
+    | effects_types.ReportParkAfterAppend(..)
+    | effects_types.SetOperatorPausedAfterAppend(..) -> [
       transition_types.LedgerAppendCompleted(
         correlation_id: request.correlation_id,
         continuation: request.policy,
@@ -780,6 +781,7 @@ fn should_stop_after_append(
     | effects_types.ScheduleRetryTimerAfterAppend(..)
     | effects_types.CancelRetryTimerAfterAppend(..)
     | effects_types.SpawnClaimedWorkerAfterAppend(..)
-    | effects_types.ReportParkAfterAppend(..) -> False
+    | effects_types.ReportParkAfterAppend(..)
+    | effects_types.SetOperatorPausedAfterAppend(..) -> False
   }
 }

@@ -473,16 +473,72 @@ fn handle_review_lane_preflight_result(
         park_on_failure,
       )
     review_lane_preflight_gate.ClaimAllowed ->
-      begin_claim_for_workflow(
-        state,
-        issue,
-        remaining_candidates,
-        context,
-        callbacks,
-        workflow_id,
-        previous_retry_generation,
-        retry_cancellation,
-      )
+      case context.operator_paused {
+        True -> review_lane_preflight_paused(state, issue, retry_cancellation)
+        False ->
+          begin_claim_for_workflow(
+            state,
+            issue,
+            remaining_candidates,
+            context,
+            callbacks,
+            workflow_id,
+            previous_retry_generation,
+            retry_cancellation,
+          )
+      }
+  }
+}
+
+fn review_lane_preflight_paused(
+  state: State,
+  issue: Issue,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> Outcome {
+  let #(state, retry_effects) =
+    restore_retry_after_paused_preflight(state, issue, retry_cancellation)
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("info", "review_lane_preflight_precondition_failed", [
+      #("issue_id", issue.id),
+      #("reason", "operator_paused"),
+    ]),
+    ..retry_effects
+  ])
+}
+
+fn restore_retry_after_paused_preflight(
+  state: State,
+  issue: Issue,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> #(State, List(effects_types.Effect)) {
+  case retry_cancellation {
+    None -> #(state, [])
+    Some(transition_types.RetryCancellation(
+      issue_id: issue_id,
+      generation: generation,
+      previous_retry: previous_retry,
+      ..,
+    )) -> {
+      let task_identity =
+        orchestrator_state.task_ref_identity(previous_retry.task_ref)
+      let runtime =
+        orchestrator_state.RuntimeState(
+          ..state.runtime,
+          retry_attempts: dict.insert(
+            state.runtime.retry_attempts,
+            task_identity,
+            previous_retry,
+          ),
+          claimed: dict.insert(
+            state.runtime.claimed,
+            task_identity,
+            issue.identifier,
+          ),
+        )
+      let state =
+        transition_types.State(..state, runtime: runtime) |> sync_state
+      #(state, [effects_types.DeferRetryTimer(issue_id, generation, 60_000)])
+    }
   }
 }
 

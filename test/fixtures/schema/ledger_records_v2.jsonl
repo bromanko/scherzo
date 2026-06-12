@@ -30,6 +30,7 @@
 {"schema_version":2,"record_id":"record-issue-parked","at_ms":1018,"kind":"issue_parked","issue_id":"issue-2","issue_identifier":"LIV-2","reason":"blocked","observed_updated_at_ms":1017}
 {"schema_version":2,"record_id":"record-issue-parked-v2","at_ms":1019,"kind":"issue_parked_v2","issue_id":"issue-3","issue_identifier":"LIV-3","reason":"max_retry_attempts","release_policy":"auto_unpark_on_issue_change","issue_fingerprint":"fingerprint","observed_updated_at_ms":1018}
 {"schema_version":2,"record_id":"record-issue-unparked","at_ms":1020,"kind":"issue_unparked","issue_id":"issue-3","issue_identifier":"LIV-3","reason":"operator"}
+{"schema_version":2,"record_id":"record-dispatch-pause-changed","at_ms":1021,"kind":"dispatch_pause_changed","status":"paused"}
 {"schema_version":2,"record_id":"record-linear-command-seen","at_ms":1021,"kind":"linear_command_seen","comment_id":"comment-1","issue_id":"issue-1","author_id":"user-1","command_name":"retry","excerpt":"/scherzo retry"}
 {"schema_version":2,"record_id":"record-linear-command-started","at_ms":1022,"kind":"linear_command_started","comment_id":"comment-1","issue_id":"issue-1","command_name":"retry"}
 {"schema_version":2,"record_id":"record-linear-command-completed","at_ms":1023,"kind":"linear_command_completed","comment_id":"comment-1","issue_id":"issue-1","status":"accepted","message_excerpt":"queued retry"}

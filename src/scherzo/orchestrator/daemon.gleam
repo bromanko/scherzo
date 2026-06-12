@@ -882,7 +882,7 @@ pub fn start(
                           ledger_projection: startup_recovery.projection,
                           remote_client: None,
                           remote_client_monitor: None,
-                          operator_paused: False,
+                          operator_paused: startup_recovery.projection.dispatch_paused,
                           last_operator_command_result: None,
                           shell_state_overrides_transition: False,
                           dependencies: dependencies,
