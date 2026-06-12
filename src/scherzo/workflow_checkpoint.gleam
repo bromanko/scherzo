@@ -404,6 +404,27 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
   )
 }
 
+pub fn corrupt_tolerant_ledger_writer(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+) -> Writer {
+  case ledger.path_for_workspace_root(workspace_root) {
+    Error(error) -> {
+      let _message = describe_ledger_error(error)
+      ledger_writer(workspace_root, now_ms)
+    }
+    Ok(ledger_path) ->
+      case ledger.load_projection(ledger_path) {
+        Ok(_) -> ledger_writer(workspace_root, now_ms)
+        Error(ledger.CorruptRecord(..)) -> noop_writer()
+        Error(error) -> {
+          let _message = describe_ledger_error(error)
+          ledger_writer(workspace_root, now_ms)
+        }
+      }
+  }
+}
+
 pub fn ledger_writer_with_artifact_store(
   workspace_root: String,
   now_ms: fn() -> Int,

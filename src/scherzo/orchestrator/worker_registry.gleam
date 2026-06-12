@@ -38,6 +38,16 @@ pub type ScheduledWorkerHandle {
   )
 }
 
+pub type YamlStepHandle {
+  YamlStepHandle(
+    session_id: String,
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+  )
+}
+
 pub type StepCommandSubjectLookupError {
   NoActiveStepCommandSubject
   MultipleActiveStepCommandSubjects
@@ -68,6 +78,7 @@ pub opaque type Registry {
     step_command_monitors: Dict(process.Monitor, String),
     step_command_subject_monitors: Dict(String, process.Monitor),
     yaml_step_runs: Dict(String, String),
+    yaml_step_handles: Dict(String, YamlStepHandle),
     stopped_yaml_runs: Dict(String, session_reason.WorkerExitReason),
     next_session_sequence: Int,
   )
@@ -89,6 +100,7 @@ pub fn new() -> Registry {
     step_command_monitors: dict.new(),
     step_command_subject_monitors: dict.new(),
     yaml_step_runs: dict.new(),
+    yaml_step_handles: dict.new(),
     stopped_yaml_runs: dict.new(),
     next_session_sequence: 1,
   )
@@ -519,19 +531,63 @@ pub fn register_active_yaml_step_started(
   registry: Registry,
   session_id: String,
   run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
 ) -> Registry {
   case stopped_yaml_run_reason(registry, run_id) {
     Ok(_) -> registry
     Error(Nil) ->
       case worker_for_run(registry, run_id) {
-        Ok(_) -> register_yaml_step_started(registry, session_id, run_id)
+        Ok(_) ->
+          register_yaml_step_handle(
+            registry,
+            session_id,
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+          )
         Error(Nil) ->
           case scheduled_worker_for_run(registry, run_id) {
-            Ok(_) -> register_yaml_step_started(registry, session_id, run_id)
+            Ok(_) ->
+              register_yaml_step_handle(
+                registry,
+                session_id,
+                run_id,
+                workflow_id,
+                step_id,
+                attempt_index,
+              )
             Error(Nil) -> registry
           }
       }
   }
+}
+
+fn register_yaml_step_handle(
+  registry: Registry,
+  session_id: String,
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
+) -> Registry {
+  let registry = register_yaml_step_started(registry, session_id, run_id)
+  Registry(
+    ..registry,
+    yaml_step_handles: dict.insert(
+      registry.yaml_step_handles,
+      session_id,
+      YamlStepHandle(
+        session_id: session_id,
+        run_id: run_id,
+        workflow_id: workflow_id,
+        step_id: step_id,
+        attempt_index: attempt_index,
+      ),
+    ),
+  )
 }
 
 pub fn finish_yaml_step(registry: Registry, session_id: String) -> Registry {
@@ -554,6 +610,15 @@ pub fn active_yaml_step_sessions_for_run(
     let #(session_id, _) = entry
     session_id
   })
+}
+
+pub fn active_yaml_step_handles_for_run(
+  registry: Registry,
+  run_id: String,
+) -> List(YamlStepHandle) {
+  registry.yaml_step_handles
+  |> dict.values
+  |> list.filter(fn(handle) { handle.run_id == run_id })
 }
 
 pub fn delete_yaml_step_sessions(
@@ -814,6 +879,7 @@ fn delete_yaml_step_session(
   Registry(
     ..registry,
     yaml_step_runs: dict.delete(registry.yaml_step_runs, session_id),
+    yaml_step_handles: dict.delete(registry.yaml_step_handles, session_id),
   )
 }
 

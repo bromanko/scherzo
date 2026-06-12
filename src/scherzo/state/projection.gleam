@@ -1493,53 +1493,59 @@ pub fn apply(
     ) -> {
       let key = step_attempt_key(run_id, step_id, attempt_index)
       let status = case dict.get(projection.step_attempts, key) {
-        Ok(StepAttemptRunning(
-          workspace_name: workspace_name,
-          workspace_path: workspace_path,
-          run_root: run_root,
-          continuation_capable: continuation_capable,
-          pi_session_id: pi_session_id,
-          pi_session_file: pi_session_file,
-          pi_session_fact_count: pi_session_fact_count,
-          ..,
-        )) ->
-          StepAttemptInterruptedStatus(
-            run_id,
-            workflow_id,
-            step_id,
-            attempt_index,
-            workspace_name,
-            workspace_path,
-            run_root,
-            reason,
-            continuation_capable,
-            pi_session_id,
-            pi_session_file,
-            pi_session_fact_count,
-            at_ms,
-          )
-        Ok(StepAttemptPending(
-          workspace_name: workspace_name,
-          workspace_path: workspace_path,
-          run_root: run_root,
-          ..,
-        )) ->
-          StepAttemptInterruptedStatus(
-            run_id,
-            workflow_id,
-            step_id,
-            attempt_index,
-            workspace_name,
-            workspace_path,
-            run_root,
-            reason,
-            False,
-            None,
-            None,
-            0,
-            at_ms,
-          )
-        _ ->
+        Ok(existing) ->
+          case existing {
+            StepAttemptFinishedStatus(..)
+            | StepAttemptInterruptedStatus(..)
+            | StepAttemptSupersededStatus(..) -> existing
+            StepAttemptRunning(
+              workspace_name: workspace_name,
+              workspace_path: workspace_path,
+              run_root: run_root,
+              continuation_capable: continuation_capable,
+              pi_session_id: pi_session_id,
+              pi_session_file: pi_session_file,
+              pi_session_fact_count: pi_session_fact_count,
+              ..,
+            ) ->
+              StepAttemptInterruptedStatus(
+                run_id,
+                workflow_id,
+                step_id,
+                attempt_index,
+                workspace_name,
+                workspace_path,
+                run_root,
+                reason,
+                continuation_capable,
+                pi_session_id,
+                pi_session_file,
+                pi_session_fact_count,
+                at_ms,
+              )
+            StepAttemptPending(
+              workspace_name: workspace_name,
+              workspace_path: workspace_path,
+              run_root: run_root,
+              ..,
+            ) ->
+              StepAttemptInterruptedStatus(
+                run_id,
+                workflow_id,
+                step_id,
+                attempt_index,
+                workspace_name,
+                workspace_path,
+                run_root,
+                reason,
+                False,
+                None,
+                None,
+                0,
+                at_ms,
+              )
+          }
+        Error(Nil) ->
           StepAttemptInterruptedStatus(
             run_id,
             workflow_id,

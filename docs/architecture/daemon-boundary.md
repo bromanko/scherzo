@@ -2,7 +2,7 @@
 
 `src/scherzo/orchestrator/daemon.gleam` remains Scherzo's public daemon actor shell. It may own public actor startup, public message receipt, compatibility types, dependency injection, control-plane/process/timer edges, top-level logging/redaction context, and handoff between subsystem outcomes. It must not regrow extracted subsystem helpers without an explicit update to this document and the matching source guardrail.
 
-The daemon line-count ratchet is `max_daemon_lines: 7037`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
+The daemon line-count ratchet is `max_daemon_lines: 6933`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
 
 `src/scherzo/orchestrator/service.gleam` is the only documented startup-edge import exception for `scherzo/orchestrator/daemon`. It may import the daemon because it is the process edge that starts the public actor. Extracted orchestrator subsystem modules must not import `scherzo/orchestrator/daemon`.
 
@@ -15,7 +15,6 @@ Forbidden daemon prefix: `scheduled_`.
 Exact daemon shell exceptions:
 
 - `scheduled_failure_paths`: the daemon shell still maps configured scheduled-failure routes into scheduled-runtime input lists.
-- `scheduled_projection_for_root`: the daemon shell still reads projected scheduled state before calling scheduled-runtime helpers.
 - `scheduled_job_by_id`: the daemon shell still resolves a scheduled job from the loaded workflow before handing work off.
 - `scheduled_worker_down_context`: the daemon shell still shapes daemon-owned crash logging for scheduled worker exits.
 - `scheduled_worker_active_for_job`: the daemon shell still checks actor occupancy before asking scheduled-runtime whether another run may start.

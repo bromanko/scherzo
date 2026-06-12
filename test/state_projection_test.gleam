@@ -66,6 +66,50 @@ pub fn folding_records_produces_expected_projection_test() {
   )) = dict.get(folded.outbox, "outbox-1")
 }
 
+pub fn step_attempt_interruption_after_finished_preserves_finished_status_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "step-finished",
+        1000,
+        record.StepAttemptFinished(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          step_id: "review",
+          attempt_index: 1,
+          outcome: "success",
+          artifact_ref: "artifact-ref",
+          artifact_sha256: "sha",
+          workspace_name: "main",
+          workspace_path: "/tmp/main",
+          token_total: 3,
+          turns: 1,
+        ),
+      ),
+      record.with_id(
+        "step-interrupted",
+        1100,
+        record.StepAttemptInterrupted(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          step_id: "review",
+          attempt_index: 1,
+          reason: "daemon_shutdown",
+        ),
+      ),
+    ])
+
+  let assert Ok(projection.StepAttemptFinishedStatus(
+    outcome: "success",
+    finished_at_ms: 1000,
+    ..,
+  )) =
+    dict.get(
+      folded.step_attempts,
+      projection.step_attempt_key("run-1", "review", 1),
+    )
+}
+
 pub fn projection_exposes_recovery_facts_test() {
   let records = [
     record.with_id(
