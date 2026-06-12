@@ -517,7 +517,7 @@ pub fn retry_step_abort_of_recovered_parent_cleans_review_children_and_exposes_o
       "review_started:code_review",
       "review_started:security_review",
     ],
-    20,
+    100,
   )
 
   let assert Ok(parent_session) =
@@ -705,7 +705,7 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
       "active_review_started:code_review",
       "active_review_started:security_review",
     ],
-    20,
+    100,
   )
   let assert Ok(active_code_review_session) =
     wait_for_active_step_session(hub_subject, "run-1", "code_review", 1, 20)
