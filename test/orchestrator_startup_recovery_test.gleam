@@ -475,6 +475,82 @@ pub fn load_emits_park_report_for_workflow_identity_mismatch_test() {
   assert loaded.workflow_resumptions == []
 }
 
+pub fn load_recovers_active_scheduled_run_from_replayed_projection_test() {
+  let bundle =
+    scheduled_bundle("test/tmp/startup-recovery-active-scheduled-run", [
+      scheduled_entry("scheduled-job", True),
+    ])
+  let workspace_root = bundle.effective.workspace.root
+  append_test_ledger_bodies(workspace_root, [
+    record.ScheduledJobDue(
+      "scheduled-job",
+      "implementation",
+      5000,
+      "run-active",
+      "timer",
+    ),
+    record.ScheduledRunPending(
+      "scheduled-job",
+      "implementation",
+      5000,
+      "run-active",
+      "timer",
+      5000,
+    ),
+    record.ScheduledRunStarted(
+      "scheduled-job",
+      "implementation",
+      5000,
+      5100,
+      "run-active",
+      2,
+      "session-run-active",
+      "/tmp/run-active",
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([]),
+      startup_dependencies(),
+      [],
+    )
+
+  assert scheduled_runtime.pending_starts(loaded.scheduled.runtime) == []
+  assert loaded.scheduled.effects
+    == [
+      startup_recovery.AppendLedger(
+        record_bodies: [
+          record.ScheduledRunFailed(
+            "scheduled-job",
+            "implementation",
+            5000,
+            "run-active",
+            2,
+            7000,
+            "daemon_restart",
+            True,
+            Some("/tmp/run-active"),
+          ),
+        ],
+        failure_event: "scheduled_recovery_append_failed",
+      ),
+      startup_recovery.BeginFailureReport(
+        scheduled_runtime.FailureReportRequest(
+          job_id: "scheduled-job",
+          workflow_id: "implementation",
+          due_at_ms: 5000,
+          run_id: "run-active",
+          attempt: 2,
+          reason: "daemon_restart",
+          run_root: Some("/tmp/run-active"),
+          session_id: Some("session-run-active"),
+        ),
+      ),
+    ]
+}
+
 pub fn recover_scheduled_runtime_restores_report_retry_timer_test() {
   let bundle =
     scheduled_bundle("test/tmp/startup-recovery-scheduled-report-retry", [

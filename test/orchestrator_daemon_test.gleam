@@ -2116,7 +2116,7 @@ pub fn daemon_shutdown_logs_event_hub_timeout_test() {
   process.kill(event_hub_pid)
 }
 
-pub fn daemon_shutdown_logs_projection_load_failure_test() {
+pub fn daemon_shutdown_uses_cached_state_after_post_start_ledger_corruption_test() {
   let root = "test/tmp/daemon-shutdown-projection-unavailable"
   let workflow_path = write_workflow(root, 1)
   let client =
@@ -2136,11 +2136,8 @@ pub fn daemon_shutdown_logs_projection_load_failure_test() {
     simplifile.write(ledger_path.current_path, "not-json\nnot-json\n")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
-  assert wait_for_event(
-    log_subject,
-    "workflow_shutdown_projection_unavailable",
-    10,
-  )
+  let logs = test_async.drain_subject(log_subject)
+  assert !list.contains(logs, "workflow_shutdown_projection_unavailable")
 }
 
 pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {
@@ -3314,7 +3311,7 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
   process.send(clock, StopClock)
 }
 
-pub fn daemon_scheduled_report_retry_logs_projection_failure_test() {
+pub fn daemon_scheduled_report_retry_uses_cached_projection_after_post_start_ledger_corruption_test() {
   let dir = "test/tmp/daemon-scheduled-report-retry-projection-unavailable"
   let workflow_path = write_scheduled_reporting_workflow(dir)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
@@ -3355,12 +3352,12 @@ pub fn daemon_scheduled_report_retry_logs_projection_failure_test() {
   write_corrupt_current_ledger(root)
   process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 1))
 
-  assert wait_for_event(
-    log_subject,
-    "scheduled_report_retry_projection_unavailable",
-    20,
-  )
-  test_async.assert_no_extra_message_within(report_subject, 100)
+  let assert Ok(DirectedScheduledReportCall(second_request, second_reply)) =
+    process.receive(report_subject, within: 5000)
+  process.send(second_reply, ScheduledReportSuccess)
+  assert second_request.run_id == run_id
+  let logs = test_async.drain_subject(log_subject)
+  assert !list.contains(logs, "scheduled_report_retry_projection_unavailable")
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
 }

@@ -15,7 +15,7 @@ const service_path = "src/scherzo/orchestrator/service.gleam"
 
 const daemon_module = "scherzo/orchestrator/daemon"
 
-const max_daemon_lines = 7037
+const max_daemon_lines = 6933
 
 type ShellException {
   ShellException(name: String)
@@ -452,7 +452,6 @@ fn owner_rules() -> List(OwnerRule) {
       prefixes: ["scheduled_"],
       exceptions: [
         ShellException(name: "scheduled_failure_paths"),
-        ShellException(name: "scheduled_projection_for_root"),
         ShellException(name: "scheduled_job_by_id"),
         ShellException(name: "scheduled_worker_down_context"),
         ShellException(name: "scheduled_worker_active_for_job"),

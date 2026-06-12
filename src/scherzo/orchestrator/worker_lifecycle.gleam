@@ -98,7 +98,7 @@ pub type ScheduledWorkerSpawnContext(state) {
       Int,
       String,
       String,
-    ) -> Nil,
+    ) -> state,
     log_dispatch_started: fn(String, String, String) -> Nil,
     spawn: fn(Int, String) -> process.Pid,
     publish_worker_started: fn(String) -> Nil,
@@ -120,13 +120,14 @@ pub fn spawn_scheduled_worker(
   let display_ref = "scheduled-" <> pending.job_id
   context.register_session(session_id, display_ref, run_root, started_at_ms)
   context.publish_dispatch_started(session_id)
-  context.append_started_ledger(
-    state,
-    pending,
-    started_at_ms,
-    session_id,
-    run_root,
-  )
+  let state =
+    context.append_started_ledger(
+      state,
+      pending,
+      started_at_ms,
+      session_id,
+      run_root,
+    )
   context.log_dispatch_started(
     pending.job_id,
     pending.run_id,
@@ -273,7 +274,7 @@ pub type ScheduledWorkerSuccessContext(state) {
       state,
       worker_registry.ScheduledWorkerHandle,
       workflow_run.WorkflowRunSuccess,
-    ) -> Nil,
+    ) -> state,
     needs_human: fn(
       state,
       worker_registry.ScheduledWorkerHandle,
@@ -299,7 +300,6 @@ pub fn finish_scheduled_worker_success(
       context.publish_worker_exited(handle.session_id, "normal")
       context.finish_session(handle.session_id, session_reason.Normal)
       context.append_success_ledger(context.state, handle, success)
-      context.state
     }
     agent_types.FinalActive | agent_types.FinalNonActive ->
       context.needs_human(context.state, handle, success)
@@ -319,7 +319,7 @@ pub type ScheduledWorkerNeedsHumanContext(state) {
       String,
       Bool,
       Option(String),
-    ) -> Nil,
+    ) -> state,
     begin_failure_report_request: fn(
       state,
       scheduled_runtime.FailureReportRequest,
@@ -336,15 +336,16 @@ pub fn finish_scheduled_worker_needs_human(
   context.update_tokens(handle.session_id, success.worker_success.tokens)
   context.publish_worker_exited(handle.session_id, "needs_human")
   context.finish_failed_session(handle.session_id)
-  context.append_failure_ledger(
-    context.state,
-    handle,
-    "needs_human",
-    True,
-    Some(handle.run_root),
-  )
+  let state =
+    context.append_failure_ledger(
+      context.state,
+      handle,
+      "needs_human",
+      True,
+      Some(handle.run_root),
+    )
   context.begin_failure_report_request(
-    context.state,
+    state,
     scheduled_runtime.needs_human_follow_up(
       handle.job_id,
       handle.workflow_id,
@@ -375,7 +376,7 @@ pub type ScheduledWorkerFailureContext(state) {
       String,
       Bool,
       Option(String),
-    ) -> Nil,
+    ) -> state,
     begin_failure_report_request: fn(
       state,
       scheduled_runtime.FailureReportRequest,
@@ -398,7 +399,8 @@ pub fn finish_scheduled_worker_failure(
   }
   let #(state, follow_up) =
     context.worker_failure_follow_up(context.state, handle, reason, run_root)
-  context.append_failure_ledger(state, handle, reason, True, run_root)
+  let state =
+    context.append_failure_ledger(state, handle, reason, True, run_root)
   continue_scheduled_failure_follow_up(
     state,
     follow_up,
@@ -578,7 +580,7 @@ pub type ScheduledWorkerDownContext(state) {
       String,
       Bool,
       Option(String),
-    ) -> Nil,
+    ) -> state,
     begin_failure_report_request: fn(
       state,
       scheduled_runtime.FailureReportRequest,
@@ -604,13 +606,14 @@ pub fn scheduled_worker_down(
       "worker_down",
       Some(handle.run_root),
     )
-  context.append_failure_ledger(
-    state,
-    handle,
-    "worker_down",
-    True,
-    Some(handle.run_root),
-  )
+  let state =
+    context.append_failure_ledger(
+      state,
+      handle,
+      "worker_down",
+      True,
+      Some(handle.run_root),
+    )
   let state =
     continue_scheduled_failure_follow_up(
       state,

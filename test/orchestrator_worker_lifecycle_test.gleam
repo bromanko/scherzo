@@ -85,6 +85,19 @@ fn scheduled_handle() -> worker_registry.ScheduledWorkerHandle {
   )
 }
 
+fn pending_start() -> scheduled_runtime.PendingStart {
+  scheduled_runtime.PendingStart(
+    job_id: "repair",
+    workflow_id: "repair",
+    due_at_ms: 1,
+    run_id: "run-1",
+    trigger: "timer",
+    requested_at_ms: 1,
+    attempt: 2,
+    blocking_reason: "",
+  )
+}
+
 fn workflow_success(
   classification: agent_types.FinalClassification,
 ) -> workflow_run.WorkflowRunSuccess {
@@ -175,6 +188,86 @@ pub fn worker_lifecycle_handle_worker_command_ready_registers_subject_test() {
   process.demonitor_process(handle.monitor)
 }
 
+pub fn worker_lifecycle_spawn_scheduled_worker_threads_started_ledger_state_test() {
+  let pending = pending_start()
+  let state =
+    TestState(
+      registry: worker_registry.new(),
+      events: [],
+      report_requests: 0,
+      action_batches: 0,
+      pending_starts: 1,
+    )
+  let context =
+    worker_lifecycle.ScheduledWorkerSpawnContext(
+      state: state,
+      now_ms: fn() { 123 },
+      reserve_session_sequence: fn(state) { state },
+      register_session: fn(session_id, display_ref, run_root, started_at_ms) {
+        assert session_id == "run-1-a2"
+        assert display_ref == "scheduled-repair"
+        assert run_root == "workspace/repair"
+        assert started_at_ms == 123
+      },
+      publish_dispatch_started: fn(_) { Nil },
+      append_started_ledger: fn(
+        state,
+        observed,
+        started_at_ms,
+        session_id,
+        run_root,
+      ) {
+        assert observed == pending
+        assert started_at_ms == 123
+        assert session_id == "run-1-a2"
+        assert run_root == "workspace/repair"
+        append_event(state, "ledger_started")
+      },
+      log_dispatch_started: fn(job_id, run_id, workflow_id) {
+        assert job_id == "repair"
+        assert run_id == "run-1"
+        assert workflow_id == "repair"
+      },
+      spawn: fn(started_at_ms, session_id) {
+        assert started_at_ms == 123
+        assert session_id == "run-1-a2"
+        process.self()
+      },
+      publish_worker_started: fn(_) { Nil },
+      update_running_status: fn(_) { Nil },
+      register_scheduled_worker: fn(state, handle) {
+        assert state.events == ["ledger_started"]
+        TestState(
+          ..state,
+          registry: worker_registry.register_scheduled_worker(
+            state.registry,
+            handle,
+          ),
+        )
+      },
+      remove_pending_start: fn(state, job_id) {
+        assert job_id == "repair"
+        assert state.events == ["ledger_started"]
+        TestState(..append_event(state, "pending_removed"), pending_starts: 0)
+      },
+    )
+
+  let state =
+    worker_lifecycle.spawn_scheduled_worker(
+      context,
+      pending,
+      "workspace/repair",
+    )
+
+  let assert Ok(found) =
+    worker_registry.scheduled_worker_for_run(state.registry, "run-1")
+  assert found.workflow_id == "repair"
+  assert found.session_id == "run-1-a2"
+  assert state.events == ["pending_removed", "ledger_started"]
+  assert state.pending_starts == 0
+  process.demonitor_process(found.monitor)
+}
+
 pub fn worker_lifecycle_finish_scheduled_worker_success_terminal_test() {
   let handle = scheduled_handle()
   let state =
@@ -195,10 +288,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_success_terminal_test() {
       update_tokens: fn(_, _) { Nil },
       publish_worker_exited: fn(_, _) { Nil },
       finish_session: fn(_, _) { Nil },
-      append_success_ledger: fn(state, _, _) {
-        let _ = append_event(state, "ledger")
-        Nil
-      },
+      append_success_ledger: fn(state, _, _) { append_event(state, "ledger") },
       needs_human: fn(state, _, _) { append_event(state, "needs_human") },
     )
 
@@ -209,7 +299,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_success_terminal_test() {
       workflow_success(agent_types.FinalTerminal),
     )
 
-  assert state.events == []
+  assert state.events == ["ledger"]
   process.demonitor_process(handle.monitor)
 }
 
@@ -230,7 +320,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_success_delegates_needs_human_te
       update_tokens: fn(_, _) { Nil },
       publish_worker_exited: fn(_, _) { Nil },
       finish_session: fn(_, _) { Nil },
-      append_success_ledger: fn(_, _, _) { Nil },
+      append_success_ledger: fn(state, _, _) { state },
       needs_human: fn(state, _, _) { append_event(state, "needs_human") },
     )
 
@@ -279,11 +369,12 @@ pub fn worker_lifecycle_finish_scheduled_worker_needs_human_reports_side_effects
       finish_failed_session: fn(session_id) {
         process.send(calls, NeedsHumanFailedSession(session_id))
       },
-      append_failure_ledger: fn(_, _, reason, retry_exhausted, run_root) {
+      append_failure_ledger: fn(state, _, reason, retry_exhausted, run_root) {
         process.send(
           calls,
           NeedsHumanFailureLedger(reason, retry_exhausted, run_root),
         )
+        state
       },
       begin_failure_report_request: fn(state, request) {
         process.send(calls, NeedsHumanReportRequest(request))
@@ -361,7 +452,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_reports_test() {
           ),
         )
       },
-      append_failure_ledger: fn(_, _, _, _, _) { Nil },
+      append_failure_ledger: fn(state, _, _, _, _) { state },
       begin_failure_report_request: fn(state, _) {
         TestState(..state, report_requests: state.report_requests + 1)
       },
@@ -413,8 +504,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_has_no_retry_branch_test
         )
       },
       append_failure_ledger: fn(state, _, _, _, _) {
-        let _ = append_event(state, "ledger")
-        Nil
+        append_event(state, "ledger")
       },
       begin_failure_report_request: fn(state, _) {
         TestState(..state, report_requests: state.report_requests + 1)
@@ -469,7 +559,7 @@ pub fn worker_lifecycle_scheduled_worker_down_starts_pending_after_report_test()
           ),
         )
       },
-      append_failure_ledger: fn(_, _, _, _, _) { Nil },
+      append_failure_ledger: fn(state, _, _, _, _) { state },
       begin_failure_report_request: fn(state, _) {
         TestState(..state, report_requests: state.report_requests + 1)
       },

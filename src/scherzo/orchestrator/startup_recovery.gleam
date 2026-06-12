@@ -63,6 +63,7 @@ pub type StartupRecovery {
     warnings: List(String),
     workflow_resumptions: List(recovery.RecoveredWorkflowRun),
     scheduled: ScheduledRecovery,
+    projection: projection.Projection,
   )
 }
 
@@ -137,11 +138,12 @@ pub fn load(
       recovery_plan.runtime,
       records_to_append,
     )
+  let projected = projection.fold_from(replayed.projection, records_to_append)
   let scheduled =
     recover_scheduled_runtime(
       bundle,
       dependencies.now_ms(),
-      projection.scheduled_statuses(replayed.projection),
+      projection.scheduled_statuses(projected),
     )
   Ok(StartupRecovery(
     runtime: runtime,
@@ -159,6 +161,7 @@ pub fn load(
     ),
     workflow_resumptions: workflow_finalization.resumptions,
     scheduled: scheduled,
+    projection: projected,
   ))
 }
 
