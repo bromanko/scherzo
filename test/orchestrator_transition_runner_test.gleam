@@ -206,6 +206,7 @@ pub fn running_refresh_releases_stale_context_slot_before_candidate_fetch_test()
   assert dict.get(next.workers.by_issue, identity) == Error(Nil)
   assert interpreter.data(shell)
     == [
+      "append:workflow_cancelled_issue_reconcile:issue-1:run-1:terminal",
       "stop_refresh:issue-1",
       "cleanup:test/tmp/workspaces/ABC-1",
       "fetch:1",

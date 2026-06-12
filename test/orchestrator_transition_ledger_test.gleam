@@ -212,6 +212,72 @@ pub fn terminal_worker_success_appends_counter_reset_test() {
   })
 }
 
+pub fn issue_reconcile_stop_appends_cancelled_workflow_record_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let terminal =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let state =
+    running_worker_state_with_counter(
+      issue,
+      orchestrator_state.new_issue_counter(),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.RunningRefreshCompleted(
+        1,
+        transition_types.PollSnapshot(1, Some(1)),
+        Ok([terminal]),
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state,
+    )
+
+  assert dict.get(next.runtime.running, task_identity) == Error(Nil)
+  assert_cancelled_workflow_append(
+    effects,
+    "workflow_cancelled_issue_reconcile:issue-1:run-1:terminal",
+  )
+  assert_stop_after_issue_refresh(effects, orchestrator_reason.StopTerminal)
+}
+
+pub fn issue_reconcile_non_active_stop_appends_cancelled_workflow_record_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let non_active =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Backlog"),
+    )
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let state =
+    running_worker_state_with_counter(
+      issue,
+      orchestrator_state.new_issue_counter(),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.RunningRefreshCompleted(
+        1,
+        transition_types.PollSnapshot(1, Some(1)),
+        Ok([non_active]),
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state,
+    )
+
+  assert dict.get(next.runtime.running, task_identity) == Error(Nil)
+  assert_cancelled_workflow_append(
+    effects,
+    "workflow_cancelled_issue_reconcile:issue-1:run-1:non_active",
+  )
+  assert_stop_after_issue_refresh(effects, orchestrator_reason.StopNonActive)
+}
+
 pub fn claim_start_recovery_retry_after_prior_retry_increments_generation_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let task_identity = orchestrator_state.issue_identity(issue)
@@ -400,6 +466,49 @@ pub fn claim_requested_missing_workflow_start_does_not_emit_append_or_start_work
         #("correlation_id", "claim:issue-1:run-1"),
       ]),
     ]
+}
+
+fn assert_cancelled_workflow_append(
+  effects: List(effects_types.Effect),
+  correlation_id: String,
+) {
+  assert list.any(effects, fn(effect) {
+    case effect {
+      effects_types.AppendLedger(effects_types.LedgerAppend(
+        correlation_id: id,
+        batch: batch,
+        failure_event: "workflow_terminal_append_failed",
+        policy: effects_types.ContinueRegardless,
+      )) ->
+        id == correlation_id
+        && ledger_batch.to_bodies(batch)
+        == [
+          record.WorkflowRunFinishedWithTask(
+            "run-1",
+            "default",
+            "issue-1",
+            record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+            "cancelled",
+            0,
+            0,
+          ),
+        ]
+      _ -> False
+    }
+  })
+}
+
+fn assert_stop_after_issue_refresh(
+  effects: List(effects_types.Effect),
+  reason: orchestrator_reason.StopReason,
+) {
+  assert list.any(effects, fn(effect) {
+    case effect {
+      effects_types.StopWorkerAfterIssueRefresh(_, actual_reason) ->
+        actual_reason == reason
+      _ -> False
+    }
+  })
 }
 
 fn running_worker_state_with_counter(

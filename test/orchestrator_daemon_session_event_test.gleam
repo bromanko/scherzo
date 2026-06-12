@@ -1,4 +1,5 @@
 import birl
+import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -16,6 +17,7 @@ import scherzo/session/name as session_name
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/tracker
 import scherzo/tracker/adapter_legacy
@@ -950,6 +952,17 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
     process.receive(refresh_subject, within: 1000)
   process.send(running_refresh, terminal)
   assert wait_for_log(log_subject, "worker_stop_requested", 20)
+
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(projected) = ledger.load_projection(ledger_path)
+  let assert Ok(projection.WorkflowRunFinished(
+    workflow_id: "implementation",
+    issue_id: "stop-id",
+    outcome: "cancelled",
+    token_total: 0,
+    turns: 0,
+    ..,
+  )) = dict.get(projected.workflow_runs, "ABC-STOP-42-1")
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-STOP-42-1", 20)
   assert summary.status == event.Exited(reason.Stopped)

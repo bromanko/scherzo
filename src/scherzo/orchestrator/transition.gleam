@@ -1682,10 +1682,23 @@ fn stop_worker_after_issue_refresh(
     Error(Nil) -> transition_types.Outcome(state: state, effects: [])
     Ok(entry) -> {
       let identity = worker_identity(entry)
+      let reason_text = orchestrator_reason.stop_to_string(reason)
       let state = remove_worker_from_directory(state, entry)
       transition_types.Outcome(
         state: remove_yaml_step_runs_for_run(state, entry.run_id),
-        effects: [effects_types.StopWorkerAfterIssueRefresh(identity, reason)],
+        effects: [
+          effects_types.workflow_cancelled_append(
+            "workflow_cancelled_issue_reconcile:"
+              <> entry.issue_id
+              <> ":"
+              <> entry.run_id
+              <> ":"
+              <> reason_text,
+            #(entry.run_id, entry.workflow_id, entry.task_ref),
+            0,
+          ),
+          effects_types.StopWorkerAfterIssueRefresh(identity, reason),
+        ],
       )
     }
   }
@@ -2596,18 +2609,11 @@ fn finish_operator_worker_failure_entry(
           tokens: failure.tokens,
           update_tokens: True,
         )),
-        effects_types.AppendLedger(effects_types.LedgerAppend(
-          correlation_id: "workflow_cancelled:"
-            <> entry.issue_id
-            <> ":"
-            <> entry.run_id,
-          batch: ledger_batch.workflow_cancelled(
-            #(entry.run_id, entry.workflow_id, entry.task_ref),
-            failure.tokens.total,
-          ),
-          failure_event: "workflow_terminal_append_failed",
-          policy: effects_types.ContinueRegardless,
-        )),
+        effects_types.workflow_cancelled_append(
+          "workflow_cancelled:" <> entry.issue_id <> ":" <> entry.run_id,
+          #(entry.run_id, entry.workflow_id, entry.task_ref),
+          failure.tokens.total,
+        ),
       ],
       park_effects,
     ),
@@ -2729,18 +2735,11 @@ fn stop_worker_entry(
     )
   let identity = worker_identity(entry)
   transition_types.Outcome(state: state, effects: [
-    effects_types.AppendLedger(effects_types.LedgerAppend(
-      correlation_id: "workflow_cancelled:"
-        <> entry.issue_id
-        <> ":"
-        <> entry.run_id,
-      batch: ledger_batch.workflow_cancelled(
-        #(entry.run_id, entry.workflow_id, entry.task_ref),
-        0,
-      ),
-      failure_event: "workflow_terminal_append_failed",
-      policy: effects_types.ContinueRegardless,
-    )),
+    effects_types.workflow_cancelled_append(
+      "workflow_cancelled:" <> entry.issue_id <> ":" <> entry.run_id,
+      #(entry.run_id, entry.workflow_id, entry.task_ref),
+      0,
+    ),
     effects_types.StopWorker(identity, reason),
     effects_types.FinishYamlStepSessionsForRun(
       identity.run_id_from_string(entry.run_id),
