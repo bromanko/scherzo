@@ -2891,6 +2891,7 @@ fn worker_start_from_entry(
     issue: entry.issue,
     workspace_path: entry.workspace_path,
     workflow_id: entry.workflow_id,
+    workflow_snapshot: entry.workflow_snapshot,
     route_label: entry.issue.identifier,
     recovery: entry.recovery,
   )

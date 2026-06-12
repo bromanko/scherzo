@@ -874,6 +874,54 @@ pub fn review_lane_preflight_stale_completion_does_not_claim_test() {
   assert has_preflight_stale_log(effects)
 }
 
+pub fn workflow_route_snapshot_failure_skips_tracker_claim_test() {
+  let candidate = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let policy =
+    review_lane_preflight_policy.Policy(
+      mode: review_lane_preflight_policy.Off,
+      cache_ttl_seconds: 86_400,
+      park_on_failure: True,
+      strict_live_model_checks: False,
+    )
+  let result =
+    review_lane_preflight.failed(
+      "cache-key",
+      "ignored_in_off_mode",
+      "ignored in off mode",
+      True,
+    )
+  let context =
+    transition_types.DispatchContext(
+      ..context_with_preflight(policy, result),
+      review_lane_preflight: transition_types.ReviewLanePreflightContext(
+        config_dir: ".scherzo",
+        workflow_dags: dict.new(),
+        policy: policy,
+        override: Some(result),
+      ),
+    )
+  let state = state_with_pending_dispatch_validation(candidate)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.DispatchValidationCompleted(
+        candidate.id,
+        1,
+        Ok(candidate),
+        context,
+      ),
+      state,
+    )
+
+  assert dict.size(next.pending_claims) == 0
+  assert dict.size(next.pending_dispatch_validations) == 0
+  assert !has_claim_issue(effects)
+  assert has_workflow_route_snapshot_failed_log(
+    effects,
+    "unknown_workflow_label",
+  )
+}
+
 pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
   let candidate = labelled_issue("issue-1", "ABC-1", "workflow:review")
   let context =
@@ -1329,6 +1377,19 @@ fn has_begin_review_lane_preflight(
   list.any(effects, fn(effect) {
     case effect {
       effects_types.BeginReviewLanePreflight(_) -> True
+      _ -> False
+    }
+  })
+}
+
+fn has_workflow_route_snapshot_failed_log(
+  effects: List(effects_types.Effect),
+  expected_error: String,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.Log("warn", "workflow_route_snapshot_failed", fields) ->
+        field_equals(fields, "error", expected_error)
       _ -> False
     }
   })

@@ -4,6 +4,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/orchestrator/core
 import scherzo/orchestrator/transition_types
+import scherzo/orchestrator/workflow_snapshot
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
@@ -64,6 +65,26 @@ fn workflow_violation_to_route_error(
       "unknown_workflow_label",
       "unknown workflow label: " <> label,
     )
+  }
+}
+
+pub fn workflow_snapshot_for_claim(
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+) -> Result(workflow_snapshot.Snapshot, #(String, String)) {
+  case
+    workflow_snapshot.for_workflow_id(
+      context.review_lane_preflight.workflow_dags,
+      context.orchestrator,
+      issue,
+      workflow_id,
+      run_id,
+    )
+  {
+    Ok(snapshot) -> Ok(snapshot)
+    Error(error) -> Error(workflow_snapshot.error_fields(error))
   }
 }
 

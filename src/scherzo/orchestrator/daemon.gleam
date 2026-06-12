@@ -1164,6 +1164,7 @@ fn spawn_recovered_workflow_resumption(
           issue: recovered.issue,
           workspace_path: recovered.run_root,
           workflow_id: recovered.workflow_id,
+          workflow_snapshot: None,
           command_route_id: command_route_id,
           status: transition_types.WorkerRunning,
           recovery: recovery,
@@ -3492,6 +3493,7 @@ fn transition_dispatch_context(
 ) -> transition_types.DispatchContext {
   transition_types.dispatch_context(
     state.workflow.effective,
+    state.workflow.bundle.orchestrator,
     state.tracker_adapter.kind,
     state.workflow.bundle.orchestrator.routing,
     runtime_bundle.normalized_workflows(state.workflow.bundle),
@@ -3759,18 +3761,29 @@ fn transition_start_worker(
 ) -> #(State, Result(Nil, String)) {
   let run_id = identity.run_id_to_string(request.run_id)
   let session_id = identity.session_id_to_string(request.session_id)
-  #(
-    worker_lifecycle.spawn_worker(
-      worker_spawn_context(state, request.issue, run_id, session_id),
-      request.task_ref,
+  case
+    worker_lifecycle.workflow_snapshot_for_start(
+      request.workflow_snapshot,
+      state.workflow.bundle,
       request.issue,
-      request.workspace_path,
+      request.workflow_id,
       run_id,
-      session_id,
-      request.recovery,
-    ),
-    Ok(Nil),
-  )
+    )
+  {
+    Error(error) -> #(state, Error(worker_lifecycle.snapshot_reason(error)))
+    Ok(snapshot) -> #(
+      worker_lifecycle.spawn_worker(
+        worker_spawn_context(state, request.issue, run_id, session_id, snapshot),
+        request.task_ref,
+        request.issue,
+        request.workspace_path,
+        run_id,
+        session_id,
+        request.recovery,
+      ),
+      Ok(Nil),
+    )
+  }
 }
 
 fn transition_worker_start_failed(
@@ -4735,47 +4748,25 @@ fn handle_retry_refresh_finished(
 }
 
 fn workflow_run_started_body_for_claim(
-  state: State,
   pending: transition_types.PendingClaim,
-) -> Result(record.RecordBody, String) {
-  case runtime_bundle.select_workflow(state.workflow.bundle, pending.issue) {
-    Error(runtime_bundle.BundleError(code, message)) ->
-      Error(code <> ":" <> message)
-    Ok(#(_, dag)) -> {
-      use fingerprint <- result_try_string(
-        workflow_fingerprint.fingerprint_for_execution(
-          dag,
-          state.workflow.bundle.orchestrator,
-        )
-        |> result.replace_error("workflow_fingerprint_failed"),
-      )
-      use run_root <- result_try_string(
-        workspace_run.run_root_for(
-          pending.issue,
-          dag.id,
-          pending.run_id,
-          state.workflow.bundle.orchestrator,
-        )
-        |> result.map_error(fn(err) { error.workspace_code(err) }),
-      )
-      Ok(record.WorkflowRunStartedWithTask(
-        pending.run_id,
-        dag.id,
-        fingerprint,
-        pending.issue.id,
-        pending.issue.identifier,
-        record.TaskRefFields(
-          pending.task_ref.backend_kind,
-          pending.task_ref.remote_id,
-          pending.task_ref.key,
-          pending.task_ref.url,
-        ),
-        core.issue_fingerprint(pending.issue),
-        observed_updated_at_ms(pending.issue),
-        run_root,
-      ))
-    }
-  }
+) -> record.RecordBody {
+  let snapshot = pending.workflow_snapshot
+  record.WorkflowRunStartedWithTask(
+    pending.run_id,
+    snapshot.dag.id,
+    snapshot.fingerprint,
+    pending.issue.id,
+    pending.issue.identifier,
+    record.TaskRefFields(
+      pending.task_ref.backend_kind,
+      pending.task_ref.remote_id,
+      pending.task_ref.key,
+      pending.task_ref.url,
+    ),
+    core.issue_fingerprint(pending.issue),
+    observed_updated_at_ms(pending.issue),
+    snapshot.run_root,
+  )
 }
 
 fn publish_recovery_lifecycle(
@@ -4846,11 +4837,11 @@ fn worker_spawn_context(
   issue: tracker_issue.Issue,
   run_id: String,
   session_id: String,
+  snapshot: worker_lifecycle.WorkflowSnapshot,
 ) -> worker_lifecycle.WorkerSpawnContext(State) {
   let subject = state.subject
   let dependencies = state.dependencies
   let tracker_client = state.tracker_client
-  let bundle = state.workflow.bundle
   let secrets = state.workflow.secrets
   let event_hub = state.event_hub
   worker_lifecycle.WorkerSpawnContext(
@@ -4924,7 +4915,7 @@ fn worker_spawn_context(
           run_workflow_worker(
             issue,
             run_id,
-            bundle,
+            snapshot,
             tracker_client,
             secrets,
             dependencies.workflow_run_dependencies,
@@ -5157,7 +5148,7 @@ fn run_scheduled_workflow_worker(
 fn run_workflow_worker(
   issue: tracker_issue.Issue,
   run_id: String,
-  bundle: runtime_bundle.RuntimeBundle,
+  snapshot: worker_lifecycle.WorkflowSnapshot,
   tracker_client: tracker.Client,
   secrets: List(String),
   workflow_dependencies: workflow_run.Dependencies,
@@ -5166,48 +5157,49 @@ fn run_workflow_worker(
   session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  case runtime_bundle.select_workflow(bundle, issue) {
-    Error(runtime_bundle.BundleError(code, _)) ->
-      Error(yaml_worker_failure(code, None, issue))
-    Ok(#(_, dag)) -> {
-      let workflow_dependencies =
-        workflow_run.Dependencies(
-          ..workflow_dependencies,
-          checkpoint: workflow_checkpoint.ledger_writer(
-            bundle.effective.workspace.root,
-            now_ms,
-          ),
-        )
-      case
-        workflow_run.execute(
-          issue,
-          dag,
-          bundle.orchestrator,
-          tracker_client,
-          secrets,
-          run_id,
-          yaml_workflow_dependencies(
-            workflow_dependencies,
-            issue,
-            run_id,
-            session_id,
-            daemon_subject,
-            event_hub,
-            now_ms,
-          ),
-        )
-      {
-        Ok(success) -> {
-          publish_post_success_cleanup_warning(
-            event_hub,
-            session_id,
-            success.cleanup_warning,
-          )
-          Ok(success.worker_success)
-        }
-        Error(failure) -> Error(yaml_workflow_failure(failure, issue))
-      }
+  let workflow_dependencies =
+    workflow_run.Dependencies(
+      ..workflow_dependencies,
+      checkpoint: workflow_checkpoint.ledger_writer(
+        worker_lifecycle.workflow_snapshot_workspace_root(snapshot),
+        now_ms,
+      ),
+    )
+  case
+    workflow_run.execute_with_context(
+      issue,
+      worker_lifecycle.workflow_snapshot_dag(snapshot),
+      worker_lifecycle.workflow_snapshot_orchestrator(snapshot),
+      tracker_client,
+      secrets,
+      workflow_run.FreshRun(workflow_run.RunInvocation(
+        run_id: run_id,
+        workflow_fingerprint: worker_lifecycle.workflow_snapshot_fingerprint(
+          snapshot,
+        ),
+        supplied_contract_values: workflow_run.empty_contract_run_values(),
+        scheduled_context: None,
+      )),
+      yaml_workflow_dependencies(
+        workflow_dependencies,
+        issue,
+        run_id,
+        session_id,
+        daemon_subject,
+        event_hub,
+        now_ms,
+      ),
+    )
+  {
+    Ok(success) -> {
+      publish_post_success_cleanup_warning(
+        event_hub,
+        session_id,
+        success.cleanup_warning,
+      )
+      Ok(success.worker_success)
     }
+    Error(failure) -> Error(yaml_workflow_failure(failure, issue))
   }
 }
 
@@ -6239,39 +6231,35 @@ fn claim_ledger_batch_for_pending(
       pending.workspace_path,
     )
   let counter = counter_for_runtime(post_spawn_runtime, pending.issue.id)
-  case workflow_run_started_body_for_claim(state, pending) {
-    Error(reason) -> transition_types.HandoffClaimStartRecordFailed(reason)
-    Ok(workflow_started_body) -> {
-      let batch =
-        ledger_batch.claim_started(
-          workflow_started_body,
-          pending.issue.id,
-          pending.issue.identifier,
-          pending.workspace_path,
-          counter.failure_attempts,
-          counter.worker_sessions,
-          state.dependencies.now_ms(),
-        )
-      let batch = case pending.retry_cancellation {
-        Some(transition_types.RetryCancellation(
-          issue_id: retry_issue_id,
-          generation: generation,
-          reason: reason,
-          ..,
-        )) ->
-          ledger_batch.append_retry_cancelled(
-            batch,
-            retry_issue_id,
-            generation,
-            reason,
-          )
-        None -> batch
-      }
-      let batch =
-        ledger_batch.append_body(batch, outbox_effects.completed_body(outbox))
-      transition_types.HandoffClaimSucceeded(batch)
-    }
+  let workflow_started_body = workflow_run_started_body_for_claim(pending)
+  let batch =
+    ledger_batch.claim_started(
+      workflow_started_body,
+      pending.issue.id,
+      pending.issue.identifier,
+      pending.workspace_path,
+      counter.failure_attempts,
+      counter.worker_sessions,
+      state.dependencies.now_ms(),
+    )
+  let batch = case pending.retry_cancellation {
+    Some(transition_types.RetryCancellation(
+      issue_id: retry_issue_id,
+      generation: generation,
+      reason: reason,
+      ..,
+    )) ->
+      ledger_batch.append_retry_cancelled(
+        batch,
+        retry_issue_id,
+        generation,
+        reason,
+      )
+    None -> batch
   }
+  let batch =
+    ledger_batch.append_body(batch, outbox_effects.completed_body(outbox))
+  transition_types.HandoffClaimSucceeded(batch)
 }
 
 fn handle_handoff_success_finished(
@@ -6657,16 +6645,6 @@ fn observed_updated_at_ms(issue: tracker_issue.Issue) -> Int {
   case issue.updated_at {
     Some(time) -> birl.to_unix_milli(time)
     None -> 0
-  }
-}
-
-fn result_try_string(
-  result: Result(a, String),
-  next: fn(a) -> Result(b, String),
-) -> Result(b, String) {
-  case result {
-    Ok(value) -> next(value)
-    Error(reason) -> Error(reason)
   }
 }
 

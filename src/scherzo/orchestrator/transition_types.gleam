@@ -4,6 +4,7 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/task_lifecycle
+import scherzo/orchestrator/workflow_snapshot
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
@@ -166,6 +167,7 @@ pub type WorkerEntry {
     issue: tracker_issue.Issue,
     workspace_path: String,
     workflow_id: String,
+    workflow_snapshot: Option(workflow_snapshot.Snapshot),
     command_route_id: String,
     status: WorkerStatus,
     recovery: Option(session_event.RecoveryInfo),
@@ -244,6 +246,7 @@ pub type PendingClaim {
     session_id: String,
     workspace_path: String,
     workflow_id: String,
+    workflow_snapshot: workflow_snapshot.Snapshot,
     command_route_id: String,
     route_label: String,
     issue: tracker_issue.Issue,
@@ -284,6 +287,7 @@ pub type PollSnapshot {
 pub type DispatchContext {
   DispatchContext(
     effective: config_types.EffectiveConfig,
+    orchestrator: config_types.OrchestratorConfig,
     tracker_backend_kind: String,
     routing: config_types.RoutingConfig,
     available_workflow_ids: List(String),
@@ -310,6 +314,7 @@ pub type ReviewLanePreflightContext {
 
 pub fn dispatch_context(
   effective: config_types.EffectiveConfig,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_backend_kind: String,
   routing: config_types.RoutingConfig,
   workflow_dags: dict.Dict(String, workflow_dag.WorkflowDag),
@@ -326,6 +331,7 @@ pub fn dispatch_context(
 ) -> DispatchContext {
   DispatchContext(
     effective: effective,
+    orchestrator: orchestrator,
     tracker_backend_kind: tracker_backend_kind,
     routing: routing,
     available_workflow_ids: dict.keys(workflow_dags),

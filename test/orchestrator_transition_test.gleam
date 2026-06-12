@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import orchestrator_transition_invariant_helpers as invariant_helpers
+import scherzo/artifact_publication_config
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
@@ -9,6 +10,7 @@ import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
+import scherzo/orchestrator/workflow_snapshot
 import scherzo/review_lane_preflight_policy
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
@@ -73,16 +75,51 @@ pub fn fixture_effective() -> config_types.EffectiveConfig {
   )
 }
 
+pub fn fixture_routing() -> config_types.RoutingConfig {
+  config_types.RoutingConfig(
+    workflow_label_prefix: "workflow:",
+    require_exactly_one_workflow_label: False,
+    default_workflow: Some("default"),
+    workflows: dict.from_list([#("default", "workflows/default.yaml")]),
+  )
+}
+
+pub fn fixture_orchestrator() -> config_types.OrchestratorConfig {
+  config_types.OrchestratorConfig(
+    effective: fixture_effective(),
+    config_dir: ".scherzo",
+    routing: fixture_routing(),
+    dag_hooks: config_types.empty_dag_hooks(),
+    workspace_profiles: config_types.WorkspaceHookProfiles(
+      default_profile: "default",
+      profiles: dict.from_list([
+        #(
+          "default",
+          config_types.WorkspaceHookProfile(
+            name: "default",
+            driver: None,
+            source: config_types.SyntheticDefaultWorkspace,
+          ),
+        ),
+      ]),
+    ),
+    artifact_limits: config_types.ArtifactLimits(
+      command_stream_max_chars: 20_000,
+      template_field_max_chars: 8000,
+      workflow_summary_max_chars: 20_000,
+    ),
+    artifact_repositories: artifact_publication_config.empty_repositories(),
+    model_settings: model_config.default_settings(),
+    scheduled_jobs: [],
+  )
+}
+
 pub fn fixture_context() -> transition_types.DispatchContext {
   transition_types.DispatchContext(
     effective: fixture_effective(),
+    orchestrator: fixture_orchestrator(),
     tracker_backend_kind: "linear",
-    routing: config_types.RoutingConfig(
-      workflow_label_prefix: "workflow:",
-      require_exactly_one_workflow_label: False,
-      default_workflow: Some("default"),
-      workflows: dict.from_list([#("default", "workflows/default.yaml")]),
-    ),
+    routing: fixture_routing(),
     available_workflow_ids: ["default"],
     dispatch_enabled: True,
     operator_paused: False,
@@ -105,6 +142,20 @@ pub fn fixture_context() -> transition_types.DispatchContext {
       ),
       override: None,
     ),
+  )
+}
+
+pub fn fixture_workflow_snapshot(
+  workflow_id: String,
+  issue: tracker_issue.Issue,
+  _run_id: String,
+) -> workflow_snapshot.Snapshot {
+  workflow_snapshot.Snapshot(
+    workflow_id: workflow_id,
+    dag: fixture_workflow_dag(workflow_id),
+    orchestrator: fixture_orchestrator(),
+    fingerprint: "workflow-fingerprint",
+    run_root: "test/tmp/workspaces/" <> issue.identifier,
   )
 }
 
@@ -164,6 +215,7 @@ pub fn state_with_pending_claim(
         session_id: "session-1",
         workspace_path: "test/tmp/workspaces/ABC-1",
         workflow_id: "default",
+        workflow_snapshot: fixture_workflow_snapshot("default", issue, "run-1"),
         command_route_id: "worker:run-1:1",
         route_label: issue.identifier,
         issue: issue,

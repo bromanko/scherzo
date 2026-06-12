@@ -4,18 +4,28 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
+import scherzo/config/types as config_types
 import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_registry
+import scherzo/orchestrator/workflow_snapshot
 import scherzo/runtime/identity
+import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_dag
 import scherzo/workflow_run
+
+pub type WorkflowSnapshot =
+  workflow_snapshot.Snapshot
+
+pub type WorkflowSnapshotError =
+  workflow_snapshot.SnapshotError
 
 pub type WorkerSpawnContext(state) {
   WorkerSpawnContext(
@@ -40,6 +50,50 @@ pub type WorkerSpawnContext(state) {
     register_worker: fn(state, worker_registry.WorkerHandle) -> state,
     clear_recovery: fn(state, String) -> state,
   )
+}
+
+pub fn workflow_snapshot_for_start(
+  snapshot: Option(WorkflowSnapshot),
+  bundle: runtime_bundle.RuntimeBundle,
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+) -> Result(WorkflowSnapshot, WorkflowSnapshotError) {
+  workflow_snapshot.for_worker_start(
+    snapshot,
+    bundle,
+    issue,
+    workflow_id,
+    run_id,
+  )
+}
+
+pub fn snapshot_reason(error: WorkflowSnapshotError) -> String {
+  workflow_snapshot.worker_start_error_reason(error)
+}
+
+pub fn workflow_snapshot_workspace_root(snapshot: WorkflowSnapshot) -> String {
+  snapshot.orchestrator.effective.workspace.root
+}
+
+pub fn workflow_snapshot_dag(
+  snapshot: WorkflowSnapshot,
+) -> workflow_dag.WorkflowDag {
+  snapshot.dag
+}
+
+pub fn workflow_snapshot_orchestrator(
+  snapshot: WorkflowSnapshot,
+) -> config_types.OrchestratorConfig {
+  snapshot.orchestrator
+}
+
+pub fn workflow_snapshot_fingerprint(snapshot: WorkflowSnapshot) -> String {
+  snapshot.fingerprint
+}
+
+pub fn workflow_snapshot_run_root(snapshot: WorkflowSnapshot) -> String {
+  snapshot.run_root
 }
 
 pub fn spawn_worker(

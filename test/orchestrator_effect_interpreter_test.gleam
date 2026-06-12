@@ -126,6 +126,7 @@ fn worker_start_request() -> effects_types.WorkerStart {
     issue: orchestrator_transition_test.fixture_issue(),
     workspace_path: "test/tmp/workspaces/ABC-1",
     workflow_id: "default",
+    workflow_snapshot: None,
     route_label: "ABC-1",
     recovery: None,
   )
