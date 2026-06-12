@@ -1499,6 +1499,21 @@ def reject_unsafe_stable_commit_stack_branch(branch: str, base: str) -> None:
         )
 
 
+def require_commit_stack_head_description(root: Path) -> None:
+    description = revision_value(root, "@", "description", default="")
+    if description.strip():
+        return
+    json_failure(
+        status="invalid_commit_stack",
+        failure_code="commit_stack_head_description_empty",
+        message=(
+            "commit_stack publication refused because the selected head commit "
+            "has an empty jj description; rerun the workflow materialization "
+            "helper or set a description before publication"
+        ),
+    )
+
+
 def stable_commit_stack_push_needs_reconcile(message: str) -> bool:
     normalized = message.lower()
     reconcile_markers = [
@@ -1712,6 +1727,9 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
         return
     if not records:
         json_failure(status="nothing_to_publish", failure_code="nothing_to_publish", message="no changed files to publish")
+
+    if operation == "publish-commit-stack":
+        require_commit_stack_head_description(root)
 
     change_id = revision_value(root, "@", "change_id.short()", default="change")
     branch = publication_branch(operation, values, title_text, change_id)

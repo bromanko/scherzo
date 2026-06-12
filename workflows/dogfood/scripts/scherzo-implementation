@@ -32,6 +32,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
 
+from scherzo_workflow import commit_stack as commit_stack_helper
+
 TMP_DIR = Path("tmp")
 METADATA_PATH = TMP_DIR / "scherzo-implementation.json"
 CANONICAL_METADATA_RELATIVE_PATH = Path("state") / "implementation" / "metadata.json"
@@ -49,8 +51,6 @@ VALIDATION_PATH = TMP_DIR / "scherzo-implementation-validation.json"
 PUBLISH_PATH = TMP_DIR / "scherzo-implementation-publish.json"
 COMMIT_STACK_PATH = TMP_DIR / "scherzo-implementation-commit-stack.json"
 COMMIT_STACK_CARRIER_NAME = "commit_stack.bundle"
-COMMIT_STACK_MAX_CARRIER_BYTES = 104_857_600
-COMMIT_STACK_HASH_CHUNK_BYTES = 1024 * 1024
 TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
 PLAN_BRIEF_PATH = TMP_DIR / "scherzo-execplan-brief.md"
 PLAN_INDEX_PATH = TMP_DIR / "scherzo-execplan-index.json"
@@ -61,7 +61,6 @@ BASE_DRIFT_REPAIR_SUMMARY_PATH = TMP_DIR / "scherzo-implementation-base-drift-re
 BASE_DRIFT_REPAIR_FAILURE_PATH = TMP_DIR / "scherzo-implementation-base-drift-failure.md"
 RETENTION_MARKER = ".scherzo-keep-workspace"
 REFRESH_STAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-ARTIFACT_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
 PLAN_RE = re.compile(
     r"(?<![A-Za-z0-9_./-])(docs/plans/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:html|md))(?![A-Za-z0-9_/-])"
@@ -3078,234 +3077,26 @@ def write_publish_metadata_files(pr_title: str, body: str) -> tuple[Path, Path, 
     return title_path, PR_BODY_PATH, repair_summary_included
 
 
-def require_artifact_run_id(value: str) -> str:
-    if not ARTIFACT_RUN_ID_RE.fullmatch(value):
-        fail(
-            "SCHERZO_RUN_ID must be a safe artifact path segment containing only letters, digits, '.', '_' and '-'",
-            failure_code="invalid_configuration",
-        )
-    return value
-
-
-def run_id_for_artifacts() -> str:
-    run_id = os.environ.get("SCHERZO_RUN_ID", "local-run").strip() or "local-run"
-    return require_artifact_run_id(run_id)
-
-
-def run_artifact_dir_for_commit_stack(run_id: str) -> Path | None:
-    explicit = os.environ.get("SCHERZO_RUN_ARTIFACT_DIR", "").strip()
-    if explicit:
-        return Path(explicit)
-    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
-    if not run_root:
-        return None
-    run_root_path = Path(run_root)
-    candidates = [
-        run_root_path / ".scherzo-state" / "artifacts" / "runs" / run_id,
-        run_root_path.parent.parent.parent / ".scherzo-state" / "artifacts" / "runs" / run_id,
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[-1]
-
-
-def artifact_output_ref(run_id: str, name: str) -> str:
-    return f"runs/{run_id}/outputs/{name}"
-
-
-def commit_stack_max_carrier_bytes() -> int:
-    override = os.environ.get("SCHERZO_COMMIT_STACK_MAX_CARRIER_BYTES", "").strip()
-    if not override:
-        return COMMIT_STACK_MAX_CARRIER_BYTES
-    try:
-        override_bytes = int(override)
-    except ValueError:
-        fail(
-            "SCHERZO_COMMIT_STACK_MAX_CARRIER_BYTES must be a positive integer",
-            failure_code="invalid_configuration",
-        )
-    if override_bytes <= 0:
-        fail(
-            "SCHERZO_COMMIT_STACK_MAX_CARRIER_BYTES must be a positive integer",
-            failure_code="invalid_configuration",
-        )
-    return min(override_bytes, COMMIT_STACK_MAX_CARRIER_BYTES)
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(COMMIT_STACK_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def require_git_oid(value: str, *, label: str) -> str:
-    oid = value.strip().lower()
-    if re.fullmatch(r"[0-9a-f]{40}", oid):
-        return oid
-    fail(
-        f"{label} did not resolve to a 40-character Git object ID",
-        failure_code="invalid_commit_stack_artifact",
-    )
-
-
-def jj_commit_oid(revision: str) -> str:
-    value = run([
-        "jj",
-        "log",
-        "-r",
-        revision,
-        "--no-graph",
-        "-T",
-        "commit_id",
-        "--color=never",
-    ]).strip()
-    return require_git_oid(value, label=f"jj revision {revision}")
-
-
-def jj_description(revision: str) -> str:
-    return run([
-        "jj",
-        "log",
-        "-r",
-        revision,
-        "--no-graph",
-        "-T",
-        "description",
-        "--color=never",
-    ]).strip()
-
-
-def ensure_publication_commit_description(title: str) -> None:
-    if jj_description("@"):
-        return
-    description = title.strip() or "Scherzo publication"
-    describe = run_proc(["jj", "describe", "-m", description])
-    if describe.returncode != 0:
-        details = subprocess_failure_details(
-            describe.stdout,
-            describe.stderr,
-            describe.returncode,
-        )
-        fail(
-            "could not set a jj description before materializing commit_stack publication\n"
-            + details,
-            failure_code="commit_stack_description_failed",
-        )
-    if not jj_description("@"):
-        fail(
-            "jj describe completed but the selected commit still has an empty description",
-            failure_code="commit_stack_description_failed",
-        )
-
-
-def jj_tree_oid(revision: str, _head_oid: str) -> str:
-    commit = jj_commit_oid(revision)
-    proc = run_proc(["jj", "debug", "object", "commit", commit])
-    if proc.returncode != 0:
-        fail(
-            f"could not inspect Git tree for jj revision {revision}",
-            failure_code="invalid_commit_stack_artifact",
-        )
-    match = re.search(r'TreeId\(\s*"([0-9a-f]{40})"\s*,?\s*\)', proc.stdout)
-    if not match:
-        fail(
-            f"jj revision {revision} did not expose a 40-character Git tree ID",
-            failure_code="invalid_commit_stack_artifact",
-        )
-    return require_git_oid(match.group(1), label=f"tree for jj revision {revision}")
-
-
-def commit_stack_bundle_ref(run_id: str, head_oid: str) -> str:
-    run_hash = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
-    return f"refs/scherzo/commit-stack/{run_hash}/{head_oid}"
-
-
-def write_commit_stack_carrier(
-    *,
-    run_id: str,
-    repository: str,
-    base_ref: str,
-    base_oid: str,
-    head_oid: str,
-    head_tree_oid: str,
-) -> tuple[str, str, int]:
-    del repository, base_ref, head_tree_oid
-    require_command("git")
-    artifact_dir = run_artifact_dir_for_commit_stack(run_id)
-    if artifact_dir is None:
-        carrier_path = TMP_DIR / COMMIT_STACK_CARRIER_NAME
-        carrier_ref = str(carrier_path)
-    else:
-        carrier_path = artifact_dir / "outputs" / COMMIT_STACK_CARRIER_NAME
-        carrier_ref = artifact_output_ref(run_id, COMMIT_STACK_CARRIER_NAME)
-    carrier_path.parent.mkdir(parents=True, exist_ok=True)
-    if carrier_path.exists():
-        carrier_path.unlink()
-
-    bundle_ref = commit_stack_bundle_ref(run_id, head_oid)
-    try:
-        run(
-            ["git", "update-ref", bundle_ref, head_oid],
-            failure_code="invalid_commit_stack_artifact",
-        )
-        run(
-            ["git", "bundle", "create", str(carrier_path), bundle_ref, f"^{base_oid}"],
-            failure_code="invalid_commit_stack_artifact",
-        )
-        run(
-            ["git", "bundle", "verify", str(carrier_path)],
-            failure_code="invalid_commit_stack_artifact",
-        )
-    finally:
-        run(["git", "update-ref", "-d", bundle_ref], check=False)
-
-    carrier_bytes = carrier_path.stat().st_size
-    max_carrier_bytes = commit_stack_max_carrier_bytes()
-    if carrier_bytes > max_carrier_bytes:
-        fail(
-            "commit_stack carrier bundle exceeds maximum supported size "
-            f"({carrier_bytes} bytes > {max_carrier_bytes} bytes)",
-            failure_code="commit_stack_carrier_too_large",
-        )
-    return carrier_ref, file_sha256(carrier_path), carrier_bytes
-
-
 def materialize_commit_stack_artifact(
     *,
     repository: str,
     base_ref: str,
     base_revision: str,
+    description_title: str,
 ) -> dict[str, Any]:
-    run_id = run_id_for_artifacts()
-    base_oid = jj_commit_oid(base_revision)
-    head_oid = jj_commit_oid("@")
-    head_tree_oid = jj_tree_oid("@", head_oid)
-    carrier_ref, carrier_sha256, carrier_bytes = write_commit_stack_carrier(
-        run_id=run_id,
-        repository=repository,
-        base_ref=base_ref,
-        base_oid=base_oid,
-        head_oid=head_oid,
-        head_tree_oid=head_tree_oid,
-    )
-    artifact = {
-        "schema_version": 1,
-        "artifact_type": "scherzo.git_commit_stack.v1",
-        "repository": {"repo": repository},
-        "base": {"ref": base_ref, "sha": base_oid},
-        "head": {"sha": head_oid, "tree": head_tree_oid},
-        "carrier": {
-            "ref": carrier_ref,
-            "sha256": carrier_sha256,
-            "bytes": carrier_bytes,
-            "media_type": "application/vnd.git.bundle",
-        },
-    }
-    write_json(COMMIT_STACK_PATH, artifact)
-    return artifact
+    try:
+        return commit_stack_helper.materialize_commit_stack_artifact(
+            repository=repository,
+            base_ref=base_ref,
+            base_revision=base_revision,
+            output_path=COMMIT_STACK_PATH,
+            carrier_name=COMMIT_STACK_CARRIER_NAME,
+            description_title=description_title,
+            bundle_ref_namespace="commit-stack",
+            tmp_dir=TMP_DIR,
+        )
+    except commit_stack_helper.CommitStackError as exc:
+        fail(exc.message, failure_code=exc.code)
 
 
 def publish_command() -> None:
@@ -3363,12 +3154,12 @@ def publish_command() -> None:
         pr_title,
         body,
     )
-    ensure_publication_commit_description(pr_title)
     repository = default_repo(configured_publication_remote())
     commit_stack = materialize_commit_stack_artifact(
         repository=repository,
         base_ref=base,
         base_revision=base_revision,
+        description_title=pr_title,
     )
 
     publish = {

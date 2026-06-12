@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+from scherzo_workflow import commit_stack as commit_stack_helper
+
 try:
     import jsonschema
 except Exception:  # pragma: no cover - surfaced as a runtime diagnostic.
@@ -205,14 +207,11 @@ LEGACY_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation-v2"
 REVISION_HEAD_RE = re.compile(r"^[a-f0-9]{12,64}$")
 REVISION_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 REVISION_REMOTE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
-ARTIFACT_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 DEFAULT_REVISION_REFRESH_TIMEOUT_SECONDS = 120.0
 LINEAR_ISSUE_CONTEXT_TIMEOUT_SECONDS = 30.0
 MAX_WORKSPACE_DRIVER_DETAIL_CHARS = 4000
 COMMIT_STACK_OUTPUT_NAME = "execplan-commit-stack.json"
 COMMIT_STACK_CARRIER_NAME = "execplan-review-doc.bundle"
-COMMIT_STACK_MAX_CARRIER_BYTES = 104_857_600
-COMMIT_STACK_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 def usage() -> None:
@@ -1022,21 +1021,6 @@ def changed_file_records() -> list[dict[str, str]]:
     return records
 
 
-def require_artifact_run_id(value: str) -> str:
-    if not ARTIFACT_RUN_ID_RE.fullmatch(value):
-        fail("SCHERZO_RUN_ID must contain only letters, digits, '.', '_' and '-' for commit_stack artifacts")
-    return value
-
-
-def run_id_for_artifacts() -> str:
-    run_id = os.environ.get("SCHERZO_RUN_ID", "local-run").strip() or "local-run"
-    return require_artifact_run_id(run_id)
-
-
-def artifact_output_ref(run_id: str, name: str) -> str:
-    return f"runs/{run_id}/outputs/{name}"
-
-
 def configured_repo() -> str:
     for name in ["SCHERZO_GITHUB_REPO", "SCHERZO_PR_REPO", "GITHUB_REPOSITORY"]:
         value = os.environ.get(name, "").strip()
@@ -1051,83 +1035,8 @@ def configured_base_branch() -> str:
     return os.environ.get("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main").strip() or "main"
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(COMMIT_STACK_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def require_git_oid(value: str, *, label: str) -> str:
-    oid = value.strip().lower()
-    if re.fullmatch(r"[0-9a-f]{40}", oid):
-        return oid
-    fail(f"{label} did not resolve to a 40-character Git object ID")
-
-
-def jj_commit_oid(revision: str) -> str:
-    value = run([
-        "jj",
-        "log",
-        "-r",
-        revision,
-        "--no-graph",
-        "-T",
-        "commit_id",
-        "--color=never",
-    ]).strip()
-    return require_git_oid(value, label=f"jj revision {revision}")
-
-
-def jj_tree_oid(revision: str) -> str:
-    commit = jj_commit_oid(revision)
-    proc = run_proc(["jj", "debug", "object", "commit", commit])
-    if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        fail(f"could not inspect Git tree for jj revision {revision}\n{detail}")
-    match = re.search(r'TreeId\(\s*"([0-9a-f]{40})"\s*,?\s*\)', proc.stdout)
-    if not match:
-        fail(f"jj revision {revision} did not expose a 40-character Git tree ID")
-    return require_git_oid(match.group(1), label=f"tree for jj revision {revision}")
-
-
-def commit_stack_bundle_ref(run_id: str, head_oid: str) -> str:
-    run_hash = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
-    return f"refs/scherzo/commit-stack/{run_hash}/{head_oid}"
-
-
-def write_commit_stack_carrier(*, run_id: str, base_oid: str, head_oid: str) -> tuple[str, str, int]:
-    artifact_dir = run_artifact_dir()
-    if artifact_dir is None:
-        carrier_path = Path("tmp") / COMMIT_STACK_CARRIER_NAME
-        carrier_ref = str(carrier_path)
-    else:
-        carrier_path = artifact_dir / "outputs" / COMMIT_STACK_CARRIER_NAME
-        carrier_ref = artifact_output_ref(run_id, COMMIT_STACK_CARRIER_NAME)
-    carrier_path.parent.mkdir(parents=True, exist_ok=True)
-    if carrier_path.exists():
-        carrier_path.unlink()
-
-    bundle_ref = commit_stack_bundle_ref(run_id, head_oid)
-    try:
-        run(["git", "update-ref", bundle_ref, head_oid])
-        run(["git", "bundle", "create", str(carrier_path), bundle_ref, f"^{base_oid}"])
-        run(["git", "bundle", "verify", str(carrier_path)])
-    finally:
-        run(["git", "update-ref", "-d", bundle_ref], check=False)
-
-    carrier_bytes = carrier_path.stat().st_size
-    if carrier_bytes > COMMIT_STACK_MAX_CARRIER_BYTES:
-        try:
-            carrier_path.unlink()
-        except FileNotFoundError:
-            pass
-        fail(
-            "commit_stack carrier bundle exceeds maximum supported size "
-            f"({carrier_bytes} bytes > {COMMIT_STACK_MAX_CARRIER_BYTES} bytes)"
-        )
-    return carrier_ref, file_sha256(carrier_path), carrier_bytes
+def fail_commit_stack(error: commit_stack_helper.CommitStackError) -> None:
+    fail(error.message, code=error.code)
 
 
 def validate_commit_stack_changed_files(review_path: Path) -> list[dict[str, str]]:
@@ -2177,29 +2086,20 @@ def command_materialize_commit_stack(args: list[str]) -> None:
     validate_commit_stack_changed_files(review_path)
     repository = configured_repo()
     base_branch = configured_base_branch()
-    run_id = run_id_for_artifacts()
-    base_oid = jj_commit_oid("@-")
-    head_oid = jj_commit_oid("@")
-    head_tree_oid = jj_tree_oid("@")
-    carrier_ref, carrier_sha256, carrier_bytes = write_commit_stack_carrier(
-        run_id=run_id,
-        base_oid=base_oid,
-        head_oid=head_oid,
-    )
-    artifact = {
-        "schema_version": 1,
-        "artifact_type": "scherzo.git_commit_stack.v1",
-        "repository": {"repo": repository},
-        "base": {"ref": base_branch, "sha": base_oid},
-        "head": {"sha": head_oid, "tree": head_tree_oid},
-        "carrier": {
-            "ref": carrier_ref,
-            "sha256": carrier_sha256,
-            "bytes": carrier_bytes,
-            "media_type": "application/vnd.git.bundle",
-        },
-    }
-    write_json(Path(ns.output), artifact)
+    try:
+        artifact = commit_stack_helper.materialize_commit_stack_artifact(
+            repository=repository,
+            base_ref=base_branch,
+            base_revision="@-",
+            output_path=Path(ns.output),
+            carrier_name=COMMIT_STACK_CARRIER_NAME,
+            description_title=f"ExecPlan review doc: {review_meta['path']}",
+            bundle_ref_namespace="commit-stack",
+        )
+    except commit_stack_helper.CommitStackError as exc:
+        fail_commit_stack(exc)
+    base_oid = artifact["base"]["sha"]
+    head_oid = artifact["head"]["sha"]
     if ns.target_output:
         if not ns.previous_bundle:
             fail("materialize-commit-stack requires --previous-bundle when --target-output is set")

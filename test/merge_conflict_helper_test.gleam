@@ -511,6 +511,65 @@ pub fn publish_requires_recorded_project_validation_test() {
   )
 }
 
+pub fn publish_describes_empty_head_before_commit_stack_artifact_test() {
+  let dir = "test/tmp/merge-conflict-publish-empty-description"
+  write_validation_fixture(dir, "safe\n")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      dir <> "/.scherzo-state/artifacts/runs/local-run",
+    )
+  let workflow_env = "PATH=\"$PWD/bin:$PATH\" "
+
+  let validate =
+    run_helper_in(
+      dir,
+      workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
+    )
+  assert validate.status == step_artifact.StepSucceeded
+  let record =
+    run_helper_in(
+      dir,
+      workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict record-project-validation",
+    )
+  assert record.status == step_artifact.StepSucceeded
+
+  let published =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_EMPTY_DESCRIPTION=1 "
+        <> workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict publish",
+    )
+
+  assert published.status == step_artifact.StepSucceeded
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "log -r @ --no-graph -T description")
+  assert string.contains(
+    jj_log,
+    "describe -m Resolve merge conflicts for LIV-123: feature/conflicted-branch",
+  )
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-commit-stack.json")
+  assert string.contains(
+    commit_stack,
+    "cccccccccccccccccccccccccccccccccccccccc",
+  )
+  assert !string.contains(
+    commit_stack,
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  )
+  let carrier =
+    dir
+    <> "/.scherzo-state/artifacts/runs/local-run/outputs/scherzo-merge-conflict-commit-stack.bundle"
+  let assert Ok(True) = simplifile.is_file(carrier)
+  assert string.contains(
+    commit_stack,
+    "runs/local-run/outputs/scherzo-merge-conflict-commit-stack.bundle",
+  )
+}
+
 pub fn publish_writes_commit_stack_carrier_to_run_artifacts_test() {
   let dir = "test/tmp/merge-conflict-publish-run-artifact-carrier"
   write_validation_fixture(dir, "safe\n")
@@ -564,6 +623,65 @@ pub fn publish_writes_commit_stack_carrier_to_run_artifacts_test() {
   assert string.contains(git_log, "scherzo-merge-conflict-commit-stack.bundle")
   assert string.contains(git_log, "^1111111111111111111111111111111111111111")
   assert string.contains(git_log, "^2222222222222222222222222222222222222222")
+}
+
+pub fn publish_prefers_discovered_artifact_store_over_synthetic_run_root_test() {
+  let dir = "test/tmp/merge-conflict-publish-discovered-artifact-carrier"
+  let run_root = dir <> "/nested/run-root"
+  write_validation_fixture(dir, "safe\n")
+  let assert Ok(metadata) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict.json")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(run_root <> "/artifacts/merge-conflict")
+  let assert Ok(Nil) =
+    simplifile.write(
+      run_root <> "/artifacts/merge-conflict/scherzo-merge-conflict.json",
+      metadata,
+    )
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      dir <> "/.scherzo-state/artifacts/runs/run-discovered",
+    )
+
+  let workflow_env =
+    "SCHERZO_RUN_ROOT=\"$PWD/nested/run-root\" SCHERZO_RUN_ID=run-discovered PATH=\"$PWD/bin:$PATH\" "
+  let validate =
+    run_helper_in(
+      dir,
+      workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict validate",
+    )
+  assert validate.status == step_artifact.StepSucceeded
+  let record =
+    run_helper_in(
+      dir,
+      workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict record-project-validation",
+    )
+  assert record.status == step_artifact.StepSucceeded
+
+  let published =
+    run_helper_in(
+      dir,
+      workflow_env
+        <> "../../../.scherzo/workflows/scripts/scherzo-merge-conflict publish",
+    )
+
+  assert published.status == step_artifact.StepSucceeded
+  let carrier =
+    dir
+    <> "/.scherzo-state/artifacts/runs/run-discovered/outputs/scherzo-merge-conflict-commit-stack.bundle"
+  let synthetic_carrier =
+    run_root
+    <> "/.scherzo-state/artifacts/runs/run-discovered/outputs/scherzo-merge-conflict-commit-stack.bundle"
+  let assert Ok(True) = simplifile.is_file(carrier)
+  let assert Ok(False) = simplifile.is_file(synthetic_carrier)
+  let assert Ok(commit_stack) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-commit-stack.json")
+  assert string.contains(
+    commit_stack,
+    "runs/run-discovered/outputs/scherzo-merge-conflict-commit-stack.bundle",
+  )
 }
 
 pub fn validate_accepts_prepare_metadata_with_jj_conflict_status_suffix_test() {
@@ -823,10 +941,22 @@ fn write_fake_validation_jj(path: String) -> Nil {
       path,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> jj.log\n"
+        <> "if [ \"$1\" = describe ]; then touch .fake-described; exit 0; fi\n"
         <> "if [ \"$1\" = resolve ]; then echo 'Error: No conflicts found at this revision' >&2; exit 2; fi\n"
         <> "if [ \"$1 $2\" = 'file list' ]; then printf '%s\\n' conflicted.txt safe.txt; exit 0; fi\n"
-        <> "if [ \"$1\" = log ] && [ \"$2\" = -r ] && [ \"$6\" = commit_id ]; then printf '%s\\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\n"
-        <> "if [ \"$1\" = log ] && [ \"$2\" = -r ] && [ \"$6\" = 'commit_id.short()' ]; then printf '%s\\n' aaaaaaaa; exit 0; fi\n"
+        <> "if [ \"$1\" = log ]; then\n"
+        <> "  template=\n"
+        <> "  prev=\n"
+        <> "  for arg in \"$@\"; do\n"
+        <> "    if [ \"$prev\" = -T ]; then template=$arg; fi\n"
+        <> "    prev=$arg\n"
+        <> "  done\n"
+        <> "  case \"$template\" in\n"
+        <> "    description) if [ \"${SCHERZO_FAKE_EMPTY_DESCRIPTION:-}\" = 1 ] && [ ! -f .fake-described ]; then printf '\\n'; else echo currentdescription; fi; exit 0;;\n"
+        <> "    commit_id) if [ -f .fake-described ]; then printf '%s\\n' cccccccccccccccccccccccccccccccccccccccc; else printf '%s\\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi; exit 0;;\n"
+        <> "    'commit_id.short()') printf '%s\\n' aaaaaaaa; exit 0;;\n"
+        <> "  esac\n"
+        <> "fi\n"
         <> "if [ \"$1 $2 $3\" = 'debug object commit' ]; then printf '%s\\n' 'TreeId(\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\")'; exit 0; fi\n"
         <> "exit 1\n",
     )
