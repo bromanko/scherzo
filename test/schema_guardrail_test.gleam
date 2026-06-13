@@ -884,6 +884,15 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "DispatchPauseChanged",
+      "dispatch_pause_changed",
+      record.with_id(
+        "record-dispatch-pause-changed",
+        1021,
+        record.DispatchPauseChanged(paused: True),
+      ),
+    ),
+    LedgerExample(
       "LinearCommandSeen",
       "linear_command_seen",
       record.with_id(
@@ -1651,6 +1660,7 @@ fn projection_fixture_projection() -> projection.Projection {
         ),
       ),
     ]),
+    dispatch_paused: False,
     workflow_runs: dict.from_list([
       #(
         "workflow-run-1",

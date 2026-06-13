@@ -112,6 +112,14 @@ pub fn bound_port(server: Server) -> Int {
   server.port
 }
 
+/// Monitor the server lifecycle process.
+///
+/// The current implementation uses the accept loop as that lifecycle process,
+/// but callers should treat the returned monitor as server-health monitoring.
+pub fn monitor(server: Server) -> process.Monitor {
+  process.monitor(server.accept_pid)
+}
+
 pub fn stop(server: Server) -> Nil {
   process.kill(server.accept_pid)
   ffi_close_listener(server.listener)
@@ -126,7 +134,7 @@ fn accept_loop(listener: Listener, settings: Settings, store: Backend) -> Nil {
       accept_loop(listener, settings, store)
     }
     Error(message) -> {
-      log_control_debug("control_accept_stopped", [
+      log_control_error("control_accept_stopped", [
         #("error", log.truncate(message, 200)),
       ])
       Nil
@@ -530,6 +538,10 @@ fn close_after_send_failure(socket: Socket, message: String) -> Nil {
 
 fn log_control_debug(event: String, fields: List(log.Field)) -> Nil {
   io.println_error(log.debug(event, fields))
+}
+
+fn log_control_error(event: String, fields: List(log.Field)) -> Nil {
+  io.println_error(log.error(event, fields))
 }
 
 fn close_socket(socket: Socket) -> Nil {

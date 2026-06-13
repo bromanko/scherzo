@@ -1062,14 +1062,14 @@ fn handle_retry_tick(
             False ->
               transition_types.Outcome(
                 state: state,
-                effects: list.append(accepted_effects, [
-                  effects_types.Log(
-                    "warn",
-                    "retry_deferred_dispatch_unavailable",
-                    [#("issue_id", issue_id)],
+                effects: list.append(
+                  accepted_effects,
+                  retry_dispatch_unavailable_effects(
+                    issue_id,
+                    generation,
+                    context,
                   ),
-                  effects_types.DeferRetryTimer(issue_id, generation, 1000),
-                ]),
+                ),
               )
             True ->
               transition_types.Outcome(
@@ -1118,6 +1118,27 @@ fn retry_dispatch_available(
   && slots_remain(state, context)
 }
 
+fn retry_dispatch_unavailable_effects(
+  issue_id: String,
+  generation: Int,
+  context: transition_types.DispatchContext,
+) -> List(effects_types.Effect) {
+  case context.operator_paused {
+    True -> [
+      effects_types.Log("info", "retry_deferred_dispatch_paused", [
+        #("issue_id", issue_id),
+      ]),
+      effects_types.DeferRetryTimer(issue_id, generation, 60_000),
+    ]
+    False -> [
+      effects_types.Log("warn", "retry_deferred_dispatch_unavailable", [
+        #("issue_id", issue_id),
+      ]),
+      effects_types.DeferRetryTimer(issue_id, generation, 1000),
+    ]
+  }
+}
+
 fn handle_retry_refresh_completed(
   state: transition_types.State,
   issue_id: String,
@@ -1145,16 +1166,16 @@ fn handle_retry_refresh_completed(
       case entry.timer_generation != generation {
         True -> retry_timer_stale(state, issue_id, generation, True)
         False ->
-          case context.dispatch_enabled {
+          case retry_dispatch_available(state, context) {
             False ->
-              transition_types.Outcome(state: state, effects: [
-                effects_types.Log(
-                  "warn",
-                  "retry_deferred_dispatch_unavailable",
-                  [#("issue_id", issue_id)],
+              transition_types.Outcome(
+                state: state,
+                effects: retry_dispatch_unavailable_effects(
+                  issue_id,
+                  generation,
+                  context,
                 ),
-                effects_types.DeferRetryTimer(issue_id, generation, 1000),
-              ])
+              )
             True ->
               handle_retry_candidate_after_refresh(
                 state,
@@ -1872,6 +1893,42 @@ fn handle_ledger_append_completed(
         source_run_id,
         result,
       )
+    effects_types.SetOperatorPausedAfterAppend(
+      paused,
+      request,
+      success_result,
+      failure_result,
+    ) ->
+      case result {
+        Ok(Nil) ->
+          transition_types.Outcome(state: state, effects: [
+            effects_types.SetOperatorPaused(paused),
+            effects_types.FinishOperatorCommand(request, success_result),
+          ])
+        Error(err) -> {
+          let failure_effects = case paused {
+            True -> [
+              effects_types.SetOperatorPaused(True),
+              effects_types.FinishOperatorCommand(request, failure_result),
+            ]
+            False -> [
+              effects_types.FinishOperatorCommand(request, failure_result),
+            ]
+          }
+          transition_types.Outcome(state: state, effects: [
+            effects_types.Log(
+              "warn",
+              "operator_dispatch_pause_ledger_append_failed",
+              [
+                #("correlation_id", correlation_id),
+                #("status", record.dispatch_pause_status(paused)),
+                #("error", ledger.ledger_error_code(err)),
+              ],
+            ),
+            ..failure_effects
+          ])
+        }
+      }
     effects_types.ContinueRegardless | effects_types.StopBatchOnFailure ->
       transition_types.Outcome(state: state, effects: [])
   }
@@ -3219,39 +3276,45 @@ fn dispatch_validation_precondition_failure(
   context: transition_types.DispatchContext,
   issue: tracker_issue.Issue,
 ) -> Option(String) {
-  case
-    string.trim(issue.id) == ""
-    || string.trim(issue.identifier) == ""
-    || string.trim(issue.title) == ""
-    || string.trim(issue_state.to_string(issue.state)) == ""
-  {
-    True -> Some("missing_required_fields")
+  case context.operator_paused {
+    True -> Some("operator_paused")
     False ->
-      case core.is_active(context.effective, issue.state) {
-        False -> Some("inactive_state")
-        True ->
-          case core.is_terminal(context.effective, issue.state) {
-            True -> Some("terminal_state")
-            False ->
-              case list.contains(active_issue_ids(state, context), issue.id) {
-                True -> Some("already_running")
-                False -> {
-                  let identity = orchestrator_state.issue_identity(issue)
-                  case claims.has_tracker_claim(state, identity) {
-                    True -> Some("already_claimed")
-                    False ->
-                      case
-                        core.dispatch_preconditions_satisfied_without_slot_capacity(
-                          state.runtime,
-                          context.effective,
-                          issue,
-                        )
-                      {
-                        True -> None
-                        False -> Some("parked")
+      case
+        string.trim(issue.id) == ""
+        || string.trim(issue.identifier) == ""
+        || string.trim(issue.title) == ""
+        || string.trim(issue_state.to_string(issue.state)) == ""
+      {
+        True -> Some("missing_required_fields")
+        False ->
+          case core.is_active(context.effective, issue.state) {
+            False -> Some("inactive_state")
+            True ->
+              case core.is_terminal(context.effective, issue.state) {
+                True -> Some("terminal_state")
+                False ->
+                  case
+                    list.contains(active_issue_ids(state, context), issue.id)
+                  {
+                    True -> Some("already_running")
+                    False -> {
+                      let identity = orchestrator_state.issue_identity(issue)
+                      case claims.has_tracker_claim(state, identity) {
+                        True -> Some("already_claimed")
+                        False ->
+                          case
+                            core.dispatch_preconditions_satisfied_without_slot_capacity(
+                              state.runtime,
+                              context.effective,
+                              issue,
+                            )
+                          {
+                            True -> None
+                            False -> Some("parked")
+                          }
                       }
+                    }
                   }
-                }
               }
           }
       }

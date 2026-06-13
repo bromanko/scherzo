@@ -3,6 +3,10 @@ import gleam/option.{type Option, None, Some}
 
 pub const context_name = "commands"
 
+pub type DispatchPauseStatusDecodeError {
+  InvalidDispatchPauseStatus
+}
+
 pub fn linear_seen_entries(
   comment_id: String,
   issue_id: String,
@@ -115,6 +119,29 @@ pub fn remote_acked_entries(
     #("event_id", json.string(event_id)),
     #("task_remote_id", json.string(task_remote_id)),
   ]
+}
+
+pub fn dispatch_pause_changed_entries(
+  paused: Bool,
+) -> List(#(String, json.Json)) {
+  [#("status", json.string(dispatch_pause_status(paused)))]
+}
+
+pub fn dispatch_pause_status(paused: Bool) -> String {
+  case paused {
+    True -> "paused"
+    False -> "resumed"
+  }
+}
+
+pub fn dispatch_pause_status_from_string(
+  status: String,
+) -> Result(Bool, DispatchPauseStatusDecodeError) {
+  case status {
+    "paused" -> Ok(True)
+    "resumed" -> Ok(False)
+    _ -> Error(InvalidDispatchPauseStatus)
+  }
 }
 
 fn option_string(value: Option(String)) -> json.Json {

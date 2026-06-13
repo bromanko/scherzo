@@ -23,6 +23,7 @@ import scherzo/state/record
 pub type Projection {
   Projection(
     runs: Dict(String, RunStatus),
+    dispatch_paused: Bool,
     workflow_runs: Dict(String, WorkflowRunStatus),
     workflow_run_provenances: Dict(String, WorkflowRunProvenance),
     workflow_task_refs: Dict(String, record.TaskRefFields),
@@ -682,6 +683,7 @@ type WorkflowRepairSnapshot {
 type SnapshotFields {
   SnapshotFields(
     runs: List(RunSnapshot),
+    dispatch_paused: Bool,
     workflow_runs: List(WorkflowRunSnapshot),
     workflow_run_provenances: List(WorkflowRunProvenanceSnapshot),
     workflow_task_refs: List(WorkflowTaskRefSnapshot),
@@ -711,6 +713,7 @@ type WorkstreamSnapshot {
 pub fn new() -> Projection {
   Projection(
     runs: dict.new(),
+    dispatch_paused: False,
     workflow_runs: dict.new(),
     workflow_run_provenances: dict.new(),
     workflow_task_refs: dict.new(),
@@ -1724,6 +1727,8 @@ pub fn apply(
         ..projection,
         parked_issues: dict.delete(projection.parked_issues, issue_id),
       )
+    record.DispatchPauseChanged(paused) ->
+      Projection(..projection, dispatch_paused: paused)
     record.LinearCommandSeen(
       comment_id,
       issue_id,
@@ -2372,6 +2377,10 @@ pub fn scheduled_statuses(projection: Projection) -> List(ScheduledJobStatus) {
   |> scheduled_jobs_to_local
   |> scheduled_projection.statuses
   |> list.map(local_scheduled_status_to_parent)
+}
+
+pub fn dispatch_paused(projection: Projection) -> Bool {
+  projection.dispatch_paused
 }
 
 fn scheduled_jobs_to_local(
@@ -3428,6 +3437,7 @@ pub fn to_json(projection: Projection) -> json.Json {
   json.object([
     #("schema_version", json.int(record.schema_version)),
     #("kind", json.string("projection_snapshot")),
+    #("dispatch_paused", json.bool(projection.dispatch_paused)),
     #("runs", json.array(dict.to_list(projection.runs), of: run_entry_to_json)),
     #(
       "workflow_runs",
@@ -3598,6 +3608,7 @@ fn decode_current_snapshot(
             #(run_id, status)
           })
           |> dict.from_list,
+        dispatch_paused: fields.dispatch_paused,
         workflow_runs: fields.workflow_runs
           |> list.map(fn(entry) {
             let WorkflowRunSnapshot(run_id, status) = entry
@@ -4760,6 +4771,11 @@ fn workstream_phase_run_entry_to_json(
 fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
   use schema_version <- decode.field("schema_version", decode.int)
   use kind <- decode.field("kind", decode.string)
+  use dispatch_paused <- decode.optional_field(
+    "dispatch_paused",
+    False,
+    decode.bool,
+  )
   use runs <- decode.field("runs", decode.list(of: run_snapshot_decoder()))
   use workflow_runs <- decode.optional_field(
     "workflow_runs",
@@ -4858,6 +4874,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     True ->
       decode.success(SnapshotFields(
         runs,
+        dispatch_paused,
         workflow_runs,
         workflow_run_provenances,
         workflow_task_refs,
@@ -4882,6 +4899,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
       decode.failure(
         SnapshotFields(
           [],
+          False,
           [],
           [],
           [],

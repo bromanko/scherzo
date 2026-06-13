@@ -79,6 +79,10 @@ pub fn append_body(batch: LedgerBatch, body: record.RecordBody) -> LedgerBatch {
   LedgerBatch(list.append(bodies, [body]))
 }
 
+pub fn dispatch_pause_changed(paused: Bool) -> LedgerBatch {
+  LedgerBatch([record.DispatchPauseChanged(paused)])
+}
+
 // Workflow execution checkpoints own current workflow_run terminal records.
 // Worker finish batches only update counters so they do not append legacy
 // run_finished records or duplicate generic workflow outcomes.

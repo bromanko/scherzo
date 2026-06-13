@@ -112,6 +112,7 @@ pub type Message {
   )
   WorkerDown(process.Down)
   EffectRunnerDown(process.Down)
+  ControlServerDown(process.Down)
   SideEffectCompleted(effect_runner.Completion)
   Shutdown(process.Subject(Nil))
   GetSnapshot(process.Subject(orchestrator_state.RuntimeState))
@@ -204,6 +205,7 @@ type State {
     effect_runner_monitor: process.Monitor,
     event_hub: process.Subject(hub.Message),
     control_server: ControlServerHandle,
+    control_server_monitor: Option(process.Monitor),
     control_file_path: Option(String),
     query_service: query_service.Handle,
     read_model: read_model.ReadModel,
@@ -603,6 +605,15 @@ fn stop_control_plane(
   }
 }
 
+fn monitor_control_server(
+  handle: ControlServerHandle,
+) -> Option(process.Monitor) {
+  case handle {
+    NoControlServer -> None
+    RealControlServer(server) -> Some(control_server.monitor(server))
+  }
+}
+
 fn start_remote_client_now(state: State) -> State {
   case state.remote_client {
     Some(_) -> state
@@ -840,6 +851,8 @@ pub fn start(
                       )
                     }
                     True -> {
+                      let control_server_monitor =
+                        monitor_control_server(control_plane.handle)
                       let poll =
                         poll_scheduler.start(fn(generation) {
                           dependencies.send_after(
@@ -872,6 +885,7 @@ pub fn start(
                           effect_runner_monitor: effect_runner_monitor,
                           event_hub: event_hub,
                           control_server: control_plane.handle,
+                          control_server_monitor: control_server_monitor,
                           control_file_path: control_plane.control_file_path,
                           query_service: query_handle,
                           read_model: read_model.new(
@@ -882,7 +896,7 @@ pub fn start(
                           ledger_projection: startup_recovery.projection,
                           remote_client: None,
                           remote_client_monitor: None,
-                          operator_paused: False,
+                          operator_paused: startup_recovery.projection.dispatch_paused,
                           last_operator_command_result: None,
                           shell_state_overrides_transition: False,
                           dependencies: dependencies,
@@ -903,7 +917,17 @@ pub fn start(
                           effect_runner_monitor,
                           fn(down) { EffectRunnerDown(down) },
                         )
-                        |> process.select_monitors(WorkerDown)
+                      let selector = case control_server_monitor {
+                        Some(monitor) ->
+                          process.select_specific_monitor(
+                            selector,
+                            monitor,
+                            fn(down) { ControlServerDown(down) },
+                          )
+                        None -> selector
+                      }
+                      let selector =
+                        process.select_monitors(selector, WorkerDown)
                       actor.initialised(state)
                       |> actor.selecting(selector)
                       |> actor.returning(subject)
@@ -1594,6 +1618,10 @@ fn handle_message(
     EffectRunnerDown(down) -> {
       let _shutdown_state = handle_effect_runner_down(state, down)
       actor.stop_abnormal("effect_runner_down")
+    }
+    ControlServerDown(down) -> {
+      let _shutdown_state = handle_control_server_down(state, down)
+      actor.stop_abnormal("control_server_down")
     }
     SideEffectCompleted(completion) ->
       continue_with_refreshed_state(handle_side_effect_completed(
@@ -6038,7 +6066,25 @@ fn handle_effect_runner_down(state: State, down: process.Down) -> State {
   run_transition_messages(state, [transition_types.ShutdownRequested(False)])
 }
 
+fn handle_control_server_down(state: State, down: process.Down) -> State {
+  log_state(
+    state,
+    "error",
+    "control_server_down",
+    control_server_down_fields(down),
+  )
+  run_transition_messages(state, [transition_types.ShutdownRequested(True)])
+}
+
 fn effect_runner_down_fields(down: process.Down) -> List(log.Field) {
+  process_down_fields(down)
+}
+
+fn control_server_down_fields(down: process.Down) -> List(log.Field) {
+  [#("monitor", "control_server_accept_loop"), ..process_down_fields(down)]
+}
+
+fn process_down_fields(down: process.Down) -> List(log.Field) {
   case down {
     process.ProcessDown(_, _, reason) -> [
       #("reason", process_exit_reason_to_string(reason)),
@@ -6769,6 +6815,10 @@ fn shutdown_step_attempt_interruption_bodies(
 
 fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
   process.demonitor_process(state.effect_runner_monitor)
+  case state.control_server_monitor {
+    Some(monitor) -> process.demonitor_process(monitor)
+    None -> Nil
+  }
   case stop_effect_runner {
     True ->
       case effect_runner.shutdown(state.effect_runner, 1000) {
@@ -6836,6 +6886,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
     scheduled_retry_timers: dict.new(),
     scheduled_report_retry_timers: dict.new(),
     control_server: NoControlServer,
+    control_server_monitor: None,
     control_file_path: None,
     query_service: state.query_service,
     remote_client: None,
