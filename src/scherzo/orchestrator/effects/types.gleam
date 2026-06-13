@@ -138,6 +138,19 @@ pub type LedgerAppend {
   )
 }
 
+pub fn workflow_cancelled_append(
+  correlation_id: String,
+  run_ref: #(String, String, task.TaskRef),
+  token_total: Int,
+) -> Effect {
+  AppendLedger(LedgerAppend(
+    correlation_id: correlation_id,
+    batch: ledger_batch.workflow_cancelled(run_ref, token_total),
+    failure_event: "workflow_terminal_append_failed",
+    policy: ContinueRegardless,
+  ))
+}
+
 pub type LedgerPolicy {
   ContinueRegardless
   StopBatchOnFailure
