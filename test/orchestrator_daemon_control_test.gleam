@@ -1140,6 +1140,57 @@ pub fn pause_command_suppresses_dispatch_and_resume_allows_it_test() {
   hub.stop(hub_subject)
 }
 
+pub fn startup_recovery_of_dispatch_pause_suppresses_dispatch_until_resume_test() {
+  let candidate = issue("recovered-pause", "ABC-RECOVER-PAUSE", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let dir = "test/tmp/daemon-control-pause-recovery"
+  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 3)
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(dir <> "/" <> root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [record.new(1, 1, record.DispatchPauseChanged(True))],
+      True,
+    )
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      disabled_handoff(),
+      hub_subject,
+      long_running_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(recovered_read_snapshot) =
+    daemon.get_read_model_snapshot(started.data, 1000)
+  assert recovered_read_snapshot.dispatch_paused
+
+  let _ = test_async.drain_subject(log_subject)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "tick_started", 10)
+  let assert Ok(paused_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.size(paused_snapshot.running) == 0
+  let paused_logs = test_async.drain_subject(log_subject)
+  assert !list.contains(paused_logs, "dispatch_started")
+
+  let assert Ok(resumed) =
+    daemon.apply_operator_command(started.data, command.ResumeDispatch, 1000)
+  assert command.status_to_string(resumed.status) == "applied"
+  let assert Ok(resumed_read_snapshot) =
+    daemon.get_read_model_snapshot(started.data, 1000)
+  assert !resumed_read_snapshot.dispatch_paused
+  process.send(started.data, daemon.PollTick(2))
+  assert wait_for_log(log_subject, "dispatch_started", 20)
+
+  test_async.release_barrier(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
   let candidate = issue("retry-issue", "ABC-RETRY", "Todo")
   let tracker_client = tracker_with(candidate)

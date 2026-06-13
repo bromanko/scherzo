@@ -188,6 +188,66 @@ pub fn automatic_retry_dispatch_state_dispatches_test() {
   assert has_pending_retry_cancellation(next, issue.id, "retry_dispatch")
 }
 
+pub fn retry_refresh_completion_while_paused_defers_without_claim_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let context =
+    transition_types.DispatchContext(
+      ..orchestrator_transition_test.fixture_context(),
+      operator_paused: True,
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.RetryRefreshCompleted(issue.id, 1, Ok([issue]), context),
+      state_with_retry(issue),
+    )
+
+  assert !dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert dict.has_key(
+    next.runtime.retry_attempts,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !has_claim_issue(effects)
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.DeferRetryTimer(issue.id, 1, 60_000)
+  })
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.Log("info", "retry_deferred_dispatch_paused", [
+      #("issue_id", issue.id),
+    ])
+  })
+}
+
+pub fn retry_tick_while_paused_uses_backoff_without_warn_spin_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let context =
+    transition_types.DispatchContext(
+      ..orchestrator_transition_test.fixture_context(),
+      operator_paused: True,
+    )
+
+  let transition_types.Outcome(effects: effects, ..) =
+    transition.handle(
+      transition_types.RetryTick(issue.id, 1, context),
+      state_with_retry(issue),
+    )
+
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.DeferRetryTimer(issue.id, 1, 60_000)
+  })
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      effects_types.Log("warn", "retry_deferred_dispatch_unavailable", _) ->
+        True
+      _ -> False
+    }
+  })
+}
+
 pub fn retry_refresh_without_retry_state_is_treated_as_stale_test() {
   let issue = orchestrator_transition_test.fixture_issue()
 
@@ -470,6 +530,47 @@ pub fn no_dispatch_slot_available_skips_validation_test() {
   assert !list.any(effects, fn(effect) {
     case effect {
       effects_types.BeginDispatchValidation(_, _) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn dispatch_validation_completion_while_paused_does_not_claim_test() {
+  let candidate = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let context =
+    transition_types.DispatchContext(
+      ..context_requiring_preflight(review_lane_preflight_policy.Policy(
+        mode: review_lane_preflight_policy.Off,
+        cache_ttl_seconds: 86_400,
+        park_on_failure: True,
+        strict_live_model_checks: False,
+      )),
+      operator_paused: True,
+    )
+  let state = state_with_pending_dispatch_validation(candidate)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.DispatchValidationCompleted(
+        candidate.id,
+        1,
+        Ok(candidate),
+        context,
+      ),
+      state,
+    )
+
+  assert dict.size(next.pending_dispatch_validations) == 0
+  assert dict.size(next.pending_claims) == 0
+  assert !has_claim_issue(effects)
+  assert !has_start_worker(effects)
+  assert list.any(effects, fn(effect) {
+    case effect {
+      effects_types.Log(
+        "info",
+        "dispatch_validation_precondition_failed",
+        fields,
+      ) -> field_equals(fields, "reason", "operator_paused")
       _ -> False
     }
   })
@@ -779,6 +880,100 @@ pub fn review_lane_preflight_completion_allows_claim_test() {
   let assert Ok(pending_claim) = dict.get(next.pending_claims, identity)
   assert pending_claim.run_id == "ABC-1-999-1"
   assert has_claim_issue(effects)
+}
+
+pub fn review_lane_preflight_completion_while_paused_does_not_claim_test() {
+  let candidate = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let context =
+    context_requiring_preflight(review_lane_preflight_policy.Policy(
+      mode: review_lane_preflight_policy.OfflineRequired,
+      cache_ttl_seconds: 86_400,
+      park_on_failure: True,
+      strict_live_model_checks: False,
+    ))
+  let identity = orchestrator_state.issue_identity(candidate)
+  let transition_types.Outcome(state: waiting, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.DispatchValidationCompleted(
+        candidate.id,
+        1,
+        Ok(candidate),
+        context,
+      ),
+      state_with_pending_dispatch_validation(candidate),
+    )
+  let assert Ok(pending) =
+    dict.get(waiting.pending_review_lane_preflights, identity)
+  let completion_context =
+    transition_types.DispatchContext(..context, operator_paused: True)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.ReviewLanePreflightCompleted(
+        identity,
+        candidate.id,
+        pending.generation,
+        "implementation",
+        completion_context,
+        review_lane_preflight.passed("cache-key"),
+      ),
+      waiting,
+    )
+
+  assert dict.size(next.pending_review_lane_preflights) == 0
+  assert dict.size(next.pending_claims) == 0
+  assert !has_claim_issue(effects)
+  assert !has_start_worker(effects)
+  assert has_preflight_paused_log(effects)
+}
+
+pub fn retry_review_lane_preflight_completion_while_paused_restores_retry_test() {
+  let candidate = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let context =
+    context_requiring_preflight(review_lane_preflight_policy.Policy(
+      mode: review_lane_preflight_policy.OfflineRequired,
+      cache_ttl_seconds: 86_400,
+      park_on_failure: True,
+      strict_live_model_checks: False,
+    ))
+  let identity = orchestrator_state.issue_identity(candidate)
+  let transition_types.Outcome(state: waiting, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.RetryRefreshCompleted(
+        candidate.id,
+        1,
+        Ok([candidate]),
+        context,
+      ),
+      state_with_retry(candidate),
+    )
+  let assert Ok(pending) =
+    dict.get(waiting.pending_review_lane_preflights, identity)
+  let completion_context =
+    transition_types.DispatchContext(..context, operator_paused: True)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.ReviewLanePreflightCompleted(
+        identity,
+        candidate.id,
+        pending.generation,
+        "implementation",
+        completion_context,
+        review_lane_preflight.passed("cache-key"),
+      ),
+      waiting,
+    )
+
+  assert dict.size(next.pending_review_lane_preflights) == 0
+  assert dict.size(next.pending_claims) == 0
+  assert dict.has_key(next.runtime.retry_attempts, identity)
+  assert dict.has_key(next.runtime.claimed, identity)
+  assert !has_claim_issue(effects)
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.DeferRetryTimer(candidate.id, 1, 60_000)
+  })
+  assert has_preflight_paused_log(effects)
 }
 
 pub fn review_lane_preflight_completion_blocking_failure_parks_test() {
@@ -1357,6 +1552,19 @@ fn has_preflight_failure_log(effects: List(effects_types.Effect)) -> Bool {
   list.any(effects, fn(effect) {
     case effect {
       effects_types.Log(_, "review_infrastructure_preflight_failed", _) -> True
+      _ -> False
+    }
+  })
+}
+
+fn has_preflight_paused_log(effects: List(effects_types.Effect)) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.Log(
+        "info",
+        "review_lane_preflight_precondition_failed",
+        fields,
+      ) -> field_equals(fields, "reason", "operator_paused")
       _ -> False
     }
   })

@@ -12,6 +12,7 @@ import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
+import scherzo/state/record
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 
@@ -53,15 +54,14 @@ pub fn handle_submitted(
         )
       transition_types.Outcome(state: state, effects: [
         effects_types.SetOperatorPaused(True),
-        effects_types.FinishOperatorCommand(request, result),
+        operator_pause_append_effect(True, request, result),
       ])
     }
     command.ResumeDispatch -> {
       let result =
         command.applied(request.operator_command, Some("dispatch resumed"))
       transition_types.Outcome(state: state, effects: [
-        effects_types.SetOperatorPaused(False),
-        effects_types.FinishOperatorCommand(request, result),
+        operator_pause_append_effect(False, request, result),
       ])
     }
     command.RetryIssue(_) ->
@@ -105,6 +105,37 @@ pub fn handle_submitted(
     | command.StopAfterCurrentTurn(_)
     | command.CleanupOrphanSteps(_, _)
     | command.RunScheduleNow(_) -> shell_command(state, request)
+  }
+}
+
+fn operator_pause_append_effect(
+  paused: Bool,
+  request: effects_types.OperatorCommandRequest,
+  result: command.CommandResult,
+) -> effects_types.Effect {
+  effects_types.AppendLedger(effects_types.LedgerAppend(
+    correlation_id: "operator_dispatch_pause:"
+      <> record.dispatch_pause_status(paused),
+    batch: ledger_batch.dispatch_pause_changed(paused),
+    failure_event: "operator_dispatch_pause_ledger_append_failed",
+    policy: effects_types.SetOperatorPausedAfterAppend(
+      paused,
+      request,
+      result,
+      command.rejected(
+        request.operator_command,
+        "ledger_append_failed",
+        Some(dispatch_pause_failure_message(paused)),
+      ),
+    ),
+  ))
+}
+
+fn dispatch_pause_failure_message(paused: Bool) -> String {
+  case paused {
+    True ->
+      "dispatch pause is active in memory but was not persisted because the ledger append failed"
+    False -> "dispatch resume was not applied because the ledger append failed"
   }
 }
 

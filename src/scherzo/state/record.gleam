@@ -18,6 +18,10 @@ pub const schema_version = 2
 
 pub const max_excerpt_chars = 500
 
+pub fn dispatch_pause_status(paused: Bool) -> String {
+  command_record.dispatch_pause_status(paused)
+}
+
 pub type TaskRefFields {
   TaskRefFields(
     task_backend_kind: String,
@@ -321,6 +325,7 @@ pub type RecordBody {
     observed_updated_at_ms: Int,
   )
   IssueUnparked(issue_id: String, issue_identifier: String, reason: String)
+  DispatchPauseChanged(paused: Bool)
   LinearCommandSeen(
     comment_id: String,
     issue_id: String,
@@ -803,6 +808,7 @@ pub fn kind(body: RecordBody) -> String {
     IssueParked(..) -> "issue_parked"
     IssueParkedV2(..) -> "issue_parked_v2"
     IssueUnparked(..) -> "issue_unparked"
+    DispatchPauseChanged(..) -> "dispatch_pause_changed"
     LinearCommandSeen(..) -> "linear_command_seen"
     LinearCommandStarted(..) -> "linear_command_started"
     LinearCommandCompleted(..) -> "linear_command_completed"
@@ -1389,6 +1395,8 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         issue_identifier,
         reason,
       )
+    DispatchPauseChanged(paused) ->
+      command_record.dispatch_pause_changed_entries(paused)
     LinearCommandSeen(comment_id, issue_id, author_id, command_name, excerpt) ->
       command_record.linear_seen_entries(
         comment_id,
@@ -2723,6 +2731,14 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       ))
       use reason <- result.try(required_string(fields.reason, "reason"))
       Ok(IssueUnparked(issue_id, issue_identifier, reason))
+    }
+    "dispatch_pause_changed" -> {
+      use status <- result.try(required_string(fields.status, "status"))
+      case command_record.dispatch_pause_status_from_string(status) {
+        Ok(paused) -> Ok(DispatchPauseChanged(paused))
+        Error(command_record.InvalidDispatchPauseStatus) ->
+          Error(InvalidRecord("invalid dispatch pause status"))
+      }
     }
     "linear_command_seen" -> {
       use comment_id <- result.try(required_string(

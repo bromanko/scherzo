@@ -167,6 +167,12 @@ pub type LedgerPolicy {
     release_policy: String,
     source_run_id: Option(String),
   )
+  SetOperatorPausedAfterAppend(
+    paused: Bool,
+    request: OperatorCommandRequest,
+    result: command.CommandResult,
+    failure_result: command.CommandResult,
+  )
 }
 
 pub type OperatorCommandSource {
