@@ -14,6 +14,7 @@ import scherzo/handoff_format
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/poll_jitter
+import scherzo/orchestrator/scheduled_runtime
 import scherzo/path
 import scherzo/result_artifact
 import scherzo/runtime/state as orchestrator_state
@@ -758,7 +759,18 @@ fn try_adapter_tracker(
 ) -> Result(b, adapter.TrackerError) {
   case result {
     Ok(value) -> next(value)
-    Error(err) -> Error(adapter.Permanent(error.tracker_code(err)))
+    Error(err) -> Error(test_adapter_tracker_error(err))
+  }
+}
+
+fn test_adapter_tracker_error(err: error.TrackerError) -> adapter.TrackerError {
+  case err {
+    error.LinearApiStatus(status) ->
+      case status == 429 || status >= 500 {
+        True -> adapter.Transient(error.tracker_code(err))
+        False -> adapter.Permanent(error.tracker_code(err))
+      }
+    _ -> adapter.Permanent(error.tracker_code(err))
   }
 }
 
@@ -1011,6 +1023,7 @@ fn scheduled_reporter_success(
 
 type ScheduledReportDirective {
   ScheduledReportError
+  ScheduledReportPermanentError
   ScheduledReportSuccess
 }
 
@@ -1030,7 +1043,8 @@ fn scheduled_reporter_directed(
     case process.receive(reply, within: 1000) {
       Ok(ScheduledReportSuccess) ->
         Ok(scheduled_failure_reporter.FailureReportUpdated("lin-scheduled"))
-      Ok(ScheduledReportError) -> Error(error.LinearApiRequest("boom"))
+      Ok(ScheduledReportError) -> Error(error.LinearApiStatus(500))
+      Ok(ScheduledReportPermanentError) -> Error(error.LinearApiRequest("boom"))
       Error(_) -> Error(error.LinearApiRequest("directive timeout"))
     }
   })
@@ -1989,6 +2003,59 @@ fn has_scheduled_failure_report_failed(
       _ -> False
     }
   })
+}
+
+fn has_terminal_scheduled_failure_report_failed(
+  records: List(record.LedgerRecord),
+  run_id: String,
+  generation: Int,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledFailureReportFailed(
+        _,
+        _,
+        _,
+        body_run_id,
+        _,
+        _,
+        _,
+        _,
+        next_retry_at_ms,
+        body_generation,
+      ) ->
+        body_run_id == run_id
+        && body_generation == generation
+        && next_retry_at_ms == 0
+      _ -> False
+    }
+  })
+}
+
+fn scheduled_failure_report_failed_count(
+  records: List(record.LedgerRecord),
+  run_id: String,
+) -> Int {
+  records
+  |> list.filter(fn(entry) {
+    case entry.body {
+      record.ScheduledFailureReportFailed(
+        _,
+        _,
+        _,
+        body_run_id,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+      ) -> body_run_id == run_id
+      _ -> False
+    }
+  })
+  |> list.length
 }
 
 fn has_scheduled_skip(
@@ -3309,6 +3376,188 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_report_permanent_failure_does_not_retry_test() {
+  let dir = "test/tmp/daemon-scheduled-report-permanent-failure"
+  let workflow_path = write_scheduled_reporting_workflow(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let report_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter_with_scheduled_reporter(
+          client,
+          scheduled_reporter_directed(report_subject),
+        )
+      },
+      workflow_run_dependencies: failing_command_workflow_run_dependencies(
+        command_subject,
+      ),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
+    process.receive(report_subject, within: 5000)
+  process.send(first_reply, ScheduledReportPermanentError)
+  assert first_request.run_id == run_id
+  assert wait_for_records(
+    root,
+    fn(records) {
+      has_terminal_scheduled_failure_report_failed(records, run_id, 1)
+    },
+    20,
+  )
+
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert snapshot.counts.scheduled_report_retry_count == 0
+  assert snapshot.counts.scheduled_report_retry_timer_count == 0
+  let _ = test_async.drain_subject(report_subject)
+  let _ = test_async.drain_subject(command_subject)
+  test_async.assert_no_extra_message_within(command_subject, 100)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_report_retry_stops_after_default_bound_test() {
+  let dir = "test/tmp/daemon-scheduled-report-retry-bound"
+  let workflow_path = write_scheduled_reporting_workflow(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let report_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter_with_scheduled_reporter(
+          client,
+          scheduled_reporter_directed(report_subject),
+        )
+      },
+      workflow_run_dependencies: failing_command_workflow_run_dependencies(
+        command_subject,
+      ),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
+    process.receive(report_subject, within: 5000)
+  process.send(first_reply, ScheduledReportError)
+  assert first_request.run_id == run_id
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_failure_report_failed(records, run_id, 1) },
+    20,
+  )
+
+  let max_report_attempts = scheduled_runtime.default_report_max_attempts()
+  fail_scheduled_report_retries_until_bound(
+    started.data,
+    report_subject,
+    root,
+    run_id,
+    1,
+    max_report_attempts,
+  )
+
+  process.send(
+    started.data,
+    daemon.ScheduledReportRetryTick(run_id, max_report_attempts),
+  )
+  test_async.assert_no_extra_message_within(report_subject, 100)
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert snapshot.counts.scheduled_report_retry_count == 0
+  assert snapshot.counts.scheduled_report_retry_timer_count == 0
+  assert wait_for_records(
+    root,
+    fn(records) {
+      scheduled_failure_report_failed_count(records, run_id)
+      == max_report_attempts
+    },
+    20,
+  )
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+fn fail_scheduled_report_retries_until_bound(
+  daemon_subject: process.Subject(daemon.Message),
+  report_subject: process.Subject(DirectedScheduledReportCall),
+  root: String,
+  run_id: String,
+  failed_generation: Int,
+  max_generation: Int,
+) -> Nil {
+  case failed_generation >= max_generation {
+    True -> Nil
+    False -> {
+      process.send(
+        daemon_subject,
+        daemon.ScheduledReportRetryTick(run_id, failed_generation),
+      )
+      let assert Ok(DirectedScheduledReportCall(request, reply)) =
+        process.receive(report_subject, within: 5000)
+      process.send(reply, ScheduledReportError)
+      assert request.run_id == run_id
+      let next_generation = failed_generation + 1
+      assert wait_for_records(
+        root,
+        fn(records) {
+          case next_generation == max_generation {
+            True ->
+              has_terminal_scheduled_failure_report_failed(
+                records,
+                run_id,
+                next_generation,
+              )
+            False ->
+              has_scheduled_failure_report_failed(
+                records,
+                run_id,
+                next_generation,
+              )
+          }
+        },
+        20,
+      )
+      fail_scheduled_report_retries_until_bound(
+        daemon_subject,
+        report_subject,
+        root,
+        run_id,
+        next_generation,
+        max_generation,
+      )
+    }
+  }
 }
 
 pub fn daemon_scheduled_report_retry_uses_cached_projection_after_post_start_ledger_corruption_test() {

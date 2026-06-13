@@ -1,7 +1,10 @@
 import birl
+import gleam/dict
+import gleam/erlang/process
 import gleam/option.{None}
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
+import test_async
 
 fn ms(iso: String) -> Int {
   let assert Ok(time) = birl.parse(iso)
@@ -243,6 +246,7 @@ pub fn report_retry_generation_mismatch_is_ignored_and_matching_tick_retries_tes
       scheduled_runtime.RetryReport(
         "scheduled-job",
         "schedule-scheduled-job-20260505T121500Z",
+        2,
       ),
     ]
   assert scheduled_runtime.schedule_mode(runtime, "scheduled-job", False)
@@ -292,4 +296,78 @@ pub fn report_failure_retry_schedules_timer_test() {
     ]
   assert scheduled_runtime.schedule_mode(runtime, "scheduled-job", False)
     == schedule_core.RetryWaiting
+}
+
+pub fn report_failure_retry_uses_per_run_attempt_for_fresh_runs_test() {
+  let #(runtime, _, _) =
+    scheduled_runtime.schedule_report_retry_after_failure(
+      scheduled_runtime.new(),
+      "scheduled-job-a",
+      "schedule-scheduled-job-a-20260505T121500Z",
+      5,
+      60_000,
+    )
+  let #(_, delay_ms, actions) =
+    scheduled_runtime.schedule_report_retry_after_failure(
+      runtime,
+      "scheduled-job-b",
+      "schedule-scheduled-job-b-20260505T121500Z",
+      1,
+      60_000,
+    )
+
+  assert delay_ms == 10_000
+  assert actions
+    == [
+      scheduled_runtime.ScheduleReportRetryTimer(
+        "schedule-scheduled-job-b-20260505T121500Z",
+        1,
+        10_000,
+      ),
+    ]
+}
+
+pub fn report_attempts_exhaust_at_default_bound_test() {
+  assert !scheduled_runtime.report_attempts_exhausted(4)
+  assert scheduled_runtime.report_attempts_exhausted(5)
+}
+
+pub fn timer_replacement_and_removal_cancel_existing_timer_test() {
+  let cancelled = process.new_subject()
+  let cancel_timer = fn(timer) { process.send(cancelled, timer) }
+
+  let timers =
+    scheduled_runtime.insert_timer_cancelling_existing(
+      dict.new(),
+      "run-1",
+      "timer-1",
+      cancel_timer,
+    )
+  test_async.assert_no_extra_message_within(cancelled, 20)
+
+  let timers =
+    scheduled_runtime.insert_timer_cancelling_existing(
+      timers,
+      "run-1",
+      "timer-2",
+      cancel_timer,
+    )
+  let assert Ok("timer-1") = process.receive(cancelled, within: 1000)
+
+  let timers =
+    scheduled_runtime.delete_timer_cancelling_existing(
+      timers,
+      "run-1",
+      cancel_timer,
+    )
+  let assert Ok("timer-2") = process.receive(cancelled, within: 1000)
+
+  let timers =
+    scheduled_runtime.delete_timer_cancelling_existing(
+      timers,
+      "run-1",
+      cancel_timer,
+    )
+  assert dict.size(timers) == 0
+  test_async.assert_no_extra_message_within(cancelled, 20)
 }

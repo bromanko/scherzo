@@ -1008,7 +1008,7 @@ fn map_status_error(status: Int, source: String) -> adapter.TrackerError {
   case status == 401 || status == 403 {
     True -> adapter.Unauthorized(message)
     False ->
-      case status >= 500 {
+      case status == 429 || status >= 500 {
         True -> adapter.Transient(message)
         False -> adapter.Permanent(message)
       }
