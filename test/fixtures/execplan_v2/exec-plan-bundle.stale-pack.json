@@ -4,12 +4,12 @@
   "entries": [
     {
       "artifact_type": "scherzo.exec_plan.v1",
-      "bytes": 1767,
+      "bytes": 1856,
       "kind": "file",
       "media_type": "text/markdown",
       "name": "plan",
       "ref": "runs/run-1/outputs/plan.md",
-      "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+      "sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674"
     },
     {
       "artifact_type": "scherzo.implementation_pack.v2",
@@ -18,7 +18,7 @@
       "media_type": "application/json",
       "name": "implementation_pack",
       "ref": "runs/run-1/outputs/implementation_pack.json",
-      "sha256": "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201"
+      "sha256": "bb23c8a36dc5e9b3d46d8062fd073dc6acf3db208138d2e4b14530d092aa0f40"
     }
   ],
   "implementation_handoff": {
@@ -32,20 +32,20 @@
     "derived_from_review_doc_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "ref": "runs/run-1/outputs/implementation_pack.json",
     "schema": ".scherzo/workflows/schemas/implementation-pack.v2.schema.json",
-    "sha256": "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201"
+    "sha256": "bb23c8a36dc5e9b3d46d8062fd073dc6acf3db208138d2e4b14530d092aa0f40"
   },
   "kind": "artifact_set",
   "media_type": "application/json",
   "plan": {
-    "bytes": 1767,
+    "bytes": 1856,
     "media_type": "text/markdown",
     "ref": "runs/run-1/outputs/plan.md",
-    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+    "sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674"
   },
   "review_doc": {
-    "bytes": 1767,
+    "bytes": 1856,
     "path": "test/fixtures/execplan_v2/review-doc.valid.md",
-    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+    "sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674"
   },
   "review_surface": {
     "branch": "execplan/liv-314",

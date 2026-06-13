@@ -321,7 +321,7 @@ fn retry_issue(
                           request,
                           command.applied(
                             request.operator_command,
-                            Some("retry dispatched"),
+                            Some("retry accepted"),
                           ),
                         ),
                       ]),

@@ -146,6 +146,37 @@ pub fn run_caps_invariant_violation_log_payload_test() {
   })
 }
 
+pub fn run_one_message_with_operator_reply_uses_finish_hook_test() {
+  let transition_state = orchestrator_transition_test.fixture_state()
+  let state = shell_state(transition_state)
+  let request = retry_request("missing-issue")
+  let next =
+    daemon_transition_shell.run_one_message_with_operator_reply(
+      context: context(state, daemon_transition_shell.default_message_limit()),
+      message: operator_message(request),
+      operator_command: request.operator_command,
+      send_reply: fn(_) { Nil },
+    )
+
+  assert next.events == ["finish_operator:retry:rejected", "snapshot"]
+}
+
+pub fn run_one_message_with_operator_reply_logs_exhaustion_test() {
+  let transition_state = orchestrator_transition_test.fixture_state()
+  let state = shell_state(transition_state)
+  let request = retry_request("missing-issue")
+  let next =
+    daemon_transition_shell.run_one_message_with_operator_reply(
+      context: context(state, 0),
+      message: operator_message(request),
+      operator_command: request.operator_command,
+      send_reply: fn(_) { Nil },
+    )
+
+  assert next.events == ["finish_operator:retry:rejected"]
+  assert next.exhausted_limits == [0]
+}
+
 pub fn interpret_effects_covers_callback_surface_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let transition_state = orchestrator_transition_test.fixture_state()
@@ -913,6 +944,21 @@ fn operator_request(
     source: effects_types.LocalOperatorCommand,
     operator_command: operator_command,
     timeout_ms: 1000,
+  )
+}
+
+fn retry_request(issue_id: String) -> effects_types.OperatorCommandRequest {
+  operator_request(command.RetryIssue(command.IssueId(issue_id)))
+}
+
+fn operator_message(
+  request: effects_types.OperatorCommandRequest,
+) -> transition_types.Message {
+  transition_types.OperatorCommandSubmitted(
+    request: request,
+    context: orchestrator_transition_test.fixture_context(),
+    issue_resolution: transition_types.OperatorIssueNotResolved,
+    parked_issue_resolution: transition_types.ParkedIssueNotResolved,
   )
 }
 

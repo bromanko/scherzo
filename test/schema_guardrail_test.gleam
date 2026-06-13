@@ -176,6 +176,7 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
   assert issue_state.to_strings(effective.tracker.terminal_states)
     == ["Done", "Canceled"]
   assert effective.polling.interval_ms == 45_000
+  assert effective.control.command_timeout_ms == 75_000
   assert string.ends_with(
     effective.workspace.root,
     "/test/tmp/schema_guardrail/workspaces",

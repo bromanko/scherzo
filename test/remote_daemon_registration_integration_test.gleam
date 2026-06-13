@@ -162,6 +162,7 @@ fn start_control_server(
       token: token,
       workspace_root: workspace_root,
       started_at_ms: 1,
+      command_timeout_ms: 500,
     )
   #(server, control)
 }
@@ -174,6 +175,7 @@ fn effective_config(
     tracker: config.default_tracker_config(),
     polling: config.default_polling_config(),
     workspace: config_types.WorkspaceConfig(root: workspace_root),
+    control: config.default_control_config(),
     hooks: config.default_hooks_config(),
     agent: config.default_agent_config(),
     pi: config.default_pi_config(),
@@ -202,6 +204,7 @@ fn connect_bundle(
       tracker: config.default_tracker_config(),
       polling: config.default_polling_config(),
       workspace: config_types.WorkspaceConfig(root: workspace_root),
+      control: config.default_control_config(),
       hooks: config.default_hooks_config(),
       agent: config.default_agent_config(),
       pi: config.default_pi_config(),

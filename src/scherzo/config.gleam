@@ -66,6 +66,31 @@ pub fn default_workspace_config(
   config_types.WorkspaceConfig(root: root)
 }
 
+pub fn default_control_config() -> config_types.ControlConfig {
+  config_types.ControlConfig(
+    command_timeout_ms: duration_config.default_control_command_timeout_ms,
+  )
+}
+
+pub fn default_effective_config(
+  tracker: config_types.TrackerConfig,
+  workspace: config_types.WorkspaceConfig,
+) -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: tracker,
+    polling: default_polling_config(),
+    workspace: workspace,
+    control: default_control_config(),
+    hooks: default_hooks_config(),
+    agent: default_agent_config(),
+    pi: default_pi_config(),
+    handoff: default_handoff_config(),
+    linear_contract: default_linear_contract_config(),
+    linear_commands: default_linear_command_config(),
+    ui_server: default_ui_server_config(),
+  )
+}
+
 pub fn default_hooks_config() -> config_types.HooksConfig {
   config_types.HooksConfig(
     after_create: None,
@@ -228,6 +253,7 @@ pub fn resolve_root_report(
   let #(tracker, tracker_warnings) = tracker_result
   use polling <- result.try(resolve_polling(root))
   use workspace <- result.try(resolve_workspace(root, config_path, env))
+  use control <- result.try(resolve_control(root))
   use hooks <- result.try(resolve_hooks(root))
   use agent <- result.try(resolve_agent(root))
   use pi <- result.try(resolve_pi(root))
@@ -240,6 +266,7 @@ pub fn resolve_root_report(
       tracker:,
       polling:,
       workspace:,
+      control:,
       hooks:,
       agent:,
       pi:,
@@ -380,6 +407,25 @@ fn resolve_workspace(
     |> resolve_optional_env(env)
     |> option.unwrap(default_workspace_root(workflow_path))
   Ok(config_types.WorkspaceConfig(root: resolve_path(root, workflow_path)))
+}
+
+fn resolve_control(
+  root: yay.Node,
+) -> Result(config_types.ControlConfig, error.ConfigError) {
+  let defaults = default_control_config()
+  use control <- result.try(get_map_strict_or_empty(root, "control", "control"))
+  use _ <- result.try(
+    reject_unknown_map_keys(control, "control", [
+      "command_timeout",
+    ]),
+  )
+  use command_timeout_ms <- result.try(
+    duration_config.control_command_timeout_ms(
+      root,
+      defaults.command_timeout_ms,
+    ),
+  )
+  Ok(config_types.ControlConfig(command_timeout_ms: command_timeout_ms))
 }
 
 fn resolve_hooks(

@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/control/command
+import scherzo/control/defaults
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/query/codec as query_codec
@@ -41,7 +42,11 @@ type Socket
 
 const request_transport_timeout_ms = 5000
 
-const operator_command_response_timeout_ms = 30_000
+pub fn operator_command_response_timeout_ms(
+  control_file: file.ControlFile,
+) -> Int {
+  control_file.command_timeout_ms + defaults.command_response_timeout_grace_ms
+}
 
 pub fn discover_target(
   explicit_path: Option(String),
@@ -99,7 +104,7 @@ pub fn raw_request(
   raw_request_with_response_timeout(
     control_file,
     request,
-    request_response_timeout_ms(request),
+    request_response_timeout_ms(control_file, request),
   )
 }
 
@@ -210,7 +215,7 @@ pub fn apply_command(
   apply_command_with_response_timeout(
     control_file,
     operator_command,
-    operator_command_response_timeout_ms,
+    operator_command_response_timeout_ms(control_file),
   )
 }
 
@@ -304,9 +309,12 @@ fn stream_loop(
   }
 }
 
-fn request_response_timeout_ms(request: protocol.Request) -> Int {
+fn request_response_timeout_ms(
+  control_file: file.ControlFile,
+  request: protocol.Request,
+) -> Int {
   case protocol.request_operator_command(request) {
-    Some(_) -> operator_command_response_timeout_ms
+    Some(_) -> operator_command_response_timeout_ms(control_file)
     None -> request_transport_timeout_ms
   }
 }

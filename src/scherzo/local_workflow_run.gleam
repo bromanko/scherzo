@@ -120,23 +120,21 @@ fn local_orchestrator(run_root: String) -> config_types.OrchestratorConfig {
       driver: None,
       source: config_types.SyntheticDefaultWorkspace,
     )
+  let tracker =
+    config_types.TrackerConfig(
+      kind: tracker_kind.LinearTracker,
+      endpoint: "local://native-workflow-runner",
+      api_key: Some("local-native-runner"),
+      project_slug: Some("LOCAL"),
+      active_states: issue_state.list_from_strings(["Todo", "Done"]),
+      dispatch_states: issue_state.list_from_strings(["Todo"]),
+      terminal_states: issue_state.list_from_strings(["Done"]),
+    )
+  let workspace =
+    config_types.WorkspaceConfig(root: path.join(run_root, "workspaces"))
   config_types.OrchestratorConfig(
     effective: config_types.EffectiveConfig(
-      tracker: config_types.TrackerConfig(
-        kind: tracker_kind.LinearTracker,
-        endpoint: "local://native-workflow-runner",
-        api_key: Some("local-native-runner"),
-        project_slug: Some("LOCAL"),
-        active_states: issue_state.list_from_strings(["Todo", "Done"]),
-        dispatch_states: issue_state.list_from_strings(["Todo"]),
-        terminal_states: issue_state.list_from_strings(["Done"]),
-      ),
-      polling: config.default_polling_config(),
-      workspace: config_types.WorkspaceConfig(root: path.join(
-        run_root,
-        "workspaces",
-      )),
-      hooks: config.default_hooks_config(),
+      ..config.default_effective_config(tracker, workspace),
       agent: config_types.AgentConfig(
         ..config.default_agent_config(),
         max_turns: 1,
@@ -145,10 +143,6 @@ fn local_orchestrator(run_root: String) -> config_types.OrchestratorConfig {
         ..config.default_pi_config(),
         compatibility_probe: False,
       ),
-      handoff: config.default_handoff_config(),
-      linear_contract: config.default_linear_contract_config(),
-      linear_commands: config.default_linear_command_config(),
-      ui_server: config.default_ui_server_config(),
     ),
     config_dir: ".scherzo",
     routing: config_types.RoutingConfig(

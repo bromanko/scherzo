@@ -1,6 +1,6 @@
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/control/command
@@ -9,6 +9,7 @@ import scherzo/orchestrator/effects/interpreter as transition_interpreter
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/task_lifecycle_legacy
+import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_invariants
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
@@ -555,6 +556,98 @@ fn reverse_invariant_error_pair(
 
 pub fn default_message_limit() -> Int {
   transition_runner_message_limit
+}
+
+pub fn run_one_message_with_operator_reply(
+  context context: Context(state),
+  message message: transition_types.Message,
+  operator_command operator_command: command.OperatorCommand,
+  send_reply send_reply: fn(command.CommandResult) -> Nil,
+) -> state {
+  let transition_state = context.transition_state_from_state(context.state)
+  let transition_types.Outcome(state: transition_state, effects: effects) =
+    transition.handle(message, transition_state)
+  let #(request, result, effects_after_reply) = case
+    split_operator_command_finish(effects)
+  {
+    Ok(split) -> split
+    Error(Nil) -> #(
+      transition_effects.OperatorCommandRequest(
+        source: transition_effects.LocalOperatorCommand,
+        operator_command: operator_command,
+        timeout_ms: 0,
+      ),
+      command.rejected(
+        operator_command,
+        "operator_command_result_missing",
+        Some("operator command did not produce a result"),
+      ),
+      effects,
+    )
+  }
+  send_reply(result)
+  let #(state, finish_follow_ups) =
+    context.handlers.finish_operator_command(context.state, request, result)
+  let shell = transition_shell(state, context.handlers)
+  let transition_interpreter.ApplyResult(
+    shell: shell,
+    follow_up_messages: follow_up_messages,
+  ) = transition_interpreter.apply(shell, effects_after_reply)
+  let transition_runner.RunResult(
+    state: transition_state,
+    shell: shell,
+    exhausted: exhausted,
+  ) =
+    transition_runner.run(
+      state: transition_state,
+      shell: shell,
+      messages: list.append(follow_up_messages, finish_follow_ups),
+      max_messages: context.max_messages,
+    )
+  let state =
+    context.merge_transition_state(
+      transition_interpreter.data(shell),
+      transition_state,
+    )
+  case exhausted {
+    True -> context.log_exhausted(state, context.max_messages)
+    False -> state
+  }
+}
+
+fn split_operator_command_finish(
+  effects: List(transition_effects.Effect),
+) -> Result(
+  #(
+    transition_effects.OperatorCommandRequest,
+    command.CommandResult,
+    List(transition_effects.Effect),
+  ),
+  Nil,
+) {
+  split_operator_command_finish_loop(effects, [])
+}
+
+fn split_operator_command_finish_loop(
+  effects: List(transition_effects.Effect),
+  preceding: List(transition_effects.Effect),
+) -> Result(
+  #(
+    transition_effects.OperatorCommandRequest,
+    command.CommandResult,
+    List(transition_effects.Effect),
+  ),
+  Nil,
+) {
+  case effects {
+    [] -> Error(Nil)
+    [effect, ..rest] ->
+      case effect {
+        transition_effects.FinishOperatorCommand(request, result) ->
+          Ok(#(request, result, list.append(list.reverse(preceding), rest)))
+        _ -> split_operator_command_finish_loop(rest, [effect, ..preceding])
+      }
+  }
 }
 
 pub fn interpret_effects(

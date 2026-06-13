@@ -810,7 +810,38 @@ pub fn daemon_control_server_uses_extended_command_timeout_test() {
   let assert Ok(command_timeout_ms) =
     process.receive(settings_subject, within: 1000)
   assert command_timeout_ms == control_server.default_command_timeout_ms
-  assert command_timeout_ms > 500
+  assert command_timeout_ms == 60_000
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_control_server_uses_configured_command_timeout_test() {
+  let #(workflow_path, _root) =
+    write_workflow_with_extra_config(
+      "test/tmp/daemon-control-timeout-override",
+      0,
+      1,
+      "control:\n  command_timeout: 2s\n",
+    )
+  let log_subject = process.new_subject()
+  let settings_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      start_control_server: fn(
+        settings: control_server.Settings,
+        _backend: control_server.Backend,
+      ) {
+        process.send(settings_subject, settings.command_timeout_ms)
+        Ok(daemon.NoControlServer)
+      },
+      stop_control_server: fn(_) { Nil },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(command_timeout_ms) =
+    process.receive(settings_subject, within: 1000)
+  assert command_timeout_ms == 2000
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
@@ -1282,6 +1313,68 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
   assert wait_for_log(log_subject, "dispatch_started", 20)
 
   test_async.release_barrier(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_command_acknowledges_before_accepted_side_effects_finish_test() {
+  let candidate = issue("retry-async-issue", "ABC-ASYNC-RETRY", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let dir = "test/tmp/daemon-control-retry-async-ack"
+  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 3)
+  let ledger_root = dir <> "/" <> root
+  let log_subject = process.new_subject()
+  let operator_log_barrier = test_async.new_barrier()
+  let claim_barrier = test_async.new_barrier()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let base_deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      blocking_handoff(log_subject, claim_barrier),
+      hub_subject,
+      long_running_agent(log_subject, worker_barrier),
+    )
+  let deps =
+    daemon.RuntimeDependencies(..base_deps, logger: fn(_, event, fields, _) {
+      process.send(log_subject, control_log_value(event, fields))
+      case event == "operator_command" {
+        True -> {
+          process.send(log_subject, "operator_log_started")
+          test_async.block_until_released(operator_log_barrier)
+        }
+        False -> Nil
+      }
+      Ok(Nil)
+    })
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(accepted_retry) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssue(command.IssueId("retry-async-issue")),
+      50,
+    )
+  assert command.status_to_string(accepted_retry.status) == "applied"
+  assert accepted_retry.message == Some("retry accepted")
+
+  assert wait_for_log(log_subject, "operator_log_started", 20)
+  test_async.release_barrier(operator_log_barrier)
+  assert wait_for_log(log_subject, "claim_started", 20)
+  test_async.release_barrier(claim_barrier)
+  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert has_workflow_started(
+    ledger_bodies(ledger_root),
+    "implementation",
+    "implementation/ABC-ASYNC-RETRY",
+  )
+
+  test_async.release_barrier(worker_barrier)
+  assert wait_for_log(log_subject, "worker_exited", 20)
+  let assert Ok(failed_session) =
+    wait_for_session_exit(hub_subject, "ABC-ASYNC-RETRY-42-1", 20)
+  assert failed_session.status == event.Exited(session_reason.Failed)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }

@@ -33,17 +33,9 @@ pub fn from_tracker_config(
   transport: linear.Transport,
 ) -> adapter.TrackerAdapter {
   from_effective_config(
-    config_types.EffectiveConfig(
-      tracker: config,
-      polling: config_defaults.default_polling_config(),
-      workspace: config_types.WorkspaceConfig(root: "."),
-      hooks: config_defaults.default_hooks_config(),
-      agent: config_defaults.default_agent_config(),
-      pi: config_defaults.default_pi_config(),
-      handoff: config_defaults.default_handoff_config(),
-      linear_contract: config_defaults.default_linear_contract_config(),
-      linear_commands: config_defaults.default_linear_command_config(),
-      ui_server: config_defaults.default_ui_server_config(),
+    config_defaults.default_effective_config(
+      config,
+      config_types.WorkspaceConfig(root: "."),
     ),
     transport,
   )

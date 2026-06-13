@@ -562,7 +562,7 @@ fn start_control_plane(
   secrets: List(String),
 ) -> Result(ControlPlane, StartupError) {
   use token <- try_startup(dependencies.make_control_token())
-  let settings = control_server.default_settings(token)
+  let settings = control_server.settings_for_control(token, effective.control)
   use handle <- try_startup(dependencies.start_control_server(
     settings,
     control_backend(event_hub, daemon_subject, query_handle),
@@ -579,6 +579,7 @@ fn start_control_plane(
           token: token,
           workspace_root: effective.workspace.root,
           started_at_ms: dependencies.now_ms(),
+          command_timeout_ms: settings.command_timeout_ms,
         )
       case control_file.write(path, control) {
         Ok(Nil) -> {
@@ -2041,6 +2042,13 @@ fn apply_operator_command_for_reply(
   reply: process.Subject(command.CommandResult),
 ) -> OperatorCommandReplyState {
   case operator_command {
+    command.RetryIssue(_) ->
+      apply_retry_operator_command_with_early_reply(
+        state,
+        operator_command,
+        timeout_ms,
+        reply,
+      )
     command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
     | command.PromptSession(_, _)
@@ -2057,6 +2065,36 @@ fn apply_operator_command_for_reply(
       OperatorCommandImmediate(state, result)
     }
   }
+}
+
+fn apply_retry_operator_command_with_early_reply(
+  state: State,
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+  reply: process.Subject(command.CommandResult),
+) -> OperatorCommandReplyState {
+  let state = State(..state, last_operator_command_result: None)
+  let request =
+    transition_effects.OperatorCommandRequest(
+      source: transition_effects.LocalOperatorCommand,
+      operator_command: operator_command,
+      timeout_ms: timeout_ms,
+    )
+  let message =
+    transition_types.OperatorCommandSubmitted(
+      request: request,
+      context: transition_dispatch_context(state),
+      issue_resolution: operator_issue_resolution(state, operator_command),
+      parked_issue_resolution: parked_issue_resolution(state, operator_command),
+    )
+  let state =
+    daemon_transition_shell.run_one_message_with_operator_reply(
+      context: transition_shell_context(state),
+      message: message,
+      operator_command: operator_command,
+      send_reply: fn(result) { process.send(reply, result) },
+    )
+  OperatorCommandPending(State(..state, last_operator_command_result: None))
 }
 
 fn apply_operator_command_to_state(
