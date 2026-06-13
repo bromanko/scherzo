@@ -86,6 +86,8 @@ scripts/scherzoctl ui respond <session-id> <request-id> --cancel --json
 scripts/scherzoctl ui respond <session-id> <request-id> --value "approved" --json
 ```
 
+A successful whole-task `retry` response acknowledges acceptance of the retry intent after synchronous safety checks. Later claim, Linear reporting, workspace setup, worker start, or run failures are reported through normal ledger/session/failure evidence; inspect `ps`, `session`, and `events` when a retry was accepted but does not later run successfully.
+
 ## JSON response handling
 
 For daemon inspection/control commands, `--json` returns one protocol JSON document with a non-secret `target` object. Check `target.control_file_path` and `target.workspace_root` before trusting or mutating a daemon. `ok: true` means the control server accepted and decoded the request. `ok: false` means the request failed before a command result could be applied, such as authentication failure, timeout, malformed request, or protocol error; report `error.code` and `error.message` without exposing secrets.
