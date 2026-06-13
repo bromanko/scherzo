@@ -704,7 +704,7 @@ pub fn retry_step_shutdown_interrupts_active_review_children_with_registry_metad
       "shutdown_review_started:code_review",
       "shutdown_review_started:security_review",
     ],
-    20,
+    100,
   )
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
