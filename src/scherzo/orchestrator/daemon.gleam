@@ -1980,6 +1980,13 @@ fn apply_operator_command_for_reply(
   reply: process.Subject(command.CommandResult),
 ) -> OperatorCommandReplyState {
   case operator_command {
+    command.RetryIssue(_) ->
+      apply_retry_operator_command_with_early_reply(
+        state,
+        operator_command,
+        timeout_ms,
+        reply,
+      )
     command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
     | command.PromptSession(_, _)
@@ -1996,6 +2003,36 @@ fn apply_operator_command_for_reply(
       OperatorCommandImmediate(state, result)
     }
   }
+}
+
+fn apply_retry_operator_command_with_early_reply(
+  state: State,
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+  reply: process.Subject(command.CommandResult),
+) -> OperatorCommandReplyState {
+  let state = State(..state, last_operator_command_result: None)
+  let request =
+    transition_effects.OperatorCommandRequest(
+      source: transition_effects.LocalOperatorCommand,
+      operator_command: operator_command,
+      timeout_ms: timeout_ms,
+    )
+  let message =
+    transition_types.OperatorCommandSubmitted(
+      request: request,
+      context: transition_dispatch_context(state),
+      issue_resolution: operator_issue_resolution(state, operator_command),
+      parked_issue_resolution: parked_issue_resolution(state, operator_command),
+    )
+  let state =
+    daemon_transition_shell.run_one_message_with_operator_reply(
+      context: transition_shell_context(state),
+      message: message,
+      operator_command: operator_command,
+      send_reply: fn(result) { process.send(reply, result) },
+    )
+  OperatorCommandPending(State(..state, last_operator_command_result: None))
 }
 
 fn apply_operator_command_to_state(
