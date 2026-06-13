@@ -820,6 +820,28 @@ pub fn linear_adapter_scheduled_failure_preserves_dedupe_marker_test() {
     )
 }
 
+pub fn linear_adapter_scheduled_failure_rate_limit_is_transient_test() {
+  let linear_tracker =
+    linear_adapter.from_dependencies(
+      effective_config(),
+      linear_adapter.Dependencies(
+        transport: fn(_) {
+          Error(error.LinearApiRequest("unexpected Linear transport call"))
+        },
+        handoff_client: handoff.disabled_client(),
+        scheduled_failure_client: reporter.client(
+          status_error_scheduled_failure_backend(429),
+        ),
+      ),
+    )
+  let assert Some(tracker_adapter.ScheduledFailureCapability(publish: publish)) =
+    linear_tracker.scheduled_failures
+
+  let assert Error(tracker_adapter.Transient(message)) =
+    publish(scheduled_publication("schedule-nightly-429"))
+  assert string.contains(message, "429")
+}
+
 fn scheduled_publication(
   run_id: String,
 ) -> tracker_adapter.ScheduledFailurePublication {
@@ -839,6 +861,17 @@ fn scheduled_publication(
     labels: ["job:nightly"],
     target_state_name: Some("Triage"),
     previous_task_remote_id: None,
+  )
+}
+
+fn status_error_scheduled_failure_backend(status: Int) -> reporter.Backend {
+  reporter.Backend(
+    ensure_label: fn(_) { Error(error.LinearApiStatus(status)) },
+    find_open_issue_by_id: fn(_) { Error(error.LinearApiStatus(status)) },
+    find_open_issues_by_labels: fn(_) { Error(error.LinearApiStatus(status)) },
+    create_issue: fn(_, _, _, _) { Error(error.LinearApiStatus(status)) },
+    comment_issue: fn(_, _) { Error(error.LinearApiStatus(status)) },
+    move_issue_to_state: fn(_, _) { Error(error.LinearApiStatus(status)) },
   )
 }
 

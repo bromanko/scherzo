@@ -66,6 +66,49 @@ pub fn folding_records_produces_expected_projection_test() {
   )) = dict.get(folded.outbox, "outbox-1")
 }
 
+pub fn scheduled_report_terminal_failure_clears_report_retry_projection_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "report-retry-waiting",
+        1000,
+        record.ScheduledFailureReportFailed(
+          "nightly",
+          "scheduled-workflow",
+          100,
+          "schedule-nightly-1",
+          1,
+          "scheduled-job:nightly",
+          "tracker_transient",
+          "rate limited",
+          2000,
+          1,
+        ),
+      ),
+      record.with_id(
+        "report-retry-terminal",
+        1100,
+        record.ScheduledFailureReportFailed(
+          "nightly",
+          "scheduled-workflow",
+          100,
+          "schedule-nightly-1",
+          1,
+          "scheduled-job:nightly",
+          "tracker_permanent",
+          "state not found",
+          0,
+          2,
+        ),
+      ),
+    ])
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "nightly")
+  assert status.state == projection.ScheduledTerminalFailure
+  assert status.failure_dedupe_key == Some("scheduled-job:nightly")
+  assert status.report_retry == None
+}
+
 pub fn step_attempt_interruption_after_finished_preserves_finished_status_test() {
   let folded =
     projection.fold([

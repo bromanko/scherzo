@@ -1056,23 +1056,6 @@ fn apply_scheduled_startup_effect(
   }
 }
 
-fn normalized_scheduled_attempt(attempt: Int) -> Int {
-  case attempt <= 0 {
-    True -> 1
-    False -> attempt
-  }
-}
-
-fn optional_string_or_default(
-  value: Option(String),
-  default: String,
-) -> String {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
 fn scheduled_job_by_id(
   state: State,
   job_id: String,
@@ -4565,8 +4548,13 @@ fn apply_scheduled_runtime_action(
       }
     }
     scheduled_runtime.PromoteRetryToPending(_) -> state
-    scheduled_runtime.RetryReport(job_id, run_id) ->
-      retry_scheduled_failure_report_by_identity(state, job_id, run_id)
+    scheduled_runtime.RetryReport(job_id, run_id, report_attempt_index) ->
+      retry_scheduled_failure_report_by_identity(
+        state,
+        job_id,
+        run_id,
+        report_attempt_index,
+      )
   }
 }
 
@@ -4584,10 +4572,11 @@ fn schedule_scheduled_retry_timer(
     )
   State(
     ..state,
-    scheduled_retry_timers: dict.insert(
+    scheduled_retry_timers: scheduled_runtime.insert_timer_cancelling_existing(
       state.scheduled_retry_timers,
       run_id,
       timer,
+      state.dependencies.cancel_timer,
     ),
   )
 }
@@ -4606,10 +4595,11 @@ fn schedule_scheduled_report_retry_timer(
     )
   State(
     ..state,
-    scheduled_report_retry_timers: dict.insert(
+    scheduled_report_retry_timers: scheduled_runtime.insert_timer_cancelling_existing(
       state.scheduled_report_retry_timers,
       run_id,
       timer,
+      state.dependencies.cancel_timer,
     ),
   )
 }
@@ -5612,6 +5602,7 @@ fn begin_scheduled_failure_report_request(
         attempt,
         reason,
         run_root,
+        scheduled_runtime.initial_report_attempt_index(),
         session_id,
       )
   }
@@ -5626,6 +5617,7 @@ fn begin_scheduled_failure_report_for_job(
   attempt: Int,
   reason: String,
   run_root: Option(String),
+  report_attempt_index: Int,
   session_id: Option(String),
 ) -> State {
   let task_config = job.on_failure.task
@@ -5640,9 +5632,14 @@ fn begin_scheduled_failure_report_for_job(
       state
     }
     True, Some(triage_state) -> {
-      let #(runtime, generation) =
-        scheduled_runtime.reserve_report_generation(state.scheduled_runtime)
-      let state = State(..state, scheduled_runtime: runtime)
+      let generation =
+        scheduled_runtime.normalize_report_attempt_index(report_attempt_index)
+      let previous_task_remote_id = case
+        projection.scheduled_status_for(state.ledger_projection, job.id)
+      {
+        Ok(status) -> status.failure_issue_id
+        Error(Nil) -> None
+      }
       let publication =
         adapter.ScheduledFailurePublication(
           job_id: job.id,
@@ -5654,15 +5651,12 @@ fn begin_scheduled_failure_report_for_job(
           reason: reason,
           run_root: run_root,
           session_id: session_id,
-          dedupe_key: scheduled_failure_dedupe_key(job.id),
+          dedupe_key: "scheduled-job:" <> job.id,
           title: "Scheduled workflow failure: " <> job.id,
           body: reason,
           labels: task_config.labels,
           target_state_name: Some(triage_state),
-          previous_task_remote_id: scheduled_failure_issue_id_for_state(
-            state,
-            job.id,
-          ),
+          previous_task_remote_id: previous_task_remote_id,
         )
       case state.tracker_adapter.scheduled_failures {
         Some(capability) ->
@@ -5677,20 +5671,6 @@ fn begin_scheduled_failure_report_for_job(
         None -> state
       }
     }
-  }
-}
-
-fn scheduled_failure_dedupe_key(job_id: String) -> String {
-  "scheduled-job:" <> job_id
-}
-
-fn scheduled_failure_issue_id_for_state(
-  state: State,
-  job_id: String,
-) -> Option(String) {
-  case projection.scheduled_status_for(state.ledger_projection, job_id) {
-    Ok(status) -> status.failure_issue_id
-    Error(Nil) -> None
   }
 }
 
@@ -5733,7 +5713,7 @@ fn handle_scheduled_failure_report_finished(
   state: State,
   generation: Int,
   publication: adapter.ScheduledFailurePublication,
-  result: Result(adapter.ScheduledFailureReceipt, error.TrackerError),
+  result: Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
 ) -> State {
   case result {
     Ok(receipt) ->
@@ -5771,9 +5751,10 @@ fn handle_scheduled_failure_report_success(
         state.scheduled_runtime,
         publication.run_id,
       ),
-      scheduled_report_retry_timers: dict.delete(
+      scheduled_report_retry_timers: scheduled_runtime.delete_timer_cancelling_existing(
         state.scheduled_report_retry_timers,
         publication.run_id,
+        state.dependencies.cancel_timer,
       ),
     )
   append_ledger_bodies_best_effort(
@@ -5798,43 +5779,52 @@ fn handle_scheduled_failure_report_failure(
   state: State,
   generation: Int,
   publication: adapter.ScheduledFailurePublication,
-  err: error.TrackerError,
+  err: adapter.TrackerError,
 ) -> State {
-  let #(runtime, delay_ms, actions) =
-    scheduled_runtime.schedule_report_retry_after_failure(
+  let decision =
+    scheduled_runtime.decide_report_failure(
       state.scheduled_runtime,
       publication.job_id,
       publication.run_id,
       generation,
+      err,
+      state.dependencies.now_ms(),
       scheduled_runtime.default_max_backoff_ms(),
     )
-  let next_retry_at_ms = state.dependencies.now_ms() + delay_ms
-  let state = State(..state, scheduled_runtime: runtime)
-  log_state(state, "warn", "scheduled_failure_report_failed", [
-    #("job_id", publication.job_id),
-    #("run_id", publication.run_id),
-    #("error", error.tracker_code(err)),
-  ])
+  let state =
+    State(
+      ..state,
+      scheduled_runtime: scheduled_runtime.report_failure_decision_runtime(
+        decision,
+      ),
+      scheduled_report_retry_timers: case decision {
+        scheduled_runtime.ReportFailureTerminal(..) ->
+          scheduled_runtime.delete_timer_cancelling_existing(
+            state.scheduled_report_retry_timers,
+            publication.run_id,
+            state.dependencies.cancel_timer,
+          )
+        scheduled_runtime.ReportFailureRetry(..) ->
+          state.scheduled_report_retry_timers
+      },
+    )
+  log_state(
+    state,
+    "warn",
+    "scheduled_failure_report_failed",
+    scheduled_runtime.report_failure_log_fields(publication, decision),
+  )
   let state =
     append_ledger_bodies_best_effort(
       state,
-      [
-        record.ScheduledFailureReportFailed(
-          publication.job_id,
-          publication.workflow_id,
-          publication.due_at_ms,
-          publication.run_id,
-          publication.attempt,
-          publication.dedupe_key,
-          error.tracker_code(err),
-          tracker_error_message(err),
-          next_retry_at_ms,
-          generation,
-        ),
-      ],
+      [scheduled_runtime.report_failure_failed_record(publication, decision)],
       "scheduled_failure_report_failed_append_failed",
     )
-  apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
+  case decision {
+    scheduled_runtime.ReportFailureRetry(actions:, ..) ->
+      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
+    scheduled_runtime.ReportFailureTerminal(..) -> state
+  }
 }
 
 fn handle_scheduled_report_retry_tick(
@@ -5871,6 +5861,7 @@ fn retry_scheduled_failure_report_by_identity(
   state: State,
   job_id: String,
   run_id: String,
+  report_attempt_index: Int,
 ) -> State {
   case projection.scheduled_status_for(state.ledger_projection, job_id) {
     Error(Nil) -> state
@@ -5883,30 +5874,20 @@ fn retry_scheduled_failure_report_by_identity(
             status.workflow_id,
             run.due_at_ms,
             run_id,
-            normalized_scheduled_attempt(run.attempt),
-            optional_string_or_default(
-              status.last_failure_reason,
-              "scheduled failure",
-            ),
+            case run.attempt <= 0 {
+              True -> 1
+              False -> run.attempt
+            },
+            case status.last_failure_reason {
+              Some(reason) -> reason
+              None -> "scheduled failure"
+            },
             run.run_root,
+            report_attempt_index,
             run.session_id,
           )
         _, _ -> state
       }
-  }
-}
-
-fn tracker_error_message(err: error.TrackerError) -> String {
-  case err {
-    error.LinearApiRequest(message) -> message
-    error.LinearApiStatus(status) ->
-      "Linear API status " <> int.to_string(status)
-    error.LinearGraphqlErrors(message) -> message
-    error.LinearUnknownPayload(message) -> message
-    error.LinearMissingEndCursor -> "missing Linear pagination cursor"
-    error.LinearUploadStatus(status) ->
-      "Linear upload status " <> int.to_string(status)
-    error.LinearAttachmentError(message) -> message
   }
 }
 
