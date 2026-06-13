@@ -19,6 +19,7 @@ fn effective(pi: config_types.PiConfig) -> config_types.EffectiveConfig {
     ),
     polling: config.default_polling_config(),
     workspace: config_types.WorkspaceConfig(root: "test/tmp/workspaces"),
+    control: config.default_control_config(),
     hooks: config.default_hooks_config(),
     agent: config.default_agent_config(),
     pi: pi,

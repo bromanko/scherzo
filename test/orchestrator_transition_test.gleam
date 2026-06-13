@@ -62,6 +62,7 @@ pub fn fixture_effective() -> config_types.EffectiveConfig {
     tracker: config.default_tracker_config(),
     polling: config.default_polling_config(),
     workspace: config_types.WorkspaceConfig(root: "test/tmp/workspaces"),
+    control: config.default_control_config(),
     hooks: config.default_hooks_config(),
     agent: config_types.AgentConfig(
       ..config.default_agent_config(),

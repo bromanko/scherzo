@@ -2,7 +2,9 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/option.{type Option, None, Some}
+import scherzo/config/types as config_types
 import scherzo/control/command
+import scherzo/control/defaults as control_defaults
 import scherzo/control/protocol
 import scherzo/control/query/types as query_types
 import scherzo/log
@@ -46,7 +48,7 @@ pub const default_event_timeout_ms = 500
 
 pub const default_stream_poll_ms = 100
 
-pub const default_command_timeout_ms = 15_000
+pub const default_command_timeout_ms = control_defaults.default_command_timeout_ms
 
 pub type ServerError {
   ServerStartFailed(message: String)
@@ -60,6 +62,16 @@ pub fn default_settings(token: String) -> Settings {
     event_timeout_ms: default_event_timeout_ms,
     stream_poll_ms: default_stream_poll_ms,
     command_timeout_ms: default_command_timeout_ms,
+  )
+}
+
+pub fn settings_for_control(
+  token: String,
+  control: config_types.ControlConfig,
+) -> Settings {
+  Settings(
+    ..default_settings(token),
+    command_timeout_ms: control.command_timeout_ms,
   )
 }
 

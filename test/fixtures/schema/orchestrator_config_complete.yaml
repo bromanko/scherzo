@@ -45,6 +45,8 @@ agents:
     ui_requests: operator
     ui_request_timeout: 10s
     compatibility_check: false
+control:
+  command_timeout: 75s
 task_updates:
   enabled: true
   states:

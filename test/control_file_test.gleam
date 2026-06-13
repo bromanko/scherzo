@@ -1,5 +1,6 @@
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/control/defaults as control_defaults
 import scherzo/control/file
 import scherzo/path
 import simplifile
@@ -16,6 +17,7 @@ pub fn write_and_read_control_json_test() {
       token: "secret-token",
       workspace_root: root,
       started_at_ms: 42,
+      command_timeout_ms: 75_000,
     )
 
   let assert Ok(Nil) = file.write(path, control)
@@ -26,6 +28,19 @@ pub fn write_and_read_control_json_test() {
   assert read_back.token == "secret-token"
   assert read_back.workspace_root == root
   assert read_back.started_at_ms == 42
+  assert read_back.command_timeout_ms == 75_000
+}
+
+pub fn legacy_control_json_defaults_command_timeout_test() {
+  let path = "test/tmp/control-file/legacy-default/control.json"
+  test_helpers.reset_dir("test/tmp/control-file/legacy-default")
+  let contents =
+    "{\"version\":1,\"host\":\"127.0.0.1\",\"port\":54321,\"token\":\"secret-token\",\"workspace_root\":\"test/tmp/control-file/legacy-default/workspaces\",\"started_at_ms\":42}"
+  let assert Ok(Nil) = simplifile.write(path, contents)
+
+  let assert Ok(read_back) = file.read(path)
+  assert read_back.command_timeout_ms
+    == control_defaults.default_command_timeout_ms
 }
 
 pub fn env_discovery_uses_injected_environment_test() {
@@ -33,7 +48,10 @@ pub fn env_discovery_uses_injected_environment_test() {
   test_helpers.reset_dir("test/tmp/control-file/env")
   let path = file.path_for_workspace(root)
   let assert Ok(Nil) =
-    file.write(path, file.ControlFile("127.0.0.1", 10_000, "token", root, 1))
+    file.write(
+      path,
+      file.ControlFile("127.0.0.1", 10_000, "token", root, 1, 60_000),
+    )
 
   let assert Ok(discovered) =
     file.discover(None, fn(name) {
@@ -60,12 +78,19 @@ pub fn caller_cwd_resolves_relative_control_file_paths_test() {
   let assert Ok(Nil) =
     file.write(
       core_control,
-      file.ControlFile("127.0.0.1", 10_001, "core-token", core_abs, 1),
+      file.ControlFile("127.0.0.1", 10_001, "core-token", core_abs, 1, 60_000),
     )
   let assert Ok(Nil) =
     file.write(
       caller_control,
-      file.ControlFile("127.0.0.1", 10_002, "caller-token", caller_abs, 1),
+      file.ControlFile(
+        "127.0.0.1",
+        10_002,
+        "caller-token",
+        caller_abs,
+        1,
+        60_000,
+      ),
     )
   let env = fn(name) {
     case name {
@@ -94,7 +119,7 @@ pub fn caller_cwd_resolves_relative_scherzo_control_file_env_test() {
   let assert Ok(Nil) =
     file.write(
       caller_control,
-      file.ControlFile("127.0.0.1", 10_003, "env-token", caller_abs, 1),
+      file.ControlFile("127.0.0.1", 10_003, "env-token", caller_abs, 1, 60_000),
     )
 
   let assert Ok(discovered) =
@@ -132,7 +157,7 @@ pub fn write_reports_cleanup_failure_when_permission_cleanup_fails_test() {
       let write_result =
         file.write(
           control_path,
-          file.ControlFile("127.0.0.1", 10_004, "token", base, 1),
+          file.ControlFile("127.0.0.1", 10_004, "token", base, 1, 60_000),
         )
       let restore_result =
         simplifile.set_permissions_octal(for_file_at: base, to: 0o700)

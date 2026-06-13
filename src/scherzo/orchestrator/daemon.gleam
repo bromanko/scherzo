@@ -559,7 +559,7 @@ fn start_control_plane(
   secrets: List(String),
 ) -> Result(ControlPlane, StartupError) {
   use token <- try_startup(dependencies.make_control_token())
-  let settings = control_server.default_settings(token)
+  let settings = control_server.settings_for_control(token, effective.control)
   use handle <- try_startup(dependencies.start_control_server(
     settings,
     control_backend(event_hub, daemon_subject, query_handle),
@@ -576,6 +576,7 @@ fn start_control_plane(
           token: token,
           workspace_root: effective.workspace.root,
           started_at_ms: dependencies.now_ms(),
+          command_timeout_ms: settings.command_timeout_ms,
         )
       case control_file.write(path, control) {
         Ok(Nil) -> {

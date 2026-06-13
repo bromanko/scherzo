@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/agent/pi_event
 import scherzo/control/client
 import scherzo/control/command
+import scherzo/control/defaults as control_defaults
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/query/dto as query_dto
@@ -100,6 +101,7 @@ fn start_server_for_backend_with_event_timeout(
       token: token,
       workspace_root: "test/tmp/control-server/workspaces",
       started_at_ms: 1,
+      command_timeout_ms: command_timeout_ms,
     )
   #(server_handle, control_file)
 }
@@ -302,6 +304,21 @@ pub fn server_applies_authenticated_mutating_command_test() {
 
   server.stop(server_handle)
   hub.stop(subject)
+}
+
+pub fn client_operator_command_response_timeout_tracks_control_file_test() {
+  let control_file =
+    file.ControlFile(
+      host: "127.0.0.1",
+      port: 54_321,
+      token: "token",
+      workspace_root: "test/tmp/control-server/workspaces",
+      started_at_ms: 1,
+      command_timeout_ms: 75_000,
+    )
+
+  assert client.operator_command_response_timeout_ms(control_file)
+    == 75_000 + control_defaults.command_response_timeout_grace_ms
 }
 
 pub fn server_rejects_bad_token_before_mutating_backend_test() {

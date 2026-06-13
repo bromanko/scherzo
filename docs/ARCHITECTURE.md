@@ -237,6 +237,9 @@ is eliminated.
   behavior changes, or token-accounting changes.
 - `scherzoctl` discovers the control file from `--control-file`,
   `SCHERZO_CONTROL_FILE`, or the repository default path.
+- The local control server waits `control.command_timeout` for mutating
+  operator command results before returning `command_timeout`; the default is
+  `60s`.
 - Non-streaming control commands support JSON output. `attach`/`events` can
   render compact, pretty, verbose, or JSON stream output.
 - Mutating local commands (`pause`, `resume`, `reload`, `retry`, `park`,

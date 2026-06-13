@@ -164,6 +164,9 @@ agents:
     ui_request_timeout: 10m
     compatibility_check: true
 
+control:
+  command_timeout: 60s
+
 ui_server:
   enabled: false
   endpoint: https://ui.example.test
@@ -300,6 +303,12 @@ Runtime timeouts use duration strings: `turn_timeout`, `read_timeout`,
 `stall_timeout`, and `ui_request_timeout`. `ui_requests` is one of `cancel`, `fail`,
 `ignore`, or `operator`. `compatibility_check` controls whether Scherzo probes pi
 compatibility at startup.
+
+### `control`
+
+`control.command_timeout` controls how long the local loopback control server waits
+for mutating `scherzoctl` command results before returning `command_timeout`. It
+uses a positive duration string and defaults to `60s`.
 
 ### `ui_server`
 

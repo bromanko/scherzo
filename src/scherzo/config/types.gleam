@@ -38,6 +38,10 @@ pub type WorkspaceConfig {
   WorkspaceConfig(root: String)
 }
 
+pub type ControlConfig {
+  ControlConfig(command_timeout_ms: Int)
+}
+
 pub type HooksConfig {
   HooksConfig(
     after_create: Option(String),
@@ -626,6 +630,7 @@ pub type EffectiveConfig {
     tracker: TrackerConfig,
     polling: PollingConfig,
     workspace: WorkspaceConfig,
+    control: ControlConfig,
     hooks: HooksConfig,
     agent: AgentConfig,
     pi: PiConfig,

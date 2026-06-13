@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/file as control_file
+import scherzo/control/server as control_server
 import scherzo/error
 import scherzo/log
 import scherzo/pi/command as pi_command
@@ -65,6 +66,7 @@ fn ensure_test_control_file() {
       token: "local-control-token",
       workspace_root: "test/tmp/control-workspace",
       started_at_ms: 1,
+      command_timeout_ms: 60_000,
     ))
   let assert Ok(Nil) = simplifile.write(path, contents)
   Nil
@@ -79,6 +81,10 @@ pub fn default_values_test() {
   assert issue_state.to_strings(tracker.dispatch_states) == ["Todo"]
   assert issue_state.to_strings(tracker.terminal_states)
     == ["Done", "Canceled", "Cancelled", "Duplicate"]
+
+  let control = config.default_control_config()
+  assert control.command_timeout_ms == control_server.default_command_timeout_ms
+  assert control.command_timeout_ms == 60_000
 
   let agent = config.default_agent_config()
   assert agent.max_concurrent_agents == 1
@@ -111,12 +117,13 @@ pub fn default_values_test() {
 
 pub fn duration_string_fields_parse_to_milliseconds_test() {
   let front =
-    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\nagents:\n  runtime:\n    type: pi\n    turn_timeout: 1h\n    read_timeout: 5s\n    stall_timeout: 0ms\n    ui_request_timeout: 10m\n"
+    "tracker:\n  linear:\n    project: TEST\n  polling:\n    every: 45s\nhooks:\n  before_run: test -d .git\n  timeout: 90s\ncontrol:\n  command_timeout: 75s\nagents:\n  runtime:\n    type: pi\n    turn_timeout: 1h\n    read_timeout: 5s\n    stall_timeout: 0ms\n    ui_request_timeout: 10m\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 
   assert configured.polling.interval_ms == 45_000
   assert configured.hooks.timeout_ms == 90_000
+  assert configured.control.command_timeout_ms == 75_000
   assert configured.pi.turn_timeout_ms == 3_600_000
   assert configured.pi.read_timeout_ms == 5000
   assert configured.pi.stall_timeout_ms == 0
@@ -150,6 +157,12 @@ pub fn duration_string_fields_reject_invalid_values_test() {
       "tracker:\n  linear:\n    project: TEST\nhooks:\n  before_run: test -d .git\n  timeout: 0s\n",
     )
   assert string.contains(zero_positive_field, "must be positive")
+
+  let zero_control_timeout =
+    invalid_config_message(
+      minimal_front() <> "control:\n  command_timeout: 0s\n",
+    )
+  assert string.contains(zero_control_timeout, "must be positive")
 }
 
 pub fn legacy_non_polling_duration_ms_fields_remain_supported_test() {

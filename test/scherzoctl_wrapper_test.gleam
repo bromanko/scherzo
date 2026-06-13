@@ -48,12 +48,19 @@ pub fn wrapper_resolves_symlinked_script_dir_and_preserves_caller_cwd_test() {
   let assert Ok(Nil) =
     file.write(
       core_dir <> "/" <> control_rel,
-      file.ControlFile("127.0.0.1", 10_001, "core-token", core_dir, 1),
+      file.ControlFile("127.0.0.1", 10_001, "core-token", core_dir, 1, 60_000),
     )
   let assert Ok(Nil) =
     file.write(
       consumer_dir <> "/" <> control_rel,
-      file.ControlFile("127.0.0.1", 10_002, "consumer-token", consumer_dir, 1),
+      file.ControlFile(
+        "127.0.0.1",
+        10_002,
+        "consumer-token",
+        consumer_dir,
+        1,
+        60_000,
+      ),
     )
   let link_artifact =
     command_step.run(
