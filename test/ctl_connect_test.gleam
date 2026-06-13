@@ -67,6 +67,11 @@ workflows:
   config_path
 }
 
+fn read_config_contents(path: String) -> String {
+  let assert Ok(contents) = simplifile.read(path)
+  contents
+}
+
 fn output(subject: process.Subject(String)) -> connect.Output {
   connect.Output(line: fn(line) { process.send(subject, line) })
 }
@@ -134,6 +139,20 @@ pub fn connect_parse_accepts_friendly_name_test() {
     ])
 
   assert command.daemon_label == Some("Project Foo / MacBook #1")
+  assert !command.activate
+}
+
+pub fn connect_parse_accepts_activate_test() {
+  let assert Ok(command) =
+    connect.parse([
+      "--pairing-token",
+      "pair_secret_1",
+      "--server-url",
+      "https://ui.example.test",
+      "--activate",
+    ])
+
+  assert command.activate
 }
 
 pub fn connect_parse_rejects_invalid_friendly_name_test() {
@@ -177,6 +196,7 @@ pub fn connect_parse_rejects_invalid_friendly_name_test() {
 pub fn connect_usage_documents_name_precedence_and_shape_test() {
   let usage = connect.usage()
 
+  assert string.contains(usage, "--activate")
   assert string.contains(usage, "--name <friendly-name>")
   assert string.contains(usage, "Overrides ui_server.daemon_label")
   assert string.contains(usage, "spaces and punctuation")
@@ -201,6 +221,7 @@ pub fn connect_cli_label_overrides_config_label_test() {
         replace_credential: False,
         json: False,
         allow_loopback_url: False,
+        activate: False,
         config_path: Some(config_path),
       ),
       connect.Dependencies(
@@ -258,6 +279,7 @@ pub fn connect_uses_config_label_when_cli_name_absent_test() {
         replace_credential: False,
         json: False,
         allow_loopback_url: False,
+        activate: False,
         config_path: Some(config_path),
       ),
       connect.Dependencies(
@@ -310,6 +332,7 @@ pub fn connect_pretty_output_is_redacted_test() {
         replace_credential: False,
         json: False,
         allow_loopback_url: False,
+        activate: False,
         config_path: Some(config_path),
       ),
       deps(Ok(credential_store.CredentialWritten("/tmp/creds.json"))),
@@ -318,9 +341,10 @@ pub fn connect_pretty_output_is_redacted_test() {
   let line = test_async.expect_message(subject)
   assert string.contains(line, "credential_ref work-laptop")
   assert string.contains(line, "Project Foo / MacBook")
+  assert string.contains(line, "Project config was not changed")
   assert string.contains(
     line,
-    "Notified the running daemon to reload UI pairing",
+    "Notified the running daemon to reload stored UI pairing",
   )
   assert !string.contains(line, "pair_secret_1")
   assert !string.contains(line, "dcred_secret_1")
@@ -340,6 +364,7 @@ pub fn connect_json_output_is_redacted_test() {
         replace_credential: False,
         json: True,
         allow_loopback_url: False,
+        activate: False,
         config_path: Some(config_path),
       ),
       deps(Ok(credential_store.CredentialAlreadyStored("/tmp/creds.json"))),
@@ -367,6 +392,7 @@ pub fn connect_json_output_includes_non_secret_daemon_label_test() {
         replace_credential: False,
         json: True,
         allow_loopback_url: False,
+        activate: False,
         config_path: Some(config_path),
       ),
       deps(Ok(credential_store.CredentialAlreadyStored("/tmp/creds.json"))),
@@ -374,9 +400,10 @@ pub fn connect_json_output_includes_non_secret_daemon_label_test() {
     )
   let line = test_async.expect_message(subject)
   assert string.contains(line, "\"daemon_label\":\"Project Foo\"")
+  assert string.contains(line, "\"config_activation_status\":\"not_requested\"")
   assert string.contains(
     line,
-    "\"activation_message\":\"Notified the running daemon to reload UI pairing.\"",
+    "\"activation_message\":\"Notified the running daemon to reload stored UI pairing.\"",
   )
   assert !string.contains(line, "pair_secret_1")
   assert !string.contains(line, "dcred_secret_1")
@@ -396,6 +423,7 @@ pub fn connect_pretty_output_reports_manual_reload_fallback_test() {
         replace_credential: False,
         json: False,
         allow_loopback_url: False,
+        activate: False,
         config_path: Some(config_path),
       ),
       deps_with_activation(
@@ -408,6 +436,370 @@ pub fn connect_pretty_output_reports_manual_reload_fallback_test() {
   assert string.contains(line, "Run scherzoctl reload or restart the daemon")
   assert !string.contains(line, "pair_secret_1")
   assert !string.contains(line, "dcred_secret_1")
+}
+
+pub fn connect_without_activate_does_not_mutate_project_config_test() {
+  let root = "test/tmp/connect-no-activate-config"
+  let config_path = write_config(root)
+  let before = read_config_contents(config_path)
+  let assert Ok(Nil) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: Some("Project Foo"),
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: False,
+        config_path: Some(config_path),
+      ),
+      deps(Ok(credential_store.CredentialWritten("/tmp/creds.json"))),
+      output(process.new_subject()),
+    )
+
+  assert read_config_contents(config_path) == before
+}
+
+pub fn connect_activate_writes_non_secret_ui_server_config_test() {
+  let root = "test/tmp/connect-activate-config"
+  let config_path = write_config(root)
+  let subject = process.new_subject()
+  let assert Ok(Nil) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test/",
+        credential_ref: "work-laptop",
+        daemon_label: Some("Project Foo / MacBook"),
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      deps(Ok(credential_store.CredentialWritten("/tmp/creds.json"))),
+      output(subject),
+    )
+
+  let config = read_config_contents(config_path)
+  let line = test_async.expect_message(subject)
+  assert string.contains(config, "ui_server:\n")
+  assert string.contains(config, "  enabled: true")
+  assert string.contains(config, "  endpoint: \"https://ui.example.test\"")
+  assert string.contains(config, "  credential_ref: \"work-laptop\"")
+  assert string.contains(config, "  daemon_label: \"Project Foo / MacBook\"")
+  assert !string.contains(config, "pair_secret_1")
+  assert !string.contains(config, "dcred_secret_1")
+  assert string.contains(line, "Activated ui_server")
+  assert string.contains(line, "daemon should now connect")
+  assert string.contains(line, "Hot-reloaded")
+  assert !string.contains(line, "pair_secret_1")
+  assert !string.contains(line, "dcred_secret_1")
+}
+
+pub fn connect_activate_json_reports_manual_reload_fallback_test() {
+  let root = "test/tmp/connect-activate-manual-reload"
+  let config_path = write_config(root)
+  let subject = process.new_subject()
+  let assert Ok(Nil) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: None,
+        replace_credential: False,
+        json: True,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      deps_with_activation(
+        Ok(credential_store.CredentialWritten("/tmp/creds.json")),
+        connect.ManualReloadRequired,
+      ),
+      output(subject),
+    )
+
+  let config = read_config_contents(config_path)
+  let line = test_async.expect_message(subject)
+  assert string.contains(config, "  enabled: true")
+  assert string.contains(
+    line,
+    "\"config_activation_status\":\"config_updated\"",
+  )
+  assert string.contains(line, "\"reload_status\":\"manual_reload_required\"")
+  assert string.contains(
+    line,
+    "\"reload_message\":\"Run scherzoctl reload or restart the daemon to start the UI connection.\"",
+  )
+  assert !string.contains(line, "pair_secret_1")
+  assert !string.contains(line, "dcred_secret_1")
+}
+
+pub fn connect_activate_accepts_commented_ui_server_header_test() {
+  let root = "test/tmp/connect-activate-commented-header"
+  let config_path =
+    write_config_with_tail(root, "ui_server:   # remote UI\n  enabled: false\n")
+  let assert Ok(Nil) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: None,
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      deps(Ok(credential_store.CredentialWritten("/tmp/creds.json"))),
+      output(process.new_subject()),
+    )
+
+  let config = read_config_contents(config_path)
+  assert string.contains(config, "ui_server:   # remote UI\n")
+  assert string.contains(config, "  enabled: true")
+  assert string.contains(config, "  endpoint: \"https://ui.example.test\"")
+  assert string.contains(config, "  credential_ref: \"work-laptop\"")
+}
+
+pub fn connect_activate_preserves_existing_ui_server_fields_test() {
+  let root = "test/tmp/connect-activate-preserve-fields"
+  let config_path =
+    write_config_with_tail(
+      root,
+      "ui_server:\n  # keep command bridge setting\n  command_bridge_enabled: true\n  enabled: false\n",
+    )
+  let assert Ok(Nil) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: None,
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      deps(Ok(credential_store.CredentialWritten("/tmp/creds.json"))),
+      output(process.new_subject()),
+    )
+
+  let config = read_config_contents(config_path)
+  assert string.contains(config, "  # keep command bridge setting")
+  assert string.contains(config, "  command_bridge_enabled: true")
+  assert string.contains(config, "  enabled: true")
+  assert string.contains(config, "  endpoint: \"https://ui.example.test\"")
+  assert string.contains(config, "  credential_ref: \"work-laptop\"")
+}
+
+pub fn connect_activate_is_idempotent_for_matching_ui_server_config_test() {
+  let root = "test/tmp/connect-activate-idempotent"
+  let config_path =
+    write_config_with_tail(
+      root,
+      "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n  daemon_label: Project Foo\n",
+    )
+  let before = read_config_contents(config_path)
+  let subject = process.new_subject()
+  let assert Ok(Nil) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: Some("Project Foo"),
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      deps(Ok(credential_store.CredentialAlreadyStored("/tmp/creds.json"))),
+      output(subject),
+    )
+
+  assert read_config_contents(config_path) == before
+  assert string.contains(test_async.expect_message(subject), "already active")
+}
+
+pub fn connect_activate_rejects_conflicting_ui_server_config_test() {
+  let root = "test/tmp/connect-activate-conflict"
+  let config_path =
+    write_config_with_tail(
+      root,
+      "ui_server:\n  enabled: false\n  endpoint: https://other.example.test\n  credential_ref: work-laptop\n",
+    )
+  let before = read_config_contents(config_path)
+  let assert Error(connect.Failed(code, message)) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: None,
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      deps(Ok(credential_store.CredentialWritten("/tmp/creds.json"))),
+      output(process.new_subject()),
+    )
+
+  assert code == "ui_server_activation_conflict"
+  assert string.contains(message, "ui_server.endpoint")
+  assert string.contains(message, "refusing to replace")
+  assert read_config_contents(config_path) == before
+}
+
+pub fn connect_activate_rejects_inline_ui_server_before_side_effects_test() {
+  let root = "test/tmp/connect-activate-inline-unsupported"
+  let config_path =
+    write_config_with_tail(root, "ui_server: { enabled: false }\n")
+  let before = read_config_contents(config_path)
+  let observed = process.new_subject()
+  let assert Error(connect.Failed(code, message)) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: None,
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      connect.Dependencies(
+        load_bundle: runtime_bundle.load,
+        load_or_create_identity: fn(root) {
+          process.send(observed, "identity")
+          Ok(daemon_identity.DaemonIdentity(
+            "daemon_abc",
+            "boot_abc",
+            root <> "/id",
+          ))
+        },
+        exchange_pairing_token: fn(
+          server_url,
+          _pairing_token,
+          daemon_id,
+          _daemon_label,
+          _allow_loopback_url,
+        ) {
+          process.send(observed, "exchange")
+          Ok(pairing_success(server_url, daemon_id))
+        },
+        write_credential: fn(
+          _ref,
+          _server_url,
+          _daemon_id,
+          _credential,
+          _replace,
+        ) {
+          process.send(observed, "write")
+          Ok(credential_store.CredentialWritten("/tmp/creds.json"))
+        },
+        notify_reload: fn(_) {
+          process.send(observed, "reload")
+          connect.ReloadNotified
+        },
+      ),
+      output(process.new_subject()),
+    )
+
+  assert code == "ui_server_activation_unsupported"
+  assert string.contains(message, "block-style ui_server")
+  assert read_config_contents(config_path) == before
+  test_async.assert_no_extra_message(observed)
+}
+
+pub fn connect_activate_write_failure_reports_partial_success_test() {
+  let root = "test/tmp/connect-activate-write-failure"
+  let config_path = write_config(root)
+  let observed = process.new_subject()
+  let assert Error(connect.Failed(code, message)) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: None,
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      connect.Dependencies(
+        load_bundle: fn(path) {
+          case runtime_bundle.load(path) {
+            Ok(bundle) ->
+              Ok(runtime_bundle.RuntimeBundle(..bundle, config_path: root))
+            Error(error) -> Error(error)
+          }
+        },
+        load_or_create_identity: fn(workspace_root) {
+          process.send(observed, "identity")
+          Ok(daemon_identity.DaemonIdentity(
+            "daemon_abc",
+            "boot_abc",
+            workspace_root <> "/id",
+          ))
+        },
+        exchange_pairing_token: fn(
+          server_url,
+          _pairing_token,
+          daemon_id,
+          _daemon_label,
+          _allow_loopback_url,
+        ) {
+          process.send(observed, "exchange")
+          Ok(pairing_success(server_url, daemon_id))
+        },
+        write_credential: fn(
+          _ref,
+          _server_url,
+          _daemon_id,
+          _credential,
+          _replace,
+        ) {
+          process.send(observed, "write")
+          Ok(credential_store.CredentialWritten("/tmp/creds.json"))
+        },
+        notify_reload: fn(_) {
+          process.send(observed, "reload")
+          connect.ReloadNotified
+        },
+      ),
+      output(process.new_subject()),
+    )
+
+  assert code == "ui_server_activation_failed"
+  assert string.contains(message, "Stored daemon credential at /tmp/creds.json")
+  assert string.contains(message, "failed to activate ui_server")
+  assert string.contains(message, "fresh pairing token")
+  assert string.contains(message, "--replace-credential")
+  assert !string.contains(message, "pair_secret_1")
+  assert !string.contains(message, "dcred_secret_1")
+  assert test_async.expect_message(observed) == "identity"
+  assert test_async.expect_message(observed) == "exchange"
+  assert test_async.expect_message(observed) == "write"
+  test_async.assert_no_extra_message(observed)
+
+  let config = read_config_contents(config_path)
+  assert !string.contains(config, "ui_server:\n")
+  assert !string.contains(config, "pair_secret_1")
+  assert !string.contains(config, "dcred_secret_1")
 }
 
 pub fn notify_local_reload_for_workspace_applies_reload_command_test() {
@@ -480,6 +872,7 @@ pub fn connect_replace_required_error_test() {
         replace_credential: False,
         json: False,
         allow_loopback_url: False,
+        activate: False,
         config_path: Some(config_path),
       ),
       deps(Error(credential_store.ReplaceRequired("/tmp/creds.json"))),

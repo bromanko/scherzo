@@ -314,10 +314,13 @@ uses a positive duration string and defaults to `60s`.
 
 Disabled by default. `endpoint` is the remote UI server base URL and `credential_ref`
 selects the owner-only durable daemon credential created by `scherzo connect`.
-`daemon_label` is an optional non-secret friendly daemon name for UI display; it is
-trimmed to 1-80 printable characters, allows spaces and punctuation, and rejects
-newlines/control characters. `scherzo connect --name <friendly-name>` overrides the
-config label for the pairing exchange.
+`scherzo connect` does not mutate this block unless `--activate` is supplied; with
+`--activate` it writes only non-secret `enabled`, `endpoint`, `credential_ref`, and
+optional `daemon_label` fields, then asks the daemon to reload. `daemon_label` is an
+optional non-secret friendly daemon name for UI display; it is trimmed to 1-80
+printable characters, allows spaces and punctuation, and rejects newlines/control
+characters. `scherzo connect --name <friendly-name>` overrides the config label for
+the pairing exchange.
 
 ### `task_updates`
 

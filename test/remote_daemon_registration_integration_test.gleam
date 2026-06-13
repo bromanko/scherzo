@@ -44,6 +44,7 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
         replace_credential: False,
         json: False,
         allow_loopback_url: True,
+        activate: False,
         config_path: None,
       ),
       connect.Dependencies(
@@ -118,7 +119,7 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
     |> string.replace(each: identity.daemon_id, with: "[DAEMON_ID]")
   let assert Ok(Nil) = simplifile.write(transcript_path, sanitized)
 
-  assert string.contains(connect_line, "Connected daemon")
+  assert string.contains(connect_line, "Stored credential for daemon")
   assert string.contains(sanitized, "pairing_exchange_body=")
   assert string.contains(sanitized, "\"daemonLabel\":\"project-foo\"")
   assert string.contains(sanitized, "authorization=Bearer [REDACTED]")
