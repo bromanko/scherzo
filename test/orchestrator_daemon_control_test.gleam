@@ -815,6 +815,55 @@ pub fn daemon_control_server_uses_extended_command_timeout_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_stops_when_control_server_accept_loop_dies_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-control-accept-loop-down")
+  let log_subject = process.new_subject()
+  let server_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      start_control_server: fn(settings, backend) {
+        case control_server.start(settings, backend) {
+          Ok(server_handle) -> {
+            process.send(server_subject, server_handle)
+            Ok(daemon.RealControlServer(server_handle))
+          }
+          Error(control_server.ServerStartFailed(message)) ->
+            Error(daemon.StartupError("control_server_start_failed", message))
+        }
+      },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  process.unlink(started.pid)
+  let daemon_monitor = process.monitor(started.pid)
+  let assert Ok(server_handle) = process.receive(server_subject, within: 1000)
+  let assert Ok(control_file_path) = process.receive(log_subject, within: 1000)
+  let assert Ok(control_file_present) = simplifile.is_file(control_file_path)
+  assert control_file_present
+
+  control_server.stop(server_handle)
+
+  assert wait_for_log(log_subject, "control_server_down", 20)
+  let daemon_stopped = wait_for_monitor_down(daemon_monitor, 1000)
+  let control_file_removed = simplifile.is_file(control_file_path) != Ok(True)
+  process.demonitor_process(daemon_monitor)
+  case daemon_stopped {
+    True -> Nil
+    False -> {
+      let _ = daemon.shutdown(started.data, 1000)
+      Nil
+    }
+  }
+  case control_file_removed {
+    True -> Nil
+    False -> control_file.remove(control_file_path)
+  }
+  assert daemon_stopped
+  assert control_file_removed
+}
+
 pub fn daemon_metrics_query_reports_runtime_counts_test() {
   let candidate = issue("metrics-issue", "ABC-METRICS", "Todo")
   let tracker_client = tracker_with(candidate)
@@ -2229,6 +2278,18 @@ fn has_workflow_started(
       _ -> False
     }
   })
+}
+
+fn wait_for_monitor_down(monitor: process.Monitor, timeout_ms: Int) -> Bool {
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { True })
+
+  case process.selector_receive(selector, within: timeout_ms) {
+    Ok(True) -> True
+    Ok(False) -> False
+    Error(_) -> False
+  }
 }
 
 fn wait_for_log(
