@@ -81,7 +81,7 @@ pub opaque type ResultHandlers(state) {
       state,
       Int,
       adapter.ScheduledFailurePublication,
-      Result(adapter.ScheduledFailureReceipt, error.TrackerError),
+      Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
     ) -> state,
     cleanup_finished: fn(state, String, Result(Nil, error.WorkspaceError)) ->
       state,
@@ -161,7 +161,7 @@ pub fn result_handlers(
     state,
     Int,
     adapter.ScheduledFailurePublication,
-    Result(adapter.ScheduledFailureReceipt, error.TrackerError),
+    Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
   ) -> state,
   cleanup_finished cleanup_finished: fn(
     state,
@@ -323,7 +323,7 @@ pub fn crash_result_for_effect(
       effect_runner.ScheduledFailureReportFinished(
         generation,
         publication,
-        Error(error.LinearApiRequest(reason)),
+        Error(adapter.Transient(reason)),
       )
     effect_runner.CleanupWorkspace(_, workspace_path, _, _) ->
       effect_runner.CleanupFinished(

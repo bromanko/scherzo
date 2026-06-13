@@ -183,7 +183,7 @@ pub type EffectResult {
   ScheduledFailureReportFinished(
     generation: Int,
     publication: adapter.ScheduledFailurePublication,
-    result: Result(adapter.ScheduledFailureReceipt, error.TrackerError),
+    result: Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
   )
   CleanupFinished(String, Result(Nil, error.WorkspaceError))
 }
@@ -1054,7 +1054,7 @@ fn run_side_effect(effect: Effect) -> EffectResult {
       ScheduledFailureReportFinished(
         generation,
         publication,
-        adapter_result(capability.publish(publication)),
+        capability.publish(publication),
       )
     CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
       CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))

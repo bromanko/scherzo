@@ -968,8 +968,10 @@ pub fn daemon_metrics_count_active_yaml_child_steps_and_child_tokens_test() {
 
   test_async.release_barrier(worker_barrier)
   assert wait_for_log(log_subject, "worker_exited", 20)
-  let assert Ok(query_types.MetricsResponse(final_metrics)) =
-    daemon.execute_query(started.data, query_types.Metrics, 1000)
+  let assert Ok(final_metrics) =
+    wait_for_metrics(started.data, 20, fn(metrics) {
+      metrics.active_sessions == 0 && metrics.token_totals.total == 9
+    })
   assert final_metrics.active_sessions == 0
   assert final_metrics.token_totals.total == 9
 
