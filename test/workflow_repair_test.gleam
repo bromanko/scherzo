@@ -1138,6 +1138,7 @@ fn recovery_effective_config(root: String) -> config_types.EffectiveConfig {
     ),
     polling: config.default_polling_config(),
     workspace: config_types.WorkspaceConfig(root: root),
+    control: config.default_control_config(),
     hooks: config.default_hooks_config(),
     agent: config.default_agent_config(),
     pi: config.default_pi_config(),

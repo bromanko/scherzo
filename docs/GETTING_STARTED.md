@@ -166,6 +166,10 @@ task_routing:
       state: Triage
       comment: true
 
+control:
+  # Local scherzoctl mutating command timeout. Defaults to 60s.
+  command_timeout: 60s
+
 workspace:
   # Relative to .scherzo/scherzo.yaml, so this becomes .scherzo/workspaces/.
   root: workspaces
@@ -767,7 +771,7 @@ direnv exec . scripts/scherzoctl stop-after-turn <session-id> --yes
 direnv exec . scripts/scherzoctl abort <session-id> --yes
 ```
 
-Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. Recovery metadata for workflow child sessions now includes parent run/step/attempt details plus orphan cleanup hints. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. Tracker comments are not an operator command transport; with the current production adapter that means old Linear command comments are ignored by Scherzo. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
+Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. JSON responses include non-secret target context such as the resolved control file path and daemon workspace root so you can catch wrong-daemon targeting. Recovery metadata for workflow child sessions now includes parent run/step/attempt details plus orphan cleanup hints. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. The daemon waits up to `control.command_timeout` for local mutating command results before `scherzoctl` reports `command_timeout`; the default is `60s`, and longer tracker/ledger-heavy operator actions may need an explicit config value. Relative `--control-file`, `SCHERZO_CONTROL_FILE`, and `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked; direct `gleam run -- ctl` resolves them from its process working directory. Tracker comments are not an operator command transport; with the current production adapter that means old Linear command comments are ignored by Scherzo. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
 
 ## 14. Adaptation checklist and troubleshooting
 

@@ -23,6 +23,7 @@ fn control_file() -> file.ControlFile {
     token: "token",
     workspace_root: "test/tmp/ctl-attach-render/workspaces",
     started_at_ms: 1,
+    command_timeout_ms: 60_000,
   )
 }
 

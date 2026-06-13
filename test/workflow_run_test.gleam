@@ -92,6 +92,7 @@ fn effective() -> config_types.EffectiveConfig {
     workspace: config_types.WorkspaceConfig(
       root: "test/tmp/workflow-run/workspaces",
     ),
+    control: config.default_control_config(),
     hooks: config.default_hooks_config(),
     agent: config_types.AgentConfig(
       ..config.default_agent_config(),

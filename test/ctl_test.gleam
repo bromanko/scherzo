@@ -49,6 +49,7 @@ fn control_file() -> file.ControlFile {
     token: "token",
     workspace_root: "test/tmp/ctl-ps/workspaces",
     started_at_ms: 1,
+    command_timeout_ms: 60_000,
   )
 }
 
@@ -59,6 +60,7 @@ fn control_file_for_root(root: String) -> file.ControlFile {
     token: "token",
     workspace_root: root,
     started_at_ms: 1,
+    command_timeout_ms: 60_000,
   )
 }
 

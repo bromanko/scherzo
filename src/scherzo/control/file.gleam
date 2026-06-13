@@ -3,6 +3,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/control/defaults as control_defaults
 import scherzo/path
 import simplifile
 
@@ -19,6 +20,7 @@ pub type ControlFile {
     token: String,
     workspace_root: String,
     started_at_ms: Int,
+    command_timeout_ms: Int,
   )
 }
 
@@ -207,6 +209,7 @@ pub fn control_file_to_json(control_file: ControlFile) -> json.Json {
     #("token", json.string(control_file.token)),
     #("workspace_root", json.string(control_file.workspace_root)),
     #("started_at_ms", json.int(control_file.started_at_ms)),
+    #("command_timeout_ms", json.int(control_file.command_timeout_ms)),
   ])
 }
 
@@ -241,7 +244,18 @@ fn control_file_decoder() -> decode.Decoder(ControlFile) {
   use token <- decode.field("token", decode.string)
   use workspace_root <- decode.field("workspace_root", decode.string)
   use started_at_ms <- decode.field("started_at_ms", decode.int)
-  case version == 1 && host != "" && port > 0 && token != "" {
+  use command_timeout_ms <- decode.optional_field(
+    "command_timeout_ms",
+    control_defaults.default_command_timeout_ms,
+    decode.int,
+  )
+  case
+    version == 1
+    && host != ""
+    && port > 0
+    && token != ""
+    && command_timeout_ms > 0
+  {
     True ->
       decode.success(ControlFile(
         host: host,
@@ -249,9 +263,20 @@ fn control_file_decoder() -> decode.Decoder(ControlFile) {
         token: token,
         workspace_root: workspace_root,
         started_at_ms: started_at_ms,
+        command_timeout_ms: command_timeout_ms,
       ))
     False ->
-      decode.failure(ControlFile("", 0, "", "", 0), expected: "ControlFile")
+      decode.failure(
+        ControlFile(
+          "",
+          0,
+          "",
+          "",
+          0,
+          control_defaults.default_command_timeout_ms,
+        ),
+        expected: "ControlFile",
+      )
   }
 }
 

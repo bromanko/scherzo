@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import scherzo/control/defaults as control_defaults
 import scherzo/duration
 import scherzo/error
 import yay
@@ -9,6 +10,8 @@ type DurationFieldSource {
   DurationField(node: yay.Node, key: String, path: String)
   LegacyMillisecondsField(node: yay.Node, key: String, path: String)
 }
+
+pub const default_control_command_timeout_ms = control_defaults.default_command_timeout_ms
 
 pub fn polling_interval_ms(root: yay.Node) -> Result(Int, error.ConfigError) {
   let tracker = get_map(root, "tracker")
@@ -33,6 +36,18 @@ pub fn hooks_timeout_ms(root: yay.Node) -> Result(Int, error.ConfigError) {
       LegacyMillisecondsField(hooks, "timeout_ms", "hooks.timeout_ms"),
     ],
     60_000,
+    False,
+  )
+}
+
+pub fn control_command_timeout_ms(
+  root: yay.Node,
+  default: Int,
+) -> Result(Int, error.ConfigError) {
+  let control = get_map(root, "control")
+  get_duration_ms_from_sources(
+    [DurationField(control, "command_timeout", "control.command_timeout")],
+    default,
     False,
   )
 }

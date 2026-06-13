@@ -14,6 +14,9 @@ tracker:
     terminal: [Canceled, Duplicate, Done]
   polling:
     every: 60s
+control:
+  # Local scherzoctl mutating commands may need time for tracker/ledger updates.
+  command_timeout: 60s
 workspace:
   # Paths are resolved relative to .scherzo/scherzo.yaml. Runtime workspaces
   # land under repo-root/.scherzo/workspaces/<workflow>/<issue>/<run>/.

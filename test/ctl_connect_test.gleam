@@ -454,6 +454,7 @@ pub fn notify_local_reload_for_workspace_applies_reload_command_test() {
         token: "control-token",
         workspace_root: workspace_root,
         started_at_ms: 1,
+        command_timeout_ms: 500,
       ),
     )
 

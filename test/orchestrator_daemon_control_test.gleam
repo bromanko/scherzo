@@ -810,7 +810,38 @@ pub fn daemon_control_server_uses_extended_command_timeout_test() {
   let assert Ok(command_timeout_ms) =
     process.receive(settings_subject, within: 1000)
   assert command_timeout_ms == control_server.default_command_timeout_ms
-  assert command_timeout_ms > 500
+  assert command_timeout_ms == 60_000
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_control_server_uses_configured_command_timeout_test() {
+  let #(workflow_path, _root) =
+    write_workflow_with_extra_config(
+      "test/tmp/daemon-control-timeout-override",
+      0,
+      1,
+      "control:\n  command_timeout: 2s\n",
+    )
+  let log_subject = process.new_subject()
+  let settings_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      start_control_server: fn(
+        settings: control_server.Settings,
+        _backend: control_server.Backend,
+      ) {
+        process.send(settings_subject, settings.command_timeout_ms)
+        Ok(daemon.NoControlServer)
+      },
+      stop_control_server: fn(_) { Nil },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(command_timeout_ms) =
+    process.receive(settings_subject, within: 1000)
+  assert command_timeout_ms == 2000
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }

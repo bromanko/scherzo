@@ -577,6 +577,13 @@
         }
       }
     },
+    "Control": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command_timeout": { "$ref": "#/$defs/Duration" }
+      }
+    },
     "UiServer": {
       "type": "object",
       "additionalProperties": false,
@@ -622,6 +629,7 @@
         "task_routing": { "$ref": "#/$defs/TaskRouting" },
         "workspace": { "$ref": "#/$defs/WorkspaceRoot" },
         "agents": { "$ref": "#/$defs/Agents" },
+        "control": { "$ref": "#/$defs/Control" },
         "ui_server": { "$ref": "#/$defs/UiServer" },
         "task_updates": { "$ref": "#/$defs/TaskUpdates" },
         "schedules": { "$ref": "#/$defs/Schedules" },

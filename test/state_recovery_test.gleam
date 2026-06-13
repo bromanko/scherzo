@@ -1371,6 +1371,7 @@ fn config() -> config_types.EffectiveConfig {
     ),
     polling: config_types.PollingConfig(interval_ms: 30_000),
     workspace: config_types.WorkspaceConfig(root: "test/tmp/workspaces"),
+    control: config_types.ControlConfig(command_timeout_ms: 60_000),
     hooks: config_types.HooksConfig(
       after_create: Some("true"),
       before_run: None,
