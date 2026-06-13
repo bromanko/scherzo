@@ -371,7 +371,7 @@ pub fn handle_completed_scheduled_failure_and_cleanup_match_daemon_behavior_test
         effect_runner.ScheduledFailureReportFinished(
           2,
           publication,
-          Error(error.LinearApiRequest("boom")),
+          Error(adapter.Transient("boom")),
         ),
       ),
     )
@@ -587,7 +587,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
     == effect_runner.ScheduledFailureReportFinished(
       10,
       publication,
-      Error(error.LinearApiRequest(reason)),
+      Error(adapter.Transient(reason)),
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.CleanupWorkspace(

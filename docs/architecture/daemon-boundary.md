@@ -2,7 +2,7 @@
 
 `src/scherzo/orchestrator/daemon.gleam` remains Scherzo's public daemon actor shell. It may own public actor startup, public message receipt, compatibility types, dependency injection, control-plane/process/timer edges, top-level logging/redaction context, and handoff between subsystem outcomes. It must not regrow extracted subsystem helpers without an explicit update to this document and the matching source guardrail.
 
-The daemon line-count ratchet is `max_daemon_lines: 6961`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
+The daemon line-count ratchet is `max_daemon_lines: 6942`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
 
 `src/scherzo/orchestrator/service.gleam` is the only documented startup-edge import exception for `scherzo/orchestrator/daemon`. It may import the daemon because it is the process edge that starts the public actor. Extracted orchestrator subsystem modules must not import `scherzo/orchestrator/daemon`.
 

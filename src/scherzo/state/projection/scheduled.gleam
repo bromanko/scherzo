@@ -526,20 +526,30 @@ pub fn report_failed_status(
   next_retry_at_ms: Int,
   generation: Int,
 ) -> ScheduledJobStatus {
-  ScheduledJobStatus(
-    ..status,
-    state: ScheduledReportRetryWaiting,
-    failure_dedupe_key: Some(dedupe_key),
-    report_retry: Some(ScheduledReportRetry(
-      run_id: run_id,
-      attempt: attempt,
-      dedupe_key: dedupe_key,
-      error_code: error_code,
-      error_message: error_message,
-      next_retry_at_ms: next_retry_at_ms,
-      generation: generation,
-    )),
-  )
+  case next_retry_at_ms <= 0 {
+    True ->
+      ScheduledJobStatus(
+        ..status,
+        state: ScheduledTerminalFailure,
+        failure_dedupe_key: Some(dedupe_key),
+        report_retry: None,
+      )
+    False ->
+      ScheduledJobStatus(
+        ..status,
+        state: ScheduledReportRetryWaiting,
+        failure_dedupe_key: Some(dedupe_key),
+        report_retry: Some(ScheduledReportRetry(
+          run_id: run_id,
+          attempt: attempt,
+          dedupe_key: dedupe_key,
+          error_code: error_code,
+          error_message: error_message,
+          next_retry_at_ms: next_retry_at_ms,
+          generation: generation,
+        )),
+      )
+  }
 }
 
 pub fn skipped_status(

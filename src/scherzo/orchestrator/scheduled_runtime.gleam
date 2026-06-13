@@ -1,8 +1,13 @@
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, Some}
 import scherzo/orchestrator/schedule_core
 import scherzo/retry_policy
+import scherzo/state/record
+import scherzo/tracker/adapter
+
+const default_report_max_attempts_value = 5
 
 pub type Runtime {
   Runtime(
@@ -11,7 +16,6 @@ pub type Runtime {
     scheduled_retries: Dict(String, RetryStart),
     next_scheduled_retry_generation: Int,
     scheduled_report_retries: Dict(String, ReportRetryStart),
-    next_scheduled_report_generation: Int,
   )
 }
 
@@ -60,6 +64,23 @@ pub type WorkerFailureFollowUp {
   WorkerFailureReport(request: FailureReportRequest)
 }
 
+pub type ReportFailureDecision {
+  ReportFailureRetry(
+    runtime: Runtime,
+    next_retry_at_ms: Int,
+    report_attempt_index: Int,
+    error_code: String,
+    error_message: String,
+    actions: List(Action),
+  )
+  ReportFailureTerminal(
+    runtime: Runtime,
+    report_attempt_index: Int,
+    error_code: String,
+    error_message: String,
+  )
+}
+
 pub type Action {
   RecordScheduledDue(
     job_id: String,
@@ -92,11 +113,30 @@ pub type Action {
     reason: String,
   )
   PromoteRetryToPending(pending: PendingStart)
-  RetryReport(job_id: String, run_id: String)
+  RetryReport(job_id: String, run_id: String, report_attempt_index: Int)
 }
 
 pub fn default_max_backoff_ms() -> Int {
   retry_policy.default_max_backoff_ms()
+}
+
+pub fn default_report_max_attempts() -> Int {
+  default_report_max_attempts_value
+}
+
+pub fn report_attempts_exhausted(report_attempt_index: Int) -> Bool {
+  retry_policy.completed_attempts_exhausted(
+    normalize_attempt_index(report_attempt_index),
+    default_report_max_attempts(),
+  )
+}
+
+pub fn initial_report_attempt_index() -> Int {
+  retry_policy.first_attempt_index()
+}
+
+pub fn normalize_report_attempt_index(attempt: Int) -> Int {
+  normalize_attempt_index(attempt)
 }
 
 pub fn new() -> Runtime {
@@ -106,7 +146,6 @@ pub fn new() -> Runtime {
     scheduled_retries: dict.new(),
     next_scheduled_retry_generation: 1,
     scheduled_report_retries: dict.new(),
-    next_scheduled_report_generation: 1,
   )
 }
 
@@ -409,11 +448,6 @@ pub fn insert_report_retry(
   runtime: Runtime,
   report_retry: ReportRetryStart,
 ) -> Runtime {
-  let next_generation =
-    retry_policy.next_generation_after_reserved(
-      runtime.next_scheduled_report_generation,
-      report_retry.generation,
-    )
   Runtime(
     ..runtime,
     scheduled_report_retries: dict.insert(
@@ -421,19 +455,6 @@ pub fn insert_report_retry(
       report_retry.run_id,
       report_retry,
     ),
-    next_scheduled_report_generation: next_generation,
-  )
-}
-
-pub fn reserve_report_generation(runtime: Runtime) -> #(Runtime, Int) {
-  #(
-    Runtime(
-      ..runtime,
-      next_scheduled_report_generation: retry_policy.next_generation(Some(
-        runtime.next_scheduled_report_generation,
-      )),
-    ),
-    runtime.next_scheduled_report_generation,
   )
 }
 
@@ -442,10 +463,13 @@ pub fn register_report_retry(
   job_id: String,
   run_id: String,
 ) -> Runtime {
-  let #(runtime, generation) = reserve_report_generation(runtime)
   insert_report_retry(
     runtime,
-    ReportRetryStart(job_id: job_id, run_id: run_id, generation: generation),
+    ReportRetryStart(
+      job_id: job_id,
+      run_id: run_id,
+      generation: retry_policy.first_attempt_index(),
+    ),
   )
 }
 
@@ -466,6 +490,7 @@ pub fn schedule_report_retry_after_failure(
   generation: Int,
   max_backoff_ms: Int,
 ) -> #(Runtime, Int, List(Action)) {
+  let generation = normalize_attempt_index(generation)
   let delay_ms = retry_policy.backoff_delay(generation, max_backoff_ms)
   let runtime =
     insert_report_retry(
@@ -475,6 +500,144 @@ pub fn schedule_report_retry_after_failure(
   #(runtime, delay_ms, [
     ScheduleReportRetryTimer(run_id, generation, delay_ms),
   ])
+}
+
+pub fn decide_report_failure(
+  runtime: Runtime,
+  job_id: String,
+  run_id: String,
+  generation: Int,
+  err: adapter.TrackerError,
+  now_ms: Int,
+  max_backoff_ms: Int,
+) -> ReportFailureDecision {
+  let report_attempt_index = normalize_report_attempt_index(generation)
+  let error_code = adapter_tracker_error_code(err)
+  let error_message = adapter_tracker_error_message(err)
+  case
+    adapter_tracker_error_retryable(err),
+    report_attempts_exhausted(report_attempt_index)
+  {
+    True, False -> {
+      let #(runtime, delay_ms, actions) =
+        schedule_report_retry_after_failure(
+          runtime,
+          job_id,
+          run_id,
+          report_attempt_index,
+          max_backoff_ms,
+        )
+      ReportFailureRetry(
+        runtime: runtime,
+        next_retry_at_ms: now_ms + delay_ms,
+        report_attempt_index: report_attempt_index,
+        error_code: error_code,
+        error_message: error_message,
+        actions: actions,
+      )
+    }
+    _, _ ->
+      ReportFailureTerminal(
+        runtime: clear_report_retry(runtime, run_id),
+        report_attempt_index: report_attempt_index,
+        error_code: error_code,
+        error_message: error_message,
+      )
+  }
+}
+
+pub fn report_failure_decision_runtime(
+  decision: ReportFailureDecision,
+) -> Runtime {
+  case decision {
+    ReportFailureRetry(runtime:, ..) -> runtime
+    ReportFailureTerminal(runtime:, ..) -> runtime
+  }
+}
+
+pub fn report_failure_failed_record(
+  publication: adapter.ScheduledFailurePublication,
+  decision: ReportFailureDecision,
+) -> record.RecordBody {
+  let #(next_retry_at_ms, report_attempt_index, error_code, error_message) = case
+    decision
+  {
+    ReportFailureRetry(
+      next_retry_at_ms:,
+      report_attempt_index:,
+      error_code:,
+      error_message:,
+      ..,
+    ) -> #(next_retry_at_ms, report_attempt_index, error_code, error_message)
+    ReportFailureTerminal(
+      report_attempt_index:,
+      error_code:,
+      error_message:,
+      ..,
+    ) -> #(0, report_attempt_index, error_code, error_message)
+  }
+  record.ScheduledFailureReportFailed(
+    publication.job_id,
+    publication.workflow_id,
+    publication.due_at_ms,
+    publication.run_id,
+    publication.attempt,
+    publication.dedupe_key,
+    error_code,
+    error_message,
+    next_retry_at_ms,
+    report_attempt_index,
+  )
+}
+
+pub fn report_failure_log_fields(
+  publication: adapter.ScheduledFailurePublication,
+  decision: ReportFailureDecision,
+) -> List(#(String, String)) {
+  let #(report_attempt_index, error_code, retrying) = case decision {
+    ReportFailureRetry(report_attempt_index:, error_code:, ..) -> #(
+      report_attempt_index,
+      error_code,
+      "true",
+    )
+    ReportFailureTerminal(report_attempt_index:, error_code:, ..) -> #(
+      report_attempt_index,
+      error_code,
+      "false",
+    )
+  }
+  [
+    #("job_id", publication.job_id),
+    #("run_id", publication.run_id),
+    #("error", error_code),
+    #("report_attempt", int.to_string(report_attempt_index)),
+    #("retrying", retrying),
+  ]
+}
+
+pub fn insert_timer_cancelling_existing(
+  timers: Dict(String, timer),
+  key: String,
+  timer: timer,
+  cancel_timer: fn(timer) -> Nil,
+) -> Dict(String, timer) {
+  case dict.get(timers, key) {
+    Ok(existing) -> cancel_timer(existing)
+    Error(Nil) -> Nil
+  }
+  dict.insert(timers, key, timer)
+}
+
+pub fn delete_timer_cancelling_existing(
+  timers: Dict(String, timer),
+  key: String,
+  cancel_timer: fn(timer) -> Nil,
+) -> Dict(String, timer) {
+  case dict.get(timers, key) {
+    Ok(existing) -> cancel_timer(existing)
+    Error(Nil) -> Nil
+  }
+  dict.delete(timers, key)
 }
 
 pub fn handle_report_retry_tick(
@@ -492,7 +655,15 @@ pub fn handle_report_retry_tick(
         | retry_policy.TimerGenerationMismatch(_, _) -> #(runtime, [])
         retry_policy.TimerAccepted(_) -> {
           let runtime = clear_report_retry(runtime, run_id)
-          #(runtime, [RetryReport(entry.job_id, entry.run_id)])
+          #(runtime, [
+            RetryReport(
+              entry.job_id,
+              entry.run_id,
+              retry_policy.next_attempt_index(normalize_attempt_index(
+                entry.generation,
+              )),
+            ),
+          ])
         }
       }
   }
@@ -588,6 +759,47 @@ fn normalize_blocking_reason(reason: String) -> String {
   case reason {
     "paused" -> "schedule_paused"
     _ -> reason
+  }
+}
+
+fn normalize_attempt_index(attempt_index: Int) -> Int {
+  case attempt_index <= 0 {
+    True -> retry_policy.first_attempt_index()
+    False -> attempt_index
+  }
+}
+
+fn adapter_tracker_error_retryable(err: adapter.TrackerError) -> Bool {
+  case err {
+    adapter.Transient(_) -> True
+    adapter.Unauthorized(_)
+    | adapter.NotFound(_)
+    | adapter.Permanent(_)
+    | adapter.UnsupportedCapability(_)
+    | adapter.DecodeFailed(_) -> False
+  }
+}
+
+fn adapter_tracker_error_code(err: adapter.TrackerError) -> String {
+  case err {
+    adapter.Unauthorized(_) -> "tracker_unauthorized"
+    adapter.NotFound(_) -> "tracker_not_found"
+    adapter.Transient(_) -> "tracker_transient"
+    adapter.Permanent(_) -> "tracker_permanent"
+    adapter.UnsupportedCapability(_) -> "tracker_unsupported_capability"
+    adapter.DecodeFailed(_) -> "tracker_decode_failed"
+  }
+}
+
+fn adapter_tracker_error_message(err: adapter.TrackerError) -> String {
+  case err {
+    adapter.Unauthorized(message) -> message
+    adapter.NotFound(ref) -> "task not found: " <> ref.remote_id
+    adapter.Transient(message) -> message
+    adapter.Permanent(message) -> message
+    adapter.UnsupportedCapability(capability) ->
+      "unsupported tracker capability: " <> capability
+    adapter.DecodeFailed(message) -> message
   }
 }
 
