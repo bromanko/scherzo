@@ -32,9 +32,17 @@ The single milestone is to validate the review document, validate the pack, and 
 
 - [x] 2026-05-15: Created the fixture review document.
 
+## Surprises & Discoveries
+
+None.
+
 ## Decision Log
 
 - 2026-05-15: Keep fixture review docs concise so helper tests focus on v2 artifact contracts.
+
+## Outcomes & Retrospective
+
+Pending implementation.
 
 ## Validation and Acceptance
 
