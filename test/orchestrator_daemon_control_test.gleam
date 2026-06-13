@@ -1817,6 +1817,66 @@ pub fn abort_command_falls_back_to_kill_and_park_when_worker_does_not_reply_test
   )
 }
 
+pub fn abort_command_timeout_fallback_does_not_block_daemon_test() {
+  let candidate = issue("abort-timeout-issue", "ABC-ABORT-TIMEOUT", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let #(workflow_path, _root) =
+    write_workflow_with_limits("test/tmp/daemon-control-abort-timeout", 1, 3)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      disabled_handoff(),
+      hub_subject,
+      fn(issue: tracker_issue.Issue, _, _, _, _, _, command_subject, ready) {
+        ready()
+        process.send(log_subject, "agent_run:" <> issue.id)
+        let assert Ok(worker_command.Abort(_)) =
+          process.receive(command_subject, within: 1000)
+        process.send(log_subject, "abort_received:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "agent_run:abort-timeout-issue", 20)
+
+  let operator_reply =
+    daemon.apply_operator_command_async(
+      started.data,
+      command.AbortSession("ABC-ABORT-TIMEOUT-42-1"),
+      250,
+    )
+  assert wait_for_log(log_subject, "abort_received:abort-timeout-issue", 20)
+  let assert Ok(snapshot_while_pending) = daemon.get_snapshot(started.data, 100)
+  assert dict.has_key(
+    snapshot_while_pending.running,
+    orchestrator_state.issue_identity(candidate),
+  )
+
+  let assert Ok(result) = process.receive(operator_reply, within: 1000)
+  assert command.status_to_string(result.status) == "applied"
+  assert result.message == Some("operator_abort")
+
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  let identity = orchestrator_state.issue_identity(candidate)
+  assert !dict.has_key(snapshot.running, identity)
+  assert dict.has_key(snapshot.parked, identity)
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn prompt_command_reaches_live_worker_command_subject_test() {
   let candidate = issue("prompt-live-issue", "ABC-LIVE", "Todo")
   let tracker_client = tracker_with(candidate)
@@ -1866,7 +1926,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
   hub.stop(hub_subject)
 }
 
-pub fn prompt_command_reports_worker_timeout_with_existing_status_reason_and_message_test() {
+pub fn prompt_command_reports_worker_timeout_without_blocking_daemon_test() {
   let candidate = issue("prompt-timeout-issue", "ABC-PROMPT-TIMEOUT", "Todo")
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) =
@@ -1886,6 +1946,7 @@ pub fn prompt_command_reports_worker_timeout_with_existing_status_reason_and_mes
         let assert Ok(worker_command.QueuePrompt(message, _)) =
           process.receive(command_subject, within: 1000)
         assert message == "status?"
+        process.send(log_subject, "prompt_received:" <> issue.id)
         test_async.block_until_released(worker_barrier)
         Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("stopped")),
@@ -1899,12 +1960,20 @@ pub fn prompt_command_reports_worker_timeout_with_existing_status_reason_and_mes
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "agent_run:prompt-timeout-issue", 20)
 
-  let assert Ok(prompt_result) =
-    daemon.apply_operator_command(
+  let operator_reply =
+    daemon.apply_operator_command_async(
       started.data,
       command.PromptSession("ABC-PROMPT-TIMEOUT-42-1", "status?"),
-      30,
+      250,
     )
+  assert wait_for_log(log_subject, "prompt_received:prompt-timeout-issue", 20)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 100)
+  assert dict.has_key(
+    snapshot.running,
+    orchestrator_state.issue_identity(candidate),
+  )
+
+  let assert Ok(prompt_result) = process.receive(operator_reply, within: 1000)
   assert prompt_result.command == "prompt"
   assert prompt_result.target == Some("ABC-PROMPT-TIMEOUT-42-1")
   assert prompt_result.status == command.Rejected("worker_command_timeout")
