@@ -24,7 +24,6 @@ import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/daemon_identity
 import scherzo/error
 import scherzo/log
-import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon_transition_shell
 import scherzo/orchestrator/effect_completion_handler
@@ -32,6 +31,7 @@ import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/operator_runtime
+import scherzo/orchestrator/operator_worker_command
 import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/read_model
@@ -105,6 +105,15 @@ pub type Message {
   YamlStepUpdate(String, agent_types.RunnerUpdate)
   YamlStepCommandReady(String, process.Subject(worker_command.Command))
   YamlStepFinished(String, session_tokens.TokenTotals)
+  WorkerCommandCompleted(
+    command.OperatorCommand,
+    worker_command.Reply,
+    process.Subject(command.CommandResult),
+  )
+  WorkerCommandTimedOut(
+    command.OperatorCommand,
+    process.Subject(command.CommandResult),
+  )
   AbortWorkerCommandTimedOut(
     command.OperatorCommand,
     String,
@@ -715,12 +724,22 @@ pub fn apply_operator_command(
   operator_command: command.OperatorCommand,
   timeout_ms: Int,
 ) -> Result(command.CommandResult, Nil) {
+  let reply =
+    apply_operator_command_async(daemon_subject, operator_command, timeout_ms)
+  process.receive(reply, within: timeout_ms)
+}
+
+pub fn apply_operator_command_async(
+  daemon_subject: process.Subject(Message),
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+) -> process.Subject(command.CommandResult) {
   let reply = process.new_subject()
   process.send(
     daemon_subject,
     ApplyOperatorCommand(operator_command, timeout_ms, reply),
   )
-  process.receive(reply, within: timeout_ms)
+  reply
 }
 
 pub fn execute_query(
@@ -1598,6 +1617,19 @@ fn handle_message(
         session_id,
         tokens,
       ))
+    WorkerCommandCompleted(operator_command, worker_reply, reply) -> {
+      let result =
+        operator_worker_command.reply_result(operator_command, worker_reply)
+      log_operator_result(state, result, [])
+      process.send(reply, result)
+      actor.continue(state)
+    }
+    WorkerCommandTimedOut(operator_command, reply) -> {
+      let result = operator_worker_command.timeout_result(operator_command)
+      log_operator_result(state, result, [])
+      process.send(reply, result)
+      actor.continue(state)
+    }
     AbortWorkerCommandTimedOut(operator_command, session_id, reply) -> {
       let #(state, result) =
         stop_session_for_operator(
@@ -1606,6 +1638,7 @@ fn handle_message(
           session_id,
           session_reason.OperatorAbort,
         )
+      log_operator_result(state, result, [])
       process.send(reply, result)
       continue_with_refreshed_state(state)
     }
@@ -1934,16 +1967,51 @@ fn scheduled_worker_down_context(
   )
 }
 
+type OperatorCommandReplyState {
+  OperatorCommandImmediate(State, command.CommandResult)
+  OperatorCommandPending(State)
+}
+
 fn operator_command_reply(
   state: State,
   operator_command: command.OperatorCommand,
   timeout_ms: Int,
   reply: process.Subject(command.CommandResult),
 ) -> State {
-  let #(state, result) =
-    apply_operator_command_to_state(state, operator_command, timeout_ms)
-  process.send(reply, result)
-  state
+  case
+    apply_operator_command_for_reply(state, operator_command, timeout_ms, reply)
+  {
+    OperatorCommandImmediate(state, result) -> {
+      process.send(reply, result)
+      state
+    }
+    OperatorCommandPending(state) -> state
+  }
+}
+
+fn apply_operator_command_for_reply(
+  state: State,
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+  reply: process.Subject(command.CommandResult),
+) -> OperatorCommandReplyState {
+  case operator_command {
+    command.AbortSession(_)
+    | command.StopAfterCurrentTurn(_)
+    | command.PromptSession(_, _)
+    | command.RespondUi(_, _, _) ->
+      apply_async_worker_operator_command(
+        State(..state, last_operator_command_result: None),
+        operator_command,
+        timeout_ms,
+        reply,
+      )
+    _ -> {
+      let #(state, result) =
+        apply_operator_command_to_state(state, operator_command, timeout_ms)
+      OperatorCommandImmediate(state, result)
+    }
+  }
 }
 
 fn apply_operator_command_to_state(
@@ -2025,8 +2093,8 @@ fn apply_shell_operator_command(
         retry_workflow_step_for_operator: retry_workflow_step_for_operator,
         retry_artifact_publication_for_operator: retry_artifact_publication_for_operator,
         schedule_run_now_for_operator: schedule_run_now_for_operator,
-        abort_session_for_operator_sync: abort_session_for_operator_sync,
-        route_worker_command_sync: route_worker_command_sync,
+        abort_session_for_operator_sync: operator_worker_command.reject_sync_worker_command_for_operator,
+        route_worker_command_sync: operator_worker_command.reject_sync_routed_worker_command,
         cleanup_orphan_steps_for_operator: cleanup_orphan_steps_for_operator,
       ),
     )
@@ -2872,231 +2940,87 @@ fn route_worker_command_session_id(state: State, session_id: String) -> String {
   }
 }
 
-fn route_worker_command_sync(
+fn apply_async_worker_operator_command(
   state: State,
   operator_command: command.OperatorCommand,
-  session_id: String,
   timeout_ms: Int,
-  send: fn(
-    process.Subject(worker_command.Command),
-    process.Subject(worker_command.Reply),
-  ) -> Nil,
-) -> #(State, command.CommandResult) {
-  let session_id = route_worker_command_session_id(state, session_id)
+  reply: process.Subject(command.CommandResult),
+) -> OperatorCommandReplyState {
+  let context =
+    operator_worker_command.context(
+      state: state,
+      daemon_subject: state.subject,
+      route_session_id: route_worker_command_session_id,
+      worker_for_session: async_command_worker_for_session,
+      step_subject_for_run: async_command_step_subject_for_run,
+      step_subject_for_session: fn(state, session_id) {
+        worker_registry.step_command_subject_for_session(
+          state.registry,
+          session_id,
+        )
+      },
+      stop_for_abort: fn(state, operator_command, session_id) {
+        stop_session_for_operator(
+          state,
+          operator_command,
+          session_id,
+          session_reason.OperatorAbort,
+        )
+      },
+      completion_message: fn(operator_command, worker_reply, operator_reply) {
+        WorkerCommandCompleted(operator_command, worker_reply, operator_reply)
+      },
+      timeout_message: fn(operator_command, operator_reply) {
+        WorkerCommandTimedOut(operator_command, operator_reply)
+      },
+      abort_timeout_message: fn(operator_command, session_id, operator_reply) {
+        AbortWorkerCommandTimedOut(operator_command, session_id, operator_reply)
+      },
+    )
+  case
+    operator_worker_command.apply(context, operator_command, timeout_ms, reply)
+  {
+    operator_worker_command.Immediate(state, result) ->
+      logged_operator_command_result(state, result)
+    operator_worker_command.Pending(state) -> OperatorCommandPending(state)
+  }
+}
+
+fn async_command_worker_for_session(
+  state: State,
+  session_id: String,
+) -> operator_worker_command.WorkerLookup {
   case worker_for_session(state, session_id) {
-    Error(Nil) ->
-      route_step_command_sync(
-        state,
-        operator_command,
-        session_id,
-        timeout_ms,
-        send,
-      )
+    Error(Nil) -> operator_worker_command.NoWorker
     Ok(handle) ->
       case handle.command_subject {
-        None ->
-          case
-            worker_registry.step_command_subject_for_run(
-              state.registry,
-              handle.run_id,
-            )
-          {
-            Error(worker_registry.NoActiveStepCommandSubject) -> #(
-              state,
-              command.not_allowed(
-                operator_command,
-                "worker_command_subject_unavailable",
-                Some("session worker does not accept operator commands"),
-              ),
-            )
-            Error(worker_registry.MultipleActiveStepCommandSubjects) -> #(
-              state,
-              command.not_allowed(
-                operator_command,
-                "multiple_step_command_subjects",
-                Some(
-                  "multiple active step sessions accept operator commands; target a step session",
-                ),
-              ),
-            )
-            Ok(subject) ->
-              send_worker_command_sync(
-                state,
-                operator_command,
-                timeout_ms,
-                send,
-                subject,
-              )
-          }
         Some(subject) ->
-          send_worker_command_sync(
-            state,
-            operator_command,
-            timeout_ms,
-            send,
-            subject,
-          )
-      }
-  }
-}
-
-fn route_step_command_sync(
-  state: State,
-  operator_command: command.OperatorCommand,
-  session_id: String,
-  timeout_ms: Int,
-  send: fn(
-    process.Subject(worker_command.Command),
-    process.Subject(worker_command.Reply),
-  ) -> Nil,
-) -> #(State, command.CommandResult) {
-  case
-    worker_registry.step_command_subject_for_session(state.registry, session_id)
-  {
-    Error(Nil) -> #(
-      state,
-      command.not_found(operator_command, Some("session not found")),
-    )
-    Ok(subject) ->
-      send_worker_command_sync(
-        state,
-        operator_command,
-        timeout_ms,
-        send,
-        subject,
-      )
-  }
-}
-
-fn send_worker_command_sync(
-  state: State,
-  operator_command: command.OperatorCommand,
-  timeout_ms: Int,
-  send: fn(
-    process.Subject(worker_command.Command),
-    process.Subject(worker_command.Reply),
-  ) -> Nil,
-  subject: process.Subject(worker_command.Command),
-) -> #(State, command.CommandResult) {
-  let worker_reply = process.new_subject()
-  send(subject, worker_reply)
-  case
-    process.receive(
-      worker_reply,
-      within: control_command_handler.worker_command_timeout(timeout_ms),
-    )
-  {
-    Ok(reply) -> #(
-      state,
-      control_command_handler.worker_reply_to_command_result(
-        operator_command,
-        reply,
-      ),
-    )
-    Error(Nil) -> #(
-      state,
-      command.rejected(
-        operator_command,
-        "worker_command_timeout",
-        Some("worker command timed out"),
-      ),
-    )
-  }
-}
-
-fn abort_session_for_operator_sync(
-  state: State,
-  operator_command: command.OperatorCommand,
-  session_id: String,
-  timeout_ms: Int,
-) -> #(State, command.CommandResult) {
-  let session_id = route_worker_command_session_id(state, session_id)
-  case worker_for_session(state, session_id) {
-    Error(Nil) ->
-      abort_step_session_for_operator_sync(
-        state,
-        operator_command,
-        session_id,
-        timeout_ms,
-      )
-    Ok(handle) ->
-      case handle.command_subject {
+          operator_worker_command.WorkerWithCommandSubject(subject)
         None ->
-          stop_session_for_operator(
-            state,
-            operator_command,
-            session_id,
-            session_reason.OperatorAbort,
-          )
-        Some(subject) -> {
-          let worker_reply = process.new_subject()
-          process.send(subject, worker_command.Abort(worker_reply))
-          case
-            process.receive(
-              worker_reply,
-              within: control_command_handler.worker_command_timeout(timeout_ms),
-            )
-          {
-            Ok(reply) -> #(
-              state,
-              control_command_handler.worker_reply_to_command_result(
-                operator_command,
-                reply,
-              ),
-            )
-            Error(Nil) ->
-              stop_session_for_operator(
-                state,
-                operator_command,
-                session_id,
-                session_reason.OperatorAbort,
-              )
-          }
-        }
+          operator_worker_command.WorkerWithoutCommandSubject(handle.run_id)
       }
   }
 }
 
-fn abort_step_session_for_operator_sync(
+fn async_command_step_subject_for_run(
   state: State,
-  operator_command: command.OperatorCommand,
-  session_id: String,
-  timeout_ms: Int,
-) -> #(State, command.CommandResult) {
-  case
-    worker_registry.step_command_subject_for_session(state.registry, session_id)
-  {
-    Error(Nil) -> #(
-      state,
-      command.not_found(operator_command, Some("session not found")),
-    )
-    Ok(subject) -> {
-      let worker_reply = process.new_subject()
-      process.send(subject, worker_command.Abort(worker_reply))
-      case
-        process.receive(
-          worker_reply,
-          within: control_command_handler.worker_command_timeout(timeout_ms),
-        )
-      {
-        Ok(reply) -> #(
-          state,
-          control_command_handler.worker_reply_to_command_result(
-            operator_command,
-            reply,
-          ),
-        )
-        Error(Nil) -> #(
-          state,
-          command.rejected(
-            operator_command,
-            "worker_command_timeout",
-            Some("worker command timed out"),
-          ),
-        )
-      }
-    }
+  run_id: String,
+) -> operator_worker_command.StepRunCommandSubject {
+  case worker_registry.step_command_subject_for_run(state.registry, run_id) {
+    Error(worker_registry.NoActiveStepCommandSubject) ->
+      operator_worker_command.NoActiveStepCommandSubject
+    Error(worker_registry.MultipleActiveStepCommandSubjects) ->
+      operator_worker_command.MultipleActiveStepCommandSubjects
+    Ok(subject) -> operator_worker_command.StepRunCommandSubjectFound(subject)
   }
+}
+
+fn logged_operator_command_result(
+  state: State,
+  result: command.CommandResult,
+) -> OperatorCommandReplyState {
+  log_operator_result(state, result, [])
+  OperatorCommandImmediate(state, result)
 }
 
 fn stop_session_for_operator(
