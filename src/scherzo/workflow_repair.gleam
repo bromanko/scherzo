@@ -1173,6 +1173,11 @@ fn require_current_workflow(
     recovery.CurrentWorkflow(..) -> Ok(current)
     recovery.IssueUnavailable ->
       Error(RepairError("issue_unavailable", Some("issue is unavailable")))
+    recovery.TrackerRefreshUnavailable ->
+      Error(RepairError(
+        "tracker_refresh_unavailable",
+        Some("tracker refresh is unavailable"),
+      ))
     recovery.WorkflowUnavailable(reason) ->
       Error(RepairError(
         "workflow_unavailable",

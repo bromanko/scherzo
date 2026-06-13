@@ -37,7 +37,7 @@ type RetryRestoreContext {
   RetryRestoreContext(
     backend_kind: String,
     active_workflow_issue_ids: List(String),
-    issue_by_id: Dict(String, tracker_issue.Issue),
+    issue_observations: Dict(String, IssueRefreshObservation),
     issue_id: String,
     issue_identifier: String,
     generation: Int,
@@ -118,6 +118,12 @@ pub type WorkflowRecoveryCandidate {
   )
 }
 
+pub type IssueRefreshObservation {
+  RefreshedIssue(tracker_issue.Issue)
+  ConfirmedUnavailable
+  RefreshUnavailable
+}
+
 pub type CurrentWorkflowObservation {
   CurrentWorkflow(
     issue: tracker_issue.Issue,
@@ -128,6 +134,7 @@ pub type CurrentWorkflowObservation {
     workspace_root: String,
   )
   IssueUnavailable
+  TrackerRefreshUnavailable
   WorkflowUnavailable(reason: String)
 }
 
@@ -223,6 +230,12 @@ pub fn known_task_refs(
   projection: projection.Projection,
 ) -> List(record.TaskRefFields) {
   projection.known_task_refs(projection)
+}
+
+pub fn recovery_task_refs(
+  projection: projection.Projection,
+) -> List(record.TaskRefFields) {
+  projection.recovery_task_refs(projection)
 }
 
 fn default_session_recovery_config() -> SessionRecoveryConfig {
@@ -410,8 +423,21 @@ pub fn plan(
   refreshed_issues: List(tracker_issue.Issue),
   now_ms: Int,
 ) -> Result(RecoveryPlan, RecoveryError) {
+  let observations =
+    refreshed_issues
+    |> list.map(fn(issue) { #(issue.id, RefreshedIssue(issue)) })
+    |> dict.from_list
+  plan_with_issue_observations(projection, config, observations, now_ms)
+}
+
+pub fn plan_with_issue_observations(
+  projection: projection.Projection,
+  config: config_types.EffectiveConfig,
+  issue_observations: Dict(String, IssueRefreshObservation),
+  now_ms: Int,
+) -> Result(RecoveryPlan, RecoveryError) {
   let outbox_recovery = replayable_outbox(projection)
-  let issue_by_id = recovery_policy.issues_by_id(refreshed_issues)
+  let issue_by_id = issue_by_id_from_observations(issue_observations)
   let base = recovery_policy.new_state(config)
   let build =
     Build(
@@ -423,9 +449,16 @@ pub fn plan(
       auto_unparked_issue_ids: [],
     )
   let build = restore_parked(build, projection, issue_by_id)
-  let build = restore_retries(build, projection, config, issue_by_id, now_ms)
   let build =
-    recover_interrupted_runs(build, projection, config, issue_by_id, now_ms)
+    restore_retries(build, projection, config, issue_observations, now_ms)
+  let build =
+    recover_interrupted_runs(
+      build,
+      projection,
+      config,
+      issue_observations,
+      now_ms,
+    )
   Ok(
     RecoveryPlan(
       runtime: build.runtime,
@@ -440,6 +473,21 @@ pub fn plan(
       workflow_resumptions: [],
     ),
   )
+}
+
+fn issue_by_id_from_observations(
+  issue_observations: Dict(String, IssueRefreshObservation),
+) -> Dict(String, tracker_issue.Issue) {
+  issue_observations
+  |> dict.to_list
+  |> list.filter_map(fn(entry) {
+    let #(issue_id, observation) = entry
+    case observation {
+      RefreshedIssue(issue) -> Ok(#(issue_id, issue))
+      ConfirmedUnavailable | RefreshUnavailable -> Error(Nil)
+    }
+  })
+  |> dict.from_list
 }
 
 pub fn describe_error(error: RecoveryError) -> String {
@@ -524,6 +572,16 @@ fn observation_or_issue_unavailable(
   case dict.get(observations, run_id) {
     Ok(observation) -> observation
     Error(Nil) -> IssueUnavailable
+  }
+}
+
+fn issue_refresh_observation(
+  issue_observations: Dict(String, IssueRefreshObservation),
+  issue_id: String,
+) -> IssueRefreshObservation {
+  case dict.get(issue_observations, issue_id) {
+    Ok(observation) -> observation
+    Error(Nil) -> ConfirmedUnavailable
   }
 }
 
@@ -696,6 +754,24 @@ fn finalize_one_workflow_candidate(
           None,
           [
             "workflow_recovery_parked_workflow_unavailable:" <> candidate.run_id,
+          ],
+          [],
+        ),
+      )
+    TrackerRefreshUnavailable ->
+      Ok(
+        #(
+          park_candidate_bodies(
+            candidate,
+            candidate.issue_identifier,
+            "tracker_refresh_unavailable",
+            candidate.issue_fingerprint,
+            candidate.observed_updated_at_ms,
+          ),
+          None,
+          [
+            "workflow_recovery_parked_tracker_refresh_unavailable:"
+            <> candidate.run_id,
           ],
           [],
         ),
@@ -2519,7 +2595,7 @@ fn restore_retries(
   build: Build,
   projection: projection.Projection,
   config: config_types.EffectiveConfig,
-  issue_by_id: Dict(String, tracker_issue.Issue),
+  issue_observations: Dict(String, IssueRefreshObservation),
   now_ms: Int,
 ) -> Build {
   let backend_kinds = recovered_backend_kinds(projection)
@@ -2543,7 +2619,7 @@ fn restore_retries(
           config,
           backend_kinds,
           active_workflow_issue_ids,
-          issue_by_id,
+          issue_observations,
           issue_id,
           issue_identifier,
           generation,
@@ -2561,7 +2637,7 @@ fn restore_scheduled_retry(
   config: config_types.EffectiveConfig,
   backend_kinds: Dict(String, String),
   active_workflow_issue_ids: List(String),
-  issue_by_id: Dict(String, tracker_issue.Issue),
+  issue_observations: Dict(String, IssueRefreshObservation),
   issue_id: String,
   issue_identifier: String,
   generation: Int,
@@ -2576,7 +2652,7 @@ fn restore_scheduled_retry(
     RetryRestoreContext(
       backend_kind: backend_kind,
       active_workflow_issue_ids: active_workflow_issue_ids,
-      issue_by_id: issue_by_id,
+      issue_observations: issue_observations,
       issue_id: issue_id,
       issue_identifier: issue_identifier,
       generation: generation,
@@ -2596,18 +2672,22 @@ fn restore_scheduled_retry(
       )
     False ->
       case reason_text == reason.retry_to_string(reason.RetryAfterFailure) {
-        True -> {
-          let build =
-            cancel_recovered_retry(
-              build,
+        True ->
+          case
+            issue_refresh_observation(
+              context.issue_observations,
               context.issue_id,
-              context.recovered_identity,
-              context.generation,
-              "recovery_failure_retry_removed",
             )
-          case dict.get(context.issue_by_id, context.issue_id) {
-            Error(Nil) -> build
-            Ok(issue) ->
+          {
+            RefreshedIssue(issue) -> {
+              let build =
+                cancel_recovered_retry(
+                  build,
+                  context.issue_id,
+                  context.recovered_identity,
+                  context.generation,
+                  "recovery_failure_retry_removed",
+                )
               case config_types.retry_state_allowed(config, issue.state) {
                 True ->
                   ensure_parked_after_worker_failure(
@@ -2619,8 +2699,22 @@ fn restore_scheduled_retry(
                   )
                 False -> build
               }
+            }
+            ConfirmedUnavailable ->
+              cancel_recovered_retry(
+                build,
+                context.issue_id,
+                context.recovered_identity,
+                context.generation,
+                "recovery_failure_retry_removed",
+              )
+            RefreshUnavailable ->
+              warn(
+                build,
+                "retry_recovery_tracker_refresh_unavailable:"
+                  <> context.issue_id,
+              )
           }
-        }
         False -> restore_non_failure_scheduled_retry(build, config, context)
       }
   }
@@ -2659,8 +2753,12 @@ fn restore_retry_for_inactive_issue(
         "recovery_parked",
       )
     False ->
-      case dict.get(context.issue_by_id, context.issue_id) {
-        Error(Nil) ->
+      case
+        issue_refresh_observation(context.issue_observations, context.issue_id)
+      {
+        RefreshedIssue(issue) ->
+          restore_retry_for_issue(build, config, context, issue)
+        ConfirmedUnavailable ->
           cancel_recovered_retry(
             build,
             context.issue_id,
@@ -2668,7 +2766,11 @@ fn restore_retry_for_inactive_issue(
             context.generation,
             "recovery_missing_issue",
           )
-        Ok(issue) -> restore_retry_for_issue(build, config, context, issue)
+        RefreshUnavailable ->
+          warn(
+            build,
+            "retry_recovery_tracker_refresh_unavailable:" <> context.issue_id,
+          )
       }
   }
 }
@@ -2791,9 +2893,10 @@ fn recover_interrupted_runs(
   build: Build,
   projection: projection.Projection,
   config: config_types.EffectiveConfig,
-  issue_by_id: Dict(String, tracker_issue.Issue),
+  issue_observations: Dict(String, IssueRefreshObservation),
   now_ms: Int,
 ) -> Build {
+  let issue_by_id = issue_by_id_from_observations(issue_observations)
   projection.runs
   |> dict.to_list
   |> list.fold(build, fn(build, entry) {
@@ -2807,7 +2910,7 @@ fn recover_interrupted_runs(
               build,
               projection,
               config,
-              issue_by_id,
+              issue_observations,
               run_id,
               issue_id,
               issue_identifier,
@@ -2820,7 +2923,7 @@ fn recover_interrupted_runs(
               build,
               projection,
               config,
-              issue_by_id,
+              issue_observations,
               run_id,
               issue_id,
               identifier_for_issue(projection, issue_by_id, issue_id),
@@ -2838,7 +2941,7 @@ fn recover_one_interrupted_run(
   build: Build,
   projection: projection.Projection,
   config: config_types.EffectiveConfig,
-  issue_by_id: Dict(String, tracker_issue.Issue),
+  issue_observations: Dict(String, IssueRefreshObservation),
   run_id: String,
   issue_id: String,
   issue_identifier: String,
@@ -2854,9 +2957,21 @@ fn recover_one_interrupted_run(
       ])
     False -> build
   }
-  case dict.get(issue_by_id, issue_id) {
-    Error(Nil) -> warn(build, "missing_issue_for_interrupted_run:" <> issue_id)
-    Ok(issue) ->
+  case issue_refresh_observation(issue_observations, issue_id) {
+    ConfirmedUnavailable ->
+      recover_unavailable_interrupted(
+        build,
+        projection,
+        issue_id,
+        issue_identifier,
+        workspace_path,
+      )
+    RefreshUnavailable ->
+      warn(
+        build,
+        "tracker_refresh_unavailable_for_interrupted_run:" <> issue_id,
+      )
+    RefreshedIssue(issue) ->
       case recovery_policy.is_terminal(config, issue.state) {
         True ->
           recover_terminal_interrupted(
@@ -2885,6 +3000,30 @@ fn recover_one_interrupted_run(
           }
       }
   }
+}
+
+fn recover_unavailable_interrupted(
+  build: Build,
+  projection: projection.Projection,
+  issue_id: String,
+  issue_identifier: String,
+  workspace_path: String,
+) -> Build {
+  let workspace_path = case string.trim(workspace_path) == "" {
+    True -> workspace_for_issue(projection, issue_id)
+    False -> workspace_path
+  }
+  let cleanup_workspaces = case string.trim(workspace_path) == "" {
+    True -> build.cleanup_workspaces
+    False -> [
+      CleanupRequest(issue_id, issue_identifier, workspace_path),
+      ..build.cleanup_workspaces
+    ]
+  }
+  Build(
+    ..warn(build, "issue_unavailable_for_interrupted_run:" <> issue_id),
+    cleanup_workspaces: cleanup_workspaces,
+  )
 }
 
 fn recover_terminal_interrupted(

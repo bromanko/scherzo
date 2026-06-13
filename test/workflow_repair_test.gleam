@@ -156,6 +156,22 @@ pub fn retry_step_rejects_missing_provenance_issue_identifier_drift_test() {
   assert workflow_repair.describe_error(error) == "issue_drift"
 }
 
+pub fn retry_step_rejects_tracker_refresh_unavailable_current_workflow_test() {
+  let projection = projection.fold(interrupted_run_records())
+
+  let assert Error(error) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      recovery.TrackerRefreshUnavailable,
+    )
+
+  assert workflow_repair.describe_error(error) == "tracker_refresh_unavailable"
+  assert workflow_repair.error_message(error)
+    == Some("tracker refresh is unavailable")
+}
+
 pub fn retry_step_interrupted_run_carries_step_recovery_evidence_test() {
   let projection = projection.fold(interrupted_run_records_with_step_recovery())
   let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())

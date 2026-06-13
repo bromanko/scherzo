@@ -898,6 +898,141 @@ pub fn active_workflow_run_suppresses_stale_retry_recovery_test() {
   )
 }
 
+pub fn retry_for_unrefreshed_issue_is_held_during_recovery_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "continuation",
+        ),
+      ),
+    ])
+  let observations =
+    dict.from_list([
+      #("issue-1", recovery.RefreshUnavailable),
+    ])
+
+  let assert Ok(plan) =
+    recovery.plan_with_issue_observations(
+      projection,
+      config(),
+      observations,
+      7000,
+    )
+
+  assert plan.retry_timers == []
+  assert !dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert !has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_missing_issue",
+  )
+  assert list.contains(
+    plan.warnings,
+    "retry_recovery_tracker_refresh_unavailable:issue-1",
+  )
+}
+
+pub fn failure_retry_for_unrefreshed_issue_is_held_during_recovery_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+    ])
+  let observations =
+    dict.from_list([
+      #("issue-1", recovery.RefreshUnavailable),
+    ])
+
+  let assert Ok(plan) =
+    recovery.plan_with_issue_observations(
+      projection,
+      config(),
+      observations,
+      7000,
+    )
+
+  assert plan.retry_timers == []
+  assert !dict.has_key(
+    plan.runtime.retry_attempts,
+    orchestrator_state.linear_issue_id_identity("issue-1"),
+  )
+  assert !has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_failure_retry_removed",
+  )
+  assert !has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_missing_issue",
+  )
+  assert list.contains(
+    plan.warnings,
+    "retry_recovery_tracker_refresh_unavailable:issue-1",
+  )
+}
+
+pub fn interrupted_run_for_unavailable_issue_requests_cleanup_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "run-started",
+        1000,
+        record.RunStarted(
+          run_id: "run-1",
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          workspace_path: ".scherzo/workspaces/ABC-1",
+        ),
+      ),
+    ])
+  let observations =
+    dict.from_list([#("issue-1", recovery.ConfirmedUnavailable)])
+
+  let assert Ok(plan) =
+    recovery.plan_with_issue_observations(
+      projection,
+      config(),
+      observations,
+      7000,
+    )
+
+  assert plan.cleanup_workspaces
+    == [
+      recovery.CleanupRequest(
+        issue_id: "issue-1",
+        issue_identifier: "ABC-1",
+        workspace_path: ".scherzo/workspaces/ABC-1",
+      ),
+    ]
+  assert list.contains(
+    plan.warnings,
+    "issue_unavailable_for_interrupted_run:issue-1",
+  )
+}
+
 pub fn payload_less_pending_outbox_is_marked_failed_test() {
   let projection =
     projection.fold([

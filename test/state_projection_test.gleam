@@ -661,6 +661,283 @@ pub fn known_task_refs_includes_remote_command_task_identity_test() {
   )
 }
 
+pub fn recovery_task_refs_exclude_finished_only_history_test() {
+  let active_workflow_task_ref =
+    record.TaskRefFields(
+      task_backend_kind: "github",
+      task_remote_id: "octo/repo#42",
+      task_key: Some("GH-42"),
+      task_url: Some("https://github.example/octo/repo/issues/42"),
+    )
+  let finished_workflow_task_ref =
+    record.TaskRefFields(
+      task_backend_kind: "github",
+      task_remote_id: "octo/repo#43",
+      task_key: Some("GH-43"),
+      task_url: Some("https://github.example/octo/repo/issues/43"),
+    )
+  let completed_outbox_task_ref =
+    record.TaskRefFields(
+      task_backend_kind: "github",
+      task_remote_id: "octo/repo#45",
+      task_key: Some("GH-45"),
+      task_url: Some("https://github.example/octo/repo/issues/45"),
+    )
+  let retry_workflow_task_ref =
+    record.TaskRefFields(
+      task_backend_kind: "github",
+      task_remote_id: "octo/repo#46",
+      task_key: Some("GH-46"),
+      task_url: Some("https://github.example/octo/repo/issues/46"),
+    )
+  let folded =
+    projection.fold([
+      record.with_id(
+        "finished-run-started",
+        1000,
+        record.RunStarted(
+          run_id: "run-finished",
+          issue_id: "issue-finished",
+          issue_identifier: "SCH-1",
+          workspace_path: ".scherzo/workspaces/SCH-1",
+        ),
+      ),
+      record.with_id(
+        "finished-run-finished",
+        1100,
+        record.RunFinished(
+          run_id: "run-finished",
+          issue_id: "issue-finished",
+          classification: "success",
+          token_total: 1,
+          turns: 1,
+        ),
+      ),
+      record.with_id(
+        "workflow-active-started",
+        1200,
+        record.WorkflowRunStartedWithTask(
+          run_id: "workflow-active",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-active",
+          issue_id: "issue-workflow-active",
+          issue_identifier: "SCH-2",
+          task_ref: active_workflow_task_ref,
+          issue_fingerprint: "fingerprint-active",
+          observed_updated_at_ms: 1199,
+          run_root: "test/tmp/projection/workflow-active",
+        ),
+      ),
+      record.with_id(
+        "workflow-finished-started",
+        1300,
+        record.WorkflowRunStartedWithTask(
+          run_id: "workflow-finished",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-finished",
+          issue_id: "issue-workflow-finished",
+          issue_identifier: "SCH-3",
+          task_ref: finished_workflow_task_ref,
+          issue_fingerprint: "fingerprint-finished",
+          observed_updated_at_ms: 1299,
+          run_root: "test/tmp/projection/workflow-finished",
+        ),
+      ),
+      record.with_id(
+        "workflow-finished-finished",
+        1400,
+        record.WorkflowRunFinished(
+          run_id: "workflow-finished",
+          workflow_id: "implementation",
+          issue_id: "issue-workflow-finished",
+          outcome: "completed",
+          token_total: 1,
+          turns: 1,
+        ),
+      ),
+      record.with_id(
+        "workflow-retry-finished-started",
+        1450,
+        record.WorkflowRunStartedWithTask(
+          run_id: "workflow-retry-finished",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-retry-finished",
+          issue_id: "octo/repo#46",
+          issue_identifier: "GH-46",
+          task_ref: retry_workflow_task_ref,
+          issue_fingerprint: "fingerprint-retry-finished",
+          observed_updated_at_ms: 1449,
+          run_root: "test/tmp/projection/workflow-retry-finished",
+        ),
+      ),
+      record.with_id(
+        "workflow-retry-finished-finished",
+        1460,
+        record.WorkflowRunFinished(
+          run_id: "workflow-retry-finished",
+          workflow_id: "implementation",
+          issue_id: "octo/repo#46",
+          outcome: "completed",
+          token_total: 1,
+          turns: 1,
+        ),
+      ),
+      record.with_id(
+        "nonlinear-retry",
+        1470,
+        record.RetryScheduled(
+          issue_id: "octo/repo#46",
+          issue_identifier: "GH-46",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "continuation",
+        ),
+      ),
+      record.with_id(
+        "legacy-running",
+        1500,
+        record.RunStarted(
+          run_id: "run-running",
+          issue_id: "issue-running",
+          issue_identifier: "SCH-4",
+          workspace_path: ".scherzo/workspaces/SCH-4",
+        ),
+      ),
+      record.with_id(
+        "legacy-interrupted-started",
+        1600,
+        record.RunStarted(
+          run_id: "run-interrupted",
+          issue_id: "issue-interrupted",
+          issue_identifier: "SCH-5",
+          workspace_path: ".scherzo/workspaces/SCH-5",
+        ),
+      ),
+      record.with_id(
+        "legacy-interrupted",
+        1700,
+        record.RunInterrupted(
+          run_id: "run-interrupted",
+          issue_id: "issue-interrupted",
+          reason: "daemon_restart",
+        ),
+      ),
+      record.with_id(
+        "parked",
+        1800,
+        record.IssueParkedV2(
+          issue_id: "issue-parked",
+          issue_identifier: "SCH-6",
+          reason: "operator_hold",
+          release_policy: "explicit_unpark_only",
+          issue_fingerprint: "parked-fingerprint",
+          observed_updated_at_ms: 1799,
+        ),
+      ),
+      record.with_id(
+        "retry",
+        1900,
+        record.RetryScheduled(
+          issue_id: "issue-retry",
+          issue_identifier: "SCH-7",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+      record.with_id(
+        "counter-live",
+        2000,
+        record.IssueCounterUpdated(
+          issue_id: "issue-counter-live",
+          issue_identifier: "SCH-8",
+          failure_attempts: 1,
+          worker_sessions: 0,
+          observed_updated_at_ms: 1999,
+          source_run_id: Some("run-running"),
+        ),
+      ),
+      record.with_id(
+        "counter-finished",
+        2100,
+        record.IssueCounterUpdated(
+          issue_id: "issue-counter-finished",
+          issue_identifier: "SCH-9",
+          failure_attempts: 0,
+          worker_sessions: 0,
+          observed_updated_at_ms: 2099,
+          source_run_id: Some("run-finished"),
+        ),
+      ),
+      record.with_id(
+        "workspace-only",
+        2200,
+        record.KnownWorkspace(
+          issue_id: "issue-workspace-only",
+          issue_identifier: "SCH-10",
+          workspace_path: ".scherzo/workspaces/SCH-10",
+        ),
+      ),
+      record.with_id(
+        "remote-command-seen",
+        2300,
+        record.RemoteCommandSeen(
+          backend_kind: "github",
+          event_id: "event-44",
+          task_remote_id: "octo/repo#44",
+          task_key: Some("GH-44"),
+          author_id: "user-1",
+          command_name: "retry",
+          excerpt: "/scherzo retry",
+        ),
+      ),
+      record.with_id(
+        "remote-command-completed",
+        2400,
+        record.RemoteCommandCompleted(
+          backend_kind: "github",
+          event_id: "event-44",
+          task_remote_id: "octo/repo#44",
+          status: "accepted",
+          message_excerpt: "queued",
+        ),
+      ),
+      record.with_id(
+        "outbox-completed",
+        2500,
+        record.OutboxCompletedWithTask(
+          outbox_id: "outbox-1",
+          task_ref: completed_outbox_task_ref,
+          outbox_kind: "remote_command_ack",
+        ),
+      ),
+    ])
+
+  let recovery_refs = projection.recovery_task_refs(folded)
+  let known_refs = projection.known_task_refs(folded)
+
+  assert has_task_ref(recovery_refs, "github", "octo/repo#42")
+  assert has_task_ref(recovery_refs, "linear", "issue-running")
+  assert has_task_ref(recovery_refs, "linear", "issue-interrupted")
+  assert has_task_ref(recovery_refs, "linear", "issue-parked")
+  assert has_task_ref(recovery_refs, "linear", "issue-retry")
+  assert has_task_ref(recovery_refs, "linear", "issue-counter-live")
+  assert has_task_ref(recovery_refs, "github", "octo/repo#46")
+
+  assert !has_task_ref(recovery_refs, "linear", "issue-finished")
+  assert !has_task_ref(recovery_refs, "github", "octo/repo#43")
+  assert !has_task_ref(recovery_refs, "linear", "issue-counter-finished")
+  assert !has_task_ref(recovery_refs, "linear", "issue-workspace-only")
+  assert !has_task_ref(recovery_refs, "github", "octo/repo#44")
+  assert !has_task_ref(recovery_refs, "github", "octo/repo#45")
+  assert !has_task_ref(recovery_refs, "linear", "octo/repo#46")
+
+  assert has_task_ref(known_refs, "github", "octo/repo#43")
+  assert has_task_ref(known_refs, "linear", "issue-workspace-only")
+  assert has_task_ref(known_refs, "github", "octo/repo#44")
+  assert has_task_ref(known_refs, "github", "octo/repo#45")
+}
+
 pub fn known_issue_ids_omits_blank_issue_ids_test() {
   let folded =
     projection.fold([

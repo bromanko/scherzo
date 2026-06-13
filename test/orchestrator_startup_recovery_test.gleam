@@ -1,5 +1,7 @@
 import birl
 import gleam/dict
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -14,6 +16,7 @@ import scherzo/state/outbox
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
+import scherzo/task
 import scherzo/tracker
 import scherzo/tracker/adapter
 import scherzo/tracker/adapter_legacy
@@ -22,6 +25,7 @@ import scherzo/tracker/state as issue_state
 import scherzo/workflow_fingerprint
 import simplifile
 import support/test_helpers
+import test_async
 
 fn issue(id: String, identifier: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
@@ -183,11 +187,110 @@ fn load_records(root: String) -> List(record.LedgerRecord) {
   read.records
 }
 
+fn count_record_kind(records: List(record.LedgerRecord), kind: String) -> Int {
+  records
+  |> list.filter(fn(entry) { record.kind(entry.body) == kind })
+  |> list.length
+}
+
+fn many_retry_scheduled_records(
+  remaining: Int,
+  index: Int,
+  acc: List(record.RecordBody),
+) -> List(record.RecordBody) {
+  case remaining <= 0 {
+    True -> list.reverse(acc)
+    False ->
+      many_retry_scheduled_records(remaining - 1, index + 1, [
+        record.RetryScheduled(
+          issue_id: "issue-" <> int.to_string(index),
+          issue_identifier: "ABC-" <> int.to_string(index),
+          delay_ms: 2500,
+          generation: 1,
+          reason: "continuation",
+        ),
+        ..acc
+      ])
+  }
+}
+
+fn many_issues(
+  remaining: Int,
+  acc: List(tracker_issue.Issue),
+) -> List(tracker_issue.Issue) {
+  case remaining <= 0 {
+    True -> list.reverse(acc)
+    False ->
+      many_issues(remaining - 1, [
+        issue(
+          "issue-" <> int.to_string(remaining),
+          "ABC-" <> int.to_string(remaining),
+        ),
+        ..acc
+      ])
+  }
+}
+
 fn startup_dependencies() -> startup_recovery.Dependencies {
+  startup_dependencies_with_sleep(process.new_subject())
+}
+
+fn startup_dependencies_with_sleep(
+  sleeps: process.Subject(Int),
+) -> startup_recovery.Dependencies {
   startup_recovery.Dependencies(
     logger: fn(_, _, _, _) { Ok(Nil) },
     now_ms: fn() { 7000 },
+    sleep_ms: fn(delay_ms) {
+      process.send(sleeps, delay_ms)
+      Nil
+    },
   )
+}
+
+type FakeRefreshAdapter {
+  FakeRefreshAdapter(
+    tracker_adapter: adapter.TrackerAdapter,
+    refresh_calls: process.Subject(List(String)),
+  )
+}
+
+fn fake_refresh_adapter(
+  refresh_results: process.Subject(
+    Result(List(tracker_issue.Issue), adapter.TrackerError),
+  ),
+) -> FakeRefreshAdapter {
+  let refresh_calls = process.new_subject()
+  let tracker_adapter =
+    adapter.TrackerAdapter(
+      kind: "linear",
+      display_name: "Linear",
+      task_source: adapter.TaskSourceCapability(
+        fetch_candidates: fn(_) { Ok([]) },
+        refresh_by_refs: fn(refs) {
+          process.send(refresh_calls, list.map(refs, fn(ref) { ref.remote_id }))
+          let result = test_async.expect_message(refresh_results)
+          case result {
+            Ok(issues) -> Ok(list.map(issues, task.from_legacy_issue))
+            Error(err) -> Error(err)
+          }
+        },
+        lookup_by_operator_ref: fn(_) { Ok(None) },
+        list_tasks: fn(_) { Ok(adapter.TaskPage([], False)) },
+        lookup_task_detail: fn(_) { Ok(None) },
+      ),
+      comments: None,
+      remote_commands: None,
+      state_transitions: None,
+      routing_metadata: None,
+      links: None,
+      handoff: None,
+      scheduled_failures: None,
+      readiness: None,
+      smoke: None,
+      attachments: None,
+    )
+  FakeRefreshAdapter(tracker_adapter, refresh_calls)
 }
 
 fn scheduled_run(
@@ -473,6 +576,196 @@ pub fn load_emits_park_report_for_workflow_identity_mismatch_test() {
   assert run_id == "run-1"
   assert string.starts_with(reason, "issue_content_drift:")
   assert loaded.workflow_resumptions == []
+}
+
+pub fn load_degrades_when_workflow_refresh_stays_unavailable_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-refresh-unavailable",
+      "prompts/task.md",
+    )
+  let original_issue = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let run_root = workspace_root <> "/implementation/ABC-1/run-1"
+  let assert Ok(#(_, dag)) =
+    runtime_bundle.select_workflow(bundle, original_issue)
+  let assert Ok(fingerprint) =
+    workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
+
+  append_test_ledger_bodies(workspace_root, [
+    record.WorkflowRunStarted(
+      "run-1",
+      "implementation",
+      fingerprint,
+      original_issue.id,
+      original_issue.identifier,
+      core.issue_fingerprint(original_issue),
+      0,
+      run_root,
+    ),
+  ])
+
+  let refresh_results = process.new_subject()
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  let FakeRefreshAdapter(tracker_adapter, refresh_calls) =
+    fake_refresh_adapter(refresh_results)
+  let sleeps = process.new_subject()
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter,
+      startup_dependencies_with_sleep(sleeps),
+      [],
+    )
+
+  assert loaded.workflow_resumptions == []
+  assert test_async.drain_subject(refresh_calls)
+    == [["issue-1"], ["issue-1"], ["issue-1"]]
+  assert test_async.drain_subject(sleeps) == [50, 200]
+  let assert [adapter.ParkReport(reason: reason_text, run_id: Some(run_id), ..)] =
+    loaded.park_reports
+  assert reason_text == "tracker_refresh_unavailable"
+  assert run_id == "run-1"
+  assert list.contains(
+    loaded.warnings,
+    "tracker_refresh_unavailable:linear:tracker down",
+  )
+  assert list.contains(
+    loaded.warnings,
+    "workflow_recovery_parked_tracker_refresh_unavailable:run-1",
+  )
+}
+
+pub fn load_preserves_successful_refresh_chunk_when_later_chunk_fails_test() {
+  let bundle =
+    write_bundle("test/tmp/startup-recovery-partial-refresh", "prompts/task.md")
+  let workspace_root = bundle.effective.workspace.root
+  append_test_ledger_bodies(
+    workspace_root,
+    many_retry_scheduled_records(51, 1, []),
+  )
+
+  let refresh_results = process.new_subject()
+  process.send(refresh_results, Ok(many_issues(51, [])))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  let FakeRefreshAdapter(tracker_adapter, refresh_calls) =
+    fake_refresh_adapter(refresh_results)
+  let sleeps = process.new_subject()
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter,
+      startup_dependencies_with_sleep(sleeps),
+      [],
+    )
+
+  assert list.length(loaded.retry_timers) == 50
+  assert loaded.workflow_resumptions == []
+  let assert [first_chunk, second_try, third_try, fourth_try] =
+    test_async.drain_subject(refresh_calls)
+  assert list.length(first_chunk) == 50
+  assert list.length(second_try) == 1
+  assert second_try == third_try
+  assert third_try == fourth_try
+  assert test_async.drain_subject(sleeps) == [50, 200]
+  assert list.contains(
+    loaded.warnings,
+    "tracker_refresh_unavailable:linear:tracker down",
+  )
+}
+
+pub fn load_global_refresh_auth_failure_skips_retries_and_remaining_chunks_test() {
+  let bundle =
+    write_bundle("test/tmp/startup-recovery-global-refresh", "prompts/task.md")
+  let workspace_root = bundle.effective.workspace.root
+  append_test_ledger_bodies(
+    workspace_root,
+    many_retry_scheduled_records(51, 1, []),
+  )
+
+  let refresh_results = process.new_subject()
+  process.send(refresh_results, Error(adapter.Unauthorized("auth failed")))
+  process.send(refresh_results, Error(adapter.Unauthorized("auth failed")))
+  process.send(refresh_results, Error(adapter.Unauthorized("auth failed")))
+  process.send(refresh_results, Error(adapter.Unauthorized("auth failed")))
+  process.send(refresh_results, Error(adapter.Unauthorized("auth failed")))
+  process.send(refresh_results, Error(adapter.Unauthorized("auth failed")))
+  let FakeRefreshAdapter(tracker_adapter, refresh_calls) =
+    fake_refresh_adapter(refresh_results)
+  let sleeps = process.new_subject()
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter,
+      startup_dependencies_with_sleep(sleeps),
+      [],
+    )
+
+  assert loaded.retry_timers == []
+  let assert [first_chunk] = test_async.drain_subject(refresh_calls)
+  assert list.length(first_chunk) == 50
+  assert test_async.drain_subject(sleeps) == []
+  assert list.contains(
+    loaded.warnings,
+    "tracker_refresh_unavailable:linear:auth failed",
+  )
+}
+
+pub fn load_degraded_boot_is_idempotent_for_unavailable_refresh_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-degraded-idempotent",
+      "prompts/task.md",
+    )
+  let original_issue = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let run_root = workspace_root <> "/implementation/ABC-1/run-1"
+  let assert Ok(#(_, dag)) =
+    runtime_bundle.select_workflow(bundle, original_issue)
+  let assert Ok(fingerprint) =
+    workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
+
+  append_test_ledger_bodies(workspace_root, [
+    record.WorkflowRunStarted(
+      "run-1",
+      "implementation",
+      fingerprint,
+      original_issue.id,
+      original_issue.identifier,
+      core.issue_fingerprint(original_issue),
+      0,
+      run_root,
+    ),
+  ])
+
+  let refresh_results = process.new_subject()
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  process.send(refresh_results, Error(adapter.Transient("tracker down")))
+  let FakeRefreshAdapter(tracker_adapter, _) =
+    fake_refresh_adapter(refresh_results)
+
+  let assert Ok(_) =
+    startup_recovery.load(bundle, tracker_adapter, startup_dependencies(), [])
+  let assert Ok(_) =
+    startup_recovery.load(bundle, tracker_adapter, startup_dependencies(), [])
+
+  assert count_record_kind(load_records(workspace_root), "issue_parked_v2") == 1
+  assert count_record_kind(
+      load_records(workspace_root),
+      "workflow_run_interrupted",
+    )
+    == 1
 }
 
 pub fn load_recovers_active_scheduled_run_from_replayed_projection_test() {
