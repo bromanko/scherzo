@@ -85,6 +85,36 @@ fn assert_review_doc_section_failed(
   Nil
 }
 
+fn assert_review_doc_missing_section_failed(
+  artifact: step_artifact.StepArtifact,
+  section: String,
+) -> Nil {
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_review_doc_required_section_missing",
+  )
+  assert_review_doc_section_failed(
+    artifact,
+    "review doc missing required section",
+    section,
+  )
+}
+
+fn assert_review_doc_empty_section_failed(
+  artifact: step_artifact.StepArtifact,
+  section: String,
+) -> Nil {
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_review_doc_required_section_empty",
+  )
+  assert_review_doc_section_failed(
+    artifact,
+    "review doc required section has no meaningful content",
+    section,
+  )
+}
+
 fn tmp_repo_path(path: String) -> String {
   "../../../" <> path
 }
@@ -420,7 +450,7 @@ fn write_source_handoff_split_bundle(dir: String) -> #(String, String) {
   let bundle_with_pack_sha =
     string.replace(
       bundle_with_title,
-      each: "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201",
+      each: "bb23c8a36dc5e9b3d46d8062fd073dc6acf3db208138d2e4b14530d092aa0f40",
       with: pack_sha,
     )
   let bundle_text =
@@ -1092,7 +1122,7 @@ pub fn validate_bundle_rejects_descriptor_plan_hash_mismatch_test() {
   let path =
     mutated_bundle(
       "test/tmp/execplan-descriptor-plan-hash-mismatch",
-      each: "      \"name\": \"plan\",\n      \"ref\": \"runs/run-1/outputs/plan.md\",\n      \"sha256\": \"64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4\"",
+      each: "      \"name\": \"plan\",\n      \"ref\": \"runs/run-1/outputs/plan.md\",\n      \"sha256\": \"6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674\"",
       with: "      \"name\": \"plan\",\n      \"ref\": \"runs/run-1/outputs/plan.md\",\n      \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"",
     )
 
@@ -1433,7 +1463,7 @@ pub fn validate_bundle_rejects_review_doc_hash_mismatch_test() {
   let path =
     mutated_legacy_bundle(
       "test/tmp/execplan-review-hash-mismatch",
-      each: "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4",
+      each: "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674",
       with: "0000000000000000000000000000000000000000000000000000000000000000",
     )
 
@@ -1471,7 +1501,7 @@ pub fn validate_bundle_rejects_implementation_pack_hash_mismatch_test() {
   let path =
     mutated_bundle(
       "test/tmp/execplan-pack-hash-mismatch",
-      each: "0dff7ca136284ffa40da5ae8dd6972de67bf65eb358cef6bf8a39481ff69c201",
+      each: "bb23c8a36dc5e9b3d46d8062fd073dc6acf3db208138d2e4b14530d092aa0f40",
       with: "0000000000000000000000000000000000000000000000000000000000000000",
     )
 
@@ -1590,6 +1620,82 @@ pub fn validate_review_doc_rejects_empty_open_questions_test() {
   )
 }
 
+pub fn validate_review_doc_rejects_missing_surprises_and_discoveries_test() {
+  let dir = "test/tmp/execplan-missing-surprises-discoveries"
+  test_helpers.reset_dir(dir)
+  let path = dir <> "/review.md"
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let review =
+    string.replace(
+      valid,
+      each: "\n## Surprises & Discoveries\n\nNone.\n",
+      with: "\n",
+    )
+  let assert Ok(Nil) = simplifile.write(path, review)
+
+  let artifact = run_helper("validate-review-doc --path " <> path)
+
+  assert_review_doc_missing_section_failed(artifact, "Surprises & Discoveries")
+}
+
+pub fn validate_review_doc_rejects_empty_surprises_and_discoveries_test() {
+  let dir = "test/tmp/execplan-empty-surprises-discoveries"
+  test_helpers.reset_dir(dir)
+  let path = dir <> "/review.md"
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let review =
+    string.replace(
+      valid,
+      each: "## Surprises & Discoveries\n\nNone.\n\n## Decision Log",
+      with: "## Surprises & Discoveries\n\n<!-- intentionally blank -->\n\n## Decision Log",
+    )
+  let assert Ok(Nil) = simplifile.write(path, review)
+
+  let artifact = run_helper("validate-review-doc --path " <> path)
+
+  assert_review_doc_empty_section_failed(artifact, "Surprises & Discoveries")
+}
+
+pub fn validate_review_doc_rejects_missing_outcomes_retrospective_test() {
+  let dir = "test/tmp/execplan-missing-outcomes-retrospective"
+  test_helpers.reset_dir(dir)
+  let path = dir <> "/review.md"
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let review =
+    string.replace(
+      valid,
+      each: "\n## Outcomes & Retrospective\n\nPending implementation.\n",
+      with: "\n",
+    )
+  let assert Ok(Nil) = simplifile.write(path, review)
+
+  let artifact = run_helper("validate-review-doc --path " <> path)
+
+  assert_review_doc_missing_section_failed(artifact, "Outcomes & Retrospective")
+}
+
+pub fn validate_review_doc_rejects_empty_outcomes_retrospective_test() {
+  let dir = "test/tmp/execplan-empty-outcomes-retrospective"
+  test_helpers.reset_dir(dir)
+  let path = dir <> "/review.md"
+  let assert Ok(valid) =
+    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
+  let review =
+    string.replace(
+      valid,
+      each: "## Outcomes & Retrospective\n\nPending implementation.\n\n## Validation and Acceptance",
+      with: "## Outcomes & Retrospective\n\n<!-- intentionally blank -->\n\n## Validation and Acceptance",
+    )
+  let assert Ok(Nil) = simplifile.write(path, review)
+
+  let artifact = run_helper("validate-review-doc --path " <> path)
+
+  assert_review_doc_empty_section_failed(artifact, "Outcomes & Retrospective")
+}
+
 pub fn validate_review_doc_rejects_missing_strategy_overview_test() {
   let dir = "test/tmp/execplan-missing-strategy-overview"
   test_helpers.reset_dir(dir)
@@ -1645,8 +1751,8 @@ pub fn validate_review_doc_rejects_unchecked_required_progress_test() {
   let review =
     string.replace(
       valid,
-      each: "## Progress\n\n- [x] 2026-05-15: Created the fixture review document.\n\n## Decision Log",
-      with: "## Progress\n\n- [ ] Run full validation before rollout.\n\n## Decision Log",
+      each: "## Progress\n\n- [x] 2026-05-15: Created the fixture review document.\n\n## Surprises & Discoveries",
+      with: "## Progress\n\n- [ ] Run full validation before rollout.\n\n## Surprises & Discoveries",
     )
   let assert Ok(Nil) = simplifile.write(path, review)
 
@@ -2866,7 +2972,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
   )
   assert string.contains(
     bundle,
-    "\"sha256\": \"ee4fbc4fa35c13874ec5626e07929cdcf1e9c25198af3a81edb7cd5740c6e168\"",
+    "\"sha256\": \"591e1f2fff461dfb467f27c21122b1dea94cf903946acf5c644937b1b1f9afdc\"",
   )
   assert string.contains(bundle, "\"head_revision\": \"reused\"")
 }

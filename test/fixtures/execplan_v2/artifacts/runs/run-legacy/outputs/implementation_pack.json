@@ -3,7 +3,7 @@
   "conflict_policy": "If review doc intent and implementation pack mechanics conflict, stop and request workflow:execplan-revision.",
   "derived_from": {
     "review_doc_path": "test/fixtures/execplan_v2/review-doc.valid.md",
-    "review_doc_sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+    "review_doc_sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674"
   },
   "pack_id": "fixture-pack-liv-314-legacy",
   "provenance": {
@@ -13,9 +13,9 @@
     "workflow_id": "execplan"
   },
   "review_doc": {
-    "bytes": 1767,
+    "bytes": 1856,
     "path": "test/fixtures/execplan_v2/review-doc.valid.md",
-    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+    "sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674"
   },
   "schema_version": 2,
   "sections": {

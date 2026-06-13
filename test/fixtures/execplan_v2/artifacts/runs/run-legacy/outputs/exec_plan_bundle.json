@@ -9,15 +9,15 @@
   },
   "implementation_pack": {
     "bytes": 2167,
-    "derived_from_review_doc_sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4",
+    "derived_from_review_doc_sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674",
     "ref": "runs/run-legacy/outputs/implementation_pack.json",
     "schema": ".scherzo/workflows/schemas/implementation-pack.v2.schema.json",
-    "sha256": "f2686ee19d2f69f494f90597d3c4d2f06d65c8c22ddc4a10bd6379e08d269448"
+    "sha256": "28758229f95a810c61e6bbae7ea8a1c5f1e17367d597cbaec4570556c57f7b4e"
   },
   "review_doc": {
-    "bytes": 1767,
+    "bytes": 1856,
     "path": "test/fixtures/execplan_v2/review-doc.valid.md",
-    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+    "sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674"
   },
   "review_surface": {
     "branch": "execplan/liv-314",

@@ -15,7 +15,7 @@
   },
   "implementation_pack": {
     "ref": "runs/run-legacy/outputs/implementation_pack.json",
-    "sha256": "f2686ee19d2f69f494f90597d3c4d2f06d65c8c22ddc4a10bd6379e08d269448"
+    "sha256": "28758229f95a810c61e6bbae7ea8a1c5f1e17367d597cbaec4570556c57f7b4e"
   },
   "plan_completion": {
     "bytes": 62,
@@ -39,14 +39,14 @@
   ],
   "review_doc": {
     "path": "test/fixtures/execplan_v2/review-doc.valid.md",
-    "sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4"
+    "sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674"
   },
   "schema_version": 2,
   "source_bundle": {
-    "implementation_pack_sha256": "f2686ee19d2f69f494f90597d3c4d2f06d65c8c22ddc4a10bd6379e08d269448",
+    "implementation_pack_sha256": "28758229f95a810c61e6bbae7ea8a1c5f1e17367d597cbaec4570556c57f7b4e",
     "ref": "runs/run-legacy/outputs/exec_plan_bundle.json",
-    "review_doc_sha256": "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4",
-    "sha256": "e503af131a692313d2baf4e0ff639426518fdf9aa83e98663fa003e3fdc1fd6d"
+    "review_doc_sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674",
+    "sha256": "713c617fb27b7dfafac6ddaf2f09f30991187107cf23ca99357dbecf81785f22"
   },
   "validation_artifacts": [
     {
