@@ -138,25 +138,6 @@ pub fn handle(
         result,
         context,
       )
-    transition_types.ClaimLedgerAppendRequested(
-      correlation_id,
-      task_identity,
-      issue_id,
-      run_id,
-      session_id,
-      batch,
-      failure_event,
-    ) ->
-      claims.handle_requested(
-        state,
-        correlation_id,
-        task_identity,
-        issue_id,
-        run_id,
-        session_id,
-        batch,
-        failure_event,
-      )
     transition_types.LedgerAppendCompleted(
       correlation_id,
       continuation,
@@ -684,7 +665,6 @@ fn begin_dispatch_validation(
           issue: issue,
           remaining_candidates: remaining_candidates,
           generation: generation,
-          requested_at_ms: context.now_ms,
         )
       transition_types.Outcome(
         state: claims.add_pending_dispatch_validation(
@@ -1811,11 +1791,11 @@ fn cancel_retry_effects(
 fn handle_ledger_append_completed(
   state: transition_types.State,
   correlation_id: String,
-  continuation: effects_types.LedgerPolicy,
+  continuation: transition_types.LedgerAppendContinuation,
   result: Result(Nil, ledger.LedgerError),
 ) -> transition_types.Outcome {
   case continuation {
-    effects_types.ScheduleRetryTimerAfterAppend(
+    transition_types.ScheduleRetryTimerAfterAppend(
       issue_id,
       delay_ms,
       generation,
@@ -1832,7 +1812,7 @@ fn handle_ledger_append_completed(
         previous_retry,
         result,
       )
-    effects_types.CancelRetryTimerAfterAppend(
+    transition_types.CancelRetryTimerAfterAppend(
       issue_id,
       generation,
       cancel_reason,
@@ -1847,7 +1827,7 @@ fn handle_ledger_append_completed(
         previous_retry,
         result,
       )
-    effects_types.SpawnClaimedWorkerAfterAppend(
+    transition_types.SpawnClaimedWorkerAfterAppend(
       task_identity,
       issue_id,
       run_id,
@@ -1863,7 +1843,7 @@ fn handle_ledger_append_completed(
         result,
         claim_callbacks(),
       )
-    effects_types.ReportParkAfterAppend(
+    transition_types.ReportParkAfterAppend(
       issue_id,
       issue_identifier,
       reason,
@@ -1880,7 +1860,7 @@ fn handle_ledger_append_completed(
         source_run_id,
         result,
       )
-    effects_types.SetOperatorPausedAfterAppend(
+    transition_types.SetOperatorPausedAfterAppend(
       paused,
       request,
       success_result,
@@ -1916,8 +1896,6 @@ fn handle_ledger_append_completed(
           ])
         }
       }
-    effects_types.ContinueRegardless | effects_types.StopBatchOnFailure ->
-      transition_types.Outcome(state: state, effects: [])
   }
 }
 

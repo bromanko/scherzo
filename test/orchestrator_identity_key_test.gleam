@@ -132,8 +132,5 @@ pub fn orchestrator_append_effects_use_typed_ledger_batches_test() {
     transition_types_source,
     "HandoffClaimSucceeded(bodies: List(record.RecordBody))",
   )
-  assert !string.contains(
-    transition_types_source,
-    "ClaimLedgerAppendRequested(\n    correlation_id: String,\n    issue_id: String,\n    run_id: String,\n    session_id: String,\n    bodies: List(record.RecordBody)",
-  )
+  assert !string.contains(transition_types_source, "ClaimLedgerAppendRequested")
 }

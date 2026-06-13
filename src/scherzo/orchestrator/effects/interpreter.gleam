@@ -1,5 +1,5 @@
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/log
@@ -752,22 +752,17 @@ fn append_follow_up(
   result: Result(Nil, ledger.LedgerError),
   follow_up_messages: List(transition_types.Message),
 ) -> List(transition_types.Message) {
-  case request.policy {
-    effects_types.ScheduleRetryTimerAfterAppend(..)
-    | effects_types.CancelRetryTimerAfterAppend(..)
-    | effects_types.SpawnClaimedWorkerAfterAppend(..)
-    | effects_types.ReportParkAfterAppend(..)
-    | effects_types.SetOperatorPausedAfterAppend(..) -> [
+  case transition_types.ledger_append_continuation(request.policy) {
+    Some(continuation) -> [
       transition_types.LedgerAppendCompleted(
         correlation_id: request.correlation_id,
-        continuation: request.policy,
+        continuation: continuation,
         result: result,
         now_ms: shell.now_ms(shell.data),
       ),
       ..follow_up_messages
     ]
-    effects_types.ContinueRegardless | effects_types.StopBatchOnFailure ->
-      follow_up_messages
+    None -> follow_up_messages
   }
 }
 

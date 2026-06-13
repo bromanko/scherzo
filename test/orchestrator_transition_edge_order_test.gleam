@@ -575,7 +575,6 @@ fn state_with_pending_dispatch_validation(
           issue: issue,
           remaining_candidates: [],
           generation: generation,
-          requested_at_ms: 123,
         ),
       ),
     ]),

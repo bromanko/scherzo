@@ -1,13 +1,15 @@
 import gleam/dict
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
+import scherzo/control/command
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/workflow_snapshot
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
+import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
@@ -100,18 +102,9 @@ pub type Message {
     result: Result(List(tracker_issue.Issue), String),
     context: DispatchContext,
   )
-  ClaimLedgerAppendRequested(
-    correlation_id: String,
-    task_identity: identity.TaskIdentity,
-    issue_id: identity.IssueId,
-    run_id: identity.RunId,
-    session_id: identity.SessionId,
-    batch: ledger_batch.LedgerBatch,
-    failure_event: String,
-  )
   LedgerAppendCompleted(
     correlation_id: String,
-    continuation: effects_types.LedgerPolicy,
+    continuation: LedgerAppendContinuation,
     result: Result(Nil, ledger.LedgerError),
     now_ms: Int,
   )
@@ -264,8 +257,109 @@ pub type PendingDispatchValidation {
     issue: tracker_issue.Issue,
     remaining_candidates: List(tracker_issue.Issue),
     generation: Int,
-    requested_at_ms: Int,
   )
+}
+
+pub type LedgerAppendContinuation {
+  ScheduleRetryTimerAfterAppend(
+    issue_id: String,
+    delay_ms: Int,
+    generation: Int,
+    retry_reason: orchestrator_reason.RetryReason,
+    previous_retry: Option(orchestrator_state.RetryEntry),
+  )
+  CancelRetryTimerAfterAppend(
+    issue_id: String,
+    generation: Int,
+    cancel_reason: String,
+    previous_retry: Option(orchestrator_state.RetryEntry),
+  )
+  SpawnClaimedWorkerAfterAppend(
+    task_identity: identity.TaskIdentity,
+    issue_id: identity.IssueId,
+    run_id: identity.RunId,
+    session_id: identity.SessionId,
+  )
+  ReportParkAfterAppend(
+    issue_id: String,
+    issue_identifier: String,
+    reason: String,
+    release_policy: String,
+    source_run_id: Option(String),
+  )
+  SetOperatorPausedAfterAppend(
+    paused: Bool,
+    request: effects_types.OperatorCommandRequest,
+    result: command.CommandResult,
+    failure_result: command.CommandResult,
+  )
+}
+
+pub fn ledger_append_continuation(
+  policy: effects_types.LedgerPolicy,
+) -> Option(LedgerAppendContinuation) {
+  case policy {
+    effects_types.ScheduleRetryTimerAfterAppend(
+      issue_id,
+      delay_ms,
+      generation,
+      retry_reason,
+      previous_retry,
+    ) ->
+      Some(ScheduleRetryTimerAfterAppend(
+        issue_id,
+        delay_ms,
+        generation,
+        retry_reason,
+        previous_retry,
+      ))
+    effects_types.CancelRetryTimerAfterAppend(
+      issue_id,
+      generation,
+      cancel_reason,
+      previous_retry,
+    ) ->
+      Some(CancelRetryTimerAfterAppend(
+        issue_id,
+        generation,
+        cancel_reason,
+        previous_retry,
+      ))
+    effects_types.SpawnClaimedWorkerAfterAppend(
+      task_identity,
+      issue_id,
+      run_id,
+      session_id,
+    ) ->
+      Some(SpawnClaimedWorkerAfterAppend(
+        task_identity,
+        issue_id,
+        run_id,
+        session_id,
+      ))
+    effects_types.ReportParkAfterAppend(
+      issue_id,
+      issue_identifier,
+      reason,
+      release_policy,
+      source_run_id,
+    ) ->
+      Some(ReportParkAfterAppend(
+        issue_id,
+        issue_identifier,
+        reason,
+        release_policy,
+        source_run_id,
+      ))
+    effects_types.SetOperatorPausedAfterAppend(
+      paused,
+      request,
+      result,
+      failure_result,
+    ) ->
+      Some(SetOperatorPausedAfterAppend(paused, request, result, failure_result))
+    effects_types.ContinueRegardless | effects_types.StopBatchOnFailure -> None
+  }
 }
 
 pub type PendingReviewLanePreflight {
