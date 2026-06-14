@@ -76,6 +76,44 @@ pub fn release_claim_payload_is_replayable_test() {
     == Ok(Nil)
 }
 
+pub fn scheduled_failure_payload_decodes_and_is_replayable_test() {
+  let payload_json =
+    outbox.scheduled_failure_payload(
+      outbox.ScheduledFailurePayload(
+        kind: outbox.scheduled_failure_publication_kind,
+        job_id: "scheduled-job",
+        workflow_id: "implementation",
+        due_at_ms: 1000,
+        run_id: "run-1",
+        attempt: 2,
+        max_attempts: 3,
+        reason: "boom secret",
+        run_root: Some("/tmp/run"),
+        session_id: Some("session-1"),
+        dedupe_key: "scheduled-job:scheduled-job",
+        title: "Scheduled failure",
+        body: "boom secret",
+        labels: ["job:scheduled-job"],
+        target_state_name: Some("Triage"),
+        previous_task_remote_id: Some("lin-1"),
+        report_attempt_index: 2,
+      ),
+      ["secret"],
+    )
+
+  let assert Ok(outbox.ScheduledFailurePayload(
+    kind: kind,
+    job_id: "scheduled-job",
+    run_id: "run-1",
+    reason: "boom [REDACTED]",
+    previous_task_remote_id: Some("lin-1"),
+    report_attempt_index: 2,
+    ..,
+  )) = outbox.decode_scheduled_failure_payload(payload_json)
+  assert kind == outbox.scheduled_failure_publication_kind
+  assert outbox.recovery_replay_error(kind, kind) == Ok(Nil)
+}
+
 pub fn replay_kind_mismatch_returns_typed_error_with_stable_code_test() {
   assert outbox.recovery_replay_error("linear_comment", "linear_comment")
     == Ok(Nil)
