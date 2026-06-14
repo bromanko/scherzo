@@ -20,9 +20,18 @@ fn tracker_config() -> config_types.TrackerConfig {
     endpoint: "https://api.linear.test/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
+    task_scope: None,
     active_states: issue_state.list_from_strings(["Ready for Agent"]),
     dispatch_states: issue_state.list_from_strings(["Ready for Agent"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
+  )
+}
+
+fn multi_project_tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
+    ..tracker_config(),
+    project_slug: None,
+    task_scope: Some(config_types.LinearTaskProjects(["PROJ", "BUGS"])),
   )
 }
 
@@ -372,6 +381,50 @@ pub fn scheduled_failure_reporter_real_search_uses_open_reserved_label_filters_t
   assert !string.contains(comment_body, "lin-closed")
 }
 
+pub fn scheduled_failure_reporter_real_search_uses_multi_project_scope_filter_test() {
+  let calls = process.new_subject()
+  let client =
+    reporter.real_client_with_transport(
+      multi_project_tracker_config(),
+      real_search_transport_with_contract(
+        calls,
+        multi_project_contract_response(),
+      ),
+    )
+
+  assert client.report_failure(base_request())
+    == Ok(reporter.FailureReportUpdated("lin-open"))
+
+  let search_body =
+    receive_call_containing(calls, "ScherzoScheduledFailureIssues", 10)
+  assert string.contains(
+    search_body,
+    "project: { slugId: { in: $projectSlugs } }",
+  )
+  assert string.contains(search_body, "\"projectSlugs\":[\"PROJ\",\"BUGS\"]")
+}
+
+pub fn scheduled_failure_reporter_multi_project_create_uses_single_project_id_test() {
+  let calls = process.new_subject()
+  let client =
+    reporter.real_client_with_transport(
+      multi_project_tracker_config(),
+      real_create_transport_with_contract(
+        calls,
+        multi_project_contract_response(),
+      ),
+    )
+
+  assert client.report_failure(base_request())
+    == Ok(reporter.FailureReportCreated("lin-created"))
+
+  let create_body =
+    receive_call_containing(calls, "ScherzoScheduledFailureIssueCreate", 20)
+  assert string.contains(create_body, "\"projectId\":\"project-PROJ\"")
+  assert string.contains(create_body, "\"teamId\":\"team-PROJ\"")
+  assert !string.contains(create_body, "project-PROJ,project-BUGS")
+}
+
 pub fn scheduled_failure_reporter_label_failure_stops_before_create_test() {
   let calls = process.new_subject()
   let backend =
@@ -406,10 +459,17 @@ pub fn scheduled_failure_reporter_disabled_client_is_noop_test() {
 fn real_search_transport(
   observed: process.Subject(Call),
 ) -> fn(linear.Request) -> Result(linear.Response, error.TrackerError) {
+  real_search_transport_with_contract(observed, contract_response())
+}
+
+fn real_search_transport_with_contract(
+  observed: process.Subject(Call),
+  contract_body: String,
+) -> fn(linear.Request) -> Result(linear.Response, error.TrackerError) {
   fn(request: linear.Request) {
     process.send(observed, Call(request.body))
     case string.contains(request.body, "ScherzoLinearContract") {
-      True -> Ok(linear.Response(status: 200, body: contract_response()))
+      True -> Ok(linear.Response(status: 200, body: contract_body))
       False ->
         case string.contains(request.body, "ScherzoScheduledFailureIssues") {
           True ->
@@ -436,6 +496,37 @@ fn real_search_transport(
   }
 }
 
+fn real_create_transport_with_contract(
+  observed: process.Subject(Call),
+  contract_body: String,
+) -> fn(linear.Request) -> Result(linear.Response, error.TrackerError) {
+  fn(request: linear.Request) {
+    process.send(observed, Call(request.body))
+    case string.contains(request.body, "ScherzoLinearContract") {
+      True -> Ok(linear.Response(status: 200, body: contract_body))
+      False ->
+        case string.contains(request.body, "ScherzoScheduledFailureIssues") {
+          True ->
+            Ok(linear.Response(status: 200, body: empty_issue_search_response()))
+          False ->
+            case
+              string.contains(
+                request.body,
+                "ScherzoScheduledFailureIssueCreate",
+              )
+            {
+              True ->
+                Ok(linear.Response(
+                  status: 200,
+                  body: "{\"data\":{\"issueCreate\":{\"success\":true,\"issue\":{\"id\":\"lin-created\",\"identifier\":\"LIV-1\",\"url\":\"https://linear/issue/LIV-1\"}}}}",
+                ))
+              False -> Error(error.LinearApiRequest("unexpected request"))
+            }
+        }
+    }
+  }
+}
+
 fn contract_response() -> String {
   "{\"data\":{\"projects\":{\"nodes\":["
   <> "{\"id\":\"project-id\",\"name\":\"Project\",\"slugId\":\"PROJ\","
@@ -453,12 +544,42 @@ fn contract_response() -> String {
   <> "\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
 }
 
+fn multi_project_contract_response() -> String {
+  "{\"data\":{\"projects\":{\"nodes\":["
+  <> contract_project_node("PROJ")
+  <> ","
+  <> contract_project_node("BUGS")
+  <> "]},\"issueLabels\":{\"nodes\":["
+  <> "{\"id\":\"label-scheduled\",\"name\":\"scherzo:scheduled\"},"
+  <> "{\"id\":\"label-job\",\"name\":\"scherzo:scheduled-job:pr-conflict-repair\"},"
+  <> "{\"id\":\"label-extra\",\"name\":\"job:pr-conflict-repair\"}],"
+  <> "\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+}
+
+fn contract_project_node(slug: String) -> String {
+  "{\"id\":\"project-"
+  <> slug
+  <> "\",\"name\":\"Project "
+  <> slug
+  <> "\",\"slugId\":\""
+  <> slug
+  <> "\",\"teams\":{\"nodes\":[{\"id\":\"team-"
+  <> slug
+  <> "\",\"key\":\"ENG\",\"name\":\"Engineering\",\"states\":{\"nodes\":[{\"id\":\"state-triage-"
+  <> slug
+  <> "\",\"name\":\"Triage\",\"type\":\"triage\"}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}"
+}
+
 fn issue_search_response() -> String {
   "{\"data\":{\"issues\":{\"nodes\":["
   <> issue_node("lin-closed", "completed", "2026-05-08T00:00:03Z")
   <> ","
   <> issue_node("lin-open", "started", "2026-05-08T00:00:01Z")
   <> "]}}}"
+}
+
+fn empty_issue_search_response() -> String {
+  "{\"data\":{\"issues\":{\"nodes\":[]}}}"
 }
 
 fn issue_node(id: String, state_type: String, updated_at: String) -> String {

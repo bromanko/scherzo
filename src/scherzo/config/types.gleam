@@ -1,4 +1,6 @@
 import gleam/dict.{type Dict}
+import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -18,16 +20,160 @@ pub fn config_warning_message(warning: ConfigWarning) -> String {
   event <> " path=" <> path <> " replacement=" <> replacement
 }
 
+pub type LinearTaskScope {
+  LinearTaskProject(String)
+  LinearTaskProjects(List(String))
+}
+
+pub type LinearTaskScopeError {
+  MissingLinearTaskScopeProject
+}
+
+pub fn linear_task_scope_error_message(error: LinearTaskScopeError) -> String {
+  case error {
+    MissingLinearTaskScopeProject -> "missing Linear project slug"
+  }
+}
+
 pub type TrackerConfig {
   TrackerConfig(
     kind: tracker_kind.TrackerKind,
     endpoint: String,
     api_key: Option(String),
     project_slug: Option(String),
+    task_scope: Option(LinearTaskScope),
     active_states: List(issue_state.IssueState),
     dispatch_states: List(issue_state.IssueState),
     terminal_states: List(issue_state.IssueState),
   )
+}
+
+pub fn linear_task_scope_from_tracker_config(
+  config: TrackerConfig,
+) -> Result(LinearTaskScope, LinearTaskScopeError) {
+  case config.task_scope {
+    Some(scope) -> validate_linear_task_scope(scope)
+    None -> legacy_project_scope(config.project_slug)
+  }
+}
+
+pub fn linear_task_scope_project_slugs(scope: LinearTaskScope) -> List(String) {
+  case scope {
+    LinearTaskProject(slug) -> normalize_project_slugs([slug])
+    LinearTaskProjects(slugs) -> normalize_project_slugs(slugs)
+  }
+}
+
+pub fn linear_task_scope_matches_project_slug(
+  scope: LinearTaskScope,
+  returned_slug: String,
+) -> Bool {
+  linear_task_scope_project_slugs(scope)
+  |> list.any(fn(expected_slug) {
+    project_slug_matches(expected_slug, returned_slug)
+  })
+}
+
+pub fn linear_task_scope_graphql_variables(
+  scope: LinearTaskScope,
+  single_name: String,
+  multi_name: String,
+) -> List(#(String, json.Json)) {
+  case scope {
+    LinearTaskProject(_) -> [
+      #(
+        single_name,
+        json.string(first_project_slug(linear_task_scope_project_slugs(scope))),
+      ),
+    ]
+    LinearTaskProjects(_) -> [
+      #(
+        multi_name,
+        json.array(linear_task_scope_project_slugs(scope), of: json.string),
+      ),
+    ]
+  }
+}
+
+pub fn linear_task_scope_variable_declaration(
+  scope: LinearTaskScope,
+  single_name: String,
+  multi_name: String,
+) -> String {
+  case scope {
+    LinearTaskProject(_) -> "$" <> single_name <> ": String!"
+    LinearTaskProjects(_) -> "$" <> multi_name <> ": [String!]!"
+  }
+}
+
+pub fn linear_task_scope_project_filter(
+  scope: LinearTaskScope,
+  single_variable: String,
+  multi_variable: String,
+) -> String {
+  case scope {
+    LinearTaskProject(_) ->
+      "project: { slugId: { eq: " <> single_variable <> " } }"
+    LinearTaskProjects(_) ->
+      "project: { slugId: { in: " <> multi_variable <> " } }"
+  }
+}
+
+pub fn linear_task_scope_contract_project_first(
+  scope: LinearTaskScope,
+) -> String {
+  case scope {
+    LinearTaskProject(_) -> "2"
+    LinearTaskProjects(_) ->
+      linear_task_scope_project_slugs(scope)
+      |> list.length
+      |> int.to_string
+  }
+}
+
+fn first_project_slug(slugs: List(String)) -> String {
+  case slugs {
+    [slug, ..] -> slug
+    [] -> ""
+  }
+}
+
+fn validate_linear_task_scope(
+  scope: LinearTaskScope,
+) -> Result(LinearTaskScope, LinearTaskScopeError) {
+  case linear_task_scope_project_slugs(scope) {
+    [] -> Error(MissingLinearTaskScopeProject)
+    [slug, ..rest] ->
+      case scope {
+        LinearTaskProject(_) -> Ok(LinearTaskProject(slug))
+        LinearTaskProjects(_) -> Ok(LinearTaskProjects([slug, ..rest]))
+      }
+  }
+}
+
+fn legacy_project_scope(
+  project_slug: Option(String),
+) -> Result(LinearTaskScope, LinearTaskScopeError) {
+  case project_slug {
+    Some(slug) -> validate_linear_task_scope(LinearTaskProject(slug))
+    None -> Error(MissingLinearTaskScopeProject)
+  }
+}
+
+fn normalize_project_slugs(slugs: List(String)) -> List(String) {
+  slugs
+  |> list.map(string.trim)
+  |> list.filter(fn(slug) { slug != "" })
+  |> dedupe_preserving_first
+}
+
+fn project_slug_matches(expected: String, returned: String) -> Bool {
+  let expected = string.trim(expected) |> string.lowercase
+  let returned = string.trim(returned) |> string.lowercase
+  case expected == "" || returned == "" {
+    True -> False
+    False -> expected == returned || string.ends_with(expected, "-" <> returned)
+  }
 }
 
 pub type PollingConfig {

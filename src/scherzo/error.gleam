@@ -131,7 +131,8 @@ pub fn config_message(error: ConfigError) -> String {
   case error {
     UnsupportedTrackerKind(kind) -> "unsupported tracker kind: " <> kind
     MissingTrackerApiKey -> "tracker.api_key or LINEAR_API_KEY is required"
-    MissingTrackerProjectSlug -> "tracker.project_slug is required"
+    MissingTrackerProjectSlug ->
+      "tracker.linear.tasks_from.project, tracker.linear.tasks_from.projects, or tracker.linear.project is required"
     InvalidConfig(message) -> message
     InvalidScheduledJobOverlap(message) -> message
     ScheduledJobCatchUpUnsupported(message) -> message

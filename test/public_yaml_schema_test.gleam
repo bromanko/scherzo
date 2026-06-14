@@ -301,6 +301,20 @@ pub fn yaml_schema_modeline_comments_are_checked_in_test() {
 
 pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
   let cases = [
+    "version: 1\n"
+      <> "tracker:\n"
+      <> "  linear:\n"
+      <> "    tasks_from:\n"
+      <> "      project: demo-project\n"
+      <> "workflows:\n"
+      <> "  research: workflows/research.yaml\n",
+    "version: 1\n"
+      <> "tracker:\n"
+      <> "  linear:\n"
+      <> "    tasks_from:\n"
+      <> "      projects: [demo-project, bugs]\n"
+      <> "workflows:\n"
+      <> "  research: workflows/research.yaml\n",
     minimal_config()
       <> "agents:\n"
       <> "  recovery:\n"
@@ -428,6 +442,28 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
     #(
       "workflows list instead of map",
       "version: 1\ntracker:\n  linear:\n    project: demo-project\nworkflows: []\n",
+    ),
+    #(
+      "tasks_from conflicts with compatibility project",
+      "version: 1\n"
+        <> "tracker:\n"
+        <> "  linear:\n"
+        <> "    project: demo-project\n"
+        <> "    tasks_from:\n"
+        <> "      projects: [demo-project, bugs]\n"
+        <> "workflows:\n"
+        <> "  research: workflows/research.yaml\n",
+    ),
+    #(
+      "tasks_from has both project and projects",
+      "version: 1\n"
+        <> "tracker:\n"
+        <> "  linear:\n"
+        <> "    tasks_from:\n"
+        <> "      project: demo-project\n"
+        <> "      projects: [demo-project, bugs]\n"
+        <> "workflows:\n"
+        <> "  research: workflows/research.yaml\n",
     ),
     #(
       "task_updates.comment_on invalid event",
