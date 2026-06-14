@@ -2,6 +2,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import scherzo/claim_abandonment
 import scherzo/log
 
 pub const max_payload_chars = 500
@@ -125,17 +126,24 @@ pub fn recovery_replay_error(
   outbox_kind: String,
   payload_kind: String,
 ) -> Result(Nil, ReplayError) {
-  case outbox_kind, payload_kind {
-    "linear_comment", "linear_comment"
-    | "linear_command_ack", "linear_command_ack"
-    | "remote_command_ack", "remote_command_ack"
-    | "claim", "claim"
-    | "report_success", "report_success"
-    | "report_failure", "report_failure"
-    | "park", "park"
-    | "invalid_workflow", "invalid_workflow"
-    -> Ok(Nil)
-    _, _ -> Error(UnsupportedOutboxKind(outbox_kind))
+  case outbox_kind == payload_kind && replayable_kind(outbox_kind) {
+    True -> Ok(Nil)
+    False -> Error(UnsupportedOutboxKind(outbox_kind))
+  }
+}
+
+fn replayable_kind(kind: String) -> Bool {
+  case kind {
+    "linear_comment"
+    | "linear_command_ack"
+    | "remote_command_ack"
+    | "report_success"
+    | "report_failure"
+    | "park"
+    | "invalid_workflow" -> True
+    _ ->
+      kind == claim_abandonment.claim_kind
+      || kind == claim_abandonment.release_claim_kind
   }
 }
 
