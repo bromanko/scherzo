@@ -1588,6 +1588,7 @@ pub fn default_agent_step_routes_command_ready_subject_test() {
   let root = "test/tmp/workflow-run-agent-command-ready"
   test_helpers.reset_dir(root)
   let event_subject = process.new_subject()
+  let command_sent_subject = process.new_subject()
   let base = orchestrator()
   let effective =
     config_types.EffectiveConfig(
@@ -1618,19 +1619,21 @@ pub fn default_agent_step_routes_command_ready_subject_test() {
               command_subject,
               worker_command.QueuePrompt("follow-up prompt", reply),
             )
+            process.send(command_sent_subject, Nil)
             let event = case process.receive(reply, within: 1000) {
               Ok(reply) -> command_ready_reply_event(reply)
               Error(Nil) -> "command_ready:timeout"
             }
             process.send(event_subject, event)
           })
+        test_async.expect_message(command_sent_subject)
         Nil
       },
       fn(_) { Nil },
     )
 
   assert receive_event(event_subject)
-    == "command_ready:queued:prompt queued for next turn"
+    == "command_ready:applied:prompt accepted for next turn"
 }
 
 fn command_ready_reply_event(reply: worker_command.Reply) -> String {

@@ -1453,7 +1453,7 @@ pub fn workflow_reload_removed_route_preserves_pending_claim_snapshot_test() {
   hub.stop(hub_subject)
 }
 
-pub fn retry_rejects_active_pending_and_dispatches_inactive_issues_test() {
+pub fn retry_rejects_active_pending_and_accepts_inactive_issues_test() {
   let active = issue("active-issue", "ABC-ACTIVE", "Todo")
   let tracker_client = tracker_with(active)
   let #(workflow_path, _root) =
@@ -1546,7 +1546,8 @@ pub fn retry_rejects_active_pending_and_dispatches_inactive_issues_test() {
       1000,
     )
   assert command.status_to_string(claimed_retry.status) == "applied"
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  let assert Ok(retried_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert !dict.has_key(retried_snapshot.completed, claimed_identity)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -1629,7 +1630,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
 
   process.send(tracker_server, SetControlTrackerCandidate(changed))
   process.send(started.data, daemon.PollTick(2))
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "agent_run:Changed title", 20)
   let assert Ok(running_snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.has_key(running_snapshot.running, identity)
   assert !dict.has_key(running_snapshot.parked, identity)

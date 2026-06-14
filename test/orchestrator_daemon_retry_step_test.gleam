@@ -1,8 +1,13 @@
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
+import scherzo/artifact_publication_manifest
+import scherzo/artifact_publication_planner
+import scherzo/artifact_publication_recording
+import scherzo/artifact_repository/command_runner
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/protocol
@@ -10,16 +15,21 @@ import scherzo/error
 import scherzo/handoff
 import scherzo/hash
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/dispatch_recovery
+import scherzo/orchestrator/startup_recovery
 import scherzo/orchestrator/yaml_step_session
 import scherzo/path
 import scherzo/result_artifact
+import scherzo/runtime_bundle
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
+import scherzo/state/projection
 import scherzo/state/record
+import scherzo/state/recovery
 import scherzo/step_artifact
 import scherzo/task
 import scherzo/tracker
@@ -27,7 +37,11 @@ import scherzo/tracker/adapter
 import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_contract
+import scherzo/workflow_contract_manifest
+import scherzo/workflow_fingerprint as workflow_fingerprint_module
 import scherzo/workflow_run
+import scherzo/workspace_manifest
 import simplifile
 import support/test_helpers
 import test_async
@@ -59,7 +73,7 @@ pub fn retry_step_rejects_active_issue_for_interrupted_run_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "agent_run:issue-1", 20)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -72,7 +86,7 @@ pub fn retry_step_rejects_active_issue_for_interrupted_run_test() {
     )
 
   assert command.status_to_string(result.status) == "rejected"
-  assert command.status_reason(result.status) == Some("issue_already_active")
+  assert command.status_reason(result.status) == Some("no_failed_workflow_run")
 
   test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -1345,6 +1359,407 @@ steps:
   #(config_path, root)
 }
 
+pub fn dispatch_recovery_classifier_marks_fresh_issue_without_retained_run_test() {
+  let issue = issue("issue-1", "LIV-1059", "Todo")
+  let #(workflow_path, _) =
+    write_retry_step_workflow("test/tmp/dispatch-recovery-classifier-fresh")
+  let projected = projection.fold([])
+
+  assert dispatch_recovery.classify(
+      projected,
+      issue,
+      observation_for(workflow_path, issue),
+    )
+    == dispatch_recovery.FreshDispatch
+}
+
+pub fn dispatch_recovery_classifier_uses_retry_step_for_interrupted_run_test() {
+  let issue = issue("issue-1", "LIV-509", "Todo")
+  let #(workflow_path, root) =
+    write_retry_step_workflow("test/tmp/dispatch-recovery-classifier-step")
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+
+  let assert dispatch_recovery.StepRecovery(_) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+}
+
+pub fn dispatch_recovery_classifier_bypasses_retained_run_after_auto_unpark_issue_change_test() {
+  let issue = issue("issue-1", "LIV-509", "Todo")
+  let changed_issue = tracker_issue.Issue(..issue, title: "Changed title")
+  let #(workflow_path, root) =
+    write_retry_step_workflow(
+      "test/tmp/dispatch-recovery-classifier-auto-unpark-changed",
+    )
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "issue-auto-parked",
+          20,
+          record.IssueParkedV2(
+            issue.id,
+            issue.identifier,
+            "dispatch_recovery_rejected",
+            "auto_unpark_on_issue_change",
+            tracker_issue.content_fingerprint(issue),
+            20,
+          ),
+        ),
+      ],
+      True,
+    )
+
+  assert dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      changed_issue,
+      observation_for(workflow_path, changed_issue),
+    )
+    == dispatch_recovery.FreshDispatch
+}
+
+pub fn dispatch_recovery_classifier_rejects_missing_publication_manifest_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-missing"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: False,
+  )
+
+  let assert dispatch_recovery.RejectRecovery(reason, _) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+  assert reason == "publication_retry_output_manifest_missing"
+}
+
+pub fn dispatch_recovery_classifier_rejects_publication_issue_drift_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-drift"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let changed_issue = tracker_issue.Issue(..issue, title: "Changed title")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+
+  let assert dispatch_recovery.RejectRecovery(reason, _) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      changed_issue,
+      observation_for(workflow_path, changed_issue),
+    )
+  assert reason == "publication_recovery_issue_drift"
+}
+
+pub fn dispatch_recovery_classifier_rejects_retained_run_without_retryable_publication_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-complete"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  seed_successful_publication_attempt(root, "run-1", at_ms: 1030)
+
+  let assert dispatch_recovery.RejectRecovery(reason, _) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+  assert reason == "publication_retry_targets_not_found"
+}
+
+pub fn dispatch_recovery_classifier_rejects_newer_unsafe_publication_run_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-latest"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-2",
+    2000,
+    include_output_manifest: False,
+  )
+
+  let assert dispatch_recovery.RejectRecovery(reason, _) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+  assert reason == "publication_retry_output_manifest_missing"
+}
+
+pub fn dispatch_recovery_rejects_unsafe_publication_candidate_with_state_move_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-reject"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: False,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_with_candidate(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_with_candidate(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      command_runner.Runner(run: fn(_) {
+        Error(command_runner.command_error("unexpected_publication_retry"))
+      }),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "state_transition:Triage", 100)
+  assert wait_for_log(log_subject, "dispatch_recovery_rejected", 100)
+  assert !wait_for_log(log_subject, "agent_run:issue-1", 5)
+  assert contains_kind_sequence(root, ["issue_parked_v2"])
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_reuses_retry_step_on_poll_without_fresh_dispatch_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-step"
+  let issue = issue("issue-1", "LIV-1059", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with_candidate(issue),
+      hub_subject,
+      fn(issue, _context, effective) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        process.send(
+          log_subject,
+          recovery_append_state(log_subject, effective.workspace.root),
+        )
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+  assert wait_for_log(log_subject, "retry_step_ledger_ready", 100)
+  assert !wait_for_log(log_subject, "dispatch_started", 5)
+  assert contains_kind_sequence(root, [
+    "workflow_repair_requested",
+    "step_attempt_superseded",
+    "workflow_run_started",
+    "known_workspace",
+    "issue_counter_updated",
+  ])
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_repeated_poll_is_idempotent_while_recovered_run_active_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-step-idempotent"
+  let issue = issue("issue-1", "LIV-1059", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with_candidate(issue),
+      hub_subject,
+      fn(issue, _context, _effective) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+
+  process.send(started.data, daemon.PollTick(2))
+
+  assert !wait_for_log(log_subject, "recovered_worker_started:issue-1", 5)
+  assert count_kind(root, "workflow_repair_requested") == 1
+  assert count_kind(root, "step_attempt_superseded") == 1
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_tracker_transition_failure_parks_and_suppresses_repeat_poll_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-transition-failure"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: False,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_with_candidate(issue),
+      tracker_adapter_with_failing_transition_logging(
+        log_subject,
+        tracker_with_candidate(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      command_runner.Runner(run: fn(_) {
+        Error(command_runner.command_error("unexpected_publication_retry"))
+      }),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "state_transition_failed:Triage", 100)
+  assert wait_for_log(
+    log_subject,
+    "dispatch_recovery_rejected_state_transition_failed",
+    100,
+  )
+  assert wait_for_log(log_subject, "dispatch_recovery_rejected", 100)
+  assert contains_kind_sequence(root, ["issue_parked_v2"])
+
+  process.send(started.data, daemon.PollTick(2))
+
+  assert !wait_for_log(log_subject, "state_transition_failed:Triage", 5)
+  assert count_kind(root, "issue_parked_v2") == 1
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_retries_publication_and_moves_issue_out_of_todo_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-publication"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_with_candidate(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_with_candidate(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "comment:publication_retry", 100)
+  assert wait_for_log(log_subject, "state_transition:Done", 100)
+  assert !wait_for_log(log_subject, "agent_run:issue-1", 5)
+
+  let attempts =
+    projection.publication_attempts_for_run(
+      load_projection_or_panic(root),
+      "run-1",
+      "execplan_review_doc",
+    )
+  assert list.length(attempts) == 2
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
     id: id,
@@ -1455,9 +1870,10 @@ fn in_process_dependencies(
     config_types.EffectiveConfig,
   ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
-  daemon.RuntimeDependencies(
-    ..daemon.default_dependencies(),
-    make_tracker_adapter: fn(_) {
+  in_process_dependencies_with_adapter(
+    log_subject,
+    tracker_client,
+    fn(_) {
       let legacy =
         adapter_legacy.adapter_from_legacy_client(tracker_client, "linear")
       adapter.TrackerAdapter(
@@ -1465,6 +1881,30 @@ fn in_process_dependencies(
         handoff: Some(test_handoff_capability(disabled_handoff())),
       )
     },
+    hub_subject,
+    agent_runner,
+    command_runner.Runner(run: fn(_) {
+      Error(command_runner.command_error("unexpected_publication_retry"))
+    }),
+  )
+}
+
+fn in_process_dependencies_with_adapter(
+  log_subject: process.Subject(String),
+  _tracker_client: tracker.Client,
+  make_tracker_adapter: fn(config_types.EffectiveConfig) ->
+    adapter.TrackerAdapter,
+  hub_subject: process.Subject(hub.Message),
+  agent_runner: fn(
+    tracker_issue.Issue,
+    workflow_run.StepContext,
+    config_types.EffectiveConfig,
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+  publication_runner: command_runner.Runner,
+) -> daemon.RuntimeDependencies {
+  daemon.RuntimeDependencies(
+    ..daemon.default_dependencies(),
+    make_tracker_adapter: make_tracker_adapter,
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, _fields, _) {
       process.send(log_subject, event)
@@ -1479,11 +1919,83 @@ fn in_process_dependencies(
         agent_runner(issue, context, effective)
       },
     ),
+    publication_command_runner: publication_runner,
     start_event_hub: fn() { Ok(hub_subject) },
     make_control_token: fn() { Ok("test-token") },
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
+}
+
+fn tracker_adapter_with_transition_logging(
+  log_subject: process.Subject(String),
+  tracker_client: tracker.Client,
+) -> fn(config_types.EffectiveConfig) -> adapter.TrackerAdapter {
+  fn(_) {
+    let legacy =
+      adapter_legacy.adapter_from_legacy_client(tracker_client, "linear")
+    adapter.TrackerAdapter(
+      ..legacy,
+      comments: Some(
+        adapter.CommentCapability(
+          post_or_update: fn(request) {
+            let adapter.CommentRequest(body: body, ..) = request
+            case string.contains(body, "retained publication output") {
+              True -> process.send(log_subject, "comment:publication_retry")
+              False -> process.send(log_subject, "comment:other")
+            }
+            Ok(adapter.CommentReceipt(
+              id: "comment-1",
+              task: request.task,
+              url: None,
+              created: True,
+            ))
+          },
+          find_by_marker: fn(_) { Ok(None) },
+        ),
+      ),
+      state_transitions: Some(
+        adapter.StateTransitionCapability(transition: fn(request) {
+          process.send(
+            log_subject,
+            "state_transition:" <> request.target_state_name,
+          )
+          Ok(adapter.StateTransitionReceipt(
+            task: request.task,
+            state: task.TaskState(
+              id: None,
+              name: request.target_state_name,
+              category: task.Ready,
+            ),
+          ))
+        }),
+      ),
+      handoff: Some(test_handoff_capability(disabled_handoff())),
+    )
+  }
+}
+
+fn tracker_adapter_with_failing_transition_logging(
+  log_subject: process.Subject(String),
+  tracker_client: tracker.Client,
+) -> fn(config_types.EffectiveConfig) -> adapter.TrackerAdapter {
+  fn(_) {
+    let legacy =
+      adapter_legacy.adapter_from_legacy_client(tracker_client, "linear")
+    adapter.TrackerAdapter(
+      ..legacy,
+      state_transitions: Some(
+        adapter.StateTransitionCapability(transition: fn(request) {
+          process.send(
+            log_subject,
+            "state_transition_failed:" <> request.target_state_name,
+          )
+          Error(adapter.Permanent("transition failed"))
+        }),
+      ),
+      handoff: Some(test_handoff_capability(disabled_handoff())),
+    )
+  }
 }
 
 fn disabled_handoff() -> handoff.Client {
@@ -1536,6 +2048,433 @@ fn map_tracker_nil(
     Error(error.LinearApiRequest(message)) -> Error(adapter.Permanent(message))
     Error(_) -> Error(adapter.Permanent("tracker error"))
   }
+}
+
+fn observation_for(
+  config_path: String,
+  issue: tracker_issue.Issue,
+) -> recovery.CurrentWorkflowObservation {
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  startup_recovery.current_workflow_observation(bundle, issue)
+}
+
+fn load_projection_or_panic(root: String) -> projection.Projection {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(projected) = ledger.load_projection(ledger_path)
+  projected
+}
+
+fn write_retry_publication_workflow(dir: String) -> #(String, String) {
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let assert Ok(base) = path.dirname(root)
+  let workflow_dir = base <> "/workflows"
+  let template_dir = workflow_dir <> "/templates"
+  let script_dir = base <> "/scripts"
+  let config_path = base <> "/scherzo.yaml"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(template_dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(script_dir)
+  let driver_path = script_dir <> "/retained-driver"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver_path,
+      "#!/bin/sh\nif [ \"$1\" = describe ] && [ \"$2\" = --json ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"publish-commit-stack\"]}'\n  exit 0\nfi\nexit 1\n",
+    )
+  test_helpers.chmod_executable(driver_path)
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/execplan.yaml",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: materialize\n        path: tmp/commit-stack.json\nartifacts:\n  publications:\n    - id: execplan_review_doc\n      repository: github.docs\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: '{{ work.identifier }} publication'\n        body_template: templates/publication.md\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(template_dir <> "/publication.md", "Published by Scherzo.")
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
+        <> root
+        <> "\n  driver: retained\n  drivers:\n    retained:\n      type: custom\n      command: scripts/retained-driver\n      timeout: 1234ms\ntask_updates:\n  enabled: true\n  states:\n    success: Done\n    failure: Triage\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
+    )
+  #(config_path, root)
+}
+
+fn seed_failed_publication_retry_run(
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+  include_output_manifest include_output_manifest: Bool,
+) -> Nil {
+  write_seed_artifact(
+    root,
+    run_output_ref(run_id),
+    commit_stack_payload(run_id),
+  )
+  write_seed_artifact(root, run_bundle_ref(run_id), "bundle")
+  write_publication_retained_workspace_manifest(root, run_id)
+  let output_manifest = seeded_output_manifest(run_id)
+  let config_path = publication_config_path(root)
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "execplan")
+  let assert Ok(body_templates) =
+    artifact_publication_recording.load_body_templates(
+      workflow.publication_routes,
+      bundle.orchestrator.artifact_repositories,
+      bundle.orchestrator.config_dir,
+      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
+    )
+  let assert Ok(fingerprint) =
+    workflow_fingerprint_module.fingerprint_for_execution(
+      workflow,
+      bundle.orchestrator,
+    )
+  let assert [route] = workflow.publication_routes
+  let assert Ok(planned) =
+    artifact_publication_planner.plan_publication(
+      output_manifest,
+      bundle.orchestrator.artifact_repositories,
+      route,
+      artifact_store.new(root),
+      artifact_publication_planner.PublicationWork(
+        kind: artifact_publication_planner.TaskWork,
+        id: issue.id,
+        identifier: issue.identifier,
+        slug: issue.identifier,
+        title: None,
+        url: None,
+      ),
+      run_id,
+      body_templates,
+    )
+  let failed_ref =
+    "runs/" <> run_id <> "/publications/execplan_review_doc/failed-1.json"
+  let failed_manifest =
+    artifact_publication_manifest.failed_from_planned_manifest(
+      planned,
+      "failed-1",
+      at_ms + 20,
+      True,
+      Some(planned.branch),
+      None,
+      None,
+      [],
+      [],
+      artifact_publication_manifest.PublicationErrorInfo(
+        code: "git_push_failed",
+        message: "previous push failed",
+      ),
+    )
+  let #(failed_sha, failed_bytes) =
+    write_publication_manifest(root, failed_ref, failed_manifest)
+  let output_records = case include_output_manifest {
+    True -> [seeded_output_manifest_record(root, run_id)]
+    False -> []
+  }
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      list.append(
+        [
+          record.with_id(
+            "workflow-started-" <> run_id,
+            at_ms,
+            record.WorkflowRunStarted(
+              run_id: run_id,
+              workflow_id: "execplan",
+              workflow_fingerprint: fingerprint,
+              issue_id: issue.id,
+              issue_identifier: issue.identifier,
+              issue_fingerprint: tracker_issue.content_fingerprint(issue),
+              observed_updated_at_ms: at_ms - 1,
+              run_root: root <> "/runs/" <> run_id,
+            ),
+          ),
+          ..output_records
+        ],
+        [
+          record.with_id(
+            "workflow-finished-" <> run_id,
+            at_ms + 10,
+            record.WorkflowRunFinished(
+              run_id: run_id,
+              workflow_id: "execplan",
+              issue_id: issue.id,
+              outcome: "completed",
+              token_total: 0,
+              turns: 1,
+            ),
+          ),
+          record.with_id(
+            "publication-failed-" <> run_id,
+            at_ms + 20,
+            record.PublicationAttemptRecorded(
+              run_id: run_id,
+              workflow_id: "execplan",
+              publication_id: "execplan_review_doc",
+              series_id: planned.series_id,
+              attempt_id: "failed-1",
+              status: "failed",
+              required: True,
+              retryable: True,
+              retry_execution_available: True,
+              version_id: None,
+              manifest_ref: Some(failed_ref),
+              manifest_sha256: Some(failed_sha),
+              manifest_bytes: Some(failed_bytes),
+              error_code: Some("git_push_failed"),
+              error_message: Some("previous push failed"),
+            ),
+          ),
+        ],
+      ),
+      True,
+    )
+  Nil
+}
+
+fn seed_successful_publication_attempt(
+  root: String,
+  run_id: String,
+  at_ms at_ms: Int,
+) -> Nil {
+  let assert [latest, ..] =
+    projection.publication_attempts_for_run(
+      load_projection_or_panic(root),
+      run_id,
+      "execplan_review_doc",
+    )
+    |> list.reverse
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "publication-published-" <> run_id,
+          at_ms,
+          record.PublicationAttemptRecorded(
+            run_id: run_id,
+            workflow_id: latest.workflow_id,
+            publication_id: latest.publication_id,
+            series_id: latest.series_id,
+            attempt_id: "published-1",
+            status: "published",
+            required: latest.required,
+            retryable: False,
+            retry_execution_available: False,
+            version_id: latest.version_id,
+            manifest_ref: None,
+            manifest_sha256: None,
+            manifest_bytes: None,
+            error_code: None,
+            error_message: None,
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
+}
+
+fn publication_config_path(root: String) -> String {
+  let assert Ok(base) = path.dirname(root)
+  base <> "/scherzo.yaml"
+}
+
+fn run_output_ref(run_id: String) -> String {
+  "runs/" <> run_id <> "/outputs/commit-stack.json"
+}
+
+fn run_bundle_ref(run_id: String) -> String {
+  "runs/" <> run_id <> "/outputs/commit-stack.bundle"
+}
+
+fn retry_commit_stack_base_sha() -> String {
+  "1111111111111111111111111111111111111111"
+}
+
+fn retry_commit_stack_head_sha() -> String {
+  "2222222222222222222222222222222222222222"
+}
+
+fn retry_commit_stack_tree_sha() -> String {
+  "3333333333333333333333333333333333333333"
+}
+
+fn commit_stack_payload(run_id: String) -> String {
+  "{\"artifact_type\":\"scherzo.git_commit_stack.v1\",\"repository\":\"scherzo-systems/scherzo\",\"base\":{\"ref\":\"main\",\"sha\":\""
+  <> retry_commit_stack_base_sha()
+  <> "\"},\"head\":{\"sha\":\""
+  <> retry_commit_stack_head_sha()
+  <> "\",\"tree\":\""
+  <> retry_commit_stack_tree_sha()
+  <> "\"},\"carrier\":{\"ref\":\""
+  <> run_bundle_ref(run_id)
+  <> "\",\"sha256\":\""
+  <> hash.sha256_hex("bundle")
+  <> "\",\"bytes\":6,\"media_type\":\"application/vnd.git.bundle\"}}"
+}
+
+fn commit_stack_driver_success_json(issue_identifier: String) -> String {
+  "{\"version\":1,\"status\":\"published\",\"branch\":\"scherzo/execplan/"
+  <> issue_identifier
+  <> "\",\"base_ref\":\"main\",\"base_revision\":\""
+  <> retry_commit_stack_base_sha()
+  <> "\",\"head_revision\":\""
+  <> retry_commit_stack_head_sha()
+  <> "\",\"created\":false,\"updated\":true,\"url\":\"https://example.test/pr/42\",\"change_id\":\"42\"}"
+}
+
+fn seeded_output_manifest(
+  run_id: String,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  let body = commit_stack_payload(run_id)
+  let written =
+    workflow_contract_manifest.ArtifactWritten(
+      ref: run_output_ref(run_id),
+      sha256: hash.sha256_hex(body),
+      bytes: bit_array.byte_size(bit_array.from_string(body)),
+    )
+  workflow_contract_manifest.ContractOutputManifest(
+    run_id: run_id,
+    workflow_id: "execplan",
+    workflow_fingerprint: "wf-1",
+    outputs: [
+      workflow_contract_manifest.NamedManifestValue(
+        name: "commit_stack",
+        value: workflow_contract_manifest.present_run_artifact(
+          workflow_contract.CommitStack,
+          written,
+          "application/vnd.scherzo.git-commit-stack+json",
+          None,
+        ),
+      ),
+    ],
+    diagnostics: [],
+  )
+}
+
+fn write_publication_retained_workspace_manifest(
+  root: String,
+  run_id: String,
+) -> Nil {
+  let run_root = root <> "/runs/" <> run_id
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root <> "/.scherzo")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace_manifest.manifest_path(run_root),
+      workspace_manifest.encode_manifest(
+        [
+          workspace_manifest.Entry(
+            run_id: run_id,
+            workflow_id: "execplan",
+            step_id: "materialize",
+            attempt_index: 1,
+            workspace_name: "main",
+            relative_path: "workspaces/main",
+            workspace_profile: "retained",
+            driver_command: "retained-driver",
+            driver_capabilities: ["publish-commit-stack"],
+            source_workspace_name: None,
+            source_workspace_relative_path: None,
+            state: workspace_manifest.Ready,
+          ),
+        ],
+        run_id,
+        "execplan",
+      ),
+    )
+  Nil
+}
+
+fn seeded_output_manifest_record(
+  root: String,
+  run_id: String,
+) -> record.LedgerRecord {
+  let payload =
+    seeded_output_manifest(run_id)
+    |> workflow_contract_manifest.output_manifest_to_string
+  let ref = "runs/" <> run_id <> "/contract/outputs.json"
+  write_seed_artifact(root, ref, payload)
+  record.with_id(
+    "workflow-outputs-recorded-" <> run_id,
+    1015,
+    record.WorkflowRunOutputsRecorded(
+      run_id: run_id,
+      workflow_id: "execplan",
+      workflow_fingerprint: "wf-1",
+      artifact_ref: ref,
+      artifact_sha256: hash.sha256_hex(payload),
+      artifact_bytes: bit_array.byte_size(bit_array.from_string(payload)),
+    ),
+  )
+}
+
+fn write_publication_manifest(
+  root: String,
+  ref: String,
+  manifest: artifact_publication_manifest.PublicationManifest,
+) -> #(String, Int) {
+  let payload = artifact_publication_manifest.to_string(manifest)
+  write_seed_artifact(root, ref, payload)
+  #(
+    hash.sha256_hex(payload),
+    bit_array.byte_size(bit_array.from_string(payload)),
+  )
+}
+
+fn write_seed_artifact(root: String, ref: String, contents: String) -> Nil {
+  let absolute = root <> "/.scherzo-state/artifacts/" <> ref
+  let assert Ok(dir) = path.dirname(absolute)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let assert Ok(Nil) = simplifile.write(absolute, contents)
+  Nil
+}
+
+fn publication_retry_runner() -> command_runner.Runner {
+  command_runner.Runner(run: fn(spec) {
+    let command_runner.CommandSpec(
+      executable: executable,
+      args: args,
+      cwd: cwd,
+      ..,
+    ) = spec
+    let _ = simplifile.create_directory_all(cwd)
+    case executable, args {
+      "git", ["clone", _, target] -> {
+        let _ = simplifile.create_directory_all(target)
+        Ok(command_runner.CommandOutput(0, "", ""))
+      }
+      "git", ["fetch", ..]
+      | "git", ["checkout", ..]
+      | "git", ["status", ..]
+      | "git", ["add", ..]
+      | "git", ["commit", ..]
+      -> Ok(command_runner.CommandOutput(0, "", ""))
+      "git", ["ls-remote", ..] -> Ok(command_runner.CommandOutput(2, "", ""))
+      "git", ["rev-parse", "--verify", ..] ->
+        Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["diff", ..] -> Ok(command_runner.CommandOutput(1, "", ""))
+      "git", ["rev-parse", "HEAD"] ->
+        Ok(command_runner.CommandOutput(0, "deadbeef", ""))
+      "git", ["push", ..] -> Ok(command_runner.CommandOutput(0, "", ""))
+      "gh", ["pr", "list", ..] -> Ok(command_runner.CommandOutput(0, "[]", ""))
+      "gh", ["pr", "create", ..] ->
+        Ok(command_runner.CommandOutput(0, "https://example.test/pr/1", ""))
+      _, ["publish-commit-stack", ..] ->
+        Ok(command_runner.CommandOutput(
+          0,
+          commit_stack_driver_success_json("LIV-1059"),
+          "",
+        ))
+      _, _ -> Error(command_runner.command_error("unexpected_command"))
+    }
+  })
 }
 
 fn seed_interrupted_retry_step_run(
@@ -2350,6 +3289,12 @@ fn retained_workflow_interruption_reason(
 fn contains_kind(root: String, expected: String) -> Bool {
   ledger_bodies(root)
   |> list.any(fn(body) { record.kind(body) == expected })
+}
+
+fn count_kind(root: String, expected: String) -> Int {
+  ledger_bodies(root)
+  |> list.filter(fn(body) { record.kind(body) == expected })
+  |> list.length
 }
 
 fn contains_kind_sequence(root: String, expected: List(String)) -> Bool {
