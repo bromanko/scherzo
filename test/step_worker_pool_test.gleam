@@ -74,6 +74,7 @@ pub fn step_batch_deadline_returns_timeout_failure_test() {
       [prepared_start("hung_step")],
       20,
       timeout_artifact,
+      fn(_) { False },
       fn(_, _) { Ok(Nil) },
       fn(step, _) {
         test_async.block_until_released(barrier)
@@ -99,8 +100,10 @@ pub fn step_batch_deadline_returns_timeout_failure_test() {
   step_worker_pool.fold_step_batch_outcome(
     outcome,
     fn(_) { panic as "expected batch timeout to be fatal" },
-    fn(result) {
+    fn(result, _, interrupted_step_ids, drained) {
       assert step_worker_pool.step_result_step_id(result) == "hung_step"
+      assert interrupted_step_ids == []
+      assert drained == False
       let artifact = step_worker_pool.step_result_artifact(result)
       assert artifact.status == step_artifact.StepFailed
       assert artifact.exit_code == Some(124)
@@ -118,6 +121,7 @@ pub fn step_batch_deadline_uses_stable_timeout_step_id_test() {
       [prepared_start("z_hung_step"), prepared_start("a_hung_step")],
       20,
       timeout_artifact,
+      fn(_) { False },
       fn(_, _) { Ok(Nil) },
       fn(step, _) {
         test_async.block_until_released(barrier)
@@ -144,8 +148,10 @@ pub fn step_batch_deadline_uses_stable_timeout_step_id_test() {
   step_worker_pool.fold_step_batch_outcome(
     outcome,
     fn(_) { panic as "expected batch timeout to be fatal" },
-    fn(result) {
+    fn(result, _, interrupted_step_ids, drained) {
       assert step_worker_pool.step_result_step_id(result) == "a_hung_step"
+      assert interrupted_step_ids == ["z_hung_step"]
+      assert drained == False
     },
   )
 }

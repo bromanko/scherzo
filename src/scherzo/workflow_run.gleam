@@ -249,6 +249,16 @@ pub type ResumeState {
   )
 }
 
+type AppliedPreparedResults {
+  AppliedPreparedResults(
+    scheduler_state: workflow_scheduler.SchedulerState,
+    artifacts: Dict(String, step_artifact.StepArtifact),
+    tokens: session_tokens.TokenTotals,
+    final_issue: Option(tracker_issue.Issue),
+    turns: Int,
+  )
+}
+
 type WorkflowStartError {
   WorkflowRunRootFailed(error.WorkspaceError)
   WorkflowStartCheckpointFailed(workflow_checkpoint.CheckpointError)
@@ -1858,14 +1868,6 @@ fn loop(
         Ok(_) -> ""
         Error(error) -> "; workflow_output_manifest_failed:" <> error
       }
-      let cleanup_suffix =
-        cleanup_failure_suffix(cleanup_if_allowed(
-          run_root,
-          orchestrator,
-          profile,
-          dependencies,
-          cleanup_allowed,
-        ))
       use Nil <- result_try_checkpoint(
         dependencies.checkpoint.workflow_finished(
           workflow_checkpoint.WorkflowFinished(
@@ -1882,6 +1884,14 @@ fn loop(
         run_root,
         None,
       )
+      let cleanup_suffix =
+        cleanup_failure_suffix(cleanup_if_allowed(
+          run_root,
+          orchestrator,
+          profile,
+          dependencies,
+          cleanup_allowed,
+        ))
       Error(WorkflowRunFailure(
         reason: "workflow_step_failed" <> output_suffix <> cleanup_suffix,
         agent_reason: None,
@@ -2170,10 +2180,13 @@ fn execute_prepared_steps(
                 profile,
               )
             },
-            fn(result) {
+            fn(result, sibling_results, interrupted_step_ids, drained) {
               finish_fatal_batch_result(
                 starts,
                 result,
+                sibling_results,
+                interrupted_step_ids,
+                drained,
                 issue,
                 dag,
                 orchestrator,
@@ -2226,6 +2239,21 @@ fn run_prepared_batch(
         secrets,
         orchestrator.artifact_limits,
       )
+    },
+    fn(step_id) {
+      case prepared_start_by_step(starts, step_id) {
+        Ok(start) -> {
+          let step = step_worker_pool.prepared_start_step(start)
+          let workspace = step_worker_pool.prepared_start_workspace(start)
+          recovery_execution.effective_for_failure(
+            dag,
+            step,
+            workspace.attempt_index,
+          )
+          != None
+        }
+        Error(Nil) -> False
+      }
     },
     fn(step, workspace) {
       start_prepared_step(
@@ -2400,6 +2428,9 @@ fn start_prepared_step(
 fn finish_fatal_batch_result(
   starts: List(PreparedStart),
   result: StepExecutionResult,
+  sibling_results: List(StepExecutionResult),
+  interrupted_step_ids: List(String),
+  drained: Bool,
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
@@ -2427,11 +2458,52 @@ fn finish_fatal_batch_result(
   let result_artifact = step_worker_pool.step_result_artifact(result)
   let result_tokens = step_worker_pool.step_result_tokens(result)
   let result_turns = step_worker_pool.step_result_turns(result)
-  let artifacts = dict.insert(artifacts, result_step_id, result_artifact)
+  let result_final_issue = step_worker_pool.step_result_final_issue(result)
+  let sibling_result_by_step =
+    sibling_results
+    |> list.map(fn(result) {
+      #(step_worker_pool.step_result_step_id(result), result)
+    })
+    |> dict.from_list
+  let sibling_starts =
+    prepared_starts_with_results(
+      starts,
+      sibling_result_by_step,
+      result_step_id,
+      [],
+    )
+  use applied <- result.try(apply_prepared_results_state(
+    sibling_starts,
+    sibling_result_by_step,
+    issue,
+    dag,
+    orchestrator,
+    run_id,
+    recovery_evidence,
+    dependencies,
+    scheduler_state,
+    artifacts,
+    run_root,
+    tokens,
+    final_issue,
+    turns,
+    cleanup_allowed,
+    profile,
+  ))
+  let AppliedPreparedResults(
+    scheduler_state: sibling_scheduler_state,
+    artifacts: sibling_artifacts,
+    tokens: sibling_tokens,
+    final_issue: sibling_final_issue,
+    turns: sibling_turns,
+  ) = applied
+  let failure_artifacts =
+    dict.insert(sibling_artifacts, result_step_id, result_artifact)
   case prepared_start_by_step(starts, result_step_id) {
     Error(Nil) ->
       terminal_fatal_batch_failure(
         starts,
+        interrupted_step_ids,
         result,
         issue,
         dag,
@@ -2441,11 +2513,11 @@ fn finish_fatal_batch_result(
         recovery_evidence,
         orchestrator,
         dependencies,
-        artifacts,
+        failure_artifacts,
         prepared_workspaces,
         run_root,
-        tokens.total,
-        turns,
+        sibling_tokens.total + result_tokens.total,
+        sibling_turns + result_turns,
         cleanup_allowed,
         profile,
         checkpoint_error: None,
@@ -2480,6 +2552,7 @@ fn finish_fatal_batch_result(
         Error(error) ->
           terminal_fatal_batch_failure(
             starts,
+            interrupted_step_ids,
             result,
             issue,
             dag,
@@ -2489,91 +2562,129 @@ fn finish_fatal_batch_result(
             recovery_evidence,
             orchestrator,
             dependencies,
-            artifacts,
+            failure_artifacts,
             prepared_workspaces,
             run_root,
-            tokens.total,
-            turns,
+            sibling_tokens.total + result_tokens.total,
+            sibling_turns + result_turns,
             cleanup_allowed,
             profile,
             checkpoint_error: Some(error),
           )
         Ok(_) ->
-          case
-            recovery_execution.effective_for_failure(
-              dag,
-              step,
-              workspace.attempt_index,
-            )
-          {
-            Some(config) ->
+          case drained {
+            True ->
               case
-                execute_step_recovery(
-                  step,
-                  workspace,
-                  result_artifact,
-                  config,
-                  issue,
+                recovery_execution.effective_for_failure(
                   dag,
-                  orchestrator,
-                  tracker_client,
-                  secrets,
-                  dependencies,
-                  profile,
+                  step,
+                  workspace.attempt_index,
                 )
               {
-                recovery_execution.RecoveryRecheckRequested(
-                  recovery_tokens,
-                  recovery_final_issue,
-                  recovery_turns,
-                ) -> {
-                  let scheduler_state =
-                    mark_batch_pending(scheduler_state, starts)
-                  let tokens =
-                    add_tokens(
-                      add_tokens(tokens, result_tokens),
+                Some(config) ->
+                  case
+                    execute_step_recovery(
+                      step,
+                      workspace,
+                      result_artifact,
+                      config,
+                      issue,
+                      dag,
+                      orchestrator,
+                      tracker_client,
+                      secrets,
+                      dependencies,
+                      profile,
+                    )
+                  {
+                    recovery_execution.RecoveryRecheckRequested(
                       recovery_tokens,
-                    )
-                  let final_issue =
-                    latest_final_issue(final_issue, recovery_final_issue)
-                  loop(
-                    issue,
-                    dag,
-                    orchestrator,
-                    tracker_client,
-                    secrets,
-                    run_id,
-                    workflow_fingerprint,
-                    contract_outputs_recorded,
-                    workflow_outcome.StepRecoveryRecheckRequested,
-                    recovered_execution,
-                    dependencies,
-                    scheduler_state,
-                    artifacts,
-                    prepared_workspaces,
-                    run_root,
-                    attempt_indexes,
-                    tokens,
-                    final_issue,
-                    turns + result_turns + recovery_turns,
-                    cleanup_allowed,
-                    pi_session_continuations,
-                    profile,
-                  )
-                }
-                recovery_execution.RecoveryStop(
-                  recovery_tokens,
-                  _,
-                  recovery_turns,
-                  stop_recovery_evidence,
-                ) -> {
-                  let recovery_evidence =
-                    recovery_execution.combine_evidence(
-                      recovery_evidence,
+                      recovery_final_issue,
+                      recovery_turns,
+                    ) -> {
+                      let scheduler_state =
+                        workflow_scheduler.mark_pending(
+                          sibling_scheduler_state,
+                          step.id,
+                        )
+                      let tokens =
+                        add_tokens(
+                          add_tokens(sibling_tokens, result_tokens),
+                          recovery_tokens,
+                        )
+                      let final_issue =
+                        latest_final_issue(
+                          latest_final_issue(
+                            sibling_final_issue,
+                            result_final_issue,
+                          ),
+                          recovery_final_issue,
+                        )
+                      loop(
+                        issue,
+                        dag,
+                        orchestrator,
+                        tracker_client,
+                        secrets,
+                        run_id,
+                        workflow_fingerprint,
+                        contract_outputs_recorded,
+                        workflow_outcome.StepRecoveryRecheckRequested,
+                        recovered_execution,
+                        dependencies,
+                        scheduler_state,
+                        dict.delete(failure_artifacts, step.id),
+                        prepared_workspaces,
+                        run_root,
+                        attempt_indexes,
+                        tokens,
+                        final_issue,
+                        sibling_turns + result_turns + recovery_turns,
+                        cleanup_allowed,
+                        pi_session_continuations,
+                        profile,
+                      )
+                    }
+                    recovery_execution.RecoveryStop(
+                      recovery_tokens,
+                      _,
+                      recovery_turns,
                       stop_recovery_evidence,
-                    )
+                    ) -> {
+                      let recovery_evidence =
+                        recovery_execution.combine_evidence(
+                          recovery_evidence,
+                          stop_recovery_evidence,
+                        )
+                      terminal_fatal_batch_failure(
+                        starts,
+                        interrupted_step_ids,
+                        result,
+                        issue,
+                        dag,
+                        run_id,
+                        workflow_fingerprint,
+                        contract_outputs_recorded,
+                        recovery_evidence,
+                        orchestrator,
+                        dependencies,
+                        failure_artifacts,
+                        prepared_workspaces,
+                        run_root,
+                        sibling_tokens.total
+                          + result_tokens.total
+                          + recovery_tokens.total,
+                        sibling_turns + result_turns + recovery_turns,
+                        cleanup_allowed,
+                        profile,
+                        checkpoint_error: None,
+                      )
+                    }
+                  }
+                None ->
                   terminal_fatal_batch_failure(
                     starts,
+                    interrupted_step_ids,
                     result,
                     issue,
                     dag,
@@ -2583,20 +2694,20 @@ fn finish_fatal_batch_result(
                     recovery_evidence,
                     orchestrator,
                     dependencies,
-                    artifacts,
+                    failure_artifacts,
                     prepared_workspaces,
                     run_root,
-                    tokens.total + result_tokens.total + recovery_tokens.total,
-                    turns + result_turns + recovery_turns,
+                    sibling_tokens.total + result_tokens.total,
+                    sibling_turns + result_turns,
                     cleanup_allowed,
                     profile,
                     checkpoint_error: None,
                   )
-                }
               }
-            None ->
+            False ->
               terminal_fatal_batch_failure(
                 starts,
+                interrupted_step_ids,
                 result,
                 issue,
                 dag,
@@ -2606,11 +2717,11 @@ fn finish_fatal_batch_result(
                 recovery_evidence,
                 orchestrator,
                 dependencies,
-                artifacts,
+                failure_artifacts,
                 prepared_workspaces,
                 run_root,
-                tokens.total + result_tokens.total,
-                turns + result_turns,
+                sibling_tokens.total + result_tokens.total,
+                sibling_turns + result_turns,
                 cleanup_allowed,
                 profile,
                 checkpoint_error: None,
@@ -2623,6 +2734,7 @@ fn finish_fatal_batch_result(
 
 fn terminal_fatal_batch_failure(
   starts: List(PreparedStart),
+  interrupted_step_ids: List(String),
   result: StepExecutionResult,
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
@@ -2665,12 +2777,12 @@ fn terminal_fatal_batch_failure(
       agent_reason: step_execution.agent_reason_for_artifact(result_artifact),
       checkpoint_error: checkpoint_error,
       interrupt_active_attempts: fn() {
-        mark_prepared_attempts_interrupted(
+        mark_selected_prepared_attempts_interrupted(
           starts,
+          interrupted_step_ids,
           dependencies,
           dag.id,
           "fatal_sibling_finished",
-          Some(result_step_id),
         )
       },
     ),
@@ -2794,32 +2906,19 @@ fn latest_final_issue(
   }
 }
 
-fn mark_batch_pending(
-  state: workflow_scheduler.SchedulerState,
+fn mark_selected_prepared_attempts_interrupted(
   starts: List(PreparedStart),
-) -> workflow_scheduler.SchedulerState {
-  case starts {
-    [] -> state
-    [start, ..rest] -> {
-      let step_id = step_worker_pool.prepared_start_step_id(start)
-      mark_batch_pending(workflow_scheduler.mark_pending(state, step_id), rest)
-    }
-  }
-}
-
-fn mark_prepared_attempts_interrupted(
-  starts: List(PreparedStart),
+  interrupted_step_ids: List(String),
   dependencies: Dependencies,
   workflow_id: String,
   reason: String,
-  skipped_step_id: Option(String),
 ) -> Nil {
   case starts {
     [] -> Nil
     [start, ..rest] -> {
       let step = step_worker_pool.prepared_start_step(start)
       let workspace = step_worker_pool.prepared_start_workspace(start)
-      case skipped_step_id != Some(step.id) {
+      case list.contains(interrupted_step_ids, step.id) {
         True ->
           ignore_secondary_checkpoint_result(
             dependencies.checkpoint.step_interrupted(
@@ -2832,13 +2931,55 @@ fn mark_prepared_attempts_interrupted(
           )
         False -> Nil
       }
-      mark_prepared_attempts_interrupted(
+      mark_selected_prepared_attempts_interrupted(
         rest,
+        interrupted_step_ids,
         dependencies,
         workflow_id,
         reason,
-        skipped_step_id,
       )
+    }
+  }
+}
+
+fn prepared_start_ids(
+  starts: List(PreparedStart),
+  acc: List(String),
+) -> List(String) {
+  case starts {
+    [] -> list.reverse(acc)
+    [start, ..rest] ->
+      prepared_start_ids(rest, [
+        step_worker_pool.prepared_start_step_id(start),
+        ..acc
+      ])
+  }
+}
+
+fn prepared_starts_with_results(
+  starts: List(PreparedStart),
+  result_by_step: Dict(String, StepExecutionResult),
+  skipped_step_id: String,
+  acc: List(PreparedStart),
+) -> List(PreparedStart) {
+  case starts {
+    [] -> list.reverse(acc)
+    [start, ..rest] -> {
+      let step_id = step_worker_pool.prepared_start_step_id(start)
+      case step_id != skipped_step_id && dict.has_key(result_by_step, step_id) {
+        True ->
+          prepared_starts_with_results(rest, result_by_step, skipped_step_id, [
+            start,
+            ..acc
+          ])
+        False ->
+          prepared_starts_with_results(
+            rest,
+            result_by_step,
+            skipped_step_id,
+            acc,
+          )
+      }
     }
   }
 }
@@ -2884,32 +3025,84 @@ fn apply_prepared_results(
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  use applied <- result.try(apply_prepared_results_state(
+    starts,
+    result_by_step,
+    issue,
+    dag,
+    orchestrator,
+    run_id,
+    recovery_evidence,
+    dependencies,
+    scheduler_state,
+    artifacts,
+    run_root,
+    tokens,
+    final_issue,
+    turns,
+    cleanup_allowed,
+    profile,
+  ))
+  let AppliedPreparedResults(
+    scheduler_state: scheduler_state,
+    artifacts: artifacts,
+    tokens: tokens,
+    final_issue: final_issue,
+    turns: turns,
+  ) = applied
+  loop(
+    issue,
+    dag,
+    orchestrator,
+    tracker_client,
+    secrets,
+    run_id,
+    workflow_fingerprint,
+    contract_outputs_recorded,
+    recovery_evidence,
+    recovered_execution,
+    dependencies,
+    scheduler_state,
+    artifacts,
+    prepared_workspaces,
+    run_root,
+    attempt_indexes,
+    tokens,
+    final_issue,
+    turns,
+    cleanup_allowed,
+    pi_session_continuations,
+    profile,
+  )
+}
+
+fn apply_prepared_results_state(
+  starts: List(PreparedStart),
+  result_by_step: Dict(String, StepExecutionResult),
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  run_id: String,
+  recovery_evidence: workflow_outcome.RecoveryEvidence,
+  dependencies: Dependencies,
+  scheduler_state: workflow_scheduler.SchedulerState,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  run_root: Option(String),
+  tokens: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
+  turns: Int,
+  cleanup_allowed: Bool,
+  profile: config_types.WorkspaceHookProfile,
+) -> Result(AppliedPreparedResults, WorkflowRunFailure) {
   case starts {
     [] ->
-      loop(
-        issue,
-        dag,
-        orchestrator,
-        tracker_client,
-        secrets,
-        run_id,
-        workflow_fingerprint,
-        contract_outputs_recorded,
-        recovery_evidence,
-        recovered_execution,
-        dependencies,
-        scheduler_state,
-        artifacts,
-        prepared_workspaces,
-        run_root,
-        attempt_indexes,
-        tokens,
-        final_issue,
-        turns,
-        cleanup_allowed,
-        pi_session_continuations,
-        profile,
-      )
+      Ok(AppliedPreparedResults(
+        scheduler_state: scheduler_state,
+        artifacts: artifacts,
+        tokens: tokens,
+        final_issue: final_issue,
+        turns: turns,
+      ))
     [start, ..rest] -> {
       let step = step_worker_pool.prepared_start_step(start)
       let workspace = step_worker_pool.prepared_start_workspace(start)
@@ -3078,47 +3271,29 @@ fn apply_prepared_results(
                         failed_step_id: Some(step.id),
                       ))
                     }
-                    Ok(Nil) -> {
-                      let artifacts =
-                        dict.insert(artifacts, step.id, result_artifact)
-                      let scheduler_state =
-                        workflow_scheduler.mark_finished(
-                          scheduler_state,
-                          step.id,
-                          result_artifact,
-                        )
-                      let tokens = add_tokens(tokens, result_tokens)
-                      let final_issue = case result_final_issue {
-                        Some(_) -> result_final_issue
-                        None -> final_issue
-                      }
-                      apply_prepared_results(
+                    Ok(Nil) ->
+                      apply_prepared_results_state(
                         rest,
                         result_by_step,
                         issue,
                         dag,
                         orchestrator,
-                        tracker_client,
-                        secrets,
                         run_id,
-                        workflow_fingerprint,
-                        contract_outputs_recorded,
                         recovery_evidence,
                         dependencies,
-                        scheduler_state,
-                        artifacts,
-                        prepared_workspaces,
+                        workflow_scheduler.mark_finished(
+                          scheduler_state,
+                          step.id,
+                          result_artifact,
+                        ),
+                        dict.insert(artifacts, step.id, result_artifact),
                         run_root,
-                        attempt_indexes,
-                        tokens,
-                        final_issue,
+                        add_tokens(tokens, result_tokens),
+                        latest_final_issue(final_issue, result_final_issue),
                         turns + result_turns,
                         cleanup_allowed,
-                        recovered_execution,
-                        pi_session_continuations,
                         profile,
                       )
-                    }
                   }
               }
           }
@@ -3215,12 +3390,12 @@ fn mark_workflow_failed_terminal(
   turns: Int,
   active_attempts: List(PreparedStart),
 ) -> Nil {
-  mark_prepared_attempts_interrupted(
+  mark_selected_prepared_attempts_interrupted(
     active_attempts,
+    prepared_start_ids(active_attempts, []),
     dependencies,
     workflow_id,
     "terminal_failure",
-    None,
   )
   ignore_secondary_checkpoint_result(
     dependencies.checkpoint.workflow_finished(

@@ -1740,6 +1740,40 @@ pub fn startup_recovery_new_park_posts_park_comment_test() {
   hub.stop(hub_subject)
 }
 
+pub fn reload_workflow_updates_runtime_limits_before_reply_test() {
+  let #(workflow_path, root) =
+    write_workflow_with_limits("test/tmp/daemon-control-reload-runtime", 0, 1)
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(10, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      empty_tracker(),
+      disabled_handoff(),
+      hub_subject,
+      failing_agent(log_subject),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(initial_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert initial_snapshot.max_concurrent_agents == 0
+
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_path,
+      workflow_text_with_extra_config(root, 2, 1, ""),
+    )
+  let assert Ok(reloaded) =
+    daemon.apply_operator_command(started.data, command.ReloadWorkflow, 1000)
+  assert command.status_to_string(reloaded.status) == "applied"
+
+  let assert Ok(reloaded_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert reloaded_snapshot.max_concurrent_agents == 2
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn reload_workflow_starts_remote_client_after_enabling_ui_server_test() {
   let #(workflow_path, root) =
     write_workflow_with_extra_config(

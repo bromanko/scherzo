@@ -1555,10 +1555,11 @@ fn state_with_retry(issue: tracker_issue.Issue) -> transition_types.State {
   )
 }
 
-fn retry_request(issue_id: String) -> effects_types.OperatorCommandRequest {
+fn retry_request(_issue_id: String) -> effects_types.OperatorCommandRequest {
   effects_types.OperatorCommandRequest(
+    correlation_id: "test-correlation",
     source: effects_types.LocalOperatorCommand,
-    operator_command: command.RetryIssue(command.IssueId(issue_id)),
+    operator_command: command.RetryIssue(command.IssueId("issue-1")),
     timeout_ms: 1000,
   )
 }

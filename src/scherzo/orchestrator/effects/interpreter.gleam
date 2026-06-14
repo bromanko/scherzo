@@ -108,7 +108,7 @@ pub opaque type ShellState(shell) {
     shutdown_runtime: fn(shell, Bool) -> shell,
     set_operator_paused: fn(shell, Bool) -> shell,
     apply_operator_command: fn(shell, effects_types.OperatorCommandRequest) ->
-      #(shell, command.CommandResult),
+      #(shell, command.CommandResult, List(transition_types.Message)),
     finish_operator_command: fn(
       shell,
       effects_types.OperatorCommandRequest,
@@ -197,6 +197,7 @@ pub fn new_shell_state(
           "operator_command_unhandled",
           None,
         ),
+        [],
       )
     },
     finish_operator_command: fn(started_workers, _, _) {
@@ -330,7 +331,7 @@ pub fn new_production_shell_state(
   apply_operator_command apply_operator_command: fn(
     shell,
     effects_types.OperatorCommandRequest,
-  ) -> #(shell, command.CommandResult),
+  ) -> #(shell, command.CommandResult, List(transition_types.Message)),
   finish_operator_command finish_operator_command: fn(
     shell,
     effects_types.OperatorCommandRequest,
@@ -702,15 +703,18 @@ fn apply_loop(
           apply_loop(shell, rest, follow_up_messages)
         }
         effects_types.ApplyOperatorCommand(request) -> {
-          let #(data, result) =
+          let #(data, result, new_follow_ups) =
             shell.apply_operator_command(shell.data, request)
-          let #(data, new_follow_ups) =
-            shell.finish_operator_command(data, request, result)
+          let completion =
+            transition_types.OperatorCommandCompleted(request, result)
           let shell = ShellState(..shell, data: data)
           apply_loop(
             shell,
             rest,
-            list.append(list.reverse(new_follow_ups), follow_up_messages),
+            list.append(
+              [completion, ..list.reverse(new_follow_ups)],
+              follow_up_messages,
+            ),
           )
         }
         effects_types.FinishOperatorCommand(request, result) -> {
