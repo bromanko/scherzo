@@ -13,8 +13,10 @@ import scherzo/error
 import scherzo/handoff_format
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/daemon_transition_shell
 import scherzo/orchestrator/poll_jitter
 import scherzo/orchestrator/scheduled_runtime
+import scherzo/orchestrator/transition_invariants
 import scherzo/path
 import scherzo/result_artifact
 import scherzo/runtime/state as orchestrator_state
@@ -136,6 +138,15 @@ fn bool_to_yaml(value: Bool) -> String {
 fn write_workflow(dir: String, max_concurrent: Int) -> String {
   test_helpers.reset_dir(dir)
   write_workflow_files(dir, workflow_text(dir <> "/workspaces", max_concurrent))
+}
+
+fn write_workflow_with_absolute_root(
+  dir: String,
+  max_concurrent: Int,
+) -> String {
+  test_helpers.reset_dir(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  write_workflow_files(dir, workflow_text(root, max_concurrent))
 }
 
 fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
@@ -440,6 +451,162 @@ fn base_dependencies(
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
+}
+
+type InvariantCheckCommand {
+  CheckInvariants(
+    process.Subject(Result(Nil, List(transition_invariants.InvariantError))),
+  )
+  StopInvariantChecker
+}
+
+fn scripted_invariant_checker(
+  fail_after_successes: Int,
+) -> #(
+  daemon_transition_shell.InvariantChecker,
+  process.Subject(InvariantCheckCommand),
+) {
+  let ready = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let subject = process.new_subject()
+      process.send(ready, subject)
+      scripted_invariant_checker_loop(subject, fail_after_successes, 0)
+    })
+  let assert Ok(subject) = process.receive(ready, within: 1000)
+  #(
+    fn(_) {
+      let reply = process.new_subject()
+      process.send(subject, CheckInvariants(reply))
+      case process.receive(reply, within: 1000) {
+        Ok(result) -> result
+        Error(Nil) -> Ok(Nil)
+      }
+    },
+    subject,
+  )
+}
+
+fn scripted_invariant_checker_loop(
+  subject: process.Subject(InvariantCheckCommand),
+  fail_after_successes: Int,
+  success_count: Int,
+) -> Nil {
+  case process.receive(subject, within: 60_000) {
+    Ok(StopInvariantChecker) -> Nil
+    Ok(CheckInvariants(reply)) -> {
+      let should_fail = success_count >= fail_after_successes
+      case should_fail {
+        True -> {
+          process.send(reply, Error([test_transition_invariant_error()]))
+          scripted_invariant_checker_loop(
+            subject,
+            fail_after_successes,
+            success_count,
+          )
+        }
+        False -> {
+          process.send(reply, Ok(Nil))
+          scripted_invariant_checker_loop(
+            subject,
+            fail_after_successes,
+            success_count + 1,
+          )
+        }
+      }
+    }
+    Error(Nil) -> Nil
+  }
+}
+
+fn test_transition_invariant_error() -> transition_invariants.InvariantError {
+  transition_invariants.InvariantError(
+    "test_fatal_invariant",
+    "test-identity",
+    "test violation",
+  )
+}
+
+pub fn daemon_startup_invariant_failure_aborts_and_cleans_up_test() {
+  let workflow_path =
+    write_workflow_with_absolute_root("test/tmp/daemon-startup-invariant", 1)
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let cleanup_subject = process.new_subject()
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let assert Ok(event_hub_pid) = process.subject_owner(event_hub)
+  let event_hub_monitor = process.monitor(event_hub_pid)
+  let #(checker, checker_subject) = scripted_invariant_checker(0)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      start_event_hub: fn() { Ok(event_hub) },
+      stop_control_server: fn(_) {
+        process.send(cleanup_subject, "control_stop")
+      },
+      check_transition_invariants: checker,
+    )
+
+  let result = daemon.start(Some(workflow_path), deps)
+  process.send(checker_subject, StopInvariantChecker)
+
+  let assert Error(daemon.StartupError(code, _)) = result
+  assert code == "transition_invariant_violation"
+  assert wait_for_event(log_subject, "transition_invariant_violation", 10)
+  assert process.receive(cleanup_subject, within: 1000) == Ok("control_stop")
+  let event_hub_stopped = wait_for_monitor_down(event_hub_monitor, 1000)
+  case event_hub_stopped {
+    True -> Nil
+    False -> hub.stop(event_hub)
+  }
+  process.demonitor_process(event_hub_monitor)
+  assert event_hub_stopped
+}
+
+pub fn daemon_runtime_invariant_failure_stops_after_cleanup_test() {
+  use <- expected_crash.suppressing(["transition_invariant_violation"])
+  let workflow_path =
+    write_workflow_with_absolute_root("test/tmp/daemon-runtime-invariant", 1)
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let cleanup_subject = process.new_subject()
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let assert Ok(event_hub_pid) = process.subject_owner(event_hub)
+  let event_hub_monitor = process.monitor(event_hub_pid)
+  let #(checker, checker_subject) = scripted_invariant_checker(2)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      start_event_hub: fn() { Ok(event_hub) },
+      stop_control_server: fn(_) {
+        process.send(cleanup_subject, "control_stop")
+      },
+      check_transition_invariants: checker,
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(daemon_pid) = process.subject_owner(started.data)
+  process.unlink(daemon_pid)
+  let daemon_monitor = process.monitor(daemon_pid)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(log_subject, "transition_invariant_violation", 10)
+  let daemon_stopped = wait_for_monitor_down(daemon_monitor, 1000)
+  let event_hub_stopped = wait_for_monitor_down(event_hub_monitor, 1000)
+  process.send(checker_subject, StopInvariantChecker)
+  case daemon_stopped {
+    True -> Nil
+    False -> process.kill(daemon_pid)
+  }
+  case event_hub_stopped {
+    True -> Nil
+    False -> hub.stop(event_hub)
+  }
+  process.demonitor_process(daemon_monitor)
+  process.demonitor_process(event_hub_monitor)
+  assert process.receive(cleanup_subject, within: 1000) == Ok("control_stop")
+  assert daemon_stopped
+  assert event_hub_stopped
 }
 
 pub fn daemon_schedules_jittered_recurring_poll_after_immediate_tick_test() {

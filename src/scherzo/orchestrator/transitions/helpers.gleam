@@ -1,10 +1,13 @@
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/orchestrator/core
+import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/transition_types
+import scherzo/orchestrator/transitions/claim_retries
 import scherzo/orchestrator/workflow_snapshot
+import scherzo/runtime/identity.{type TaskIdentity}
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
@@ -146,6 +149,34 @@ pub fn make_session_id(
 
 pub fn claim_correlation_id(issue_id: String, run_id: String) -> String {
   "claim:" <> issue_id <> ":" <> run_id
+}
+
+pub fn reconcile_unstarted_pending_claim(
+  state: transition_types.State,
+  task_identity: TaskIdentity,
+  pending: transition_types.PendingClaim,
+) -> #(transition_types.State, List(effects_types.Effect)) {
+  claim_retries.reconcile_unstarted_pending_claim(state, task_identity, pending)
+}
+
+pub fn restore_after_pre_claim_failure(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> #(transition_types.State, List(effects_types.Effect)) {
+  claim_retries.restore_after_pre_claim_failure(
+    state,
+    issue,
+    retry_cancellation,
+  )
+}
+
+pub fn restore_after_paused_preflight(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  retry_cancellation: Option(transition_types.RetryCancellation),
+) -> #(transition_types.State, List(effects_types.Effect)) {
+  claim_retries.restore_after_paused_preflight(state, issue, retry_cancellation)
 }
 
 fn lookup_workflow(

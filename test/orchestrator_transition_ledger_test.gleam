@@ -616,6 +616,135 @@ pub fn claim_requested_missing_workflow_start_does_not_emit_append_or_start_work
     ]
 }
 
+pub fn retry_claim_requested_empty_batch_restores_retry_state_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let #(claiming, task_identity, pending) = pending_retry_claim_state(issue)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.HandoffClaimCompleted(
+        task_identity: task_identity,
+        issue_id: identity.issue_id_from_string(issue.id),
+        run_id: identity.run_id_from_string(pending.run_id),
+        result: transition_types.HandoffClaimSucceeded(ledger_batch.empty()),
+      ),
+      claiming,
+    )
+
+  assert_retry_restored(next, effects, task_identity, issue, 3, 40_000)
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.Log("warn", "claim_ledger_append_empty", [
+      #("issue_id", issue.id),
+      #("run_id", pending.run_id),
+      #("correlation_id", "claim:" <> issue.id <> ":" <> pending.run_id),
+    ])
+  })
+}
+
+pub fn retry_claim_requested_missing_workflow_start_restores_retry_state_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let #(claiming, task_identity, pending) = pending_retry_claim_state(issue)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.HandoffClaimCompleted(
+        task_identity: task_identity,
+        issue_id: identity.issue_id_from_string(issue.id),
+        run_id: identity.run_id_from_string(pending.run_id),
+        result: transition_types.HandoffClaimSucceeded(
+          ledger_batch.step_attempt_started(
+            pending.run_id,
+            "default",
+            "build",
+            1,
+            pending.session_id,
+            None,
+            True,
+          ),
+        ),
+      ),
+      claiming,
+    )
+
+  assert_retry_restored(next, effects, task_identity, issue, 3, 40_000)
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.Log("warn", "claim_ledger_append_invalid_claim_started", [
+      #("issue_id", issue.id),
+      #("run_id", pending.run_id),
+      #("correlation_id", "claim:" <> issue.id <> ":" <> pending.run_id),
+    ])
+  })
+}
+
+fn pending_retry_claim_state(
+  issue: tracker_issue.Issue,
+) -> #(
+  transition_types.State,
+  identity.TaskIdentity,
+  transition_types.PendingClaim,
+) {
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let runtime = orchestrator_transition_test.fixture_runtime()
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      runtime: orchestrator_state.RuntimeState(
+        ..runtime,
+        retry_attempts: dict.insert(
+          runtime.retry_attempts,
+          task_identity,
+          orchestrator_state.RetryEntry(
+            task_ref: task.from_legacy_issue(issue).ref,
+            issue_id: issue.id,
+            delay_ms: 40_000,
+            timer_generation: 3,
+          ),
+        ),
+        claimed: dict.insert(runtime.claimed, task_identity, issue.identifier),
+      ),
+    )
+  let transition_types.Outcome(state: claiming, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        3,
+        Ok([issue]),
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state,
+    )
+  let assert Ok(pending) = dict.get(claiming.pending_claims, task_identity)
+  #(claiming, task_identity, pending)
+}
+
+fn assert_retry_restored(
+  state: transition_types.State,
+  effects: List(effects_types.Effect),
+  task_identity: identity.TaskIdentity,
+  issue: tracker_issue.Issue,
+  generation: Int,
+  delay_ms: Int,
+) {
+  assert dict.get(state.pending_claims, task_identity) == Error(Nil)
+  let assert Ok(retry) = dict.get(state.runtime.retry_attempts, task_identity)
+  assert retry.issue_id == issue.id
+  assert retry.delay_ms == delay_ms
+  assert retry.timer_generation == generation
+  assert dict.get(state.runtime.claimed, task_identity) == Ok(issue.identifier)
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.DeferRetryTimer(issue.id, generation, delay_ms)
+  })
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      effects_types.AppendLedger(_) | effects_types.StartWorker(_) -> True
+      effects_types.CancelRetryTimer(_, _, "retry_dispatch") -> True
+      _ -> False
+    }
+  })
+}
+
 fn assert_cancelled_workflow_append(
   effects: List(effects_types.Effect),
   correlation_id: String,

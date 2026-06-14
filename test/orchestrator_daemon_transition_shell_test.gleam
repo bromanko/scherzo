@@ -2,12 +2,14 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import orchestrator_transition_test
 import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/error
 import scherzo/orchestrator/daemon_transition_shell
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/transition_invariants
 import scherzo/orchestrator/transition_types
 import scherzo/result_artifact
 import scherzo/runtime/identity
@@ -79,6 +81,69 @@ pub fn run_logs_exhaustion_with_configured_limit_test() {
   assert next.events == ["append:claim:issue-1:run-1"]
   assert next.transition_state == original
   assert next.exhausted_limits == [1]
+}
+
+pub fn run_logs_and_marks_fatal_invariant_violations_test() {
+  let state = shell_state(state_with_claimed_lifecycle_missing())
+
+  let next = daemon_transition_shell.run(context(state, 8), [])
+
+  assert next.events
+    == [
+      "invariants:error:claimed_lifecycle_missing:logged=1:omitted=0:truncated=false",
+      "invariants:fail:claimed_lifecycle_missing",
+    ]
+}
+
+pub fn run_warn_mode_does_not_mark_invariant_violations_fatal_test() {
+  let state = shell_state(state_with_claimed_lifecycle_missing())
+
+  let next =
+    daemon_transition_shell.run(
+      context_with_invariant_mode(
+        state,
+        8,
+        daemon_transition_shell.WarnOnInvariantViolation,
+      ),
+      [],
+    )
+
+  assert next.events
+    == [
+      "invariants:warn:claimed_lifecycle_missing:logged=1:omitted=0:truncated=false",
+    ]
+}
+
+pub fn run_treats_slot_overcommit_as_warning_in_fail_mode_test() {
+  let state = shell_state(state_with_pending_slot_overcommit())
+
+  let next = daemon_transition_shell.run(context(state, 8), [])
+
+  assert next.events
+    == [
+      "invariants:warn:pending_slot_overcommit:logged=1:omitted=0:truncated=false",
+    ]
+}
+
+pub fn run_caps_invariant_violation_log_payload_test() {
+  let state = shell_state(orchestrator_transition_test.fixture_state())
+
+  let next =
+    daemon_transition_shell.run(
+      context_with_invariant_checker(
+        state,
+        8,
+        daemon_transition_shell.FailOnInvariantViolation,
+        fn(_) { Error(invariant_errors(40)) },
+      ),
+      [],
+    )
+
+  assert list.any(next.events, fn(event) {
+    string.starts_with(event, "invariants:error:")
+    && string.contains(event, ":logged=32:omitted=8:truncated=true")
+    && !string.contains(event, "rule-40")
+  })
 }
 
 pub fn run_one_message_with_operator_reply_uses_finish_hook_test() {
@@ -358,9 +423,82 @@ fn shell_state(transition_state: transition_types.State) -> ShellState {
   )
 }
 
+fn state_with_claimed_lifecycle_missing() -> transition_types.State {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let task_identity = orchestrator_state.issue_identity(issue)
+  transition_types.State(
+    ..orchestrator_transition_test.fixture_state(),
+    runtime: orchestrator_state.RuntimeState(
+      ..orchestrator_transition_test.fixture_runtime(),
+      claimed: dict.from_list([#(task_identity, issue.identifier)]),
+    ),
+  )
+}
+
+fn state_with_pending_slot_overcommit() -> transition_types.State {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let state = orchestrator_transition_test.state_with_pending_claim(issue)
+  transition_types.State(
+    ..state,
+    runtime: orchestrator_state.RuntimeState(
+      ..state.runtime,
+      max_concurrent_agents: 0,
+    ),
+  )
+}
+
+fn invariant_errors(count: Int) -> List(transition_invariants.InvariantError) {
+  invariant_errors_loop(1, count, [])
+}
+
+fn invariant_errors_loop(
+  index: Int,
+  count: Int,
+  acc: List(transition_invariants.InvariantError),
+) -> List(transition_invariants.InvariantError) {
+  case index > count {
+    True -> list.reverse(acc)
+    False ->
+      invariant_errors_loop(index + 1, count, [
+        transition_invariants.InvariantError(
+          "rule-" <> int.to_string(index),
+          "identity-" <> int.to_string(index),
+          "message",
+        ),
+        ..acc
+      ])
+  }
+}
+
 fn context(
   state: ShellState,
   max_messages: Int,
+) -> daemon_transition_shell.Context(ShellState) {
+  context_with_invariant_mode(
+    state,
+    max_messages,
+    daemon_transition_shell.FailOnInvariantViolation,
+  )
+}
+
+fn context_with_invariant_mode(
+  state: ShellState,
+  max_messages: Int,
+  invariant_mode: daemon_transition_shell.InvariantMode,
+) -> daemon_transition_shell.Context(ShellState) {
+  context_with_invariant_checker(
+    state,
+    max_messages,
+    invariant_mode,
+    transition_invariants.check,
+  )
+}
+
+fn context_with_invariant_checker(
+  state: ShellState,
+  max_messages: Int,
+  invariant_mode: daemon_transition_shell.InvariantMode,
+  invariant_checker: daemon_transition_shell.InvariantChecker,
 ) -> daemon_transition_shell.Context(ShellState) {
   daemon_transition_shell.context(
     state: state,
@@ -382,9 +520,37 @@ fn context(
         exhausted_limits: list.append(state.exhausted_limits, [max_messages]),
       )
     },
+    mark_invariant_failure: fn(state, errors) {
+      append_event(state, "invariants:fail:" <> invariant_codes(errors))
+    },
+    invariant_mode: invariant_mode,
+    invariant_checker: invariant_checker,
     max_messages: max_messages,
     handlers: handlers(),
   )
+}
+
+fn invariant_codes(
+  errors: List(transition_invariants.InvariantError),
+) -> String {
+  errors
+  |> list.map(transition_invariants.error_code)
+  |> string.join(with: ",")
+}
+
+fn field_value(fields: List(#(String, String)), name: String) -> String {
+  case
+    list.find(fields, fn(field) {
+      let #(key, _) = field
+      key == name
+    })
+  {
+    Ok(field) -> {
+      let #(_, value) = field
+      value
+    }
+    Error(Nil) -> ""
+  }
 }
 
 fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
@@ -393,7 +559,25 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
       #(append_event(state, "append:" <> request.correlation_id), Ok(Nil))
     },
     now_ms: fn(_) { 456 },
-    log_effect: fn(state, _, event, _) { append_event(state, "log:" <> event) },
+    log_effect: fn(state, level, event, fields) {
+      case event {
+        "transition_invariant_violation" | "transition_invariant_warning" ->
+          append_event(
+            state,
+            "invariants:"
+              <> level
+              <> ":"
+              <> field_value(fields, "rule_ids")
+              <> ":logged="
+              <> field_value(fields, "logged_count")
+              <> ":omitted="
+              <> field_value(fields, "omitted_count")
+              <> ":truncated="
+              <> field_value(fields, "truncated"),
+          )
+        _ -> append_event(state, "log:" <> event)
+      }
+    },
     start_worker: fn(state, request) {
       #(
         append_event(
