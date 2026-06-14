@@ -24,6 +24,7 @@ import scherzo/tracker/state as issue_state
 pub fn operator_pause_command_appends_durable_pause_record_test() {
   let request =
     effects_types.OperatorCommandRequest(
+      correlation_id: "test-correlation",
       source: effects_types.LocalOperatorCommand,
       operator_command: command.PauseDispatch,
       timeout_ms: 1000,
@@ -62,6 +63,7 @@ pub fn operator_pause_command_appends_durable_pause_record_test() {
 pub fn operator_pause_append_success_sets_paused_and_finishes_test() {
   let request =
     effects_types.OperatorCommandRequest(
+      correlation_id: "test-correlation",
       source: effects_types.LocalOperatorCommand,
       operator_command: command.PauseDispatch,
       timeout_ms: 1000,
@@ -96,6 +98,7 @@ pub fn operator_pause_append_success_sets_paused_and_finishes_test() {
 pub fn operator_pause_append_failure_keeps_runtime_paused_and_rejects_test() {
   let request =
     effects_types.OperatorCommandRequest(
+      correlation_id: "test-correlation",
       source: effects_types.LocalOperatorCommand,
       operator_command: command.PauseDispatch,
       timeout_ms: 1000,
@@ -130,6 +133,7 @@ pub fn operator_pause_append_failure_keeps_runtime_paused_and_rejects_test() {
 pub fn operator_resume_append_failure_does_not_resume_and_rejects_test() {
   let request =
     effects_types.OperatorCommandRequest(
+      correlation_id: "test-correlation",
       source: effects_types.LocalOperatorCommand,
       operator_command: command.ResumeDispatch,
       timeout_ms: 1000,

@@ -30,27 +30,27 @@ pub fn lookup(
 pub opaque type ShellHandlers(state) {
   ShellHandlers(
     reload_workflow_for_operator: fn(state, command.OperatorCommand) ->
-      #(state, command.CommandResult),
+      #(state, command.CommandResult, List(transition_types.Message)),
     retry_workflow_step_for_operator: fn(
       state,
       command.OperatorCommand,
       command.RetryWorkflowStepTarget,
       Option(String),
-    ) -> #(state, command.CommandResult),
+    ) -> #(state, command.CommandResult, List(transition_types.Message)),
     retry_artifact_publication_for_operator: fn(
       state,
       command.OperatorCommand,
       String,
       Option(String),
-    ) -> #(state, command.CommandResult),
+    ) -> #(state, command.CommandResult, List(transition_types.Message)),
     schedule_run_now_for_operator: fn(state, command.OperatorCommand, String) ->
-      #(state, command.CommandResult),
+      #(state, command.CommandResult, List(transition_types.Message)),
     abort_session_for_operator_sync: fn(
       state,
       command.OperatorCommand,
       String,
       Int,
-    ) -> #(state, command.CommandResult),
+    ) -> #(state, command.CommandResult, List(transition_types.Message)),
     route_worker_command_sync: fn(
       state,
       command.OperatorCommand,
@@ -60,13 +60,13 @@ pub opaque type ShellHandlers(state) {
         process.Subject(worker_command.Command),
         process.Subject(worker_command.Reply),
       ) -> Nil,
-    ) -> #(state, command.CommandResult),
+    ) -> #(state, command.CommandResult, List(transition_types.Message)),
     cleanup_orphan_steps_for_operator: fn(
       state,
       command.OperatorCommand,
       String,
       Bool,
-    ) -> #(state, command.CommandResult),
+    ) -> #(state, command.CommandResult, List(transition_types.Message)),
   )
 }
 
@@ -74,30 +74,30 @@ pub fn shell_handlers(
   reload_workflow_for_operator reload_workflow_for_operator: fn(
     state,
     command.OperatorCommand,
-  ) -> #(state, command.CommandResult),
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   retry_workflow_step_for_operator retry_workflow_step_for_operator: fn(
     state,
     command.OperatorCommand,
     command.RetryWorkflowStepTarget,
     Option(String),
-  ) -> #(state, command.CommandResult),
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   retry_artifact_publication_for_operator retry_artifact_publication_for_operator: fn(
     state,
     command.OperatorCommand,
     String,
     Option(String),
-  ) -> #(state, command.CommandResult),
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   schedule_run_now_for_operator schedule_run_now_for_operator: fn(
     state,
     command.OperatorCommand,
     String,
-  ) -> #(state, command.CommandResult),
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   abort_session_for_operator_sync abort_session_for_operator_sync: fn(
     state,
     command.OperatorCommand,
     String,
     Int,
-  ) -> #(state, command.CommandResult),
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   route_worker_command_sync route_worker_command_sync: fn(
     state,
     command.OperatorCommand,
@@ -107,13 +107,13 @@ pub fn shell_handlers(
       process.Subject(worker_command.Command),
       process.Subject(worker_command.Reply),
     ) -> Nil,
-  ) -> #(state, command.CommandResult),
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   cleanup_orphan_steps_for_operator cleanup_orphan_steps_for_operator: fn(
     state,
     command.OperatorCommand,
     String,
     Bool,
-  ) -> #(state, command.CommandResult),
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
 ) -> ShellHandlers(state) {
   ShellHandlers(
     reload_workflow_for_operator: reload_workflow_for_operator,
@@ -193,7 +193,7 @@ pub fn apply_shell_operator_command(
   state: state,
   request: transition_effects.OperatorCommandRequest,
   handlers: ShellHandlers(state),
-) -> #(state, command.CommandResult) {
+) -> #(state, command.CommandResult, List(transition_types.Message)) {
   let operator_command = request.operator_command
   case operator_command {
     command.ReloadWorkflow ->
@@ -272,6 +272,7 @@ pub fn apply_shell_operator_command(
         "operator_command_already_handled",
         None,
       ),
+      [],
     )
   }
 }

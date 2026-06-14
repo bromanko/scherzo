@@ -194,6 +194,7 @@ pub type OperatorCommandSource {
 
 pub type OperatorCommandRequest {
   OperatorCommandRequest(
+    correlation_id: String,
     source: OperatorCommandSource,
     operator_command: command.OperatorCommand,
     timeout_ms: Int,

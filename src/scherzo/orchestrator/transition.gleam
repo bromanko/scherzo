@@ -78,6 +78,10 @@ pub fn handle(
         parked_issue_resolution,
         operator_callbacks(),
       )
+    transition_types.OperatorCommandCompleted(request, result) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.FinishOperatorCommand(request, result),
+      ])
     transition_types.DispatchCandidates(candidates, context) ->
       dispatch_candidates_outcome(candidates, state, context)
     transition_types.DispatchValidationCompleted(
@@ -162,6 +166,30 @@ pub fn handle(
       handle_worker_down(state, resolution, context)
     transition_types.WorkerStopRequested(session_id, reason, context) ->
       handle_worker_stop_requested(state, session_id, reason, context)
+    transition_types.AggregatePiTokensAdded(tokens) ->
+      handle_aggregate_pi_tokens_added(state, tokens)
+    transition_types.WorkflowRuntimeReloaded(
+      poll_interval_ms,
+      max_concurrent_agents,
+    ) ->
+      handle_workflow_runtime_reloaded(
+        state,
+        poll_interval_ms,
+        max_concurrent_agents,
+      )
+    transition_types.InvalidWorkflowReportResultRecorded(
+      issue_id,
+      violation_fingerprint,
+      reporting_policy_fingerprint,
+      last_result,
+    ) ->
+      handle_invalid_workflow_report_result_recorded(
+        state,
+        issue_id,
+        violation_fingerprint,
+        reporting_policy_fingerprint,
+        last_result,
+      )
     transition_types.YamlStepStarted(session_id, run_id) ->
       handle_yaml_step_started(state, session_id, run_id)
     transition_types.YamlStepFinished(session_id) ->
@@ -176,6 +204,62 @@ fn normalize_outcome(
   outcome: transition_types.Outcome,
 ) -> transition_types.Outcome {
   claims.sync_outcome(outcome)
+}
+
+fn handle_aggregate_pi_tokens_added(
+  state: transition_types.State,
+  tokens: session_tokens.TokenTotals,
+) -> transition_types.Outcome {
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      aggregate_pi_totals: core.add_tokens(
+        state.runtime.aggregate_pi_totals,
+        tokens,
+      ),
+    )
+  transition_types.Outcome(
+    state: transition_types.State(..state, runtime: runtime),
+    effects: [],
+  )
+}
+
+fn handle_workflow_runtime_reloaded(
+  state: transition_types.State,
+  poll_interval_ms: Int,
+  max_concurrent_agents: Int,
+) -> transition_types.Outcome {
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      poll_interval_ms: poll_interval_ms,
+      max_concurrent_agents: max_concurrent_agents,
+    )
+  transition_types.Outcome(
+    state: transition_types.State(..state, runtime: runtime),
+    effects: [],
+  )
+}
+
+fn handle_invalid_workflow_report_result_recorded(
+  state: transition_types.State,
+  issue_id: String,
+  violation_fingerprint: String,
+  reporting_policy_fingerprint: String,
+  last_result: String,
+) -> transition_types.Outcome {
+  let runtime =
+    core.mark_invalid_workflow_report_result(
+      state.runtime,
+      issue_id,
+      violation_fingerprint,
+      reporting_policy_fingerprint,
+      last_result,
+    )
+  transition_types.Outcome(
+    state: transition_types.State(..state, runtime: runtime),
+    effects: [],
+  )
 }
 
 pub fn snapshot(
