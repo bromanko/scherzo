@@ -935,16 +935,6 @@ fn handle_successful_dispatch_validation(
   }
 }
 
-fn clear_pending_claim(
-  state: transition_types.State,
-  task_identity: identity.TaskIdentity,
-) -> transition_types.State {
-  transition_types.State(
-    ..state,
-    pending_claims: dict.delete(state.pending_claims, task_identity),
-  )
-}
-
 fn handle_handoff_claim_completed(
   state: transition_types.State,
   task_identity: identity.TaskIdentity,
@@ -973,7 +963,12 @@ fn handle_handoff_claim_completed(
         False ->
           case result {
             transition_types.HandoffClaimFailed(err) -> {
-              let state = clear_pending_claim(state, task_identity)
+              let #(state, retry_effects) =
+                claims.reconcile_unstarted_pending_claim(
+                  state,
+                  task_identity,
+                  pending,
+                )
               let outcome =
                 dispatch_candidates_outcome(
                   pending.remaining_candidates,
@@ -985,11 +980,16 @@ fn handle_handoff_claim_completed(
                   #("issue_id", issue_id_text),
                   #("error", err),
                 ]),
-                ..outcome.effects
+                ..list.append(retry_effects, outcome.effects)
               ])
             }
             transition_types.HandoffClaimStartRecordFailed(reason) -> {
-              let state = clear_pending_claim(state, task_identity)
+              let #(state, retry_effects) =
+                claims.reconcile_unstarted_pending_claim(
+                  state,
+                  task_identity,
+                  pending,
+                )
               let outcome =
                 dispatch_candidates_outcome(
                   pending.remaining_candidates,
@@ -1001,7 +1001,7 @@ fn handle_handoff_claim_completed(
                   #("issue_id", issue_id_text),
                   #("error", reason),
                 ]),
-                ..outcome.effects
+                ..list.append(retry_effects, outcome.effects)
               ])
             }
             transition_types.HandoffClaimSucceeded(batch) ->

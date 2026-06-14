@@ -13,6 +13,7 @@ import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight
 import scherzo/review_lane_preflight_policy
+import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/task
@@ -186,6 +187,96 @@ pub fn automatic_retry_dispatch_state_dispatches_test() {
   )
   assert has_claim_issue(effects)
   assert has_pending_retry_cancellation(next, issue.id, "retry_dispatch")
+}
+
+pub fn retry_handoff_claim_failed_restores_retry_state_test() {
+  assert_retry_handoff_failure_restores_retry(
+    transition_types.HandoffClaimFailed("linear_api_request"),
+  )
+}
+
+pub fn retry_handoff_claim_start_record_failed_restores_retry_state_test() {
+  assert_retry_handoff_failure_restores_retry(
+    transition_types.HandoffClaimStartRecordFailed("append_failed"),
+  )
+}
+
+pub fn retry_workflow_route_failure_restores_retry_state_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let context =
+    transition_types.DispatchContext(
+      ..orchestrator_transition_test.fixture_context(),
+      routing: config_types.RoutingConfig(
+        workflow_label_prefix: "workflow:",
+        require_exactly_one_workflow_label: True,
+        default_workflow: None,
+        workflows: dict.from_list([#("default", "workflows/default.yaml")]),
+      ),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.RetryRefreshCompleted(issue.id, 1, Ok([issue]), context),
+      state_with_retry(issue),
+    )
+
+  assert_retry_pre_claim_failure_restores_retry(next, effects, issue)
+  assert has_log(effects, "workflow_route_failed")
+}
+
+pub fn retry_workspace_path_failure_restores_retry_state_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..orchestrator_transition_test.fixture_issue(),
+      identifier: ".",
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        1,
+        Ok([issue]),
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state_with_retry(issue),
+    )
+
+  assert_retry_pre_claim_failure_restores_retry(next, effects, issue)
+  assert has_log(effects, "dispatch_workspace_path_failed")
+}
+
+pub fn retry_workflow_snapshot_failure_restores_retry_state_test() {
+  let issue = labelled_issue("issue-1", "ABC-1", "workflow:implementation")
+  let policy =
+    review_lane_preflight_policy.Policy(
+      mode: review_lane_preflight_policy.Off,
+      cache_ttl_seconds: 86_400,
+      park_on_failure: True,
+      strict_live_model_checks: False,
+    )
+  let context =
+    transition_types.DispatchContext(
+      ..context_requiring_preflight(policy),
+      review_lane_preflight: transition_types.ReviewLanePreflightContext(
+        config_dir: ".scherzo",
+        workflow_dags: dict.new(),
+        policy: policy,
+        override: None,
+      ),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.RetryRefreshCompleted(issue.id, 1, Ok([issue]), context),
+      state_with_retry(issue),
+    )
+
+  assert_retry_pre_claim_failure_restores_retry(next, effects, issue)
+  assert has_workflow_route_snapshot_failed_log(
+    effects,
+    "unknown_workflow_label",
+  )
 }
 
 pub fn retry_refresh_completion_while_paused_defers_without_claim_test() {
@@ -1367,6 +1458,65 @@ fn dispatch_candidate_issue() -> tracker_issue.Issue {
   )
 }
 
+fn assert_retry_handoff_failure_restores_retry(
+  result: transition_types.HandoffClaimResult,
+) {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let transition_types.Outcome(state: claiming, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.RetryRefreshCompleted(
+        issue.id,
+        1,
+        Ok([issue]),
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state_with_retry(issue),
+    )
+  let assert Ok(pending) = dict.get(claiming.pending_claims, task_identity)
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.HandoffClaimCompleted(
+        task_identity: task_identity,
+        issue_id: identity.issue_id_from_string(issue.id),
+        run_id: identity.run_id_from_string(pending.run_id),
+        result: result,
+      ),
+      claiming,
+    )
+
+  assert dict.get(next.pending_claims, task_identity) == Error(Nil)
+  let assert Ok(retry) = dict.get(next.runtime.retry_attempts, task_identity)
+  assert retry.issue_id == issue.id
+  assert retry.delay_ms == 1000
+  assert retry.timer_generation == 1
+  assert dict.get(next.runtime.claimed, task_identity) == Ok(issue.identifier)
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.DeferRetryTimer(issue.id, 1, 1000)
+  })
+  assert !has_cancel_retry_reason(effects, "retry_dispatch")
+}
+
+fn assert_retry_pre_claim_failure_restores_retry(
+  state: transition_types.State,
+  effects: List(effects_types.Effect),
+  issue: tracker_issue.Issue,
+) {
+  let task_identity = orchestrator_state.issue_identity(issue)
+  assert dict.size(state.pending_claims) == 0
+  let assert Ok(retry) = dict.get(state.runtime.retry_attempts, task_identity)
+  assert retry.issue_id == issue.id
+  assert retry.delay_ms == 1000
+  assert retry.timer_generation == 1
+  assert dict.get(state.runtime.claimed, task_identity) == Ok(issue.identifier)
+  assert !has_claim_issue(effects)
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.DeferRetryTimer(issue.id, 1, 1000)
+  })
+  assert !has_cancel_retry_reason(effects, "retry_dispatch")
+}
+
 fn state_with_retry(issue: tracker_issue.Issue) -> transition_types.State {
   let runtime =
     orchestrator_state.RuntimeState(
@@ -1489,6 +1639,18 @@ fn has_claim_issue(effects: List(effects_types.Effect)) -> Bool {
   list.any(effects, fn(effect) {
     case effect {
       effects_types.ClaimIssue(_, _, _, _) -> True
+      _ -> False
+    }
+  })
+}
+
+fn has_log(
+  effects: List(effects_types.Effect),
+  expected_event: String,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.Log(_, event, _) -> event == expected_event
       _ -> False
     }
   })

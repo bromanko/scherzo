@@ -240,6 +240,12 @@ fn begin_for_issue_with_retry_metadata(
   let Callbacks(dispatch_candidates: dispatch) = callbacks
   case helpers.select_workflow_route(context, issue) {
     Error(#(code, message)) -> {
+      let #(state, retry_effects) =
+        helpers.restore_after_pre_claim_failure(
+          state,
+          issue,
+          retry_cancellation,
+        )
       let outcome = dispatch(remaining_candidates, state, context)
       transition_types.Outcome(state: outcome.state, effects: [
         effects_types.Log("warn", "workflow_route_failed", [
@@ -247,7 +253,7 @@ fn begin_for_issue_with_retry_metadata(
           #("error", code),
           #("message", message),
         ]),
-        ..outcome.effects
+        ..list_append(retry_effects, outcome.effects)
       ])
     }
     Ok(workflow_id) ->
@@ -496,7 +502,7 @@ fn review_lane_preflight_paused(
   retry_cancellation: Option(transition_types.RetryCancellation),
 ) -> Outcome {
   let #(state, retry_effects) =
-    restore_retry_after_paused_preflight(state, issue, retry_cancellation)
+    helpers.restore_after_paused_preflight(state, issue, retry_cancellation)
   transition_types.Outcome(state: state, effects: [
     effects_types.Log("info", "review_lane_preflight_precondition_failed", [
       #("issue_id", issue.id),
@@ -504,42 +510,6 @@ fn review_lane_preflight_paused(
     ]),
     ..retry_effects
   ])
-}
-
-fn restore_retry_after_paused_preflight(
-  state: State,
-  issue: Issue,
-  retry_cancellation: Option(transition_types.RetryCancellation),
-) -> #(State, List(effects_types.Effect)) {
-  case retry_cancellation {
-    None -> #(state, [])
-    Some(transition_types.RetryCancellation(
-      issue_id: issue_id,
-      generation: generation,
-      previous_retry: previous_retry,
-      ..,
-    )) -> {
-      let task_identity =
-        orchestrator_state.task_ref_identity(previous_retry.task_ref)
-      let runtime =
-        orchestrator_state.RuntimeState(
-          ..state.runtime,
-          retry_attempts: dict.insert(
-            state.runtime.retry_attempts,
-            task_identity,
-            previous_retry,
-          ),
-          claimed: dict.insert(
-            state.runtime.claimed,
-            task_identity,
-            issue.identifier,
-          ),
-        )
-      let state =
-        transition_types.State(..state, runtime: runtime) |> sync_state
-      #(state, [effects_types.DeferRetryTimer(issue_id, generation, 60_000)])
-    }
-  }
 }
 
 fn begin_claim_for_workflow(
@@ -555,13 +525,19 @@ fn begin_claim_for_workflow(
   let Callbacks(dispatch_candidates: dispatch) = callbacks
   case workspace.workspace_path(context.workspace_root, issue.identifier) {
     Error(err) -> {
+      let #(state, retry_effects) =
+        helpers.restore_after_pre_claim_failure(
+          state,
+          issue,
+          retry_cancellation,
+        )
       let outcome = dispatch(remaining_candidates, state, context)
       transition_types.Outcome(state: outcome.state, effects: [
         effects_types.Log("warn", "dispatch_workspace_path_failed", [
           #("issue_id", issue.id),
           #("error", error.workspace_code(err)),
         ]),
-        ..outcome.effects
+        ..list_append(retry_effects, outcome.effects)
       ])
     }
     Ok(#(_, workspace_path)) -> {
@@ -582,6 +558,12 @@ fn begin_claim_for_workflow(
         helpers.workflow_snapshot_for_claim(context, issue, workflow_id, run_id)
       {
         Error(#(code, message)) -> {
+          let #(state, retry_effects) =
+            helpers.restore_after_pre_claim_failure(
+              state,
+              issue,
+              retry_cancellation,
+            )
           let outcome = dispatch(remaining_candidates, state, context)
           transition_types.Outcome(state: outcome.state, effects: [
             effects_types.Log("warn", "workflow_route_snapshot_failed", [
@@ -590,7 +572,7 @@ fn begin_claim_for_workflow(
               #("error", code),
               #("message", message),
             ]),
-            ..outcome.effects
+            ..list_append(retry_effects, outcome.effects)
           ])
         }
         Ok(workflow_snapshot) -> {
@@ -748,6 +730,14 @@ pub fn claim_correlation_id(issue_id: String, run_id: String) -> String {
   helpers.claim_correlation_id(issue_id, run_id)
 }
 
+pub fn reconcile_unstarted_pending_claim(
+  state: State,
+  task_identity: TaskIdentity,
+  pending: PendingClaim,
+) -> #(State, List(effects_types.Effect)) {
+  helpers.reconcile_unstarted_pending_claim(state, task_identity, pending)
+}
+
 pub fn handle_requested(
   state: State,
   correlation_id: String,
@@ -768,34 +758,44 @@ pub fn handle_requested(
         False -> stale_continuation(state, correlation_id, issue_id, run_id)
         True ->
           case ledger_batch.to_bodies(batch) {
-            [] ->
-              transition_types.Outcome(
-                state: clear_pending_claim(state, task_identity),
-                effects: [
-                  effects_types.Log("warn", "claim_ledger_append_empty", [
-                    #("issue_id", identity.issue_id_to_string(issue_id)),
-                    #("run_id", identity.run_id_to_string(run_id)),
-                    #("correlation_id", correlation_id),
-                  ]),
-                ],
-              )
+            [] -> {
+              let #(state, retry_effects) =
+                helpers.reconcile_unstarted_pending_claim(
+                  state,
+                  task_identity,
+                  pending,
+                )
+              transition_types.Outcome(state: state, effects: [
+                effects_types.Log("warn", "claim_ledger_append_empty", [
+                  #("issue_id", identity.issue_id_to_string(issue_id)),
+                  #("run_id", identity.run_id_to_string(run_id)),
+                  #("correlation_id", correlation_id),
+                ]),
+                ..retry_effects
+              ])
+            }
             _ ->
               case claim_started_batch_is_valid(batch, pending.run_id) {
-                False ->
-                  transition_types.Outcome(
-                    state: clear_pending_claim(state, task_identity),
-                    effects: [
-                      effects_types.Log(
-                        "warn",
-                        "claim_ledger_append_invalid_claim_started",
-                        [
-                          #("issue_id", identity.issue_id_to_string(issue_id)),
-                          #("run_id", identity.run_id_to_string(run_id)),
-                          #("correlation_id", correlation_id),
-                        ],
-                      ),
-                    ],
-                  )
+                False -> {
+                  let #(state, retry_effects) =
+                    helpers.reconcile_unstarted_pending_claim(
+                      state,
+                      task_identity,
+                      pending,
+                    )
+                  transition_types.Outcome(state: state, effects: [
+                    effects_types.Log(
+                      "warn",
+                      "claim_ledger_append_invalid_claim_started",
+                      [
+                        #("issue_id", identity.issue_id_to_string(issue_id)),
+                        #("run_id", identity.run_id_to_string(run_id)),
+                        #("correlation_id", correlation_id),
+                      ],
+                    ),
+                    ..retry_effects
+                  ])
+                }
                 True ->
                   transition_types.Outcome(state: state, effects: [
                     effects_types.AppendLedger(effects_types.LedgerAppend(
@@ -862,7 +862,7 @@ fn handle_claim_append_failed(
   err: ledger.LedgerError,
 ) -> Outcome {
   case pending.retry_cancellation {
-    Some(retry_cancellation) ->
+    Some(_) ->
       restore_retry_after_claim_append_failure(
         state,
         pending,
@@ -871,7 +871,6 @@ fn handle_claim_append_failed(
         run_id,
         correlation_id,
         err,
-        retry_cancellation,
       )
     None ->
       schedule_claim_start_recovery_retry(
@@ -894,31 +893,9 @@ fn restore_retry_after_claim_append_failure(
   run_id: RunId,
   correlation_id: String,
   err: ledger.LedgerError,
-  retry_cancellation: transition_types.RetryCancellation,
 ) -> Outcome {
-  let transition_types.RetryCancellation(previous_retry: previous_retry, ..) =
-    retry_cancellation
-  let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      retry_attempts: dict.insert(
-        state.runtime.retry_attempts,
-        task_identity,
-        previous_retry,
-      ),
-      claimed: dict.insert(
-        state.runtime.claimed,
-        task_identity,
-        pending.issue.identifier,
-      ),
-    )
-  let state =
-    transition_types.State(
-      ..state,
-      pending_claims: dict.delete(state.pending_claims, task_identity),
-      runtime: runtime,
-    )
-    |> sync_state
+  let #(state, retry_effects) =
+    helpers.reconcile_unstarted_pending_claim(state, task_identity, pending)
   transition_types.Outcome(state: state, effects: [
     effects_types.Log("warn", "ledger_append_failed", [
       #("issue_id", identity.issue_id_to_string(issue_id)),
@@ -926,11 +903,7 @@ fn restore_retry_after_claim_append_failure(
       #("correlation_id", correlation_id),
       #("error", ledger_error_code(err)),
     ]),
-    effects_types.DeferRetryTimer(
-      pending.issue_id,
-      previous_retry.timer_generation,
-      previous_retry.delay_ms,
-    ),
+    ..retry_effects
   ])
 }
 
@@ -1118,14 +1091,6 @@ fn stale_continuation(
       #("correlation_id", correlation_id),
     ]),
   ])
-}
-
-fn clear_pending_claim(state: State, task_identity: TaskIdentity) -> State {
-  transition_types.State(
-    ..state,
-    pending_claims: dict.delete(state.pending_claims, task_identity),
-  )
-  |> sync_state
 }
 
 fn sync_state(state: State) -> State {
