@@ -8,6 +8,8 @@ pub type QueryRequest {
   Metrics
   TaskList(TaskListQuery)
   TaskShow(TaskShowQuery)
+  OutboxList(OutboxListQuery)
+  OutboxShow(OutboxShowQuery)
 }
 
 pub type QueryResponse {
@@ -15,6 +17,8 @@ pub type QueryResponse {
   MetricsResponse(metrics: OperationalMetricsDto)
   TaskListResponse(tasks: TaskListDto)
   TaskShowResponse(task: TaskDetailDto)
+  OutboxListResponse(outbox: OutboxListDto)
+  OutboxShowResponse(outbox: OutboxRecordDto)
 }
 
 pub type TaskListQuery {
@@ -29,9 +33,31 @@ pub type TaskShowQuery {
   TaskShowQuery(ref: TaskQueryRef)
 }
 
+pub type OutboxListQuery {
+  OutboxListQuery(
+    statuses: List(OutboxRecordStatus),
+    kinds: List(String),
+    limit: Int,
+    cursor: Option(String),
+  )
+}
+
+pub type OutboxShowQuery {
+  OutboxShowQuery(outbox_id: String)
+}
+
 pub type TaskQueryRef {
   TaskDisplayId(String)
   TaskRemoteId(provider: Option(String), id: String)
+}
+
+pub type OutboxRecordStatus {
+  OutboxPendingStatus
+  OutboxInFlightStatus
+  OutboxRetryableStatus
+  OutboxCompletedStatus
+  OutboxFailedStatus
+  OutboxPermanentStatus
 }
 
 pub type QueryErrorCode {
@@ -102,6 +128,37 @@ pub type TaskListDto {
 
 pub type TaskDetailDto {
   TaskDetailDto(summary: TaskSummaryDto, description: TaskDescriptionDto)
+}
+
+pub type OutboxTaskRefDto {
+  OutboxTaskRefDto(
+    provider: String,
+    id: String,
+    display_id: Option(String),
+    url: Option(String),
+  )
+}
+
+pub type OutboxRecordDto {
+  OutboxRecordDto(
+    outbox_id: String,
+    kind: String,
+    status: OutboxRecordStatus,
+    task_ref: OutboxTaskRefDto,
+    dedupe_key: Option(String),
+    attempt_count: Option(Int),
+    next_attempt_at_ms: Option(Int),
+    last_error_code: Option(String),
+    pending_at_ms: Option(Int),
+    attempted_at_ms: Option(Int),
+    failed_at_ms: Option(Int),
+    completed_at_ms: Option(Int),
+    has_payload: Bool,
+  )
+}
+
+pub type OutboxListDto {
+  OutboxListDto(items: List(OutboxRecordDto), page: PageDto)
 }
 
 pub type StatusSource {
@@ -214,7 +271,14 @@ pub type OperationalMetricsSource {
 pub const operational_metrics_schema_version = 1
 
 pub fn supported_queries() -> List(String) {
-  ["status", "metrics", "task_list", "task_show"]
+  [
+    "status",
+    "metrics",
+    "task_list",
+    "task_show",
+    "outbox_list",
+    "outbox_show",
+  ]
 }
 
 pub fn error_code_to_string(code: QueryErrorCode) -> String {
@@ -248,6 +312,8 @@ pub fn query_type(request: QueryRequest) -> String {
     Metrics -> "metrics"
     TaskList(_) -> "task_list"
     TaskShow(_) -> "task_show"
+    OutboxList(_) -> "outbox_list"
+    OutboxShow(_) -> "outbox_show"
   }
 }
 
@@ -257,11 +323,43 @@ pub fn response_type(response: QueryResponse) -> String {
     MetricsResponse(_) -> "metrics"
     TaskListResponse(_) -> "task_list"
     TaskShowResponse(_) -> "task_show"
+    OutboxListResponse(_) -> "outbox_list"
+    OutboxShowResponse(_) -> "outbox_show"
   }
 }
 
 pub fn default_task_list_query() -> TaskListQuery {
   TaskListQuery(states: [], limit: 50, cursor: None)
+}
+
+pub fn default_outbox_list_query() -> OutboxListQuery {
+  OutboxListQuery(statuses: [], kinds: [], limit: 50, cursor: None)
+}
+
+pub fn outbox_status_to_string(status: OutboxRecordStatus) -> String {
+  case status {
+    OutboxPendingStatus -> "pending"
+    OutboxInFlightStatus -> "in_flight"
+    OutboxRetryableStatus -> "retryable"
+    OutboxCompletedStatus -> "completed"
+    OutboxFailedStatus -> "failed"
+    OutboxPermanentStatus -> "permanent"
+  }
+}
+
+pub fn outbox_status_from_string(
+  value: String,
+) -> Result(OutboxRecordStatus, Nil) {
+  case value {
+    "pending" -> Ok(OutboxPendingStatus)
+    "in_flight" | "in-flight" -> Ok(OutboxInFlightStatus)
+    "retryable" -> Ok(OutboxRetryableStatus)
+    "completed" -> Ok(OutboxCompletedStatus)
+    "failed" -> Ok(OutboxFailedStatus)
+    "permanent" | "permanently_failed" | "permanently-failed" ->
+      Ok(OutboxPermanentStatus)
+    _ -> Error(Nil)
+  }
 }
 
 pub fn default_status_source(

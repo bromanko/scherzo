@@ -1034,6 +1034,76 @@ pub fn daemon_status_and_metrics_queries_do_not_call_tracker_adapter_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_outbox_queries_use_recovered_outbox_snapshot_test() {
+  let dir = "test/tmp/daemon-control-outbox-query"
+  let #(workflow_path, root) = write_workflow(dir)
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(dir <> "/" <> root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.new(
+          1,
+          1000,
+          record.OutboxPermanentlyFailedWithTask(
+            "outbox-daemon",
+            record.linear_task_ref_fields(
+              "issue-daemon",
+              Some("LIV-1087"),
+              Some("https://linear.example/LIV-1087"),
+            ),
+            "linear_comment",
+            "invalid_payload",
+            3,
+          ),
+        ),
+      ],
+      True,
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+      stop_control_server: fn(_) { Nil },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(query_types.OutboxListResponse(page)) =
+    daemon.execute_query(
+      started.data,
+      query_types.OutboxList(query_types.OutboxListQuery(
+        statuses: [query_types.OutboxPermanentStatus],
+        kinds: ["linear_comment"],
+        limit: 10,
+        cursor: None,
+      )),
+      1000,
+    )
+  let assert [item] = page.items
+  assert item.outbox_id == "outbox-daemon"
+  assert item.task_ref.display_id == Some("LIV-1087")
+  assert item.has_payload == False
+  assert item.last_error_code == Some("invalid_payload")
+
+  let assert Ok(query_types.OutboxShowResponse(shown)) =
+    daemon.execute_query(
+      started.data,
+      query_types.OutboxShow(query_types.OutboxShowQuery(
+        outbox_id: "outbox-daemon",
+      )),
+      1000,
+    )
+  assert shown.outbox_id == "outbox-daemon"
+  assert shown.dedupe_key == None
+  assert shown.attempt_count == Some(3)
+  let encoded = shown |> dto.outbox_record_to_json |> json.to_string
+  assert !string.contains(encoded, "raw-secret")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn daemon_status_and_metrics_queries_stay_bounded_with_large_retained_history_test() {
   let #(workflow_path, _root) =
     write_workflow("test/tmp/daemon-control-large-history")

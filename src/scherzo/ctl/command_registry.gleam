@@ -2,6 +2,7 @@ import gleam/int
 import gleam/list
 import gleam/string
 import scherzo/ctl/command_spec
+import scherzo/ctl/outbox_command_spec
 import scherzo/ctl/task_output
 import scherzo/terminal/style
 
@@ -12,6 +13,7 @@ pub type HandlerKey {
   QueryMetricsKey
   TaskListKey
   TaskShowKey
+  OutboxKey
   SessionKey
   EventsKey
   AttachKey
@@ -140,6 +142,13 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
           "Show one tracker task through the daemon query surface.",
         ),
       ],
+    ),
+    outbox_command_spec.command(
+      OutboxKey,
+      control_file_option(),
+      json_option(),
+      limit_option(),
+      cursor_option(),
     ),
     command_spec.CommandSpec(
       handler: SessionKey,
@@ -726,6 +735,8 @@ fn option_specs_in_help_order() -> List(command_spec.OptionSpec) {
     run_option(),
     publication_option(),
     state_option(),
+    outbox_command_spec.status_option(),
+    outbox_command_spec.kind_option(),
     limit_option(),
     cursor_option(),
     yes_option(),

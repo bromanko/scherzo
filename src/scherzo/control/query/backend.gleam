@@ -29,6 +29,11 @@ pub fn run(
       execute_task_list_query(tracker_adapter, task_query)
     types.TaskShow(task_query) ->
       execute_task_show_query(tracker_adapter, task_query)
+    types.OutboxList(_) | types.OutboxShow(_) ->
+      Error(types.QueryError(
+        types.UnsupportedQuery,
+        "unsupported query type: " <> types.query_type(query),
+      ))
   }
 }
 
