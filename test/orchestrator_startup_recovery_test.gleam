@@ -183,6 +183,40 @@ fn load_records(root: String) -> List(record.LedgerRecord) {
   read.records
 }
 
+fn release_claim_record_count(
+  records: List(record.LedgerRecord),
+  release_key: String,
+) -> Int {
+  records
+  |> list.filter(fn(entry) {
+    case entry.body {
+      record.OutboxPendingV2WithTask(
+        outbox_id: outbox_id,
+        outbox_kind: "release_claim",
+        ..,
+      ) -> outbox_id == release_key
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
+fn abandoned_park_record_count(
+  records: List(record.LedgerRecord),
+  issue_id: String,
+  reason_text: String,
+) -> Int {
+  records
+  |> list.filter(fn(entry) {
+    case entry.body {
+      record.IssueParkedV2(issue_id: parked_issue_id, reason: parked_reason, ..) ->
+        parked_issue_id == issue_id && parked_reason == reason_text
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
 fn startup_dependencies() -> startup_recovery.Dependencies {
   startup_recovery.Dependencies(
     logger: fn(_, _, _, _) { Ok(Nil) },
@@ -422,6 +456,456 @@ pub fn load_replays_pending_command_outbox_test() {
   assert !list.any(load_records(workspace_root), fn(entry) {
     case entry.body {
       record.OutboxFailedWithTask(outbox_id: "comment-1", ..) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn load_compensates_recovered_claim_outbox_with_release_claim_test() {
+  let bundle =
+    write_bundle("test/tmp/startup-recovery-release-claim", "prompts/task.md")
+  let candidate = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let claim_key = "claim:linear:issue-1:run-1"
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxPendingV2WithTask(
+      outbox_id: claim_key,
+      task_ref: record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      outbox_kind: "claim",
+      dedupe_key: claim_key,
+      payload_json: outbox.tracker_update_payload(
+        "claim",
+        claim_key,
+        "claimed",
+        None,
+        None,
+        [],
+      ),
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([candidate]),
+      startup_dependencies(),
+      [],
+    )
+
+  let release_key = "release_claim:linear:issue-1:run-1"
+  let assert [release_replay] = loaded.outbox_to_replay
+  let recovery.OutboxReplay(
+    outbox_id: release_outbox_id,
+    task_ref: release_task_ref,
+    outbox_kind: release_kind,
+    dedupe_key: release_dedupe_key,
+    ..,
+  ) = release_replay
+  assert release_outbox_id == release_key
+  assert release_task_ref.task_remote_id == "issue-1"
+  assert release_kind == "release_claim"
+  assert release_dedupe_key == release_key
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  let assert Ok(parked) = dict.get(loaded.runtime.parked, identity)
+  assert parked.release_policy == orchestrator_state.ExplicitUnparkOnly
+  assert parked.reason
+    == reason.ParkOperator("abandoned_claim:startup_recovered_claim")
+  assert loaded.park_reports == []
+  let records = load_records(workspace_root)
+  assert list.any(records, fn(entry) {
+    case entry.body {
+      record.OutboxPermanentlyFailedWithTask(
+        outbox_id: outbox_id,
+        outbox_kind: "claim",
+        error_code: "abandoned_claim_recovered",
+        ..,
+      ) -> outbox_id == claim_key
+      _ -> False
+    }
+  })
+  assert list.any(records, fn(entry) {
+    case entry.body {
+      record.IssueParkedV2(
+        issue_id: "issue-1",
+        reason: "abandoned_claim:startup_recovered_claim",
+        release_policy: "explicit_unpark_only",
+        ..,
+      ) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn load_compensates_permanent_claim_outbox_failure_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-release-claim-permanent",
+      "prompts/task.md",
+    )
+  let candidate = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let claim_key = "claim:linear:issue-1:run-1"
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxPermanentlyFailedWithTask(
+      outbox_id: claim_key,
+      task_ref: record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      outbox_kind: "claim",
+      error_code: "unauthorized",
+      attempt_count: 1,
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([candidate]),
+      startup_dependencies(),
+      [],
+    )
+
+  let assert [release_replay] = loaded.outbox_to_replay
+  let recovery.OutboxReplay(
+    outbox_id: release_outbox_id,
+    outbox_kind: release_kind,
+    ..,
+  ) = release_replay
+  assert release_outbox_id == "release_claim:linear:issue-1:run-1"
+  assert release_kind == "release_claim"
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  let assert Ok(parked) = dict.get(loaded.runtime.parked, identity)
+  assert parked.reason
+    == reason.ParkOperator("abandoned_claim:permanent_failure:unauthorized")
+}
+
+pub fn load_compensates_completed_claim_without_workflow_run_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-release-claim-completed",
+      "prompts/task.md",
+    )
+  let candidate = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let claim_key = "claim:linear:issue-1:run-1"
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxCompletedWithTask(
+      outbox_id: claim_key,
+      task_ref: record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      outbox_kind: "claim",
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([candidate]),
+      startup_dependencies(),
+      [],
+    )
+
+  let release_key = "release_claim:linear:issue-1:run-1"
+  let assert [release_replay] = loaded.outbox_to_replay
+  let recovery.OutboxReplay(
+    outbox_id: release_outbox_id,
+    outbox_kind: release_kind,
+    dedupe_key: release_dedupe_key,
+    ..,
+  ) = release_replay
+  assert release_outbox_id == release_key
+  assert release_kind == "release_claim"
+  assert release_dedupe_key == release_key
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  let assert Ok(parked) = dict.get(loaded.runtime.parked, identity)
+  assert parked.reason
+    == reason.ParkOperator("abandoned_claim:stale_claim_success")
+  assert loaded.park_reports == []
+  assert list.contains(
+    loaded.warnings,
+    "abandoned_claim_compensation:issue-1:stale_claim_success",
+  )
+  let records = load_records(workspace_root)
+  assert list.any(records, fn(entry) {
+    case entry.body {
+      record.OutboxPendingV2WithTask(
+        outbox_id: outbox_id,
+        outbox_kind: "release_claim",
+        dedupe_key: dedupe_key,
+        ..,
+      ) -> outbox_id == release_key && dedupe_key == release_key
+      _ -> False
+    }
+  })
+  assert list.any(records, fn(entry) {
+    case entry.body {
+      record.IssueParkedV2(
+        issue_id: "issue-1",
+        reason: "abandoned_claim:stale_claim_success",
+        release_policy: "explicit_unpark_only",
+        ..,
+      ) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn load_does_not_compensate_completed_claim_with_legacy_run_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-release-claim-legacy-run",
+      "prompts/task.md",
+    )
+  let candidate = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let workspace_path = workspace_root <> "/ABC-1"
+  let claim_key = "claim:linear:issue-1:run-1"
+
+  append_test_ledger_bodies(workspace_root, [
+    record.RunStarted(
+      run_id: "run-1",
+      issue_id: candidate.id,
+      issue_identifier: candidate.identifier,
+      workspace_path: workspace_path,
+    ),
+    record.OutboxCompletedWithTask(
+      outbox_id: claim_key,
+      task_ref: record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      outbox_kind: "claim",
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([candidate]),
+      startup_dependencies(),
+      [],
+    )
+
+  assert loaded.outbox_to_replay == []
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  let assert Ok(parked) = dict.get(loaded.runtime.parked, identity)
+  assert parked.reason == reason.ParkWorkerFailure
+  assert !list.contains(
+    loaded.warnings,
+    "abandoned_claim_compensation:issue-1:stale_claim_success",
+  )
+  let records = load_records(workspace_root)
+  assert release_claim_record_count(
+      records,
+      "release_claim:linear:issue-1:run-1",
+    )
+    == 0
+  assert abandoned_park_record_count(
+      records,
+      "issue-1",
+      "abandoned_claim:stale_claim_success",
+    )
+    == 0
+}
+
+pub fn load_reuses_existing_release_claim_and_park_records_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-release-claim-idempotent",
+      "prompts/task.md",
+    )
+  let candidate = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let task_ref = record.linear_task_ref_fields("issue-1", Some("ABC-1"), None)
+  let claim_key = "claim:linear:issue-1:run-1"
+  let release_key = "release_claim:linear:issue-1:run-1"
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxCompletedWithTask(
+      outbox_id: claim_key,
+      task_ref: task_ref,
+      outbox_kind: "claim",
+    ),
+    record.OutboxPendingV2WithTask(
+      outbox_id: release_key,
+      task_ref: task_ref,
+      outbox_kind: "release_claim",
+      dedupe_key: release_key,
+      payload_json: outbox.tracker_update_payload(
+        "release_claim",
+        release_key,
+        "already parked",
+        None,
+        None,
+        [],
+      ),
+    ),
+    record.IssueParkedV2(
+      "issue-1",
+      "ABC-1",
+      "abandoned_claim:stale_claim_success",
+      "explicit_unpark_only",
+      "",
+      6000,
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([candidate]),
+      startup_dependencies(),
+      [],
+    )
+
+  let assert [release_replay] = loaded.outbox_to_replay
+  let recovery.OutboxReplay(
+    outbox_id: release_outbox_id,
+    outbox_kind: release_kind,
+    dedupe_key: release_dedupe_key,
+    ..,
+  ) = release_replay
+  assert release_outbox_id == release_key
+  assert release_kind == "release_claim"
+  assert release_dedupe_key == release_key
+  let records = load_records(workspace_root)
+  assert release_claim_record_count(records, release_key) == 1
+  assert abandoned_park_record_count(
+      records,
+      "issue-1",
+      "abandoned_claim:stale_claim_success",
+    )
+    == 1
+}
+
+pub fn load_compensates_failed_claim_outbox_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-release-claim-failed",
+      "prompts/task.md",
+    )
+  let candidate = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let claim_key = "claim:linear:issue-1:run-1"
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxFailedWithTask(
+      outbox_id: claim_key,
+      task_ref: record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      outbox_kind: "claim",
+      error_code: "temporary_claim_error",
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([candidate]),
+      startup_dependencies(),
+      [],
+    )
+
+  let release_key = "release_claim:linear:issue-1:run-1"
+  let assert [release_replay] = loaded.outbox_to_replay
+  let recovery.OutboxReplay(
+    outbox_id: release_outbox_id,
+    outbox_kind: release_kind,
+    dedupe_key: release_dedupe_key,
+    ..,
+  ) = release_replay
+  assert release_outbox_id == release_key
+  assert release_kind == "release_claim"
+  assert release_dedupe_key == release_key
+  let identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  let assert Ok(parked) = dict.get(loaded.runtime.parked, identity)
+  assert parked.reason
+    == reason.ParkOperator(
+      "abandoned_claim:operator_action_required:temporary_claim_error",
+    )
+  assert loaded.park_reports == []
+  assert list.contains(
+    loaded.warnings,
+    "abandoned_claim_compensation:issue-1:operator_action_required:temporary_claim_error",
+  )
+  let records = load_records(workspace_root)
+  assert list.any(records, fn(entry) {
+    case entry.body {
+      record.OutboxPendingV2WithTask(
+        outbox_id: outbox_id,
+        outbox_kind: "release_claim",
+        dedupe_key: dedupe_key,
+        ..,
+      ) -> outbox_id == release_key && dedupe_key == release_key
+      _ -> False
+    }
+  })
+  assert list.any(records, fn(entry) {
+    case entry.body {
+      record.IssueParkedV2(
+        issue_id: "issue-1",
+        reason: "abandoned_claim:operator_action_required:temporary_claim_error",
+        release_policy: "explicit_unpark_only",
+        ..,
+      ) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn load_compensates_recovered_claim_outbox_cancels_existing_retry_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-release-claim-retry",
+      "prompts/task.md",
+    )
+  let candidate = issue("issue-1", "ABC-1")
+  let workspace_root = bundle.effective.workspace.root
+  let claim_key = "claim:linear:issue-1:run-1"
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxPendingV2WithTask(
+      outbox_id: claim_key,
+      task_ref: record.linear_task_ref_fields("issue-1", Some("ABC-1"), None),
+      outbox_kind: "claim",
+      dedupe_key: claim_key,
+      payload_json: outbox.tracker_update_payload(
+        "claim",
+        claim_key,
+        "claimed",
+        None,
+        None,
+        [],
+      ),
+    ),
+    record.RetryScheduled(
+      issue_id: candidate.id,
+      issue_identifier: candidate.identifier,
+      delay_ms: 2500,
+      generation: 3,
+      reason: "claim_start_ledger_append_failed",
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([candidate]),
+      startup_dependencies(),
+      [],
+    )
+
+  assert loaded.retry_timers == []
+  let task_identity = orchestrator_state.linear_issue_id_identity("issue-1")
+  assert !dict.has_key(loaded.runtime.retry_attempts, task_identity)
+  assert !dict.has_key(loaded.runtime.claimed, task_identity)
+  let assert Ok(parked) = dict.get(loaded.runtime.parked, task_identity)
+  assert parked.reason
+    == reason.ParkOperator("abandoned_claim:startup_recovered_claim")
+  let records = load_records(workspace_root)
+  assert list.any(records, fn(entry) {
+    case entry.body {
+      record.RetryCancelled(
+        issue_id: "issue-1",
+        generation: 3,
+        reason: "recovery_parked",
+      ) -> True
       _ -> False
     }
   })

@@ -24,6 +24,7 @@ import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/daemon_identity
 import scherzo/error
 import scherzo/log
+import scherzo/orchestrator/abandoned_claim
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon_transition_shell
@@ -6569,29 +6570,73 @@ fn handle_handoff_claim_finished(
   run_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
-  let state = case result {
-    Ok(Nil) -> state
-    Error(err) -> append_outbox_failure(state, outbox, err)
-  }
   let task_identity =
     orchestrator_state.issue_id_identity_for_backend(
       issue_id,
       state.tracker_adapter.kind,
     )
-  run_transition_messages(state, [
-    transition_types.HandoffClaimCompleted(
-      task_identity,
-      identity.issue_id_from_string(issue_id),
-      identity.run_id_from_string(run_id),
-      handoff_claim_result_for_transition(
-        state,
-        outbox,
-        issue_id,
-        run_id,
-        result,
-      ),
-    ),
-  ])
+  let active_run_present = dict.has_key(state.runtime.running, task_identity)
+  let pending_claim_superseded = case
+    dict.get(state.pending_claims, task_identity)
+  {
+    Ok(pending) -> pending.run_id != run_id
+    Error(Nil) -> False
+  }
+  let compensation_reason = case result {
+    Ok(Nil) ->
+      case
+        abandoned_claim.claim_success_abandoned(
+          state.pending_claims,
+          state.tracker_adapter.kind,
+          issue_id,
+        )
+        && !active_run_present
+      {
+        True -> Some("stale_claim_success")
+        False -> None
+      }
+    Error(err) ->
+      case
+        tracker_error_retryable(err)
+        || active_run_present
+        || pending_claim_superseded
+      {
+        True -> None
+        False -> Some("permanent_failure:" <> error.tracker_code(err))
+      }
+  }
+  let state = case result {
+    Ok(Nil) -> state
+    Error(err) -> append_outbox_failure(state, outbox, err)
+  }
+  case compensation_reason {
+    Some(reason) -> {
+      let state =
+        State(
+          ..state,
+          pending_claims: dict.delete(state.pending_claims, task_identity),
+        )
+      compensate_abandoned_claim(state, outbox, run_id, reason)
+    }
+    None -> {
+      let claim_result =
+        handoff_claim_result_for_transition(
+          state,
+          outbox,
+          issue_id,
+          run_id,
+          result,
+        )
+      run_transition_messages(state, [
+        transition_types.HandoffClaimCompleted(
+          task_identity,
+          identity.issue_id_from_string(issue_id),
+          identity.run_id_from_string(run_id),
+          claim_result,
+        ),
+      ])
+    }
+  }
 }
 
 fn handoff_claim_result_for_transition(
@@ -6621,6 +6666,55 @@ fn handoff_claim_result_for_transition(
           }
       }
   }
+}
+
+fn compensate_abandoned_claim(
+  state: State,
+  outbox: outbox_effects.Intent,
+  run_id: String,
+  abandonment_reason: String,
+) -> State {
+  let compensation =
+    abandoned_claim.compensate(
+      state.runtime,
+      outbox_effects.task_ref_from_fields(outbox.task_ref),
+      run_id,
+      abandonment_reason,
+      state.dependencies.now_ms(),
+      tracker_secrets(state),
+    )
+  let state = State(..state, runtime: compensation.runtime)
+  log_state(state, "warn", "abandoned_claim_compensated", [
+    #("issue_id", compensation.parked.issue_id),
+    #("issue_identifier", compensation.parked.identifier),
+    #("run_id", run_id),
+    #("reason", abandonment_reason),
+  ])
+  let #(state, appended) =
+    append_parked_record(state, compensation.parked, compensation.reason_text)
+  case appended {
+    False -> state
+    True -> enqueue_release_claim_intent(state, compensation.release_intent)
+  }
+}
+
+fn enqueue_release_claim_intent(
+  state: State,
+  intent: outbox_effects.Intent,
+) -> State {
+  enqueue_outbox_side_effect(state, intent, fn(intent) {
+    effect_runner.ReplayOutbox(
+      outbox: recovery.OutboxReplay(
+        intent.outbox_id,
+        intent.task_ref,
+        intent.outbox_kind,
+        intent.dedupe_key,
+        intent.payload_json,
+      ),
+      comments: state.tracker_adapter.comments,
+      state_transitions: state.tracker_adapter.state_transitions,
+    )
+  })
 }
 
 fn claim_ledger_batch_for_pending(

@@ -1,6 +1,7 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
+import scherzo/claim_abandonment
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff_format
@@ -14,8 +15,6 @@ import scherzo/tracker/idempotency
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_completion_policy
 import scherzo/workflow_policy
-
-pub const claim_kind = "claim"
 
 pub const report_success_kind = "report_success"
 
@@ -60,7 +59,12 @@ pub fn claim_intent(
   handoff: config_types.HandoffConfig,
   secrets: List(String),
 ) -> Intent {
-  let key = claim_key(task_ref.backend_kind, task_ref.remote_id, run_id)
+  let key =
+    claim_abandonment.claim_key(
+      task_ref.backend_kind,
+      task_ref.remote_id,
+      run_id,
+    )
   let #(target_state_id, target_state_name) =
     optional_state_ref(handoff.claim_state_id)
   let body =
@@ -68,7 +72,7 @@ pub fn claim_intent(
     |> idempotency.append_marker(key)
   intent(
     task_ref,
-    claim_kind,
+    claim_abandonment.claim_kind,
     key,
     body,
     target_state_id,
@@ -208,6 +212,36 @@ pub fn parked_entry_intent(
   )
 }
 
+pub fn release_claim_intent(
+  report: adapter.ParkReport,
+  run_or_reason: String,
+  secrets: List(String),
+) -> Intent {
+  let key =
+    claim_abandonment.release_key(
+      report.task.backend_kind,
+      report.task.remote_id,
+      run_or_reason,
+    )
+  let body =
+    claim_abandonment.release_comment_body(
+      report.issue_identifier,
+      report.reason,
+      report.run_id,
+      key,
+      secrets,
+    )
+  intent(
+    report.task,
+    claim_abandonment.release_claim_kind,
+    key,
+    body,
+    None,
+    None,
+    secrets,
+  )
+}
+
 pub fn invalid_workflow_intent(
   issue: tracker_issue.Issue,
   violation: workflow_policy.IssueWorkflowViolation,
@@ -334,14 +368,6 @@ fn intent(
       secrets,
     ),
   )
-}
-
-fn claim_key(
-  backend_kind: String,
-  task_remote_id: String,
-  run_id: String,
-) -> String {
-  "claim:" <> backend_kind <> ":" <> task_remote_id <> ":" <> run_id
 }
 
 fn report_key(

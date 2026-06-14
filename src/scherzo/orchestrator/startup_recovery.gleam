@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/claim_abandonment
 import scherzo/config/types as config_types
 import scherzo/log
 import scherzo/orchestrator/core
@@ -586,7 +587,10 @@ fn add_startup_park_report(
   reason_text: String,
   release_policy: Option(String),
 ) -> List(adapter.ParkReport) {
-  case list.contains(seen_issue_ids, issue_id) {
+  case
+    list.contains(seen_issue_ids, issue_id)
+    || claim_abandonment.is_reason_text(reason_text)
+  {
     True -> startup_park_reports_loop(rest, run_ids, seen_issue_ids, reports)
     False ->
       startup_park_reports_loop(rest, run_ids, [issue_id, ..seen_issue_ids], [

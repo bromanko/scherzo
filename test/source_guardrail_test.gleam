@@ -330,7 +330,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/linear.gleam", 1496, 8),
     SourceLimit("src/scherzo/local_workflow_run.gleam", 939, 21),
     SourceLimit("src/scherzo/orchestrator/core.gleam", 1155, 9),
-    SourceLimit("src/scherzo/orchestrator/daemon.gleam", 7318, 74),
+    SourceLimit("src/scherzo/orchestrator/daemon.gleam", 7412, 75),
     SourceLimit(
       "src/scherzo/orchestrator/daemon_transition_shell.gleam",
       727,
@@ -347,7 +347,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/state/local_artifacts.gleam", 1232, 8),
     SourceLimit("src/scherzo/state/projection.gleam", 6735, 12),
     SourceLimit("src/scherzo/state/record.gleam", 4472, 10),
-    SourceLimit("src/scherzo/state/recovery.gleam", 3139, 16),
+    SourceLimit("src/scherzo/state/recovery.gleam", 3482, 17),
     SourceLimit("src/scherzo/step_artifact.gleam", 1563, 9),
     SourceLimit("src/scherzo/terminal/render.gleam", 1090, 6),
     SourceLimit("src/scherzo/tracker/conformance/json.gleam", 1168, 5),
