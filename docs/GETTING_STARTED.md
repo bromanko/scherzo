@@ -31,7 +31,7 @@ Before configuring Scherzo for a repository, collect these inputs.
 ### Tracker adapter and Linear
 
 - A Linear API key available as `LINEAR_API_KEY` or another environment variable referenced by config.
-- The Linear project slug for tasks Scherzo should poll.
+- The Linear project slug for tasks Scherzo should poll today, or a future non-overlapping Linear task scope once `tracker.linear.tasks_from` runtime support exists.
 - The state names used for dispatch and lifecycle decisions, for example `Todo`, `In Progress`, `In Review`, `Done`, `Canceled`, and `Duplicate`.
 - The workflow labels you want to route, usually labels with the `workflow:` prefix such as `workflow:research` and `workflow:implementation`.
 - Whether Scherzo should post tracker comments or move states after runs. Start with task updates disabled until `doctor` and a single `--once` run are understood.
@@ -269,7 +269,7 @@ Use these schemas for editor completion, hover text, and structural validation. 
 
 ### Project, API key, and states
 
-Set `tracker.linear.project` to the Linear project slug Scherzo should poll. Keep the API key in the environment rather than committing a secret:
+Set `tracker.linear.project` to the Linear project slug Scherzo should poll. This is the current single-project task-scope default. A future `tracker.linear.tasks_from` predicate will generalize this surface; see [docs/specs/TRACKER_LINEAR_TASKS_FROM.md](specs/TRACKER_LINEAR_TASKS_FROM.md). Keep the API key in the environment rather than committing a secret:
 
 ```sh
 export LINEAR_API_KEY=lin_api_...
@@ -739,7 +739,8 @@ Before daemon mode:
 - Keep `agents.concurrency: 1` until the workflow is proven.
 - Enable task updates or establish a manual policy that removes completed tasks from ready states.
 - Keep an operator watching the first several runs.
-- Run only one Scherzo instance per tracker project and canonical workspace root.
+- Run only one Scherzo instance per non-overlapping Linear task scope/root.
+- Be especially careful with future multi-project, `or`, team, or label-based scopes because two predicates can overlap even when their config does not look identical at a glance.
 - For multi-repo or multi-instance operations, rely on the built-in poll jitter; it spreads recurring tracker requests around `tracker.polling.every` and logs `next_poll_scheduled` with the effective next delay.
 
 Set `agents.concurrency: 0` to pause new dispatch while keeping daemon reload and reconciliation alive.
