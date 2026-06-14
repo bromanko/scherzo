@@ -71,6 +71,11 @@ pub fn legacy_remote_command_ack_payload_backend_kind_decodes_test() {
     )
 }
 
+pub fn release_claim_payload_is_replayable_test() {
+  assert outbox.recovery_replay_error("release_claim", "release_claim")
+    == Ok(Nil)
+}
+
 pub fn replay_kind_mismatch_returns_typed_error_with_stable_code_test() {
   assert outbox.recovery_replay_error("linear_comment", "linear_comment")
     == Ok(Nil)
