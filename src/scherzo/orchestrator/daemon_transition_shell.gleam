@@ -1,5 +1,7 @@
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, Some}
+import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/log
@@ -8,6 +10,7 @@ import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/task_lifecycle_legacy
 import scherzo/orchestrator/transition
+import scherzo/orchestrator/transition_invariants
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
 import scherzo/runtime/identity
@@ -22,6 +25,30 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
 const transition_runner_message_limit = 128
+
+const invariant_violation_log_limit = 32
+
+pub type InvariantMode {
+  FailOnInvariantViolation
+  WarnOnInvariantViolation
+}
+
+pub type InvariantChecker =
+  fn(transition_types.State) ->
+    Result(Nil, List(transition_invariants.InvariantError))
+
+pub fn default_invariant_checker(
+  state: transition_types.State,
+) -> Result(Nil, List(transition_invariants.InvariantError)) {
+  transition_invariants.check(state)
+}
+
+pub fn invariant_mode_from_string(value: String) -> InvariantMode {
+  case string.lowercase(string.trim(value)) {
+    "warn" -> WarnOnInvariantViolation
+    _ -> FailOnInvariantViolation
+  }
+}
 
 pub fn lifecycle_projection_failed(state: transition_types.State) -> Bool {
   case task_lifecycle_legacy.from_transition_state(state) {
@@ -340,6 +367,12 @@ pub opaque type Context(state) {
     transition_state_from_state: fn(state) -> transition_types.State,
     merge_transition_state: fn(state, transition_types.State) -> state,
     log_exhausted: fn(state, Int) -> state,
+    mark_invariant_failure: fn(
+      state,
+      List(transition_invariants.InvariantError),
+    ) -> state,
+    invariant_mode: InvariantMode,
+    invariant_checker: InvariantChecker,
     max_messages: Int,
     handlers: ShellHandlers(state),
   )
@@ -354,6 +387,12 @@ pub fn context(
     transition_types.State,
   ) -> state,
   log_exhausted log_exhausted: fn(state, Int) -> state,
+  mark_invariant_failure mark_invariant_failure: fn(
+    state,
+    List(transition_invariants.InvariantError),
+  ) -> state,
+  invariant_mode invariant_mode: InvariantMode,
+  invariant_checker invariant_checker: InvariantChecker,
   max_messages max_messages: Int,
   handlers handlers: ShellHandlers(state),
 ) -> Context(state) {
@@ -362,6 +401,9 @@ pub fn context(
     transition_state_from_state: transition_state_from_state,
     merge_transition_state: merge_transition_state,
     log_exhausted: log_exhausted,
+    mark_invariant_failure: mark_invariant_failure,
+    invariant_mode: invariant_mode,
+    invariant_checker: invariant_checker,
     max_messages: max_messages,
     handlers: handlers,
   )
@@ -389,10 +431,127 @@ pub fn run(
       transition_interpreter.data(shell),
       transition_state,
     )
+  let state = check_invariants(Context(..context, state: state))
   case exhausted {
     True -> context.log_exhausted(state, context.max_messages)
     False -> state
   }
+}
+
+pub fn check_invariants(context: Context(state)) -> state {
+  let transition_state = context.transition_state_from_state(context.state)
+  case context.invariant_checker(transition_state) {
+    Ok(Nil) -> context.state
+    Error(errors) -> apply_invariant_violations(context, errors)
+  }
+}
+
+fn apply_invariant_violations(
+  context: Context(state),
+  errors: List(transition_invariants.InvariantError),
+) -> state {
+  let #(warning_errors, failure_errors) =
+    split_invariant_errors(context.invariant_mode, errors)
+  let state = case warning_errors {
+    [] -> context.state
+    _ ->
+      log_invariant_violations(context, context.state, "warn", warning_errors)
+  }
+  case failure_errors {
+    [] -> state
+    _ -> {
+      let state =
+        log_invariant_violations(context, state, "error", failure_errors)
+      context.mark_invariant_failure(state, failure_errors)
+    }
+  }
+}
+
+fn log_invariant_violations(
+  context: Context(state),
+  state: state,
+  level: String,
+  errors: List(transition_invariants.InvariantError),
+) -> state {
+  context.handlers.log_effect(
+    state,
+    level,
+    invariant_violation_event(level),
+    invariant_violation_fields(errors),
+  )
+}
+
+fn invariant_violation_event(level: String) -> String {
+  case level {
+    "error" -> "transition_invariant_violation"
+    _ -> "transition_invariant_warning"
+  }
+}
+
+fn invariant_violation_fields(
+  errors: List(transition_invariants.InvariantError),
+) -> List(log.Field) {
+  let total_count = list.length(errors)
+  let logged_errors = list.take(errors, invariant_violation_log_limit)
+  let logged_count = list.length(logged_errors)
+  let omitted_count = total_count - logged_count
+  [
+    #("count", int.to_string(total_count)),
+    #("logged_count", int.to_string(logged_count)),
+    #("omitted_count", int.to_string(omitted_count)),
+    #("truncated", case omitted_count > 0 {
+      True -> "true"
+      False -> "false"
+    }),
+    #(
+      "rule_ids",
+      logged_errors
+        |> list.map(transition_invariants.error_code)
+        |> string.join(with: ","),
+    ),
+    #(
+      "identities",
+      logged_errors
+        |> list.map(transition_invariants.error_identity)
+        |> string.join(with: ","),
+    ),
+    #("violations", transition_invariants.format_errors(logged_errors)),
+  ]
+}
+
+fn split_invariant_errors(
+  mode: InvariantMode,
+  errors: List(transition_invariants.InvariantError),
+) -> #(
+  List(transition_invariants.InvariantError),
+  List(transition_invariants.InvariantError),
+) {
+  case mode {
+    WarnOnInvariantViolation -> #(errors, [])
+    FailOnInvariantViolation ->
+      errors
+      |> list.fold(#([], []), fn(acc, error) {
+        let #(warnings, failures) = acc
+        case transition_invariants.is_warn_only(error) {
+          True -> #([error, ..warnings], failures)
+          False -> #(warnings, [error, ..failures])
+        }
+      })
+      |> reverse_invariant_error_pair
+  }
+}
+
+fn reverse_invariant_error_pair(
+  pair: #(
+    List(transition_invariants.InvariantError),
+    List(transition_invariants.InvariantError),
+  ),
+) -> #(
+  List(transition_invariants.InvariantError),
+  List(transition_invariants.InvariantError),
+) {
+  let #(warnings, failures) = pair
+  #(list.reverse(warnings), list.reverse(failures))
 }
 
 pub fn default_message_limit() -> Int {

@@ -52,6 +52,18 @@ pub fn error_code(error: InvariantError) -> String {
   code
 }
 
+pub fn error_identity(error: InvariantError) -> String {
+  let InvariantError(identity: identity, ..) = error
+  identity
+}
+
+pub fn is_warn_only(error: InvariantError) -> Bool {
+  case error_code(error) {
+    "pending_slot_overcommit" | "dispatch_slot_overcommit" -> True
+    _ -> False
+  }
+}
+
 fn format_error(error: InvariantError) -> String {
   let InvariantError(code: code, identity: identity, message: message) = error
   code <> " [" <> identity <> "]: " <> message

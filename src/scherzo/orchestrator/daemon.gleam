@@ -181,6 +181,7 @@ pub type RuntimeDependencies {
     stop_remote_client: fn(remote_command_runtime.Handle, Int) ->
       Result(Nil, Nil),
     monitor_remote_client: fn(remote_command_runtime.Handle) -> process.Monitor,
+    check_transition_invariants: daemon_transition_shell.InvariantChecker,
   )
 }
 
@@ -224,6 +225,7 @@ type State {
     operator_paused: Bool,
     last_operator_command_result: Option(command.CommandResult),
     shell_state_overrides_transition: Bool,
+    transition_invariant_violation_pending: Bool,
     dependencies: RuntimeDependencies,
   )
 }
@@ -291,6 +293,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     },
     stop_remote_client: remote_command_runtime.stop,
     monitor_remote_client: remote_command_runtime.monitor,
+    check_transition_invariants: daemon_transition_shell.default_invariant_checker,
   )
 }
 
@@ -918,8 +921,10 @@ pub fn start(
                           operator_paused: startup_recovery.projection.dispatch_paused,
                           last_operator_command_result: None,
                           shell_state_overrides_transition: False,
+                          transition_invariant_violation_pending: False,
                           dependencies: dependencies,
                         )
+                        |> log_startup_invariant_warn_mode
                         |> apply_startup_recovery(startup_recovery)
                         |> apply_scheduled_startup_recovery(
                           startup_recovery.scheduled,
@@ -927,30 +932,45 @@ pub fn start(
                         |> spawn_recovered_workflow_resumptions(
                           startup_recovery.workflow_resumptions,
                         )
-                        |> refresh_read_model
-                      process.send(subject, StartRemoteClient)
-                      let selector =
-                        process.new_selector()
-                        |> process.select(subject)
-                        |> process.select_specific_monitor(
-                          effect_runner_monitor,
-                          fn(down) { EffectRunnerDown(down) },
-                        )
-                      let selector = case control_server_monitor {
-                        Some(monitor) ->
-                          process.select_specific_monitor(
-                            selector,
-                            monitor,
-                            fn(down) { ControlServerDown(down) },
+                        |> check_startup_transition_invariants
+                      case state.transition_invariant_violation_pending {
+                        True -> {
+                          let _shutdown_state =
+                            shutdown_runtime_shell(state, True)
+                          Error(
+                            encode_startup_error(StartupError(
+                              "transition_invariant_violation",
+                              "transition invariant violation during startup",
+                            )),
                           )
-                        None -> selector
+                        }
+                        False -> {
+                          let state = refresh_read_model(state)
+                          process.send(subject, StartRemoteClient)
+                          let selector =
+                            process.new_selector()
+                            |> process.select(subject)
+                            |> process.select_specific_monitor(
+                              effect_runner_monitor,
+                              fn(down) { EffectRunnerDown(down) },
+                            )
+                          let selector = case control_server_monitor {
+                            Some(monitor) ->
+                              process.select_specific_monitor(
+                                selector,
+                                monitor,
+                                fn(down) { ControlServerDown(down) },
+                              )
+                            None -> selector
+                          }
+                          let selector =
+                            process.select_monitors(selector, WorkerDown)
+                          actor.initialised(state)
+                          |> actor.selecting(selector)
+                          |> actor.returning(subject)
+                          |> Ok
+                        }
                       }
-                      let selector =
-                        process.select_monitors(selector, WorkerDown)
-                      actor.initialised(state)
-                      |> actor.selecting(selector)
-                      |> actor.returning(subject)
-                      |> Ok
                     }
                   }
                 }
@@ -1008,9 +1028,13 @@ fn apply_scheduled_startup_recovery(
   state: State,
   scheduled: startup_recovery.ScheduledRecovery,
 ) -> State {
-  list.fold(scheduled.effects, state, fn(state, effect) {
-    apply_scheduled_startup_effect(state, effect)
-  })
+  case state.transition_invariant_violation_pending {
+    True -> state
+    False ->
+      list.fold(scheduled.effects, state, fn(state, effect) {
+        apply_scheduled_startup_effect(state, effect)
+      })
+  }
 }
 
 fn apply_scheduled_startup_effect(
@@ -1057,13 +1081,37 @@ fn apply_startup_recovery(
   ])
 }
 
+fn log_startup_invariant_warn_mode(state: State) -> State {
+  case transition_invariant_mode_from_env() {
+    daemon_transition_shell.WarnOnInvariantViolation -> {
+      log_state(state, "warn", "transition_invariants_warn_mode_enabled", [
+        #("env", "SCHERZO_INVARIANTS=warn"),
+      ])
+      state
+    }
+    daemon_transition_shell.FailOnInvariantViolation -> state
+  }
+}
+
+fn check_startup_transition_invariants(state: State) -> State {
+  case state.transition_invariant_violation_pending {
+    True -> state
+    False ->
+      daemon_transition_shell.check_invariants(transition_shell_context(state))
+  }
+}
+
 fn spawn_recovered_workflow_resumptions(
   state: State,
   resumptions: List(recovery.RecoveredWorkflowRun),
 ) -> State {
-  list.fold(resumptions, state, fn(state, resumption) {
-    spawn_recovered_workflow_resumption(state, resumption)
-  })
+  case state.transition_invariant_violation_pending {
+    True -> state
+    False ->
+      list.fold(resumptions, state, fn(state, resumption) {
+        spawn_recovered_workflow_resumption(state, resumption)
+      })
+  }
 }
 
 fn spawn_recovered_workflow_resumption(
@@ -1400,7 +1448,13 @@ fn map_startup_recovery_error(
 }
 
 fn continue_with_refreshed_state(state: State) -> actor.Next(State, Message) {
-  actor.continue(refresh_read_model(state))
+  case state.transition_invariant_violation_pending {
+    True -> {
+      let _shutdown_state = shutdown_runtime_shell(state, True)
+      actor.stop_abnormal("transition_invariant_violation")
+    }
+    False -> actor.continue(refresh_read_model(state))
+  }
 }
 
 fn handle_issue_worker_finished(
@@ -1658,7 +1712,10 @@ fn handle_message(
       actor.continue(state)
     }
     StartRemoteClient ->
-      continue_with_refreshed_state(start_remote_client_now(state))
+      case state.transition_invariant_violation_pending {
+        True -> continue_with_refreshed_state(state)
+        False -> continue_with_refreshed_state(start_remote_client_now(state))
+      }
     ApplyOperatorCommand(operator_command, timeout_ms, reply) ->
       continue_with_refreshed_state(operator_command_reply(
         state,
@@ -1679,9 +1736,14 @@ fn handle_message(
         run_transition_messages(state, [
           transition_types.ShutdownRequested(True),
         ])
-      log_state(state, "info", "daemon_shutdown", [])
-      process.send(reply, Nil)
-      actor.stop()
+      case state.transition_invariant_violation_pending {
+        True -> actor.stop_abnormal("transition_invariant_violation")
+        False -> {
+          log_state(state, "info", "daemon_shutdown", [])
+          process.send(reply, Nil)
+          actor.stop()
+        }
+      }
     }
   }
 }
@@ -3539,9 +3601,21 @@ fn transition_shell_context(
       ])
       state
     },
+    mark_invariant_failure: fn(state, _) {
+      State(..state, transition_invariant_violation_pending: True)
+    },
+    invariant_mode: transition_invariant_mode_from_env(),
+    invariant_checker: state.dependencies.check_transition_invariants,
     max_messages: daemon_transition_shell.default_message_limit(),
     handlers: transition_shell_handlers(),
   )
+}
+
+fn transition_invariant_mode_from_env() -> daemon_transition_shell.InvariantMode {
+  case control_file.get_env("SCHERZO_INVARIANTS") {
+    Some(value) -> daemon_transition_shell.invariant_mode_from_string(value)
+    None -> daemon_transition_shell.FailOnInvariantViolation
+  }
 }
 
 fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
