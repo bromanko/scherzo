@@ -41,7 +41,12 @@ type StepBatchMessage {
 
 pub opaque type StepBatchOutcome {
   StepBatchCompleted(List(StepExecutionResult))
-  StepBatchFatal(StepExecutionResult)
+  StepBatchFatal(
+    primary_result: StepExecutionResult,
+    sibling_results: List(StepExecutionResult),
+    interrupted_step_ids: List(String),
+    drained: Bool,
+  )
 }
 
 pub opaque type StepBatchError {
@@ -122,11 +127,22 @@ pub fn step_result_turns(result: StepExecutionResult) -> Int {
 pub fn fold_step_batch_outcome(
   outcome: StepBatchOutcome,
   on_completed: fn(List(StepExecutionResult)) -> return_value,
-  on_fatal: fn(StepExecutionResult) -> return_value,
+  on_fatal: fn(
+    StepExecutionResult,
+    List(StepExecutionResult),
+    List(String),
+    Bool,
+  ) -> return_value,
 ) -> return_value {
   case outcome {
     StepBatchCompleted(results) -> on_completed(results)
-    StepBatchFatal(fatal_result) -> on_fatal(fatal_result)
+    StepBatchFatal(
+      primary_result,
+      sibling_results,
+      interrupted_step_ids,
+      drained,
+    ) ->
+      on_fatal(primary_result, sibling_results, interrupted_step_ids, drained)
   }
 }
 
@@ -134,6 +150,7 @@ pub fn run_prepared_batch(
   starts: List(PreparedStart),
   batch_timeout_ms: Int,
   timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
+  is_recoverable_fatal_step: fn(String) -> Bool,
   start_step: fn(workflow_dag.WorkflowStep, workspace_run.PreparedStepWorkspace) ->
     Result(Nil, String),
   run_step: fn(workflow_dag.WorkflowStep, workspace_run.PreparedStepWorkspace) ->
@@ -170,6 +187,8 @@ pub fn run_prepared_batch(
           batch_started_ms + max_int(0, batch_timeout_ms),
           timeout_artifact,
           failure_policy_by_step(starts, dict.new()),
+          prepared_step_ids(starts, []),
+          is_recoverable_fatal_step,
           [],
         )
         |> result.map_error(fn(failure) {
@@ -297,6 +316,17 @@ fn failure_policy_by_step(
   }
 }
 
+fn prepared_step_ids(
+  starts: List(PreparedStart),
+  acc: List(String),
+) -> List(String) {
+  case starts {
+    [] -> list.reverse(acc)
+    [PreparedStart(step: step, ..), ..rest] ->
+      prepared_step_ids(rest, [step.id, ..acc])
+  }
+}
+
 fn is_fatal_result(
   result: StepExecutionResult,
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
@@ -332,6 +362,8 @@ fn collect_step_results(
   batch_deadline_ms: Int,
   timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
+  ordered_step_ids: List(String),
+  is_recoverable_fatal_step: fn(String) -> Bool,
   acc: List(StepExecutionResult),
 ) -> Result(StepBatchOutcome, StepBatchFailure) {
   case remaining <= 0 {
@@ -344,6 +376,7 @@ fn collect_step_results(
             monitor_to_pid,
             batch_started_ms,
             timeout_artifact,
+            ordered_step_ids,
           ))
         Ok(StepBatchResult(result)) ->
           case dict.get(step_to_monitor, result.step_id) {
@@ -358,6 +391,8 @@ fn collect_step_results(
                 batch_deadline_ms,
                 timeout_artifact,
                 failure_policies,
+                ordered_step_ids,
+                is_recoverable_fatal_step,
                 acc,
               )
             Ok(monitor) -> {
@@ -366,10 +401,34 @@ fn collect_step_results(
               let step_to_monitor = dict.delete(step_to_monitor, result.step_id)
               let monitor_to_pid = dict.delete(monitor_to_pid, monitor)
               case is_fatal_result(result, failure_policies) {
-                True -> {
-                  terminate_step_workers(monitor_to_pid)
-                  Ok(StepBatchFatal(result))
-                }
+                True ->
+                  case is_recoverable_fatal_step(result.step_id) {
+                    True ->
+                      collect_fatal_sibling_results(
+                        result,
+                        remaining - 1,
+                        selector,
+                        monitor_to_step,
+                        step_to_monitor,
+                        monitor_to_pid,
+                        batch_started_ms,
+                        batch_deadline_ms,
+                        timeout_artifact,
+                        ordered_step_ids,
+                        [result, ..acc],
+                      )
+                    False -> {
+                      let interrupted_step_ids =
+                        active_step_ids(ordered_step_ids, step_to_monitor, [])
+                      terminate_step_workers(monitor_to_pid)
+                      Ok(StepBatchFatal(
+                        primary_result: result,
+                        sibling_results: acc,
+                        interrupted_step_ids: interrupted_step_ids,
+                        drained: False,
+                      ))
+                    }
+                  }
                 False ->
                   collect_step_results(
                     remaining - 1,
@@ -381,6 +440,8 @@ fn collect_step_results(
                     batch_deadline_ms,
                     timeout_artifact,
                     failure_policies,
+                    ordered_step_ids,
+                    is_recoverable_fatal_step,
                     [result, ..acc],
                   )
               }
@@ -398,6 +459,8 @@ fn collect_step_results(
             batch_deadline_ms,
             timeout_artifact,
             failure_policies,
+            ordered_step_ids,
+            is_recoverable_fatal_step,
             acc,
           )
         Ok(StepBatchLinkedExit) ->
@@ -411,6 +474,8 @@ fn collect_step_results(
             batch_deadline_ms,
             timeout_artifact,
             failure_policies,
+            ordered_step_ids,
+            is_recoverable_fatal_step,
             acc,
           )
       }
@@ -428,6 +493,8 @@ fn handle_step_worker_down(
   batch_deadline_ms: Int,
   timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
+  ordered_step_ids: List(String),
+  is_recoverable_fatal_step: fn(String) -> Bool,
   acc: List(StepExecutionResult),
 ) -> Result(StepBatchOutcome, StepBatchFailure) {
   case down {
@@ -444,6 +511,8 @@ fn handle_step_worker_down(
             batch_deadline_ms,
             timeout_artifact,
             failure_policies,
+            ordered_step_ids,
+            is_recoverable_fatal_step,
             acc,
           )
         Ok(step_id) -> {
@@ -462,8 +531,158 @@ fn handle_step_worker_down(
         batch_deadline_ms,
         timeout_artifact,
         failure_policies,
+        ordered_step_ids,
+        is_recoverable_fatal_step,
         acc,
       )
+  }
+}
+
+fn collect_fatal_sibling_results(
+  primary_result: StepExecutionResult,
+  remaining: Int,
+  selector: process.Selector(StepBatchMessage),
+  monitor_to_step: Dict(process.Monitor, String),
+  step_to_monitor: Dict(String, process.Monitor),
+  monitor_to_pid: Dict(process.Monitor, process.Pid),
+  batch_started_ms: Int,
+  batch_deadline_ms: Int,
+  timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
+  ordered_step_ids: List(String),
+  acc: List(StepExecutionResult),
+) -> Result(StepBatchOutcome, StepBatchFailure) {
+  case remaining <= 0 {
+    True ->
+      Ok(StepBatchFatal(
+        primary_result: primary_result,
+        sibling_results: list.filter(acc, fn(result) {
+          result.step_id != primary_result.step_id
+        }),
+        interrupted_step_ids: [],
+        drained: True,
+      ))
+    False ->
+      case receive_batch_message(selector, batch_deadline_ms) {
+        Error(Nil) -> {
+          let interrupted_step_ids =
+            active_step_ids(ordered_step_ids, step_to_monitor, [])
+          let timeout_result =
+            batch_timeout_result(
+              monitor_to_step,
+              batch_started_ms,
+              timeout_artifact,
+            )
+          terminate_step_workers(monitor_to_pid)
+          Ok(StepBatchFatal(
+            primary_result: primary_result,
+            sibling_results: list.filter([timeout_result, ..acc], fn(result) {
+              result.step_id != primary_result.step_id
+            }),
+            interrupted_step_ids: interrupted_step_ids,
+            drained: False,
+          ))
+        }
+        Ok(StepBatchResult(result)) ->
+          case dict.get(step_to_monitor, result.step_id) {
+            Error(Nil) ->
+              collect_fatal_sibling_results(
+                primary_result,
+                remaining,
+                selector,
+                monitor_to_step,
+                step_to_monitor,
+                monitor_to_pid,
+                batch_started_ms,
+                batch_deadline_ms,
+                timeout_artifact,
+                ordered_step_ids,
+                acc,
+              )
+            Ok(monitor) -> {
+              process.demonitor_process(monitor)
+              collect_fatal_sibling_results(
+                primary_result,
+                remaining - 1,
+                selector,
+                dict.delete(monitor_to_step, monitor),
+                dict.delete(step_to_monitor, result.step_id),
+                dict.delete(monitor_to_pid, monitor),
+                batch_started_ms,
+                batch_deadline_ms,
+                timeout_artifact,
+                ordered_step_ids,
+                [result, ..acc],
+              )
+            }
+          }
+        Ok(StepBatchDown(down)) ->
+          case down {
+            process.ProcessDown(monitor, _, reason) ->
+              case dict.get(monitor_to_step, monitor) {
+                Error(Nil) ->
+                  collect_fatal_sibling_results(
+                    primary_result,
+                    remaining,
+                    selector,
+                    monitor_to_step,
+                    step_to_monitor,
+                    monitor_to_pid,
+                    batch_started_ms,
+                    batch_deadline_ms,
+                    timeout_artifact,
+                    ordered_step_ids,
+                    acc,
+                  )
+                Ok(step_id) -> {
+                  terminate_step_workers(monitor_to_pid)
+                  Error(step_worker_down_failure(step_id, reason))
+                }
+              }
+            process.PortDown(_, _, _) ->
+              collect_fatal_sibling_results(
+                primary_result,
+                remaining,
+                selector,
+                monitor_to_step,
+                step_to_monitor,
+                monitor_to_pid,
+                batch_started_ms,
+                batch_deadline_ms,
+                timeout_artifact,
+                ordered_step_ids,
+                acc,
+              )
+          }
+        Ok(StepBatchLinkedExit) ->
+          collect_fatal_sibling_results(
+            primary_result,
+            remaining,
+            selector,
+            monitor_to_step,
+            step_to_monitor,
+            monitor_to_pid,
+            batch_started_ms,
+            batch_deadline_ms,
+            timeout_artifact,
+            ordered_step_ids,
+            acc,
+          )
+      }
+  }
+}
+
+fn active_step_ids(
+  ordered_step_ids: List(String),
+  step_to_monitor: Dict(String, process.Monitor),
+  acc: List(String),
+) -> List(String) {
+  case ordered_step_ids {
+    [] -> list.reverse(acc)
+    [step_id, ..rest] ->
+      case dict.has_key(step_to_monitor, step_id) {
+        True -> active_step_ids(rest, step_to_monitor, [step_id, ..acc])
+        False -> active_step_ids(rest, step_to_monitor, acc)
+      }
   }
 }
 
@@ -483,17 +702,49 @@ fn batch_timeout_outcome(
   monitor_to_pid: Dict(process.Monitor, process.Pid),
   batch_started_ms: Int,
   timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
+  ordered_step_ids: List(String),
 ) -> StepBatchOutcome {
+  let interrupted_step_ids =
+    active_step_ids(ordered_step_ids, step_monitor_by_step(monitor_to_step), [])
   terminate_step_workers(monitor_to_pid)
+  let timeout_result =
+    batch_timeout_result(monitor_to_step, batch_started_ms, timeout_artifact)
+  StepBatchFatal(
+    primary_result: timeout_result,
+    sibling_results: [],
+    interrupted_step_ids: list.filter(interrupted_step_ids, fn(step_id) {
+      step_id != timeout_result.step_id
+    }),
+    drained: False,
+  )
+}
+
+fn batch_timeout_result(
+  monitor_to_step: Dict(process.Monitor, String),
+  batch_started_ms: Int,
+  timeout_artifact: fn(String, Int) -> step_artifact.StepArtifact,
+) -> StepExecutionResult {
   let step_id = timeout_step_id(monitor_to_step)
   let duration_ms = max_int(0, monotonic_ms() - batch_started_ms)
-  StepBatchFatal(StepExecutionResult(
+  StepExecutionResult(
     step_id: step_id,
     artifact: timeout_artifact(step_id, duration_ms),
     tokens: session_tokens.zero_token_totals(),
     final_issue: None,
     turns: 0,
-  ))
+  )
+}
+
+fn step_monitor_by_step(
+  monitor_to_step: Dict(process.Monitor, String),
+) -> Dict(String, process.Monitor) {
+  monitor_to_step
+  |> dict.to_list
+  |> list.map(fn(pair) {
+    let #(monitor, step_id) = pair
+    #(step_id, monitor)
+  })
+  |> dict.from_list
 }
 
 fn timeout_step_id(monitor_to_step: Dict(process.Monitor, String)) -> String {

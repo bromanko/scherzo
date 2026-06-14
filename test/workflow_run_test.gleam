@@ -4268,6 +4268,483 @@ fn receive_events(
   }
 }
 
+pub fn recoverable_fatal_batch_drains_siblings_and_rechecks_only_failed_step_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: fixable\n    kind: command\n    run: fixable\n    run_in: main\n    recovery:\n      attempts: 1\n      prompt: repair fixable\n  - id: sibling\n    kind: command\n    run: sibling\n    run_in: review\n  - id: final\n    kind: command\n    depends_on: [fixable, sibling]\n    run: final\n    run_in: main\n",
+    )
+  let event_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let recovery_subject = process.new_subject()
+  let result_subject = process.new_subject()
+  let sibling_barrier = test_async.new_barrier()
+  let base = deps(event_subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let event =
+          context.step_id <> ":" <> int.to_string(context.attempt_index)
+        process.send(command_subject, event)
+        case context.step_id, context.attempt_index {
+          "sibling", 1 -> test_async.block_until_released(sibling_barrier)
+          _, _ -> Nil
+        }
+        let exit_code = case context.step_id, context.attempt_index {
+          "fixable", 1 -> 1
+          _, _ -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> event,
+          "stderr:" <> event,
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(recovery_subject, context.step_id)
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "recheck",
+            "patched",
+            "ready for recheck",
+          )),
+        )
+      },
+    )
+
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(
+        result_subject,
+        workflow_run.execute(
+          issue(),
+          dag,
+          orchestrator(),
+          empty_tracker(),
+          [],
+          "run-1",
+          dependencies,
+        ),
+      )
+    })
+
+  let first_runs = receive_events(command_subject, 2, [])
+  assert list.contains(first_runs, "fixable:1")
+  assert list.contains(first_runs, "sibling:1")
+  test_async.assert_no_extra_message_within(recovery_subject, 50)
+
+  test_async.release_barrier(sibling_barrier)
+  let assert Ok(Ok(_)) = process.receive(result_subject, within: 1000)
+
+  let later_runs = test_async.drain_subject(command_subject)
+  assert list.contains(later_runs, "fixable:2")
+  assert list.contains(later_runs, "final:1")
+  assert list.filter(later_runs, fn(item) { item == "sibling:1" }) == []
+  assert list.filter(later_runs, fn(item) { item == "sibling:2" }) == []
+  assert receive_event(recovery_subject) == "fixable"
+  test_async.assert_no_extra_message_within(recovery_subject, 50)
+
+  let events = test_async.drain_subject(event_subject)
+  assert list.length(
+      list.filter(events, fn(event) { event == "prepare:fixable:main:" }),
+    )
+    == 2
+  assert list.length(
+      list.filter(events, fn(event) { event == "prepare:sibling:review:" }),
+    )
+    == 1
+}
+
+pub fn recoverable_fatal_batch_records_failed_continued_sibling_without_recovery_test() {
+  let root = "test/tmp/workflow-run/recoverable-fatal-batch-failed-continued"
+  let event_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let recovery_subject = process.new_subject()
+  let result_subject = process.new_subject()
+  let optional_barrier = test_async.new_barrier()
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: fixable\n    kind: command\n    run: fixable\n    run_in: main\n    recovery:\n      attempts: 1\n      prompt: repair fixable\n  - id: optional\n    kind: command\n    run: optional\n    run_in: review\n    on_failure: continue\n  - id: final\n    kind: command\n    depends_on: [fixable, optional]\n    run: final\n    run_in: main\n",
+    )
+  let base = deps(event_subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      checkpoint: recording_checkpoint(root, event_subject),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let event =
+          context.step_id <> ":" <> int.to_string(context.attempt_index)
+        process.send(command_subject, event)
+        case context.step_id, context.attempt_index {
+          "optional", 1 -> test_async.block_until_released(optional_barrier)
+          _, _ -> Nil
+        }
+        let exit_code = case context.step_id, context.attempt_index {
+          "fixable", 1 -> 1
+          "optional", 1 -> 1
+          _, _ -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> event,
+          "stderr:" <> event,
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(recovery_subject, context.step_id)
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "recheck",
+            "patched",
+            "ready for recheck",
+          )),
+        )
+      },
+    )
+
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(
+        result_subject,
+        workflow_run.execute(
+          issue(),
+          dag,
+          orchestrator(),
+          empty_tracker(),
+          [],
+          "run-1",
+          dependencies,
+        ),
+      )
+    })
+
+  let first_runs = receive_events(command_subject, 2, [])
+  assert list.contains(first_runs, "fixable:1")
+  assert list.contains(first_runs, "optional:1")
+  test_async.assert_no_extra_message_within(recovery_subject, 50)
+
+  test_async.release_barrier(optional_barrier)
+  let assert Ok(Ok(_)) = process.receive(result_subject, within: 1000)
+
+  let later_runs = test_async.drain_subject(command_subject)
+  assert list.contains(later_runs, "fixable:2")
+  assert list.contains(later_runs, "final:1")
+  assert list.filter(later_runs, fn(item) { item == "optional:1" }) == []
+  assert list.filter(later_runs, fn(item) { item == "optional:2" }) == []
+  assert receive_event(recovery_subject) == "fixable"
+  test_async.assert_no_extra_message_within(recovery_subject, 50)
+  assert step_finished_outcome(root, "optional") == "failed_continued"
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.succeeded_after_recovery
+
+  let events = test_async.drain_subject(event_subject)
+  assert list.length(
+      list.filter(events, fn(event) { event == "prepare:fixable:main:" }),
+    )
+    == 2
+  assert list.length(
+      list.filter(events, fn(event) { event == "prepare:optional:review:" }),
+    )
+    == 1
+
+  test_async.release_barrier_if_waiting(optional_barrier)
+}
+
+pub fn nonrecoverable_fatal_batch_keeps_completed_siblings_and_interrupts_only_active_steps_test() {
+  let root = "test/tmp/workflow-run/nonrecoverable-fatal-batch"
+  let subject = process.new_subject()
+  let result_subject = process.new_subject()
+  let slow_barrier = test_async.new_barrier()
+  let fail_barrier = test_async.new_barrier()
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nconcurrency: 3\nsteps:\n  - id: done\n    kind: command\n    run: done\n    run_in: docs\n  - id: fail\n    kind: command\n    run: fail\n    run_in: main\n  - id: slow\n    kind: command\n    run: slow\n    run_in: review\n  - id: final\n    kind: command\n    depends_on: [done, fail, slow]\n    run: final\n    run_in: main\n",
+    )
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      checkpoint: recording_checkpoint(root, subject),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "run:" <> context.step_id)
+        case context.step_id {
+          "slow" -> test_async.block_until_released(slow_barrier)
+          "fail" -> test_async.block_until_released(fail_barrier)
+          _ -> Nil
+        }
+        let exit_code = case context.step_id == "fail" {
+          True -> 1
+          False -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> context.step_id,
+          "stderr:" <> context.step_id,
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(
+        result_subject,
+        workflow_run.execute(
+          issue(),
+          dag,
+          orchestrator(),
+          empty_tracker(),
+          [],
+          "run-1",
+          dependencies,
+        ),
+      )
+    })
+
+  assert receive_event_with_prefix(subject, "run:done", 20) == "run:done"
+  test_async.release_barrier(fail_barrier)
+  let assert Ok(Error(failure)) = process.receive(result_subject, within: 1000)
+  assert failure.reason == "workflow_step_failed"
+  test_async.release_barrier_if_waiting(slow_barrier)
+  assert step_finished_outcome(root, "done") == workflow_outcome.completed
+  assert has_step_interrupted_before_workflow_finished(
+    root,
+    "slow",
+    "fatal_sibling_finished",
+  )
+  assert !has_step_interrupted_before_workflow_finished(
+    root,
+    "done",
+    "fatal_sibling_finished",
+  )
+}
+
+pub fn recovery_recheck_hides_failed_artifact_from_new_template_rendering_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: fixable\n    kind: command\n    run: fixable\n    run_in: main\n    recovery:\n      attempts: 1\n      prompt: repair fixable\n  - id: helper\n    kind: command\n    run: helper\n    run_in: review\n  - id: reader\n    kind: agent\n    depends_on: [helper]\n    prompt: seen {{ steps.fixable.stderr }}\n    run_in: docs\n  - id: final\n    kind: command\n    depends_on: [fixable, reader]\n    run: final\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let result_subject = process.new_subject()
+  let retry_barrier = test_async.new_barrier()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "command:"
+            <> context.step_id
+            <> ":"
+            <> int.to_string(context.attempt_index),
+        )
+        case context.step_id, context.attempt_index {
+          "fixable", 2 -> test_async.block_until_released(retry_barrier)
+          _, _ -> Nil
+        }
+        let exit_code = case context.step_id, context.attempt_index {
+          "fixable", 1 -> 1
+          _, _ -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> context.step_id,
+          "broken artifact from attempt "
+            <> int.to_string(context.attempt_index),
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent:" <> context.step_id <> ":" <> prompt_text(prompt_mode),
+        )
+        case context.step_id {
+          "fixable" ->
+            Ok(
+              success_agent_with_result(workflow_step_recovery_result(
+                "recheck",
+                "patched",
+                "ready for recheck",
+              )),
+            )
+          _ -> Ok(success_agent(prompt_text(prompt_mode)))
+        }
+      },
+    )
+
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(
+        result_subject,
+        workflow_run.execute(
+          issue(),
+          dag,
+          orchestrator(),
+          empty_tracker(),
+          [],
+          "run-1",
+          dependencies,
+        ),
+      )
+    })
+
+  let retry_started =
+    receive_event_with_prefix(subject, "command:fixable:2", 1000)
+  assert retry_started == "command:fixable:2"
+  let assert Ok(Error(failure)) = process.receive(result_subject, within: 1000)
+  test_async.release_barrier_if_waiting(retry_barrier)
+  assert failure.failed_step_id == Some("reader")
+  let assert Ok(reader_artifact) = dict.get(failure.artifacts, "reader")
+  assert string.contains(reader_artifact.stderr, "template render failed")
+  assert !string.contains(
+    reader_artifact.stderr,
+    "broken artifact from attempt 1",
+  )
+  let assert Error(Nil) = dict.get(failure.artifacts, "fixable")
+}
+
+pub fn execute_with_resume_successful_run_cleans_up_run_root_test() {
+  let root = "test/tmp/workflow-run/execute-with-resume-cleanup"
+  let subject = process.new_subject()
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
+    )
+  let resume =
+    workflow_run.ResumeState(
+      artifacts: dict.new(),
+      workspaces: dict.new(),
+      next_attempt_indexes: dict.from_list([#("collect", 1)]),
+      run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      recovery_evidence: workflow_outcome.NoStepRecovery,
+      pi_session_continuations: dict.new(),
+      contract_inputs_recorded: None,
+      contract_outputs_recorded: None,
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, None),
+        checkpoint: recording_checkpoint(root, subject),
+      ),
+      resume,
+    )
+
+  assert receive_event_with_prefix(subject, "workflow_finished:", 20)
+    == "workflow_finished:completed"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+}
+
+pub fn workflow_failed_checkpoints_before_cleanup_test() {
+  let root = "test/tmp/workflow-run/workflow-failed-checkpoint-order"
+  let subject = process.new_subject()
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
+    )
+
+  let assert Error(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(
+        ..deps(subject, Some("collect")),
+        checkpoint: recording_checkpoint(root, subject),
+      ),
+    )
+
+  assert receive_event_with_prefix(subject, "workflow_finished:", 20)
+    == "workflow_finished:failed_fatal"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+}
+
 fn receive_command_starts(
   subject: process.Subject(CommandStart),
   count: Int,
