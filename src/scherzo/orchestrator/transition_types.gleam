@@ -13,6 +13,7 @@ import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 import scherzo/state/recovery
@@ -70,6 +71,10 @@ pub type Message {
     context: DispatchContext,
     issue_resolution: OperatorIssueResolution,
     parked_issue_resolution: ParkedIssueResolution,
+  )
+  OperatorCommandCompleted(
+    request: effects_types.OperatorCommandRequest,
+    result: command.CommandResult,
   )
   DispatchCandidates(
     candidates: List(tracker_issue.Issue),
@@ -131,6 +136,14 @@ pub type Message {
     session_id: identity.SessionId,
     reason: session_reason.WorkerExitReason,
     context: WorkerLifecycleContext,
+  )
+  AggregatePiTokensAdded(tokens: session_tokens.TokenTotals)
+  WorkflowRuntimeReloaded(poll_interval_ms: Int, max_concurrent_agents: Int)
+  InvalidWorkflowReportResultRecorded(
+    issue_id: String,
+    violation_fingerprint: String,
+    reporting_policy_fingerprint: String,
+    last_result: String,
   )
   YamlStepStarted(session_id: identity.SessionId, run_id: identity.RunId)
   YamlStepFinished(session_id: identity.SessionId)

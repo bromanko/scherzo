@@ -155,7 +155,7 @@ pub opaque type ShellHandlers(state) {
     shutdown_runtime: fn(state, Bool) -> state,
     set_operator_paused: fn(state, Bool) -> state,
     apply_operator_command: fn(state, transition_effects.OperatorCommandRequest) ->
-      #(state, command.CommandResult),
+      #(state, command.CommandResult, List(transition_types.Message)),
     finish_operator_command: fn(
       state,
       transition_effects.OperatorCommandRequest,
@@ -298,7 +298,7 @@ pub fn shell_handlers(
   apply_operator_command apply_operator_command: fn(
     state,
     transition_effects.OperatorCommandRequest,
-  ) -> #(state, command.CommandResult),
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   finish_operator_command finish_operator_command: fn(
     state,
     transition_effects.OperatorCommandRequest,
@@ -365,7 +365,11 @@ pub opaque type Context(state) {
   Context(
     state: state,
     transition_state_from_state: fn(state) -> transition_types.State,
-    merge_transition_state: fn(state, transition_types.State) -> state,
+    merge_transition_state: fn(
+      state,
+      transition_types.State,
+      transition_types.State,
+    ) -> state,
     log_exhausted: fn(state, Int) -> state,
     mark_invariant_failure: fn(
       state,
@@ -384,6 +388,7 @@ pub fn context(
     transition_types.State,
   merge_transition_state merge_transition_state: fn(
     state,
+    transition_types.State,
     transition_types.State,
   ) -> state,
   log_exhausted log_exhausted: fn(state, Int) -> state,
@@ -413,7 +418,8 @@ pub fn run(
   context: Context(state),
   messages: List(transition_types.Message),
 ) -> state {
-  let transition_state = context.transition_state_from_state(context.state)
+  let input_transition_state =
+    context.transition_state_from_state(context.state)
   let shell = transition_shell(context.state, context.handlers)
   let transition_runner.RunResult(
     state: transition_state,
@@ -421,7 +427,7 @@ pub fn run(
     exhausted: exhausted,
   ) =
     transition_runner.run(
-      state: transition_state,
+      state: input_transition_state,
       shell: shell,
       messages: messages,
       max_messages: context.max_messages,
@@ -429,6 +435,7 @@ pub fn run(
   let state =
     context.merge_transition_state(
       transition_interpreter.data(shell),
+      input_transition_state,
       transition_state,
     )
   let state = check_invariants(Context(..context, state: state))
@@ -564,15 +571,17 @@ pub fn run_one_message_with_operator_reply(
   operator_command operator_command: command.OperatorCommand,
   send_reply send_reply: fn(command.CommandResult) -> Nil,
 ) -> state {
-  let transition_state = context.transition_state_from_state(context.state)
+  let input_transition_state =
+    context.transition_state_from_state(context.state)
   let transition_types.Outcome(state: transition_state, effects: effects) =
-    transition.handle(message, transition_state)
+    transition.handle(message, input_transition_state)
   let #(request, result, effects_after_reply) = case
     split_operator_command_finish(effects)
   {
     Ok(split) -> split
     Error(Nil) -> #(
       transition_effects.OperatorCommandRequest(
+        correlation_id: "missing",
         source: transition_effects.LocalOperatorCommand,
         operator_command: operator_command,
         timeout_ms: 0,
@@ -607,6 +616,7 @@ pub fn run_one_message_with_operator_reply(
   let state =
     context.merge_transition_state(
       transition_interpreter.data(shell),
+      input_transition_state,
       transition_state,
     )
   case exhausted {

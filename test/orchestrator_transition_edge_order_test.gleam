@@ -1008,6 +1008,7 @@ fn edge_shell() -> interpreter.ShellState(List(String)) {
       #(
         append_event(events, "operator:apply"),
         command.rejected(request.operator_command, "unhandled", None),
+        [],
       )
     },
     finish_operator_command: fn(events, _, result) {
