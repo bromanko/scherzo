@@ -48,6 +48,7 @@ pub fn apply_shell_operator_command_routes_prompt_session_test() {
   let worker_subject = process.new_subject()
   let request =
     transition_effects.OperatorCommandRequest(
+      correlation_id: "test-correlation",
       source: transition_effects.LocalOperatorCommand,
       operator_command: command.PromptSession("session-1", "hello"),
       timeout_ms: 1000,
@@ -55,35 +56,36 @@ pub fn apply_shell_operator_command_routes_prompt_session_test() {
   let handlers =
     operator_runtime.shell_handlers(
       reload_workflow_for_operator: fn(state, _) {
-        #(state, command.applied(command.ReloadWorkflow, None))
+        #(state, command.applied(command.ReloadWorkflow, None), [])
       },
       retry_workflow_step_for_operator: fn(state, _, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None))
+        #(state, command.applied(command.ReloadWorkflow, None), [])
       },
       retry_artifact_publication_for_operator: fn(state, _, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None))
+        #(state, command.applied(command.ReloadWorkflow, None), [])
       },
       schedule_run_now_for_operator: fn(state, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None))
+        #(state, command.applied(command.ReloadWorkflow, None), [])
       },
       abort_session_for_operator_sync: fn(state, _, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None))
+        #(state, command.applied(command.ReloadWorkflow, None), [])
       },
       route_worker_command_sync: fn(state, _, _, _, send) {
         let reply = process.new_subject()
         send(worker_subject, reply)
-        #(state + 1, command.applied(command.PauseDispatch, Some("routed")))
+        #(state + 1, command.applied(command.PauseDispatch, Some("routed")), [])
       },
       cleanup_orphan_steps_for_operator: fn(state, _, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None))
+        #(state, command.applied(command.ReloadWorkflow, None), [])
       },
     )
 
-  let #(state, result) =
+  let #(state, result, follow_ups) =
     operator_runtime.apply_shell_operator_command(0, request, handlers)
 
   assert state == 1
   assert result.message == Some("routed")
+  assert follow_ups == []
   let assert Ok(worker_command.QueuePrompt(message: message, ..)) =
     process.receive(worker_subject, within: 1000)
   assert message == "hello"

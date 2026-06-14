@@ -266,6 +266,7 @@ pub fn reply_snapshot(
             "operator_command_unhandled",
             None,
           ),
+          [],
         )
       },
       finish_operator_command: fn(data, _, _) { #(data, []) },

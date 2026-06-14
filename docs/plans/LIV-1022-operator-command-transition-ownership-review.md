@@ -54,6 +54,13 @@ Milestone 6 deletes the override path and validates the invariant. The observabl
 - [x] (2026-06-11) Reviewed the current operator command, transition shell, effect interpreter, runtime-write, and operator stop paths named by LIV-1022.
 - [x] (2026-06-11) Wrote this planning review document only; no production implementation was changed.
 - [x] (2026-06-11) Incorporated review feedback by tightening milestone specificity, acceptance evidence, lint/full-validation obligations, deferred manual smoke timing, docs/helper migration boundaries, and provider-live/cache no-op expectations.
+- [x] (2026-06-13 00:00Z) Implemented Milestone 1's fail-closed tripwire by snapshotting the pre-shell transition state, logging discarded mergeable sections, and marking the daemon for fatal shutdown when an override would hide transition-owned changes.
+- [ ] (2026-06-13 00:00Z) Implement Milestone 2 by replacing inline `ApplyOperatorCommand` completion with explicit operator-command completion messages and transition-owned finish handling.
+
+## Surprises & Discoveries
+
+- Observation: the override path can only detect silent loss correctly if it compares against the pre-shell transition snapshot rather than the shell-mutated daemon state.
+  Evidence: `src/scherzo/orchestrator/daemon.gleam` now stores `override_input_transition_state` when `ApplyOperatorCommand` enters the shell-owned override path.
 
 ## Decision Log
 
@@ -61,6 +68,11 @@ Milestone 6 deletes the override path and validates the invariant. The observabl
 - Decision: Use correlation-based pending replies instead of `last_operator_command_result`. Rationale: it preserves synchronous `scherzo ctl` semantics without coupling command replies to a single mutable daemon field. Date: 2026-06-11.
 - Decision: Treat operator shell follow-ups as transition messages processed before command completion. Rationale: stop, reload, and future shell commands can mutate transition-owned state through the same mechanism as all other effects. Date: 2026-06-11.
 - Decision: Keep full async worker-command waits as coordinated overlap, not mandatory scope. Rationale: this issue must remove override and re-entrancy; the correlation boundary can support async waits if that ticket is merged, but it should not expand the implementation without owner approval. Date: 2026-06-11.
+- Decision: Detect discarded transition state by snapshotting mergeable transition-owned fields before the shell command runs. Rationale: comparing against the pre-shell snapshot catches silent loss without treating shell-owned mutations as false positives. Date: 2026-06-13.
+
+## Outcomes & Retrospective
+
+Milestone 1 is now implemented in code. The daemon no longer silently tolerates an override that would discard changes to mergeable transition-owned fields; it logs `operator_command_transition_state_discarded` and proceeds to the existing fatal cleanup path. The remaining work is still the larger ownership redesign: explicit operator completion messages, correlated replies, re-entrancy removal, runtime-mutation migration, and final override deletion.
 
 ## Validation and Acceptance
 

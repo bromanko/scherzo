@@ -47,25 +47,14 @@ pub fn run_applies_effects_and_merges_transition_state_test() {
     ))
 }
 
-pub fn run_respects_shell_state_override_test() {
-  let issue = orchestrator_transition_test.fixture_issue()
-  let original = orchestrator_transition_test.state_with_pending_claim(issue)
-  let state =
-    ShellState(
-      transition_state: original,
-      events: [],
-      shell_state_overrides_transition: True,
-      exhausted_limits: [],
-    )
+pub fn run_empty_messages_preserve_transition_state_test() {
+  let original = orchestrator_transition_test.fixture_state()
+  let state = shell_state(original)
 
-  let next =
-    daemon_transition_shell.run(context(state, 8), [
-      handoff_claim_succeeded(),
-    ])
+  let next = daemon_transition_shell.run(context(state, 8), [])
 
-  assert next.events == ["append:claim:issue-1:run-1", "start:run-1"]
+  assert next.events == []
   assert next.transition_state == original
-  assert next.shell_state_overrides_transition == False
 }
 
 pub fn run_logs_exhaustion_with_configured_limit_test() {
@@ -351,7 +340,6 @@ pub fn interpret_effects_covers_callback_surface_test() {
       "shutdown:True",
       "paused:True",
       "apply_operator:pause",
-      "finish_operator:pause:applied",
       "finish_operator:resume:queued",
       "report_park_effect:issue-1",
     ]
@@ -362,7 +350,10 @@ pub fn interpret_effects_covers_callback_surface_test() {
         identity.run_id_from_string("run-1"),
         identity.session_id_from_string("session-1"),
       ),
-      transition_types.SnapshotRequested,
+      transition_types.OperatorCommandCompleted(
+        apply_request,
+        command.applied(apply_request.operator_command, None),
+      ),
       transition_types.SnapshotRequested,
     ]
 }
@@ -409,7 +400,6 @@ type ShellState {
   ShellState(
     transition_state: transition_types.State,
     events: List(String),
-    shell_state_overrides_transition: Bool,
     exhausted_limits: List(Int),
   )
 }
@@ -418,7 +408,6 @@ fn shell_state(transition_state: transition_types.State) -> ShellState {
   ShellState(
     transition_state: transition_state,
     events: [],
-    shell_state_overrides_transition: False,
     exhausted_limits: [],
   )
 }
@@ -503,16 +492,8 @@ fn context_with_invariant_checker(
   daemon_transition_shell.context(
     state: state,
     transition_state_from_state: fn(state) { state.transition_state },
-    merge_transition_state: fn(state, transition_state) {
-      case state.shell_state_overrides_transition {
-        True -> ShellState(..state, shell_state_overrides_transition: False)
-        False ->
-          ShellState(
-            ..state,
-            transition_state: transition_state,
-            shell_state_overrides_transition: False,
-          )
-      }
+    merge_transition_state: fn(state, _input_transition_state, transition_state) {
+      ShellState(..state, transition_state: transition_state)
     },
     log_exhausted: fn(state, max_messages) {
       ShellState(
@@ -778,6 +759,7 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
           "apply_operator:" <> command.command_name(request.operator_command),
         ),
         command.applied(request.operator_command, None),
+        [],
       )
     },
     finish_operator_command: fn(state, request, result) {
@@ -895,6 +877,7 @@ fn failing_handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
           "apply_operator:" <> command.command_name(request.operator_command),
         ),
         command.applied(request.operator_command, None),
+        [],
       )
     },
     finish_operator_command: fn(state, request, result) {
@@ -941,6 +924,7 @@ fn operator_request(
   operator_command: command.OperatorCommand,
 ) -> effects_types.OperatorCommandRequest {
   effects_types.OperatorCommandRequest(
+    correlation_id: "test-correlation",
     source: effects_types.LocalOperatorCommand,
     operator_command: operator_command,
     timeout_ms: 1000,

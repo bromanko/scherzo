@@ -1020,6 +1020,7 @@ fn shell_with_append_and_start_result(
       #(
         list.append(events, ["operator:apply"]),
         command.rejected(request.operator_command, "unhandled", None),
+        [],
       )
     },
     finish_operator_command: fn(events, _, result) {
