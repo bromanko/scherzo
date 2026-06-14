@@ -1772,7 +1772,7 @@ fn stop_worker_after_issue_refresh(
       transition_types.Outcome(
         state: remove_yaml_step_runs_for_run(state, entry.run_id),
         effects: [
-          effects_types.workflow_cancelled_append(
+          effects_types.workflow_cancelled_stop_on_failure_append(
             "workflow_cancelled_issue_reconcile:"
               <> entry.issue_id
               <> ":"
@@ -2489,6 +2489,10 @@ fn finish_worker_success_entry(
       Some(entry.task_ref),
     )
   transition_types.Outcome(state: state, effects: [
+    effects_types.worker_terminal_stop_on_failure_append(
+      "worker_finish:" <> entry.issue_id <> ":" <> entry.run_id,
+      batch,
+    ),
     effects_types.Log("info", "worker_exited", [
       #("issue_id", entry.issue_id),
       #("run_id", entry.run_id),
@@ -2500,12 +2504,6 @@ fn finish_worker_success_entry(
       exit_reason: session_reason.Normal,
       tokens: success.tokens,
       update_tokens: True,
-    )),
-    effects_types.AppendLedger(effects_types.LedgerAppend(
-      correlation_id: "worker_finish:" <> entry.issue_id <> ":" <> entry.run_id,
-      batch: batch,
-      failure_event: "ledger_append_failed",
-      policy: effects_types.ContinueRegardless,
     )),
     effects_types.ReportWorkerSuccess(identity, success),
     ..follow_ups
@@ -2595,6 +2593,10 @@ fn finish_standard_worker_failure_entry(
       Some(entry.task_ref),
     )
   transition_types.Outcome(state: state, effects: [
+    effects_types.worker_terminal_stop_on_failure_append(
+      "worker_failure:" <> entry.issue_id <> ":" <> entry.run_id,
+      batch,
+    ),
     effects_types.Log("warn", "worker_exited", [
       #("issue_id", entry.issue_id),
       #("run_id", entry.run_id),
@@ -2606,12 +2608,6 @@ fn finish_standard_worker_failure_entry(
       exit_reason: session_reason.Failed,
       tokens: failure.tokens,
       update_tokens: False,
-    )),
-    effects_types.AppendLedger(effects_types.LedgerAppend(
-      correlation_id: "worker_failure:" <> entry.issue_id <> ":" <> entry.run_id,
-      batch: batch,
-      failure_event: "ledger_append_failed",
-      policy: effects_types.ContinueRegardless,
     )),
     effects_types.ReportWorkerFailure(identity, failure),
     ..follow_ups
@@ -2652,6 +2648,16 @@ fn finish_recovery_validation_failure_entry(
     state: state,
     effects: list.append(
       [
+        effects_types.worker_terminal_stop_on_failure_append(
+          "worker_failure:" <> entry.issue_id <> ":" <> entry.run_id,
+          ledger_batch.worker_failed(counter_record_for_entry(
+            runtime,
+            entry,
+            baseline_issue.identifier,
+            Some(entry.run_id),
+            context.now_ms,
+          )),
+        ),
         effects_types.Log("warn", "worker_exited", [
           #("issue_id", entry.issue_id),
           #("run_id", entry.run_id),
@@ -2663,21 +2669,6 @@ fn finish_recovery_validation_failure_entry(
           exit_reason: session_reason.Failed,
           tokens: failure.tokens,
           update_tokens: False,
-        )),
-        effects_types.AppendLedger(effects_types.LedgerAppend(
-          correlation_id: "worker_failure:"
-            <> entry.issue_id
-            <> ":"
-            <> entry.run_id,
-          batch: ledger_batch.worker_failed(counter_record_for_entry(
-            runtime,
-            entry,
-            baseline_issue.identifier,
-            Some(entry.run_id),
-            context.now_ms,
-          )),
-          failure_event: "ledger_append_failed",
-          policy: effects_types.ContinueRegardless,
         )),
       ],
       park_effects,
@@ -2716,6 +2707,11 @@ fn finish_operator_worker_failure_entry(
     state: state,
     effects: list.append(
       [
+        effects_types.workflow_cancelled_stop_on_failure_append(
+          "workflow_cancelled:" <> entry.issue_id <> ":" <> entry.run_id,
+          #(entry.run_id, entry.workflow_id, entry.task_ref),
+          failure.tokens.total,
+        ),
         effects_types.Log("warn", "worker_exited", [
           #("issue_id", entry.issue_id),
           #("run_id", entry.run_id),
@@ -2728,11 +2724,6 @@ fn finish_operator_worker_failure_entry(
           tokens: failure.tokens,
           update_tokens: True,
         )),
-        effects_types.workflow_cancelled_append(
-          "workflow_cancelled:" <> entry.issue_id <> ":" <> entry.run_id,
-          #(entry.run_id, entry.workflow_id, entry.task_ref),
-          failure.tokens.total,
-        ),
       ],
       park_effects,
     ),
@@ -2854,7 +2845,7 @@ fn stop_worker_entry(
     )
   let identity = worker_identity(entry)
   transition_types.Outcome(state: state, effects: [
-    effects_types.workflow_cancelled_append(
+    effects_types.workflow_cancelled_stop_on_failure_append(
       "workflow_cancelled:" <> entry.issue_id <> ":" <> entry.run_id,
       #(entry.run_id, entry.workflow_id, entry.task_ref),
       0,

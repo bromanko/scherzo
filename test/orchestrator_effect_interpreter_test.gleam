@@ -103,6 +103,34 @@ pub fn append_ledger_continue_regardless_failure_does_not_block_later_effects_te
   assert interpreter.started_workers(shell) == [worker_start]
 }
 
+pub fn append_ledger_stop_daemon_failure_blocks_later_effects_test() {
+  let shell =
+    interpreter.new_shell_state(
+      append_ledger: fn(_) { Error(ledger.Io("disk full")) },
+      now_ms: fn() { 456 },
+    )
+  let request =
+    effects_types.LedgerAppend(
+      correlation_id: "worker_failure:issue-1:run-1",
+      batch: ledger_batch.retry_cancelled("issue-1", 1, "test"),
+      failure_event: "ledger_append_failed",
+      policy: effects_types.StopBatchOnFailure,
+    )
+  let worker_start = worker_start_request()
+
+  let interpreter.ApplyResult(
+    shell: shell,
+    follow_up_messages: follow_up_messages,
+  ) =
+    interpreter.apply(shell, [
+      effects_types.AppendLedger(request),
+      effects_types.StartWorker(worker_start),
+    ])
+
+  assert follow_up_messages == []
+  assert interpreter.started_workers(shell) == []
+}
+
 pub fn apply_operator_command_follow_ups_precede_completion_test() {
   let request =
     effects_types.OperatorCommandRequest(
