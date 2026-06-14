@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq}
 import gleam/result
 import gleam/string
+import scherzo/claim_abandonment
 import scherzo/config/types as config_types
 import scherzo/hash
 import scherzo/path
@@ -436,7 +437,7 @@ pub fn plan_with_issue_observations(
   issue_observations: Dict(String, IssueRefreshObservation),
   now_ms: Int,
 ) -> Result(RecoveryPlan, RecoveryError) {
-  let outbox_recovery = replayable_outbox(projection)
+  let outbox_recovery = replayable_outbox(projection, now_ms)
   let issue_by_id = issue_by_id_from_observations(issue_observations)
   let base = recovery_policy.new_state(config)
   let build =
@@ -449,6 +450,8 @@ pub fn plan_with_issue_observations(
       auto_unparked_issue_ids: [],
     )
   let build = restore_parked(build, projection, issue_by_id)
+  let build =
+    restore_recovered_park_records(build, outbox_recovery.record_bodies)
   let build =
     restore_retries(build, projection, config, issue_observations, now_ms)
   let build =
@@ -2021,7 +2024,7 @@ fn artifact_recovery_park_candidate_bodies(
       candidate.issue_id,
       issue_identifier,
       "artifact_recovery_failed",
-      "explicit_unpark_only",
+      claim_abandonment.explicit_unpark_only,
       issue_fingerprint,
       observed_updated_at_ms,
     ),
@@ -2044,7 +2047,7 @@ fn park_candidate_bodies(
       candidate.issue_id,
       issue_identifier,
       reason,
-      "explicit_unpark_only",
+      claim_abandonment.explicit_unpark_only,
       issue_fingerprint,
       observed_updated_at_ms,
     ),
@@ -2235,14 +2238,19 @@ fn attempt_workflow_id(status: projection.StepAttemptStatus) -> String {
   }
 }
 
-fn replayable_outbox(projection: projection.Projection) -> OutboxRecovery {
+fn replayable_outbox(
+  projection: projection.Projection,
+  now_ms: Int,
+) -> OutboxRecovery {
   let recovered =
     projection.outbox
     |> dict.to_list
     |> list.sort(by: compare_outbox_entries_by_time)
     |> list.fold(
       OutboxRecovery(outbox_to_replay: [], record_bodies: [], warnings: []),
-      fn(recovery, entry) { recover_outbox_entry(recovery, projection, entry) },
+      fn(recovery, entry) {
+        recover_outbox_entry(recovery, projection, entry, now_ms)
+      },
     )
 
   OutboxRecovery(
@@ -2256,17 +2264,31 @@ fn recover_outbox_entry(
   recovery: OutboxRecovery,
   projection: projection.Projection,
   entry: #(String, projection.OutboxStatus),
+  now_ms: Int,
 ) -> OutboxRecovery {
   let #(outbox_id, status) = entry
   case status {
     projection.OutboxPending(issue_id, outbox_kind, _, _) ->
-      fail_outbox_recovery(
-        recovery,
-        outbox_id,
-        legacy_linear_task_ref(issue_id),
-        outbox_kind,
-        outbox.OutboxPayloadMissing,
-      )
+      case outbox_kind == claim_abandonment.claim_kind {
+        True ->
+          recover_abandoned_claim_outbox(
+            recovery,
+            projection,
+            outbox_id,
+            legacy_linear_task_ref(issue_id),
+            "startup_recovered_claim",
+            True,
+            now_ms,
+          )
+        False ->
+          fail_outbox_recovery(
+            recovery,
+            outbox_id,
+            legacy_linear_task_ref(issue_id),
+            outbox_kind,
+            outbox.OutboxPayloadMissing,
+          )
+      }
     projection.OutboxPendingV2(
       issue_id,
       outbox_kind,
@@ -2300,6 +2322,7 @@ fn recover_outbox_entry(
         outbox_kind,
         dedupe_key,
         payload_json,
+        now_ms,
       )
     projection.OutboxPendingV2WithTask(
       task_ref,
@@ -2334,13 +2357,66 @@ fn recover_outbox_entry(
         outbox_kind,
         dedupe_key,
         payload_json,
+        now_ms,
       )
-    projection.OutboxCompleted(_, _, _)
-    | projection.OutboxCompletedWithTask(_, _, _)
-    | projection.OutboxFailed(_, _, _, _)
-    | projection.OutboxFailedWithTask(_, _, _, _)
-    | projection.OutboxPermanentlyFailed(_, _, _, _, _)
-    | projection.OutboxPermanentlyFailedWithTask(_, _, _, _, _) -> recovery
+    projection.OutboxCompleted(_, outbox_kind, _)
+    | projection.OutboxCompletedWithTask(_, outbox_kind, _) ->
+      case
+        outbox_kind == claim_abandonment.claim_kind
+        && !claim_has_workflow_run(
+          projection,
+          outbox_id,
+          completed_outbox_task_ref(status),
+        )
+      {
+        True ->
+          recover_abandoned_claim_outbox(
+            recovery,
+            projection,
+            outbox_id,
+            completed_outbox_task_ref(status),
+            "stale_claim_success",
+            False,
+            now_ms,
+          )
+        False -> recovery
+      }
+    projection.OutboxFailed(_, outbox_kind, error_code, _)
+    | projection.OutboxFailedWithTask(_, outbox_kind, error_code, _) ->
+      case outbox_kind == claim_abandonment.claim_kind {
+        True ->
+          recover_abandoned_claim_outbox(
+            recovery,
+            projection,
+            outbox_id,
+            failed_outbox_task_ref(status),
+            "operator_action_required:" <> error_code,
+            False,
+            now_ms,
+          )
+        False -> recovery
+      }
+    projection.OutboxPermanentlyFailed(_, outbox_kind, error_code, _, _)
+    | projection.OutboxPermanentlyFailedWithTask(
+        _,
+        outbox_kind,
+        error_code,
+        _,
+        _,
+      ) ->
+      case outbox_kind == claim_abandonment.claim_kind {
+        True ->
+          recover_abandoned_claim_outbox(
+            recovery,
+            projection,
+            outbox_id,
+            permanent_outbox_task_ref(status),
+            "permanent_failure:" <> error_code,
+            False,
+            now_ms,
+          )
+        False -> recovery
+      }
   }
 }
 
@@ -2352,36 +2428,235 @@ fn recover_pending_outbox(
   outbox_kind: String,
   dedupe_key: String,
   payload_json: String,
+  now_ms: Int,
 ) -> OutboxRecovery {
-  case outbox.decode_payload(payload_json) {
-    Error(error) ->
-      fail_outbox_recovery(recovery, outbox_id, task_ref, outbox_kind, error)
-    Ok(payload) ->
-      case command_ack_already_recorded(projection, outbox_id, payload) {
-        True -> recovery
-        False ->
-          case outbox.recovery_replay_error(outbox_kind, payload.kind) {
-            Error(error) ->
-              fail_outbox_recovery(
-                recovery,
-                outbox_id,
-                task_ref,
-                outbox_kind,
-                error,
-              )
-            Ok(Nil) ->
-              OutboxRecovery(..recovery, outbox_to_replay: [
-                OutboxReplay(
-                  outbox_id,
-                  task_ref,
-                  outbox_kind,
-                  dedupe_key,
-                  payload_json,
-                ),
-                ..recovery.outbox_to_replay
-              ])
+  case outbox_kind == claim_abandonment.claim_kind {
+    True ->
+      recover_abandoned_claim_outbox(
+        recovery,
+        projection,
+        outbox_id,
+        task_ref,
+        "startup_recovered_claim",
+        True,
+        now_ms,
+      )
+    False ->
+      case outbox.decode_payload(payload_json) {
+        Error(error) ->
+          fail_outbox_recovery(
+            recovery,
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            error,
+          )
+        Ok(payload) ->
+          case command_ack_already_recorded(projection, outbox_id, payload) {
+            True -> recovery
+            False ->
+              case outbox.recovery_replay_error(outbox_kind, payload.kind) {
+                Error(error) ->
+                  fail_outbox_recovery(
+                    recovery,
+                    outbox_id,
+                    task_ref,
+                    outbox_kind,
+                    error,
+                  )
+                Ok(Nil) ->
+                  OutboxRecovery(..recovery, outbox_to_replay: [
+                    OutboxReplay(
+                      outbox_id,
+                      task_ref,
+                      outbox_kind,
+                      dedupe_key,
+                      payload_json,
+                    ),
+                    ..recovery.outbox_to_replay
+                  ])
+              }
           }
       }
+  }
+}
+
+fn recover_abandoned_claim_outbox(
+  recovery: OutboxRecovery,
+  projection: projection.Projection,
+  claim_outbox_id: String,
+  task_ref: record.TaskRefFields,
+  abandonment_reason: String,
+  mark_original_permanent: Bool,
+  now_ms: Int,
+) -> OutboxRecovery {
+  let #(run_or_reason, source_run_id) =
+    claim_abandonment.claim_source(
+      task_ref,
+      claim_outbox_id,
+      abandonment_reason,
+    )
+  let issue_id = task_ref.task_remote_id
+  let issue_identifier = claim_abandonment.task_identifier_fields(task_ref)
+  let reason_text = claim_abandonment.reason_text(abandonment_reason)
+  let release_id =
+    claim_abandonment.release_key(
+      task_ref.task_backend_kind,
+      issue_id,
+      run_or_reason,
+    )
+  let release_payload =
+    release_claim_payload(
+      issue_identifier,
+      reason_text,
+      source_run_id,
+      release_id,
+    )
+  let release_records = case dict.has_key(projection.outbox, release_id) {
+    True -> []
+    False -> [
+      record.OutboxPendingV2WithTask(
+        release_id,
+        task_ref,
+        claim_abandonment.release_claim_kind,
+        release_id,
+        release_payload,
+      ),
+    ]
+  }
+  let release_replays = case dict.has_key(projection.outbox, release_id) {
+    True -> recovery.outbox_to_replay
+    False -> [
+      OutboxReplay(
+        release_id,
+        task_ref,
+        claim_abandonment.release_claim_kind,
+        release_id,
+        release_payload,
+      ),
+      ..recovery.outbox_to_replay
+    ]
+  }
+  let park_records = case dict.has_key(projection.parked_issues, issue_id) {
+    True -> []
+    False -> [
+      record.IssueParkedV2(
+        issue_id,
+        issue_identifier,
+        reason_text,
+        claim_abandonment.explicit_unpark_only,
+        "",
+        now_ms,
+      ),
+    ]
+  }
+  let original_records = case mark_original_permanent {
+    True -> [
+      record.OutboxPermanentlyFailedWithTask(
+        claim_outbox_id,
+        task_ref,
+        claim_abandonment.claim_kind,
+        "abandoned_claim_recovered",
+        1,
+      ),
+    ]
+    False -> []
+  }
+  OutboxRecovery(
+    outbox_to_replay: release_replays,
+    record_bodies: list.append(
+      original_records,
+      list.append(
+        release_records,
+        list.append(park_records, recovery.record_bodies),
+      ),
+    ),
+    warnings: [
+      "abandoned_claim_compensation:" <> issue_id <> ":" <> abandonment_reason,
+      ..recovery.warnings
+    ],
+  )
+}
+
+fn release_claim_payload(
+  issue_identifier: String,
+  reason_text: String,
+  source_run_id: Option(String),
+  release_id: String,
+) -> String {
+  let body =
+    claim_abandonment.release_comment_body(
+      issue_identifier,
+      reason_text,
+      source_run_id,
+      release_id,
+      [],
+    )
+  outbox.tracker_update_payload(
+    claim_abandonment.release_claim_kind,
+    release_id,
+    body,
+    None,
+    None,
+    [],
+  )
+}
+
+fn claim_has_workflow_run(
+  projection: projection.Projection,
+  claim_outbox_id: String,
+  task_ref: record.TaskRefFields,
+) -> Bool {
+  let #(run_or_reason, source_run_id) =
+    claim_abandonment.claim_source(
+      task_ref,
+      claim_outbox_id,
+      "stale_claim_success",
+    )
+  case source_run_id {
+    Some(run_id) -> claim_has_known_run(projection, run_id)
+    None -> claim_has_known_run(projection, run_or_reason)
+  }
+}
+
+fn claim_has_known_run(
+  projection: projection.Projection,
+  run_id: String,
+) -> Bool {
+  projection.has_workflow_run(projection, run_id)
+  || dict.has_key(projection.runs, run_id)
+}
+
+fn completed_outbox_task_ref(
+  status: projection.OutboxStatus,
+) -> record.TaskRefFields {
+  case status {
+    projection.OutboxCompleted(issue_id, _, _) ->
+      legacy_linear_task_ref(issue_id)
+    projection.OutboxCompletedWithTask(task_ref, _, _) -> task_ref
+    _ -> legacy_linear_task_ref("")
+  }
+}
+
+fn failed_outbox_task_ref(
+  status: projection.OutboxStatus,
+) -> record.TaskRefFields {
+  case status {
+    projection.OutboxFailed(issue_id, _, _, _) ->
+      legacy_linear_task_ref(issue_id)
+    projection.OutboxFailedWithTask(task_ref, _, _, _) -> task_ref
+    _ -> legacy_linear_task_ref("")
+  }
+}
+
+fn permanent_outbox_task_ref(
+  status: projection.OutboxStatus,
+) -> record.TaskRefFields {
+  case status {
+    projection.OutboxPermanentlyFailed(issue_id, _, _, _, _) ->
+      legacy_linear_task_ref(issue_id)
+    projection.OutboxPermanentlyFailedWithTask(task_ref, _, _, _, _) -> task_ref
+    _ -> legacy_linear_task_ref("")
   }
 }
 
@@ -2589,6 +2864,78 @@ fn restore_parked(
       }
     }
   })
+}
+
+fn restore_recovered_park_records(
+  build: Build,
+  record_bodies: List(record.RecordBody),
+) -> Build {
+  list.fold(record_bodies, build, fn(build, body) {
+    case body {
+      record.IssueParked(issue_id, issue_identifier, reason_text, at_ms) ->
+        restore_recovered_park_record(
+          build,
+          issue_id,
+          issue_identifier,
+          reason_text,
+          claim_abandonment.explicit_unpark_only,
+          "",
+          at_ms,
+        )
+      record.IssueParkedV2(
+        issue_id,
+        issue_identifier,
+        reason_text,
+        release_policy,
+        issue_fingerprint,
+        at_ms,
+      ) ->
+        restore_recovered_park_record(
+          build,
+          issue_id,
+          issue_identifier,
+          reason_text,
+          release_policy,
+          issue_fingerprint,
+          at_ms,
+        )
+      _ -> build
+    }
+  })
+}
+
+fn restore_recovered_park_record(
+  build: Build,
+  issue_id: String,
+  issue_identifier: String,
+  reason_text: String,
+  release_policy: String,
+  issue_fingerprint: String,
+  parked_at_ms: Int,
+) -> Build {
+  let task_ref = orchestrator_state.linear_issue_id_ref(issue_id)
+  let identity = orchestrator_state.task_ref_identity(task_ref)
+  let parked_entry =
+    orchestrator_state.ParkedEntry(
+      task_ref: task_ref,
+      issue_id: issue_id,
+      identifier: issue_identifier,
+      reason: park_reason_from_string(reason_text),
+      release_policy: orchestrator_state.park_release_policy_from_string(
+        release_policy,
+        issue_fingerprint,
+      ),
+      parked_at_ms: parked_at_ms,
+    )
+  Build(
+    ..build,
+    runtime: orchestrator_state.RuntimeState(
+      ..build.runtime,
+      parked: dict.insert(build.runtime.parked, identity, parked_entry),
+      claimed: dict.delete(build.runtime.claimed, identity),
+      retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
+    ),
+  )
 }
 
 fn restore_retries(

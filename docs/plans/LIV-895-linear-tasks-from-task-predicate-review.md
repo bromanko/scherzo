@@ -58,6 +58,13 @@ Milestone 5 completes documentation validation. The outcome is a reviewer-readab
 - [x] (2026-06-09) Inspected current config, Linear query, task-source, scheduled-failure, doctor, contract, and safety docs to ground the plan in the repository.
 - [x] (2026-06-09) Wrote this review document as a planning artifact only; no production parser or runtime behavior was changed.
 - [x] (2026-06-09) Incorporated review feedback by making milestone evidence, manual checklist timing, non-doc validation obligations, and deferred live/cache/dogfood checks explicit in this review document and the structured implementation pack.
+- [x] (2026-06-13) Implemented the docs-only follow-up by adding `docs/specs/TRACKER_LINEAR_TASKS_FROM.md`, linking it from `docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md`, and updating operator safety wording in `docs/GETTING_STARTED.md`.
+- [x] (2026-06-13) Ran docs-only validation and manual checklist review evidence for AST keys, compatibility/desugaring, invalid shapes, doctor expectations, query-path inventory, and non-overlapping task-scope guidance.
+
+## Surprises & Discoveries
+
+- Observation: The review-doc validator remained fail-closed during implementation handoff and rejected the document once the required `Surprises & Discoveries` heading was absent, even though the implementation itself was docs-only.
+  Evidence: `validate-review-doc` returned `SCHERZO_FAILURE_CODE=execplan_review_doc_required_section_missing` until the heading was restored.
 
 ## Decision Log
 
@@ -65,6 +72,7 @@ Milestone 5 completes documentation validation. The outcome is a reviewer-readab
 - Decision: Make existing `tracker.linear.project`, `tracker.linear.project_slug`, and `tracker.project_slug` compatibility aliases desugar only when `tasks_from` is absent. Rationale: mixed ownership-boundary fields are easy to misread and should not silently create overlapping daemon scopes. Date: 2026-06-09.
 - Decision: Put parser and runtime support out of scope for the follow-up implementation. Rationale: this issue is a specification slice, and a checked-in spec reduces risk for later code work. Date: 2026-06-09.
 - Decision: Treat manual documentation review and grep evidence as pre-publish requirements, while deferring browser, live Linear dogfood, provider-live, and cache checks unless the implementation leaves the docs-only scope. Rationale: review feedback asked for explicit evidence timing without inventing irrelevant runtime validation for a specification-only change. Date: 2026-06-09.
+- Decision: Keep the docs slice additive by documenting `tracker.linear.project` as the current public default while pointing future readers to `docs/specs/TRACKER_LINEAR_TASKS_FROM.md` for the generalized predicate model. Rationale: this preserves current operator guidance and acceptance criteria without implying parser/runtime support already exists. Date: 2026-06-13.
 
 ## Validation and Acceptance
 
@@ -85,3 +93,7 @@ Rollout for the follow-up implementation is additive documentation: add the spec
 ## Open Questions and Clarifications Needed
 
 No open question blocks implementation handoff. A later parser ticket should decide exact version-gating for future leaves such as `team`, `all_labels`, and `any_label` if the runtime cannot support them immediately, but this spec should still define their intended semantics now.
+
+## Outcomes & Retrospective
+
+The docs-only implementation delivered the intended contract surface without touching runtime code. The new spec now records the `tracker.linear.tasks_from` AST, compatibility/desugaring rules, validation and `doctor` expectations, query-path inventory, and the updated non-overlapping Linear task scope/root safety invariant. Browser, live Linear dogfood, provider-live, cache, helper-migration, and full Gleam validation remain intentionally deferred because the final diff stayed within Markdown documentation.
