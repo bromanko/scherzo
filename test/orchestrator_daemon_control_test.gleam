@@ -384,6 +384,7 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
       retry_initial_ms: 50,
       retry_max_ms: 100,
       connect_timeout_ms: 50,
+      command_timeout_ms: 75,
       command_bridge_enabled: False,
       redaction_secrets: ["dcred_secret_1"],
     )
@@ -401,6 +402,13 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
       },
       list_sessions: fn() { Ok([]) },
       dispatch_paused: fn(_) { Ok(False) },
+      apply_command: fn(operator_command, _) {
+        Ok(command.not_allowed(
+          operator_command,
+          "remote_command_unavailable",
+          Some("remote command bridge is unavailable"),
+        ))
+      },
       logger: fn(_, _, _, _) { Ok(Nil) },
     )
   let _ = key

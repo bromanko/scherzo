@@ -359,7 +359,16 @@ fn plan_project_config_activation(
         bundle.effective.ui_server,
         desired,
       ))
-      case ui_server_already_active(bundle.effective.ui_server, desired) {
+      case
+        ui_server_already_active(
+          bundle.effective.ui_server,
+          desired,
+          ui_server_command_bridge_setting_lines(string.split(
+            bundle.config_contents,
+            on: "\n",
+          )),
+        )
+      {
         True -> Ok(ActivationAlreadyPlanned(bundle.config_path))
         False -> {
           use updated <- result.try(update_config_contents(
@@ -397,10 +406,16 @@ fn apply_project_config_activation(
 fn ui_server_already_active(
   ui_server: config_types.UiServerConfig,
   desired: DesiredUiServerConfig,
+  command_bridge_setting: Option(Bool),
 ) -> Bool {
+  let bridge_active = case command_bridge_setting {
+    Some(False) -> True
+    Some(True) | None -> ui_server.command_bridge_enabled
+  }
   ui_server.enabled
   && ui_server.endpoint == Some(desired.endpoint)
   && ui_server.credential_ref == Some(desired.credential_ref)
+  && bridge_active
   && daemon_label_already_active(ui_server.daemon_label, desired.daemon_label)
 }
 
@@ -445,10 +460,17 @@ fn rewrite_existing_ui_server(
               ))
             True -> {
               let #(body, after) = take_ui_server_body(rest, [])
+              let bridge_enabled = case command_bridge_setting_from_body(body) {
+                Some(False) -> False
+                Some(True) | None -> True
+              }
               let new_body =
                 rewrite_ui_server_body(
                   body,
-                  desired_ui_server_field_lines(desired),
+                  desired_ui_server_field_lines_with_bridge(
+                    desired,
+                    bridge_enabled,
+                  ),
                 )
               let rewritten_block = [line, ..list.append(new_body, after)]
               Ok(Some(list.append(list.reverse(before), rewritten_block)))
@@ -564,6 +586,17 @@ fn desired_field_line(
 fn desired_ui_server_field_lines(
   desired: DesiredUiServerConfig,
 ) -> List(#(String, String)) {
+  desired_ui_server_field_lines_with_bridge(desired, True)
+}
+
+fn desired_ui_server_field_lines_with_bridge(
+  desired: DesiredUiServerConfig,
+  command_bridge_enabled: Bool,
+) -> List(#(String, String)) {
+  let bridge_value = case command_bridge_enabled {
+    True -> "true"
+    False -> "false"
+  }
   let base = [
     #("enabled", "  enabled: true"),
     #("endpoint", "  endpoint: " <> yaml_string(desired.endpoint)),
@@ -571,6 +604,7 @@ fn desired_ui_server_field_lines(
       "credential_ref",
       "  credential_ref: " <> yaml_string(desired.credential_ref),
     ),
+    #("command_bridge_enabled", "  command_bridge_enabled: " <> bridge_value),
   ]
   case desired.daemon_label {
     Some(label) ->
@@ -648,23 +682,65 @@ fn ui_server_body_field(line: String) -> Option(String) {
     False -> None
     True ->
       case string.split_once(trimmed, on: ":") {
-        Ok(#(key, _)) -> {
-          let key = string.trim(key)
-          case target_ui_server_field(key) {
-            True -> Some(key)
-            False -> None
+        Ok(#(key, _)) ->
+          case string.trim(key) {
+            "enabled" as key
+            | "endpoint" as key
+            | "credential_ref" as key
+            | "daemon_label" as key
+            | "command_bridge_enabled" as key -> Some(key)
+            _ -> None
           }
-        }
         Error(Nil) -> None
       }
   }
 }
 
-fn target_ui_server_field(key: String) -> Bool {
-  key == "enabled"
-  || key == "endpoint"
-  || key == "credential_ref"
-  || key == "daemon_label"
+fn ui_server_command_bridge_setting_lines(lines: List(String)) -> Option(Bool) {
+  case lines {
+    [] -> None
+    [line, ..rest] ->
+      case is_ui_server_header(line), ui_server_header_is_block_style(line) {
+        True, True -> {
+          let #(body, _) = take_ui_server_body(rest, [])
+          command_bridge_setting_from_body(body)
+        }
+        True, False -> None
+        False, _ -> ui_server_command_bridge_setting_lines(rest)
+      }
+  }
+}
+
+fn command_bridge_setting_from_body(body: List(String)) -> Option(Bool) {
+  case body {
+    [] -> None
+    [line, ..rest] ->
+      case ui_server_body_field(line) {
+        Some("command_bridge_enabled") ->
+          case yaml_bool_value(line) {
+            Some(value) -> Some(value)
+            None -> command_bridge_setting_from_body(rest)
+          }
+        _ -> command_bridge_setting_from_body(rest)
+      }
+  }
+}
+
+fn yaml_bool_value(line: String) -> Option(Bool) {
+  case string.split_once(string.trim(line), on: ":") {
+    Ok(#(_, value)) -> {
+      let value = case string.split_once(value, on: "#") {
+        Ok(#(before_comment, _)) -> string.trim(before_comment)
+        Error(Nil) -> string.trim(value)
+      }
+      case value {
+        "true" -> Some(True)
+        "false" -> Some(False)
+        _ -> None
+      }
+    }
+    Error(Nil) -> None
+  }
 }
 
 fn yaml_string(value: String) -> String {

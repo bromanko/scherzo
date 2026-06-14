@@ -4,9 +4,13 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import scherzo/control/command
 import scherzo/control/remote/ui_protocol
+import scherzo/control/remote_command_router
 import scherzo/log
 import scherzo/session/event
+
+const max_in_flight_commands = 8
 
 pub type Settings {
   Settings(
@@ -21,6 +25,7 @@ pub type Settings {
     retry_initial_ms: Int,
     retry_max_ms: Int,
     connect_timeout_ms: Int,
+    command_timeout_ms: Int,
     command_bridge_enabled: Bool,
     redaction_secrets: List(String),
   )
@@ -37,6 +42,8 @@ pub type Dependencies(connection, timer) {
     cancel_timer: fn(timer) -> Nil,
     list_sessions: fn() -> Result(List(event.SessionSummary), String),
     dispatch_paused: fn(Int) -> Result(Bool, String),
+    apply_command: fn(command.OperatorCommand, Int) ->
+      Result(command.CommandResult, Nil),
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
   )
@@ -56,6 +63,7 @@ pub opaque type Message {
   StateTick
   ReaderText(Int, String)
   ReaderFailed(Int, String)
+  ApplyCompleted(Int, String, command.OperatorCommand, command.CommandResult)
   Shutdown(process.Subject(Nil))
 }
 
@@ -72,6 +80,8 @@ type State(connection, timer) {
     connection_generation: Int,
     current_heartbeat_interval_ms: Int,
     stopped_for_repair: Bool,
+    router: remote_command_router.State,
+    last_known_dispatch_paused: Bool,
   )
 }
 
@@ -80,7 +90,7 @@ pub fn start(
   dependencies: Dependencies(connection, timer),
 ) -> Result(Handle, ClientError) {
   let settings = normalize_settings(settings)
-  emit_command_bridge_disabled_warning(settings, dependencies)
+  emit_command_bridge_startup_log(settings, dependencies)
   let builder =
     actor.new_with_initialiser(1000, fn(subject) {
       let state =
@@ -96,6 +106,8 @@ pub fn start(
           connection_generation: 0,
           current_heartbeat_interval_ms: settings.heartbeat_interval_ms,
           stopped_for_repair: False,
+          router: remote_command_router.new(),
+          last_known_dispatch_paused: False,
         )
         |> schedule_attempt_connect(0)
       let selector = process.new_selector() |> process.select(subject)
@@ -148,6 +160,14 @@ fn handle_message(
       actor.continue(handle_reader_text(state, generation, payload))
     ReaderFailed(generation, message) ->
       actor.continue(handle_reader_failed(state, generation, message))
+    ApplyCompleted(generation, command_id, operator_command, result) ->
+      actor.continue(handle_apply_completed(
+        state,
+        generation,
+        command_id,
+        operator_command,
+        result,
+      ))
     Shutdown(reply) -> {
       shutdown_runtime(state)
       process.send(reply, Nil)
@@ -303,14 +323,280 @@ fn handle_reader_text(
             "ui_websocket_daemon_identity_revoked",
             reason,
           )
-        Ok(ui_protocol.UnknownServerMessage(_)) -> state
-        Error(_) -> {
-          emit_log(state, "warn", "ui_websocket_bad_inbound", [])
+        Ok(ui_protocol.ServerCommand(
+          command_id,
+          daemon_id,
+          boot_id,
+          operator_command,
+        )) ->
+          handle_server_command(
+            state,
+            connection,
+            generation,
+            command_id,
+            daemon_id,
+            boot_id,
+            operator_command,
+          )
+        Ok(ui_protocol.UnknownServerMessage(type_)) -> {
+          emit_log(state, "debug", "ui_websocket_unknown_inbound", [
+            #("type", type_),
+          ])
           state
         }
+        Error(error) -> handle_bad_inbound(state, connection, payload, error)
       }
     _, _ -> state
   }
+}
+
+fn handle_bad_inbound(
+  state: State(connection, timer),
+  connection: connection,
+  payload: String,
+  error: ui_protocol.DecodeError,
+) -> State(connection, timer) {
+  let ui_protocol.DecodeError(code: code, message: message) = error
+  emit_log(state, "warn", "ui_websocket_bad_inbound", [
+    #("code", code),
+    #("reason", message),
+  ])
+  case ui_protocol.decode_server_command_rejection(payload) {
+    Ok(#(command_id, result)) ->
+      handle_bad_server_command(state, connection, command_id, result)
+    Error(ui_protocol.DecodeError(code: rejection_code, message: _)) -> {
+      emit_log(state, "debug", "ui_websocket_unrepliable_bad_inbound", [
+        #("code", rejection_code),
+      ])
+      state
+    }
+  }
+}
+
+fn handle_bad_server_command(
+  state: State(connection, timer),
+  connection: connection,
+  command_id: String,
+  result: command.CommandResult,
+) -> State(connection, timer) {
+  let #(router, decision) =
+    remote_command_router.register_rejection(state.router, command_id, result)
+  let state = State(..state, router: router)
+  case decision {
+    remote_command_router.StartApply ->
+      send_command_result_for_state(state, connection, command_id, result)
+    remote_command_router.DuplicateInFlight -> {
+      emit_log(state, "debug", "ui_websocket_server_command_duplicate", [
+        #("server_command_id", command_id),
+      ])
+      state
+    }
+    remote_command_router.ReplayCompleted(result) ->
+      send_command_result_for_state(state, connection, command_id, result)
+    remote_command_router.Reject(result) ->
+      send_command_result_for_state(state, connection, command_id, result)
+  }
+}
+
+fn handle_server_command(
+  state: State(connection, timer),
+  connection: connection,
+  generation: Int,
+  command_id: String,
+  daemon_id: String,
+  boot_id: String,
+  operator_command: command.OperatorCommand,
+) -> State(connection, timer) {
+  let #(router, decision) =
+    remote_command_router.register_limited(
+      state.router,
+      command_id,
+      operator_command,
+      max_in_flight_commands,
+    )
+  let state = State(..state, router: router)
+  case decision {
+    remote_command_router.StartApply ->
+      case
+        command_without_apply_result(
+          state,
+          operator_command,
+          daemon_id,
+          boot_id,
+        )
+      {
+        Some(result) ->
+          complete_and_send_command_result(
+            state,
+            connection,
+            command_id,
+            result,
+          )
+        None -> {
+          emit_log(state, "info", "ui_websocket_server_command_received", [
+            #("server_command_id", command_id),
+            #("command", command.command_name(operator_command)),
+          ])
+          spawn_apply_worker(
+            state.subject,
+            state.dependencies.apply_command,
+            generation,
+            command_id,
+            operator_command,
+            state.settings.command_timeout_ms,
+          )
+          state
+        }
+      }
+    remote_command_router.DuplicateInFlight -> {
+      emit_log(state, "debug", "ui_websocket_server_command_duplicate", [
+        #("server_command_id", command_id),
+      ])
+      state
+    }
+    remote_command_router.ReplayCompleted(result) ->
+      send_command_result_for_state(state, connection, command_id, result)
+    remote_command_router.Reject(result) ->
+      send_command_result_for_state(state, connection, command_id, result)
+  }
+}
+
+fn command_without_apply_result(
+  state: State(connection, timer),
+  operator_command: command.OperatorCommand,
+  daemon_id: String,
+  boot_id: String,
+) -> Option(command.CommandResult) {
+  case state.settings.command_bridge_enabled {
+    False ->
+      Some(command.not_allowed(
+        operator_command,
+        "command_bridge_disabled",
+        Some("remote command bridge is disabled"),
+      ))
+    True ->
+      case
+        daemon_id == state.settings.daemon_id,
+        boot_id == state.settings.boot_id
+      {
+        False, _ ->
+          Some(command.not_allowed(
+            operator_command,
+            "daemon_id_mismatch",
+            Some("server command daemonId does not match this daemon"),
+          ))
+        _, False ->
+          Some(command.not_allowed(
+            operator_command,
+            "boot_id_mismatch",
+            Some("server command bootId does not match this daemon boot"),
+          ))
+        True, True -> None
+      }
+  }
+}
+
+fn handle_apply_completed(
+  state: State(connection, timer),
+  generation: Int,
+  command_id: String,
+  operator_command: command.OperatorCommand,
+  result: command.CommandResult,
+) -> State(connection, timer) {
+  let state =
+    State(
+      ..state,
+      router: remote_command_router.complete(state.router, command_id, result),
+      last_known_dispatch_paused: update_known_dispatch_paused(
+        state.last_known_dispatch_paused,
+        operator_command,
+        result,
+      ),
+    )
+  emit_log(state, "info", "ui_websocket_server_command_completed", [
+    #("server_command_id", command_id),
+    #("command", command.command_name(operator_command)),
+    #("status", command.status_to_string(result.status)),
+  ])
+  case generation == state.connection_generation, state.connection {
+    True, Some(connection) ->
+      send_command_result_and_state(state, connection, command_id, result)
+    _, _ -> state
+  }
+}
+
+fn complete_and_send_command_result(
+  state: State(connection, timer),
+  connection: connection,
+  command_id: String,
+  result: command.CommandResult,
+) -> State(connection, timer) {
+  let state =
+    State(
+      ..state,
+      router: remote_command_router.complete(state.router, command_id, result),
+    )
+  send_command_result_for_state(state, connection, command_id, result)
+}
+
+fn send_command_result_for_state(
+  state: State(connection, timer),
+  connection: connection,
+  command_id: String,
+  result: command.CommandResult,
+) -> State(connection, timer) {
+  case send_command_result(connection, state, command_id, result) {
+    Ok(Nil) -> state
+    Error(message) ->
+      retry_after_send_failure(
+        state,
+        connection,
+        "ui_websocket_command_result_send_failed",
+        message,
+      )
+  }
+}
+
+fn send_command_result_and_state(
+  state: State(connection, timer),
+  connection: connection,
+  command_id: String,
+  result: command.CommandResult,
+) -> State(connection, timer) {
+  case send_command_result(connection, state, command_id, result) {
+    Ok(Nil) ->
+      case send_state_snapshot(connection, state) {
+        Ok(Nil) -> state
+        Error(message) ->
+          retry_after_send_failure(
+            state,
+            connection,
+            "ui_websocket_state_send_failed",
+            message,
+          )
+      }
+    Error(message) ->
+      retry_after_send_failure(
+        state,
+        connection,
+        "ui_websocket_command_result_send_failed",
+        message,
+      )
+  }
+}
+
+fn send_command_result(
+  connection: connection,
+  state: State(connection, timer),
+  command_id: String,
+  result: command.CommandResult,
+) -> Result(Nil, String) {
+  ui_protocol.encode_command_result(command_id, result)
+  |> state.dependencies.send_text(
+    connection,
+    _,
+    state.settings.connect_timeout_ms,
+  )
 }
 
 fn apply_server_hello(
@@ -380,10 +666,10 @@ fn send_state_snapshot(
   state: State(connection, timer),
 ) -> Result(Nil, String) {
   let dispatch_paused = case
-    state.dependencies.dispatch_paused(state.settings.connect_timeout_ms)
+    state.dependencies.dispatch_paused(state.settings.command_timeout_ms)
   {
     Ok(dispatch_paused) -> dispatch_paused
-    Error(_) -> False
+    Error(_) -> state.last_known_dispatch_paused
   }
   use sessions <- result.try(state.dependencies.list_sessions())
   let snapshots = sessions |> list.map(ui_protocol.session_from_summary)
@@ -511,7 +797,7 @@ fn shutdown_runtime(state: State(connection, timer)) -> Nil {
   }
 }
 
-fn emit_command_bridge_disabled_warning(
+fn emit_command_bridge_startup_log(
   settings: Settings,
   dependencies: Dependencies(connection, timer),
 ) -> Nil {
@@ -519,14 +805,9 @@ fn emit_command_bridge_disabled_warning(
     True -> {
       let _ =
         dependencies.logger(
-          "warn",
-          "ui_websocket_command_bridge_disabled",
-          [
-            #(
-              "message",
-              "command_bridge_enabled is not implemented yet; remote command/result bridging remains disabled",
-            ),
-          ],
+          "info",
+          "ui_websocket_command_bridge_enabled",
+          [#("message", "remote command/result bridge enabled")],
           settings.redaction_secrets,
         )
       Nil
@@ -582,6 +863,50 @@ fn reader_loop(
   }
 }
 
+fn spawn_apply_worker(
+  subject: process.Subject(Message),
+  apply_command: fn(command.OperatorCommand, Int) ->
+    Result(command.CommandResult, Nil),
+  generation: Int,
+  command_id: String,
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+) -> Nil {
+  let _worker =
+    process.spawn_unlinked(fn() {
+      let result = case apply_command(operator_command, timeout_ms) {
+        Ok(result) -> result
+        Error(Nil) ->
+          command.rejected(
+            operator_command,
+            "remote_command_timeout",
+            Some("remote command timed out"),
+          )
+      }
+      process.send(
+        subject,
+        ApplyCompleted(generation, command_id, operator_command, result),
+      )
+    })
+  Nil
+}
+
+fn update_known_dispatch_paused(
+  current: Bool,
+  operator_command: command.OperatorCommand,
+  result: command.CommandResult,
+) -> Bool {
+  case result.status {
+    command.Applied ->
+      case operator_command {
+        command.PauseDispatch -> True
+        command.ResumeDispatch -> False
+        _ -> current
+      }
+    _ -> current
+  }
+}
+
 fn normalize_settings(settings: Settings) -> Settings {
   let retry_initial_ms = normalize_positive(settings.retry_initial_ms)
   let retry_max_ms = case settings.retry_max_ms < retry_initial_ms {
@@ -595,6 +920,7 @@ fn normalize_settings(settings: Settings) -> Settings {
     retry_initial_ms: retry_initial_ms,
     retry_max_ms: retry_max_ms,
     connect_timeout_ms: normalize_positive(settings.connect_timeout_ms),
+    command_timeout_ms: normalize_positive(settings.command_timeout_ms),
   )
 }
 
