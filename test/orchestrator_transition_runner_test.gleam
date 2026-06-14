@@ -8,6 +8,7 @@ import orchestrator_transition_test
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
+import scherzo/error
 import scherzo/orchestrator/effects/interpreter
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
@@ -24,6 +25,7 @@ import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
 
 pub fn transition_runner_applies_effects_and_follow_ups_in_order_test() {
   let issue = orchestrator_transition_test.fixture_issue()
@@ -213,6 +215,48 @@ pub fn running_refresh_releases_stale_context_slot_before_candidate_fetch_test()
     ]
 }
 
+pub fn running_refresh_cancelled_append_failure_blocks_reconcile_followups_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let terminal_issue =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
+  let effective = orchestrator_transition_test.fixture_effective()
+  let context =
+    transition_types.DispatchContext(
+      ..orchestrator_transition_test.fixture_context(),
+      effective: config_types.EffectiveConfig(
+        ..effective,
+        agent: config_types.AgentConfig(
+          ..effective.agent,
+          max_concurrent_agents: 1,
+        ),
+      ),
+      active_issue_ids: [issue.id],
+      active_issues: [issue],
+    )
+
+  let transition_runner.RunResult(shell: shell, exhausted: exhausted, ..) =
+    transition_runner.run(
+      state: state_with_running_worker(issue),
+      shell: append_failure_shell(),
+      messages: [
+        transition_types.RunningRefreshCompleted(
+          1,
+          transition_types.PollSnapshot(1, Some(1)),
+          Ok([terminal_issue]),
+          context,
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell)
+    == ["append:workflow_cancelled_issue_reconcile:issue-1:run-1:terminal"]
+}
+
 pub fn transition_runner_stops_at_message_limit_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let state = orchestrator_transition_test.state_with_pending_claim(issue)
@@ -352,12 +396,88 @@ pub fn worker_finish_removes_running_and_reports_success_test() {
   assert interpreter.data(shell)
     == [
       "remove:issue-1",
+      "append:worker_finish:issue-1:run-1",
       "log:worker_exited",
       "publish:issue-1",
-      "append:worker_finish:issue-1:run-1",
       "success:issue-1",
       "release:issue-1",
     ]
+}
+
+pub fn worker_finish_append_failure_blocks_terminal_followups_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let state = state_with_running_worker(issue)
+
+  let transition_runner.RunResult(shell: shell, exhausted: exhausted, ..) =
+    transition_runner.run(
+      state: state,
+      shell: append_failure_shell(),
+      messages: [
+        transition_types.WorkerFinished(
+          identity.issue_id_from_string(issue.id),
+          identity.run_id_from_string("run-1"),
+          Ok(worker_success(issue)),
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell)
+    == ["remove:issue-1", "append:worker_finish:issue-1:run-1"]
+}
+
+pub fn recovery_validation_append_failure_blocks_publish_and_park_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let failure =
+    worker_failure(
+      error.PiFailed(error.PiProtocolError(
+        workflow_attempt.recovery_pi_resume_validation_failed,
+      )),
+    )
+
+  let transition_runner.RunResult(shell: shell, exhausted: exhausted, ..) =
+    transition_runner.run(
+      state: state_with_running_worker(issue),
+      shell: append_failure_shell(),
+      messages: [
+        transition_types.WorkerFinished(
+          identity.issue_id_from_string(issue.id),
+          identity.run_id_from_string("run-1"),
+          Error(failure),
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell)
+    == ["remove:issue-1", "append:worker_failure:issue-1:run-1"]
+}
+
+pub fn operator_worker_failure_append_failure_blocks_publish_and_park_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+
+  let transition_runner.RunResult(shell: shell, exhausted: exhausted, ..) =
+    transition_runner.run(
+      state: state_with_running_worker(issue),
+      shell: append_failure_shell(),
+      messages: [
+        transition_types.WorkerFinished(
+          identity.issue_id_from_string(issue.id),
+          identity.run_id_from_string("run-1"),
+          Error(worker_failure(error.OperatorAbort)),
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell)
+    == ["remove:issue-1", "append:workflow_cancelled:issue-1:run-1"]
 }
 
 pub fn worker_finish_uses_task_ref_with_duplicate_remote_ids_test() {
@@ -471,13 +591,63 @@ pub fn worker_down_known_removes_worker_and_reports_failure_test() {
     == [
       "log:worker_down",
       "remove:issue-1",
+      "append:worker_failure:issue-1:run-1",
       "log:worker_exited",
       "publish:issue-1",
-      "append:worker_failure:issue-1:run-1",
       "failure:issue-1",
       "park:issue-1",
       "release:issue-1",
     ]
+}
+
+pub fn worker_down_append_failure_blocks_failure_followups_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+
+  let transition_runner.RunResult(shell: shell, exhausted: exhausted, ..) =
+    transition_runner.run(
+      state: state_with_running_worker(issue),
+      shell: append_failure_shell(),
+      messages: [
+        transition_types.WorkerDown(
+          transition_types.KnownWorkerDown(
+            identity.issue_id_from_string(issue.id),
+            identity.run_id_from_string("run-1"),
+            identity.session_id_from_string("session-1"),
+          ),
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell)
+    == [
+      "log:worker_down",
+      "remove:issue-1",
+      "append:worker_failure:issue-1:run-1",
+    ]
+}
+
+pub fn worker_stop_cancelled_append_failure_blocks_stop_followups_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+
+  let transition_runner.RunResult(shell: shell, exhausted: exhausted, ..) =
+    transition_runner.run(
+      state: state_with_running_worker(issue),
+      shell: append_failure_shell(),
+      messages: [
+        transition_types.WorkerStopRequested(
+          identity.session_id_from_string("session-1"),
+          session_reason.OperatorAbort,
+          lifecycle_context(),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell) == ["append:workflow_cancelled:issue-1:run-1"]
 }
 
 pub fn worker_down_stale_is_safe_test() {
@@ -845,6 +1015,26 @@ fn lifecycle_context() -> transition_types.WorkerLifecycleContext {
     effective: orchestrator_transition_test.fixture_effective(),
     now_ms: 456,
     secrets: [],
+  )
+}
+
+fn worker_success(issue: tracker_issue.Issue) -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
+    final_issue: Some(issue),
+    final_classification: agent_types.FinalTerminal,
+    workspace_path: "test/tmp/workspaces/ABC-1",
+    tokens: session_tokens.zero_token_totals(),
+    turns: 1,
+    result: result_artifact.empty(),
+  )
+}
+
+fn worker_failure(reason: error.AgentRunnerError) -> agent_types.WorkerFailure {
+  agent_types.WorkerFailure(
+    reason: reason,
+    workspace_path: Some("test/tmp/workspaces/ABC-1"),
+    tokens: session_tokens.zero_token_totals(),
+    final_issue: None,
   )
 }
 

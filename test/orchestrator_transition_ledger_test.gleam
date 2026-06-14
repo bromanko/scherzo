@@ -350,6 +350,7 @@ pub fn terminal_worker_success_appends_counter_reset_test() {
       effects_types.AppendLedger(effects_types.LedgerAppend(
         correlation_id: "worker_finish:issue-1:run-1",
         batch: batch,
+        policy: effects_types.StopBatchOnFailure,
         ..,
       )) ->
         ledger_batch.to_bodies(batch)
@@ -361,6 +362,51 @@ pub fn terminal_worker_success_appends_counter_reset_test() {
             worker_sessions: 0,
             observed_updated_at_ms: 789,
             source_run_id: Some("run-1"),
+          ),
+        ]
+      _ -> False
+    }
+  })
+}
+
+pub fn worker_failure_counter_append_stops_daemon_on_append_failure_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let state =
+    running_worker_state_with_counter(
+      issue,
+      orchestrator_state.new_issue_counter(),
+    )
+
+  let transition_types.Outcome(effects: effects, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.WorkerDown(
+        transition_types.KnownWorkerDown(
+          identity.issue_id_from_string(issue.id),
+          identity.run_id_from_string("run-1"),
+          identity.session_id_from_string("session-1"),
+        ),
+        lifecycle_context(789),
+      ),
+      state,
+    )
+
+  assert list.any(effects, fn(effect) {
+    case effect {
+      effects_types.AppendLedger(effects_types.LedgerAppend(
+        correlation_id: "worker_failure:issue-1:run-1",
+        batch: batch,
+        policy: effects_types.StopBatchOnFailure,
+        ..,
+      )) ->
+        ledger_batch.to_bodies(batch)
+        == [
+          record.IssueCounterUpdated(
+            "issue-1",
+            "ABC-1",
+            1,
+            0,
+            789,
+            Some("run-1"),
           ),
         ]
       _ -> False
@@ -759,7 +805,7 @@ fn assert_cancelled_workflow_append(
         correlation_id: id,
         batch: batch,
         failure_event: "workflow_terminal_append_failed",
-        policy: effects_types.ContinueRegardless,
+        policy: effects_types.StopBatchOnFailure,
       )) ->
         id == correlation_id
         && ledger_batch.to_bodies(batch)

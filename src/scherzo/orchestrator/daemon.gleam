@@ -1441,10 +1441,6 @@ fn recovered_workspaces_to_prepared(
   |> dict.from_list
 }
 
-fn ledger_error_message(error: ledger.LedgerError) -> String {
-  ledger.ledger_error_to_string(error)
-}
-
 fn map_startup_recovery_error(
   result: Result(a, startup_recovery.StartupError),
 ) -> Result(a, StartupError) {
@@ -2553,10 +2549,11 @@ fn replay_projection_for_operator(
 ) -> Result(projection.Projection, String) {
   use ledger_path <- result.try(
     ledger.path_for_workspace_root(state.workflow.effective.workspace.root)
-    |> result.map_error(ledger_error_message),
+    |> result.map_error(ledger.ledger_error_to_string),
   )
   use read <- result.try(
-    ledger.read_records(ledger_path) |> result.map_error(ledger_error_message),
+    ledger.read_records(ledger_path)
+    |> result.map_error(ledger.ledger_error_to_string),
   )
   Ok(projection.fold(read.records))
 }
@@ -4139,11 +4136,19 @@ fn transition_append_ledger(
   request: transition_effects.LedgerAppend,
 ) -> #(State, Result(Nil, ledger.LedgerError)) {
   let bodies = ledger_batch.to_bodies(request.batch)
-  append_ledger_records(
-    state,
-    ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
-    request.failure_event,
-  )
+  let #(state, result) =
+    append_ledger_records(
+      state,
+      ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
+      request.failure_event,
+    )
+  case result != Ok(Nil), request.policy {
+    True, transition_effects.StopBatchOnFailure -> #(
+      State(..state, transition_invariant_violation_pending: True),
+      result,
+    )
+    _, _ -> #(state, result)
+  }
 }
 
 fn transition_start_worker(
@@ -4361,7 +4366,7 @@ fn transition_park_issue(
   ])
   let #(state, appended) = append_parked_record(state, parked, reason_text)
   case appended {
-    False -> state
+    False -> State(..state, transition_invariant_violation_pending: True)
     True ->
       enqueue_parked_entry_report(state, parked, reason_text, source_run_id)
   }
@@ -7075,25 +7080,14 @@ fn append_ledger_bodies(
 ) -> #(State, Bool) {
   case bodies {
     [] -> #(state, True)
-    _ ->
-      append_ledger_records(
-        state,
-        ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
-        event,
-      )
-      |> bool_result_from_append
-  }
-}
-
-fn bool_result_from_append(
-  result: #(State, Result(Nil, ledger.LedgerError)),
-) -> #(State, Bool) {
-  let #(state, append_result) = result
-  case append_result {
-    Ok(Nil) -> #(state, True)
-    Error(err) -> {
-      let _message = ledger_error_message(err)
-      #(state, False)
+    _ -> {
+      let #(state, append_result) =
+        append_ledger_records(
+          state,
+          ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
+          event,
+        )
+      #(state, append_result == Ok(Nil))
     }
   }
 }
@@ -7111,7 +7105,7 @@ fn append_ledger_records(
       {
         Error(err) -> {
           log_state(state, "error", event, [
-            #("error", ledger_error_message(err)),
+            #("error", ledger.ledger_error_to_string(err)),
           ])
           #(state, Error(err))
         }
@@ -7129,7 +7123,7 @@ fn append_ledger_records(
             )
             Error(err) -> {
               log_state(state, "error", event, [
-                #("error", ledger_error_message(err)),
+                #("error", ledger.ledger_error_to_string(err)),
               ])
               #(state, Error(err))
             }
