@@ -214,10 +214,15 @@ Required integer. The simplified schema intentionally keeps `version: 1`.
 
 ### `tracker`
 
-`tracker.linear.project` is the Linear project slug. `api_key_env` defaults to
-`LINEAR_API_KEY`. `endpoint` defaults to `https://api.linear.app/graphql`.
-`check_setup` defaults to `false`; when true, Scherzo checks that the configured
-Linear project, states, and labels exist.
+`tracker.linear.project` is the current public way to name the Linear project slug
+Scherzo should treat as its task scope. A future `tracker.linear.tasks_from`
+predicate will generalize this into a restricted Scherzo-owned task-scope AST; see
+[docs/specs/TRACKER_LINEAR_TASKS_FROM.md](TRACKER_LINEAR_TASKS_FROM.md). Until that
+predicate is implemented in parser/runtime code, operators should keep using
+`tracker.linear.project`. `api_key_env` defaults to `LINEAR_API_KEY`. `endpoint`
+defaults to `https://api.linear.app/graphql`. `check_setup` defaults to `false`;
+when true, Scherzo checks that the configured Linear project, states, and labels
+exist.
 
 `tracker.states.ready` names task states Scherzo may pick up. It defaults to
 `[Todo]`. `tracker.states.active` names non-terminal states Scherzo treats as
@@ -535,7 +540,7 @@ drivers, especially `workspace.drivers.<name>.type: custom`.
 | --- | --- |
 | `tracker.kind` | Removed; only `tracker.linear` is currently supported. |
 | `tracker.credentials.api_key_env` | `tracker.linear.api_key_env` |
-| `tracker.linear.project_slug` | `tracker.linear.project` |
+| `tracker.linear.project_slug` | `tracker.linear.project` (or future `tracker.linear.tasks_from` when implemented; see [TRACKER_LINEAR_TASKS_FROM.md](TRACKER_LINEAR_TASKS_FROM.md)) |
 | `tracker.active_states` | `tracker.states.active` |
 | `tracker.dispatch_states` | `tracker.states.ready` |
 | `tracker.terminal_states` | `tracker.states.terminal` |
