@@ -316,17 +316,20 @@ fn build_scheduled_failure_issue_search_request(
 ) -> Result(linear.Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
-  use project_slug <- try_tracker(require_project_slug(config))
+  use scope <- try_tracker(require_task_scope(config))
+  let variables =
+    config_types.linear_task_scope_graphql_variables(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
+    |> list.append([
+      #("labelFilters", build_label_filter_inputs(label_names)),
+    ])
   let body =
     json.object([
-      #("query", json.string(scheduled_failure_issue_search_query())),
-      #(
-        "variables",
-        json.object([
-          #("projectSlug", json.string(project_slug)),
-          #("labelFilters", build_label_filter_inputs(label_names)),
-        ]),
-      ),
+      #("query", json.string(scheduled_failure_issue_search_query(scope))),
+      #("variables", json.object(variables)),
     ])
     |> json.to_string
   Ok(graphql_request(endpoint, api_key, body))
@@ -411,6 +414,20 @@ fn graphql_request(
   )
 }
 
+fn require_task_scope(
+  config: config_types.TrackerConfig,
+) -> Result(config_types.LinearTaskScope, error.TrackerError) {
+  case config_types.linear_task_scope_from_tracker_config(config) {
+    Ok(scope) -> Ok(scope)
+    Error(scope_error) ->
+      Error(
+        error.LinearApiRequest(config_types.linear_task_scope_error_message(
+          scope_error,
+        )),
+      )
+  }
+}
+
 fn require_https_endpoint(
   endpoint: String,
 ) -> Result(String, error.TrackerError) {
@@ -434,25 +451,30 @@ fn require_api_key(
   }
 }
 
-fn require_project_slug(
-  config: config_types.TrackerConfig,
-) -> Result(String, error.TrackerError) {
-  case config.project_slug {
-    Some(project_slug) ->
-      case string.trim(project_slug) == "" {
-        True -> Error(error.LinearApiRequest("missing Linear project slug"))
-        False -> Ok(project_slug)
-      }
-    None -> Error(error.LinearApiRequest("missing Linear project slug"))
-  }
-}
-
 fn issue_label_create_mutation() -> String {
   "mutation ScherzoIssueLabelCreate($teamId: String!, $name: String!) { issueLabelCreate(input: { teamId: $teamId, name: $name }) { success issueLabel { id name } } }"
 }
 
-fn scheduled_failure_issue_search_query() -> String {
-  "query ScherzoScheduledFailureIssues($projectSlug: String!, $labelFilters: [IssueFilter!]!) { issues(first: 50, filter: { project: { slugId: { eq: $projectSlug } }, state: { type: { nin: [\"completed\", \"canceled\", \"duplicate\"] } }, and: $labelFilters }, orderBy: updatedAt) { nodes { id updatedAt state { type } labels { nodes { name } } } } }"
+fn scheduled_failure_issue_search_query(
+  scope: config_types.LinearTaskScope,
+) -> String {
+  let project_declaration =
+    config_types.linear_task_scope_variable_declaration(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
+  let project_filter =
+    config_types.linear_task_scope_project_filter(
+      scope,
+      "$projectSlug",
+      "$projectSlugs",
+    )
+  "query ScherzoScheduledFailureIssues("
+  <> project_declaration
+  <> ", $labelFilters: [IssueFilter!]!) { issues(first: 50, filter: { "
+  <> project_filter
+  <> ", state: { type: { nin: [\"completed\", \"canceled\", \"duplicate\"] } }, and: $labelFilters }, orderBy: updatedAt) { nodes { id updatedAt state { type } labels { nodes { name } } } } }"
 }
 
 fn scheduled_failure_issue_lookup_query() -> String {
@@ -810,9 +832,7 @@ fn fetch_board(
   config: config_types.TrackerConfig,
   transport: linear.Transport,
 ) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
-  use request <- try_tracker(linear.build_contract_request(config))
-  use response <- try_tracker(transport(request))
-  linear.parse_contract_response(response)
+  linear.fetch_remote_contract(config, transport)
 }
 
 fn first_team(

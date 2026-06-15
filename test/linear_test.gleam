@@ -9,6 +9,7 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
+import scherzo/linear/task_query
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -21,9 +22,18 @@ fn tracker_config() -> config_types.TrackerConfig {
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
+    task_scope: None,
     active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
     dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
+  )
+}
+
+fn multi_project_tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
+    ..tracker_config(),
+    project_slug: None,
+    task_scope: Some(config_types.LinearTaskProjects(["PROJ", "BUGS"])),
   )
 }
 
@@ -126,6 +136,27 @@ pub fn candidate_query_uses_project_slug_filter_test() {
       #("Authorization", "secret-key"),
       #("Content-Type", "application/json"),
     ]
+}
+
+pub fn candidate_query_uses_multi_project_scope_filter_test() {
+  let assert Ok(request) =
+    linear.build_candidate_request(
+      multi_project_tracker_config(),
+      issue_state.list_from_strings(["Todo"]),
+      Some("cursor"),
+    )
+  let query = request_query(request.body)
+  assert variable_names(request.body)
+    == ["after", "dispatchStates", "projectSlugs"]
+  assert string_list_variable(request.body, "projectSlugs") == ["PROJ", "BUGS"]
+  assert string.contains(
+    query,
+    "query CandidateIssues($projectSlugs: [String!]!, $dispatchStates: [String!], $after: String)",
+  )
+  assert string.contains(
+    query,
+    "issues(first: 50, after: $after, filter: { project: { slugId: { in: $projectSlugs } }, state: { name: { in: $dispatchStates } } })",
+  )
 }
 
 pub fn state_refresh_query_uses_graphql_id_list_test() {
@@ -393,6 +424,70 @@ pub fn missing_end_cursor_is_error_test() {
     linear.fetch_candidate_issues(tracker_config(), transport)
 }
 
+pub fn task_source_requests_use_multi_project_scope_filters_test() {
+  let assert Ok(list_request) =
+    task_query.build_list_request(
+      multi_project_tracker_config(),
+      issue_state.list_from_strings(["Todo"]),
+      None,
+    )
+  let list_query = request_query(list_request.body)
+  assert variable_names(list_request.body)
+    == ["after", "projectSlugs", "stateNames"]
+  assert string_list_variable(list_request.body, "projectSlugs")
+    == ["PROJ", "BUGS"]
+  assert string.contains(
+    list_query,
+    "query ScherzoTaskList($projectSlugs: [String!]!, $stateNames: [String!], $after: String)",
+  )
+  assert string.contains(
+    list_query,
+    "filter: { project: { slugId: { in: $projectSlugs } }, state: { name: { in: $stateNames } } }",
+  )
+
+  let assert Ok(detail_request) =
+    task_query.build_detail_by_id_request(
+      multi_project_tracker_config(),
+      "issue-id",
+    )
+  let detail_query = request_query(detail_request.body)
+  assert variable_names(detail_request.body) == ["ids", "projectSlugs"]
+  assert string_list_variable(detail_request.body, "projectSlugs")
+    == ["PROJ", "BUGS"]
+  assert string.contains(
+    detail_query,
+    "query ScherzoTaskDetailById($projectSlugs: [String!]!, $ids: [ID!]!)",
+  )
+  assert string.contains(
+    detail_query,
+    "filter: { project: { slugId: { in: $projectSlugs } }, id: { in: $ids } }",
+  )
+}
+
+pub fn task_source_detail_identifier_filters_multi_project_scope_test() {
+  let scope = config_types.LinearTaskProjects(["PROJ", "BUGS"])
+  let assert Ok(Some(found)) =
+    task_query.parse_detail_by_identifier_response(
+      linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_response("BUG-1", "BUGS"),
+      ),
+      scope,
+      "BUG-1",
+    )
+  assert found.ref.key == Some("BUG-1")
+
+  let assert Ok(None) =
+    task_query.parse_detail_by_identifier_response(
+      linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_response("BUG-1", "OTHER"),
+      ),
+      scope,
+      "BUG-1",
+    )
+}
+
 pub fn contract_request_uses_project_slug_and_read_only_query_test() {
   let assert Ok(request) = linear.build_contract_request(tracker_config())
   let query = request_query(request.body)
@@ -426,6 +521,68 @@ pub fn contract_request_uses_project_slug_and_read_only_query_test() {
     ]
 }
 
+pub fn contract_request_uses_multi_project_scope_filter_test() {
+  let assert Ok(request) =
+    linear.build_contract_request(multi_project_tracker_config())
+  let query = request_query(request.body)
+  assert variable_names(request.body) == ["projectSlugs"]
+  assert string_list_variable(request.body, "projectSlugs") == ["PROJ", "BUGS"]
+  assert string.contains(
+    query,
+    "query ScherzoLinearContract($projectSlugs: [String!]!)",
+  )
+  assert string.contains(
+    query,
+    "projects(first: 2, filter: { slugId: { in: $projectSlugs } })",
+  )
+}
+
+pub fn contract_client_validates_all_configured_project_slugs_test() {
+  let client =
+    linear.contract_client(multi_project_tracker_config(), fn(_) {
+      Ok(linear.Response(
+        status: 200,
+        body: contract_response(
+          "["
+            <> contract_project(
+            "[" <> contract_team("ENG", "false", "false") <> "]",
+            "false",
+          )
+            <> "]",
+          "false",
+        ),
+      ))
+    })
+
+  let assert Error(error.LinearUnknownPayload(message)) =
+    client.fetch_remote_contract()
+  assert string.contains(message, "project slug(s) not found: BUGS")
+}
+
+pub fn contract_client_merges_multi_project_contract_without_synthetic_project_id_test() {
+  let shared_team = "[" <> contract_team("ENG", "false", "false") <> "]"
+  let client =
+    linear.contract_client(multi_project_tracker_config(), fn(_) {
+      Ok(linear.Response(
+        status: 200,
+        body: contract_response(
+          "["
+            <> contract_project_for("BUGS", shared_team, "false")
+            <> ","
+            <> contract_project_for("PROJ", shared_team, "false")
+            <> "]",
+          "false",
+        ),
+      ))
+    })
+
+  let assert Ok(board) = client.fetch_remote_contract()
+  assert board.project_id == "project-PROJ"
+  assert board.project_slug == "PROJ,BUGS"
+  let assert [team] = board.teams
+  assert team.id == "team-ENG"
+}
+
 pub fn contract_response_decodes_project_teams_and_workspace_labels_test() {
   let response =
     linear.Response(
@@ -445,7 +602,7 @@ pub fn contract_response_decodes_project_teams_and_workspace_labels_test() {
       ),
     )
   let assert Ok(board) = linear.parse_contract_response(response)
-  assert board.project_id == "project-id"
+  assert board.project_id == "project-PROJ"
   assert board.project_slug == "PROJ"
   let assert [eng, ops] = board.teams
   assert eng.key == "ENG"
@@ -578,6 +735,17 @@ pub fn contract_response_maps_graphql_and_http_errors_test() {
     ))
 }
 
+fn task_detail_by_identifier_response(
+  identifier: String,
+  project_slug: String,
+) -> String {
+  "{\"data\":{\"issue\":{\"id\":\"issue-id\",\"identifier\":\""
+  <> identifier
+  <> "\",\"title\":\"Task Detail\",\"description\":\"Desc\",\"priority\":1,\"branchName\":\"branch\",\"url\":\"https://linear/issue\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"project\":{\"slugId\":\""
+  <> project_slug
+  <> "\"},\"state\":{\"id\":\"state-id\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-id\",\"name\":\"workflow:bug\"}]}}}}"
+}
+
 fn contract_response(projects: String, workspace_has_next: String) -> String {
   "{\"data\":{\"projects\":{\"nodes\":"
   <> projects
@@ -587,7 +755,21 @@ fn contract_response(projects: String, workspace_has_next: String) -> String {
 }
 
 fn contract_project(teams: String, teams_has_next: String) -> String {
-  "{\"id\":\"project-id\",\"name\":\"Project\",\"slugId\":\"PROJ\",\"teams\":{\"nodes\":"
+  contract_project_for("PROJ", teams, teams_has_next)
+}
+
+fn contract_project_for(
+  slug: String,
+  teams: String,
+  teams_has_next: String,
+) -> String {
+  "{\"id\":\"project-"
+  <> slug
+  <> "\",\"name\":\"Project "
+  <> slug
+  <> "\",\"slugId\":\""
+  <> slug
+  <> "\",\"teams\":{\"nodes\":"
   <> teams
   <> ",\"pageInfo\":"
   <> page_info(teams_has_next)

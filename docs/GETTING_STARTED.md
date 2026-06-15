@@ -125,7 +125,8 @@ version: 1
 
 tracker:
   linear:
-    project: YOUR_LINEAR_PROJECT_SLUG
+    tasks_from:
+      project: YOUR_LINEAR_PROJECT_SLUG
 
 workflows:
   getting-started: workflows/getting-started.yaml
@@ -142,7 +143,8 @@ version: 1
 
 tracker:
   linear:
-    project: YOUR_LINEAR_PROJECT_SLUG
+    tasks_from:
+      project: YOUR_LINEAR_PROJECT_SLUG
     api_key_env: LINEAR_API_KEY
     endpoint: https://api.linear.app/graphql
     check_setup: true
@@ -232,7 +234,8 @@ You can attach a schema inline with a yaml-language-server modeline comment. For
 version: 1
 tracker:
   linear:
-    project: YOUR_LINEAR_PROJECT_SLUG
+    tasks_from:
+      project: YOUR_LINEAR_PROJECT_SLUG
 ```
 
 For a workflow file such as `.scherzo/workflows/getting-started.yaml`:
@@ -269,7 +272,23 @@ Use these schemas for editor completion, hover text, and structural validation. 
 
 ### Project, API key, and states
 
-Set `tracker.linear.project` to the Linear project slug Scherzo should poll. This is the current single-project task-scope default. A future `tracker.linear.tasks_from` predicate will generalize this surface; see [docs/specs/TRACKER_LINEAR_TASKS_FROM.md](specs/TRACKER_LINEAR_TASKS_FROM.md). Keep the API key in the environment rather than committing a secret:
+Set `tracker.linear.tasks_from.project` to the Linear project slug Scherzo should poll, or `tracker.linear.tasks_from.projects` to poll an explicit list of projects:
+
+```yaml
+tracker:
+  linear:
+    tasks_from:
+      project: scherzo-core
+```
+
+```yaml
+tracker:
+  linear:
+    tasks_from:
+      projects: [scherzo-core, scherzo-bugs]
+```
+
+`tracker.linear.project: scherzo-core` remains accepted as compatibility syntax for the single-project form, but new configs should prefer `tasks_from`. See [docs/specs/TRACKER_LINEAR_TASKS_FROM.md](specs/TRACKER_LINEAR_TASKS_FROM.md). Keep the API key in the environment rather than committing a secret:
 
 ```sh
 export LINEAR_API_KEY=lin_api_...
@@ -310,12 +329,13 @@ With `require_exactly_one: true`, Scherzo rejects tasks with no workflow label o
 
 ### Linear setup checks
 
-Set `tracker.linear.check_setup: true` once the project, states, and labels exist on the board. `doctor --check tracker-contract` then verifies that the Linear board matches config. Expected workflow labels are derived from top-level `workflows`, support labels come from `tracker.linear.labels.support`, and lifecycle states come from `tracker.states`, `task_routing.labels.on_invalid.state`, and `task_updates.states`.
+Set `tracker.linear.check_setup: true` once the project scope, states, and labels exist on the board. `doctor --check tracker-contract` then verifies that the Linear board matches config. Expected workflow labels are derived from top-level `workflows`, support labels come from `tracker.linear.labels.support`, and lifecycle states come from `tracker.states`, `task_routing.labels.on_invalid.state`, and `task_updates.states`.
 
 ```yaml
 tracker:
   linear:
-    project: YOUR_LINEAR_PROJECT_SLUG
+    tasks_from:
+      project: YOUR_LINEAR_PROJECT_SLUG
     check_setup: true
     labels:
       support: [needs-workflow, needs-clarification]
@@ -693,7 +713,7 @@ Common doctor failures:
 | --- | --- | --- |
 | Config file not found | Running from the wrong directory or no config path passed | Run from the target repo or pass `.scherzo/scherzo.yaml` |
 | Linear auth failure | Missing/invalid `LINEAR_API_KEY` | Export a valid key in the Scherzo process environment |
-| Project not found | Wrong `tracker.linear.project` | Copy the slug from the Linear project URL/config |
+| Project not found | Wrong `tracker.linear.tasks_from` project slug | Copy the slug from the Linear project URL/config |
 | State/label mismatch | Board does not have configured states or labels | Create labels/states or adjust `tracker`, `workflows`, `task_routing`, and `task_updates` config |
 | No workflow route | Task label suffix does not match a top-level `workflows` key | Add the workflow YAML and workflow key or fix the Linear label |
 | Multiple workflow labels | `task_routing.labels.require_exactly_one: true` and task has more than one | Leave exactly one `workflow:*` label on the task |
@@ -708,7 +728,7 @@ Common doctor failures:
 After doctor passes, create or choose one low-risk task. With the current production adapter this means a Linear issue:
 
 - State is in `tracker.states.ready`, for example `Todo`.
-- Project matches `tracker.linear.project`.
+- Project matches `tracker.linear.tasks_from` (or compatibility `tracker.linear.project`).
 - Exactly one workflow label is present, for example `workflow:getting-started`.
 - The task description is safe for the configured workflow and workspace driver.
 
@@ -740,7 +760,7 @@ Before daemon mode:
 - Enable task updates or establish a manual policy that removes completed tasks from ready states.
 - Keep an operator watching the first several runs.
 - Run only one Scherzo instance per non-overlapping Linear task scope/root.
-- Be especially careful with future multi-project, `or`, team, or label-based scopes because two predicates can overlap even when their config does not look identical at a glance.
+- Be especially careful with multi-project and future `or`, team, or label-based scopes because two predicates can overlap even when their config does not look identical at a glance.
 - For multi-repo or multi-instance operations, rely on the built-in poll jitter; it spreads recurring tracker requests around `tracker.polling.every` and logs `next_poll_scheduled` with the effective next delay.
 
 Set `agents.concurrency: 0` to pause new dispatch while keeping daemon reload and reconciliation alive.
@@ -783,7 +803,7 @@ Use `ps --json` and `session --json` when scripting or when an agent is acting a
 
 - [ ] Scherzo command is installed and `scherzo --version` works.
 - [ ] `LINEAR_API_KEY` is set outside committed config.
-- [ ] `.scherzo/scherzo.yaml` has `tracker.linear.project`, the right task states, and a top-level `workflows` map.
+- [ ] `.scherzo/scherzo.yaml` has `tracker.linear.tasks_from`, the right task states, and a top-level `workflows` map.
 - [ ] Workspace driver starts with built-in `noop` for artifact-only workflows or a reviewed `jj`/custom driver for implementation workflows.
 - [ ] Custom workspace driver, if any, passes `describe --json` and follows the workspace driver spec.
 - [ ] Workflow labels exist in the tracker and match the top-level `workflows` keys.

@@ -616,6 +616,8 @@ pub fn flat_linear_tracker_config_aliases_still_parse_test() {
   assert configured.tracker.endpoint == "https://api.linear.app/graphql"
   assert configured.tracker.api_key == Some("linearkey")
   assert configured.tracker.project_slug == Some("example-project")
+  assert configured.tracker.task_scope
+    == Some(config_types.LinearTaskProject("example-project"))
   assert issue_state.to_strings(configured.tracker.active_states)
     == ["Todo", "In Progress"]
   assert issue_state.to_strings(configured.tracker.dispatch_states) == ["Todo"]
@@ -639,11 +641,47 @@ pub fn nested_linear_tracker_config_parses_test() {
   assert configured.tracker.endpoint == "https://api.linear.app/graphql"
   assert configured.tracker.api_key == Some("linearkey")
   assert configured.tracker.project_slug == Some("example-project")
+  assert configured.tracker.task_scope
+    == Some(config_types.LinearTaskProject("example-project"))
   assert issue_state.to_strings(configured.tracker.active_states)
     == ["Todo", "In Progress"]
   assert issue_state.to_strings(configured.tracker.dispatch_states) == ["Todo"]
   assert issue_state.to_strings(configured.tracker.terminal_states)
     == ["Done", "Canceled"]
+}
+
+pub fn linear_tasks_from_project_parses_like_legacy_project_test() {
+  let front =
+    "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    endpoint: https://api.linear.app/graphql\n    tasks_from:\n      project: example-project\n  states:\n    ready: [Todo]\n    active: [Todo, In Progress]\n    terminal: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.tracker.project_slug == Some("example-project")
+  assert configured.tracker.task_scope
+    == Some(config_types.LinearTaskProject("example-project"))
+}
+
+pub fn linear_tasks_from_projects_parses_multi_project_scope_test() {
+  let front =
+    "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    endpoint: https://api.linear.app/graphql\n    tasks_from:\n      projects: [scherzo-core, scherzo-bugs, scherzo-core]\n  states:\n    ready: [Todo]\n    active: [Todo, In Progress]\n    terminal: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.tracker.project_slug == None
+  assert configured.tracker.task_scope
+    == Some(config_types.LinearTaskProjects(["scherzo-core", "scherzo-bugs"]))
+}
+
+pub fn linear_tasks_from_rejects_legacy_project_conflict_test() {
+  let front =
+    "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: old-project\n    tasks_from:\n      projects: [scherzo-core, scherzo-bugs]\nhooks:\n  before_run: test -d .git\n"
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert string.contains(
+    message,
+    "tracker.linear.tasks_from cannot be combined with tracker.linear.project",
+  )
 }
 
 pub fn nested_tracker_config_takes_precedence_over_flat_aliases_test() {
