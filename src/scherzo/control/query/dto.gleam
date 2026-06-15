@@ -486,6 +486,34 @@ pub fn task_detail_to_json(detail: types.TaskDetailDto) -> json.Json {
   ])
 }
 
+pub fn outbox_list_to_json(outbox: types.OutboxListDto) -> json.Json {
+  json.object([
+    #("items", json.array(outbox.items, of: outbox_record_to_json)),
+    #("page", page_to_json(outbox.page)),
+  ])
+}
+
+pub fn outbox_record_to_json(record: types.OutboxRecordDto) -> json.Json {
+  json.object([
+    #("outbox_id", json.string(record.outbox_id)),
+    #("kind", json.string(record.kind)),
+    #("status", json.string(types.outbox_status_to_string(record.status))),
+    #("task_ref", outbox_task_ref_to_json(record.task_ref)),
+    #("dedupe_key", json.nullable(record.dedupe_key, of: json.string)),
+    #("attempt_count", json.nullable(record.attempt_count, of: json.int)),
+    #(
+      "next_attempt_at_ms",
+      json.nullable(record.next_attempt_at_ms, of: json.int),
+    ),
+    #("last_error_code", json.nullable(record.last_error_code, of: json.string)),
+    #("pending_at_ms", json.nullable(record.pending_at_ms, of: json.int)),
+    #("attempted_at_ms", json.nullable(record.attempted_at_ms, of: json.int)),
+    #("failed_at_ms", json.nullable(record.failed_at_ms, of: json.int)),
+    #("completed_at_ms", json.nullable(record.completed_at_ms, of: json.int)),
+    #("has_payload", json.bool(record.has_payload)),
+  ])
+}
+
 pub fn decode_task_list_dynamic(
   value: Dynamic,
 ) -> Result(types.TaskListDto, types.QueryError) {
@@ -508,6 +536,32 @@ pub fn decode_task_detail_dynamic(
       Error(types.QueryError(
         types.QueryBackendFailed,
         "invalid task detail query payload",
+      ))
+  }
+}
+
+pub fn decode_outbox_list_dynamic(
+  value: Dynamic,
+) -> Result(types.OutboxListDto, types.QueryError) {
+  case decode.run(value, outbox_list_decoder()) {
+    Ok(outbox) -> Ok(outbox)
+    Error(_) ->
+      Error(types.QueryError(
+        types.QueryBackendFailed,
+        "invalid outbox list query payload",
+      ))
+  }
+}
+
+pub fn decode_outbox_record_dynamic(
+  value: Dynamic,
+) -> Result(types.OutboxRecordDto, types.QueryError) {
+  case decode.run(value, outbox_record_decoder()) {
+    Ok(record) -> Ok(record)
+    Error(_) ->
+      Error(types.QueryError(
+        types.QueryBackendFailed,
+        "invalid outbox record query payload",
       ))
   }
 }
@@ -542,6 +596,15 @@ fn source_to_json(source: types.TaskSourceDto) -> json.Json {
     #("id", json.string(source.id)),
     #("display_id", json.nullable(source.display_id, of: json.string)),
     #("url", json.nullable(source.url, of: json.string)),
+  ])
+}
+
+fn outbox_task_ref_to_json(task_ref: types.OutboxTaskRefDto) -> json.Json {
+  json.object([
+    #("provider", json.string(task_ref.provider)),
+    #("id", json.string(task_ref.id)),
+    #("display_id", json.nullable(task_ref.display_id, of: json.string)),
+    #("url", json.nullable(task_ref.url, of: json.string)),
   ])
 }
 
@@ -602,6 +665,74 @@ fn task_detail_decoder() -> decode.Decoder(types.TaskDetailDto) {
   use summary <- decode.then(task_summary_decoder())
   use description <- decode.field("description", description_decoder())
   decode.success(types.TaskDetailDto(summary: summary, description: description))
+}
+
+fn outbox_list_decoder() -> decode.Decoder(types.OutboxListDto) {
+  use items <- decode.field("items", decode.list(outbox_record_decoder()))
+  use page <- decode.field("page", page_decoder())
+  decode.success(types.OutboxListDto(items: items, page: page))
+}
+
+fn outbox_record_decoder() -> decode.Decoder(types.OutboxRecordDto) {
+  use outbox_id <- decode.field("outbox_id", decode.string)
+  use kind <- decode.field("kind", decode.string)
+  use status <- decode.field("status", outbox_status_decoder())
+  use task_ref <- decode.field("task_ref", outbox_task_ref_decoder())
+  use dedupe_key <- decode.field("dedupe_key", decode.optional(decode.string))
+  use attempt_count <- decode.field(
+    "attempt_count",
+    decode.optional(decode.int),
+  )
+  use next_attempt_at_ms <- decode.field(
+    "next_attempt_at_ms",
+    decode.optional(decode.int),
+  )
+  use last_error_code <- decode.field(
+    "last_error_code",
+    decode.optional(decode.string),
+  )
+  use pending_at_ms <- decode.field(
+    "pending_at_ms",
+    decode.optional(decode.int),
+  )
+  use attempted_at_ms <- decode.field(
+    "attempted_at_ms",
+    decode.optional(decode.int),
+  )
+  use failed_at_ms <- decode.field("failed_at_ms", decode.optional(decode.int))
+  use completed_at_ms <- decode.field(
+    "completed_at_ms",
+    decode.optional(decode.int),
+  )
+  use has_payload <- decode.field("has_payload", decode.bool)
+  decode.success(types.OutboxRecordDto(
+    outbox_id: outbox_id,
+    kind: kind,
+    status: status,
+    task_ref: task_ref,
+    dedupe_key: dedupe_key,
+    attempt_count: attempt_count,
+    next_attempt_at_ms: next_attempt_at_ms,
+    last_error_code: last_error_code,
+    pending_at_ms: pending_at_ms,
+    attempted_at_ms: attempted_at_ms,
+    failed_at_ms: failed_at_ms,
+    completed_at_ms: completed_at_ms,
+    has_payload: has_payload,
+  ))
+}
+
+fn outbox_task_ref_decoder() -> decode.Decoder(types.OutboxTaskRefDto) {
+  use provider <- decode.field("provider", decode.string)
+  use id <- decode.field("id", decode.string)
+  use display_id <- decode.field("display_id", decode.optional(decode.string))
+  use url <- decode.field("url", decode.optional(decode.string))
+  decode.success(types.OutboxTaskRefDto(
+    provider: provider,
+    id: id,
+    display_id: display_id,
+    url: url,
+  ))
 }
 
 fn task_summary_decoder() -> decode.Decoder(types.TaskSummaryDto) {
@@ -667,6 +798,15 @@ fn state_category_decoder() -> decode.Decoder(task.TaskStateCategory) {
   case task.state_category_from_string(value) {
     Ok(category) -> decode.success(category)
     Error(Nil) -> decode.failure(task.Unknown, expected: "TaskStateCategory")
+  }
+}
+
+fn outbox_status_decoder() -> decode.Decoder(types.OutboxRecordStatus) {
+  use value <- decode.then(decode.string)
+  case types.outbox_status_from_string(value) {
+    Ok(status) -> decode.success(status)
+    Error(Nil) ->
+      decode.failure(types.OutboxPendingStatus, expected: "OutboxStatus")
   }
 }
 

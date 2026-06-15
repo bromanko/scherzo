@@ -253,6 +253,40 @@ fn task_detail_response() -> query_types.QueryResponse {
   ))
 }
 
+fn outbox_record() -> query_types.OutboxRecordDto {
+  query_types.OutboxRecordDto(
+    outbox_id: "outbox-1",
+    kind: "linear_comment",
+    status: query_types.OutboxRetryableStatus,
+    task_ref: query_types.OutboxTaskRefDto(
+      provider: "linear",
+      id: "issue-1087",
+      display_id: Some("LIV-1087"),
+      url: Some("https://linear.app/living-systems/issue/LIV-1087"),
+    ),
+    dedupe_key: Some("dedupe-1"),
+    attempt_count: Some(2),
+    next_attempt_at_ms: Some(1234),
+    last_error_code: Some("rate_limited"),
+    pending_at_ms: None,
+    attempted_at_ms: None,
+    failed_at_ms: Some(1200),
+    completed_at_ms: None,
+    has_payload: True,
+  )
+}
+
+fn outbox_list_response() -> query_types.QueryResponse {
+  query_types.OutboxListResponse(query_types.OutboxListDto(
+    items: [outbox_record()],
+    page: query_types.PageDto(next_cursor: Some("cursor:1"), has_more: True),
+  ))
+}
+
+fn outbox_show_response() -> query_types.QueryResponse {
+  query_types.OutboxShowResponse(outbox_record())
+}
+
 fn task_detail_response_with_terminal_controls() -> query_types.QueryResponse {
   let esc = "\u{1b}"
   let bel = "\u{7}"
@@ -556,6 +590,86 @@ pub fn task_show_not_found_returns_failed_error_test() {
   assert drain_output(output_subject) == ""
 }
 
+pub fn outbox_list_human_executes_daemon_query_and_redacts_payload_test() {
+  let path = "test/tmp/ctl-outbox/list-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let query_calls = process.new_subject()
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, ""),
+      query: fn(control_file, query) {
+        process.send(query_calls, #(control_file, query))
+        Ok(outbox_list_response())
+      },
+    )
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Outbox(
+        Some(path),
+        False,
+        None,
+        [query_types.OutboxRetryableStatus],
+        ["linear_comment"],
+        1,
+        Some("cursor:0"),
+      ),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(#(called_control_file, called_query)) =
+    process.receive(query_calls, within: 1000)
+  assert called_control_file.token == "token"
+  assert called_query
+    == query_types.OutboxList(query_types.OutboxListQuery(
+      statuses: [query_types.OutboxRetryableStatus],
+      kinds: ["linear_comment"],
+      limit: 1,
+      cursor: Some("cursor:0"),
+    ))
+  let transcript = drain_output(output_subject)
+  assert string.contains(
+    transcript,
+    "outbox-1 retryable linear_comment LIV-1087 attempts=2 next_attempt_at_ms=1234 error=rate_limited",
+  )
+  assert string.contains(transcript, "next_cursor: cursor:1")
+  assert !string.contains(transcript, "payload_json")
+  assert !string.contains(transcript, "raw-secret")
+}
+
+pub fn outbox_show_json_prints_safe_record_test() {
+  let path = "test/tmp/ctl-outbox/show-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let query_calls = process.new_subject()
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), query: fn(_, query) {
+      process.send(query_calls, query)
+      Ok(outbox_show_response())
+    })
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Outbox(Some(path), True, Some("outbox-1"), [], [], 50, None),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(called_query) = process.receive(query_calls, within: 1000)
+  assert called_query
+    == query_types.OutboxShow(query_types.OutboxShowQuery(outbox_id: "outbox-1"))
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"outbox_id\":\"outbox-1\"")
+  assert string.contains(transcript, "\"status\":\"retryable\"")
+  assert string.contains(transcript, "\"has_payload\":true")
+  assert !string.contains(transcript, "payload_json")
+  assert !string.contains(transcript, "raw-secret")
+}
+
 pub fn parse_ping_ps_session_events_and_attach_test() {
   assert ctl.parse(["ping"]) == Ok(ctl.Ping(None, False))
   assert ctl.parse(["ps", "--json"]) == Ok(ctl.Ps(None, True))
@@ -593,6 +707,29 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       True,
       query_types.TaskRemoteId(provider: None, id: "issue-770"),
     ))
+  assert ctl.parse([
+      "outbox",
+      "--status",
+      "retryable",
+      "--kind",
+      "linear_comment",
+      "--limit",
+      "25",
+      "--cursor",
+      "cursor:25",
+      "--json",
+    ])
+    == Ok(ctl.Outbox(
+      None,
+      True,
+      None,
+      [query_types.OutboxRetryableStatus],
+      ["linear_comment"],
+      25,
+      Some("cursor:25"),
+    ))
+  assert ctl.parse(["outbox", "outbox-1", "--json"])
+    == Ok(ctl.Outbox(None, True, Some("outbox-1"), [], [], 50, None))
   assert ctl.parse(["session", "ABC-1", "--control-file", "state/control.json"])
     == Ok(ctl.Session(Some("state/control.json"), False, "ABC-1"))
   assert ctl.parse(["events", "ABC-1"])
@@ -948,6 +1085,9 @@ pub fn parse_rejects_usage_errors_test() {
     ctl.parse(["task", "list", "--cursor", ""])
   let assert Error(ctl.UsageError(_)) = ctl.parse(["task", "show", "id:"])
   let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["outbox", "--status", "unknown"])
+  let assert Error(ctl.UsageError(_)) = ctl.parse(["outbox", "--kind", ""])
+  let assert Error(ctl.UsageError(_)) =
     ctl.parse(["artifact", "publication", "list"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["artifact", "publication", "show", "--run", "run-1"])
@@ -959,6 +1099,22 @@ pub fn parse_rejects_irrelevant_command_options_test() {
     == Error(ctl.UsageError("unsupported option for ping: --yes"))
   assert ctl.parse(["task", "show", "LIV-1", "--state", "ready"])
     == Error(ctl.UsageError("unsupported option for task show: --state"))
+  assert ctl.parse(["outbox", "--state", "ready"])
+    == Error(ctl.UsageError("unsupported option for outbox: --state"))
+  assert ctl.parse(["outbox", "outbox-1", "--status", "retryable"])
+    == Error(ctl.UsageError(
+      "unsupported option for outbox <outbox-id>: --status",
+    ))
+  assert ctl.parse(["outbox", "outbox-1", "--kind", "linear_comment"])
+    == Error(ctl.UsageError("unsupported option for outbox <outbox-id>: --kind"))
+  assert ctl.parse(["outbox", "outbox-1", "--limit", "1"])
+    == Error(ctl.UsageError(
+      "unsupported option for outbox <outbox-id>: --limit",
+    ))
+  assert ctl.parse(["outbox", "outbox-1", "--cursor", "cursor:1"])
+    == Error(ctl.UsageError(
+      "unsupported option for outbox <outbox-id>: --cursor",
+    ))
   assert ctl.parse(["schedules", "logs", "nightly", "--now"])
     == Error(ctl.UsageError("unsupported option for schedules logs: --now"))
   assert ctl.parse([
@@ -999,6 +1155,8 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "events --pretty --verbose <session-ref>")
   assert string.contains(usage, "task list")
   assert string.contains(usage, "task show <task|id:<id>>")
+  assert string.contains(usage, "outbox <outbox-id>")
+  assert string.contains(usage, "outbox --status retryable")
   assert string.contains(usage, "attach <session-ref>")
   assert string.contains(usage, "attach --verbose <session-ref>")
   assert string.contains(usage, "attach --raw <session-ref>")
@@ -1039,6 +1197,8 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "--run <run-id>")
   assert string.contains(usage, "--publication <publication>")
   assert string.contains(usage, "--state <state>")
+  assert string.contains(usage, "--status <status>")
+  assert string.contains(usage, "--kind <kind>")
   assert string.contains(usage, "--limit <n>")
   assert string.contains(usage, "--cursor <cursor>")
   assert string.contains(usage, "--dry-run")

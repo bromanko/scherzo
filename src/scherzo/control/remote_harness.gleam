@@ -417,20 +417,13 @@ fn client_dependencies(
       case query {
         query_types.Status ->
           Ok(
-            query_types.StatusResponse(
-              query_types.StatusDto(
-                daemon_id: scenario.daemon_id,
-                boot_id: scenario.boot_id,
-                dispatch_paused: False,
-                ui_server_enabled: False,
-                supported_queries: [
-                  "status",
-                  "metrics",
-                  "task_list",
-                  "task_show",
-                ],
-              ),
-            ),
+            query_types.StatusResponse(query_types.StatusDto(
+              daemon_id: scenario.daemon_id,
+              boot_id: scenario.boot_id,
+              dispatch_paused: False,
+              ui_server_enabled: False,
+              supported_queries: query_types.supported_queries(),
+            )),
           )
         query_types.Metrics ->
           Ok(query_types.MetricsResponse(
@@ -451,6 +444,18 @@ fn client_dependencies(
           Error(query_types.QueryError(
             query_types.QueryNotFound,
             "task not found",
+          ))
+        query_types.OutboxList(_) ->
+          Ok(
+            query_types.OutboxListResponse(query_types.OutboxListDto(
+              items: [],
+              page: query_types.PageDto(next_cursor: None, has_more: False),
+            )),
+          )
+        query_types.OutboxShow(_) ->
+          Error(query_types.QueryError(
+            query_types.QueryNotFound,
+            "outbox record not found",
           ))
       }
     },

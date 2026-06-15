@@ -1,4 +1,5 @@
 import gleam/erlang/process
+import gleam/option.{None}
 import scherzo/control/query/service
 import scherzo/control/query/types
 import simplifile
@@ -23,6 +24,24 @@ pub fn query_service_metrics_success_test() {
     )
 
   assert service.query(handle, types.Metrics) == Ok(metrics_response())
+  assert service.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn query_service_outbox_success_test() {
+  let request = types.OutboxList(types.default_outbox_list_query())
+  let response = outbox_list_response()
+  let assert Ok(handle) =
+    service.start(
+      service.Settings(max_concurrent: 1, max_queued: 1, timeout_ms: 50),
+      service.Backend(run: fn(query) {
+        case query == request {
+          True -> Ok(response)
+          False -> Ok(status_response())
+        }
+      }),
+    )
+
+  assert service.query(handle, request) == Ok(response)
   assert service.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -172,6 +191,13 @@ fn status_response() -> types.QueryResponse {
       supported_queries: ["status"],
     ),
   )
+}
+
+fn outbox_list_response() -> types.QueryResponse {
+  types.OutboxListResponse(types.OutboxListDto(
+    items: [],
+    page: types.PageDto(next_cursor: None, has_more: False),
+  ))
 }
 
 fn metrics_response() -> types.QueryResponse {

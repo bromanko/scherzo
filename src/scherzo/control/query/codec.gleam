@@ -27,6 +27,15 @@ fn request_entries(request: types.QueryRequest) -> List(#(String, json.Json)) {
       #("ref", task_query_ref_to_json(query.ref)),
       ..base_request_entries(types.query_type(request))
     ]
+    types.OutboxList(query) ->
+      list.append(
+        outbox_list_query_entries(query),
+        base_request_entries(types.query_type(request)),
+      )
+    types.OutboxShow(query) -> [
+      #("outbox_id", json.string(query.outbox_id)),
+      ..base_request_entries(types.query_type(request))
+    ]
   }
 }
 
@@ -39,6 +48,17 @@ fn task_list_query_entries(
 ) -> List(#(String, json.Json)) {
   [
     #("states", json.array(query.states, of: task_state_category_to_json)),
+    #("limit", json.int(query.limit)),
+    #("cursor", json.nullable(query.cursor, of: json.string)),
+  ]
+}
+
+fn outbox_list_query_entries(
+  query: types.OutboxListQuery,
+) -> List(#(String, json.Json)) {
+  [
+    #("statuses", json.array(query.statuses, of: outbox_status_to_json)),
+    #("kinds", json.array(query.kinds, of: json.string)),
     #("limit", json.int(query.limit)),
     #("cursor", json.nullable(query.cursor, of: json.string)),
   ]
@@ -62,6 +82,10 @@ fn task_query_ref_to_json(ref: types.TaskQueryRef) -> json.Json {
 
 fn task_state_category_to_json(category: task.TaskStateCategory) -> json.Json {
   category |> task.state_category_to_string |> json.string
+}
+
+fn outbox_status_to_json(status: types.OutboxRecordStatus) -> json.Json {
+  status |> types.outbox_status_to_string |> json.string
 }
 
 pub fn request_to_string(request: types.QueryRequest) -> String {
@@ -121,6 +145,20 @@ pub fn response_to_json(response: types.QueryResponse) -> json.Json {
         #("type", json.string(types.response_type(response))),
         #("task", dto.task_detail_to_json(task)),
       ])
+    types.OutboxListResponse(outbox) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #("outbox", dto.outbox_list_to_json(outbox)),
+      ])
+    types.OutboxShowResponse(outbox) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #("outbox_record", dto.outbox_record_to_json(outbox)),
+      ])
   }
 }
 
@@ -177,7 +215,10 @@ type RequestFields {
     limit: Option(Int),
     cursor: Option(String),
     states: List(String),
+    statuses: List(String),
+    kinds: List(String),
     ref: Option(TaskRefFields),
+    outbox_id: Option(String),
   )
 }
 
@@ -199,6 +240,8 @@ type ResponseFields {
     metrics: Option(Dynamic),
     task_list: Option(Dynamic),
     task: Option(Dynamic),
+    outbox: Option(Dynamic),
+    outbox_record: Option(Dynamic),
     error: Option(ErrorFields),
   )
 }
@@ -225,10 +268,21 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     decode.optional(decode.string),
   )
   use states <- decode.optional_field("states", [], decode.list(decode.string))
+  use statuses <- decode.optional_field(
+    "statuses",
+    [],
+    decode.list(decode.string),
+  )
+  use kinds <- decode.optional_field("kinds", [], decode.list(decode.string))
   use ref <- decode.optional_field(
     "ref",
     None,
     decode.optional(task_ref_fields_decoder()),
+  )
+  use outbox_id <- decode.optional_field(
+    "outbox_id",
+    None,
+    decode.optional(decode.string),
   )
   decode.success(RequestFields(
     version: version,
@@ -236,7 +290,10 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     limit: limit,
     cursor: cursor,
     states: states,
+    statuses: statuses,
+    kinds: kinds,
     ref: ref,
+    outbox_id: outbox_id,
   ))
 }
 
@@ -297,6 +354,16 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     None,
     decode.optional(decode.dynamic),
   )
+  use outbox <- decode.optional_field(
+    "outbox",
+    None,
+    decode.optional(decode.dynamic),
+  )
+  use outbox_record <- decode.optional_field(
+    "outbox_record",
+    None,
+    decode.optional(decode.dynamic),
+  )
   use error <- decode.optional_field(
     "error",
     None,
@@ -310,6 +377,8 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     metrics: metrics,
     task_list: task_list,
     task: task,
+    outbox: outbox,
+    outbox_record: outbox_record,
     error: error,
   ))
 }
@@ -339,6 +408,8 @@ fn request_from_fields(
         Some("metrics") -> Ok(types.Metrics)
         Some("task_list") -> task_list_request_from_fields(fields)
         Some("task_show") -> task_show_request_from_fields(fields)
+        Some("outbox_list") -> outbox_list_request_from_fields(fields)
+        Some("outbox_show") -> outbox_show_request_from_fields(fields)
         Some(other) ->
           Error(types.QueryError(
             types.UnsupportedQuery,
@@ -376,6 +447,35 @@ fn task_show_request_from_fields(
   }
 }
 
+fn outbox_list_request_from_fields(
+  fields: RequestFields,
+) -> Result(types.QueryRequest, types.QueryError) {
+  use statuses <- result.try(decode_outbox_statuses(fields.statuses))
+  use limit <- result.try(required_positive_limit_named(
+    fields.limit,
+    "outbox list",
+  ))
+  Ok(
+    types.OutboxList(types.OutboxListQuery(
+      statuses: statuses,
+      kinds: fields.kinds,
+      limit: limit,
+      cursor: fields.cursor,
+    )),
+  )
+}
+
+fn outbox_show_request_from_fields(
+  fields: RequestFields,
+) -> Result(types.QueryRequest, types.QueryError) {
+  case fields.outbox_id {
+    Some(outbox_id) ->
+      Ok(types.OutboxShow(types.OutboxShowQuery(outbox_id: outbox_id)))
+    None ->
+      Error(types.QueryError(types.QueryBackendFailed, "missing outbox id"))
+  }
+}
+
 fn decode_state_categories(
   values: List(String),
 ) -> Result(List(task.TaskStateCategory), types.QueryError) {
@@ -400,15 +500,46 @@ fn decode_state_categories_loop(
   }
 }
 
+fn decode_outbox_statuses(
+  values: List(String),
+) -> Result(List(types.OutboxRecordStatus), types.QueryError) {
+  decode_outbox_statuses_loop(values, [])
+}
+
+fn decode_outbox_statuses_loop(
+  values: List(String),
+  acc: List(types.OutboxRecordStatus),
+) -> Result(List(types.OutboxRecordStatus), types.QueryError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [value, ..rest] ->
+      case types.outbox_status_from_string(value) {
+        Ok(status) -> decode_outbox_statuses_loop(rest, [status, ..acc])
+        Error(_) ->
+          Error(types.QueryError(
+            types.QueryBackendFailed,
+            "invalid outbox status: " <> value,
+          ))
+      }
+  }
+}
+
 fn required_positive_limit(
   limit: Option(Int),
+) -> Result(Int, types.QueryError) {
+  required_positive_limit_named(limit, "task list")
+}
+
+fn required_positive_limit_named(
+  limit: Option(Int),
+  label: String,
 ) -> Result(Int, types.QueryError) {
   case limit {
     Some(limit) if limit > 0 -> Ok(limit)
     Some(_) ->
       Error(types.QueryError(
         types.QueryBackendFailed,
-        "task list limit must be positive",
+        label <> " limit must be positive",
       ))
     None -> Ok(50)
   }
@@ -481,6 +612,20 @@ fn decode_success_response(
         Some(task) ->
           dto.decode_task_detail_dynamic(task)
           |> result.map(types.TaskShowResponse)
+        None -> missing_response_payload()
+      }
+    Some("outbox_list") ->
+      case fields.outbox {
+        Some(outbox) ->
+          dto.decode_outbox_list_dynamic(outbox)
+          |> result.map(types.OutboxListResponse)
+        None -> missing_response_payload()
+      }
+    Some("outbox_show") ->
+      case fields.outbox_record {
+        Some(outbox_record) ->
+          dto.decode_outbox_record_dynamic(outbox_record)
+          |> result.map(types.OutboxShowResponse)
         None -> missing_response_payload()
       }
     Some(other) ->

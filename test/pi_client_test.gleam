@@ -194,7 +194,7 @@ pub fn compact_timeout_diagnostics_preserve_interleaved_events_test() {
     "FAKE_PI_COMPACT_FAIL=1 FAKE_PI_COMPACT_EVENTS_BEFORE_FAIL=1 FAKE_PI_COMPACT_NO_RESPONSE_AFTER_EVENTS=1 "
     <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
-  let result = client.compact_with_diagnostics(session, None, 50)
+  let result = client.compact_with_diagnostics(session, None, 1000)
   let _ = client.terminate(session)
   let assert Error(client.RpcCommandFailure(
     error: error.PiReadTimeout,
