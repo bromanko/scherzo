@@ -1285,7 +1285,7 @@ pub fn workflow_route_selection_sets_pending_claim_workflow_test() {
   })
   assert list.any(effects, fn(effect) {
     case effect {
-      effects_types.ClaimIssue(_, issue, _, _) -> issue.id == candidate.id
+      effects_types.ClaimIssue(_, issue, _, _, _) -> issue.id == candidate.id
       _ -> False
     }
   })
@@ -1639,7 +1639,7 @@ fn context_requiring_preflight(
 fn has_claim_issue(effects: List(effects_types.Effect)) -> Bool {
   list.any(effects, fn(effect) {
     case effect {
-      effects_types.ClaimIssue(_, _, _, _) -> True
+      effects_types.ClaimIssue(_, _, _, _, _) -> True
       _ -> False
     }
   })

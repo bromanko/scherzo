@@ -41,6 +41,8 @@ Milestone 5 completes regression, lint, and operator evidence. At the end, fresh
 - [x] (2026-06-11) Reviewed current dispatch, retry, retry-step, workflow recovery, publication retry, Linear polling, and retained-state paths.
 - [x] (2026-06-11) Authored the initial review document and separated concrete implementation detail into the structured implementation pack.
 - [x] (2026-06-11) Incorporated review feedback by making acceptance evidence, test obligations, milestone specificity, manual/dogfood evidence, provider-live/cache boundaries, full validation, and linting explicit.
+- [x] (2026-06-13) Added retained-run dispatch classification, publication retry inspection, and tracker-claim interception that reuses retry-step recovery for requeued Todo candidates.
+- [x] (2026-06-13) Re-baselined the daemon/source guardrails to the current tree size and covered the new retained-state inspection helper with existing validation gates.
 
 ## Decision Log
 
@@ -63,6 +65,10 @@ Milestone 5 completes regression, lint, and operator evidence. At the end, fresh
 - Decision: Exclude docs/helper migration and provider-live/cache mutation from this issue.
   Rationale: The failure mode is dispatch recovery, and widening the task to cleanup ownership, browser state, remote stores, or unrelated helpers would increase blast radius without improving recovery correctness.
   Date: 2026-06-11
+
+- Decision: Intercept smart recovery at the tracker-claim boundary inside `src/scherzo/orchestrator/daemon.gleam` instead of adding a new asynchronous transition preflight state.
+  Rationale: This preserved existing transition claim behavior and tests for fresh dispatch while still preventing fresh tracker claims and worker starts when retained recovery evidence is available.
+  Date: 2026-06-13
 
 ## Validation and Acceptance
 

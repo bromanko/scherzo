@@ -1091,7 +1091,7 @@ fn shell_with_append_and_start_result(
     reserve_session_sequence: fn(events, sequence) {
       list.append(events, ["reserve:" <> int.to_string(sequence)])
     },
-    claim_issue: fn(events, _, issue, _, _) {
+    claim_issue: fn(events, _, issue, _, _, _) {
       list.append(events, ["claim:" <> issue.id])
     },
     report_invalid_workflow: fn(events, issue, _, _, _) {

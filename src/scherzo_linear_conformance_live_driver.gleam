@@ -137,6 +137,7 @@ fn tracker_config(
     endpoint: live_endpoint(),
     api_key: api_key,
     project_slug: Some(project),
+    task_scope: None,
     active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
     dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings(["Done"]),

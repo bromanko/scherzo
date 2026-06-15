@@ -207,6 +207,7 @@ pub fn interpret_effects_covers_callback_surface_test() {
           issue: issue,
           workspace_path: "test/tmp/workspaces/ABC-1",
           run_id: "run-1",
+          remaining_candidates: [],
         ),
         effects_types.ReportInvalidWorkflow(
           issue: issue,
@@ -585,7 +586,7 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
     reserve_session_sequence: fn(state, sequence) {
       append_event(state, "reserve:" <> int.to_string(sequence))
     },
-    claim_issue: fn(state, _, issue, _, _) {
+    claim_issue: fn(state, _, issue, _, _, _) {
       append_event(state, "claim:" <> issue.id)
     },
     report_invalid_workflow: fn(state, issue, _, _, _) {
@@ -812,7 +813,7 @@ fn failing_handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
       append_event(state, "preflight:" <> request.issue_id)
     },
     reserve_session_sequence: fn(state, _) { state },
-    claim_issue: fn(state, _, issue, _, _) {
+    claim_issue: fn(state, _, issue, _, _, _) {
       append_event(state, "claim:" <> issue.id)
     },
     report_invalid_workflow: fn(state, issue, _, _, _) {

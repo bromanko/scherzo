@@ -188,9 +188,10 @@ pub fn fetch_remote_contract(
   config: config_types.TrackerConfig,
   transport: Transport,
 ) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
+  use scope <- try_tracker(require_task_scope(config))
   use request <- try_tracker(build_contract_request(config))
   use response <- try_tracker(transport(request))
-  parse_contract_response(response)
+  parse_contract_response_for_scope(response, scope)
 }
 
 fn fetch_pages(
@@ -222,21 +223,24 @@ pub fn build_candidate_request(
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
-  use project_slug <- try_tracker(require_project_slug(config))
+  use scope <- try_tracker(require_task_scope(config))
+  let variables =
+    config_types.linear_task_scope_graphql_variables(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
+    |> list.append([
+      #(
+        "dispatchStates",
+        json.array(issue_state.to_strings(states), of: json.string),
+      ),
+      #("after", json.nullable(after, of: json.string)),
+    ])
   let body =
     json.object([
-      #("query", json.string(candidate_query())),
-      #(
-        "variables",
-        json.object([
-          #("projectSlug", json.string(project_slug)),
-          #(
-            "dispatchStates",
-            json.array(issue_state.to_strings(states), of: json.string),
-          ),
-          #("after", json.nullable(after, of: json.string)),
-        ]),
-      ),
+      #("query", json.string(candidate_query_for_scope(scope))),
+      #("variables", json.object(variables)),
     ])
     |> json.to_string
   Ok(graphql_request(endpoint, api_key, body))
@@ -262,11 +266,18 @@ pub fn build_contract_request(
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
-  use project_slug <- try_tracker(require_project_slug(config))
+  use scope <- try_tracker(require_task_scope(config))
   let body =
     json.object([
-      #("query", json.string(contract_query())),
-      #("variables", json.object([#("projectSlug", json.string(project_slug))])),
+      #("query", json.string(contract_query_for_scope(scope))),
+      #(
+        "variables",
+        json.object(config_types.linear_task_scope_graphql_variables(
+          scope,
+          "projectSlug",
+          "projectSlugs",
+        )),
+      ),
     ])
     |> json.to_string
   Ok(graphql_request(endpoint, api_key, body))
@@ -461,7 +472,27 @@ fn graphql_request(endpoint: String, api_key: String, body: String) -> Request {
 }
 
 pub fn candidate_query() -> String {
-  "query CandidateIssues($projectSlug: String!, $dispatchStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $dispatchStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
+  candidate_query_for_scope(config_types.LinearTaskProject("projectSlug"))
+}
+
+fn candidate_query_for_scope(scope: config_types.LinearTaskScope) -> String {
+  let project_declaration =
+    config_types.linear_task_scope_variable_declaration(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
+  let project_filter =
+    config_types.linear_task_scope_project_filter(
+      scope,
+      "$projectSlug",
+      "$projectSlugs",
+    )
+  "query CandidateIssues("
+  <> project_declaration
+  <> ", $dispatchStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { "
+  <> project_filter
+  <> ", state: { name: { in: $dispatchStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn state_refresh_query() -> String {
@@ -501,7 +532,27 @@ pub fn issue_update_state_mutation() -> String {
 }
 
 pub fn contract_query() -> String {
-  "query ScherzoLinearContract($projectSlug: String!) { projects(first: 2, filter: { slugId: { eq: $projectSlug } }) { nodes { id name slugId teams(first: 10) { nodes { id key name states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } } labels(first: 140) { nodes { id name } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } pageInfo { hasNextPage endCursor } } }"
+  contract_query_for_scope(config_types.LinearTaskProject("projectSlug"))
+}
+
+fn contract_query_for_scope(scope: config_types.LinearTaskScope) -> String {
+  let project_declaration =
+    config_types.linear_task_scope_variable_declaration(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
+  let project_filter = case scope {
+    config_types.LinearTaskProject(_) -> "slugId: { eq: $projectSlug }"
+    config_types.LinearTaskProjects(_) -> "slugId: { in: $projectSlugs }"
+  }
+  "query ScherzoLinearContract("
+  <> project_declaration
+  <> ") { projects(first: "
+  <> config_types.linear_task_scope_contract_project_first(scope)
+  <> ", filter: { "
+  <> project_filter
+  <> " }) { nodes { id name slugId teams(first: 10) { nodes { id key name states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } } labels(first: 140) { nodes { id name } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn parse_response(
@@ -533,6 +584,21 @@ pub fn parse_contract_response(
     True ->
       case json.parse(response.body, contract_graphql_decoder()) {
         Ok(Ok(raw_data)) -> raw_contract_to_board(raw_data)
+        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
+        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
+      }
+  }
+}
+
+fn parse_contract_response_for_scope(
+  response: Response,
+  scope: config_types.LinearTaskScope,
+) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
+  case response.status == 200 {
+    False -> Error(error.LinearApiStatus(response.status))
+    True ->
+      case json.parse(response.body, contract_graphql_decoder()) {
+        Ok(Ok(raw_data)) -> raw_contract_to_board_for_scope(raw_data, scope)
         Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
         Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
       }
@@ -1000,6 +1066,117 @@ fn raw_contract_to_board(
   }
 }
 
+fn raw_contract_to_board_for_scope(
+  data: RawContractData,
+  scope: config_types.LinearTaskScope,
+) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
+  case scope {
+    config_types.LinearTaskProject(_) -> raw_contract_to_board(data)
+    config_types.LinearTaskProjects(_) -> {
+      let expected_slugs = config_types.linear_task_scope_project_slugs(scope)
+      let matching_projects =
+        list.filter_map(expected_slugs, fn(expected) {
+          list.find(data.projects, fn(project) {
+            config_types.linear_task_scope_matches_project_slug(
+              config_types.LinearTaskProject(expected),
+              project.slug_id,
+            )
+          })
+        })
+      case missing_project_slugs(expected_slugs, matching_projects) {
+        [] -> raw_projects_to_board(matching_projects, data.workspace_labels)
+        missing ->
+          Error(error.LinearUnknownPayload(
+            "project slug(s) not found: " <> string.join(missing, with: ", "),
+          ))
+      }
+    }
+  }
+}
+
+fn missing_project_slugs(
+  expected_slugs: List(String),
+  projects: List(RawProject),
+) -> List(String) {
+  list.filter(expected_slugs, fn(expected) {
+    !list.any(projects, fn(project) {
+      config_types.linear_task_scope_matches_project_slug(
+        config_types.LinearTaskProject(expected),
+        project.slug_id,
+      )
+    })
+  })
+}
+
+fn raw_projects_to_board(
+  projects: List(RawProject),
+  workspace_labels: RawConnection(RawLabel),
+) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
+  case projects {
+    [] -> Error(error.LinearUnknownPayload("project slug not found"))
+    [project] -> raw_project_to_board(project, workspace_labels)
+    [_, ..] -> {
+      use boards <- try_tracker(
+        raw_projects_to_boards(projects, workspace_labels, []),
+      )
+      case boards {
+        [] -> Error(error.LinearUnknownPayload("project slug not found"))
+        [primary_board, ..] ->
+          Ok(linear_contract.RemoteBoard(
+            project_id: primary_board.project_id,
+            project_slug: string.join(
+              list.map(boards, fn(board) { board.project_slug }),
+              with: ",",
+            ),
+            project_name: string.join(
+              list.map(boards, fn(board) { board.project_name }),
+              with: ",",
+            ),
+            teams: collect_board_teams(boards),
+            workspace_labels: primary_board.workspace_labels,
+          ))
+      }
+    }
+  }
+}
+
+fn raw_projects_to_boards(
+  projects: List(RawProject),
+  workspace_labels: RawConnection(RawLabel),
+  acc: List(linear_contract.RemoteBoard),
+) -> Result(List(linear_contract.RemoteBoard), error.TrackerError) {
+  case projects {
+    [] -> Ok(list.reverse(acc))
+    [project, ..rest] -> {
+      use board <- try_tracker(raw_project_to_board(project, workspace_labels))
+      raw_projects_to_boards(rest, workspace_labels, [board, ..acc])
+    }
+  }
+}
+
+fn collect_board_teams(
+  boards: List(linear_contract.RemoteBoard),
+) -> List(linear_contract.RemoteTeam) {
+  boards
+  |> list.map(fn(board) { board.teams })
+  |> list.flatten
+  |> collect_unique_teams([])
+}
+
+fn collect_unique_teams(
+  teams: List(linear_contract.RemoteTeam),
+  acc: List(linear_contract.RemoteTeam),
+) -> List(linear_contract.RemoteTeam) {
+  case teams {
+    [] -> list.reverse(acc)
+    [team, ..rest] ->
+      case list.any(acc, fn(existing) { existing.id == team.id }) {
+        True -> collect_unique_teams(rest, acc)
+        False -> collect_unique_teams(rest, [team, ..acc])
+      }
+  }
+}
+
 fn raw_project_to_board(
   project: RawProject,
   workspace_labels: RawConnection(RawLabel),
@@ -1260,6 +1437,17 @@ fn parse_optional_time(value: Option(String)) -> Option(birl.Time) {
   }
 }
 
+fn require_task_scope(
+  config: config_types.TrackerConfig,
+) -> Result(config_types.LinearTaskScope, error.TrackerError) {
+  config_types.linear_task_scope_from_tracker_config(config)
+  |> result.map_error(fn(scope_error) {
+    error.LinearApiRequest(config_types.linear_task_scope_error_message(
+      scope_error,
+    ))
+  })
+}
+
 fn require_https_endpoint(
   endpoint: String,
 ) -> Result(String, error.TrackerError) {
@@ -1276,15 +1464,6 @@ fn require_api_key(
   case config.api_key {
     Some(value) -> Ok(value)
     None -> Error(error.LinearApiRequest("missing api key"))
-  }
-}
-
-fn require_project_slug(
-  config: config_types.TrackerConfig,
-) -> Result(String, error.TrackerError) {
-  case config.project_slug {
-    Some(value) -> Ok(value)
-    None -> Error(error.LinearApiRequest("missing project slug"))
   }
 }
 

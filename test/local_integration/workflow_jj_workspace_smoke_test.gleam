@@ -42,6 +42,7 @@ fn effective(workspace_root: String) -> config_types.EffectiveConfig {
       endpoint: "https://api.linear.app/graphql",
       api_key: Some("test-key"),
       project_slug: Some("TEST"),
+      task_scope: None,
       active_states: issue_state.list_from_strings(["Todo"]),
       dispatch_states: issue_state.list_from_strings(["Todo"]),
       terminal_states: issue_state.list_from_strings(["Done"]),

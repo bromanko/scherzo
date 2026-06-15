@@ -614,7 +614,13 @@ fn begin_claim_for_workflow(
               |> sync_state,
             effects: [
               effects_types.ReserveSessionSequence(sequence),
-              effects_types.ClaimIssue(task_ref, issue, workspace_path, run_id),
+              effects_types.ClaimIssue(
+                task_ref,
+                issue,
+                workspace_path,
+                run_id,
+                remaining_candidates,
+              ),
             ],
           )
         }
