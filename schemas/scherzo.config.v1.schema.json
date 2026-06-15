@@ -9,6 +9,12 @@
       "type": "string",
       "minLength": 1
     },
+    "LinearTaskScopeString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
     "WorkflowId": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]*$",
@@ -144,20 +150,18 @@
         "linear": {
           "type": "object",
           "description": "Linear is the current production tracker adapter.",
-          "oneOf": [
-            {
-              "required": ["tasks_from"],
-              "not": { "required": ["project"] }
-            },
-            {
-              "required": ["project"],
-              "not": { "required": ["tasks_from"] }
-            }
+          "allOf": [
+            { "not": { "required": ["tasks_from", "project"] } },
+            { "not": { "required": ["tasks_from", "project_slug"] } }
           ],
           "additionalProperties": false,
           "properties": {
             "project": {
-              "$ref": "#/$defs/NonEmptyString",
+              "$ref": "#/$defs/LinearTaskScopeString",
+              "description": "Compatibility syntax for tracker.linear.tasks_from.project."
+            },
+            "project_slug": {
+              "$ref": "#/$defs/LinearTaskScopeString",
               "description": "Compatibility syntax for tracker.linear.tasks_from.project."
             },
             "tasks_from": {
@@ -169,11 +173,12 @@
               ],
               "additionalProperties": false,
               "properties": {
-                "project": { "$ref": "#/$defs/NonEmptyString" },
+                "project": { "$ref": "#/$defs/LinearTaskScopeString" },
                 "projects": {
                   "type": "array",
                   "minItems": 1,
-                  "items": { "$ref": "#/$defs/NonEmptyString" }
+                  "maxItems": 32,
+                  "items": { "$ref": "#/$defs/LinearTaskScopeString" }
                 }
               }
             },
@@ -188,6 +193,10 @@
               }
             }
           }
+        },
+        "project_slug": {
+          "$ref": "#/$defs/LinearTaskScopeString",
+          "description": "Compatibility syntax for tracker.linear.tasks_from.project."
         },
         "states": {
           "type": "object",
@@ -225,7 +234,25 @@
           "description": "tracker.terminal_states was removed. Use tracker.states.terminal.",
           "not": {}
         }
-      }
+      },
+      "allOf": [
+        {
+          "anyOf": [
+            { "required": ["project_slug"] },
+            { "properties": { "linear": { "required": ["project"] } } },
+            { "properties": { "linear": { "required": ["project_slug"] } } },
+            { "properties": { "linear": { "required": ["tasks_from"] } } }
+          ]
+        },
+        {
+          "not": {
+            "allOf": [
+              { "required": ["project_slug"] },
+              { "properties": { "linear": { "required": ["tasks_from"] } } }
+            ]
+          }
+        }
+      ]
     },
     "WorkflowMap": {
       "type": "object",
