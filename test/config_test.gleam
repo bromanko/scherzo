@@ -1,4 +1,5 @@
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -61,6 +62,47 @@ fn tasks_from_front(tasks_from_yaml: String) -> String {
   linear_tracker_front(
     "    api_key_env: LINEAR_API_KEY\n    tasks_from:\n" <> tasks_from_yaml,
   )
+}
+
+fn repeated_project_predicates(count: Int) -> String {
+  string.join(
+    list.repeat("        - project: demo-project\n", times: count),
+    with: "",
+  )
+}
+
+fn repeated_nested_project_predicates(count: Int) -> String {
+  string.join(
+    list.repeat("            - project: demo-project\n", times: count),
+    with: "",
+  )
+}
+
+fn long_slug_list(prefix: String, count: Int) -> List(String) {
+  long_slug_list_loop(prefix, count, 0, [])
+}
+
+fn long_slug_list_loop(
+  prefix: String,
+  count: Int,
+  index: Int,
+  acc: List(String),
+) -> List(String) {
+  case index >= count {
+    True -> list.reverse(acc)
+    False -> {
+      let suffix = prefix <> int.to_string(index)
+      let slug =
+        string.repeat("x", times: 128 - string.length(suffix)) <> suffix
+      long_slug_list_loop(prefix, count, index + 1, [slug, ..acc])
+    }
+  }
+}
+
+fn projects_predicate(prefix: String) -> String {
+  "        - projects: ["
+  <> string.join(long_slug_list(prefix, 32), with: ", ")
+  <> "]\n"
 }
 
 fn test_control_file_path() -> String {
@@ -685,6 +727,37 @@ pub fn linear_tasks_from_projects_parses_multi_project_scope_test() {
     == Some(config_types.LinearTaskProjects(["scherzo-core", "scherzo-bugs"]))
 }
 
+pub fn linear_tasks_from_boolean_project_scopes_parse_test() {
+  let front =
+    tasks_from_front(
+      "      or:\n"
+      <> "        - project: scherzo-core\n"
+      <> "        - and:\n"
+      <> "            - projects: [scherzo-bugs, scherzo-ops, scherzo-bugs]\n"
+      <> "            - project: scherzo-bugs\n",
+    )
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.tracker.project_slug == None
+  assert configured.tracker.task_scope
+    == Some(
+      config_types.LinearTaskOr([
+        config_types.LinearTaskProject("scherzo-core"),
+        config_types.LinearTaskAnd([
+          config_types.LinearTaskProjects(["scherzo-bugs", "scherzo-ops"]),
+          config_types.LinearTaskProject("scherzo-bugs"),
+        ]),
+      ]),
+    )
+  let assert Some(scope) = configured.tracker.task_scope
+  assert linear_task_scope.summary(scope)
+    == "or(project(scherzo-core), and(projects([scherzo-bugs, scherzo-ops]), project(scherzo-bugs)))"
+  assert linear_task_scope.matches_project_slug(scope, "scherzo-core")
+  assert linear_task_scope.matches_project_slug(scope, "scherzo-bugs")
+  assert !linear_task_scope.matches_project_slug(scope, "scherzo-ops")
+}
+
 pub fn linear_tasks_from_rejects_legacy_project_conflict_test() {
   let front =
     "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: old-project\n    tasks_from:\n      projects: [scherzo-core, scherzo-bugs]\nhooks:\n  before_run: test -d .git\n"
@@ -757,6 +830,16 @@ pub fn linear_task_scope_summary_returns_canonical_predicates_test() {
       ]),
     )
     == "projects([demo-project, bugs])"
+  assert linear_task_scope.summary(
+      config_types.LinearTaskOr([
+        config_types.LinearTaskProject("demo-project"),
+        config_types.LinearTaskAnd([
+          config_types.LinearTaskProjects(["bugs", "ops", "bugs"]),
+          config_types.LinearTaskProject("bugs"),
+        ]),
+      ]),
+    )
+    == "or(project(demo-project), and(projects([bugs, ops]), project(bugs)))"
 }
 
 pub fn linear_task_scope_unresolved_env_errors_are_pathful_test() {
@@ -850,6 +933,77 @@ pub fn linear_tasks_from_validation_errors_are_pathful_test() {
     #(
       tasks_from_front(oversized_projects),
       "tracker.linear.tasks_from.projects has 33 entries; maximum is 32",
+    ),
+  ]
+
+  list.each(cases, fn(item) {
+    let #(front, expected_message) = item
+    let message = invalid_config_message(front)
+    assert string.contains(message, expected_message)
+  })
+}
+
+pub fn linear_tasks_from_boolean_validation_errors_are_pathful_test() {
+  let node_count_yaml =
+    "      and:\n"
+    <> "        - project: demo-project\n"
+    <> "        - or:\n"
+    <> repeated_nested_project_predicates(32)
+    <> "        - or:\n"
+    <> repeated_nested_project_predicates(32)
+  let payload_yaml =
+    "      or:\n"
+    <> projects_predicate("payload")
+    <> projects_predicate("payload")
+    <> projects_predicate("payload")
+    <> projects_predicate("payload")
+    <> projects_predicate("payload")
+  let total_project_count_yaml =
+    "      or:\n"
+    <> projects_predicate("scope-a")
+    <> projects_predicate("scope-b")
+  let cases = [
+    #(
+      tasks_from_front("      and: []\n"),
+      "tracker.linear.tasks_from.and must contain at least one predicate",
+    ),
+    #(
+      tasks_from_front("      or: []\n"),
+      "tracker.linear.tasks_from.or must contain at least one predicate",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - and:\n"
+        <> "            - and:\n"
+        <> "                - and:\n"
+        <> "                    - project: demo-project\n",
+      ),
+      "tracker.linear.tasks_from exceeds max predicate depth 4; got 5",
+    ),
+    #(
+      tasks_from_front(node_count_yaml),
+      "tracker.linear.tasks_from exceeds max predicate nodes 64; got 68",
+    ),
+    #(
+      tasks_from_front("      and:\n" <> repeated_project_predicates(33)),
+      "tracker.linear.tasks_from.and has 33 entries; maximum is 32",
+    ),
+    #(
+      tasks_from_front(total_project_count_yaml),
+      "tracker.linear.tasks_from references 64 unique projects; maximum is 32",
+    ),
+    #(
+      tasks_from_front(
+        "      or:\n"
+        <> "        - project: demo-project\n"
+        <> "        - any_label: [workflow:implementation]\n",
+      ),
+      "tracker.linear.tasks_from.or[1].any_label is recognized",
+    ),
+    #(
+      tasks_from_front(payload_yaml),
+      "tracker.linear.tasks_from compiled Linear IssueFilter payload is ",
     ),
   ]
 

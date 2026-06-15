@@ -10,10 +10,10 @@ import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/linear/contract_query as linear_contract_query
 import scherzo/linear_body_data
 import scherzo/linear_contract
 import scherzo/tracker
-import scherzo/tracker/idempotency
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
@@ -225,11 +225,7 @@ pub fn build_candidate_request(
   use api_key <- try_tracker(require_api_key(config))
   use scope <- try_tracker(require_task_scope(config))
   let variables =
-    config_types.linear_task_scope_graphql_variables(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
+    linear_contract.task_scope_issue_filter_variables(scope, "taskFilter")
     |> list.append([
       #(
         "dispatchStates",
@@ -269,13 +265,18 @@ pub fn build_contract_request(
   use scope <- try_tracker(require_task_scope(config))
   let body =
     json.object([
-      #("query", json.string(contract_query_for_scope(scope))),
+      #("query", json.string(linear_contract_query.query(scope))),
       #(
         "variables",
-        json.object(config_types.linear_task_scope_graphql_variables(
-          scope,
-          "projectSlug",
-          "projectSlugs",
+        json.object(list.append(
+          linear_contract.task_scope_project_filter_variables(
+            scope,
+            "projectFilter",
+          ),
+          linear_contract.task_scope_configured_project_slug_variables(
+            scope,
+            "configuredProjectSlugs",
+          ),
         )),
       ),
     ])
@@ -346,7 +347,10 @@ pub fn find_issue_comment_by_marker(
   use comments <- try_tracker(parse_issue_comments_response(response))
   Ok(
     list.find(comments, fn(comment) {
-      idempotency.contains_marker(comment.body, marker_key)
+      string.contains(
+        comment.body,
+        "<!-- scherzo:outbox:" <> marker_key <> " -->",
+      )
     })
     |> option.from_result,
   )
@@ -475,24 +479,10 @@ pub fn candidate_query() -> String {
   candidate_query_for_scope(config_types.LinearTaskProject("projectSlug"))
 }
 
-fn candidate_query_for_scope(scope: config_types.LinearTaskScope) -> String {
-  let project_declaration =
-    config_types.linear_task_scope_variable_declaration(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
-  let project_filter =
-    config_types.linear_task_scope_project_filter(
-      scope,
-      "$projectSlug",
-      "$projectSlugs",
-    )
+fn candidate_query_for_scope(_scope: config_types.LinearTaskScope) -> String {
   "query CandidateIssues("
-  <> project_declaration
-  <> ", $dispatchStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { "
-  <> project_filter
-  <> ", state: { name: { in: $dispatchStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
+  <> linear_contract.task_scope_issue_filter_declaration("taskFilter")
+  <> ", $dispatchStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { and: [$taskFilter], state: { name: { in: $dispatchStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn state_refresh_query() -> String {
@@ -532,27 +522,7 @@ pub fn issue_update_state_mutation() -> String {
 }
 
 pub fn contract_query() -> String {
-  contract_query_for_scope(config_types.LinearTaskProject("projectSlug"))
-}
-
-fn contract_query_for_scope(scope: config_types.LinearTaskScope) -> String {
-  let project_declaration =
-    config_types.linear_task_scope_variable_declaration(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
-  let project_filter = case scope {
-    config_types.LinearTaskProject(_) -> "slugId: { eq: $projectSlug }"
-    config_types.LinearTaskProjects(_) -> "slugId: { in: $projectSlugs }"
-  }
-  "query ScherzoLinearContract("
-  <> project_declaration
-  <> ") { projects(first: "
-  <> config_types.linear_task_scope_contract_project_first(scope)
-  <> ", filter: { "
-  <> project_filter
-  <> " }) { nodes { id name slugId teams(first: 10) { nodes { id key name states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } } labels(first: 140) { nodes { id name } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } pageInfo { hasNextPage endCursor } } }"
+  linear_contract_query.query(config_types.LinearTaskProject("projectSlug"))
 }
 
 pub fn parse_response(
@@ -579,30 +549,18 @@ pub fn parse_page_response(
 pub fn parse_contract_response(
   response: Response,
 ) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
-  case response.status == 200 {
-    False -> Error(error.LinearApiStatus(response.status))
-    True ->
-      case json.parse(response.body, contract_graphql_decoder()) {
-        Ok(Ok(raw_data)) -> raw_contract_to_board(raw_data)
-        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
-        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
-      }
-  }
+  linear_contract_query.parse_response(response.status, response.body)
 }
 
 fn parse_contract_response_for_scope(
   response: Response,
   scope: config_types.LinearTaskScope,
 ) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
-  case response.status == 200 {
-    False -> Error(error.LinearApiStatus(response.status))
-    True ->
-      case json.parse(response.body, contract_graphql_decoder()) {
-        Ok(Ok(raw_data)) -> raw_contract_to_board_for_scope(raw_data, scope)
-        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
-        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
-      }
-  }
+  linear_contract_query.parse_response_for_scope(
+    response.status,
+    response.body,
+    scope,
+  )
 }
 
 pub fn parse_issue_team_states_response(
@@ -754,6 +712,40 @@ fn graphql_decoder() -> decode.Decoder(Result(Page, String)) {
 fn data_decoder() -> decode.Decoder(Page) {
   use page <- decode.field("issues", page_decoder())
   decode.success(page)
+}
+
+type RawStateConnection {
+  RawStateConnection(nodes: List(RawState), page_info: PageInfo)
+}
+
+type RawState {
+  RawState(id: String, name: String, type_: String)
+}
+
+fn raw_state_connection_decoder() -> decode.Decoder(RawStateConnection) {
+  use nodes <- decode.field("nodes", decode.list(raw_state_decoder()))
+  use page_info <- decode.field("pageInfo", page_info_decoder())
+  decode.success(RawStateConnection(nodes: nodes, page_info: page_info))
+}
+
+fn raw_state_decoder() -> decode.Decoder(RawState) {
+  use id <- decode.field("id", decode.string)
+  use name <- decode.field("name", decode.string)
+  use type_ <- decode.field("type", decode.string)
+  decode.success(RawState(id: id, name: name, type_: type_))
+}
+
+fn raw_states_to_remote(
+  states: List(RawState),
+) -> List(linear_contract.RemoteState) {
+  states
+  |> list.map(fn(state) {
+    linear_contract.RemoteState(
+      id: state.id,
+      name: state.name,
+      type_: state.type_,
+    )
+  })
 }
 
 fn issue_team_states_graphql_decoder() -> decode.Decoder(
@@ -930,345 +922,6 @@ fn body_data_decoder() -> decode.Decoder(linear_body_data.JsonValue) {
           decode.failure(linear_body_data.JNull, expected: "bodyData JSON")
       }
   }
-}
-
-type RawContractData {
-  RawContractData(
-    projects: List(RawProject),
-    workspace_labels: RawConnection(RawLabel),
-  )
-}
-
-type RawProject {
-  RawProject(
-    id: String,
-    name: String,
-    slug_id: String,
-    teams: RawConnection(RawTeam),
-  )
-}
-
-type RawTeam {
-  RawTeam(
-    id: String,
-    key: String,
-    name: String,
-    states: RawConnection(RawState),
-    labels: RawConnection(RawLabel),
-  )
-}
-
-type RawState {
-  RawState(id: String, name: String, type_: String)
-}
-
-type RawLabel {
-  RawLabel(id: String, name: String)
-}
-
-type RawConnection(a) {
-  RawConnection(nodes: List(a), page_info: PageInfo)
-}
-
-fn contract_graphql_decoder() -> decode.Decoder(Result(RawContractData, String)) {
-  use errors <- decode.optional_field(
-    "errors",
-    [],
-    decode.list(error_message_decoder()),
-  )
-  case errors {
-    [] -> {
-      use data <- decode.field("data", contract_data_decoder())
-      decode.success(Ok(data))
-    }
-    errors -> decode.success(Error(string.join(errors, with: "; ")))
-  }
-}
-
-fn contract_data_decoder() -> decode.Decoder(RawContractData) {
-  use projects <- decode.field("projects", raw_project_nodes_decoder())
-  use workspace_labels <- decode.field(
-    "issueLabels",
-    raw_label_connection_decoder(),
-  )
-  decode.success(RawContractData(
-    projects: projects,
-    workspace_labels: workspace_labels,
-  ))
-}
-
-fn raw_project_nodes_decoder() -> decode.Decoder(List(RawProject)) {
-  use nodes <- decode.field("nodes", decode.list(raw_project_decoder()))
-  decode.success(nodes)
-}
-
-fn raw_project_decoder() -> decode.Decoder(RawProject) {
-  use id <- decode.field("id", decode.string)
-  use name <- decode.field("name", decode.string)
-  use slug_id <- decode.field("slugId", decode.string)
-  use teams <- decode.field("teams", raw_team_connection_decoder())
-  decode.success(RawProject(id: id, name: name, slug_id: slug_id, teams: teams))
-}
-
-fn raw_team_connection_decoder() -> decode.Decoder(RawConnection(RawTeam)) {
-  use nodes <- decode.field("nodes", decode.list(raw_team_decoder()))
-  use page_info <- decode.field("pageInfo", page_info_decoder())
-  decode.success(RawConnection(nodes: nodes, page_info: page_info))
-}
-
-fn raw_team_decoder() -> decode.Decoder(RawTeam) {
-  use id <- decode.field("id", decode.string)
-  use key <- decode.field("key", decode.string)
-  use name <- decode.field("name", decode.string)
-  use states <- decode.field("states", raw_state_connection_decoder())
-  use labels <- decode.field("labels", raw_label_connection_decoder())
-  decode.success(RawTeam(
-    id: id,
-    key: key,
-    name: name,
-    states: states,
-    labels: labels,
-  ))
-}
-
-fn raw_state_connection_decoder() -> decode.Decoder(RawConnection(RawState)) {
-  use nodes <- decode.field("nodes", decode.list(raw_state_decoder()))
-  use page_info <- decode.field("pageInfo", page_info_decoder())
-  decode.success(RawConnection(nodes: nodes, page_info: page_info))
-}
-
-fn raw_state_decoder() -> decode.Decoder(RawState) {
-  use id <- decode.field("id", decode.string)
-  use name <- decode.field("name", decode.string)
-  use type_ <- decode.field("type", decode.string)
-  decode.success(RawState(id: id, name: name, type_: type_))
-}
-
-fn raw_label_connection_decoder() -> decode.Decoder(RawConnection(RawLabel)) {
-  use nodes <- decode.field("nodes", decode.list(raw_label_decoder()))
-  use page_info <- decode.field("pageInfo", page_info_decoder())
-  decode.success(RawConnection(nodes: nodes, page_info: page_info))
-}
-
-fn raw_label_decoder() -> decode.Decoder(RawLabel) {
-  use id <- decode.field("id", decode.string)
-  use name <- decode.field("name", decode.string)
-  decode.success(RawLabel(id: id, name: name))
-}
-
-fn raw_contract_to_board(
-  data: RawContractData,
-) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
-  case data.projects {
-    [] -> Error(error.LinearUnknownPayload("project slug not found"))
-    [project] -> raw_project_to_board(project, data.workspace_labels)
-    [_, ..] -> Error(error.LinearUnknownPayload("project slug is not unique"))
-  }
-}
-
-fn raw_contract_to_board_for_scope(
-  data: RawContractData,
-  scope: config_types.LinearTaskScope,
-) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
-  case scope {
-    config_types.LinearTaskProject(_) -> raw_contract_to_board(data)
-    config_types.LinearTaskProjects(_) -> {
-      let expected_slugs = config_types.linear_task_scope_project_slugs(scope)
-      let matching_projects =
-        list.filter_map(expected_slugs, fn(expected) {
-          list.find(data.projects, fn(project) {
-            config_types.linear_task_scope_matches_project_slug(
-              config_types.LinearTaskProject(expected),
-              project.slug_id,
-            )
-          })
-        })
-      case missing_project_slugs(expected_slugs, matching_projects) {
-        [] -> raw_projects_to_board(matching_projects, data.workspace_labels)
-        missing ->
-          Error(error.LinearUnknownPayload(
-            "project slug(s) not found: " <> string.join(missing, with: ", "),
-          ))
-      }
-    }
-  }
-}
-
-fn missing_project_slugs(
-  expected_slugs: List(String),
-  projects: List(RawProject),
-) -> List(String) {
-  list.filter(expected_slugs, fn(expected) {
-    !list.any(projects, fn(project) {
-      config_types.linear_task_scope_matches_project_slug(
-        config_types.LinearTaskProject(expected),
-        project.slug_id,
-      )
-    })
-  })
-}
-
-fn raw_projects_to_board(
-  projects: List(RawProject),
-  workspace_labels: RawConnection(RawLabel),
-) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
-  case projects {
-    [] -> Error(error.LinearUnknownPayload("project slug not found"))
-    [project] -> raw_project_to_board(project, workspace_labels)
-    [_, ..] -> {
-      use boards <- try_tracker(
-        raw_projects_to_boards(projects, workspace_labels, []),
-      )
-      case boards {
-        [] -> Error(error.LinearUnknownPayload("project slug not found"))
-        [primary_board, ..] ->
-          Ok(linear_contract.RemoteBoard(
-            project_id: primary_board.project_id,
-            project_slug: string.join(
-              list.map(boards, fn(board) { board.project_slug }),
-              with: ",",
-            ),
-            project_name: string.join(
-              list.map(boards, fn(board) { board.project_name }),
-              with: ",",
-            ),
-            teams: collect_board_teams(boards),
-            workspace_labels: primary_board.workspace_labels,
-          ))
-      }
-    }
-  }
-}
-
-fn raw_projects_to_boards(
-  projects: List(RawProject),
-  workspace_labels: RawConnection(RawLabel),
-  acc: List(linear_contract.RemoteBoard),
-) -> Result(List(linear_contract.RemoteBoard), error.TrackerError) {
-  case projects {
-    [] -> Ok(list.reverse(acc))
-    [project, ..rest] -> {
-      use board <- try_tracker(raw_project_to_board(project, workspace_labels))
-      raw_projects_to_boards(rest, workspace_labels, [board, ..acc])
-    }
-  }
-}
-
-fn collect_board_teams(
-  boards: List(linear_contract.RemoteBoard),
-) -> List(linear_contract.RemoteTeam) {
-  boards
-  |> list.map(fn(board) { board.teams })
-  |> list.flatten
-  |> collect_unique_teams([])
-}
-
-fn collect_unique_teams(
-  teams: List(linear_contract.RemoteTeam),
-  acc: List(linear_contract.RemoteTeam),
-) -> List(linear_contract.RemoteTeam) {
-  case teams {
-    [] -> list.reverse(acc)
-    [team, ..rest] ->
-      case list.any(acc, fn(existing) { existing.id == team.id }) {
-        True -> collect_unique_teams(rest, acc)
-        False -> collect_unique_teams(rest, [team, ..acc])
-      }
-  }
-}
-
-fn raw_project_to_board(
-  project: RawProject,
-  workspace_labels: RawConnection(RawLabel),
-) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
-  case project.teams.page_info.has_next_page {
-    True ->
-      Error(error.LinearUnknownPayload("project teams metadata truncated"))
-    False ->
-      case list.is_empty(project.teams.nodes) {
-        True -> Error(error.LinearUnknownPayload("project has no teams"))
-        False ->
-          case workspace_labels.page_info.has_next_page {
-            True ->
-              Error(error.LinearUnknownPayload(
-                "workspace issue labels metadata truncated",
-              ))
-            False -> {
-              use teams <- try_tracker(
-                raw_teams_to_remote(project.teams.nodes, []),
-              )
-              Ok(linear_contract.RemoteBoard(
-                project_id: project.id,
-                project_slug: project.slug_id,
-                project_name: project.name,
-                teams: teams,
-                workspace_labels: raw_labels_to_remote(workspace_labels.nodes),
-              ))
-            }
-          }
-      }
-  }
-}
-
-fn raw_teams_to_remote(
-  teams: List(RawTeam),
-  acc: List(linear_contract.RemoteTeam),
-) -> Result(List(linear_contract.RemoteTeam), error.TrackerError) {
-  case teams {
-    [] -> Ok(list.reverse(acc))
-    [team, ..rest] -> {
-      use remote <- try_tracker(raw_team_to_remote(team))
-      raw_teams_to_remote(rest, [remote, ..acc])
-    }
-  }
-}
-
-fn raw_team_to_remote(
-  team: RawTeam,
-) -> Result(linear_contract.RemoteTeam, error.TrackerError) {
-  case team.states.page_info.has_next_page {
-    True ->
-      Error(error.LinearUnknownPayload(
-        "team " <> team.key <> " states metadata truncated",
-      ))
-    False ->
-      case team.labels.page_info.has_next_page {
-        True ->
-          Error(error.LinearUnknownPayload(
-            "team " <> team.key <> " labels metadata truncated",
-          ))
-        False ->
-          Ok(linear_contract.RemoteTeam(
-            id: team.id,
-            key: team.key,
-            name: team.name,
-            states: raw_states_to_remote(team.states.nodes),
-            labels: raw_labels_to_remote(team.labels.nodes),
-          ))
-      }
-  }
-}
-
-fn raw_states_to_remote(
-  states: List(RawState),
-) -> List(linear_contract.RemoteState) {
-  states
-  |> list.map(fn(state) {
-    linear_contract.RemoteState(
-      id: state.id,
-      name: state.name,
-      type_: state.type_,
-    )
-  })
-}
-
-fn raw_labels_to_remote(
-  labels: List(RawLabel),
-) -> List(linear_contract.RemoteLabel) {
-  labels
-  |> list.map(fn(label) {
-    linear_contract.RemoteLabel(id: label.id, name: label.name)
-  })
 }
 
 fn error_message_decoder() -> decode.Decoder(String) {

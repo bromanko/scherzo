@@ -15,6 +15,38 @@
       "maxLength": 128,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
     },
+    "LinearTaskScopePredicate": {
+      "type": "object",
+      "description": "Linear task scope predicate. This build supports project/project(s) leaves with and/or composition.",
+      "oneOf": [
+        { "required": ["project"] },
+        { "required": ["projects"] },
+        { "required": ["and"] },
+        { "required": ["or"] }
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "project": { "$ref": "#/$defs/LinearTaskScopeString" },
+        "projects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopeString" }
+        },
+        "and": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopePredicate" }
+        },
+        "or": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopePredicate" }
+        }
+      }
+    },
     "WorkflowId": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]*$",
@@ -164,24 +196,7 @@
               "$ref": "#/$defs/LinearTaskScopeString",
               "description": "Compatibility syntax for tracker.linear.tasks_from.project."
             },
-            "tasks_from": {
-              "type": "object",
-              "description": "Linear task scope. This build supports project and projects only.",
-              "oneOf": [
-                { "required": ["project"] },
-                { "required": ["projects"] }
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "project": { "$ref": "#/$defs/LinearTaskScopeString" },
-                "projects": {
-                  "type": "array",
-                  "minItems": 1,
-                  "maxItems": 32,
-                  "items": { "$ref": "#/$defs/LinearTaskScopeString" }
-                }
-              }
-            },
+            "tasks_from": { "$ref": "#/$defs/LinearTaskScopePredicate" },
             "api_key_env": { "$ref": "#/$defs/EnvVarName" },
             "endpoint": { "$ref": "#/$defs/HttpsUrl" },
             "check_setup": { "type": "boolean" },

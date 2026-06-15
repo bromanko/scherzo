@@ -318,6 +318,17 @@ pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
     "version: 1\n"
       <> "tracker:\n"
       <> "  linear:\n"
+      <> "    tasks_from:\n"
+      <> "      or:\n"
+      <> "        - project: demo-project\n"
+      <> "        - and:\n"
+      <> "            - projects: [bugs, ops]\n"
+      <> "            - project: bugs\n"
+      <> "workflows:\n"
+      <> "  research: workflows/research.yaml\n",
+    "version: 1\n"
+      <> "tracker:\n"
+      <> "  linear:\n"
       <> "    project_slug: demo-project\n"
       <> "workflows:\n"
       <> "  research: workflows/research.yaml\n",

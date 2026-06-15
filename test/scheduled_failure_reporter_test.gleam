@@ -35,6 +35,26 @@ fn multi_project_tracker_config() -> config_types.TrackerConfig {
   )
 }
 
+fn composed_project_tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
+    ..tracker_config(),
+    project_slug: None,
+    task_scope: Some(
+      config_types.LinearTaskOr([
+        config_types.LinearTaskProject("PROJ"),
+        config_types.LinearTaskAnd([
+          config_types.LinearTaskProjects(["BUGS", "OPS"]),
+          config_types.LinearTaskProject("BUGS"),
+        ]),
+      ]),
+    ),
+  )
+}
+
+fn composed_project_task_filter_body_fragment() -> String {
+  "\"taskFilter\":{\"or\":[{\"project\":{\"slugId\":{\"eq\":\"PROJ\"}}},{\"and\":[{\"project\":{\"slugId\":{\"in\":[\"BUGS\",\"OPS\"]}}},{\"project\":{\"slugId\":{\"eq\":\"BUGS\"}}}]}]}"
+}
+
 fn base_request() -> reporter.FailureReportRequest {
   reporter.FailureReportRequest(
     job_id: "pr-conflict-repair",
@@ -381,7 +401,7 @@ pub fn scheduled_failure_reporter_real_search_uses_open_reserved_label_filters_t
   assert !string.contains(comment_body, "lin-closed")
 }
 
-pub fn scheduled_failure_reporter_real_search_uses_multi_project_scope_filter_test() {
+pub fn scheduled_failure_reporter_real_search_uses_multi_project_task_filter_test() {
   let calls = process.new_subject()
   let client =
     reporter.real_client_with_transport(
@@ -399,9 +419,38 @@ pub fn scheduled_failure_reporter_real_search_uses_multi_project_scope_filter_te
     receive_call_containing(calls, "ScherzoScheduledFailureIssues", 10)
   assert string.contains(
     search_body,
-    "project: { slugId: { in: $projectSlugs } }",
+    "and: [$taskFilter, { and: $labelFilters }]",
   )
-  assert string.contains(search_body, "\"projectSlugs\":[\"PROJ\",\"BUGS\"]")
+  assert string.contains(
+    search_body,
+    "\"taskFilter\":{\"project\":{\"slugId\":{\"in\":[\"PROJ\",\"BUGS\"]}}}",
+  )
+}
+
+pub fn scheduled_failure_reporter_real_search_uses_composed_task_filter_test() {
+  let calls = process.new_subject()
+  let client =
+    reporter.real_client_with_transport(
+      composed_project_tracker_config(),
+      real_search_transport_with_contract(
+        calls,
+        composed_project_contract_response(),
+      ),
+    )
+
+  assert client.report_failure(base_request())
+    == Ok(reporter.FailureReportUpdated("lin-open"))
+
+  let search_body =
+    receive_call_containing(calls, "ScherzoScheduledFailureIssues", 10)
+  assert string.contains(
+    search_body,
+    composed_project_task_filter_body_fragment(),
+  )
+  assert string.contains(
+    search_body,
+    "and: [$taskFilter, { and: $labelFilters }]",
+  )
 }
 
 pub fn scheduled_failure_reporter_multi_project_create_uses_single_project_id_test() {
@@ -545,10 +594,16 @@ fn contract_response() -> String {
 }
 
 fn multi_project_contract_response() -> String {
+  contract_response_for_projects(["PROJ", "BUGS"])
+}
+
+fn composed_project_contract_response() -> String {
+  contract_response_for_projects(["PROJ", "BUGS", "OPS"])
+}
+
+fn contract_response_for_projects(slugs: List(String)) -> String {
   "{\"data\":{\"projects\":{\"nodes\":["
-  <> contract_project_node("PROJ")
-  <> ","
-  <> contract_project_node("BUGS")
+  <> string.join(list.map(slugs, contract_project_node), with: ",")
   <> "]},\"issueLabels\":{\"nodes\":["
   <> "{\"id\":\"label-scheduled\",\"name\":\"scherzo:scheduled\"},"
   <> "{\"id\":\"label-job\",\"name\":\"scherzo:scheduled-job:pr-conflict-repair\"},"

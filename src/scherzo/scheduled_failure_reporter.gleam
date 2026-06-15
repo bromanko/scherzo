@@ -5,6 +5,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/config/linear_task_scope
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
@@ -318,11 +319,7 @@ fn build_scheduled_failure_issue_search_request(
   use api_key <- try_tracker(require_api_key(config))
   use scope <- try_tracker(require_task_scope(config))
   let variables =
-    config_types.linear_task_scope_graphql_variables(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
+    linear_task_scope.issue_filter_variables(scope, "taskFilter")
     |> list.append([
       #("labelFilters", build_label_filter_inputs(label_names)),
     ])
@@ -456,25 +453,11 @@ fn issue_label_create_mutation() -> String {
 }
 
 fn scheduled_failure_issue_search_query(
-  scope: config_types.LinearTaskScope,
+  _scope: config_types.LinearTaskScope,
 ) -> String {
-  let project_declaration =
-    config_types.linear_task_scope_variable_declaration(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
-  let project_filter =
-    config_types.linear_task_scope_project_filter(
-      scope,
-      "$projectSlug",
-      "$projectSlugs",
-    )
   "query ScherzoScheduledFailureIssues("
-  <> project_declaration
-  <> ", $labelFilters: [IssueFilter!]!) { issues(first: 50, filter: { "
-  <> project_filter
-  <> ", state: { type: { nin: [\"completed\", \"canceled\", \"duplicate\"] } }, and: $labelFilters }, orderBy: updatedAt) { nodes { id updatedAt state { type } labels { nodes { name } } } } }"
+  <> linear_task_scope.issue_filter_declaration("taskFilter")
+  <> ", $labelFilters: [IssueFilter!]!) { issues(first: 50, filter: { and: [$taskFilter, { and: $labelFilters }], state: { type: { nin: [\"completed\", \"canceled\", \"duplicate\"] } } }, orderBy: updatedAt) { nodes { id updatedAt state { type } labels { nodes { name } } } } }"
 }
 
 fn scheduled_failure_issue_lookup_query() -> String {

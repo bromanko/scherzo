@@ -4,6 +4,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/config/linear_task_scope
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
@@ -57,22 +58,18 @@ pub fn build_list_request(
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
   use scope <- try_tracker(require_task_scope(config))
-  let project_variables =
-    config_types.linear_task_scope_graphql_variables(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
+  let task_filter_variables =
+    linear_task_scope.issue_filter_variables(scope, "taskFilter")
   let variables = case states {
     [] ->
       json.object(
-        list.append(project_variables, [
+        list.append(task_filter_variables, [
           #("after", json.nullable(after, of: json.string)),
         ]),
       )
     _ ->
       json.object(
-        list.append(project_variables, [
+        list.append(task_filter_variables, [
           #(
             "stateNames",
             json.array(issue_state.to_strings(states), of: json.string),
@@ -98,11 +95,7 @@ pub fn build_detail_by_id_request(
   use api_key <- try_tracker(require_api_key(config))
   use scope <- try_tracker(require_task_scope(config))
   let variables =
-    config_types.linear_task_scope_graphql_variables(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
+    linear_task_scope.issue_filter_variables(scope, "taskFilter")
     |> list.append([#("ids", json.array([id], of: json.string))])
   let body =
     json.object([
@@ -119,10 +112,20 @@ pub fn build_detail_by_identifier_request(
 ) -> Result(linear.Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
+  use scope <- try_tracker(require_task_scope(config))
   let body =
     json.object([
       #("query", json.string(detail_by_identifier_query())),
-      #("variables", json.object([#("issueId", json.string(identifier))])),
+      #(
+        "variables",
+        json.object(
+          linear_task_scope.issue_filter_variables(scope, "taskFilter")
+          |> list.append([
+            #("issueRemoteId", json.string(identifier)),
+            #("issueIdentifier", json.string(identifier)),
+          ]),
+        ),
+      ),
     ])
     |> json.to_string
   Ok(graphql_request(endpoint, api_key, body))
@@ -134,33 +137,17 @@ pub fn list_query(states: List(issue_state.IssueState)) -> String {
 
 fn list_query_for_scope(
   states: List(issue_state.IssueState),
-  scope: config_types.LinearTaskScope,
+  _scope: config_types.LinearTaskScope,
 ) -> String {
-  let project_declaration =
-    config_types.linear_task_scope_variable_declaration(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
-  let project_filter =
-    config_types.linear_task_scope_project_filter(
-      scope,
-      "$projectSlug",
-      "$projectSlugs",
-    )
   case states {
     [] ->
       "query ScherzoTaskList("
-      <> project_declaration
-      <> ", $after: String) { issues(first: 50, after: $after, filter: { "
-      <> project_filter
-      <> " }) { nodes { id identifier title priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
+      <> linear_task_scope.issue_filter_declaration("taskFilter")
+      <> ", $after: String) { issues(first: 50, after: $after, filter: { and: [$taskFilter] }) { nodes { id identifier title priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
     _ ->
       "query ScherzoTaskList("
-      <> project_declaration
-      <> ", $stateNames: [String!], $after: String) { issues(first: 50, after: $after, filter: { "
-      <> project_filter
-      <> ", state: { name: { in: $stateNames } } }) { nodes { id identifier title priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
+      <> linear_task_scope.issue_filter_declaration("taskFilter")
+      <> ", $stateNames: [String!], $after: String) { issues(first: 50, after: $after, filter: { and: [$taskFilter], state: { name: { in: $stateNames } } }) { nodes { id identifier title priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
   }
 }
 
@@ -168,32 +155,18 @@ pub fn detail_by_id_query() -> String {
   detail_by_id_query_for_scope(config_types.LinearTaskProject("projectSlug"))
 }
 
-fn detail_by_id_query_for_scope(scope: config_types.LinearTaskScope) -> String {
-  let project_declaration =
-    config_types.linear_task_scope_variable_declaration(
-      scope,
-      "projectSlug",
-      "projectSlugs",
-    )
-  let project_filter =
-    config_types.linear_task_scope_project_filter(
-      scope,
-      "$projectSlug",
-      "$projectSlugs",
-    )
+fn detail_by_id_query_for_scope(
+  _scope: config_types.LinearTaskScope,
+) -> String {
   "query ScherzoTaskDetailById("
-  <> project_declaration
-  <> ", $ids: [ID!]!) { issues(first: 2, filter: { "
-  <> project_filter
-  <> ", id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
+  <> linear_task_scope.issue_filter_declaration("taskFilter")
+  <> ", $ids: [ID!]!) { issues(first: 2, filter: { and: [$taskFilter], id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn detail_by_identifier_query() -> String {
-  // Linear's root issue(id:) lookup accepts either a Linear UUID or the
-  // display identifier that operators type at the CLI, such as LIV-864. Keep the
-  // remote-id path on its existing project-filtered query; this path verifies
-  // the returned identifier and project before exposing the task.
-  "query ScherzoTaskDetailByIdentifier($issueId: String!) { issue(id: $issueId) { id identifier title description priority branchName url createdAt updatedAt project { slugId } state { id name type } labels { nodes { id name } } } }"
+  "query ScherzoTaskDetailByIdentifier("
+  <> linear_task_scope.issue_filter_declaration("taskFilter")
+  <> ", $issueRemoteId: ID!, $issueIdentifier: String!) { issues(first: 2, filter: { and: [$taskFilter], or: [{ id: { eq: $issueRemoteId } }, { identifier: { eq: $issueIdentifier } }] }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn parse_page_response(
@@ -288,34 +261,46 @@ fn detail_by_identifier_graphql_decoder(
     decode.list(error_message_decoder()),
   )
   case errors {
-    [] -> {
-      use issue <- decode.then(decode.at(
-        ["data", "issue"],
-        decode.optional(issue_detail_decoder()),
-      ))
-      let found = case issue {
-        None -> Ok(None)
-        Some(IssueDetail(task: item, project_slug: Some(project_slug))) ->
-          case
-            config_types.linear_task_scope_matches_project_slug(
-              expected_scope,
-              project_slug,
-            ),
-            identifier_matches(expected_identifier, task.display_key(item.ref))
-          {
-            True, True -> Ok(Some(item))
-            _, _ -> Ok(None)
-          }
-        Some(IssueDetail(project_slug: None, ..)) -> Ok(None)
-      }
-      decode.success(found)
-    }
+    [] ->
+      decode.one_of(
+        decode.at(["data", "issues"], connection_decoder())
+          |> decode.map(page_to_unique_task),
+        or: [
+          legacy_detail_by_identifier_decoder(
+            expected_scope,
+            expected_identifier,
+          ),
+        ],
+      )
     errors ->
       case graphql_errors_indicate_missing_issue(errors) {
         True -> decode.success(Ok(None))
         False -> decode.success(Error(string.join(errors, with: "; ")))
       }
   }
+}
+
+fn legacy_detail_by_identifier_decoder(
+  expected_scope: config_types.LinearTaskScope,
+  expected_identifier: String,
+) -> decode.Decoder(Result(Option(task.Task), String)) {
+  use issue <- decode.then(decode.at(
+    ["data", "issue"],
+    decode.optional(issue_detail_decoder()),
+  ))
+  let found = case issue {
+    None -> Ok(None)
+    Some(IssueDetail(task: item, project_slug: Some(project_slug))) ->
+      case
+        linear_task_scope.matches_project_slug(expected_scope, project_slug),
+        identifier_matches(expected_identifier, task.display_key(item.ref))
+      {
+        True, True -> Ok(Some(item))
+        _, _ -> Ok(None)
+      }
+    Some(IssueDetail(project_slug: None, ..)) -> Ok(None)
+  }
+  decode.success(found)
 }
 
 fn graphql_errors_indicate_missing_issue(errors: List(String)) -> Bool {
