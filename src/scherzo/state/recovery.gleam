@@ -2303,16 +2303,6 @@ fn recover_outbox_entry(
         payload_json,
         _,
         _,
-      )
-    | projection.OutboxRetryScheduled(
-        issue_id,
-        outbox_kind,
-        dedupe_key,
-        payload_json,
-        _,
-        _,
-        _,
-        _,
       ) ->
       recover_pending_outbox(
         recovery,
@@ -2322,6 +2312,27 @@ fn recover_outbox_entry(
         outbox_kind,
         dedupe_key,
         payload_json,
+        now_ms,
+      )
+    projection.OutboxRetryScheduled(
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      _,
+      _,
+      next_attempt_at_ms,
+      _,
+    ) ->
+      recover_retryable_outbox(
+        recovery,
+        projection,
+        outbox_id,
+        legacy_linear_task_ref(issue_id),
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        next_attempt_at_ms,
         now_ms,
       )
     projection.OutboxPendingV2WithTask(
@@ -2338,16 +2349,6 @@ fn recover_outbox_entry(
         payload_json,
         _,
         _,
-      )
-    | projection.OutboxRetryScheduledWithTask(
-        task_ref,
-        outbox_kind,
-        dedupe_key,
-        payload_json,
-        _,
-        _,
-        _,
-        _,
       ) ->
       recover_pending_outbox(
         recovery,
@@ -2357,6 +2358,27 @@ fn recover_outbox_entry(
         outbox_kind,
         dedupe_key,
         payload_json,
+        now_ms,
+      )
+    projection.OutboxRetryScheduledWithTask(
+      task_ref,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      _,
+      _,
+      next_attempt_at_ms,
+      _,
+    ) ->
+      recover_retryable_outbox(
+        recovery,
+        projection,
+        outbox_id,
+        task_ref,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        next_attempt_at_ms,
         now_ms,
       )
     projection.OutboxCompleted(_, outbox_kind, _)
@@ -2420,6 +2442,33 @@ fn recover_outbox_entry(
   }
 }
 
+fn recover_retryable_outbox(
+  recovery: OutboxRecovery,
+  projection: projection.Projection,
+  outbox_id: String,
+  task_ref: record.TaskRefFields,
+  outbox_kind: String,
+  dedupe_key: String,
+  payload_json: String,
+  next_attempt_at_ms: Int,
+  now_ms: Int,
+) -> OutboxRecovery {
+  case outbox.retry_due_on_recovery(outbox_kind, next_attempt_at_ms, now_ms) {
+    True ->
+      recover_pending_outbox(
+        recovery,
+        projection,
+        outbox_id,
+        task_ref,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+        now_ms,
+      )
+    False -> recovery
+  }
+}
+
 fn recover_pending_outbox(
   recovery: OutboxRecovery,
   projection: projection.Projection,
@@ -2442,7 +2491,43 @@ fn recover_pending_outbox(
         now_ms,
       )
     False ->
-      case outbox.decode_payload(payload_json) {
+      case outbox_kind == outbox.scheduled_failure_publication_kind {
+        True ->
+          recover_scheduled_failure_outbox(
+            recovery,
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+          )
+        False ->
+          recover_tracker_outbox(
+            recovery,
+            projection,
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+          )
+      }
+  }
+}
+
+fn recover_scheduled_failure_outbox(
+  recovery: OutboxRecovery,
+  outbox_id: String,
+  task_ref: record.TaskRefFields,
+  outbox_kind: String,
+  dedupe_key: String,
+  payload_json: String,
+) -> OutboxRecovery {
+  case outbox.decode_scheduled_failure_payload(payload_json) {
+    Error(error) ->
+      fail_outbox_recovery(recovery, outbox_id, task_ref, outbox_kind, error)
+    Ok(payload) ->
+      case outbox.recovery_replay_error(outbox_kind, payload.kind) {
         Error(error) ->
           fail_outbox_recovery(
             recovery,
@@ -2451,34 +2536,70 @@ fn recover_pending_outbox(
             outbox_kind,
             error,
           )
-        Ok(payload) ->
-          case command_ack_already_recorded(projection, outbox_id, payload) {
-            True -> recovery
-            False ->
-              case outbox.recovery_replay_error(outbox_kind, payload.kind) {
-                Error(error) ->
-                  fail_outbox_recovery(
-                    recovery,
-                    outbox_id,
-                    task_ref,
-                    outbox_kind,
-                    error,
-                  )
-                Ok(Nil) ->
-                  OutboxRecovery(..recovery, outbox_to_replay: [
-                    OutboxReplay(
-                      outbox_id,
-                      task_ref,
-                      outbox_kind,
-                      dedupe_key,
-                      payload_json,
-                    ),
-                    ..recovery.outbox_to_replay
-                  ])
-              }
+        Ok(Nil) ->
+          append_outbox_replay(
+            recovery,
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+          )
+      }
+  }
+}
+
+fn recover_tracker_outbox(
+  recovery: OutboxRecovery,
+  projection: projection.Projection,
+  outbox_id: String,
+  task_ref: record.TaskRefFields,
+  outbox_kind: String,
+  dedupe_key: String,
+  payload_json: String,
+) -> OutboxRecovery {
+  case outbox.decode_payload(payload_json) {
+    Error(error) ->
+      fail_outbox_recovery(recovery, outbox_id, task_ref, outbox_kind, error)
+    Ok(payload) ->
+      case command_ack_already_recorded(projection, outbox_id, payload) {
+        True -> recovery
+        False ->
+          case outbox.recovery_replay_error(outbox_kind, payload.kind) {
+            Error(error) ->
+              fail_outbox_recovery(
+                recovery,
+                outbox_id,
+                task_ref,
+                outbox_kind,
+                error,
+              )
+            Ok(Nil) ->
+              append_outbox_replay(
+                recovery,
+                outbox_id,
+                task_ref,
+                outbox_kind,
+                dedupe_key,
+                payload_json,
+              )
           }
       }
   }
+}
+
+fn append_outbox_replay(
+  recovery: OutboxRecovery,
+  outbox_id: String,
+  task_ref: record.TaskRefFields,
+  outbox_kind: String,
+  dedupe_key: String,
+  payload_json: String,
+) -> OutboxRecovery {
+  OutboxRecovery(..recovery, outbox_to_replay: [
+    OutboxReplay(outbox_id, task_ref, outbox_kind, dedupe_key, payload_json),
+    ..recovery.outbox_to_replay
+  ])
 }
 
 fn recover_abandoned_claim_outbox(

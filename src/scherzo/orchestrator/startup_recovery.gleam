@@ -24,6 +24,8 @@ import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_fingerprint
 
+const scheduled_failure_publication_kind = "scheduled_failure_publication"
+
 pub type StartupError {
   StartupError(code: String, message: String)
 }
@@ -154,10 +156,11 @@ pub fn load(
     )
   let projected = projection.fold_from(replayed.projection, records_to_append)
   let scheduled =
-    recover_scheduled_runtime(
+    recover_scheduled_runtime_with_outbox_replay(
       bundle,
       dependencies.now_ms(),
       projection.scheduled_statuses(projected),
+      recovery_plan.outbox_to_replay,
     )
   Ok(StartupRecovery(
     runtime: runtime,
@@ -184,6 +187,20 @@ pub fn recover_scheduled_runtime(
   now_ms: Int,
   scheduled_statuses: List(projection.ScheduledJobStatus),
 ) -> ScheduledRecovery {
+  recover_scheduled_runtime_with_outbox_replay(
+    bundle,
+    now_ms,
+    scheduled_statuses,
+    [],
+  )
+}
+
+pub fn recover_scheduled_runtime_with_outbox_replay(
+  bundle: runtime_bundle.RuntimeBundle,
+  now_ms: Int,
+  scheduled_statuses: List(projection.ScheduledJobStatus),
+  outbox_to_replay: List(recovery.OutboxReplay),
+) -> ScheduledRecovery {
   let runtime =
     scheduled_runtime.from_next_due(
       dict.to_list(initial_scheduled_next_due(
@@ -201,6 +218,7 @@ pub fn recover_scheduled_runtime(
         bundle.orchestrator.scheduled_jobs,
         now_ms,
         status,
+        outbox_to_replay,
       )
     })
   ScheduledRecovery(runtime: runtime, effects: list.reverse(effects))
@@ -254,6 +272,7 @@ fn recover_scheduled_status(
   jobs: List(config_types.ScheduledJobConfig),
   now_ms: Int,
   status: projection.ScheduledJobStatus,
+  outbox_to_replay: List(recovery.OutboxReplay),
 ) -> #(scheduled_runtime.Runtime, List(ScheduledRecoveryEffect)) {
   case scheduled_job_by_id(jobs, status.job_id), status.current_run {
     Ok(job), Some(run) ->
@@ -268,6 +287,7 @@ fn recover_scheduled_status(
             job,
             status,
             run,
+            outbox_to_replay,
           )
       }
     Error(Nil), Some(run) ->
@@ -283,6 +303,7 @@ fn recover_enabled_scheduled_run(
   job: config_types.ScheduledJobConfig,
   status: projection.ScheduledJobStatus,
   run: projection.ScheduledRunSummary,
+  outbox_to_replay: List(recovery.OutboxReplay),
 ) -> #(scheduled_runtime.Runtime, List(ScheduledRecoveryEffect)) {
   case status.state {
     projection.ScheduledDuePending
@@ -314,6 +335,7 @@ fn recover_enabled_scheduled_run(
         now_ms,
         job,
         status,
+        outbox_to_replay,
       )
     projection.ScheduledIdle
     | projection.ScheduledTerminalSuccess
@@ -386,15 +408,12 @@ fn recover_scheduled_report_retry_waiting(
   now_ms: Int,
   job: config_types.ScheduledJobConfig,
   status: projection.ScheduledJobStatus,
+  outbox_to_replay: List(recovery.OutboxReplay),
 ) -> #(scheduled_runtime.Runtime, List(ScheduledRecoveryEffect)) {
   case status.report_retry {
     None -> #(runtime, effects)
     Some(report_retry) -> {
-      let delay_ms = case report_retry.next_retry_at_ms <= now_ms {
-        True -> 0
-        False -> report_retry.next_retry_at_ms - now_ms
-      }
-      #(
+      let runtime =
         scheduled_runtime.insert_report_retry(
           runtime,
           scheduled_runtime.ReportRetryStart(
@@ -402,18 +421,42 @@ fn recover_scheduled_report_retry_waiting(
             run_id: report_retry.run_id,
             generation: report_retry.generation,
           ),
-        ),
-        [
-          ScheduleReportRetryTimer(
-            run_id: report_retry.run_id,
-            generation: report_retry.generation,
-            delay_ms: delay_ms,
-          ),
-          ..effects
-        ],
-      )
+        )
+      case
+        scheduled_failure_outbox_replay_exists(outbox_to_replay, report_retry)
+      {
+        True -> #(runtime, effects)
+        False -> {
+          let delay_ms = case report_retry.next_retry_at_ms <= now_ms {
+            True -> 0
+            False -> report_retry.next_retry_at_ms - now_ms
+          }
+          #(runtime, [
+            ScheduleReportRetryTimer(
+              run_id: report_retry.run_id,
+              generation: report_retry.generation,
+              delay_ms: delay_ms,
+            ),
+            ..effects
+          ])
+        }
+      }
     }
   }
+}
+
+fn scheduled_failure_outbox_replay_exists(
+  outbox_to_replay: List(recovery.OutboxReplay),
+  report_retry: projection.ScheduledReportRetry,
+) -> Bool {
+  list.any(outbox_to_replay, fn(replay) {
+    let recovery.OutboxReplay(outbox_id, _, outbox_kind, dedupe_key, _) = replay
+    outbox_kind == scheduled_failure_publication_kind
+    && {
+      outbox_id == report_retry.dedupe_key
+      || dedupe_key == report_retry.dedupe_key
+    }
+  })
 }
 
 fn recover_disabled_scheduled_run(

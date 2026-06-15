@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/result
 import scherzo/config/types as config_types
+import scherzo/control/command
 import scherzo/control/remote/credential_store
 import scherzo/control/remote/ui_websocket_client
 import scherzo/control/remote/url
@@ -26,12 +27,27 @@ pub fn start(
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
-  start_with_control(effective, event_hub, fn(_) { Ok(False) }, secrets, logger)
+  start_with_control(
+    effective,
+    event_hub,
+    fn(operator_command, _) {
+      Ok(command.not_allowed(
+        operator_command,
+        "remote_command_unavailable",
+        Some("remote command bridge is unavailable"),
+      ))
+    },
+    fn(_) { Ok(False) },
+    secrets,
+    logger,
+  )
 }
 
 pub fn start_with_control(
   effective: config_types.EffectiveConfig,
   event_hub: process.Subject(hub.Message),
+  apply_command: fn(command.OperatorCommand, Int) ->
+    Result(command.CommandResult, Nil),
   dispatch_paused: fn(Int) -> Result(Bool, Nil),
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
@@ -57,6 +73,7 @@ pub fn start_with_control(
       retry_initial_ms: effective.ui_server.retry_initial_ms,
       retry_max_ms: effective.ui_server.retry_max_ms,
       connect_timeout_ms: 1000,
+      command_timeout_ms: effective.control.command_timeout_ms,
       command_bridge_enabled: effective.ui_server.command_bridge_enabled,
       redaction_secrets: [stored.secret, ..secrets],
     )
@@ -79,6 +96,7 @@ pub fn start_with_control(
           Error(Nil) -> Error("daemon_dispatch_paused_timeout")
         }
       },
+      apply_command: apply_command,
       logger: logger,
     )
   case ui_websocket_client.start(settings, dependencies) {

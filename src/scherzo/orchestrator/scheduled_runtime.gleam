@@ -2,6 +2,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, Some}
+import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/schedule_core
 import scherzo/retry_policy
 import scherzo/state/record
@@ -588,6 +589,41 @@ pub fn report_failure_failed_record(
     next_retry_at_ms,
     report_attempt_index,
   )
+}
+
+pub fn report_failure_outbox_failed_record(
+  outbox: outbox_effects.Intent,
+  publication: adapter.ScheduledFailurePublication,
+  decision: ReportFailureDecision,
+  secrets: List(String),
+) -> record.RecordBody {
+  case decision {
+    ReportFailureRetry(
+      next_retry_at_ms:,
+      report_attempt_index:,
+      error_code:,
+      ..,
+    ) -> {
+      let next_outbox =
+        outbox_effects.scheduled_failure_intent(
+          publication,
+          report_attempt_index + 1,
+          secrets,
+        )
+      outbox_effects.retry_scheduled_body(
+        next_outbox,
+        error_code,
+        report_attempt_index,
+        next_retry_at_ms,
+      )
+    }
+    ReportFailureTerminal(report_attempt_index:, error_code:, ..) ->
+      outbox_effects.permanently_failed_body(
+        outbox,
+        error_code,
+        report_attempt_index,
+      )
+  }
 }
 
 pub fn report_failure_log_fields(

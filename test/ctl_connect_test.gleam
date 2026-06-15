@@ -489,6 +489,7 @@ pub fn connect_activate_writes_non_secret_ui_server_config_test() {
   assert string.contains(config, "  enabled: true")
   assert string.contains(config, "  endpoint: \"https://ui.example.test\"")
   assert string.contains(config, "  credential_ref: \"work-laptop\"")
+  assert string.contains(config, "  command_bridge_enabled: true")
   assert string.contains(config, "  daemon_label: \"Project Foo / MacBook\"")
   assert !string.contains(config, "pair_secret_1")
   assert !string.contains(config, "dcred_secret_1")
@@ -565,6 +566,7 @@ pub fn connect_activate_accepts_commented_ui_server_header_test() {
   assert string.contains(config, "  enabled: true")
   assert string.contains(config, "  endpoint: \"https://ui.example.test\"")
   assert string.contains(config, "  credential_ref: \"work-laptop\"")
+  assert string.contains(config, "  command_bridge_enabled: true")
 }
 
 pub fn connect_activate_preserves_existing_ui_server_fields_test() {
@@ -604,7 +606,7 @@ pub fn connect_activate_is_idempotent_for_matching_ui_server_config_test() {
   let config_path =
     write_config_with_tail(
       root,
-      "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n  daemon_label: Project Foo\n",
+      "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n  command_bridge_enabled: true\n  daemon_label: Project Foo\n",
     )
   let before = read_config_contents(config_path)
   let subject = process.new_subject()
@@ -615,6 +617,36 @@ pub fn connect_activate_is_idempotent_for_matching_ui_server_config_test() {
         server_url: "https://ui.example.test",
         credential_ref: "work-laptop",
         daemon_label: Some("Project Foo"),
+        replace_credential: False,
+        json: False,
+        allow_loopback_url: False,
+        activate: True,
+        config_path: Some(config_path),
+      ),
+      deps(Ok(credential_store.CredentialAlreadyStored("/tmp/creds.json"))),
+      output(subject),
+    )
+
+  assert read_config_contents(config_path) == before
+  assert string.contains(test_async.expect_message(subject), "already active")
+}
+
+pub fn connect_activate_preserves_explicit_command_bridge_disabled_test() {
+  let root = "test/tmp/connect-activate-preserve-bridge-disabled"
+  let config_path =
+    write_config_with_tail(
+      root,
+      "ui_server:\n  enabled: true\n  endpoint: https://ui.example.test\n  credential_ref: work-laptop\n  command_bridge_enabled: false\n",
+    )
+  let before = read_config_contents(config_path)
+  let subject = process.new_subject()
+  let assert Ok(Nil) =
+    connect.run_with_deps(
+      connect.Command(
+        pairing_token: "pair_secret_1",
+        server_url: "https://ui.example.test",
+        credential_ref: "work-laptop",
+        daemon_label: None,
         replace_credential: False,
         json: False,
         allow_loopback_url: False,

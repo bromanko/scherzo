@@ -343,6 +343,45 @@ fn scheduled_run(
   )
 }
 
+fn scheduled_failure_task_ref(job_id: String) -> record.TaskRefFields {
+  record.TaskRefFields(
+    task_backend_kind: "scheduled_failure",
+    task_remote_id: job_id,
+    task_key: Some(job_id),
+    task_url: None,
+  )
+}
+
+fn scheduled_failure_payload(
+  job_id: String,
+  run_id: String,
+  report_attempt_index: Int,
+) -> String {
+  let dedupe_key = "scheduled-job:" <> job_id
+  outbox.scheduled_failure_payload(
+    outbox.ScheduledFailurePayload(
+      kind: outbox.scheduled_failure_publication_kind,
+      job_id: job_id,
+      workflow_id: "implementation",
+      due_at_ms: 5000,
+      run_id: run_id,
+      attempt: 1,
+      max_attempts: 1,
+      reason: "daemon_restart",
+      run_root: Some("/tmp/" <> run_id),
+      session_id: Some("session-" <> run_id),
+      dedupe_key: dedupe_key,
+      title: "Scheduled workflow failure: " <> job_id,
+      body: "daemon_restart",
+      labels: ["job:" <> job_id],
+      target_state_name: Some("Triage"),
+      previous_task_remote_id: None,
+      report_attempt_index: report_attempt_index,
+    ),
+    [],
+  )
+}
+
 fn scheduled_status(
   job_id: String,
   state: projection.ScheduledRunState,
@@ -562,6 +601,188 @@ pub fn load_replays_pending_command_outbox_test() {
       _ -> False
     }
   })
+}
+
+pub fn load_replays_pending_scheduled_failure_outbox_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-scheduled-failure-outbox",
+      "prompts/task.md",
+    )
+  let workspace_root = bundle.effective.workspace.root
+  let dedupe_key = "scheduled-job:scheduled-job"
+  let payload_json = scheduled_failure_payload("scheduled-job", "run-1", 1)
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxPendingV2WithTask(
+      outbox_id: dedupe_key,
+      task_ref: scheduled_failure_task_ref("scheduled-job"),
+      outbox_kind: outbox.scheduled_failure_publication_kind,
+      dedupe_key: dedupe_key,
+      payload_json: payload_json,
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([]),
+      startup_dependencies(),
+      [],
+    )
+
+  assert loaded.outbox_to_replay
+    == [
+      recovery.OutboxReplay(
+        dedupe_key,
+        scheduled_failure_task_ref("scheduled-job"),
+        outbox.scheduled_failure_publication_kind,
+        dedupe_key,
+        payload_json,
+      ),
+    ]
+}
+
+pub fn load_replays_due_scheduled_failure_retry_outbox_only_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-scheduled-failure-retry-outbox",
+      "prompts/task.md",
+    )
+  let workspace_root = bundle.effective.workspace.root
+  let due_key = "scheduled-job:due-job"
+  let future_key = "scheduled-job:future-job"
+  let due_payload = scheduled_failure_payload("due-job", "run-due", 2)
+  let future_payload = scheduled_failure_payload("future-job", "run-future", 2)
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxRetryScheduledWithTask(
+      outbox_id: due_key,
+      task_ref: scheduled_failure_task_ref("due-job"),
+      outbox_kind: outbox.scheduled_failure_publication_kind,
+      dedupe_key: due_key,
+      payload_json: due_payload,
+      error_code: "tracker_transient",
+      attempt_count: 1,
+      next_attempt_at_ms: 6500,
+    ),
+    record.OutboxRetryScheduledWithTask(
+      outbox_id: future_key,
+      task_ref: scheduled_failure_task_ref("future-job"),
+      outbox_kind: outbox.scheduled_failure_publication_kind,
+      dedupe_key: future_key,
+      payload_json: future_payload,
+      error_code: "tracker_transient",
+      attempt_count: 1,
+      next_attempt_at_ms: 9000,
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([]),
+      startup_dependencies(),
+      [],
+    )
+
+  assert loaded.outbox_to_replay
+    == [
+      recovery.OutboxReplay(
+        due_key,
+        scheduled_failure_task_ref("due-job"),
+        outbox.scheduled_failure_publication_kind,
+        due_key,
+        due_payload,
+      ),
+    ]
+}
+
+pub fn load_marks_malformed_scheduled_failure_outbox_failed_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-malformed-scheduled-failure-outbox",
+      "prompts/task.md",
+    )
+  let workspace_root = bundle.effective.workspace.root
+  let dedupe_key = "scheduled-job:scheduled-job"
+  let payload_json =
+    outbox.bounded_payload_json(
+      outbox.scheduled_failure_publication_kind,
+      "",
+      [],
+    )
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxPendingV2WithTask(
+      outbox_id: dedupe_key,
+      task_ref: scheduled_failure_task_ref("scheduled-job"),
+      outbox_kind: outbox.scheduled_failure_publication_kind,
+      dedupe_key: dedupe_key,
+      payload_json: payload_json,
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([]),
+      startup_dependencies(),
+      [],
+    )
+
+  assert loaded.outbox_to_replay == []
+  assert loaded.warnings
+    == [
+      "outbox_replay_failed:scheduled-job:scheduled-job:invalid_outbox_payload",
+    ]
+  assert list.any(load_records(workspace_root), fn(entry) {
+    case entry.body {
+      record.OutboxFailedWithTask(
+        outbox_id: "scheduled-job:scheduled-job",
+        outbox_kind: kind,
+        error_code: "invalid_outbox_payload",
+        ..,
+      ) -> kind == outbox.scheduled_failure_publication_kind
+      _ -> False
+    }
+  })
+}
+
+pub fn load_suppresses_completed_and_permanent_scheduled_failure_outbox_test() {
+  let bundle =
+    write_bundle(
+      "test/tmp/startup-recovery-scheduled-failure-terminal-outbox",
+      "prompts/task.md",
+    )
+  let workspace_root = bundle.effective.workspace.root
+  let completed_key = "scheduled-job:completed-job"
+  let permanent_key = "scheduled-job:permanent-job"
+
+  append_test_ledger_bodies(workspace_root, [
+    record.OutboxCompletedWithTask(
+      outbox_id: completed_key,
+      task_ref: scheduled_failure_task_ref("completed-job"),
+      outbox_kind: outbox.scheduled_failure_publication_kind,
+    ),
+    record.OutboxPermanentlyFailedWithTask(
+      outbox_id: permanent_key,
+      task_ref: scheduled_failure_task_ref("permanent-job"),
+      outbox_kind: outbox.scheduled_failure_publication_kind,
+      error_code: "tracker_permanent",
+      attempt_count: 1,
+    ),
+  ])
+
+  let assert Ok(loaded) =
+    startup_recovery.load(
+      bundle,
+      tracker_adapter([]),
+      startup_dependencies(),
+      [],
+    )
+
+  assert loaded.outbox_to_replay == []
 }
 
 pub fn load_compensates_recovered_claim_outbox_with_release_claim_test() {
@@ -1367,6 +1588,54 @@ pub fn recover_scheduled_runtime_restores_report_retry_timer_test() {
         delay_ms: 500,
       ),
     ]
+}
+
+pub fn recover_scheduled_runtime_suppresses_report_retry_timer_when_outbox_replays_test() {
+  let bundle =
+    scheduled_bundle("test/tmp/startup-recovery-scheduled-report-outbox-owner", [
+      scheduled_entry("scheduled-job", True),
+    ])
+  let report_retry =
+    projection.ScheduledReportRetry(
+      run_id: "run-report",
+      attempt: 3,
+      dedupe_key: "scheduled-job:scheduled-job",
+      error_code: "linear_failed",
+      error_message: "temporary failure",
+      next_retry_at_ms: 6500,
+      generation: 4,
+    )
+  let payload_json = scheduled_failure_payload("scheduled-job", "run-report", 4)
+
+  let recovery =
+    startup_recovery.recover_scheduled_runtime_with_outbox_replay(
+      bundle,
+      7000,
+      [
+        scheduled_status(
+          "scheduled-job",
+          projection.ScheduledReportRetryWaiting,
+          scheduled_run("run-report", 3),
+          Some(report_retry),
+        ),
+      ],
+      [
+        recovery.OutboxReplay(
+          "scheduled-job:scheduled-job",
+          scheduled_failure_task_ref("scheduled-job"),
+          outbox.scheduled_failure_publication_kind,
+          "scheduled-job:scheduled-job",
+          payload_json,
+        ),
+      ],
+    )
+
+  assert scheduled_runtime.report_retry_tick_matches(
+    recovery.runtime,
+    "run-report",
+    4,
+  )
+  assert recovery.effects == []
 }
 
 pub fn recover_scheduled_runtime_reports_enabled_retry_waiting_as_failed_test() {

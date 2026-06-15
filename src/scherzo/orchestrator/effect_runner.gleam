@@ -91,8 +91,10 @@ pub type Effect {
     outbox: recovery.OutboxReplay,
     comments: Option(adapter.CommentCapability),
     state_transitions: Option(adapter.StateTransitionCapability),
+    scheduled_failures: Option(adapter.ScheduledFailureCapability),
   )
   ReportScheduledFailure(
+    outbox: outbox_effects.Intent,
     generation: Int,
     publication: adapter.ScheduledFailurePublication,
     capability: adapter.ScheduledFailureCapability,
@@ -181,6 +183,7 @@ pub type EffectResult {
     result: Result(Nil, error.TrackerError),
   )
   ScheduledFailureReportFinished(
+    outbox: outbox_effects.Intent,
     generation: Int,
     publication: adapter.ScheduledFailurePublication,
     result: Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
@@ -399,8 +402,8 @@ pub fn effect_kind(effect: Effect) -> String {
     ReportFailure(_, _, _, _, _, _, _, _) -> "report_failure"
     ReportPark(_, _, _) -> "report_park"
     ReportInvalidWorkflow(_, _, _, _, _, _, _, _) -> "report_invalid_workflow"
-    ReplayOutbox(_, _, _) -> "replay_outbox"
-    ReportScheduledFailure(_, _, _) -> "report_scheduled_failure"
+    ReplayOutbox(_, _, _, _) -> "replay_outbox"
+    ReportScheduledFailure(_, _, _, _) -> "report_scheduled_failure"
     CleanupWorkspace(_, _, _, _) -> "cleanup_workspace"
   }
 }
@@ -884,6 +887,58 @@ fn run_replay_state_transition(
   }
 }
 
+fn run_replay_outbox(
+  outbox_replay: recovery.OutboxReplay,
+  comments: Option(adapter.CommentCapability),
+  state_transitions: Option(adapter.StateTransitionCapability),
+  scheduled_failures: Option(adapter.ScheduledFailureCapability),
+) -> EffectResult {
+  let recovery.OutboxReplay(_, _, outbox_kind, _, _) = outbox_replay
+  case outbox_kind == outbox.scheduled_failure_publication_kind {
+    True -> replay_scheduled_failure_outbox(outbox_replay, scheduled_failures)
+    False ->
+      OutboxReplayFinished(
+        outbox_replay,
+        replay_outbox_update(outbox_replay, comments, state_transitions),
+      )
+  }
+}
+
+fn replay_scheduled_failure_outbox(
+  outbox_replay: recovery.OutboxReplay,
+  scheduled_failures: Option(adapter.ScheduledFailureCapability),
+) -> EffectResult {
+  let intent = outbox_effects.recovered_intent(outbox_replay)
+  case
+    outbox_effects.scheduled_failure_publication_from_payload(
+      intent.payload_json,
+    )
+  {
+    Error(err) ->
+      OutboxReplayFinished(
+        outbox_replay,
+        Error(error.LinearUnknownPayload(outbox.replay_error_code(err))),
+      )
+    Ok(#(generation, publication)) ->
+      case scheduled_failures {
+        None ->
+          ScheduledFailureReportFinished(
+            intent,
+            generation,
+            publication,
+            Error(adapter.UnsupportedCapability("scheduled_failures")),
+          )
+        Some(capability) ->
+          ScheduledFailureReportFinished(
+            intent,
+            generation,
+            publication,
+            capability.publish(publication),
+          )
+      }
+  }
+}
+
 fn string_is_empty(value: String) -> Bool {
   value == ""
 }
@@ -1046,13 +1101,16 @@ fn run_side_effect(effect: Effect) -> EffectResult {
           Some(outbox.dedupe_key),
         ),
       )
-    ReplayOutbox(outbox_replay, comments, state_transitions) ->
-      OutboxReplayFinished(
+    ReplayOutbox(outbox_replay, comments, state_transitions, scheduled_failures) ->
+      run_replay_outbox(
         outbox_replay,
-        replay_outbox_update(outbox_replay, comments, state_transitions),
+        comments,
+        state_transitions,
+        scheduled_failures,
       )
-    ReportScheduledFailure(generation, publication, capability) ->
+    ReportScheduledFailure(outbox, generation, publication, capability) ->
       ScheduledFailureReportFinished(
+        outbox,
         generation,
         publication,
         capability.publish(publication),
