@@ -535,7 +535,6 @@ pub fn workspace_driver_profiles_resolve_dogfood_jj_shape_test() {
       config_types.WorkspaceAssertOnly,
       config_types.WorkspaceBaseline,
       config_types.WorkspaceRefreshBase,
-      config_types.WorkspacePublishChange,
       config_types.WorkspacePublishCommitStack,
     ]
   assert driver.env

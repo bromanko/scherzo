@@ -590,6 +590,18 @@ pub fn rejects_invalid_workspace_requires_test() {
       "version: 1\nid: research\nworkspace:\n  requires: [pull-request]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )
     == "unknown_workspace_capability"
+  let legacy_source =
+    "version: 1\nid: research\nworkspace:\n  requires: [publish-change]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n"
+  assert error_code(legacy_source) == "legacy_workspace_capability"
+  assert string.contains(
+    error_message(legacy_source),
+    "publish-change was removed",
+  )
+  assert string.contains(error_message(legacy_source), "publish-commit-stack")
+  assert string.contains(
+    error_message(legacy_source),
+    "docs/runbooks/workspace-driver-migration.md",
+  )
   assert error_code(
       "version: 1\nid: research\nworkspace:\n  requires: [assert-only, assert-only]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
     )

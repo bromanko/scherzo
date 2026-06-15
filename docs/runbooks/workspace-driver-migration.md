@@ -14,7 +14,7 @@ The old model put trusted shell snippets directly in YAML as hooks, and later ex
 
 Driver commands are trusted operator config, not workflow-defined shell. A workflow can select `workspace.driver: isolated` or require `workspace.requires: [assert-only]`, but it cannot set `workspace.drivers.<name>.command` and cannot override the configured command at runtime. Built-in `noop` and `jj` drivers have known capabilities; custom drivers self-describe by running `<driver> describe --json`. Scherzo validates workflow requirements during runtime bundle loading and again before direct workflow execution.
 
-The accepted lifecycle command names remain `create`, `before-step`, `after-step`, and `remove`, but lifecycle selection is no longer public config. The accepted public capability names are `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, `publish-change`, and `publish-commit-stack`. `type: custom` `command` values must be one executable token without whitespace or shell metacharacters. They may use `$SCHERZO_REPO_ROOT` as a leading placeholder, which Scherzo resolves before exposing `SCHERZO_WORKSPACE_DRIVER` to workflow steps. Drivers configure `type`, optional `timeout`, optional `env`, and for `type: jj` friendly fields such as `remote`, `base_branch`, `base`, `fetch_base`, `publish_remote`, and `github_repo`.
+The accepted lifecycle command names remain `create`, `before-step`, `after-step`, and `remove`, but lifecycle selection is no longer public config. The accepted public capability names are `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-commit-stack`. `publish-change` was the old same-repository publication name and is now rejected with migration diagnostics. `type: custom` `command` values must be one executable token without whitespace or shell metacharacters. They may use `$SCHERZO_REPO_ROOT` as a leading placeholder, which Scherzo resolves before exposing `SCHERZO_WORKSPACE_DRIVER` to workflow steps. Drivers configure `type`, optional `timeout`, optional `env`, and for `type: jj` friendly fields such as `remote`, `base_branch`, `base`, `fetch_base`, `publish_remote`, and `github_repo`.
 
 Legacy hook/profile blocks are no longer runtime configuration. Top-level `workspace.hooks`, `workspace.default_profile`, `workspace.profiles`, driver-local `hooks`, driver-local `lifecycle`, and `timeout_ms` fail config loading with an `invalid_config` diagnostic that names the unsupported key and links back to the simplified schema. Use `workspace.driver` plus a `workspace.drivers.<name>` entry whose selected driver implements the lifecycle contract in [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
 
@@ -31,6 +31,26 @@ Driver-local legacy config fails with the same diagnostic shape and names the dr
     workspace.drivers.noop.hooks was removed. Use workspace.drivers.noop.type: custom. Workspace lifecycle hook config was removed; use a custom workspace driver command instead. See docs/specs/SCHERZO_YAML_SIMPLIFIED_V1.md.
 
 The doctor check name remains `workspace-hooks` for CLI compatibility, but legacy hook config is rejected by the earlier workflow-config load.
+
+## Migrating from publish-change to publish-commit-stack
+
+`publish-change` has been removed as a supported workspace capability and command. Same-repository `commit_stack` publication now requires the selected workspace driver to advertise `publish-commit-stack` from `describe --json` and implement the `publish-commit-stack` command.
+
+Update workflows from:
+
+```yaml
+workspace:
+  requires: [publish-change]
+```
+
+to:
+
+```yaml
+workspace:
+  requires: [publish-commit-stack]
+```
+
+Update custom drivers so `describe --json` reports `publish-commit-stack` and no longer reports `publish-change`. Rename the command handler from `publish-change` to `publish-commit-stack`; the request shape is the same publication boundary, with commit-stack-specific safety arguments such as `--expected-head` when Scherzo is updating an existing PR branch. The bundled jj driver advertises and accepts only `publish-commit-stack`; invoking `publish-change` returns a legacy-command diagnostic that points back to this section.
 
 ## Before and after: direct hooks
 
@@ -161,14 +181,14 @@ workspace:
 
 The name can stay stable, but workflows must now select it with `workspace.driver: isolated` and move any capability declarations to `workspace.requires`.
 
-Command steps and agent subprocesses run under a selected driver receive `SCHERZO_WORKSPACE_PROFILE=isolated`, `SCHERZO_WORKSPACE_DRIVER=<resolved-driver-command>`, and `SCHERZO_WORKSPACE_CAPABILITIES="status diff changed-files assert-only baseline refresh-base publish-change publish-commit-stack"` for the current bundled jj driver. Current workflows should require `publish-commit-stack` for same-repo GitHub publication; `publish-change` remains a compatibility alias. An original agent prompt can render `{{ workspace.driver }}` or loop over `{% for capability in workspace.capabilities %}`.
+Command steps and agent subprocesses run under a selected driver receive `SCHERZO_WORKSPACE_PROFILE=isolated`, `SCHERZO_WORKSPACE_DRIVER=<resolved-driver-command>`, and `SCHERZO_WORKSPACE_CAPABILITIES="status diff changed-files assert-only baseline refresh-base publish-commit-stack"` for the current bundled jj driver. Current workflows should require `publish-commit-stack` for same-repo GitHub publication. An original agent prompt can render `{{ workspace.driver }}` or loop over `{% for capability in workspace.capabilities %}`.
 
 ## Choosing capabilities
 
 Declare only workflow requirements that the workflow actually needs. Workspace driver config no longer declares provided capabilities in YAML. The current checked and packaged drivers provide these public capability names:
 
 - `scripts/scherzo-workspace-noop` and `scherzo-workspace-noop`: `status`, `changed-files`, and `assert-only`.
-- `scripts/scherzo-workspace-jj` and `scherzo-workspace-jj`: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, `publish-commit-stack`, and the compatibility alias `publish-change`.
+- `scripts/scherzo-workspace-jj` and `scherzo-workspace-jj`: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-commit-stack`.
 
 A workflow that invokes the selected driver for `assert-only --path research-findings.md` should declare `workspace.requires: [assert-only]`. A workflow that asks the driver for changed files should declare `workspace.requires: [changed-files]`. If a workflow declares a capability missing from the selected driver's `describe --json` response, Scherzo fails workflow-config loading before dispatch.
 
@@ -274,6 +294,8 @@ A passing workflow-config check means Scherzo can parse the orchestrator config,
 ## Troubleshooting
 
 If workflow-config reports `invalid_config` for `workspace.hooks`, `workspace.default_profile`, `workspace.profiles`, driver-local `hooks`, driver-local `lifecycle`, or `timeout_ms`, migrate that block to `workspace.driver` and `workspace.drivers.<name>`. Keep the old selector name when possible, but update workflow files to select it through `workspace.driver`.
+
+If workflow-config fails with a `publish-change was removed` diagnostic, update workflow `workspace.requires` entries and custom driver `describe --json` output to use `publish-commit-stack`. Do not treat `publish-change` as an unknown capability; it is a recognized legacy name that must be migrated.
 
 If workflow-config fails with `workspace_capabilities_unavailable`, the workflow requires a capability that the selected driver does not provide. Either remove the unnecessary workflow capability, select a driver that reports it, or teach the trusted driver to support it in a separate runtime change.
 

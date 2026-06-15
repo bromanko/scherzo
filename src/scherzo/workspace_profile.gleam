@@ -190,23 +190,7 @@ fn capability_is_provided(
   capability: config_types.WorkspaceCapability,
   provided: List(config_types.WorkspaceCapability),
 ) -> Bool {
-  case list.contains(provided, capability) {
-    True -> True
-    False -> capability_alias_is_provided(capability, provided)
-  }
-}
-
-fn capability_alias_is_provided(
-  capability: config_types.WorkspaceCapability,
-  provided: List(config_types.WorkspaceCapability),
-) -> Bool {
-  case capability {
-    config_types.WorkspacePublishChange ->
-      list.contains(provided, config_types.WorkspacePublishCommitStack)
-    config_types.WorkspacePublishCommitStack ->
-      list.contains(provided, config_types.WorkspacePublishChange)
-    _ -> False
-  }
+  list.contains(provided, capability)
 }
 
 fn available_names(

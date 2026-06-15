@@ -17,7 +17,7 @@ WORKSPACE_DRIVER_CAPABILITIES = {
         "assert-only",
         "baseline",
         "refresh-base",
-        "publish-change",
+        "publish-commit-stack",
     ],
 }
 
@@ -206,7 +206,7 @@ if argv[:1] == ["status"]:
 if argv == ["changed-files", "--json"]:
     print('{{"version":1,"files":[]}}')
     sys.exit(0)
-if argv[:1] in (["assert-only"], ["diff"], ["baseline"], ["refresh-base"], ["publish-change"]):
+if argv[:1] in (["assert-only"], ["diff"], ["baseline"], ["refresh-base"], ["publish-commit-stack"]):
     sys.exit(0)
 if argv[:2] == ["lifecycle", "create"]:
     workspace = os.environ.get("SCHERZO_WORKSPACE_PATH")

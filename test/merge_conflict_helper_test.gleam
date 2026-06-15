@@ -898,7 +898,7 @@ fn write_fake_workspace_driver(path: String) -> Nil {
       "#!/bin/sh\n"
         <> "printf 'env remote=%s base=%s publish=%s legacy_remote=%s legacy_base=%s\\n' \"${SCHERZO_JJ_WORKSPACE_REMOTE:-}\" \"${SCHERZO_JJ_WORKSPACE_BASE_BRANCH:-}\" \"${SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE:-}\" \"${SCHERZO_PR_REMOTE:-}\" \"${SCHERZO_PR_BASE:-}\" >> workspace-driver.log\n"
         <> "printf '%s\\n' \"$*\" >> workspace-driver.log\n"
-        <> "if [ \"$1\" = publish-change ]; then\n"
+        <> "if [ \"$1\" = publish-commit-stack ]; then\n"
         <> "  printf '%s\\n' '{\"version\":1,\"head_revision\":\"abc123\"}'\n"
         <> "  exit 0\n"
         <> "fi\n"

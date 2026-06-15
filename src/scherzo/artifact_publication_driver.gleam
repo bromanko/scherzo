@@ -110,7 +110,7 @@ fn require_publication_driver(
     None ->
       Error(artifact_publication_manifest.PublicationErrorInfo(
         code: "commit_stack_publication_driver_unavailable",
-        message: "same-repo commit_stack publication requires a workspace driver with publish-change or publish-commit-stack",
+        message: "same-repo commit_stack publication requires a workspace driver with publish-commit-stack",
       ))
   }
 }
@@ -118,19 +118,26 @@ fn require_publication_driver(
 fn driver_publish_operation(
   driver: WorkspacePublicationDriver,
 ) -> Result(String, artifact_publication_manifest.PublicationErrorInfo) {
-  case
-    list.contains(driver.capabilities, config_types.WorkspacePublishCommitStack)
-  {
-    True -> Ok("publish-commit-stack")
+  case list.contains(driver.capabilities, config_types.WorkspacePublishChange) {
+    True ->
+      Error(artifact_publication_manifest.PublicationErrorInfo(
+        code: "legacy_publish_change_unsupported",
+        message: config_types.legacy_publish_change_migration_message(
+          "workspace driver for same-repo commit_stack publication",
+        ),
+      ))
     False ->
       case
-        list.contains(driver.capabilities, config_types.WorkspacePublishChange)
+        list.contains(
+          driver.capabilities,
+          config_types.WorkspacePublishCommitStack,
+        )
       {
-        True -> Ok("publish-change")
+        True -> Ok("publish-commit-stack")
         False ->
           Error(artifact_publication_manifest.PublicationErrorInfo(
             code: "commit_stack_publication_driver_unsupported",
-            message: "workspace driver does not advertise publish-change or publish-commit-stack",
+            message: "workspace driver does not advertise publish-commit-stack",
           ))
       }
   }

@@ -1032,7 +1032,14 @@ pub fn workspace_driver_accepts_builtin_jj_selection_test() {
   let assert Some(driver) = profile.driver
   assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
   assert driver.env == []
-  assert list.contains(driver.capabilities, config_types.WorkspacePublishChange)
+  assert !list.contains(
+    driver.capabilities,
+    config_types.WorkspacePublishChange,
+  )
+  assert list.contains(
+    driver.capabilities,
+    config_types.WorkspacePublishCommitStack,
+  )
 }
 
 pub fn named_jj_workspace_driver_maps_friendly_fields_test() {

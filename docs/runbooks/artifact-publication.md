@@ -41,7 +41,7 @@ When a daemon control file is available, retry goes through the control/daemon o
 
 ## Publication boundary
 
-Same-repository repository-change publication is workspace-driver-backed. Commit-stack routes publish from the retained workflow workspace through the selected driver (`publish-commit-stack` or the migration-compatible `publish-change` capability), and retry reuses that retained workspace boundary.
+Same-repository repository-change publication is workspace-driver-backed. Commit-stack routes publish from the retained workflow workspace through the selected driver using `publish-commit-stack` only, and retry reuses that retained workspace boundary. Retained runs or custom drivers that still mention the removed `publish-change` name must be migrated with `docs/runbooks/workspace-driver-migration.md#migrating-from-publish-change-to-publish-commit-stack` before publication can proceed.
 
 GitHub file artifact publication no longer has a Scherzo-managed checkout implementation. Routes that still use `files:` for a GitHub repository fail with `file_publication_unsupported` and do not clone, reset, clean, or lock hidden repositories. Publish file-style review documents from an explicit workflow command/driver step, or convert repository changes to `mode: commit_stack`.
 

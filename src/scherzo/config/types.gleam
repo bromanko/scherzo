@@ -535,6 +535,19 @@ pub type WorkspaceDriverConfig {
   )
 }
 
+pub const legacy_publish_change_migration_doc = "docs/runbooks/workspace-driver-migration.md#migrating-from-publish-change-to-publish-commit-stack"
+
+pub fn is_legacy_publish_change_capability(value: String) -> Bool {
+  value |> string.trim |> string.lowercase == "publish-change"
+}
+
+pub fn legacy_publish_change_migration_message(subject: String) -> String {
+  subject
+  <> " uses legacy workspace-driver capability publish-change. publish-change was removed; use publish-commit-stack for same-repo commit_stack publication and update custom drivers to advertise and implement publish-commit-stack. See "
+  <> legacy_publish_change_migration_doc
+  <> "."
+}
+
 pub fn validate_workspace_driver_command(
   command: String,
 ) -> Result(String, String) {

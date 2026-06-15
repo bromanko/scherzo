@@ -46,7 +46,10 @@ pub fn retained_run_driver_uses_manifest_workspace_and_configured_profile_test()
   assert driver.workspace_path == workspace_abs
   assert driver.command == "fake-retained-driver"
   assert driver.timeout_ms == 777
-  assert list.contains(driver.capabilities, config_types.WorkspacePublishChange)
+  assert list.contains(
+    driver.capabilities,
+    config_types.WorkspacePublishCommitStack,
+  )
   assert env_value(driver.env, "SCHERZO_WORKSPACE_PATH") == Some(workspace_abs)
   assert env_value(driver.env, "SCHERZO_WORKSPACE_NAME") == Some("main")
   assert env_value(driver.env, "SCHERZO_RUN_ROOT") == Some(run_root)
@@ -69,7 +72,7 @@ fn write_retained_workspace_manifest(run_root: String) -> Nil {
             relative_path: "workspaces/main",
             workspace_profile: "dogfood-jj",
             driver_command: "fake-retained-driver",
-            driver_capabilities: ["publish-change"],
+            driver_capabilities: ["publish-commit-stack"],
             source_workspace_name: Some("source"),
             source_workspace_relative_path: Some("workspaces/source"),
             state: workspace_manifest.Ready,
