@@ -84,8 +84,14 @@ pub opaque type ShellHandlers(state) {
       transition_effects.ReviewLanePreflightRequest,
     ) -> state,
     reserve_session_sequence: fn(state, Int) -> state,
-    claim_issue: fn(state, task.TaskRef, tracker_issue.Issue, String, String) ->
+    claim_issue: fn(
       state,
+      task.TaskRef,
+      tracker_issue.Issue,
+      String,
+      String,
+      List(tracker_issue.Issue),
+    ) -> state,
     report_invalid_workflow: fn(
       state,
       tracker_issue.Issue,
@@ -197,6 +203,7 @@ pub fn shell_handlers(
     tracker_issue.Issue,
     String,
     String,
+    List(tracker_issue.Issue),
   ) -> state,
   report_invalid_workflow report_invalid_workflow: fn(
     state,

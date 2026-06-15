@@ -38,8 +38,14 @@ pub opaque type ShellState(shell) {
       effects_types.ReviewLanePreflightRequest,
     ) -> shell,
     reserve_session_sequence: fn(shell, Int) -> shell,
-    claim_issue: fn(shell, task.TaskRef, tracker_issue.Issue, String, String) ->
+    claim_issue: fn(
       shell,
+      task.TaskRef,
+      tracker_issue.Issue,
+      String,
+      String,
+      List(tracker_issue.Issue),
+    ) -> shell,
     report_invalid_workflow: fn(
       shell,
       tracker_issue.Issue,
@@ -153,7 +159,7 @@ pub fn new_shell_state(
     begin_dispatch_validation: fn(started_workers, _, _) { started_workers },
     begin_review_lane_preflight: fn(started_workers, _) { started_workers },
     reserve_session_sequence: fn(started_workers, _) { started_workers },
-    claim_issue: fn(started_workers, _, _, _, _) { started_workers },
+    claim_issue: fn(started_workers, _, _, _, _, _) { started_workers },
     report_invalid_workflow: fn(started_workers, _, _, _, _) { started_workers },
     replay_outbox: fn(started_workers, _) { started_workers },
     remove_retry_timer: fn(started_workers, _) { started_workers },
@@ -233,6 +239,7 @@ pub fn new_production_shell_state(
     tracker_issue.Issue,
     String,
     String,
+    List(tracker_issue.Issue),
   ) -> shell,
   report_invalid_workflow report_invalid_workflow: fn(
     shell,
@@ -500,7 +507,13 @@ fn apply_loop(
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }
-        effects_types.ClaimIssue(task_ref, issue, workspace_path, run_id) -> {
+        effects_types.ClaimIssue(
+          task_ref,
+          issue,
+          workspace_path,
+          run_id,
+          remaining_candidates,
+        ) -> {
           let data =
             shell.claim_issue(
               shell.data,
@@ -508,6 +521,7 @@ fn apply_loop(
               issue,
               workspace_path,
               run_id,
+              remaining_candidates,
             )
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
