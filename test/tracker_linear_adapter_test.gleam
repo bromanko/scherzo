@@ -38,6 +38,7 @@ fn tracker_config() -> config_types.TrackerConfig {
     endpoint: "https://api.linear.test/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
+    task_scope: None,
     active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
     dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings(["Done"]),

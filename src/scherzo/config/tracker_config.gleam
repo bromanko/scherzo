@@ -65,6 +65,7 @@ pub fn default() -> config_types.TrackerConfig {
     endpoint: "https://api.linear.app/graphql",
     api_key: None,
     project_slug: None,
+    task_scope: None,
     active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
     dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings([
@@ -124,14 +125,10 @@ pub fn resolve(
   )
   let api_key =
     resolve_tracker_api_key(tracker_node, linear_node, credentials_node, env)
-  let project_slug =
-    get_string(linear_node, "project")
-    |> option.lazy_or(fn() { get_string(linear_node, "project_slug") })
-    |> option.lazy_or(fn() { get_string(tracker_node, "project_slug") })
-    |> resolve_optional_env(env)
-  use project_slug <- result.try(required_option(
-    project_slug,
-    error.MissingTrackerProjectSlug,
+  use task_scope <- result.try(resolve_task_scope(
+    tracker_node,
+    linear_node,
+    env,
   ))
   use api_key <- result.try(required_option(api_key, error.MissingTrackerApiKey))
   Ok(#(
@@ -139,7 +136,8 @@ pub fn resolve(
       kind: kind,
       endpoint: endpoint,
       api_key: Some(api_key),
-      project_slug: Some(project_slug),
+      project_slug: primary_project_slug(task_scope),
+      task_scope: Some(task_scope),
       active_states: active_states,
       dispatch_states: dispatch_states,
       terminal_states: issue_state.list_from_strings(terminal_state_strings),
@@ -215,6 +213,231 @@ fn resolve_env_name(name: String, env: Env) -> Option(String) {
   case name == "" {
     True -> None
     False -> env(name)
+  }
+}
+
+fn resolve_task_scope(
+  tracker_node: yay.Node,
+  linear_node: yay.Node,
+  env: Env,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
+  case get_node(linear_node, "tasks_from") {
+    Some(tasks_from) -> {
+      use _ <- result.try(reject_tasks_from_legacy_conflicts(
+        tracker_node,
+        linear_node,
+      ))
+      parse_tasks_from(tasks_from, env)
+    }
+    None -> resolve_legacy_project_scope(tracker_node, linear_node, env)
+  }
+}
+
+fn resolve_legacy_project_scope(
+  tracker_node: yay.Node,
+  linear_node: yay.Node,
+  env: Env,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
+  let project_slug =
+    get_string(linear_node, "project")
+    |> option.lazy_or(fn() { get_string(linear_node, "project_slug") })
+    |> option.lazy_or(fn() { get_string(tracker_node, "project_slug") })
+    |> resolve_optional_env(env)
+  use project_slug <- result.try(required_option(
+    project_slug,
+    error.MissingTrackerProjectSlug,
+  ))
+  validate_project_slug(project_slug, "tracker.linear.project", fn(slug) {
+    config_types.LinearTaskProject(slug)
+  })
+}
+
+fn reject_tasks_from_legacy_conflicts(
+  tracker_node: yay.Node,
+  linear_node: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case node_has_key(linear_node, "project") {
+    True -> Error(task_scope_conflict("tracker.linear.project"))
+    False ->
+      case node_has_key(linear_node, "project_slug") {
+        True -> Error(task_scope_conflict("tracker.linear.project_slug"))
+        False ->
+          case node_has_key(tracker_node, "project_slug") {
+            True -> Error(task_scope_conflict("tracker.project_slug"))
+            False -> Ok(Nil)
+          }
+      }
+  }
+}
+
+fn task_scope_conflict(path: String) -> error.ConfigError {
+  error.InvalidConfig(
+    "tracker.linear.tasks_from cannot be combined with "
+    <> path
+    <> ". Choose one task-scope configuration surface.",
+  )
+}
+
+fn parse_tasks_from(
+  node: yay.Node,
+  env: Env,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
+  case node {
+    yay.NodeMap(pairs) ->
+      case task_scope_keys(pairs) {
+        ["project"] -> parse_tasks_from_project(pairs, env)
+        ["projects"] -> parse_tasks_from_projects(pairs, env)
+        [key] -> Error(unsupported_tasks_from_key(key))
+        [] ->
+          Error(error.InvalidConfig(
+            "tracker.linear.tasks_from must contain exactly one key: project or projects",
+          ))
+        [_, ..] ->
+          Error(error.InvalidConfig(
+            "tracker.linear.tasks_from must contain exactly one key: project or projects",
+          ))
+      }
+    _ -> Error(error.InvalidConfig("tracker.linear.tasks_from must be a map"))
+  }
+}
+
+fn parse_tasks_from_project(
+  pairs: List(#(yay.Node, yay.Node)),
+  env: Env,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
+  use value <- result.try(required_option(
+    get_pair(pairs, "project"),
+    error.InvalidConfig("tracker.linear.tasks_from.project is required"),
+  ))
+  case value {
+    yay.NodeStr(project) ->
+      resolve_task_scope_project_value(
+        project,
+        "tracker.linear.tasks_from.project",
+        env,
+        fn(slug) { config_types.LinearTaskProject(slug) },
+      )
+    _ ->
+      Error(error.InvalidConfig(
+        "tracker.linear.tasks_from.project must be a string",
+      ))
+  }
+}
+
+fn parse_tasks_from_projects(
+  pairs: List(#(yay.Node, yay.Node)),
+  env: Env,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
+  use value <- result.try(required_option(
+    get_pair(pairs, "projects"),
+    error.InvalidConfig("tracker.linear.tasks_from.projects is required"),
+  ))
+  case value {
+    yay.NodeSeq(values) -> {
+      use projects <- result.try(
+        read_tasks_from_project_values(values, env, []),
+      )
+      case dedupe_preserving_first(projects) {
+        [] ->
+          Error(error.InvalidConfig(
+            "tracker.linear.tasks_from.projects must contain at least one project",
+          ))
+        [project] -> Ok(config_types.LinearTaskProjects([project]))
+        projects -> Ok(config_types.LinearTaskProjects(projects))
+      }
+    }
+    _ ->
+      Error(error.InvalidConfig(
+        "tracker.linear.tasks_from.projects must be a string list",
+      ))
+  }
+}
+
+fn read_tasks_from_project_values(
+  values: List(yay.Node),
+  env: Env,
+  acc: List(String),
+) -> Result(List(String), error.ConfigError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] -> {
+      use project <- result.try(
+        resolve_task_scope_project_value(
+          value,
+          "tracker.linear.tasks_from.projects entries",
+          env,
+          fn(slug) { slug },
+        ),
+      )
+      read_tasks_from_project_values(rest, env, [project, ..acc])
+    }
+    [_, ..] ->
+      Error(error.InvalidConfig(
+        "tracker.linear.tasks_from.projects entries must be strings",
+      ))
+  }
+}
+
+fn resolve_task_scope_project_value(
+  value: String,
+  path: String,
+  env: Env,
+  wrap: fn(String) -> a,
+) -> Result(a, error.ConfigError) {
+  case resolve_optional_env(Some(value), env) {
+    Some(project) -> validate_project_slug(project, path, wrap)
+    None -> Error(error.InvalidConfig(path <> " must resolve to a string"))
+  }
+}
+
+fn validate_project_slug(
+  value: String,
+  path: String,
+  wrap: fn(String) -> a,
+) -> Result(a, error.ConfigError) {
+  let value = string.trim(value)
+  case value == "" {
+    True -> Error(error.InvalidConfig(path <> " must be non-empty"))
+    False -> Ok(wrap(value))
+  }
+}
+
+fn primary_project_slug(scope: config_types.LinearTaskScope) -> Option(String) {
+  case scope {
+    config_types.LinearTaskProject(project) -> Some(project)
+    config_types.LinearTaskProjects(_) -> None
+  }
+}
+
+fn task_scope_keys(pairs: List(#(yay.Node, yay.Node))) -> List(String) {
+  case pairs {
+    [] -> []
+    [#(yay.NodeStr(key), _), ..rest] -> [key, ..task_scope_keys(rest)]
+    [#(_, _), ..rest] -> task_scope_keys(rest)
+  }
+}
+
+fn unsupported_tasks_from_key(key: String) -> error.ConfigError {
+  error.InvalidConfig(
+    "tracker.linear.tasks_from."
+    <> key
+    <> " is not supported by this Scherzo build; supported keys are project and projects",
+  )
+}
+
+fn dedupe_preserving_first(values: List(String)) -> List(String) {
+  dedupe_loop(values, []) |> list.reverse
+}
+
+fn dedupe_loop(values: List(String), acc: List(String)) -> List(String) {
+  case values {
+    [] -> acc
+    [value, ..rest] -> {
+      case list.contains(acc, value) {
+        True -> dedupe_loop(rest, acc)
+        False -> dedupe_loop(rest, [value, ..acc])
+      }
+    }
   }
 }
 

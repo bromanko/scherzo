@@ -216,7 +216,7 @@ fn shell_with_apply_operator_command(
     begin_dispatch_validation: fn(started_workers, _, _) { started_workers },
     begin_review_lane_preflight: fn(started_workers, _) { started_workers },
     reserve_session_sequence: fn(started_workers, _) { started_workers },
-    claim_issue: fn(started_workers, _, _, _, _) { started_workers },
+    claim_issue: fn(started_workers, _, _, _, _, _) { started_workers },
     report_invalid_workflow: fn(started_workers, _, _, _, _) { started_workers },
     replay_outbox: fn(started_workers, _) { started_workers },
     remove_retry_timer: fn(started_workers, _) { started_workers },

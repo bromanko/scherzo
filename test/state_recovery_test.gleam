@@ -1500,6 +1500,7 @@ fn config() -> config_types.EffectiveConfig {
       endpoint: "endpoint",
       api_key: Some("key"),
       project_slug: Some("PROJ"),
+      task_scope: None,
       active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
       dispatch_states: issue_state.list_from_strings(["Todo"]),
       terminal_states: issue_state.list_from_strings(["Done", "Closed"]),

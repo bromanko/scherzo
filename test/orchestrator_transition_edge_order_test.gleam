@@ -842,7 +842,7 @@ fn edge_shell() -> interpreter.ShellState(List(String)) {
     reserve_session_sequence: fn(events, sequence) {
       append_event(events, "reserve:" <> int.to_string(sequence))
     },
-    claim_issue: fn(events, _, issue, _, _) {
+    claim_issue: fn(events, _, issue, _, _, _) {
       append_event(events, "claim:" <> issue.id)
     },
     report_invalid_workflow: fn(events, issue, _, _, _) {

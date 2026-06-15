@@ -345,6 +345,7 @@ fn reset_issue_for_operator_retry(
       ..state.runtime,
       retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
       issue_counters: dict.delete(state.runtime.issue_counters, identity),
+      completed: dict.delete(state.runtime.completed, identity),
     )
   transition_types.State(..state, runtime: runtime)
 }
