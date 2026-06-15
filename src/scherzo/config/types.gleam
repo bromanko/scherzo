@@ -875,21 +875,10 @@ fn completion_retry_handoff_states(
 ) -> List(issue_state.IssueState) {
   case config.handoff.completion_states {
     None -> []
-    Some(policy) -> {
-      let global_refs = [policy.failure_state, policy.partial_success_state]
-      let global_refs =
-        prepend_optional_ref(global_refs, policy.cancellation_state)
-      let workflow_refs =
-        policy.workflows
-        |> dict.values
-        |> list.fold([], fn(acc, override) {
-          let acc = prepend_optional_ref(acc, override.failure_state)
-          let acc = prepend_optional_ref(acc, override.partial_success_state)
-          prepend_optional_ref(acc, override.cancellation_state)
-        })
-      list.append(global_refs, workflow_refs)
+    Some(policy) ->
+      policy
+      |> workflow_completion_policy.retry_state_refs
       |> list.filter_map(state_ref_to_issue_state)
-    }
   }
 }
 
@@ -909,16 +898,6 @@ fn legacy_failure_handoff_states(
             Ok(state_name) -> [issue_state.from_string_unchecked(state_name)]
           }
       }
-  }
-}
-
-fn prepend_optional_ref(
-  refs: List(workflow_completion_policy.LinearStateRef),
-  maybe_ref: Option(workflow_completion_policy.LinearStateRef),
-) -> List(workflow_completion_policy.LinearStateRef) {
-  case maybe_ref {
-    None -> refs
-    Some(ref) -> [ref, ..refs]
   }
 }
 

@@ -359,6 +359,18 @@ pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
       <> "  enabled: true\n"
       <> "  endpoint: http://127.0.0.1:4000\n"
       <> "  credential_ref: work-laptop\n",
+    minimal_config()
+      <> "task_updates:\n"
+      <> "  enabled: true\n"
+      <> "  states:\n"
+      <> "    success: In Review\n"
+      <> "    no_review_success: Done\n"
+      <> "    failure: Triage\n"
+      <> "  workflows:\n"
+      <> "    research:\n"
+      <> "      requires_review: false\n"
+      <> "      states:\n"
+      <> "        no_review_success: Done\n",
   ]
 
   list.each(cases, fn(yaml) {
@@ -503,6 +515,23 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
     #(
       "task_updates.comment_on invalid event",
       minimal_config() <> "task_updates:\n" <> "  comment_on: [unknown]\n",
+    ),
+    #(
+      "task_updates.workflows rejects flat success key",
+      minimal_config()
+        <> "task_updates:\n"
+        <> "  workflows:\n"
+        <> "    research:\n"
+        <> "      success: Done\n",
+    ),
+    #(
+      "task_updates.workflows.states rejects claim key",
+      minimal_config()
+        <> "task_updates:\n"
+        <> "  workflows:\n"
+        <> "    research:\n"
+        <> "      states:\n"
+        <> "        claim: In Progress\n",
     ),
     #(
       "custom driver without command",

@@ -88,16 +88,18 @@ fn named_handoff_config(
 
 fn completion_policy() -> workflow_completion_policy.CompletionStatePolicy {
   workflow_completion_policy.CompletionStatePolicy(
-    default_completion_state: workflow_completion_policy.StateByName(
+    default_completion_state: Some(workflow_completion_policy.StateByName(
       "In Review",
-    ),
+    )),
     no_review_completion_state: Some(workflow_completion_policy.StateByName(
       "Done",
     )),
-    failure_state: workflow_completion_policy.StateByName("Needs Attention"),
-    partial_success_state: workflow_completion_policy.StateByName(
+    failure_state: Some(workflow_completion_policy.StateByName(
       "Needs Attention",
-    ),
+    )),
+    partial_success_state: Some(workflow_completion_policy.StateByName(
+      "Needs Attention",
+    )),
     cancellation_state: None,
     workflows: dict.from_list([
       #(
@@ -729,8 +731,45 @@ pub fn completion_state_policy_names_are_checked_test() {
   assert list.any(diagnostics, fn(diagnostic) {
     diagnostic
     == linear_contract.MissingCompletionStateId(
-      source: "task_updates.states.success",
+      source: "task_updates.workflows.execplan.states.success",
       id: "state-custom-review",
+    )
+  })
+}
+
+pub fn completion_state_policy_workflow_override_names_are_checked_test() {
+  let policy =
+    workflow_completion_policy.CompletionStatePolicy(
+      ..completion_policy(),
+      workflows: dict.from_list([
+        #(
+          "merge-conflict-resolution",
+          workflow_completion_policy.WorkflowCompletionOverride(
+            ..workflow_completion_policy.default_override(),
+            no_review_completion_state: Some(
+              workflow_completion_policy.StateByName("Conflict Resolved"),
+            ),
+          ),
+        ),
+      ]),
+    )
+  let handoff =
+    config_types.HandoffConfig(
+      ..handoff_config(True, None, None, None),
+      completion_states: Some(policy),
+    )
+  let diagnostics =
+    linear_contract.check(
+      effective(contract_config(False), handoff, ["Ready for Agent"], ["Done"]),
+      board([team("ENG", all_states(), [])], []),
+    )
+
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.MissingState(
+      team_key: "ENG",
+      name: "Conflict Resolved",
+      source: "task_updates.workflows.merge-conflict-resolution.states.no_review_success",
     )
   })
 }
@@ -739,13 +778,15 @@ pub fn completion_state_policy_ids_are_checked_test() {
   let id_policy =
     workflow_completion_policy.CompletionStatePolicy(
       ..completion_policy(),
-      default_completion_state: workflow_completion_policy.StateById(
+      default_completion_state: Some(workflow_completion_policy.StateById(
         "state-review",
-      ),
-      failure_state: workflow_completion_policy.StateById("state-attention"),
-      partial_success_state: workflow_completion_policy.StateById(
+      )),
+      failure_state: Some(workflow_completion_policy.StateById(
+        "state-attention",
+      )),
+      partial_success_state: Some(workflow_completion_policy.StateById(
         "missing-attention",
-      ),
+      )),
       workflows: dict.new(),
     )
   let handoff =

@@ -572,6 +572,153 @@ pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test(
     )
 }
 
+pub fn task_updates_workflow_override_can_make_publish_commit_stack_no_review_test() {
+  let dir = "test/tmp/runtime-bundle-task-updates-workflow-override"
+  test_helpers.reset_dir(dir)
+  write_describe_driver(dir, "driver", "[\"publish-commit-stack\"]")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let publish_stack_workflow =
+    "version: 1\nworkspace:\n  driver: driver\n  requires: [publish-commit-stack]\nsteps:\n  - id: run\n    kind: command\n    run: echo published\n"
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/merge-conflict-resolution.yaml",
+      "id: merge-conflict-resolution\n" <> publish_stack_workflow,
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "id: implementation\n" <> publish_stack_workflow,
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/execplan.yaml",
+      "id: execplan\n" <> publish_stack_workflow,
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: driver\n  drivers:\n    driver:\n      type: custom\n      command: scripts/driver\ntask_updates:\n  enabled: true\n  states:\n    success: In Review\n    no_review_success: Done\n    failure: Triage\n    partial_success: Triage\n  workflows:\n    merge-conflict-resolution:\n      requires_review: false\n      states:\n        no_review_success: Done\n    execplan:\n      states:\n        success: Done\nworkflows:\n    merge-conflict-resolution: workflows/merge-conflict-resolution.yaml\n    implementation: workflows/implementation.yaml\n    execplan: workflows/execplan.yaml\n",
+    )
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let assert Some(policy) = bundle.effective.handoff.completion_states
+  let assert Ok(merge_override) =
+    dict.get(policy.workflows, "merge-conflict-resolution")
+  let assert Ok(implementation_override) =
+    dict.get(policy.workflows, "implementation")
+  let assert Ok(execplan_override) = dict.get(policy.workflows, "execplan")
+
+  assert merge_override.produces_reviewable_artifacts == Some(False)
+  assert merge_override.requires_review == Some(False)
+  assert merge_override.no_review_completion_state
+    == Some(workflow_completion_policy.StateByName("Done"))
+  assert implementation_override.produces_reviewable_artifacts == Some(True)
+  assert implementation_override.requires_review == Some(True)
+  assert execplan_override.produces_reviewable_artifacts == Some(True)
+  assert execplan_override.requires_review == Some(True)
+  assert execplan_override.success_state
+    == Some(workflow_completion_policy.StateByName("Done"))
+
+  let success =
+    worker_success(result_artifact.from_final_response(
+      Some("published commit stack"),
+      False,
+      "test",
+    ))
+  let merge_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "merge-conflict-resolution",
+      success,
+    )
+  assert merge_outcome.requires_review
+    == workflow_completion_policy.ReviewNotRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "merge-conflict-resolution",
+      merge_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("Done"),
+      "no review is required",
+    )
+
+  let implementation_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "implementation",
+      success,
+    )
+  assert implementation_outcome.requires_review
+    == workflow_completion_policy.ReviewRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "implementation",
+      implementation_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("In Review"),
+      "reviewable artifacts were produced",
+    )
+
+  let execplan_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "execplan",
+      success,
+    )
+  assert execplan_outcome.requires_review
+    == workflow_completion_policy.ReviewRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "execplan",
+      execplan_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("Done"),
+      "workflow-specific success state",
+    )
+
+  let empty_execplan_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "execplan",
+      worker_success(result_artifact.empty()),
+    )
+  assert empty_execplan_outcome.expected_artifacts_missing == True
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "execplan",
+      empty_execplan_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("Triage"),
+      "expected reviewable artifacts were missing",
+    )
+}
+
+pub fn task_updates_workflow_override_rejects_unknown_workflow_test() {
+  let dir = "test/tmp/runtime-bundle-task-updates-unknown-workflow"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: run\n    kind: command\n    run: echo implementation\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\ntask_updates:\n  enabled: true\n  workflows:\n    implmentation:\n      states:\n        success: Done\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "unknown_task_update_workflow"
+  assert string.contains(message, "task_updates.workflows.implmentation")
+}
+
 pub fn task_updates_completion_policy_accepts_publish_commit_stack_with_jj_test() {
   let dir = "test/tmp/runtime-bundle-task-updates-publish-commit-stack"
   test_helpers.reset_dir(dir)

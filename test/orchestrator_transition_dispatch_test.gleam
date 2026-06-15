@@ -1575,16 +1575,18 @@ fn context_with_failure_state(
         ..context.effective.handoff,
         completion_states: Some(
           workflow_completion_policy.CompletionStatePolicy(
-            default_completion_state: workflow_completion_policy.StateByName(
-              "In Review",
+            default_completion_state: Some(
+              workflow_completion_policy.StateByName("In Review"),
             ),
             no_review_completion_state: Some(
               workflow_completion_policy.StateByName("Done"),
             ),
-            failure_state: workflow_completion_policy.StateByName(state_name),
-            partial_success_state: workflow_completion_policy.StateByName(
+            failure_state: Some(workflow_completion_policy.StateByName(
               state_name,
-            ),
+            )),
+            partial_success_state: Some(workflow_completion_policy.StateByName(
+              state_name,
+            )),
             cancellation_state: None,
             workflows: dict.new(),
           ),

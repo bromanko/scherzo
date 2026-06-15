@@ -799,6 +799,7 @@ fn resolve_task_updates(
     reject_unknown_map_keys(task_updates, "task_updates", [
       "enabled",
       "states",
+      "workflows",
       "comment_on",
       "result",
     ]),
@@ -810,10 +811,14 @@ fn resolve_task_updates(
   ))
   let enabled = enabled_option |> bool_default(False)
   use states <- result.try(resolve_task_update_states(task_updates))
+  use workflow_overrides <- result.try(resolve_task_update_workflow_overrides(
+    task_updates,
+  ))
   use comments <- result.try(resolve_task_update_comments(task_updates))
   use result_config <- result.try(resolve_task_update_result(task_updates))
   use completion_states <- result.try(resolve_task_update_completion_states(
     states,
+    workflow_overrides,
   ))
   Ok(config_types.HandoffConfig(
     enabled: enabled,
@@ -883,6 +888,125 @@ fn resolve_task_update_states(
   ))
 }
 
+fn resolve_task_update_workflow_overrides(
+  task_updates: yay.Node,
+) -> Result(
+  dict.Dict(String, workflow_completion_policy.WorkflowCompletionOverride),
+  error.ConfigError,
+) {
+  use workflows <- result.try(get_map_strict_or_empty(
+    task_updates,
+    "workflows",
+    "task_updates.workflows",
+  ))
+  case workflows {
+    yay.NodeMap(entries) ->
+      read_task_update_workflow_override_entries(entries, [])
+    _ -> Ok(dict.new())
+  }
+}
+
+fn read_task_update_workflow_override_entries(
+  entries: List(#(yay.Node, yay.Node)),
+  acc: List(#(String, workflow_completion_policy.WorkflowCompletionOverride)),
+) -> Result(
+  dict.Dict(String, workflow_completion_policy.WorkflowCompletionOverride),
+  error.ConfigError,
+) {
+  case entries {
+    [] -> Ok(dict.from_list(list.reverse(acc)))
+    [#(yay.NodeStr(key), yay.NodeMap(_) as workflow), ..rest] -> {
+      let workflow_id = normalize_label(key)
+      case valid_workflow_name(workflow_id) {
+        False ->
+          Error(error.InvalidConfig(
+            "task_updates.workflows has invalid workflow id: " <> key,
+          ))
+        True -> {
+          use override <- result.try(resolve_task_update_workflow_override(
+            workflow,
+            "task_updates.workflows." <> key,
+          ))
+          read_task_update_workflow_override_entries(rest, [
+            #(workflow_id, override),
+            ..acc
+          ])
+        }
+      }
+    }
+    [#(yay.NodeStr(key), _), ..] ->
+      Error(error.InvalidConfig(
+        "task_updates.workflows." <> key <> " must be a map",
+      ))
+    [#(_, _), ..] ->
+      Error(error.InvalidConfig("task_updates.workflows keys must be strings"))
+  }
+}
+
+fn resolve_task_update_workflow_override(
+  workflow: yay.Node,
+  path: String,
+) -> Result(
+  workflow_completion_policy.WorkflowCompletionOverride,
+  error.ConfigError,
+) {
+  use _ <- result.try(
+    reject_unknown_map_keys(workflow, path, [
+      "requires_review",
+      "states",
+    ]),
+  )
+  use requires_review <- result.try(get_bool_strict(
+    workflow,
+    "requires_review",
+    path <> ".requires_review",
+  ))
+  use states <- result.try(get_map_strict_or_empty(
+    workflow,
+    "states",
+    path <> ".states",
+  ))
+  use _ <- result.try(
+    reject_unknown_map_keys(states, path <> ".states", [
+      "success",
+      "no_review_success",
+      "failure",
+      "partial_success",
+    ]),
+  )
+  use success <- result.try(read_task_update_state(
+    states,
+    "success",
+    path <> ".states.success",
+  ))
+  use no_review_success <- result.try(read_task_update_state(
+    states,
+    "no_review_success",
+    path <> ".states.no_review_success",
+  ))
+  use failure <- result.try(read_task_update_state(
+    states,
+    "failure",
+    path <> ".states.failure",
+  ))
+  use partial_success <- result.try(read_task_update_state(
+    states,
+    "partial_success",
+    path <> ".states.partial_success",
+  ))
+  Ok(
+    workflow_completion_policy.WorkflowCompletionOverride(
+      ..workflow_completion_policy.default_override(),
+      produces_reviewable_artifacts: requires_review,
+      requires_review: requires_review,
+      success_state: success,
+      no_review_completion_state: no_review_success,
+      failure_state: failure,
+      partial_success_state: partial_success,
+    ),
+  )
+}
+
 fn read_task_update_state(
   states: yay.Node,
   key: String,
@@ -914,48 +1038,75 @@ fn task_update_state_ref(
 
 fn resolve_task_update_completion_states(
   states: TaskUpdateStates,
+  workflow_overrides: dict.Dict(
+    String,
+    workflow_completion_policy.WorkflowCompletionOverride,
+  ),
 ) -> Result(
   Option(workflow_completion_policy.CompletionStatePolicy),
   error.ConfigError,
 ) {
-  case states.no_review_success, states.partial_success {
-    None, None -> Ok(None)
-    _, _ -> {
-      use success <- result.try(required_task_update_state(
+  case
+    states.no_review_success,
+    states.partial_success,
+    dict.size(workflow_overrides)
+  {
+    None, None, 0 -> Ok(None)
+    _, _, _ -> {
+      use success <- result.try(required_global_completion_state(
         states.success,
         "task_updates.states.success",
-        "task_updates.states.no_review_success or task_updates.states.partial_success",
+        states,
       ))
-      use failure <- result.try(required_task_update_state(
+      use failure <- result.try(required_global_completion_state(
         states.failure,
         "task_updates.states.failure",
-        "task_updates.states.no_review_success or task_updates.states.partial_success",
+        states,
       ))
+      let partial_success = case states.partial_success {
+        Some(state) -> Some(state)
+        None -> failure
+      }
       Ok(
         Some(workflow_completion_policy.CompletionStatePolicy(
           default_completion_state: success,
           no_review_completion_state: states.no_review_success,
           failure_state: failure,
-          partial_success_state: option.unwrap(states.partial_success, failure),
+          partial_success_state: partial_success,
           cancellation_state: None,
-          workflows: dict.new(),
+          workflows: workflow_overrides,
         )),
       )
     }
   }
 }
 
-fn required_task_update_state(
+fn required_global_completion_state(
   state: Option(workflow_completion_policy.LinearStateRef),
   path: String,
-  dependent_path: String,
-) -> Result(workflow_completion_policy.LinearStateRef, error.ConfigError) {
+  states: TaskUpdateStates,
+) -> Result(
+  Option(workflow_completion_policy.LinearStateRef),
+  error.ConfigError,
+) {
   case state {
-    Some(state) -> Ok(state)
+    Some(_) -> Ok(state)
     None ->
-      Error(error.InvalidConfig(
-        path <> " is required when " <> dependent_path <> " is set",
-      ))
+      case global_completion_states_require_defaults(states) {
+        True ->
+          Error(error.InvalidConfig(
+            path
+            <> " is required when task_updates.states.no_review_success or task_updates.states.partial_success is set",
+          ))
+        False -> Ok(None)
+      }
+  }
+}
+
+fn global_completion_states_require_defaults(states: TaskUpdateStates) -> Bool {
+  case states.no_review_success, states.partial_success {
+    None, None -> False
+    _, _ -> True
   }
 }
 

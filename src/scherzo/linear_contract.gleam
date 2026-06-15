@@ -446,65 +446,73 @@ fn append_completion_state_policy_diagnostics(
 fn completion_state_refs(
   policy: workflow_completion_policy.CompletionStatePolicy,
 ) -> List(#(String, workflow_completion_policy.LinearStateRef)) {
-  let globals = [
-    task_update_state_ref_source("success", policy.default_completion_state),
-    task_update_state_ref_source("failure", policy.failure_state),
-    task_update_state_ref_source(
-      "partial_success",
-      policy.partial_success_state,
-    ),
-  ]
   let globals =
-    append_optional_task_update_state_ref(
-      globals,
-      "no_review_success",
+    []
+    |> append_optional_state_ref(
+      "task_updates.states.success",
+      policy.default_completion_state,
+    )
+    |> append_optional_state_ref(
+      "task_updates.states.no_review_success",
       policy.no_review_completion_state,
     )
-  let globals =
-    append_optional_task_update_state_ref(
-      globals,
-      "cancellation",
+    |> append_optional_state_ref(
+      "task_updates.states.failure",
+      policy.failure_state,
+    )
+    |> append_optional_state_ref(
+      "task_updates.states.partial_success",
+      policy.partial_success_state,
+    )
+    |> append_optional_state_ref(
+      "task_updates.states.cancellation",
       policy.cancellation_state,
     )
   policy.workflows
   |> dict.to_list
   |> list.sort(by: compare_workflow_override_pairs)
   |> list.fold(globals, fn(acc, entry) {
-    let #(_, override) = entry
+    let #(workflow_id, override) = entry
     acc
-    |> append_optional_task_update_state_ref("success", override.success_state)
-    |> append_optional_task_update_state_ref(
-      "no_review_success",
+    |> append_optional_state_ref(
+      workflow_task_update_state_ref_source(workflow_id, "success"),
+      override.success_state,
+    )
+    |> append_optional_state_ref(
+      workflow_task_update_state_ref_source(workflow_id, "no_review_success"),
       override.no_review_completion_state,
     )
-    |> append_optional_task_update_state_ref("failure", override.failure_state)
-    |> append_optional_task_update_state_ref(
-      "partial_success",
+    |> append_optional_state_ref(
+      workflow_task_update_state_ref_source(workflow_id, "failure"),
+      override.failure_state,
+    )
+    |> append_optional_state_ref(
+      workflow_task_update_state_ref_source(workflow_id, "partial_success"),
       override.partial_success_state,
     )
-    |> append_optional_task_update_state_ref(
-      "cancellation",
+    |> append_optional_state_ref(
+      workflow_task_update_state_ref_source(workflow_id, "cancellation"),
       override.cancellation_state,
     )
   })
 }
 
-fn append_optional_task_update_state_ref(
+fn append_optional_state_ref(
   acc: List(#(String, workflow_completion_policy.LinearStateRef)),
-  key: String,
+  source: String,
   maybe_ref: Option(workflow_completion_policy.LinearStateRef),
 ) -> List(#(String, workflow_completion_policy.LinearStateRef)) {
   case maybe_ref {
     None -> acc
-    Some(ref) -> [task_update_state_ref_source(key, ref), ..acc]
+    Some(ref) -> [#(source, ref), ..acc]
   }
 }
 
-fn task_update_state_ref_source(
+fn workflow_task_update_state_ref_source(
+  workflow_id: String,
   key: String,
-  ref: workflow_completion_policy.LinearStateRef,
-) -> #(String, workflow_completion_policy.LinearStateRef) {
-  #("task_updates.states." <> key, ref)
+) -> String {
+  "task_updates.workflows." <> workflow_id <> ".states." <> key
 }
 
 fn compare_workflow_override_pairs(

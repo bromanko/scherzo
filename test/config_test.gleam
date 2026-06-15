@@ -1599,14 +1599,50 @@ pub fn task_updates_completion_states_parse_state_names_test() {
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   let assert Some(policy) = configured.handoff.completion_states
   assert policy.default_completion_state
-    == workflow_completion_policy.StateByName("In Review")
+    == Some(workflow_completion_policy.StateByName("In Review"))
   assert policy.no_review_completion_state
     == Some(workflow_completion_policy.StateByName("Done"))
   assert policy.failure_state
-    == workflow_completion_policy.StateByName("Needs Attention")
+    == Some(workflow_completion_policy.StateByName("Needs Attention"))
   assert policy.partial_success_state
-    == workflow_completion_policy.StateByName("Triage")
+    == Some(workflow_completion_policy.StateByName("Triage"))
   assert dict.to_list(policy.workflows) == []
+}
+
+pub fn task_updates_workflow_completion_overrides_parse_test() {
+  let front =
+    minimal_front()
+    <> "task_updates:\n  enabled: true\n  states:\n    success: In Review\n    failure: Triage\n  workflows:\n    merge-conflict-resolution:\n      requires_review: false\n      states:\n        success: Done\n        no_review_success: Done\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  let assert Some(policy) = configured.handoff.completion_states
+  assert policy.default_completion_state
+    == Some(workflow_completion_policy.StateByName("In Review"))
+  assert policy.failure_state
+    == Some(workflow_completion_policy.StateByName("Triage"))
+  let assert Ok(override) =
+    dict.get(policy.workflows, "merge-conflict-resolution")
+  assert override.produces_reviewable_artifacts == Some(False)
+  assert override.requires_review == Some(False)
+  assert override.success_state
+    == Some(workflow_completion_policy.StateByName("Done"))
+  assert override.no_review_completion_state
+    == Some(workflow_completion_policy.StateByName("Done"))
+}
+
+pub fn task_updates_workflow_only_success_override_parses_test() {
+  let front =
+    minimal_front()
+    <> "task_updates:\n  enabled: true\n  workflows:\n    merge-conflict-resolution:\n      states:\n        success: Done\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  let assert Some(policy) = configured.handoff.completion_states
+  assert policy.default_completion_state == None
+  assert policy.failure_state == None
+  let assert Ok(override) =
+    dict.get(policy.workflows, "merge-conflict-resolution")
+  assert override.success_state
+    == Some(workflow_completion_policy.StateByName("Done"))
 }
 
 pub fn task_updates_partial_success_defaults_to_failure_state_test() {
@@ -1617,7 +1653,7 @@ pub fn task_updates_partial_success_defaults_to_failure_state_test() {
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   let assert Some(policy) = configured.handoff.completion_states
   assert policy.partial_success_state
-    == workflow_completion_policy.StateByName("Needs Attention")
+    == Some(workflow_completion_policy.StateByName("Needs Attention"))
 }
 
 pub fn task_updates_validation_test() {
@@ -1651,6 +1687,36 @@ pub fn task_updates_validation_test() {
       <> "task_updates:\n  enabled: true\n  states:\n    no_review_success: Done\n    failure: Triage\n",
     )
   assert string.contains(missing_success, "task_updates.states.success")
+
+  let flat_workflow_key =
+    invalid_config_message(
+      minimal_front()
+      <> "task_updates:\n  workflows:\n    merge-conflict-resolution:\n      success: Done\n",
+    )
+  assert string.contains(
+    flat_workflow_key,
+    "task_updates.workflows.merge-conflict-resolution.success",
+  )
+
+  let invalid_workflow_state_key =
+    invalid_config_message(
+      minimal_front()
+      <> "task_updates:\n  workflows:\n    merge-conflict-resolution:\n      states:\n        claim: In Progress\n",
+    )
+  assert string.contains(
+    invalid_workflow_state_key,
+    "task_updates.workflows.merge-conflict-resolution.states.claim",
+  )
+
+  let malformed_requires_review =
+    invalid_config_message(
+      minimal_front()
+      <> "task_updates:\n  workflows:\n    merge-conflict-resolution:\n      requires_review: sometimes\n",
+    )
+  assert string.contains(
+    malformed_requires_review,
+    "task_updates.workflows.merge-conflict-resolution.requires_review",
+  )
 }
 
 pub fn old_handoff_keys_fail_with_migration_hint_test() {

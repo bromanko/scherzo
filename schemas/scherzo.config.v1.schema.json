@@ -496,6 +496,24 @@
         }
       }
     },
+    "TaskUpdateWorkflowStates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "success": { "$ref": "#/$defs/NonEmptyString" },
+        "no_review_success": { "$ref": "#/$defs/NonEmptyString" },
+        "failure": { "$ref": "#/$defs/NonEmptyString" },
+        "partial_success": { "$ref": "#/$defs/NonEmptyString" }
+      }
+    },
+    "TaskUpdateWorkflowOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requires_review": { "type": "boolean" },
+        "states": { "$ref": "#/$defs/TaskUpdateWorkflowStates" }
+      }
+    },
     "TaskUpdates": {
       "type": "object",
       "additionalProperties": false,
@@ -511,6 +529,11 @@
             "failure": { "$ref": "#/$defs/NonEmptyString" },
             "partial_success": { "$ref": "#/$defs/NonEmptyString" }
           }
+        },
+        "workflows": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/WorkflowId" },
+          "additionalProperties": { "$ref": "#/$defs/TaskUpdateWorkflowOverride" }
         },
         "comment_on": {
           "type": "array",

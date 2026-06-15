@@ -4193,13 +4193,14 @@ fn dispatch_time_recovery_claim_issue(
             observation,
             plan,
           )
-        dispatch_recovery.PublicationRecovery(run_id) ->
+        dispatch_recovery.PublicationRecovery(run_id, workflow_id) ->
           apply_dispatch_publication_recovery(
             state,
             task_ref,
             issue,
             remaining_candidates,
             run_id,
+            workflow_id,
           )
         dispatch_recovery.RejectRecovery(reason, message) ->
           park_dispatch_recovery_rejection(
@@ -4352,6 +4353,7 @@ fn apply_dispatch_publication_recovery(
   issue: tracker_issue.Issue,
   remaining_candidates: List(tracker_issue.Issue),
   run_id: String,
+  workflow_id: String,
 ) -> State {
   case
     ctl_artifact_publication_retry.retry_attempts_with_bundle_runner(
@@ -4376,6 +4378,7 @@ fn apply_dispatch_publication_recovery(
           issue,
           run_id,
           attempt_count,
+          workflow_id,
         )
       {
         Ok(state) ->
@@ -4410,6 +4413,7 @@ fn complete_dispatch_publication_recovery(
   issue: tracker_issue.Issue,
   run_id: String,
   attempt_count: Int,
+  workflow_id: String,
 ) -> Result(State, #(State, String, String)) {
   let state =
     post_dispatch_publication_recovery_comment(
@@ -4419,7 +4423,10 @@ fn complete_dispatch_publication_recovery(
       attempt_count,
     )
   case
-    publication_recovery_completion_target(state.workflow.effective.handoff)
+    publication_recovery_completion_target(
+      state.workflow.effective.handoff,
+      workflow_id,
+    )
   {
     Error(message) ->
       Error(#(state, "publication_retry_completion_target_missing", message))
@@ -4482,17 +4489,43 @@ fn post_dispatch_publication_recovery_comment(
 
 fn publication_recovery_completion_target(
   handoff: config_types.HandoffConfig,
+  workflow_id: String,
 ) -> Result(#(Option(String), String), String) {
-  case handoff.success_state_id {
-    Some(state_ref) -> Ok(linear_state_target(state_ref))
+  let missing =
+    "publication retry completed but no success or completion state is configured"
+  case handoff.completion_states {
+    Some(policy) ->
+      policy
+      |> workflow_completion_policy.choose_linear_completion_state(
+        workflow_id,
+        publication_recovery_success_outcome(),
+      )
+      |> publication_recovery_decision_target
     None ->
-      case handoff.completion_states {
-        Some(policy) -> Ok(linear_state_target(policy.default_completion_state))
-        None ->
-          Error(
-            "publication retry completed but no success or completion state is configured",
-          )
-      }
+      handoff.success_state_id
+      |> option.to_result(missing)
+      |> result.map(linear_state_target)
+  }
+}
+
+fn publication_recovery_success_outcome() -> workflow_completion_policy.WorkflowCompletionOutcome {
+  workflow_completion_policy.WorkflowCompletionOutcome(
+    status: workflow_completion_policy.CompletionSucceeded,
+    artifacts: [],
+    requires_review: workflow_completion_policy.ReviewUnknown,
+    target_linear_state: None,
+    expected_artifacts_missing: False,
+  )
+}
+
+fn publication_recovery_decision_target(
+  decision: workflow_completion_policy.CompletionStateDecision,
+) -> Result(#(Option(String), String), String) {
+  case decision {
+    workflow_completion_policy.MoveToState(state, _) ->
+      Ok(linear_state_target(state))
+    workflow_completion_policy.LeaveLinearState(reason) ->
+      Error("publication retry completed but " <> reason)
   }
 }
 

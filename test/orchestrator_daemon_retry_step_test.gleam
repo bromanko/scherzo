@@ -1708,6 +1708,59 @@ pub fn dispatch_recovery_tracker_transition_failure_parks_and_suppresses_repeat_
   hub.stop(hub_subject)
 }
 
+pub fn dispatch_recovery_publication_retry_honors_workflow_completion_override_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-publication-workflow-override"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) =
+    write_retry_publication_workflow_with_task_updates(
+      dir,
+      "task_updates:\n  enabled: true\n  workflows:\n    execplan:\n      requires_review: false\n      states:\n        no_review_success: Done\n",
+    )
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_with_candidate(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_with_candidate(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "comment:publication_retry", 100)
+  assert wait_for_log(log_subject, "state_transition:Done", 100)
+  assert !wait_for_log(
+    log_subject,
+    "publication_retry_completion_target_missing",
+    5,
+  )
+  assert !wait_for_log(log_subject, "agent_run:issue-1", 5)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn dispatch_recovery_retries_publication_and_moves_issue_out_of_todo_test() {
   let dir = "test/tmp/daemon-dispatch-recovery-publication"
   let issue = issue("issue-1", "LIV-739", "Todo")
@@ -2065,6 +2118,16 @@ fn load_projection_or_panic(root: String) -> projection.Projection {
 }
 
 fn write_retry_publication_workflow(dir: String) -> #(String, String) {
+  write_retry_publication_workflow_with_task_updates(
+    dir,
+    "task_updates:\n  enabled: true\n  states:\n    success: Done\n    failure: Triage\n",
+  )
+}
+
+fn write_retry_publication_workflow_with_task_updates(
+  dir: String,
+  task_updates_yaml: String,
+) -> #(String, String) {
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
   let assert Ok(base) = path.dirname(root)
   let workflow_dir = base <> "/workflows"
@@ -2094,7 +2157,9 @@ fn write_retry_publication_workflow(dir: String) -> #(String, String) {
       config_path,
       "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: "
         <> root
-        <> "\n  driver: retained\n  drivers:\n    retained:\n      type: custom\n      command: scripts/retained-driver\n      timeout: 1234ms\ntask_updates:\n  enabled: true\n  states:\n    success: Done\n    failure: Triage\nagents:\n  concurrency: 1\n  sessions_per_task: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
+        <> "\n  driver: retained\n  drivers:\n    retained:\n      type: custom\n      command: scripts/retained-driver\n      timeout: 1234ms\n"
+        <> task_updates_yaml
+        <> "agents:\n  concurrency: 1\n  sessions_per_task: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
     )
   #(config_path, root)
 }

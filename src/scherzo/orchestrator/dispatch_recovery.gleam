@@ -15,7 +15,7 @@ import scherzo/workflow_repair
 pub type Outcome {
   FreshDispatch
   StepRecovery(plan: workflow_repair.RepairPlan)
-  PublicationRecovery(run_id: String)
+  PublicationRecovery(run_id: String, workflow_id: String)
   RejectRecovery(reason: String, message: String)
 }
 
@@ -83,7 +83,7 @@ fn classify_by_publication_retry(
     validate_publication_recovery_provenance(projected, run_id, observation)
   {
     Error(#(reason, message)) -> RejectRecovery(reason, message)
-    Ok(Nil) ->
+    Ok(workflow_id) ->
       case
         artifact_publication_retry.inspect_retryable_attempts(
           projected,
@@ -91,7 +91,7 @@ fn classify_by_publication_retry(
           None,
         )
       {
-        Ok(_) -> PublicationRecovery(run_id)
+        Ok(_) -> PublicationRecovery(run_id, workflow_id)
         Error(#(publication_reason, publication_message)) ->
           RejectRecovery(publication_reason, publication_message)
       }
@@ -102,7 +102,7 @@ fn validate_publication_recovery_provenance(
   projected: projection.Projection,
   run_id: String,
   observation: CurrentWorkflowObservation,
-) -> Result(Nil, #(String, String)) {
+) -> Result(String, #(String, String)) {
   case observation {
     CurrentWorkflow(
       issue,
@@ -142,6 +142,7 @@ fn validate_publication_recovery_provenance(
             issue_fingerprint,
             run_id,
           )
+          |> result.map(fn(_) { workflow_id })
       }
     }
     IssueUnavailable ->

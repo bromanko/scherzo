@@ -48,10 +48,10 @@ pub type CompletionStateDecision {
 
 pub type CompletionStatePolicy {
   CompletionStatePolicy(
-    default_completion_state: LinearStateRef,
+    default_completion_state: Option(LinearStateRef),
     no_review_completion_state: Option(LinearStateRef),
-    failure_state: LinearStateRef,
-    partial_success_state: LinearStateRef,
+    failure_state: Option(LinearStateRef),
+    partial_success_state: Option(LinearStateRef),
     cancellation_state: Option(LinearStateRef),
     workflows: Dict(String, WorkflowCompletionOverride),
   )
@@ -79,6 +79,54 @@ pub fn default_override() -> WorkflowCompletionOverride {
     partial_success_state: None,
     cancellation_state: None,
   )
+}
+
+pub fn merge_overrides(
+  inferred: WorkflowCompletionOverride,
+  configured: WorkflowCompletionOverride,
+) -> WorkflowCompletionOverride {
+  WorkflowCompletionOverride(
+    produces_reviewable_artifacts: option_or(
+      configured.produces_reviewable_artifacts,
+      inferred.produces_reviewable_artifacts,
+    ),
+    requires_review: option_or(
+      configured.requires_review,
+      inferred.requires_review,
+    ),
+    success_state: option_or(configured.success_state, inferred.success_state),
+    no_review_completion_state: option_or(
+      configured.no_review_completion_state,
+      inferred.no_review_completion_state,
+    ),
+    failure_state: option_or(configured.failure_state, inferred.failure_state),
+    partial_success_state: option_or(
+      configured.partial_success_state,
+      inferred.partial_success_state,
+    ),
+    cancellation_state: option_or(
+      configured.cancellation_state,
+      inferred.cancellation_state,
+    ),
+  )
+}
+
+pub fn retry_state_refs(policy: CompletionStatePolicy) -> List(LinearStateRef) {
+  let global_refs =
+    []
+    |> prepend_optional_state_ref(policy.failure_state)
+    |> prepend_optional_state_ref(policy.partial_success_state)
+    |> prepend_optional_state_ref(policy.cancellation_state)
+  let workflow_refs =
+    policy.workflows
+    |> dict.values
+    |> list.fold([], fn(acc, override) {
+      acc
+      |> prepend_optional_state_ref(override.failure_state)
+      |> prepend_optional_state_ref(override.partial_success_state)
+      |> prepend_optional_state_ref(override.cancellation_state)
+    })
+  list.append(global_refs, workflow_refs)
 }
 
 pub fn choose_linear_completion_state(
@@ -161,14 +209,19 @@ fn choose_without_explicit_target(
         None -> LeaveLinearState("workflow was cancelled")
       }
     CompletionFailed ->
-      MoveToState(
-        option_or(override.failure_state, policy.failure_state),
+      choose_optional_state(
+        first_state([override.failure_state, policy.failure_state]),
         "workflow failed",
+        "workflow failed and no failure state is configured",
       )
     CompletionPartiallySucceeded ->
-      MoveToState(
-        option_or(override.partial_success_state, policy.partial_success_state),
+      choose_optional_state(
+        first_state([
+          override.partial_success_state,
+          policy.partial_success_state,
+        ]),
         "workflow partially succeeded",
+        "workflow partially succeeded and no partial-success state is configured",
       )
     CompletionSucceeded -> choose_success(policy, override, outcome)
   }
@@ -181,9 +234,13 @@ fn choose_success(
 ) -> CompletionStateDecision {
   case outcome.expected_artifacts_missing {
     True ->
-      MoveToState(
-        option_or(override.partial_success_state, policy.partial_success_state),
+      choose_optional_state(
+        first_state([
+          override.partial_success_state,
+          policy.partial_success_state,
+        ]),
         "expected reviewable artifacts were missing",
+        "expected reviewable artifacts were missing and no partial-success state is configured",
       )
     False ->
       case override.success_state {
@@ -200,9 +257,10 @@ fn choose_success_without_override(
 ) -> CompletionStateDecision {
   case review_required(override, outcome) {
     True ->
-      MoveToState(
+      choose_optional_state(
         policy.default_completion_state,
         "reviewable artifacts were produced",
+        "reviewable artifacts were produced and no success state is configured",
       )
     False ->
       case
@@ -314,9 +372,30 @@ fn first_state(values: List(Option(LinearStateRef))) -> Option(LinearStateRef) {
   }
 }
 
-fn option_or(value: Option(a), fallback: a) -> a {
+fn prepend_optional_state_ref(
+  refs: List(LinearStateRef),
+  maybe_ref: Option(LinearStateRef),
+) -> List(LinearStateRef) {
+  case maybe_ref {
+    None -> refs
+    Some(ref) -> [ref, ..refs]
+  }
+}
+
+fn option_or(value: Option(a), fallback: Option(a)) -> Option(a) {
   case value {
-    Some(value) -> value
+    Some(_) -> value
     None -> fallback
+  }
+}
+
+fn choose_optional_state(
+  state: Option(LinearStateRef),
+  move_reason: String,
+  leave_reason: String,
+) -> CompletionStateDecision {
+  case state {
+    Some(state) -> MoveToState(state, move_reason)
+    None -> LeaveLinearState(leave_reason)
   }
 }

@@ -5,10 +5,10 @@ import scherzo/workflow_completion_policy as policy
 
 fn base_policy() -> policy.CompletionStatePolicy {
   policy.CompletionStatePolicy(
-    default_completion_state: policy.StateByName("In Review"),
+    default_completion_state: Some(policy.StateByName("In Review")),
     no_review_completion_state: Some(policy.StateByName("Done")),
-    failure_state: policy.StateByName("Needs Attention"),
-    partial_success_state: policy.StateByName("Needs Attention"),
+    failure_state: Some(policy.StateByName("Needs Attention")),
+    partial_success_state: Some(policy.StateByName("Needs Attention")),
     cancellation_state: None,
     workflows: dict.new(),
   )
