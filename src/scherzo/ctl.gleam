@@ -61,6 +61,15 @@ pub type Command {
     json: Bool,
     ref: query_types.TaskQueryRef,
   )
+  Outbox(
+    control_file: Option(String),
+    json: Bool,
+    outbox_id: Option(String),
+    statuses: List(query_types.OutboxRecordStatus),
+    kinds: List(String),
+    limit: Int,
+    cursor: Option(String),
+  )
   Session(control_file: Option(String), json: Bool, session_id: String)
   Events(
     control_file: Option(String),
@@ -260,6 +269,7 @@ fn build_command(
       )
       Ok(TaskShow(control_file_option(parsed), json_output(parsed), ref))
     }
+    command_registry.OutboxKey -> build_outbox_command(parsed)
     command_registry.SessionKey ->
       Ok(Session(
         control_file_option(parsed),
@@ -498,6 +508,67 @@ fn task_states_loop(
       case task_output.state_category_from_string(value) {
         Ok(state) -> task_states_loop(rest, [state, ..acc])
         Error(_) -> task_states_loop(rest, acc)
+      }
+  }
+}
+
+fn build_outbox_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  let outbox_id = optional_first_positional(parsed)
+  case outbox_id, outbox_show_disallowed_option(parsed) {
+    Some(_), Some(option) ->
+      Error(UsageError("unsupported option for outbox <outbox-id>: " <> option))
+    _, _ ->
+      Ok(Outbox(
+        control_file_option(parsed),
+        json_output(parsed),
+        outbox_id,
+        outbox_statuses(parsed),
+        command_spec.option_values(parsed, "--kind"),
+        int_option_with_default(parsed, "--limit", 50),
+        command_spec.option_value(parsed, "--cursor"),
+      ))
+  }
+}
+
+fn outbox_show_disallowed_option(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Option(String) {
+  case command_spec.option_values(parsed, "--status") {
+    [_, ..] -> Some("--status")
+    [] ->
+      case command_spec.option_values(parsed, "--kind") {
+        [_, ..] -> Some("--kind")
+        [] ->
+          case command_spec.option_value(parsed, "--limit") {
+            Some(_) -> Some("--limit")
+            None ->
+              case command_spec.option_value(parsed, "--cursor") {
+                Some(_) -> Some("--cursor")
+                None -> None
+              }
+          }
+      }
+  }
+}
+
+fn outbox_statuses(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> List(query_types.OutboxRecordStatus) {
+  outbox_statuses_loop(command_spec.option_values(parsed, "--status"), [])
+}
+
+fn outbox_statuses_loop(
+  values: List(String),
+  acc: List(query_types.OutboxRecordStatus),
+) -> List(query_types.OutboxRecordStatus) {
+  case values {
+    [] -> list.reverse(acc)
+    [value, ..rest] ->
+      case task_output.outbox_status_from_string(value) {
+        Ok(status) -> outbox_statuses_loop(rest, [status, ..acc])
+        Error(_) -> outbox_statuses_loop(rest, acc)
       }
   }
 }
@@ -1011,6 +1082,14 @@ pub fn run_with_deps(
               task_output.print_detail(task_detail, output.line)
               Ok(Nil)
             }
+            Ok(query_types.OutboxListResponse(outbox)) -> {
+              task_output.print_outbox_list(outbox, output.line)
+              Ok(Nil)
+            }
+            Ok(query_types.OutboxShowResponse(outbox_record)) -> {
+              task_output.print_outbox_record(outbox_record, output.line)
+              Ok(Nil)
+            }
             Error(err) -> Error(client_error(err))
           }
       }
@@ -1044,6 +1123,41 @@ pub fn run_with_deps(
           case json {
             True -> output.line(task_output.detail_json(task_detail))
             False -> task_output.print_detail(task_detail, output.line)
+          }
+          Ok(Nil)
+        }
+        Ok(_) ->
+          Error(Failed("unexpected_query_response", "unexpected query response"))
+        Error(err) -> Error(client_error(err))
+      }
+    }
+    Outbox(control_path, json, outbox_id, statuses, kinds, limit, cursor) -> {
+      use target <- try_ctl(load_control_target(control_path))
+      let query = case outbox_id {
+        Some(outbox_id) ->
+          query_types.OutboxShow(query_types.OutboxShowQuery(
+            outbox_id: outbox_id,
+          ))
+        None ->
+          query_types.OutboxList(query_types.OutboxListQuery(
+            statuses: statuses,
+            kinds: kinds,
+            limit: limit,
+            cursor: cursor,
+          ))
+      }
+      case deps.query(target.control_file, query) {
+        Ok(query_types.OutboxListResponse(outbox)) -> {
+          case json {
+            True -> output.line(task_output.outbox_list_json(outbox))
+            False -> task_output.print_outbox_list(outbox, output.line)
+          }
+          Ok(Nil)
+        }
+        Ok(query_types.OutboxShowResponse(outbox_record)) -> {
+          case json {
+            True -> output.line(task_output.outbox_record_json(outbox_record))
+            False -> task_output.print_outbox_record(outbox_record, output.line)
           }
           Ok(Nil)
         }

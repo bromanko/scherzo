@@ -6,7 +6,7 @@ This runbook explains how to inspect Scherzo recovery meaning, cleanup eligibili
 
 Backed statuses in this release are `recovered`, `interrupted`, `parked`, `cleanup`, and offline `old_state_reset_required`.
 
-`recovered` means Scherzo replayed durable state and restored something such as retry timers, outbox entries, or warnings, but no more specific hold applies to the session being inspected. Safe actions are to inspect the session and view events.
+`recovered` means Scherzo replayed durable state and restored something such as retry timers, outbox entries, or warnings, but no more specific hold applies to the session being inspected. Safe actions are to inspect the session and view events. When outbox counters remain non-zero, use the [outbox drill-down](outbox-drilldown.md) runbook.
 
 `interrupted` means a run was active without a durable finish record. Live Erlang ports and live pi processes do not survive daemon restart, even if a later live session has a current `pi_session_id`. Safe actions are to inspect, view events, retry if the task is safe to retry, or park the task.
 

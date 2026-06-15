@@ -1,6 +1,6 @@
 import gleam/dynamic/decode
 import gleam/json
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/query/codec
 import scherzo/control/query/cursor
@@ -93,6 +93,42 @@ pub fn shared_query_codec_decodes_nested_local_and_remote_payloads_test() {
   let metrics_line = "{\"payload\":" <> metrics_request <> "}"
   let assert Ok(metrics_dynamic) = nested_field(metrics_line, "payload")
   assert codec.decode_request_dynamic(metrics_dynamic) == Ok(types.Metrics)
+}
+
+pub fn outbox_query_request_response_roundtrip_redacts_payload_test() {
+  let list_request =
+    types.OutboxList(types.OutboxListQuery(
+      statuses: [types.OutboxRetryableStatus, types.OutboxPermanentStatus],
+      kinds: ["linear_comment"],
+      limit: 25,
+      cursor: Some("cursor:25"),
+    ))
+  let show_request =
+    types.OutboxShow(types.OutboxShowQuery(outbox_id: "outbox-1"))
+
+  assert codec.decode_request(codec.request_to_string(list_request))
+    == Ok(list_request)
+  assert codec.decode_request(codec.request_to_string(show_request))
+    == Ok(show_request)
+
+  let list_response =
+    types.OutboxListResponse(types.OutboxListDto(
+      items: [outbox_record()],
+      page: types.PageDto(next_cursor: Some("cursor:1"), has_more: True),
+    ))
+  let show_response = types.OutboxShowResponse(outbox_record())
+
+  let encoded_list = codec.response_to_string(list_response)
+  assert string.contains(encoded_list, "\"type\":\"outbox_list\"")
+  assert string.contains(encoded_list, "\"status\":\"retryable\"")
+  assert string.contains(encoded_list, "\"has_payload\":true")
+  assert !string.contains(encoded_list, "payload_json")
+  assert !string.contains(encoded_list, "raw-secret")
+  assert codec.decode_response(encoded_list) == Ok(list_response)
+
+  let encoded_show = codec.response_to_string(show_response)
+  assert string.contains(encoded_show, "\"outbox_record\"")
+  assert codec.decode_response(encoded_show) == Ok(show_response)
 }
 
 pub fn task_query_request_response_roundtrip_test() {
@@ -240,6 +276,29 @@ pub fn metrics_dto_uses_narrow_non_secret_source_test() {
   assert !string.contains(encoded, "api_key")
   assert !string.contains(encoded, "provider:linear")
   assert !string.contains(encoded, "raw failure payload")
+}
+
+fn outbox_record() -> types.OutboxRecordDto {
+  types.OutboxRecordDto(
+    outbox_id: "outbox-1",
+    kind: "linear_comment",
+    status: types.OutboxRetryableStatus,
+    task_ref: types.OutboxTaskRefDto(
+      provider: "linear",
+      id: "issue-1",
+      display_id: Some("LIV-1087"),
+      url: Some("https://linear.app/living-systems/issue/LIV-1087"),
+    ),
+    dedupe_key: Some("dedupe-1"),
+    attempt_count: Some(3),
+    next_attempt_at_ms: Some(1234),
+    last_error_code: Some("rate_limited"),
+    pending_at_ms: None,
+    attempted_at_ms: None,
+    failed_at_ms: Some(1200),
+    completed_at_ms: None,
+    has_payload: True,
+  )
 }
 
 fn task_summary() -> types.TaskSummaryDto {

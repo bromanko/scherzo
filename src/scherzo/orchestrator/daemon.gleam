@@ -15,8 +15,6 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
-import scherzo/control/query/backend as query_backend
-import scherzo/control/query/metrics as query_metrics
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
@@ -37,6 +35,7 @@ import scherzo/orchestrator/operator_runtime
 import scherzo/orchestrator/operator_worker_command
 import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/poll_scheduler
+import scherzo/orchestrator/query_runtime
 import scherzo/orchestrator/read_model
 import scherzo/orchestrator/remote_command_runtime
 import scherzo/orchestrator/retry_scheduler
@@ -132,6 +131,7 @@ pub type Message {
   Shutdown(process.Subject(Nil))
   GetSnapshot(process.Subject(orchestrator_state.RuntimeState))
   GetReadModelSnapshot(process.Subject(read_model.Snapshot))
+  GetOutboxSnapshot(process.Subject(List(#(String, projection.OutboxStatus))))
   GetRemoteDispatchPaused(process.Subject(Bool))
   StartRemoteClient
   ApplyOperatorCommand(
@@ -409,34 +409,19 @@ fn start_query_service(
   _now_ms: fn() -> Int,
   tracker_adapter: adapter.TrackerAdapter,
 ) -> Result(query_service.Handle, StartupError) {
-  query_service.start(
-    query_service.default_settings(),
-    query_service.Backend(run: fn(query) {
-      let get_dispatch_paused = fn(timeout_ms) {
-        get_remote_dispatch_paused(daemon_subject, timeout_ms)
-      }
-      let request_read_model_snapshot = fn(timeout_ms) {
-        get_read_model_snapshot(daemon_subject, timeout_ms)
-      }
-      case query {
-        query_types.Status ->
-          query_metrics.execute_status(
-            get_snapshot: request_read_model_snapshot,
-          )
-        query_types.Metrics ->
-          query_metrics.execute_metrics(
-            get_snapshot: request_read_model_snapshot,
-          )
-        query_types.TaskList(_) | query_types.TaskShow(_) ->
-          query_backend.run(
-            effective,
-            identity,
-            tracker_adapter,
-            get_dispatch_paused,
-            query,
-          )
-      }
-    }),
+  query_runtime.start(
+    effective,
+    identity,
+    tracker_adapter,
+    get_dispatch_paused: fn(timeout_ms) {
+      get_remote_dispatch_paused(daemon_subject, timeout_ms)
+    },
+    get_read_model_snapshot: fn(timeout_ms) {
+      get_read_model_snapshot(daemon_subject, timeout_ms)
+    },
+    get_outbox_snapshot: fn(timeout_ms) {
+      get_outbox_snapshot(daemon_subject, timeout_ms)
+    },
   )
   |> result.map_error(fn(error) {
     let query_service.StartError(code, message) = error
@@ -1037,6 +1022,15 @@ pub fn get_read_model_snapshot(
 ) -> Result(read_model.Snapshot, Nil) {
   let reply = process.new_subject()
   process.send(subject, GetReadModelSnapshot(reply))
+  process.receive(reply, within: timeout_ms)
+}
+
+pub fn get_outbox_snapshot(
+  subject: process.Subject(Message),
+  timeout_ms: Int,
+) -> Result(List(#(String, projection.OutboxStatus)), Nil) {
+  let reply = process.new_subject()
+  process.send(subject, GetOutboxSnapshot(reply))
   process.receive(reply, within: timeout_ms)
 }
 
@@ -1723,6 +1717,10 @@ fn handle_message(
       let refreshed = refresh_read_model(state)
       process.send(reply, read_model_snapshot_from_state(refreshed))
       actor.continue(refreshed)
+    }
+    GetOutboxSnapshot(reply) -> {
+      process.send(reply, dict.to_list(state.ledger_projection.outbox))
+      actor.continue(state)
     }
     GetRemoteDispatchPaused(reply) -> {
       process.send(reply, state.operator_paused)
