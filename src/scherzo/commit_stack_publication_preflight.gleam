@@ -61,12 +61,7 @@ pub fn diagnostic_message(diagnostic: Diagnostic) -> String {
     True -> "requires"
     False -> "declares optional"
   }
-  let action_text = case diagnostic.required {
-    True ->
-      "select a workspace driver that advertises publish-change or publish-commit-stack before running this workflow, or mark the publication required: false if it is optional"
-    False ->
-      "optional publication will not be publishable until the selected workspace driver advertises publish-change or publish-commit-stack"
-  }
+  let action_text = diagnostic_action_text(diagnostic)
   "workflow "
   <> diagnostic.workflow_id
   <> " publication "
@@ -79,6 +74,22 @@ pub fn diagnostic_message(diagnostic: Diagnostic) -> String {
   <> config_types.workspace_capabilities_to_string(diagnostic.provided)
   <> "; "
   <> action_text
+}
+
+fn diagnostic_action_text(diagnostic: Diagnostic) -> String {
+  case list.contains(diagnostic.provided, config_types.WorkspacePublishChange) {
+    True ->
+      config_types.legacy_publish_change_migration_message(
+        "workspace.driver " <> diagnostic.profile_name,
+      )
+    False ->
+      case diagnostic.required {
+        True ->
+          "select a workspace driver that advertises publish-commit-stack before running this workflow, or mark the publication required: false if it is optional"
+        False ->
+          "optional publication will not be publishable until the selected workspace driver advertises publish-commit-stack"
+      }
+  }
 }
 
 fn first_required_diagnostic(
@@ -197,8 +208,10 @@ fn diagnostic_for_route(
 fn supports_commit_stack_publication(
   provided: List(config_types.WorkspaceCapability),
 ) -> Bool {
-  list.contains(provided, config_types.WorkspacePublishChange)
-  || list.contains(provided, config_types.WorkspacePublishCommitStack)
+  case list.contains(provided, config_types.WorkspacePublishChange) {
+    True -> False
+    False -> list.contains(provided, config_types.WorkspacePublishCommitStack)
+  }
 }
 
 fn workspace_profile_capabilities(

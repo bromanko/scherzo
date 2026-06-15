@@ -232,7 +232,8 @@ pub fn rejects_required_commit_stack_publication_with_noop_driver_test() {
   assert string.contains(message, "workflow implementation")
   assert string.contains(message, "publication publish_stack")
   assert string.contains(message, "workspace.driver noop")
-  assert string.contains(message, "publish-change")
+  assert string.contains(message, "publish-commit-stack")
+  assert !string.contains(message, "publish-change or publish-commit-stack")
   assert string.contains(message, "required: false")
 }
 
@@ -285,6 +286,77 @@ pub fn loads_required_commit_stack_publication_with_successor_capability_test() 
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   assert dict.has_key(bundle.workflows, "implementation")
+}
+
+pub fn preflight_rejects_commit_stack_publication_with_legacy_and_successor_capabilities_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-legacy-both"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n",
+    "",
+    True,
+  )
+  write_describe_driver(dir, "driver", "[\"publish-commit-stack\"]")
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let assert Ok(profile) =
+    dict.get(bundle.orchestrator.workspace_profiles.profiles, "custom")
+  let assert Some(driver) = profile.driver
+  let legacy_profile =
+    config_types.WorkspaceHookProfile(
+      ..profile,
+      driver: Some(
+        config_types.WorkspaceDriverConfig(..driver, capabilities: [
+          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
+        ]),
+      ),
+    )
+  let profiles =
+    dict.insert(
+      bundle.orchestrator.workspace_profiles.profiles,
+      "custom",
+      legacy_profile,
+    )
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..bundle.orchestrator,
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        ..bundle.orchestrator.workspace_profiles,
+        profiles: profiles,
+      ),
+    )
+
+  let assert Error(error) =
+    commit_stack_publication_preflight.validate_required(
+      orchestrator,
+      dict.to_list(bundle.workflows),
+    )
+  assert commit_stack_publication_preflight.error_code(error)
+    == "commit_stack_publication_driver_unsupported"
+  let message = commit_stack_publication_preflight.error_message(error)
+  assert string.contains(message, "publish-change was removed")
+  assert string.contains(message, "publish-commit-stack")
+  assert string.contains(message, "docs/runbooks/workspace-driver-migration.md")
+}
+
+pub fn rejects_commit_stack_publication_with_legacy_driver_capability_test() {
+  let dir = "test/tmp/runtime-bundle-commit-stack-legacy-driver"
+  write_commit_stack_publication_yaml_project(
+    dir,
+    "workspace:\n  root: workspaces\n  driver: custom\n  drivers:\n    custom:\n      type: custom\n      command: scripts/driver\n",
+    "",
+    True,
+  )
+  write_describe_driver(dir, "driver", "[\"publish-change\"]")
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "workspace_driver_discovery_failed"
+  assert string.contains(message, "publish-change was removed")
+  assert string.contains(message, "publish-commit-stack")
+  assert string.contains(message, "docs/runbooks/workspace-driver-migration.md")
 }
 
 pub fn loads_optional_commit_stack_publication_with_unsupported_driver_test() {
@@ -426,12 +498,12 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
 pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test() {
   let dir = "test/tmp/runtime-bundle-task-updates-review-policy"
   test_helpers.reset_dir(dir)
-  write_describe_driver(dir, "driver", "[\"publish-change\"]")
+  write_describe_driver(dir, "driver", "[\"publish-commit-stack\"]")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/implementation.yaml",
-      "version: 1\nid: implementation\nworkspace:\n  driver: driver\n  requires: [publish-change]\nsteps:\n  - id: run\n    kind: command\n    run: echo reviewable\n",
+      "version: 1\nid: implementation\nworkspace:\n  driver: driver\n  requires: [publish-commit-stack]\nsteps:\n  - id: run\n    kind: command\n    run: echo reviewable\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -500,7 +572,7 @@ pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test(
     )
 }
 
-pub fn task_updates_completion_policy_accepts_publish_commit_stack_alias_with_jj_test() {
+pub fn task_updates_completion_policy_accepts_publish_commit_stack_with_jj_test() {
   let dir = "test/tmp/runtime-bundle-task-updates-publish-commit-stack"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
@@ -526,7 +598,10 @@ pub fn task_updates_completion_policy_accepts_publish_commit_stack_alias_with_jj
 
   assert dag.workspace_capabilities
     == [config_types.WorkspacePublishCommitStack]
-  assert list.contains(driver.capabilities, config_types.WorkspacePublishChange)
+  assert !list.contains(
+    driver.capabilities,
+    config_types.WorkspacePublishChange,
+  )
   assert list.contains(
     driver.capabilities,
     config_types.WorkspacePublishCommitStack,
@@ -793,7 +868,6 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
       config_types.WorkspaceAssertOnly,
       config_types.WorkspaceBaseline,
       config_types.WorkspaceRefreshBase,
-      config_types.WorkspacePublishChange,
       config_types.WorkspacePublishCommitStack,
     ]
 
@@ -1092,7 +1166,6 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
       config_types.WorkspaceAssertOnly,
       config_types.WorkspaceBaseline,
       config_types.WorkspaceRefreshBase,
-      config_types.WorkspacePublishChange,
       config_types.WorkspacePublishCommitStack,
     ]
   assert driver.timeout_ms == 60_000

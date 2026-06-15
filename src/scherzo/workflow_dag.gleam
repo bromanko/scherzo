@@ -365,13 +365,7 @@ fn read_workspace_capability_values(
   case values {
     [] -> Ok(list.reverse(acc))
     [yay.NodeStr(value), ..rest] -> {
-      use capability <- result.try(
-        config_types.workspace_capability_from_string(value)
-        |> result.replace_error(DagError(
-          "unknown_workspace_capability",
-          "unknown workspace capability: " <> value,
-        )),
-      )
+      use capability <- result.try(read_workspace_capability_value(value))
       case list.contains(seen, capability) {
         True ->
           Error(DagError(
@@ -390,6 +384,26 @@ fn read_workspace_capability_values(
       Error(DagError(
         "workspace_requires_entry_not_string",
         "workspace.requires entries must be strings",
+      ))
+  }
+}
+
+fn read_workspace_capability_value(
+  value: String,
+) -> Result(config_types.WorkspaceCapability, DagError) {
+  case config_types.is_legacy_publish_change_capability(value) {
+    True ->
+      Error(DagError(
+        "legacy_workspace_capability",
+        config_types.legacy_publish_change_migration_message(
+          "workspace.requires",
+        ),
+      ))
+    False ->
+      config_types.workspace_capability_from_string(value)
+      |> result.replace_error(DagError(
+        "unknown_workspace_capability",
+        "unknown workspace capability: " <> value,
       ))
   }
 }

@@ -88,7 +88,7 @@ result/bin/scherzo-workspace-noop describe --json
 result/bin/scherzo-workspace-jj describe --json
 ```
 
-The no-op driver should report `status`, `changed-files`, and `assert-only`. The current jj driver should report `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-commit-stack` (it may also report the compatibility alias `publish-change`). Neither command should require `SCHERZO_WORKSPACE_PATH` or a prepared workflow workspace.
+The no-op driver should report `status`, `changed-files`, and `assert-only`. The current jj driver should report `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-commit-stack`. It must not report the removed `publish-change` capability; custom drivers that still report it need the migration in [`workspace-driver-migration.md#migrating-from-publish-change-to-publish-commit-stack`](workspace-driver-migration.md#migrating-from-publish-change-to-publish-commit-stack). Neither command should require `SCHERZO_WORKSPACE_PATH` or a prepared workflow workspace.
 
 Then rerun the relevant validation:
 
@@ -100,4 +100,4 @@ direnv exec . env PATH="$PWD/result/bin:$PATH" LINEAR_API_KEY=dummy gleam run --
 direnv exec . gleam test
 ```
 
-If discovery fails with `workspace_driver_discovery_failed`, inspect the driver name and command in the diagnostic. The usual causes are an old custom driver without `describe --json`, malformed JSON, an unknown or duplicate capability name, a nonzero exit, or a timeout.
+If discovery fails with `workspace_driver_discovery_failed`, inspect the driver name and command in the diagnostic. The usual causes are an old custom driver without `describe --json`, malformed JSON, the removed `publish-change` capability, another unknown or duplicate capability name, a nonzero exit, or a timeout.

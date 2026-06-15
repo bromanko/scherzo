@@ -25,7 +25,6 @@ USAGE = """Usage:
   scherzo-workspace-jj changed-files --json
   scherzo-workspace-jj baseline --json
   scherzo-workspace-jj refresh-base --stage <stage> [--target <driver-ref>] --json
-  scherzo-workspace-jj publish-change --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--allow-no-changes <true|false>] --json
   scherzo-workspace-jj publish-commit-stack --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--expected-head <sha>] [--allow-no-changes <true|false>] --json
   scherzo-workspace-jj assert-only --path <relative-file>
 """
@@ -41,6 +40,12 @@ STATUS_MAP = {
     "C": "modified",
 }
 PORTABLE_SCHERZO_BRIDGE_NAME = "scherzo"
+PUBLISH_CHANGE_MIGRATION_DOC = "docs/runbooks/workspace-driver-migration.md#migrating-from-publish-change-to-publish-commit-stack"
+PUBLISH_CHANGE_MIGRATION_MESSAGE = (
+    "publish-change was removed; use publish-commit-stack for same-repo "
+    "commit_stack publication and update custom drivers to advertise and "
+    f"implement publish-commit-stack. See {PUBLISH_CHANGE_MIGRATION_DOC}."
+)
 PORTABLE_SCHERZO_LINKS = [
     ("scripts", "scripts"),
     (".scherzo/workflows", ".scherzo/workflows"),
@@ -73,7 +78,6 @@ def describe_json() -> None:
             "assert-only",
             "baseline",
             "refresh-base",
-            "publish-change",
             "publish-commit-stack",
         ],
     })
@@ -96,6 +100,20 @@ def json_failure(
     payload.update(extra)
     json_dump(payload)
     raise SystemExit(exit_code)
+
+
+def legacy_publish_change_command(args: list[str]) -> None:
+    if "--json" in args:
+        json_failure(
+            status="invalid_request",
+            failure_code="legacy_publish_change_removed",
+            message=PUBLISH_CHANGE_MIGRATION_MESSAGE,
+            exit_code=2,
+            legacy_command="publish-change",
+            replacement_command="publish-commit-stack",
+            migration_doc=PUBLISH_CHANGE_MIGRATION_DOC,
+        )
+    usage_error(PUBLISH_CHANGE_MIGRATION_MESSAGE)
 
 
 def env_value(name: str) -> str | None:
@@ -131,7 +149,7 @@ def reject_legacy_publication_remote_without_canonical() -> None:
             failure_code="legacy_publication_remote_unsupported",
             message=(
                 "SCHERZO_PR_REMOTE is no longer a jj driver publication remote; "
-                "set SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE for publish-change, "
+                "set SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE for publish-commit-stack, "
                 "or unset SCHERZO_PR_REMOTE to use origin"
             ),
             legacy_env="SCHERZO_PR_REMOTE",
@@ -1272,7 +1290,7 @@ def refresh_base(root: Path, args: list[str]) -> None:
     })
 
 
-def parse_publish_args(args: list[str]) -> dict[str, str]:
+def parse_publish_args(args: list[str], operation: str) -> dict[str, str]:
     values: dict[str, str] = {"allow-no-changes": "false"}
     saw_json = False
     with_value = {
@@ -1296,16 +1314,16 @@ def parse_publish_args(args: list[str]) -> dict[str, str]:
             values[arg[2:]] = args[index + 1]
             index += 2
         else:
-            usage_error(f"unsupported publish-change argument: {arg}")
+            usage_error(f"unsupported {operation} argument: {arg}")
     for key in ["kind", "title-file", "body-file", "branch-prefix", "base"]:
         if not values.get(key):
-            usage_error(f"publish-change requires --{key}")
+            usage_error(f"{operation} requires --{key}")
     if not saw_json:
-        usage_error("publish-change requires --json")
+        usage_error(f"{operation} requires --json")
     if values.get("allow-no-changes") not in {"true", "false"}:
         usage_error("--allow-no-changes must be true or false")
     if not PUBLISH_KIND_RE.match(values["kind"]):
-        usage_error("publish-change --kind must be a lowercase token containing letters, numbers, and hyphens")
+        usage_error(f"{operation} --kind must be a lowercase token containing letters, numbers, and hyphens")
     return values
 
 
@@ -1687,8 +1705,8 @@ def fail_pr_url_unavailable(
     )
 
 
-def publish_change(root: Path, args: list[str], *, operation: str = "publish-change") -> None:
-    values = parse_publish_args(args)
+def publish_change(root: Path, args: list[str], *, operation: str = "publish-commit-stack") -> None:
+    values = parse_publish_args(args, operation)
     reject_legacy_publication_remote_without_canonical()
     draft = pr_draft_setting()
     base = values["base"]
@@ -1735,10 +1753,6 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-cha
     branch = publication_branch(operation, values, title_text, change_id)
     # publish-commit-stack receives an already-selected commit_stack head;
     # describing it here would rewrite the commit object and break head checks.
-    if operation == "publish-change":
-        describe = run_jj_proc(root, ["describe", "-m", title_text])
-        if describe.returncode != 0:
-            json_failure(status="publication_failed", failure_code="describe_failed", message=(describe.stderr or describe.stdout or "jj describe failed").strip())
     bookmark_args = ["bookmark", "set"]
     if values.get("target-branch"):
         # Merge-conflict resolution publishes intentionally retarget an existing
@@ -1921,7 +1935,7 @@ def main(argv: list[str]) -> None:
         return
 
     if command == "publish-change":
-        publish_change(root, rest)
+        legacy_publish_change_command(rest)
         return
 
     if command == "publish-commit-stack":

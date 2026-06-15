@@ -406,7 +406,7 @@ fn run_publish_change_with_pr_draft(
   let artifact =
     run_jj(
       "jj_driver_publish_pr_draft",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, env),
     )
   #(artifact, log_text(log))
@@ -461,7 +461,6 @@ pub fn jj_driver_describe_json_is_static_and_workspace_free_test() {
       "assert-only",
       "baseline",
       "refresh-base",
-      "publish-change",
       "publish-commit-stack",
     ])
   assert log_lines(log) == []
@@ -474,6 +473,33 @@ pub fn jj_driver_describe_json_is_static_and_workspace_free_test() {
     )
   assert_exit(unsupported, 2)
   assert string.contains(unsupported.stderr, "describe requires --json")
+  assert log_lines(log) == []
+}
+
+pub fn jj_driver_legacy_publish_change_command_reports_migration_test() {
+  let dir = "test/tmp/jj-workspace-driver-legacy-publish-change"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_legacy_publish_change",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, []),
+    )
+
+  assert_exit(artifact, 2)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"legacy_publish_change_removed\"",
+  )
+  assert string.contains(artifact.stdout, "publish-change was removed")
+  assert string.contains(artifact.stdout, "publish-commit-stack")
+  assert string.contains(
+    artifact.stdout,
+    "docs/runbooks/workspace-driver-migration.md",
+  )
+  assert artifact.stderr == ""
   assert log_lines(log) == []
 }
 
@@ -849,7 +875,7 @@ pub fn jj_driver_publish_remote_is_separate_from_base_remote_test() {
   let artifact =
     run_jj(
       "jj_driver_publish_remote",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base trunk@upstream --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base trunk@upstream --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
@@ -864,40 +890,36 @@ pub fn jj_driver_publish_remote_is_separate_from_base_remote_test() {
   assert_exit(artifact, 0)
   let logged = log_text(log)
   assert string.contains(logged, "git remote list")
-  assert string.contains(logged, "describe -m Title")
+  assert !string.contains(logged, "describe -m Title")
   assert string.contains(logged, "git push --remote origin")
   assert !string.contains(logged, "git push --remote upstream")
 }
 
-pub fn jj_driver_publish_change_reports_describe_failure_test() {
-  let dir = "test/tmp/jj-workspace-driver-publish-describe-failure"
+pub fn jj_driver_publish_commit_stack_does_not_rewrite_description_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-no-describe"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
   let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
 
   let artifact =
     run_jj(
-      "jj_driver_publish_describe_failure",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "jj_driver_publish_no_describe",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_FAKE_JJ_DESCRIBE_FAIL", "1"),
         #("SCHERZO_FAKE_JJ_DESCRIBE_OUTPUT", "describe failed\n"),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
       ]),
     )
 
-  assert_exit(artifact, 1)
-  assert string.contains(
-    artifact.stdout,
-    "\"failure_code\":\"describe_failed\"",
-  )
-  assert string.contains(artifact.stdout, "describe failed")
+  assert_exit(artifact, 0)
   let logged = log_text(log)
-  assert string.contains(logged, "describe -m Title")
-  assert !string.contains(logged, "bookmark set")
-  assert !string.contains(logged, "git push")
+  assert !string.contains(logged, "describe -m Title")
+  assert string.contains(logged, "git push --remote origin")
 }
 
 pub fn jj_driver_publish_rejects_explicit_repo_mismatch_before_push_test() {
@@ -911,7 +933,7 @@ pub fn jj_driver_publish_rejects_explicit_repo_mismatch_before_push_test() {
   let artifact =
     run_jj(
       "jj_driver_publish_repo_mismatch",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
@@ -944,7 +966,7 @@ pub fn jj_driver_publish_uses_legacy_repo_alias_when_canonical_repo_unset_test()
   let artifact =
     run_jj(
       "jj_driver_publish_legacy_repo_alias",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #(
@@ -973,7 +995,7 @@ pub fn jj_driver_publish_prefers_remote_inference_over_github_repository_test() 
   let artifact =
     run_jj(
       "jj_driver_publish_github_repository",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
@@ -1001,7 +1023,7 @@ pub fn jj_driver_publish_uses_github_repository_when_remote_repo_unparseable_tes
   let artifact =
     run_jj(
       "jj_driver_publish_github_repository_fallback",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #(
@@ -1032,7 +1054,7 @@ pub fn jj_driver_publish_existing_pr_edits_title_and_body_test() {
   let artifact =
     run_jj(
       "jj_driver_publish_existing_pr_edit",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_FAKE_GH_VIEW_URL", "https://github.com/example/repo/pull/1"),
@@ -1046,7 +1068,7 @@ pub fn jj_driver_publish_existing_pr_edits_title_and_body_test() {
   let logged = log_text(log)
   assert string.contains(
     logged,
-    "gh: pr edit scherzo/test/updated-pr-title-commit --repo example/repo --title Updated PR title --body-file body.txt",
+    "gh: pr edit scherzo/test --repo example/repo --title Updated PR title --body-file body.txt",
   )
   assert !string.contains(logged, "gh: pr create")
 }
@@ -1062,7 +1084,7 @@ pub fn jj_driver_publish_legacy_remote_without_canonical_fails_closed_test() {
   let artifact =
     run_jj(
       "jj_driver_publish_legacy_remote_fails",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base develop@fork --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base develop@fork --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", ""),
@@ -1093,7 +1115,7 @@ pub fn jj_driver_publish_target_branch_allows_stale_local_bookmark_test() {
   let artifact =
     run_jj(
       "jj_driver_publish_target_branch",
-      "publish-change --kind merge-conflict --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --target-branch feature/pr --target-pr 198 --json",
+      "publish-commit-stack --kind merge-conflict --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --target-branch feature/pr --target-pr 198 --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #(
@@ -1748,7 +1770,7 @@ pub fn jj_driver_publish_accepts_workflow_kind_tokens_test() {
   let artifact =
     run_jj(
       "jj_driver_publish_kind_token",
-      "publish-change --kind execplan --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind execplan --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
@@ -1818,12 +1840,12 @@ pub fn jj_driver_publish_rejects_invalid_kind_tokens_test() {
   let artifact =
     run_jj(
       "jj_driver_publish_invalid_kind",
-      "publish-change --kind ../bad --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind ../bad --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env(workspace, bin, log, []),
     )
 
   assert_exit(artifact, 2)
-  assert string.contains(artifact.stderr, "publish-change --kind")
+  assert string.contains(artifact.stderr, "publish-commit-stack --kind")
   assert log_lines(log) == []
 }
 
@@ -1847,7 +1869,7 @@ pub fn jj_driver_missing_gh_fails_only_publish_change_test() {
   let publish =
     run_jj_with_exact_path(
       "jj_driver_missing_gh_publish",
-      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
       fake_env_with_exact_path(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),

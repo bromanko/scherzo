@@ -331,6 +331,45 @@ pub fn doctor_workflow_config_success_prints_human_summary_test() {
   assert string.contains(output, "Selected checks passed.")
 }
 
+pub fn doctor_legacy_publish_change_requirement_failure_is_actionable_test() {
+  let config_path = write_config("test/tmp/doctor-legacy-publish-change", "")
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/doctor-legacy-publish-change/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nworkspace:\n  requires: [publish-change]\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\n    run_in: main\n",
+    )
+  let subject = process.new_subject()
+  let deps = successful_deps(subject)
+  let options =
+    doctor.Options(
+      path: Some(config_path),
+      checks: ["workflow-config"],
+      list_checks: False,
+      output: doctor.Human,
+    )
+  let assert Ok(report) =
+    service.build_doctor_report_with_dependencies(options, deps)
+  let assert Some(result) = result_for(report, doctor.WorkflowConfig)
+  assert result.status == doctor.Fail
+  assert string.contains(result.message, "publish-change was removed")
+  assert string.contains(result.message, "publish-commit-stack")
+  assert string.contains(
+    result.message,
+    "docs/runbooks/workspace-driver-migration.md",
+  )
+
+  assert service.start_doctor_with_dependencies(options, deps)
+    == Error(service.StartupError(
+      "doctor_failed",
+      "one or more doctor checks failed",
+    ))
+  let assert Ok(ListWritten(output)) = process.receive(subject, within: 1000)
+  assert string.contains(output, "Workflow config")
+  assert string.contains(output, "publish-change was removed")
+  assert string.contains(output, "publish-commit-stack")
+  assert string.contains(output, "docs/runbooks/workspace-driver-migration.md")
+}
+
 pub fn doctor_old_tracker_state_key_failure_is_actionable_test() {
   let config_path =
     write_invalid_dispatch_config(

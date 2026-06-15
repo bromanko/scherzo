@@ -114,7 +114,7 @@ Workflow-level publication remains the selection point for both modes.
 - same-repo `commit_stack` routes reference the retained workflow workspace and selected workspace driver.
 - In the current schema, same-repo `commit_stack` routes also declare `target.kind: existing_pr_branch` and its `source` output so validators know which existing PR branch is being updated until the LIV-908 migration changes or aliases that route shape.
 
-A same-repo `commit_stack` route must fail doctor/preflight before remote mutation when the selected workspace driver does not expose `publish-commit-stack` or a documented migration-compatible `publish-change` alias that implements the same semantics before the rename is implemented.
+A same-repo `commit_stack` route must fail doctor/preflight before remote mutation when the selected workspace driver does not expose `publish-commit-stack`. The removed legacy `publish-change` name is recognized only to produce migration diagnostics.
 
 ## 7. GitHub MVP behavior
 
@@ -134,7 +134,7 @@ For each configured same-repo `commit_stack` publication, Scherzo should:
 
 1. Resolve the selected `commit_stack` output.
 2. Resolve the retained workflow workspace that produced that output.
-3. Run doctor/preflight checks and fail before remote mutation when the workspace is missing, stale, points at the wrong repository, or the selected driver lacks `publish-commit-stack` or a documented migration-compatible `publish-change` alias that implements the same semantics before the rename is implemented.
+3. Run doctor/preflight checks and fail before remote mutation when the workspace is missing, stale, points at the wrong repository, or the selected driver lacks `publish-commit-stack`. A selected driver that still advertises `publish-change` must fail with migration guidance before publication.
 4. Verify the retained workflow workspace still exactly matches the selected `commit_stack`: repository identity, clean/no-drift status, base ref and base commit, ordered commits, head commit and head tree, and validation metadata. Fail closed if local Git config, hooks, workspace drift, or branch/ref policy could change what gets published.
 5. Ask the selected workspace driver to run `publish-commit-stack` from the retained workflow workspace using branch/ref allowlisting and lease-protected remote updates.
 6. Record whether the result was `published`, `unchanged`, or `failed`.
@@ -175,14 +175,14 @@ If file publication is requested, the retained file artifacts remain available, 
 
 ## 10. Migration from workspace `publish-change`
 
-The same-repo capability is `publish-commit-stack`. Checked-in dogfood workflows now require `publish-commit-stack` for commit-stack GitHub publication; `publish-change` remains only a compatibility alias accepted by bundled runtime drivers and older custom drivers with equivalent semantics.
+The same-repo capability is `publish-commit-stack`. Checked-in dogfood workflows require `publish-commit-stack` for commit-stack GitHub publication. `publish-change` was the old name and is now rejected by config load, driver discovery, preflight, and runtime publication boundaries with migration diagnostics.
 
 Migration direction:
 
 1. Keep GitHub file publication disabled rather than recreating the removed managed-checkout path, and do not add new same-repository GitHub file-publication routes.
 2. Preserve same-repo repository-change publication as workspace-driver-backed `commit_stack` publication.
-3. Prefer `publish-commit-stack` in workflow requirements and operator docs; treat `publish-change` as a driver compatibility alias with equivalent semantics, not as a workflow-local direct PR creation path.
-4. Update doctor/preflight to reject same-repo `commit_stack` publication when the chosen driver cannot publish commit stacks under either the target name or the documented compatibility alias.
+3. Use `publish-commit-stack` in workflow requirements, driver `describe --json`, driver command handlers, and operator docs. Treat `publish-change` only as a legacy spelling to migrate away from.
+4. Update doctor/preflight to reject same-repo `commit_stack` publication when the chosen driver cannot publish commit stacks under `publish-commit-stack`, and to return the migration diagnostic when the driver reports only `publish-change`.
 5. Keep hidden Scherzo-owned GitHub checkout clones removed from active same-repo GitHub publication; any future external/cross-repo work must define a new driver-owned or explicit external boundary.
 
 The key migration rule is that artifact publication does not move same-repo repository changes away from workspace drivers.

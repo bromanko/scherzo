@@ -86,7 +86,7 @@ pub fn execute_routes_publishes_commit_stack_with_workspace_driver_test() {
       driver_runner(log, workspace, DriverPublishes),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -109,7 +109,7 @@ pub fn execute_routes_publishes_commit_stack_with_workspace_driver_test() {
   let transcript = read_file(log)
   assert string.contains(
     transcript,
-    "fake-driver publish-change --kind implementation",
+    "fake-driver publish-commit-stack --kind implementation",
   )
   assert string.contains(transcript, "--base main")
   assert string.contains(transcript, "--target-branch " <> existing_branch())
@@ -151,7 +151,7 @@ pub fn execute_routes_commit_stack_passes_configured_driver_timeout_test() {
       driver_runner(log, workspace, DriverPublishes),
       Some(publication_driver_with_timeout(
         workspace,
-        [config_types.WorkspacePublishChange],
+        [config_types.WorkspacePublishCommitStack],
         1234,
       )),
     )
@@ -183,7 +183,7 @@ pub fn execute_routes_commit_stack_rerun_rechecks_stale_target_with_driver_test(
       driver_runner(log, workspace, DriverPublishes),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -204,7 +204,7 @@ pub fn execute_routes_commit_stack_rerun_rechecks_stale_target_with_driver_test(
       driver_runner(log, workspace, DriverStaleExistingBranch),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -214,7 +214,7 @@ pub fn execute_routes_commit_stack_rerun_rechecks_stale_target_with_driver_test(
   let assert [second_attempt] = second.attempts
   assert second_attempt.status == "failed"
   assert second_attempt.error_code == Some("stale_existing_branch")
-  assert string.contains(read_file(log), "fake-driver publish-change")
+  assert string.contains(read_file(log), "fake-driver publish-commit-stack")
 }
 
 pub fn execute_routes_commit_stack_accepts_successor_driver_operation_test() {
@@ -249,6 +249,81 @@ pub fn execute_routes_commit_stack_accepts_successor_driver_operation_test() {
   assert string.contains(read_file(log), "fake-driver publish-commit-stack")
 }
 
+pub fn execute_routes_commit_stack_rejects_legacy_publish_change_driver_test() {
+  let root = "test/tmp/artifact-publication-executor/commit-stack-legacy"
+  let state_root = root <> "/state"
+  let workspace = root <> "/workspace"
+  test_helpers.reset_dir(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  write_commit_stack_artifacts(state_root)
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      root,
+      state_root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      fail_if_called_runner(),
+      Some(
+        publication_driver(workspace, [
+          config_types.WorkspacePublishChange,
+        ]),
+      ),
+    )
+
+  let assert [failure] = result.required_failures
+  assert failure.code == "legacy_publish_change_unsupported"
+  assert string.contains(failure.message, "publish-change was removed")
+  assert string.contains(failure.message, "publish-commit-stack")
+  assert string.contains(
+    failure.message,
+    "docs/runbooks/workspace-driver-migration.md",
+  )
+}
+
+pub fn execute_routes_commit_stack_rejects_driver_with_legacy_and_successor_test() {
+  let root = "test/tmp/artifact-publication-executor/commit-stack-legacy-both"
+  let state_root = root <> "/state"
+  let workspace = root <> "/workspace"
+  test_helpers.reset_dir(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  write_commit_stack_artifacts(state_root)
+
+  let assert Ok(result) =
+    artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
+      [commit_stack_route(True)],
+      repositories(),
+      root,
+      root,
+      state_root,
+      commit_stack_output_manifest(),
+      issue(),
+      "run-1",
+      workflow_checkpoint.ledger_writer(state_root, fn() { 123 }),
+      fail_if_called_runner(),
+      Some(
+        publication_driver(workspace, [
+          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
+        ]),
+      ),
+    )
+
+  let assert [failure] = result.required_failures
+  assert failure.code == "legacy_publish_change_unsupported"
+  assert string.contains(failure.message, "publish-change was removed")
+  assert string.contains(failure.message, "publish-commit-stack")
+  assert string.contains(
+    failure.message,
+    "docs/runbooks/workspace-driver-migration.md",
+  )
+}
+
 pub fn execute_routes_commit_stack_unchanged_records_existing_pr_url_test() {
   let root = "test/tmp/artifact-publication-executor/commit-stack-unchanged"
   let state_root = root <> "/state"
@@ -271,7 +346,7 @@ pub fn execute_routes_commit_stack_unchanged_records_existing_pr_url_test() {
       driver_runner(root <> "/driver.log", workspace, DriverUnchangedNoUrl),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -334,7 +409,7 @@ pub fn execute_routes_fails_commit_stack_on_malformed_driver_output_test() {
       driver_runner(root <> "/driver.log", workspace, DriverMalformed),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -372,7 +447,7 @@ pub fn execute_routes_fails_commit_stack_on_driver_head_mismatch_test() {
       driver_runner(root <> "/driver.log", workspace, DriverHeadMismatch),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -478,7 +553,7 @@ pub fn execute_routes_redacts_sensitive_commit_stack_driver_failure_test() {
       Some(
         publication_driver_with_env(
           workspace,
-          [config_types.WorkspacePublishChange],
+          [config_types.WorkspacePublishCommitStack],
           [#("GITHUB_TOKEN", secret)],
           [secret],
         ),
@@ -516,7 +591,7 @@ pub fn execute_routes_fails_commit_stack_on_unsuccessful_driver_status_test() {
       driver_runner(root <> "/driver.log", workspace, DriverUnsuccessful),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -626,7 +701,7 @@ pub fn retry_routes_replay_commit_stack_failure_with_workspace_driver_test() {
       driver_runner(log, workspace, DriverUnsuccessful),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
     )
@@ -647,7 +722,7 @@ pub fn retry_routes_replay_commit_stack_failure_with_workspace_driver_test() {
       driver_runner(log, workspace, DriverPublishes),
       Some(
         publication_driver(workspace, [
-          config_types.WorkspacePublishChange,
+          config_types.WorkspacePublishCommitStack,
         ]),
       ),
       False,

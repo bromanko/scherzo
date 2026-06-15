@@ -370,17 +370,29 @@ fn capability_values(
   case values {
     [] -> Ok(config_types.canonical_workspace_capabilities(acc))
     [json_value.JString(name), ..rest] ->
-      case config_types.workspace_capability_from_string(name) {
-        Error(Nil) -> description_error("unknown capability: " <> name)
-        Ok(capability) ->
-          case list.contains(seen, capability) {
-            True ->
-              description_error(
-                "duplicate capability: "
-                <> config_types.workspace_capability_to_string(capability),
-              )
-            False ->
-              capability_values(rest, [capability, ..seen], [capability, ..acc])
+      case config_types.is_legacy_publish_change_capability(name) {
+        True ->
+          description_error(
+            config_types.legacy_publish_change_migration_message(
+              "workspace driver describe --json capabilities",
+            ),
+          )
+        False ->
+          case config_types.workspace_capability_from_string(name) {
+            Error(Nil) -> description_error("unknown capability: " <> name)
+            Ok(capability) ->
+              case list.contains(seen, capability) {
+                True ->
+                  description_error(
+                    "duplicate capability: "
+                    <> config_types.workspace_capability_to_string(capability),
+                  )
+                False ->
+                  capability_values(rest, [capability, ..seen], [
+                    capability,
+                    ..acc
+                  ])
+              }
           }
       }
     [_, ..] -> description_error("capabilities entries must be strings")
