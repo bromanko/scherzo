@@ -601,16 +601,36 @@ fn append_pause_commands(
   next: Int,
   last: Int,
 ) -> Nil {
+  append_inbound_block(path, pause_command_block(prefix, next, last, ""))
+}
+
+fn pause_command_block(
+  prefix: String,
+  next: Int,
+  last: Int,
+  acc: String,
+) -> String {
   case next > last {
-    True -> Nil
-    False -> {
-      append_inbound_line(
-        path,
-        server_command_frame(prefix <> int.to_string(next), "pause"),
+    True -> acc
+    False ->
+      pause_command_block(
+        prefix,
+        next + 1,
+        last,
+        acc
+          <> server_command_frame(prefix <> int.to_string(next), "pause")
+          <> "\n",
       )
-      append_pause_commands(path, prefix, next + 1, last)
-    }
   }
+}
+
+fn append_inbound_block(path: String, block: String) -> Nil {
+  let existing = case simplifile.read(path) {
+    Ok(contents) -> contents
+    Error(_) -> ""
+  }
+  let assert Ok(Nil) = simplifile.write(path, existing <> block)
+  Nil
 }
 
 fn expect_pause_apply_requests(
