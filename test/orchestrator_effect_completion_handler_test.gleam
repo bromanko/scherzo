@@ -21,6 +21,7 @@ import scherzo/workflow_policy
 
 pub fn handle_completed_dispatches_finished_variants_test() {
   let publication = scheduled_failure_publication()
+  let scheduled_outbox = scheduled_failure_outbox(publication)
   let receipt = scheduled_failure_receipt()
   let state = new_state()
   let state =
@@ -151,6 +152,7 @@ pub fn handle_completed_dispatches_finished_variants_test() {
       effect_runner.Finished(
         11,
         effect_runner.ScheduledFailureReportFinished(
+          scheduled_outbox,
           10,
           publication,
           Ok(receipt),
@@ -349,6 +351,7 @@ pub fn handle_completed_invalid_workflow_outcomes_match_daemon_behavior_test() {
 
 pub fn handle_completed_scheduled_failure_and_cleanup_match_daemon_behavior_test() {
   let publication = scheduled_failure_publication()
+  let scheduled_outbox = scheduled_failure_outbox(publication)
   let receipt = scheduled_failure_receipt()
   let state = new_state()
   let state =
@@ -357,6 +360,7 @@ pub fn handle_completed_scheduled_failure_and_cleanup_match_daemon_behavior_test
       effect_runner.Finished(
         1,
         effect_runner.ScheduledFailureReportFinished(
+          scheduled_outbox,
           1,
           publication,
           Ok(receipt),
@@ -369,6 +373,7 @@ pub fn handle_completed_scheduled_failure_and_cleanup_match_daemon_behavior_test
       effect_runner.Finished(
         2,
         effect_runner.ScheduledFailureReportFinished(
+          scheduled_outbox,
           2,
           publication,
           Error(adapter.Transient("boom")),
@@ -432,6 +437,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
     )
   let handoff = adapter.HandoffCapability(report: fn(_) { Ok(Nil) })
   let publication = scheduled_failure_publication()
+  let scheduled_outbox = scheduled_failure_outbox(publication)
 
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.FetchCandidates(1, tracker_adapter),
@@ -578,6 +584,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
     )
   assert effect_completion_handler.crash_result_for_effect(
       effect_runner.ReportScheduledFailure(
+        scheduled_outbox,
         10,
         publication,
         scheduled_failure_capability(),
@@ -585,6 +592,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
       reason,
     )
     == effect_runner.ScheduledFailureReportFinished(
+      scheduled_outbox,
       10,
       publication,
       Error(adapter.Transient(reason)),
@@ -664,7 +672,7 @@ fn context(state: TestState) -> effect_completion_handler.Context(TestState) {
       outbox_replay_finished: fn(state, _, _) {
         append_event(state, "outbox_replay")
       },
-      scheduled_failure_report_finished: fn(state, _, _, _) {
+      scheduled_failure_report_finished: fn(state, _, _, _, _) {
         append_event(state, "scheduled_failure")
       },
       cleanup_finished: fn(state, _, _) { append_event(state, "cleanup") },
@@ -722,7 +730,7 @@ fn daemon_context(
           Error(_) -> append_event(state, "outbox_replay_failed")
         }
       },
-      scheduled_failure_report_finished: fn(state, _, _, result) {
+      scheduled_failure_report_finished: fn(state, _, _, _, result) {
         case result {
           Ok(_) -> append_event(state, "scheduled_failure_report_finished")
           Error(_) -> append_event(state, "scheduled_failure_report_failed")
@@ -870,6 +878,12 @@ fn scheduled_failure_publication() -> adapter.ScheduledFailurePublication {
     target_state_name: None,
     previous_task_remote_id: None,
   )
+}
+
+fn scheduled_failure_outbox(
+  publication: adapter.ScheduledFailurePublication,
+) -> outbox_effects.Intent {
+  outbox_effects.scheduled_failure_intent(publication, 1, [])
 }
 
 fn scheduled_failure_receipt() -> adapter.ScheduledFailureReceipt {

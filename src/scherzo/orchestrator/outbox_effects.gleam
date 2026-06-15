@@ -1,4 +1,5 @@
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/claim_abandonment
@@ -6,6 +7,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff_format
 import scherzo/runtime/state as orchestrator_state
+import scherzo/scheduled_failure_reporter
 import scherzo/state/outbox
 import scherzo/state/record
 import scherzo/state/recovery
@@ -273,6 +275,106 @@ pub fn invalid_workflow_intent(
   )
 }
 
+pub fn scheduled_failure_dedupe_key(job_id: String) -> String {
+  scheduled_failure_reporter.dedupe_key(job_id)
+}
+
+pub fn scheduled_failure_intent(
+  publication: adapter.ScheduledFailurePublication,
+  report_attempt_index: Int,
+  secrets: List(String),
+) -> Intent {
+  let key = scheduled_failure_dedupe_key(publication.job_id)
+  Intent(
+    outbox_id: key,
+    task_ref: scheduled_failure_task_ref(publication.job_id),
+    outbox_kind: outbox.scheduled_failure_publication_kind,
+    dedupe_key: key,
+    payload_json: outbox.scheduled_failure_payload(
+      outbox.ScheduledFailurePayload(
+        kind: outbox.scheduled_failure_publication_kind,
+        job_id: publication.job_id,
+        workflow_id: publication.workflow_id,
+        due_at_ms: publication.due_at_ms,
+        run_id: publication.run_id,
+        attempt: publication.attempt,
+        max_attempts: publication.max_attempts,
+        reason: publication.reason,
+        run_root: publication.run_root,
+        session_id: publication.session_id,
+        dedupe_key: key,
+        title: publication.title,
+        body: publication.body,
+        labels: publication.labels,
+        target_state_name: publication.target_state_name,
+        previous_task_remote_id: publication.previous_task_remote_id,
+        report_attempt_index: report_attempt_index,
+      ),
+      secrets,
+    ),
+  )
+}
+
+pub fn replay_attempt_count(intent: Intent) -> Result(Int, outbox.ReplayError) {
+  case intent.outbox_kind == outbox.scheduled_failure_publication_kind {
+    True ->
+      scheduled_failure_publication_from_payload(intent.payload_json)
+      |> result.map(fn(decoded) {
+        let #(attempt_count, _) = decoded
+        attempt_count
+      })
+    False -> Ok(1)
+  }
+}
+
+pub fn replay_failed_body(
+  intent: Intent,
+  error: outbox.ReplayError,
+) -> record.RecordBody {
+  record.OutboxFailedWithTask(
+    intent.outbox_id,
+    intent.task_ref,
+    intent.outbox_kind,
+    outbox.replay_error_code(error),
+  )
+}
+
+pub fn replay_error_code(error: outbox.ReplayError) -> String {
+  outbox.replay_error_code(error)
+}
+
+pub fn scheduled_failure_publication_from_payload(
+  payload_json: String,
+) -> Result(#(Int, adapter.ScheduledFailurePublication), outbox.ReplayError) {
+  use payload <- result.try(outbox.decode_scheduled_failure_payload(
+    payload_json,
+  ))
+  use Nil <- result.try(outbox.recovery_replay_error(
+    outbox.scheduled_failure_publication_kind,
+    payload.kind,
+  ))
+  Ok(#(
+    payload.report_attempt_index,
+    adapter.ScheduledFailurePublication(
+      job_id: payload.job_id,
+      workflow_id: payload.workflow_id,
+      due_at_ms: payload.due_at_ms,
+      run_id: payload.run_id,
+      attempt: payload.attempt,
+      max_attempts: payload.max_attempts,
+      reason: payload.reason,
+      run_root: payload.run_root,
+      session_id: payload.session_id,
+      dedupe_key: payload.dedupe_key,
+      title: payload.title,
+      body: payload.body,
+      labels: payload.labels,
+      target_state_name: payload.target_state_name,
+      previous_task_remote_id: payload.previous_task_remote_id,
+    ),
+  ))
+}
+
 pub fn pending_body(intent: Intent) -> record.RecordBody {
   record.OutboxPendingV2WithTask(
     intent.outbox_id,
@@ -399,6 +501,15 @@ fn park_key(
     None -> reason |> string.replace(":", "_")
   }
   "park:" <> backend_kind <> ":" <> task_remote_id <> ":" <> source
+}
+
+fn scheduled_failure_task_ref(job_id: String) -> record.TaskRefFields {
+  record.TaskRefFields(
+    task_backend_kind: "scheduled_failure",
+    task_remote_id: job_id,
+    task_key: Some(job_id),
+    task_url: None,
+  )
 }
 
 fn invalid_workflow_key(

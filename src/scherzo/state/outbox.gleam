@@ -36,6 +36,8 @@ pub fn linear_command_ack_payload(
   |> json.to_string
 }
 
+pub const scheduled_failure_publication_kind = "scheduled_failure_publication"
+
 pub fn remote_command_ack_payload(
   backend_kind: String,
   event_id: String,
@@ -51,6 +53,65 @@ pub fn remote_command_ack_payload(
     #("body", json.string(safe_body(body, secrets))),
   ])
   |> json.to_string
+}
+
+pub type ScheduledFailurePayload {
+  ScheduledFailurePayload(
+    kind: String,
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    attempt: Int,
+    max_attempts: Int,
+    reason: String,
+    run_root: Option(String),
+    session_id: Option(String),
+    dedupe_key: String,
+    title: String,
+    body: String,
+    labels: List(String),
+    target_state_name: Option(String),
+    previous_task_remote_id: Option(String),
+    report_attempt_index: Int,
+  )
+}
+
+pub fn scheduled_failure_payload(
+  payload: ScheduledFailurePayload,
+  secrets: List(String),
+) -> String {
+  let entries = [
+    #("type", json.string(payload.kind)),
+    #("job_id", json.string(payload.job_id)),
+    #("workflow_id", json.string(payload.workflow_id)),
+    #("due_at_ms", json.int(payload.due_at_ms)),
+    #("run_id", json.string(payload.run_id)),
+    #("attempt", json.int(payload.attempt)),
+    #("max_attempts", json.int(payload.max_attempts)),
+    #("reason", json.string(safe_body(payload.reason, secrets))),
+    #("dedupe_key", json.string(payload.dedupe_key)),
+    #("title", json.string(safe_body(payload.title, secrets))),
+    #("body", json.string(safe_body(payload.body, secrets))),
+    #("labels", json.array(payload.labels, of: json.string)),
+    #("report_attempt_index", json.int(payload.report_attempt_index)),
+  ]
+  let entries = append_optional_string(entries, "run_root", payload.run_root)
+  let entries =
+    append_optional_string(entries, "session_id", payload.session_id)
+  let entries =
+    append_optional_string(
+      entries,
+      "target_state_name",
+      payload.target_state_name,
+    )
+  let entries =
+    append_optional_string(
+      entries,
+      "previous_task_remote_id",
+      payload.previous_task_remote_id,
+    )
+  json.object(entries) |> json.to_string
 }
 
 pub fn tracker_update_payload(
@@ -122,6 +183,15 @@ pub fn decode_tracker_update_payload(
   }
 }
 
+pub fn decode_scheduled_failure_payload(
+  payload_json: String,
+) -> Result(ScheduledFailurePayload, ReplayError) {
+  case json.parse(payload_json, scheduled_failure_payload_decoder()) {
+    Ok(payload) -> Ok(payload)
+    Error(_) -> Error(InvalidOutboxPayload)
+  }
+}
+
 pub fn recovery_replay_error(
   outbox_kind: String,
   payload_kind: String,
@@ -130,6 +200,15 @@ pub fn recovery_replay_error(
     True -> Ok(Nil)
     False -> Error(UnsupportedOutboxKind(outbox_kind))
   }
+}
+
+pub fn retry_due_on_recovery(
+  outbox_kind: String,
+  next_attempt_at_ms: Int,
+  now_ms: Int,
+) -> Bool {
+  outbox_kind != scheduled_failure_publication_kind
+  || next_attempt_at_ms <= now_ms
 }
 
 fn replayable_kind(kind: String) -> Bool {
@@ -141,6 +220,7 @@ fn replayable_kind(kind: String) -> Bool {
     | "report_failure"
     | "park"
     | "invalid_workflow" -> True
+    kind if kind == scheduled_failure_publication_kind -> True
     _ ->
       kind == claim_abandonment.claim_kind
       || kind == claim_abandonment.release_claim_kind
@@ -264,5 +344,62 @@ fn tracker_update_payload_decoder() -> decode.Decoder(TrackerUpdatePayload) {
     body,
     target_state_id,
     target_state_name,
+  ))
+}
+
+fn scheduled_failure_payload_decoder() -> decode.Decoder(
+  ScheduledFailurePayload,
+) {
+  use kind <- decode.field("type", decode.string)
+  use job_id <- decode.field("job_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use due_at_ms <- decode.field("due_at_ms", decode.int)
+  use run_id <- decode.field("run_id", decode.string)
+  use attempt <- decode.field("attempt", decode.int)
+  use max_attempts <- decode.field("max_attempts", decode.int)
+  use reason <- decode.field("reason", decode.string)
+  use run_root <- decode.optional_field(
+    "run_root",
+    None,
+    decode.optional(decode.string),
+  )
+  use session_id <- decode.optional_field(
+    "session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use dedupe_key <- decode.field("dedupe_key", decode.string)
+  use title <- decode.field("title", decode.string)
+  use body <- decode.field("body", decode.string)
+  use labels <- decode.field("labels", decode.list(of: decode.string))
+  use target_state_name <- decode.optional_field(
+    "target_state_name",
+    None,
+    decode.optional(decode.string),
+  )
+  use previous_task_remote_id <- decode.optional_field(
+    "previous_task_remote_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use report_attempt_index <- decode.field("report_attempt_index", decode.int)
+  decode.success(ScheduledFailurePayload(
+    kind,
+    job_id,
+    workflow_id,
+    due_at_ms,
+    run_id,
+    attempt,
+    max_attempts,
+    reason,
+    run_root,
+    session_id,
+    dedupe_key,
+    title,
+    body,
+    labels,
+    target_state_name,
+    previous_task_remote_id,
+    report_attempt_index,
   ))
 }

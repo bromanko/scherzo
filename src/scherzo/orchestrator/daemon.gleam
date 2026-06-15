@@ -65,6 +65,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
+import scherzo/state/outbox
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
@@ -4062,18 +4063,26 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
     },
     replay_outbox: fn(state, outbox_replay) {
       let intent = outbox_effects.recovered_intent(outbox_replay)
-      let #(state, appended) = append_outbox_attempt(state, intent)
-      case appended {
-        True ->
-          enqueue_side_effect(
-            state,
-            effect_runner.ReplayOutbox(
-              outbox: outbox_replay,
-              comments: state.tracker_adapter.comments,
-              state_transitions: state.tracker_adapter.state_transitions,
-            ),
-          )
-        False -> state
+      case outbox_effects.replay_attempt_count(intent) {
+        Error(error) ->
+          record_outbox_replay_payload_failure(state, intent, error)
+        Ok(attempt_count) -> {
+          let #(state, appended) =
+            append_outbox_attempt_with_count(state, intent, attempt_count)
+          case appended {
+            True ->
+              enqueue_side_effect(
+                state,
+                effect_runner.ReplayOutbox(
+                  outbox: outbox_replay,
+                  comments: state.tracker_adapter.comments,
+                  state_transitions: state.tracker_adapter.state_transitions,
+                  scheduled_failures: state.tracker_adapter.scheduled_failures,
+                ),
+              )
+            False -> state
+          }
+        }
       }
     },
     remove_retry_timer: fn(state, issue_id) {
@@ -6513,19 +6522,22 @@ fn begin_scheduled_failure_report_request(
   ) = request
   case scheduled_job_by_id(state, job_id) {
     Error(Nil) -> state
-    Ok(job) ->
-      begin_scheduled_failure_report_for_job(
-        state,
-        job,
-        workflow_id,
-        due_at_ms,
-        run_id,
-        attempt,
-        reason,
-        run_root,
-        scheduled_runtime.initial_report_attempt_index(),
-        session_id,
-      )
+    Ok(job) -> {
+      let #(state, _) =
+        begin_scheduled_failure_report_for_job(
+          state,
+          job,
+          workflow_id,
+          due_at_ms,
+          run_id,
+          attempt,
+          reason,
+          run_root,
+          scheduled_runtime.initial_report_attempt_index(),
+          session_id,
+        )
+      state
+    }
   }
 }
 
@@ -6540,17 +6552,17 @@ fn begin_scheduled_failure_report_for_job(
   run_root: Option(String),
   report_attempt_index: Int,
   session_id: Option(String),
-) -> State {
+) -> #(State, Bool) {
   let task_config = job.on_failure.task
   case task_config.enabled, task_config.state {
-    False, _ -> state
+    False, _ -> #(state, True)
     True, None -> {
       log_state(state, "warn", "scheduled_failure_report_skipped", [
         #("job_id", job.id),
         #("run_id", run_id),
         #("reason", "missing_triage_state"),
       ])
-      state
+      #(state, True)
     }
     True, Some(triage_state) -> {
       let generation =
@@ -6572,7 +6584,7 @@ fn begin_scheduled_failure_report_for_job(
           reason: reason,
           run_root: run_root,
           session_id: session_id,
-          dedupe_key: "scheduled-job:" <> job.id,
+          dedupe_key: outbox_effects.scheduled_failure_dedupe_key(job.id),
           title: "Scheduled workflow failure: " <> job.id,
           body: reason,
           labels: task_config.labels,
@@ -6580,16 +6592,28 @@ fn begin_scheduled_failure_report_for_job(
           previous_task_remote_id: previous_task_remote_id,
         )
       case state.tracker_adapter.scheduled_failures {
-        Some(capability) ->
-          enqueue_side_effect(
+        Some(capability) -> {
+          let intent =
+            outbox_effects.scheduled_failure_intent(
+              publication,
+              generation,
+              tracker_secrets(state),
+            )
+          enqueue_outbox_side_effect_with_attempt_count_result(
             state,
-            effect_runner.ReportScheduledFailure(
-              generation: generation,
-              publication: publication,
-              capability: capability,
-            ),
+            intent,
+            generation,
+            fn(intent) {
+              effect_runner.ReportScheduledFailure(
+                outbox: intent,
+                generation: generation,
+                publication: publication,
+                capability: capability,
+              )
+            },
           )
-        None -> state
+        }
+        None -> #(state, True)
       }
     }
   }
@@ -6632,16 +6656,23 @@ fn handle_scheduled_retry_tick(
 
 fn handle_scheduled_failure_report_finished(
   state: State,
+  outbox: outbox_effects.Intent,
   generation: Int,
   publication: adapter.ScheduledFailurePublication,
   result: Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
 ) -> State {
   case result {
     Ok(receipt) ->
-      handle_scheduled_failure_report_success(state, publication, receipt)
+      handle_scheduled_failure_report_success(
+        state,
+        outbox,
+        publication,
+        receipt,
+      )
     Error(err) ->
       handle_scheduled_failure_report_failure(
         state,
+        outbox,
         generation,
         publication,
         err,
@@ -6651,6 +6682,7 @@ fn handle_scheduled_failure_report_finished(
 
 fn handle_scheduled_failure_report_success(
   state: State,
+  outbox: outbox_effects.Intent,
   publication: adapter.ScheduledFailurePublication,
   receipt: adapter.ScheduledFailureReceipt,
 ) -> State {
@@ -6681,6 +6713,7 @@ fn handle_scheduled_failure_report_success(
   append_ledger_bodies_best_effort(
     state,
     [
+      outbox_effects.completed_body(outbox),
       record.ScheduledFailureReported(
         publication.job_id,
         publication.workflow_id,
@@ -6698,6 +6731,7 @@ fn handle_scheduled_failure_report_success(
 
 fn handle_scheduled_failure_report_failure(
   state: State,
+  outbox: outbox_effects.Intent,
   generation: Int,
   publication: adapter.ScheduledFailurePublication,
   err: adapter.TrackerError,
@@ -6738,7 +6772,15 @@ fn handle_scheduled_failure_report_failure(
   let state =
     append_ledger_bodies_best_effort(
       state,
-      [scheduled_runtime.report_failure_failed_record(publication, decision)],
+      [
+        scheduled_runtime.report_failure_outbox_failed_record(
+          outbox,
+          publication,
+          decision,
+          tracker_secrets(state),
+        ),
+        scheduled_runtime.report_failure_failed_record(publication, decision),
+      ],
       "scheduled_failure_report_failed_append_failed",
     )
   case decision {
@@ -6788,27 +6830,76 @@ fn retry_scheduled_failure_report_by_identity(
     Error(Nil) -> state
     Ok(status) ->
       case scheduled_job_by_id(state, job_id), status.current_run {
-        Ok(job), Some(run) ->
-          begin_scheduled_failure_report_for_job(
-            state,
-            job,
-            status.workflow_id,
-            run.due_at_ms,
-            run_id,
-            case run.attempt <= 0 {
-              True -> 1
-              False -> run.attempt
-            },
-            case status.last_failure_reason {
-              Some(reason) -> reason
-              None -> "scheduled failure"
-            },
-            run.run_root,
-            report_attempt_index,
-            run.session_id,
-          )
+        Ok(job), Some(run) -> {
+          let #(state, appended) =
+            begin_scheduled_failure_report_for_job(
+              state,
+              job,
+              status.workflow_id,
+              run.due_at_ms,
+              run_id,
+              case run.attempt <= 0 {
+                True -> 1
+                False -> run.attempt
+              },
+              case status.last_failure_reason {
+                Some(reason) -> reason
+                None -> "scheduled failure"
+              },
+              run.run_root,
+              report_attempt_index,
+              run.session_id,
+            )
+          case appended {
+            True -> state
+            False ->
+              retain_scheduled_report_retry_after_outbox_append_failure(
+                state,
+                job.id,
+                run_id,
+                report_attempt_index,
+              )
+          }
+        }
         _, _ -> state
       }
+  }
+}
+
+fn retain_scheduled_report_retry_after_outbox_append_failure(
+  state: State,
+  job_id: String,
+  run_id: String,
+  report_attempt_index: Int,
+) -> State {
+  let generation = previous_report_retry_generation(report_attempt_index)
+  let state =
+    State(
+      ..state,
+      scheduled_runtime: scheduled_runtime.insert_report_retry(
+        state.scheduled_runtime,
+        scheduled_runtime.ReportRetryStart(
+          job_id: job_id,
+          run_id: run_id,
+          generation: generation,
+        ),
+      ),
+    )
+  log_state(state, "warn", "scheduled_report_retry_retained", [
+    #("job_id", job_id),
+    #("run_id", run_id),
+    #("report_attempt", int.to_string(report_attempt_index)),
+    #("reason", "outbox_append_failed"),
+  ])
+  schedule_scheduled_report_retry_timer(state, run_id, generation, 1000)
+}
+
+fn previous_report_retry_generation(report_attempt_index: Int) -> Int {
+  let generation =
+    scheduled_runtime.normalize_report_attempt_index(report_attempt_index) - 1
+  case generation <= 0 {
+    True -> scheduled_runtime.initial_report_attempt_index()
+    False -> generation
   }
 }
 
@@ -7252,6 +7343,7 @@ fn enqueue_release_claim_intent(
       ),
       comments: state.tracker_adapter.comments,
       state_transitions: state.tracker_adapter.state_transitions,
+      scheduled_failures: state.tracker_adapter.scheduled_failures,
     )
   })
 }
@@ -7425,6 +7517,28 @@ fn invalid_workflow_outcome_to_string(
   }
 }
 
+fn record_outbox_replay_payload_failure(
+  state: State,
+  intent: outbox_effects.Intent,
+  replay_error: outbox.ReplayError,
+) -> State {
+  let error_code = outbox_effects.replay_error_code(replay_error)
+  let state =
+    append_ledger_bodies_best_effort(
+      state,
+      [outbox_effects.replay_failed_body(intent, replay_error)],
+      "outbox_replay_payload_append_failed",
+    )
+  let _ =
+    log_state(state, "warn", "outbox_replay_failed", [
+      #("outbox_id", intent.outbox_id),
+      #("outbox_kind", intent.outbox_kind),
+      #("task_remote_id", intent.task_ref.task_remote_id),
+      #("error", error_code),
+    ])
+  state
+}
+
 fn handle_outbox_replay_finished(
   state: State,
   outbox_replay: recovery.OutboxReplay,
@@ -7509,22 +7623,49 @@ fn enqueue_outbox_side_effect(
   intent: outbox_effects.Intent,
   make_effect: fn(outbox_effects.Intent) -> effect_runner.Effect,
 ) -> State {
-  let #(state, appended) = append_outbox_attempt(state, intent)
+  enqueue_outbox_side_effect_with_attempt_count(state, intent, 1, make_effect)
+}
+
+fn enqueue_outbox_side_effect_with_attempt_count(
+  state: State,
+  intent: outbox_effects.Intent,
+  attempt_count: Int,
+  make_effect: fn(outbox_effects.Intent) -> effect_runner.Effect,
+) -> State {
+  let #(state, _) =
+    enqueue_outbox_side_effect_with_attempt_count_result(
+      state,
+      intent,
+      attempt_count,
+      make_effect,
+    )
+  state
+}
+
+fn enqueue_outbox_side_effect_with_attempt_count_result(
+  state: State,
+  intent: outbox_effects.Intent,
+  attempt_count: Int,
+  make_effect: fn(outbox_effects.Intent) -> effect_runner.Effect,
+) -> #(State, Bool) {
+  let #(state, appended) =
+    append_outbox_attempt_with_count(state, intent, attempt_count)
   case appended {
-    True -> enqueue_side_effect(state, make_effect(intent))
-    False -> state
+    True -> #(enqueue_side_effect(state, make_effect(intent)), True)
+    False -> #(state, False)
   }
 }
 
-fn append_outbox_attempt(
+fn append_outbox_attempt_with_count(
   state: State,
   intent: outbox_effects.Intent,
+  attempt_count: Int,
 ) -> #(State, Bool) {
   append_ledger_bodies(
     state,
     [
       outbox_effects.pending_body(intent),
-      outbox_effects.attempted_body(intent, 1),
+      outbox_effects.attempted_body(intent, attempt_count),
     ],
     "outbox_ledger_append_failed",
   )
