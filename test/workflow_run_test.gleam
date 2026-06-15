@@ -1633,7 +1633,10 @@ pub fn default_agent_step_routes_command_ready_subject_test() {
       fn(_) { Nil },
     )
 
-  assert receive_event(event_subject)
+  let command_ready_event = receive_event(event_subject)
+  assert command_ready_event
+    == "command_ready:queued:prompt queued for next turn"
+    || command_ready_event
     == "command_ready:applied:prompt accepted for next turn"
 }
 
