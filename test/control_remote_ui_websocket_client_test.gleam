@@ -3,6 +3,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/control/command
 import scherzo/control/remote/ui_websocket_client
 import scherzo/log
 import scherzo/session/event
@@ -19,6 +20,10 @@ type ConnectRequest {
   ConnectRequest(url: String, credential: String)
 }
 
+type ApplyRequest {
+  ApplyRequest(command: command.OperatorCommand, timeout_ms: Int)
+}
+
 type Fixture {
   Fixture(
     settings: ui_websocket_client.Settings,
@@ -27,6 +32,8 @@ type Fixture {
     connects: process.Subject(ConnectRequest),
     delays: process.Subject(Int),
     logs: process.Subject(String),
+    apply_requests: process.Subject(ApplyRequest),
+    closes: process.Subject(Nil),
     inbound_path: String,
   )
 }
@@ -38,6 +45,8 @@ fn new_fixture() -> Fixture {
   let connects = process.new_subject()
   let delays = process.new_subject()
   let logs = process.new_subject()
+  let apply_requests = process.new_subject()
+  let closes = process.new_subject()
   let inbound_path = root <> "/inbound.txt"
   let connection = Connection(outbound, inbound_path)
   let settings =
@@ -53,6 +62,7 @@ fn new_fixture() -> Fixture {
       retry_initial_ms: 50,
       retry_max_ms: 100,
       connect_timeout_ms: 50,
+      command_timeout_ms: 75,
       command_bridge_enabled: False,
       redaction_secrets: ["dcred_secret_1"],
     )
@@ -70,7 +80,10 @@ fn new_fixture() -> Fixture {
       recv_text: fn(connection, _) {
         read_inbound_line(connection.inbound_path)
       },
-      close: fn(_) { Nil },
+      close: fn(_) {
+        process.send(closes, Nil)
+        Nil
+      },
       send_after: fn(subject, delay, message) {
         process.send(delays, delay)
         process.send_after(subject, delay, message)
@@ -81,12 +94,43 @@ fn new_fixture() -> Fixture {
       },
       list_sessions: fn() { Ok([session_summary()]) },
       dispatch_paused: fn(_) { Ok(False) },
+      apply_command: fn(operator_command, timeout_ms) {
+        process.send(apply_requests, ApplyRequest(operator_command, timeout_ms))
+        Ok(command_result_for(operator_command))
+      },
       logger: fn(level, event, fields, secrets) {
         process.send(logs, log.format(level, event, fields, secrets))
         Ok(Nil)
       },
     )
-  Fixture(settings, deps, outbound, connects, delays, logs, inbound_path)
+  Fixture(
+    settings,
+    deps,
+    outbound,
+    connects,
+    delays,
+    logs,
+    apply_requests,
+    closes,
+    inbound_path,
+  )
+}
+
+fn command_result_for(
+  operator_command: command.OperatorCommand,
+) -> command.CommandResult {
+  case operator_command {
+    command.PauseDispatch ->
+      command.applied(
+        operator_command,
+        Some("dispatch paused; pending_claims=0"),
+      )
+    command.ResumeDispatch ->
+      command.applied(operator_command, Some("dispatch resumed"))
+    command.ReloadWorkflow ->
+      command.applied(operator_command, Some("workflow reloaded"))
+    _ -> command.not_found(operator_command, Some("not found"))
+  }
 }
 
 pub fn ui_websocket_client_sends_handshake_hello_heartbeat_and_state_test() {
@@ -192,7 +236,7 @@ pub fn ui_websocket_client_stops_after_daemon_identity_revocation_test() {
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
-pub fn ui_websocket_client_warns_when_command_bridge_is_enabled_test() {
+pub fn ui_websocket_client_logs_when_command_bridge_is_enabled_test() {
   let Fixture(settings:, deps:, logs:, ..) = new_fixture()
   let assert Ok(handle) =
     ui_websocket_client.start(
@@ -200,8 +244,319 @@ pub fn ui_websocket_client_warns_when_command_bridge_is_enabled_test() {
       deps,
     )
 
-  let entry = expect_log_contains(logs, "ui_websocket_command_bridge_disabled")
-  assert string.contains(entry, "command_bridge_enabled is not implemented yet")
+  let entry = expect_log_contains(logs, "ui_websocket_command_bridge_enabled")
+  assert string.contains(entry, "remote command/result bridge enabled")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_applies_pause_resume_reload_server_commands_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(inbound_path, server_command_frame("scmd_pause", "pause"))
+  let ApplyRequest(pause_command, pause_timeout) =
+    test_async.expect_message(apply_requests)
+  assert pause_command == command.PauseDispatch
+  assert pause_timeout == settings.command_timeout_ms
+  let pause_result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_pause\"",
+    )
+  assert string.contains(pause_result, "\"type\":\"command_result\"")
+  assert string.contains(pause_result, "\"command\":\"pause\"")
+  assert string.contains(pause_result, "\"status\":\"applied\"")
+  let pause_state =
+    expect_next_outbound_contains(outbound, "\"type\":\"daemon_state\"")
+  assert string.contains(pause_state, "\"dispatchPaused\"")
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame("scmd_resume", "resume"),
+  )
+  let ApplyRequest(resume_command, _) =
+    test_async.expect_message(apply_requests)
+  assert resume_command == command.ResumeDispatch
+  let resume_result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_resume\"",
+    )
+  assert string.contains(resume_result, "\"command\":\"resume\"")
+  assert string.contains(resume_result, "\"status\":\"applied\"")
+  let resume_state =
+    expect_next_outbound_contains(outbound, "\"type\":\"daemon_state\"")
+  assert string.contains(resume_state, "\"dispatchPaused\"")
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame("scmd_reload", "reload"),
+  )
+  let ApplyRequest(reload_command, _) =
+    test_async.expect_message(apply_requests)
+  assert reload_command == command.ReloadWorkflow
+  let reload_result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_reload\"",
+    )
+  assert string.contains(reload_result, "\"command\":\"reload\"")
+  assert string.contains(reload_result, "\"status\":\"applied\"")
+  let reload_state =
+    expect_next_outbound_contains(outbound, "\"type\":\"daemon_state\"")
+  assert string.contains(reload_state, "\"dispatchPaused\"")
+  test_async.assert_no_extra_message_within(outbound, 50)
+
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_malformed_server_command_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame_with_command("scmd_bad", "{\"type\":\"mystery\"}"),
+  )
+
+  let result =
+    expect_next_outbound_contains(outbound, "\"serverCommandId\":\"scmd_bad\"")
+  assert string.contains(result, "\"type\":\"command_result\"")
+  assert string.contains(result, "\"command\":\"mystery\"")
+  assert string.contains(result, "\"status\":\"rejected\"")
+  assert string.contains(result, "\"reason\":\"unknown_command\"")
+  test_async.assert_no_extra_message_within(apply_requests, 50)
+  test_async.assert_no_extra_message_within(outbound, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_server_command_when_bridge_disabled_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame("scmd_disabled", "pause"),
+  )
+
+  let result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_disabled\"",
+    )
+  assert string.contains(result, "\"type\":\"command_result\"")
+  assert string.contains(result, "\"command\":\"pause\"")
+  assert string.contains(result, "\"status\":\"not_allowed\"")
+  assert string.contains(result, "\"reason\":\"command_bridge_disabled\"")
+  test_async.assert_no_extra_message_within(apply_requests, 50)
+  test_async.assert_no_extra_message_within(outbound, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_server_command_for_identity_mismatch_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame_for(
+      "scmd_wrong_daemon",
+      "other_daemon",
+      "boot_abc",
+      "pause",
+    ),
+  )
+  let daemon_result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_wrong_daemon\"",
+    )
+  assert string.contains(daemon_result, "\"status\":\"not_allowed\"")
+  assert string.contains(daemon_result, "\"reason\":\"daemon_id_mismatch\"")
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame_for(
+      "scmd_wrong_boot",
+      "daemon_abc",
+      "other_boot",
+      "resume",
+    ),
+  )
+  let boot_result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_wrong_boot\"",
+    )
+  assert string.contains(boot_result, "\"status\":\"not_allowed\"")
+  assert string.contains(boot_result, "\"reason\":\"boot_id_mismatch\"")
+  test_async.assert_no_extra_message_within(apply_requests, 50)
+  test_async.assert_no_extra_message_within(outbound, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_sends_timeout_rejection_when_apply_times_out_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let deps =
+    ui_websocket_client.Dependencies(
+      ..deps,
+      apply_command: fn(operator_command, timeout_ms) {
+        process.send(apply_requests, ApplyRequest(operator_command, timeout_ms))
+        Error(Nil)
+      },
+    )
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame("scmd_timeout", "pause"),
+  )
+  let ApplyRequest(command_, timeout_ms) =
+    test_async.expect_message(apply_requests)
+  assert command_ == command.PauseDispatch
+  assert timeout_ms == settings.command_timeout_ms
+  let result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_timeout\"",
+    )
+  assert string.contains(result, "\"status\":\"rejected\"")
+  assert string.contains(result, "\"reason\":\"remote_command_timeout\"")
+  let _ = expect_next_outbound_contains(outbound, "\"type\":\"daemon_state\"")
+  test_async.assert_no_extra_message_within(outbound, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_server_command_when_in_flight_limit_reached_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let barrier = test_async.new_barrier()
+  let deps =
+    ui_websocket_client.Dependencies(
+      ..deps,
+      apply_command: fn(operator_command, timeout_ms) {
+        process.send(apply_requests, ApplyRequest(operator_command, timeout_ms))
+        test_async.block_until_released(barrier)
+        Ok(command_result_for(operator_command))
+      },
+    )
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_pause_commands(inbound_path, "scmd_inflight_", 1, 9)
+  expect_pause_apply_requests(apply_requests, 8)
+  let result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_inflight_9\"",
+    )
+  assert string.contains(result, "\"status\":\"rejected\"")
+  assert string.contains(result, "\"reason\":\"remote_command_overloaded\"")
+  test_async.assert_no_extra_message_within(apply_requests, 50)
+  test_async.assert_no_extra_message_within(outbound, 50)
+  release_barriers(barrier, 8)
+  let _ = test_async.drain_subject(outbound)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_replays_completed_server_command_without_reapplying_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(inbound_path, server_command_frame("scmd_once", "pause"))
+  let ApplyRequest(command_, _) = test_async.expect_message(apply_requests)
+  assert command_ == command.PauseDispatch
+  let _ =
+    expect_next_outbound_contains(outbound, "\"serverCommandId\":\"scmd_once\"")
+  let _ = expect_next_outbound_contains(outbound, "\"type\":\"daemon_state\"")
+
+  append_inbound_line(inbound_path, server_command_frame("scmd_once", "pause"))
+  let replay =
+    expect_next_outbound_contains(outbound, "\"serverCommandId\":\"scmd_once\"")
+  assert string.contains(replay, "\"command\":\"pause\"")
+  assert string.contains(replay, "\"status\":\"applied\"")
+  test_async.assert_no_extra_message_within(apply_requests, 50)
+  test_async.assert_no_extra_message_within(outbound, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_reconnects_after_command_result_send_failure_test() {
+  let Fixture(
+    settings:,
+    deps:,
+    outbound:,
+    connects:,
+    logs:,
+    closes:,
+    apply_requests:,
+    inbound_path:,
+    ..,
+  ) = new_fixture()
+  let deps =
+    ui_websocket_client.Dependencies(..deps, send_text: fn(_, payload, _) {
+      case string.contains(payload, "\"type\":\"command_result\"") {
+        True -> Error("send failed")
+        False -> {
+          process.send(outbound, payload)
+          Ok(Nil)
+        }
+      }
+    })
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      deps,
+    )
+  let _ = test_async.expect_message(connects)
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame("scmd_send_fail", "pause"),
+  )
+  let ApplyRequest(command_, _) = test_async.expect_message(apply_requests)
+  assert command_ == command.PauseDispatch
+  let _ = test_async.expect_message(closes)
+  let log_entry =
+    expect_log_contains(logs, "ui_websocket_command_result_send_failed")
+  assert string.contains(log_entry, "send failed")
+  let _ = test_async.expect_message(connects)
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -223,6 +578,98 @@ pub fn ui_websocket_client_ignores_too_fast_server_heartbeat_test() {
   assert delay == fixture.settings.heartbeat_interval_ms
   assert delay != 1
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+fn expect_initial_outbound(outbound: process.Subject(String)) -> Nil {
+  assert string.contains(test_async.expect_message(outbound), "daemon_hello")
+  assert string.contains(test_async.expect_message(outbound), "heartbeat")
+  assert string.contains(test_async.expect_message(outbound), "daemon_state")
+}
+
+fn expect_next_outbound_contains(
+  outbound: process.Subject(String),
+  fragment: String,
+) -> String {
+  let message = test_async.expect_message(outbound)
+  assert string.contains(message, fragment)
+  message
+}
+
+fn append_pause_commands(
+  path: String,
+  prefix: String,
+  next: Int,
+  last: Int,
+) -> Nil {
+  case next > last {
+    True -> Nil
+    False -> {
+      append_inbound_line(
+        path,
+        server_command_frame(prefix <> int.to_string(next), "pause"),
+      )
+      append_pause_commands(path, prefix, next + 1, last)
+    }
+  }
+}
+
+fn expect_pause_apply_requests(
+  subject: process.Subject(ApplyRequest),
+  remaining: Int,
+) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False -> {
+      let ApplyRequest(operator_command, _) = test_async.expect_message(subject)
+      assert operator_command == command.PauseDispatch
+      expect_pause_apply_requests(subject, remaining - 1)
+    }
+  }
+}
+
+fn release_barriers(barrier: test_async.Barrier, remaining: Int) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False -> {
+      test_async.release_barrier(barrier)
+      release_barriers(barrier, remaining - 1)
+    }
+  }
+}
+
+fn server_command_frame(command_id: String, command_type: String) -> String {
+  server_command_frame_with_command(
+    command_id,
+    "{\"type\":\"" <> command_type <> "\"}",
+  )
+}
+
+fn server_command_frame_for(
+  command_id: String,
+  daemon_id: String,
+  boot_id: String,
+  command_type: String,
+) -> String {
+  "{\"type\":\"server_command\",\"serverCommandId\":\""
+  <> command_id
+  <> "\",\"daemonId\":\""
+  <> daemon_id
+  <> "\",\"bootId\":\""
+  <> boot_id
+  <> "\",\"command\":{\"type\":\""
+  <> command_type
+  <> "\"}}"
+}
+
+fn server_command_frame_with_command(
+  command_id: String,
+  command_json: String,
+) -> String {
+  "{\"type\":\"server_command\",\"serverCommandId\":\""
+  <> command_id
+  <> "\",\"daemonId\":\"daemon_abc\",\"bootId\":\"boot_abc\",\"command\":"
+  <> command_json
+  <> "}"
 }
 
 fn expect_log_contains(

@@ -28,6 +28,7 @@ import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
+import scherzo/state/outbox
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/step_artifact
@@ -2200,6 +2201,97 @@ fn has_terminal_scheduled_failure_report_failed(
   })
 }
 
+fn has_scheduled_failure_outbox_attempted(
+  records: List(record.LedgerRecord),
+  attempt_count: Int,
+) -> Bool {
+  let key = scheduled_failure_reporter.dedupe_key("scheduled-job")
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.OutboxAttemptedWithTask(
+        outbox_id: outbox_id,
+        outbox_kind: outbox_kind,
+        dedupe_key: dedupe_key,
+        attempt_count: body_attempt_count,
+        ..,
+      ) ->
+        outbox_id == key
+        && dedupe_key == key
+        && outbox_kind == outbox.scheduled_failure_publication_kind
+        && body_attempt_count == attempt_count
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_failure_outbox_completed(
+  records: List(record.LedgerRecord),
+) -> Bool {
+  let key = scheduled_failure_reporter.dedupe_key("scheduled-job")
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.OutboxCompletedWithTask(
+        outbox_id: outbox_id,
+        outbox_kind: outbox_kind,
+        ..,
+      ) ->
+        outbox_id == key
+        && outbox_kind == outbox.scheduled_failure_publication_kind
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_failure_outbox_retry(
+  records: List(record.LedgerRecord),
+  attempt_count: Int,
+) -> Bool {
+  let key = scheduled_failure_reporter.dedupe_key("scheduled-job")
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.OutboxRetryScheduledWithTask(
+        outbox_id: outbox_id,
+        outbox_kind: outbox_kind,
+        dedupe_key: dedupe_key,
+        attempt_count: body_attempt_count,
+        next_attempt_at_ms: next_attempt_at_ms,
+        ..,
+      ) ->
+        outbox_id == key
+        && dedupe_key == key
+        && outbox_kind == outbox.scheduled_failure_publication_kind
+        && body_attempt_count == attempt_count
+        && next_attempt_at_ms > 0
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_failure_outbox_permanent(
+  records: List(record.LedgerRecord),
+  attempt_count: Int,
+) -> Bool {
+  let key = scheduled_failure_reporter.dedupe_key("scheduled-job")
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.OutboxPermanentlyFailedWithTask(
+        outbox_id: outbox_id,
+        outbox_kind: outbox_kind,
+        attempt_count: body_attempt_count,
+        ..,
+      ) ->
+        outbox_id == key
+        && outbox_kind == outbox.scheduled_failure_publication_kind
+        && body_attempt_count == attempt_count
+      _ -> False
+    }
+  })
+}
+
 fn scheduled_failure_report_failed_count(
   records: List(record.LedgerRecord),
   run_id: String,
@@ -3470,6 +3562,7 @@ pub fn daemon_scheduled_failure_reports_without_workflow_retry_test() {
     fn(records) {
       has_scheduled_failed_run(records, run_id)
       && has_scheduled_failure_reported(records, run_id, "lin-scheduled")
+      && has_scheduled_failure_outbox_completed(records)
       && !has_scheduled_retry_scheduled(records, run_id, 2)
     },
     20,
@@ -3514,11 +3607,19 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
   let run_id = "schedule-scheduled-job-19700101T000001Z"
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
     process.receive(report_subject, within: 5000)
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_failure_outbox_attempted(records, 1) },
+    20,
+  )
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
   assert wait_for_records(
     root,
-    fn(records) { has_scheduled_failure_report_failed(records, run_id, 1) },
+    fn(records) {
+      has_scheduled_failure_report_failed(records, run_id, 1)
+      && has_scheduled_failure_outbox_retry(records, 1)
+    },
     20,
   )
   let _ = test_async.drain_subject(command_subject)
@@ -3537,6 +3638,7 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
     root,
     fn(records) {
       has_scheduled_failure_reported(records, run_id, "lin-scheduled")
+      && has_scheduled_failure_outbox_completed(records)
     },
     20,
   )
@@ -3586,6 +3688,7 @@ pub fn daemon_scheduled_report_permanent_failure_does_not_retry_test() {
     root,
     fn(records) {
       has_terminal_scheduled_failure_report_failed(records, run_id, 1)
+      && has_scheduled_failure_outbox_permanent(records, 1)
     },
     20,
   )
@@ -3593,6 +3696,7 @@ pub fn daemon_scheduled_report_permanent_failure_does_not_retry_test() {
   let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
   assert snapshot.counts.scheduled_report_retry_count == 0
   assert snapshot.counts.scheduled_report_retry_timer_count == 0
+  assert snapshot.counts.permanent_outbox_count == 1
   let _ = test_async.drain_subject(report_subject)
   let _ = test_async.drain_subject(command_subject)
   test_async.assert_no_extra_message_within(command_subject, 100)
@@ -3727,8 +3831,8 @@ fn fail_scheduled_report_retries_until_bound(
   }
 }
 
-pub fn daemon_scheduled_report_retry_uses_cached_projection_after_post_start_ledger_corruption_test() {
-  let dir = "test/tmp/daemon-scheduled-report-retry-projection-unavailable"
+pub fn daemon_scheduled_report_retry_retains_retry_when_outbox_append_fails_test() {
+  let dir = "test/tmp/daemon-scheduled-report-retry-outbox-append-fails"
   let workflow_path = write_scheduled_reporting_workflow(dir)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
   let client = empty_tracker_client()
@@ -3768,12 +3872,13 @@ pub fn daemon_scheduled_report_retry_uses_cached_projection_after_post_start_led
   write_corrupt_current_ledger(root)
   process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 1))
 
-  let assert Ok(DirectedScheduledReportCall(second_request, second_reply)) =
-    process.receive(report_subject, within: 5000)
-  process.send(second_reply, ScheduledReportSuccess)
-  assert second_request.run_id == run_id
+  test_async.assert_no_extra_message_within(report_subject, 100)
   let logs = test_async.drain_subject(log_subject)
-  assert !list.contains(logs, "scheduled_report_retry_projection_unavailable")
+  assert list.contains(logs, "outbox_ledger_append_failed")
+  assert list.contains(logs, "scheduled_report_retry_retained")
+  let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  assert snapshot.counts.scheduled_report_retry_count == 1
+  assert snapshot.counts.scheduled_report_retry_timer_count == 1
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
 }

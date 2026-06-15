@@ -77,6 +77,14 @@ pub fn start_remote_client(
   daemon_remote_client.start_with_control(
     effective,
     event_hub,
+    fn(operator_command, timeout_ms) {
+      apply_remote_command(
+        daemon_subject,
+        operator_command,
+        timeout_ms,
+        dependencies,
+      )
+    },
     fn(timeout_ms) {
       read_remote_dispatch_paused(daemon_subject, timeout_ms, dependencies)
     },

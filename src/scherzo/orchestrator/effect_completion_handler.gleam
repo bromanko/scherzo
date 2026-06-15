@@ -79,6 +79,7 @@ pub opaque type ResultHandlers(state) {
     ) -> state,
     scheduled_failure_report_finished: fn(
       state,
+      outbox_effects.Intent,
       Int,
       adapter.ScheduledFailurePublication,
       Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
@@ -159,6 +160,7 @@ pub fn result_handlers(
   ) -> state,
   scheduled_failure_report_finished scheduled_failure_report_finished: fn(
     state,
+    outbox_effects.Intent,
     Int,
     adapter.ScheduledFailurePublication,
     Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
@@ -314,13 +316,14 @@ pub fn crash_result_for_effect(
         reporting_policy_fingerprint,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReplayOutbox(outbox_replay, _, _) ->
+    effect_runner.ReplayOutbox(outbox_replay, _, _, _) ->
       effect_runner.OutboxReplayFinished(
         outbox_replay,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportScheduledFailure(generation, publication, _) ->
+    effect_runner.ReportScheduledFailure(outbox, generation, publication, _) ->
       effect_runner.ScheduledFailureReportFinished(
+        outbox,
         generation,
         publication,
         Error(adapter.Transient(reason)),
@@ -403,9 +406,15 @@ fn handle_result(
       )
     effect_runner.OutboxReplayFinished(outbox_replay, result) ->
       handlers.outbox_replay_finished(context.state, outbox_replay, result)
-    effect_runner.ScheduledFailureReportFinished(generation, request, result) ->
+    effect_runner.ScheduledFailureReportFinished(
+      outbox,
+      generation,
+      request,
+      result,
+    ) ->
       handlers.scheduled_failure_report_finished(
         context.state,
+        outbox,
         generation,
         request,
         result,
