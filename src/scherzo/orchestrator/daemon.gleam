@@ -28,6 +28,7 @@ import scherzo/orchestrator/abandoned_claim
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon_transition_shell
+import scherzo/orchestrator/dispatch_recovery
 import scherzo/orchestrator/effect_completion_handler
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/effects/types as transition_effects
@@ -75,6 +76,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_checkpoint
+import scherzo/workflow_completion_policy
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
 import scherzo/workflow_repair
@@ -90,6 +92,7 @@ pub type StartupError {
 pub type Message {
   PollTick(Int)
   RetryTick(String, Int)
+  DispatchRecoveryContinue(List(tracker_issue.Issue))
   WorkerFinished(
     String,
     String,
@@ -161,6 +164,7 @@ pub type RuntimeDependencies {
     make_tracker_adapter: fn(config_types.EffectiveConfig) ->
       adapter.TrackerAdapter,
     workflow_run_dependencies: workflow_run.Dependencies,
+    publication_command_runner: command_runner.Runner,
     cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
     logger: fn(String, String, List(log.Field), List(String)) ->
@@ -203,6 +207,7 @@ type State {
     registry: worker_registry.Registry,
     yaml_step_tokens: session_metrics.StepTokenEntries,
     pending_claims: Dict(identity.TaskIdentity, transition_types.PendingClaim),
+    dispatch_recovery_cleared_pending_claims: List(identity.TaskIdentity),
     pending_dispatch_validations: Dict(
       identity.TaskIdentity,
       transition_types.PendingDispatchValidation,
@@ -240,6 +245,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
   RuntimeDependencies(
     make_tracker_adapter: linear_adapter.real,
     workflow_run_dependencies: workflow_run.default_dependencies(),
+    publication_command_runner: command_runner.production(),
     cleanup: workspace.cleanup_stored_path,
     logger: fn(_level, _event, _fields, _secrets) { Ok(Nil) },
     now_ms: wall_clock_ms,
@@ -905,6 +911,7 @@ pub fn start(
                           registry: worker_registry.new(),
                           yaml_step_tokens: session_metrics.new(),
                           pending_claims: dict.new(),
+                          dispatch_recovery_cleared_pending_claims: [],
                           pending_dispatch_validations: dict.new(),
                           pending_review_lane_preflights: dict.new(),
                           next_dispatch_validation_generation: 1,
@@ -1574,6 +1581,15 @@ fn handle_message(
           transition_types.RetryTick(
             issue_id,
             generation,
+            transition_dispatch_context(state),
+          ),
+        ]),
+      )
+    DispatchRecoveryContinue(remaining_candidates) ->
+      continue_with_refreshed_state(
+        run_transition_messages(state, [
+          transition_types.DispatchCandidates(
+            remaining_candidates,
             transition_dispatch_context(state),
           ),
         ]),
@@ -3876,6 +3892,15 @@ fn merge_transition_state(
   input_transition_state: transition_types.State,
   transition_state: transition_types.State,
 ) -> State {
+  let pending_claims =
+    merge_transition_field(
+      state.pending_claims,
+      input_transition_state.pending_claims,
+      transition_state.pending_claims,
+    )
+    |> clear_dispatch_recovery_pending_claims(
+      state.dispatch_recovery_cleared_pending_claims,
+    )
   State(
     ..state,
     runtime: merge_transition_field(
@@ -3888,11 +3913,8 @@ fn merge_transition_state(
       input_transition_state.workers,
       transition_state.workers,
     ),
-    pending_claims: merge_transition_field(
-      state.pending_claims,
-      input_transition_state.pending_claims,
-      transition_state.pending_claims,
-    ),
+    pending_claims: pending_claims,
+    dispatch_recovery_cleared_pending_claims: [],
     pending_dispatch_validations: merge_transition_field(
       state.pending_dispatch_validations,
       input_transition_state.pending_dispatch_validations,
@@ -3909,6 +3931,15 @@ fn merge_transition_state(
       transition_state.next_dispatch_validation_generation,
     ),
   )
+}
+
+fn clear_dispatch_recovery_pending_claims(
+  pending_claims: Dict(identity.TaskIdentity, transition_types.PendingClaim),
+  cleared: List(identity.TaskIdentity),
+) -> Dict(identity.TaskIdentity, transition_types.PendingClaim) {
+  list.fold(cleared, pending_claims, fn(pending_claims, task_identity) {
+    dict.delete(pending_claims, task_identity)
+  })
 }
 
 fn merge_transition_field(
@@ -3999,26 +4030,7 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
       enqueue_side_effect(state, effect_runner.ReviewLanePreflight(request))
     },
     reserve_session_sequence: transition_reserve_session_sequence,
-    claim_issue: fn(state, task_ref, issue, workspace_path, run_id) {
-      let intent =
-        outbox_effects.claim_intent(
-          task_ref,
-          issue,
-          run_id,
-          state.workflow.effective.handoff,
-          tracker_secrets(state),
-        )
-      enqueue_outbox_side_effect(state, intent, fn(intent) {
-        effect_runner.ClaimIssue(
-          outbox: intent,
-          task_ref: task_ref,
-          issue: issue,
-          workspace_path: workspace_path,
-          run_id: run_id,
-          capability: require_handoff_capability(state),
-        )
-      })
-    },
+    claim_issue: dispatch_time_recovery_claim_issue,
     report_invalid_workflow: fn(
       state,
       issue,
@@ -4128,6 +4140,528 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
       )
     },
   )
+}
+
+fn dispatch_time_recovery_claim_issue(
+  state: State,
+  task_ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  workspace_path: String,
+  run_id: String,
+  remaining_candidates: List(tracker_issue.Issue),
+) -> State {
+  case replay_projection_for_operator(state) {
+    Error(reason) ->
+      park_dispatch_recovery_rejection(
+        clear_pending_claim_for_task_ref(state, task_ref),
+        remaining_candidates,
+        task_ref,
+        issue,
+        "dispatch_recovery_projection_unavailable",
+        reason,
+      )
+    Ok(projected) -> {
+      let observation =
+        startup_recovery.current_workflow_observation(
+          state.workflow.bundle,
+          issue,
+        )
+      case dispatch_recovery.classify(projected, issue, observation) {
+        dispatch_recovery.FreshDispatch ->
+          enqueue_tracker_claim_issue(
+            state,
+            task_ref,
+            issue,
+            workspace_path,
+            run_id,
+          )
+        dispatch_recovery.StepRecovery(plan) ->
+          apply_dispatch_step_recovery(
+            state,
+            task_ref,
+            issue,
+            remaining_candidates,
+            projected,
+            observation,
+            plan,
+          )
+        dispatch_recovery.PublicationRecovery(run_id) ->
+          apply_dispatch_publication_recovery(
+            state,
+            task_ref,
+            issue,
+            remaining_candidates,
+            run_id,
+          )
+        dispatch_recovery.RejectRecovery(reason, message) ->
+          park_dispatch_recovery_rejection(
+            clear_pending_claim_for_task_ref(state, task_ref),
+            remaining_candidates,
+            task_ref,
+            issue,
+            reason,
+            message,
+          )
+      }
+    }
+  }
+}
+
+fn enqueue_tracker_claim_issue(
+  state: State,
+  task_ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  workspace_path: String,
+  run_id: String,
+) -> State {
+  let intent =
+    outbox_effects.claim_intent(
+      task_ref,
+      issue,
+      run_id,
+      state.workflow.effective.handoff,
+      tracker_secrets(state),
+    )
+  enqueue_outbox_side_effect(state, intent, fn(intent) {
+    effect_runner.ClaimIssue(
+      outbox: intent,
+      task_ref: task_ref,
+      issue: issue,
+      workspace_path: workspace_path,
+      run_id: run_id,
+      capability: require_handoff_capability(state),
+    )
+  })
+}
+
+fn pending_claim_for_task_ref(
+  state: State,
+  task_ref: task.TaskRef,
+) -> Result(transition_types.PendingClaim, Nil) {
+  dict.get(state.pending_claims, orchestrator_state.task_ref_identity(task_ref))
+}
+
+fn clear_pending_claim_for_task_ref(
+  state: State,
+  task_ref: task.TaskRef,
+) -> State {
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
+  State(
+    ..state,
+    pending_claims: dict.delete(state.pending_claims, task_identity),
+    dispatch_recovery_cleared_pending_claims: [
+      task_identity,
+      ..state.dispatch_recovery_cleared_pending_claims
+    ],
+  )
+}
+
+fn apply_dispatch_step_recovery(
+  state: State,
+  task_ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  projection_state: projection.Projection,
+  observation: recovery.CurrentWorkflowObservation,
+  plan: workflow_repair.RepairPlan,
+) -> State {
+  case
+    recovery.finalize_retry_step_candidates_with_config(
+      projection_state,
+      [plan.candidate],
+      dict.from_list([#(plan.run_id, observation)]),
+      artifact_store.new(state.workflow.effective.workspace.root),
+      state.dependencies.now_ms(),
+      state.workflow.effective,
+    )
+  {
+    Error(error) ->
+      park_dispatch_recovery_rejection(
+        clear_pending_claim_for_task_ref(state, task_ref),
+        remaining_candidates,
+        task_ref,
+        issue,
+        recovery.describe_error(error),
+        recovery.describe_error(error),
+      )
+    Ok(finalization) ->
+      case finalization.resumptions {
+        [resumption] -> {
+          let bodies =
+            list.append(
+              plan.records_to_append,
+              ledger_record_bodies(finalization.records_to_append),
+            )
+          let #(state, appended) =
+            append_ledger_bodies(
+              state,
+              bodies,
+              "dispatch_recovery_append_failed",
+            )
+          case appended {
+            False ->
+              park_dispatch_recovery_rejection(
+                clear_pending_claim_for_task_ref(state, task_ref),
+                remaining_candidates,
+                task_ref,
+                issue,
+                "ledger_append_failed",
+                "failed to append dispatch recovery records",
+              )
+            True ->
+              spawn_recovered_workflow_resumption(
+                clear_pending_claim_for_task_ref(state, task_ref),
+                resumption,
+              )
+          }
+        }
+        _ -> {
+          let #(state, _diagnostic_appended) =
+            append_ledger_bodies(
+              state,
+              retry_step_rejection_diagnostic_bodies(finalization),
+              "dispatch_recovery_rejection_diagnostic_append_failed",
+            )
+          park_dispatch_recovery_rejection(
+            clear_pending_claim_for_task_ref(state, task_ref),
+            remaining_candidates,
+            task_ref,
+            issue,
+            rejection_reason_from_finalization(finalization),
+            string.trim(option_with_default(
+              rejection_message_from_finalization(finalization),
+              "dispatch recovery rejected",
+            )),
+          )
+        }
+      }
+  }
+}
+
+fn apply_dispatch_publication_recovery(
+  state: State,
+  task_ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  run_id: String,
+) -> State {
+  case
+    ctl_artifact_publication_retry.retry_attempts_with_bundle_runner(
+      state.workflow.effective.workspace.root,
+      run_id,
+      None,
+      state.workflow.bundle,
+      state.dependencies.publication_command_runner,
+    )
+  {
+    Ok(attempts) -> {
+      let state = clear_pending_claim_for_task_ref(state, task_ref)
+      let attempt_count = list.length(attempts)
+      log_state(state, "info", "dispatch_recovery_publication_retry", [
+        #("issue_id", issue.id),
+        #("run_id", run_id),
+        #("attempt_count", int.to_string(attempt_count)),
+      ])
+      case
+        complete_dispatch_publication_recovery(
+          state,
+          issue,
+          run_id,
+          attempt_count,
+        )
+      {
+        Ok(state) ->
+          continue_dispatching_remaining_candidates(state, remaining_candidates)
+        Error(#(state, reason, message)) ->
+          park_dispatch_recovery_rejection(
+            state,
+            remaining_candidates,
+            task_ref,
+            issue,
+            reason,
+            message,
+          )
+      }
+    }
+    Error(#(reason, message)) -> {
+      let remaining_candidates = pending_remaining_candidates(state, task_ref)
+      park_dispatch_recovery_rejection(
+        clear_pending_claim_for_task_ref(state, task_ref),
+        remaining_candidates,
+        task_ref,
+        issue,
+        reason,
+        message,
+      )
+    }
+  }
+}
+
+fn complete_dispatch_publication_recovery(
+  state: State,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  attempt_count: Int,
+) -> Result(State, #(State, String, String)) {
+  let state =
+    post_dispatch_publication_recovery_comment(
+      state,
+      issue,
+      run_id,
+      attempt_count,
+    )
+  case
+    publication_recovery_completion_target(state.workflow.effective.handoff)
+  {
+    Error(message) ->
+      Error(#(state, "publication_retry_completion_target_missing", message))
+    Ok(#(target_state_id, target_state_name)) ->
+      case
+        transition_issue_state(
+          state,
+          issue,
+          target_state_id,
+          target_state_name,
+          "dispatch_recovery:publication_retry_recorded",
+        )
+      {
+        Ok(state) -> Ok(state)
+        Error(#(state, reason, message)) -> Error(#(state, reason, message))
+      }
+  }
+}
+
+fn post_dispatch_publication_recovery_comment(
+  state: State,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  attempt_count: Int,
+) -> State {
+  case state.tracker_adapter.comments {
+    None -> state
+    Some(comments) -> {
+      let body =
+        "Scherzo retried retained publication output for run "
+        <> run_id
+        <> " without rerunning the workflow and recorded "
+        <> int.to_string(attempt_count)
+        <> " publication attempt(s)."
+      case
+        comments.post_or_update(adapter.CommentRequest(
+          task: task.from_legacy_issue(issue).ref,
+          body: body,
+          mode: adapter.CreateOnly,
+        ))
+      {
+        Ok(_) -> state
+        Error(error) -> {
+          log_state(
+            state,
+            "warn",
+            "dispatch_recovery_publication_comment_failed",
+            [
+              #("issue_id", issue.id),
+              #("run_id", run_id),
+              #("reason", adapter_error_message(error)),
+            ],
+          )
+          state
+        }
+      }
+    }
+  }
+}
+
+fn publication_recovery_completion_target(
+  handoff: config_types.HandoffConfig,
+) -> Result(#(Option(String), String), String) {
+  case handoff.success_state_id {
+    Some(state_ref) -> Ok(linear_state_target(state_ref))
+    None ->
+      case handoff.completion_states {
+        Some(policy) -> Ok(linear_state_target(policy.default_completion_state))
+        None ->
+          Error(
+            "publication retry completed but no success or completion state is configured",
+          )
+      }
+  }
+}
+
+fn linear_state_target(
+  state_ref: workflow_completion_policy.LinearStateRef,
+) -> #(Option(String), String) {
+  case state_ref {
+    workflow_completion_policy.StateById(value) -> #(Some(value), value)
+    workflow_completion_policy.StateByName(value) -> #(None, value)
+  }
+}
+
+fn transition_issue_state(
+  state: State,
+  issue: tracker_issue.Issue,
+  target_state_id: Option(String),
+  target_state_name: String,
+  reason: String,
+) -> Result(State, #(State, String, String)) {
+  case state.tracker_adapter.state_transitions {
+    None ->
+      Error(#(
+        state,
+        "dispatch_recovery_state_transition_unsupported",
+        "tracker adapter does not support state transitions",
+      ))
+    Some(state_transitions) ->
+      case
+        state_transitions.transition(adapter.StateTransitionRequest(
+          task: task.from_legacy_issue(issue).ref,
+          target_state_id: target_state_id,
+          target_state_name: target_state_name,
+          reason: reason,
+        ))
+      {
+        Ok(_) -> Ok(state)
+        Error(error) ->
+          Error(#(
+            state,
+            "dispatch_recovery_state_transition_failed",
+            adapter_error_message(error),
+          ))
+      }
+  }
+}
+
+fn park_dispatch_recovery_rejection(
+  state: State,
+  remaining_candidates: List(tracker_issue.Issue),
+  task_ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  reason: String,
+  message: String,
+) -> State {
+  let state =
+    attempt_dispatch_recovery_rejection_transition(state, issue, reason)
+  let parked =
+    orchestrator_state.ParkedEntry(
+      task_ref: task_ref,
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: orchestrator_reason.ParkOperator(reason),
+      release_policy: orchestrator_state.AutoUnparkOnIssueChange(
+        core.issue_fingerprint(issue),
+      ),
+      parked_at_ms: state.dependencies.now_ms(),
+    )
+  let identity = orchestrator_state.task_ref_identity(task_ref)
+  let state =
+    State(
+      ..state,
+      runtime: orchestrator_state.RuntimeState(
+        ..state.runtime,
+        parked: dict.insert(state.runtime.parked, identity, parked),
+      ),
+    )
+  let state = transition_park_issue(state, parked, None)
+  let state = case string.trim(message) == "" {
+    True -> state
+    False -> {
+      log_state(state, "warn", "dispatch_recovery_rejected", [
+        #("issue_id", issue.id),
+        #("reason", reason),
+        #("message", message),
+      ])
+      state
+    }
+  }
+  continue_dispatching_remaining_candidates(state, remaining_candidates)
+}
+
+fn continue_dispatching_remaining_candidates(
+  state: State,
+  remaining_candidates: List(tracker_issue.Issue),
+) -> State {
+  case remaining_candidates {
+    [] -> state
+    _ -> {
+      process.send(
+        state.subject,
+        DispatchRecoveryContinue(remaining_candidates),
+      )
+      state
+    }
+  }
+}
+
+fn attempt_dispatch_recovery_rejection_transition(
+  state: State,
+  issue: tracker_issue.Issue,
+  reason: String,
+) -> State {
+  let #(target_state_id, target_state_name) = case
+    state.workflow.effective.handoff.failure_state_id
+  {
+    Some(state_ref) -> linear_state_target(state_ref)
+    None -> #(None, "Triage")
+  }
+  case
+    transition_issue_state(
+      state,
+      issue,
+      target_state_id,
+      target_state_name,
+      "dispatch_recovery:" <> reason,
+    )
+  {
+    Ok(state) -> {
+      log_state(state, "info", "dispatch_recovery_rejected_state_transition", [
+        #("issue_id", issue.id),
+        #("target_state", target_state_name),
+      ])
+      state
+    }
+    Error(#(state, transition_reason, transition_message)) -> {
+      log_state(
+        state,
+        "warn",
+        "dispatch_recovery_rejected_state_transition_failed",
+        [
+          #("issue_id", issue.id),
+          #("reason", transition_reason),
+          #("message", transition_message),
+        ],
+      )
+      state
+    }
+  }
+}
+
+fn pending_remaining_candidates(
+  state: State,
+  task_ref: task.TaskRef,
+) -> List(tracker_issue.Issue) {
+  case pending_claim_for_task_ref(state, task_ref) {
+    Ok(pending) -> pending.remaining_candidates
+    Error(Nil) -> []
+  }
+}
+
+fn option_with_default(value: Option(String), fallback: String) -> String {
+  case value {
+    Some(text) -> text
+    None -> fallback
+  }
+}
+
+fn adapter_error_message(err: adapter.TrackerError) -> String {
+  case err {
+    adapter.Unauthorized(message) -> message
+    adapter.NotFound(ref) -> "task not found: " <> ref.remote_id
+    adapter.Transient(message) -> message
+    adapter.Permanent(message) -> message
+    adapter.UnsupportedCapability(capability) ->
+      "unsupported tracker capability: " <> capability
+    adapter.DecodeFailed(message) -> message
+  }
 }
 
 fn transition_append_ledger(

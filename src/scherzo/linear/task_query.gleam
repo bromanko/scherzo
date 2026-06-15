@@ -40,13 +40,13 @@ pub fn fetch_detail_by_identifier(
   identifier: String,
   transport: linear.Transport,
 ) -> Result(Option(task.Task), error.TrackerError) {
-  use project_slug <- try_tracker(require_project_slug(config))
+  use scope <- try_tracker(require_task_scope(config))
   use request <- try_tracker(build_detail_by_identifier_request(
     config,
     identifier,
   ))
   use response <- try_tracker(transport(request))
-  parse_detail_by_identifier_response(response, project_slug, identifier)
+  parse_detail_by_identifier_response(response, scope, identifier)
 }
 
 pub fn build_list_request(
@@ -56,26 +56,34 @@ pub fn build_list_request(
 ) -> Result(linear.Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
-  use project_slug <- try_tracker(require_project_slug(config))
+  use scope <- try_tracker(require_task_scope(config))
+  let project_variables =
+    config_types.linear_task_scope_graphql_variables(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
   let variables = case states {
     [] ->
-      json.object([
-        #("projectSlug", json.string(project_slug)),
-        #("after", json.nullable(after, of: json.string)),
-      ])
+      json.object(
+        list.append(project_variables, [
+          #("after", json.nullable(after, of: json.string)),
+        ]),
+      )
     _ ->
-      json.object([
-        #("projectSlug", json.string(project_slug)),
-        #(
-          "stateNames",
-          json.array(issue_state.to_strings(states), of: json.string),
-        ),
-        #("after", json.nullable(after, of: json.string)),
-      ])
+      json.object(
+        list.append(project_variables, [
+          #(
+            "stateNames",
+            json.array(issue_state.to_strings(states), of: json.string),
+          ),
+          #("after", json.nullable(after, of: json.string)),
+        ]),
+      )
   }
   let body =
     json.object([
-      #("query", json.string(list_query(states))),
+      #("query", json.string(list_query_for_scope(states, scope))),
       #("variables", variables),
     ])
     |> json.to_string
@@ -88,17 +96,18 @@ pub fn build_detail_by_id_request(
 ) -> Result(linear.Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
-  use project_slug <- try_tracker(require_project_slug(config))
+  use scope <- try_tracker(require_task_scope(config))
+  let variables =
+    config_types.linear_task_scope_graphql_variables(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
+    |> list.append([#("ids", json.array([id], of: json.string))])
   let body =
     json.object([
-      #("query", json.string(detail_by_id_query())),
-      #(
-        "variables",
-        json.object([
-          #("projectSlug", json.string(project_slug)),
-          #("ids", json.array([id], of: json.string)),
-        ]),
-      ),
+      #("query", json.string(detail_by_id_query_for_scope(scope))),
+      #("variables", json.object(variables)),
     ])
     |> json.to_string
   Ok(graphql_request(endpoint, api_key, body))
@@ -120,16 +129,63 @@ pub fn build_detail_by_identifier_request(
 }
 
 pub fn list_query(states: List(issue_state.IssueState)) -> String {
+  list_query_for_scope(states, config_types.LinearTaskProject("projectSlug"))
+}
+
+fn list_query_for_scope(
+  states: List(issue_state.IssueState),
+  scope: config_types.LinearTaskScope,
+) -> String {
+  let project_declaration =
+    config_types.linear_task_scope_variable_declaration(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
+  let project_filter =
+    config_types.linear_task_scope_project_filter(
+      scope,
+      "$projectSlug",
+      "$projectSlugs",
+    )
   case states {
     [] ->
-      "query ScherzoTaskList($projectSlug: String!, $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } } }) { nodes { id identifier title priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
+      "query ScherzoTaskList("
+      <> project_declaration
+      <> ", $after: String) { issues(first: 50, after: $after, filter: { "
+      <> project_filter
+      <> " }) { nodes { id identifier title priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
     _ ->
-      "query ScherzoTaskList($projectSlug: String!, $stateNames: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $stateNames } } }) { nodes { id identifier title priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
+      "query ScherzoTaskList("
+      <> project_declaration
+      <> ", $stateNames: [String!], $after: String) { issues(first: 50, after: $after, filter: { "
+      <> project_filter
+      <> ", state: { name: { in: $stateNames } } }) { nodes { id identifier title priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
   }
 }
 
 pub fn detail_by_id_query() -> String {
-  "query ScherzoTaskDetailById($projectSlug: String!, $ids: [ID!]!) { issues(first: 2, filter: { project: { slugId: { eq: $projectSlug } }, id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
+  detail_by_id_query_for_scope(config_types.LinearTaskProject("projectSlug"))
+}
+
+fn detail_by_id_query_for_scope(scope: config_types.LinearTaskScope) -> String {
+  let project_declaration =
+    config_types.linear_task_scope_variable_declaration(
+      scope,
+      "projectSlug",
+      "projectSlugs",
+    )
+  let project_filter =
+    config_types.linear_task_scope_project_filter(
+      scope,
+      "$projectSlug",
+      "$projectSlugs",
+    )
+  "query ScherzoTaskDetailById("
+  <> project_declaration
+  <> ", $ids: [ID!]!) { issues(first: 2, filter: { "
+  <> project_filter
+  <> ", id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn detail_by_identifier_query() -> String {
@@ -162,15 +218,12 @@ pub fn parse_detail_by_id_response(
 
 pub fn parse_detail_by_identifier_response(
   response: linear.Response,
-  expected_project_slug: String,
+  expected_scope: config_types.LinearTaskScope,
   expected_identifier: String,
 ) -> Result(Option(task.Task), error.TrackerError) {
   parse_optional_task_response(
     response,
-    detail_by_identifier_graphql_decoder(
-      expected_project_slug,
-      expected_identifier,
-    ),
+    detail_by_identifier_graphql_decoder(expected_scope, expected_identifier),
   )
 }
 
@@ -226,7 +279,7 @@ fn detail_by_id_graphql_decoder() -> decode.Decoder(
 }
 
 fn detail_by_identifier_graphql_decoder(
-  expected_project_slug: String,
+  expected_scope: config_types.LinearTaskScope,
   expected_identifier: String,
 ) -> decode.Decoder(Result(Option(task.Task), String)) {
   use errors <- decode.optional_field(
@@ -244,7 +297,10 @@ fn detail_by_identifier_graphql_decoder(
         None -> Ok(None)
         Some(IssueDetail(task: item, project_slug: Some(project_slug))) ->
           case
-            project_slug_matches(expected_project_slug, project_slug),
+            config_types.linear_task_scope_matches_project_slug(
+              expected_scope,
+              project_slug,
+            ),
             identifier_matches(expected_identifier, task.display_key(item.ref))
           {
             True, True -> Ok(Some(item))
@@ -268,15 +324,6 @@ fn graphql_errors_indicate_missing_issue(errors: List(String)) -> Bool {
     string.contains(message, "not found")
     || string.contains(message, "could not find")
   })
-}
-
-fn project_slug_matches(expected: String, returned: String) -> Bool {
-  let expected = string.trim(expected) |> string.lowercase
-  let returned = string.trim(returned) |> string.lowercase
-  case expected == "" || returned == "" {
-    True -> False
-    False -> expected == returned || string.ends_with(expected, "-" <> returned)
-  }
 }
 
 fn identifier_matches(expected: String, returned: String) -> Bool {
@@ -458,6 +505,20 @@ fn graphql_request(
   )
 }
 
+fn require_task_scope(
+  config: config_types.TrackerConfig,
+) -> Result(config_types.LinearTaskScope, error.TrackerError) {
+  case config_types.linear_task_scope_from_tracker_config(config) {
+    Ok(scope) -> Ok(scope)
+    Error(scope_error) ->
+      Error(
+        error.LinearApiRequest(config_types.linear_task_scope_error_message(
+          scope_error,
+        )),
+      )
+  }
+}
+
 fn require_https_endpoint(
   endpoint: String,
 ) -> Result(String, error.TrackerError) {
@@ -474,15 +535,6 @@ fn require_api_key(
   case config.api_key {
     Some(value) -> Ok(value)
     None -> Error(error.LinearApiRequest("missing api key"))
-  }
-}
-
-fn require_project_slug(
-  config: config_types.TrackerConfig,
-) -> Result(String, error.TrackerError) {
-  case config.project_slug {
-    Some(value) -> Ok(value)
-    None -> Error(error.LinearApiRequest("missing project slug"))
   }
 }
 

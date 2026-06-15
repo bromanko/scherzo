@@ -1,6 +1,6 @@
 # `tracker.linear.tasks_from` specification
 
-Status: design/specification for a future Linear task-scope predicate. This document is normative for the meaning of `tracker.linear.tasks_from`, but this repository slice does not implement parsing or runtime query compilation yet.
+Status: design/specification for Linear task-scope predicates. This repository slice implements the phase-1 `project` and `projects` leaves; boolean composition, labels, team predicates, and overlap diagnostics remain future work.
 
 ## Purpose
 
@@ -10,29 +10,31 @@ The goal is to let operators express task scope precisely without exposing raw L
 
 ## Current baseline
 
-Current production behavior is project-scoped.
+Current production behavior is project-scoped with explicit phase-1 multi-project support.
 
-- `src/scherzo/config/tracker_config.gleam` reads `tracker.linear.project`, `tracker.linear.project_slug`, and `tracker.project_slug` into `TrackerConfig.project_slug`.
-- `src/scherzo/linear.gleam` uses `projectSlug` in candidate polling and Linear contract checks.
-- `src/scherzo/linear/task_query.gleam` uses `projectSlug` in task-source list and detail reads.
-- `src/scherzo/scheduled_failure_reporter.gleam` uses `projectSlug` in scheduled-failure searches.
+- `src/scherzo/config/tracker_config.gleam` reads `tracker.linear.tasks_from.project` and `tracker.linear.tasks_from.projects` into an internal task scope.
+- When `tracker.linear.tasks_from` is absent, `tracker.linear.project`, `tracker.linear.project_slug`, and `tracker.project_slug` desugar to the single-project task scope.
+- Linear read paths compile single-project scopes to `project.slugId.eq` and multi-project scopes to `project.slugId.in`.
 
-Future `tasks_from` implementation must preserve this single-project default when no explicit predicate is present.
+The phase-1 `tasks_from` implementation preserves the single-project default when no explicit predicate is present.
 
 ## Scope and non-goals
 
 This spec defines the configuration shape, semantics, validation rules, compatibility behavior, `doctor` expectations, and the Linear query paths that must share one compiled predicate.
 
-This spec does not add parser support, schema fields, runtime compilation, multi-project execution, team predicates, cache changes, provider-live changes, or live Linear behavior in this slice.
+This phase adds parser support, schema fields, and runtime compilation for `project` and `projects` only. It does not add boolean composition, label predicates, team predicates, cache changes, provider-live changes, or overlap diagnostics.
 
 ## Predicate model
 
 `tracker.linear.tasks_from` is a restricted abstract syntax tree. Each node is a map with exactly one key. Raw Linear GraphQL fragments are not allowed.
 
-Supported keys are:
+Phase 1 supports these keys at the root:
 
 - `project`
 - `projects`
+
+The full predicate language reserves these future keys, which current builds should reject until their follow-up issues are implemented:
+
 - `and`
 - `or`
 - `all_labels`
@@ -78,7 +80,7 @@ tracker:
       project: product-platform
 ```
 
-Intended future Linear compilation:
+Phase-1 Linear compilation:
 
     { project: { slugId: { eq: "product-platform" } } }
 
@@ -93,7 +95,7 @@ tracker:
       projects: [product-platform, customer-success]
 ```
 
-Intended future Linear compilation:
+Phase-1 Linear compilation:
 
     { project: { slugId: { in: ["product-platform", "customer-success"] } } }
 
@@ -211,7 +213,7 @@ Intended future Linear compilation:
 
 ## Validation rules
 
-Future parser and config validation must reject all of the following:
+The parser rejects unsupported shapes in this phase and future parser/config validation must continue to reject all of the following:
 
 - empty arrays for `projects`, `and`, `or`, `all_labels`, or `any_label`
 - mixed keys in one predicate object
@@ -308,7 +310,7 @@ tracker:
       project: <configured-project-slug>
 ```
 
-`tracker.linear.project` is the preferred public spelling. `tracker.linear.project_slug` and `tracker.project_slug` remain legacy aliases.
+`tracker.linear.tasks_from.project` is the preferred public spelling for new single-project configs. `tracker.linear.project`, `tracker.linear.project_slug`, and `tracker.project_slug` remain compatibility aliases.
 
 When `tracker.linear.tasks_from` is present, Scherzo must not silently merge it with any legacy project field. Mixed ownership-boundary config is a compatibility conflict and must be rejected with a message that tells the operator to choose one source of truth.
 
@@ -326,7 +328,7 @@ That config is invalid because it combines the legacy single-project field with 
 
 ## `doctor` expectations
 
-Future `doctor` output must treat `tasks_from` as a first-class task-scope summary.
+Phase-1 `doctor`/contract validation treats `tasks_from.project` and `tasks_from.projects` as the task-scope source for project validation. Future `doctor` output should add the richer first-class summaries and overlap diagnostics below.
 
 Expected behavior:
 
@@ -363,7 +365,7 @@ Illustrative unsupported-leaf diagnostic:
 
 ## Linear query-path inventory
 
-Once parser and runtime work exist, one compiled predicate must be applied consistently across every Linear read path that decides task ownership.
+One compiled phase-1 project predicate is applied consistently across every Linear read path that decides task ownership.
 
 Required paths are:
 
@@ -392,11 +394,11 @@ Future `doctor` checks should warn when overlap can be inferred statically and s
 
 ## Simplified YAML relationship
 
-The simplified YAML spec should continue to document `tracker.linear.project` as the current default public field and point readers here for the future predicate surface. Until parser/runtime support lands, operators should keep using the existing single-project config.
+The simplified YAML spec documents `tracker.linear.tasks_from.project` and `tracker.linear.tasks_from.projects` as the current public task-scope fields. It also records `tracker.linear.project` as compatibility syntax for existing single-project configs.
 
 ## Manual review checklist for this spec slice
 
-This docs-only slice is complete only if manual review confirms the spec covers:
+Manual review of the full predicate spec should confirm coverage for:
 
 - `project`, `projects`, `and`, `or`, `all_labels`, and `any_label`
 - compatibility and desugaring from `tracker.linear.project`, `tracker.linear.project_slug`, and `tracker.project_slug`

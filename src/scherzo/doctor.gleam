@@ -409,13 +409,13 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- When schedules[].on_failure.task.enabled is true, configure a Linear triage state and let Scherzo ensure reserved scheduled-job dedupe labels.",
     ]
     LinearContract -> [
-      "- Confirm tracker.linear.project_slug points to the expected Linear project.",
+      "- Confirm tracker.linear.tasks_from (or compatibility tracker.linear.project) points to the expected Linear project scope.",
       "- Confirm configured active, terminal, required, and handoff states exist on the board.",
       "- Run: gleam run -- --tracker-contract-check <path-to-scherzo.yaml>",
     ]
     LinearSmoke -> [
-      "- Confirm LINEAR_API_KEY is valid and can read the Linear project.",
-      "- Confirm tracker.linear.project_slug points to the expected Linear project.",
+      "- Confirm LINEAR_API_KEY is valid and can read the Linear project scope.",
+      "- Confirm tracker.linear.tasks_from (or compatibility tracker.linear.project) points to the expected Linear project scope.",
       "- Run: gleam run -- --tracker-smoke <path-to-scherzo.yaml>",
     ]
     InstanceLock -> [
@@ -446,7 +446,7 @@ fn append_code_specific_remediation(
       ])
     "missing_tracker_project_slug" ->
       list.append(lines, [
-        "- Set tracker.linear.project_slug or tracker.project_slug before rerunning doctor.",
+        "- Set tracker.linear.tasks_from.project, tracker.linear.tasks_from.projects, or compatibility tracker.linear.project before rerunning doctor.",
       ])
     _ -> lines
   }

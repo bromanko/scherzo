@@ -524,7 +524,7 @@ pub fn claim_start_recovery_retry_after_prior_retry_increments_generation_test()
   invariant_helpers.assert_valid_state(claiming)
   assert list.any(retry_effects, fn(effect) {
     case effect {
-      effects_types.ClaimIssue(_, _, _, _) -> True
+      effects_types.ClaimIssue(_, _, _, _, _) -> True
       _ -> False
     }
   })

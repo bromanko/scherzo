@@ -35,6 +35,7 @@ pub type Effect {
     issue: tracker_issue.Issue,
     workspace_path: String,
     run_id: String,
+    remaining_candidates: List(tracker_issue.Issue),
   )
   ReportInvalidWorkflow(
     issue: tracker_issue.Issue,

@@ -106,6 +106,21 @@ pub fn retry_attempts_with_bundle_runner(
   )
 }
 
+pub fn inspect_retryable_attempts(
+  projected: projection.Projection,
+  run_id: String,
+  publication_id: Option(String),
+) -> Result(List(projection.PublicationAttempt), #(String, String)) {
+  use _ <- result.try(require_publication_run(projected, run_id))
+  use targets <- result.try(select_retry_targets(
+    projected,
+    run_id,
+    publication_id,
+  ))
+  use _ <- result.try(require_output_manifest_ref(projected, run_id))
+  Ok(list.map(targets, fn(target) { target.latest }))
+}
+
 type RetrySelection {
   RetrySelection(latest: projection.PublicationAttempt)
 }

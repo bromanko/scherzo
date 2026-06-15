@@ -228,7 +228,7 @@ pub fn reply_snapshot(
       begin_dispatch_validation: fn(data, _, _) { data },
       begin_review_lane_preflight: fn(data, _) { data },
       reserve_session_sequence: fn(data, _) { data },
-      claim_issue: fn(data, _, _, _, _) { data },
+      claim_issue: fn(data, _, _, _, _, _) { data },
       report_invalid_workflow: fn(data, _, _, _, _) { data },
       replay_outbox: fn(data, _) { data },
       remove_retry_timer: fn(data, _) { data },

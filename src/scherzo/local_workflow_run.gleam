@@ -126,6 +126,7 @@ fn local_orchestrator(run_root: String) -> config_types.OrchestratorConfig {
       endpoint: "local://native-workflow-runner",
       api_key: Some("local-native-runner"),
       project_slug: Some("LOCAL"),
+      task_scope: None,
       active_states: issue_state.list_from_strings(["Todo", "Done"]),
       dispatch_states: issue_state.list_from_strings(["Todo"]),
       terminal_states: issue_state.list_from_strings(["Done"]),

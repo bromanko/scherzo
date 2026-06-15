@@ -163,6 +163,7 @@ fn effective_with_dispatch(
       ..config.default_tracker_config(),
       api_key: Some("secret"),
       project_slug: Some("PROJ"),
+      task_scope: None,
       active_states: issue_state.list_from_strings(active_states),
       dispatch_states: issue_state.list_from_strings(dispatch_states),
       terminal_states: issue_state.list_from_strings(terminal_states),
