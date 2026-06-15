@@ -315,6 +315,19 @@ pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
       <> "      projects: [demo-project, bugs]\n"
       <> "workflows:\n"
       <> "  research: workflows/research.yaml\n",
+    "version: 1\n"
+      <> "tracker:\n"
+      <> "  linear:\n"
+      <> "    project_slug: demo-project\n"
+      <> "workflows:\n"
+      <> "  research: workflows/research.yaml\n",
+    "version: 1\n"
+      <> "tracker:\n"
+      <> "  project_slug: demo-project\n"
+      <> "  linear:\n"
+      <> "    api_key_env: LINEAR_API_KEY\n"
+      <> "workflows:\n"
+      <> "  research: workflows/research.yaml\n",
     minimal_config()
       <> "agents:\n"
       <> "  recovery:\n"
@@ -451,6 +464,28 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
         <> "    project: demo-project\n"
         <> "    tasks_from:\n"
         <> "      projects: [demo-project, bugs]\n"
+        <> "workflows:\n"
+        <> "  research: workflows/research.yaml\n",
+    ),
+    #(
+      "tasks_from conflicts with nested project_slug",
+      "version: 1\n"
+        <> "tracker:\n"
+        <> "  linear:\n"
+        <> "    project_slug: demo-project\n"
+        <> "    tasks_from:\n"
+        <> "      project: bugs\n"
+        <> "workflows:\n"
+        <> "  research: workflows/research.yaml\n",
+    ),
+    #(
+      "tasks_from conflicts with flat project_slug",
+      "version: 1\n"
+        <> "tracker:\n"
+        <> "  project_slug: demo-project\n"
+        <> "  linear:\n"
+        <> "    tasks_from:\n"
+        <> "      project: bugs\n"
         <> "workflows:\n"
         <> "  research: workflows/research.yaml\n",
     ),

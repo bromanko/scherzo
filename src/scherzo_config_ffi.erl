@@ -2,7 +2,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--export([getenv/1, putenv/2, unsetenv/1, home/0, tmpdir/0, dirname/1, absname/1, realpath/1, symlink/2]).
+-export([getenv/1, putenv/2, unsetenv/1, home/0, tmpdir/0, dirname/1, absname/1, realpath/1, symlink/2, has_control_character/1, unicode_scalar_length/1]).
 
 getenv(Name) ->
     case os:getenv(to_list(Name)) of
@@ -57,6 +57,18 @@ symlink(Target, LinkName) ->
         ok -> {ok, nil};
         {error, _Reason} -> {error, nil}
     end.
+
+has_control_character(Value) ->
+    lists:any(
+        fun(Codepoint) ->
+            (Codepoint >= 0 andalso Codepoint =< 31)
+                orelse (Codepoint >= 127 andalso Codepoint =< 159)
+        end,
+        unicode:characters_to_list(Value)
+    ).
+
+unicode_scalar_length(Value) ->
+    length(unicode:characters_to_list(Value)).
 
 resolve_path(_Path, Depth) when Depth > 40 ->
     {error, too_many_symlinks};

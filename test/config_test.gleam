@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
+import scherzo/config/linear_task_scope
 import scherzo/config/types as config_types
 import scherzo/control/file as control_file
 import scherzo/control/server as control_server
@@ -48,6 +49,18 @@ fn invalid_config_message(front: String) -> String {
   let assert Error(error.InvalidConfig(message)) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   message
+}
+
+fn linear_tracker_front(linear_body: String) -> String {
+  "tracker:\n  linear:\n"
+  <> linear_body
+  <> "hooks:\n  before_run: test -d .git\n"
+}
+
+fn tasks_from_front(tasks_from_yaml: String) -> String {
+  linear_tracker_front(
+    "    api_key_env: LINEAR_API_KEY\n    tasks_from:\n" <> tasks_from_yaml,
+  )
 }
 
 fn test_control_file_path() -> String {
@@ -682,6 +695,169 @@ pub fn linear_tasks_from_rejects_legacy_project_conflict_test() {
     message,
     "tracker.linear.tasks_from cannot be combined with tracker.linear.project",
   )
+}
+
+pub fn linear_legacy_project_aliases_desugar_to_canonical_scope_test() {
+  let cases = [
+    #(
+      linear_tracker_front(
+        "    api_key_env: LINEAR_API_KEY\n    project_slug: nested-slug\n",
+      ),
+      "nested-slug",
+    ),
+    #(
+      "tracker:\n  project_slug: flat-slug\n  linear:\n    api_key_env: LINEAR_API_KEY\nhooks:\n  before_run: test -d .git\n",
+      "flat-slug",
+    ),
+  ]
+
+  list.each(cases, fn(item) {
+    let #(front, expected_slug) = item
+    let assert Ok(configured) =
+      config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+    let assert Some(scope) = configured.tracker.task_scope
+    assert scope == config_types.LinearTaskProject(expected_slug)
+    assert linear_task_scope.summary(scope)
+      == "project(" <> expected_slug <> ")"
+  })
+}
+
+pub fn linear_tasks_from_rejects_all_legacy_project_conflicts_test() {
+  let cases = [
+    #(
+      "tracker.linear.project_slug",
+      "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project_slug: old-project\n    tasks_from:\n      project: new-project\nhooks:\n  before_run: test -d .git\n",
+    ),
+    #(
+      "tracker.project_slug",
+      "tracker:\n  project_slug: old-project\n  linear:\n    api_key_env: LINEAR_API_KEY\n    tasks_from:\n      project: new-project\nhooks:\n  before_run: test -d .git\n",
+    ),
+  ]
+
+  list.each(cases, fn(item) {
+    let #(path, front) = item
+    let message = invalid_config_message(front)
+    assert string.contains(
+      message,
+      "tracker.linear.tasks_from cannot be combined with " <> path,
+    )
+  })
+}
+
+pub fn linear_task_scope_summary_returns_canonical_predicates_test() {
+  assert linear_task_scope.summary(config_types.LinearTaskProject(
+      " demo-project ",
+    ))
+    == "project(demo-project)"
+  assert linear_task_scope.summary(
+      config_types.LinearTaskProjects([
+        "demo-project",
+        "bugs",
+        "demo-project",
+      ]),
+    )
+    == "projects([demo-project, bugs])"
+}
+
+pub fn linear_task_scope_unresolved_env_errors_are_pathful_test() {
+  let cases = [
+    #(
+      linear_tracker_front(
+        "    api_key_env: LINEAR_API_KEY\n    project: \"$MISSING_PROJECT\"\n",
+      ),
+      "tracker.linear.project must resolve to a string",
+    ),
+    #(
+      linear_tracker_front(
+        "    api_key_env: LINEAR_API_KEY\n    project_slug: \"$MISSING_PROJECT\"\n",
+      ),
+      "tracker.linear.project_slug must resolve to a string",
+    ),
+    #(
+      "tracker:\n  project_slug: \"$MISSING_PROJECT\"\n  linear:\n    api_key_env: LINEAR_API_KEY\nhooks:\n  before_run: test -d .git\n",
+      "tracker.project_slug must resolve to a string",
+    ),
+    #(
+      tasks_from_front("      project: \"$MISSING_PROJECT\"\n"),
+      "tracker.linear.tasks_from.project must resolve to a string",
+    ),
+    #(
+      tasks_from_front("      projects: [demo-project, \"$MISSING_PROJECT\"]\n"),
+      "tracker.linear.tasks_from.projects[1] must resolve to a string",
+    ),
+  ]
+
+  list.each(cases, fn(item) {
+    let #(front, expected_message) = item
+    let message = invalid_config_message(front)
+    assert string.contains(message, expected_message)
+  })
+}
+
+pub fn linear_tasks_from_validation_errors_are_pathful_test() {
+  let oversized_projects =
+    "      projects: ["
+    <> string.join(list.repeat("demo-project", times: 33), with: ", ")
+    <> "]\n"
+  let long_project = string.repeat("x", times: 129)
+  let cases = [
+    #(
+      linear_tracker_front(
+        "    api_key_env: LINEAR_API_KEY\n    tasks_from: demo-project\n",
+      ),
+      "tracker.linear.tasks_from must be a map",
+    ),
+    #(
+      tasks_from_front("      project: demo-project\n      projects: [bugs]\n"),
+      "tracker.linear.tasks_from must contain exactly one key",
+    ),
+    #(
+      tasks_from_front("      team: CORE\n"),
+      "tracker.linear.tasks_from.team is not supported",
+    ),
+    #(
+      tasks_from_front("      123: demo-project\n"),
+      "tracker.linear.tasks_from keys must be strings",
+    ),
+    #(
+      tasks_from_front("      any_label: [workflow:implementation]\n"),
+      "tracker.linear.tasks_from.any_label is recognized",
+    ),
+    #(
+      tasks_from_front("      project: [demo-project]\n"),
+      "tracker.linear.tasks_from.project must be a string",
+    ),
+    #(
+      tasks_from_front("      projects: []\n"),
+      "tracker.linear.tasks_from.projects must contain at least one project",
+    ),
+    #(
+      tasks_from_front("      projects: [demo-project, \"\"]\n"),
+      "tracker.linear.tasks_from.projects[1] must be non-empty",
+    ),
+    #(
+      tasks_from_front("      projects: [demo-project, [nested]]\n"),
+      "tracker.linear.tasks_from.projects[1] must be a string",
+    ),
+    #(
+      tasks_from_front("      project: \"bad\\nslug\"\n"),
+      "tracker.linear.tasks_from.project must not contain control characters",
+    ),
+    #(
+      tasks_from_front("      project: " <> long_project <> "\n"),
+      "tracker.linear.tasks_from.project must be at most 128 Unicode scalar values; got 129",
+    ),
+    #(
+      tasks_from_front(oversized_projects),
+      "tracker.linear.tasks_from.projects has 33 entries; maximum is 32",
+    ),
+  ]
+
+  list.each(cases, fn(item) {
+    let #(front, expected_message) = item
+    let message = invalid_config_message(front)
+    assert string.contains(message, expected_message)
+  })
 }
 
 pub fn nested_tracker_config_takes_precedence_over_flat_aliases_test() {
