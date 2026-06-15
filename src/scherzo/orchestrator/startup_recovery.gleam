@@ -35,6 +35,7 @@ pub type Dependencies {
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
     now_ms: fn() -> Int,
+    sleep_ms: fn(Int) -> Nil,
   )
 }
 
@@ -70,6 +71,15 @@ pub type StartupRecovery {
   )
 }
 
+type RecoveryTaskRefresh {
+  RecoveryTaskRefresh(
+    issues: List(tracker_issue.Issue),
+    omitted_issue_ids: List(String),
+    unrefreshed_issue_ids: List(String),
+    warnings: List(String),
+  )
+}
+
 pub fn load(
   bundle: runtime_bundle.RuntimeBundle,
   tracker_adapter: adapter.TrackerAdapter,
@@ -96,15 +106,18 @@ pub fn load(
       )
     False -> Nil
   }
-  use refreshed_issues <- try_startup(fetch_recovery_task_states(
-    tracker_adapter,
-    recovery.known_task_refs(replayed.projection),
-  ))
+  let refresh =
+    fetch_recovery_task_states(
+      tracker_adapter,
+      recovery.recovery_task_refs(replayed.projection),
+      dependencies,
+    )
+  let issue_observations = recovery_issue_observations(refresh)
   use recovery_plan <- try_startup(
-    recovery.plan(
+    recovery.plan_with_issue_observations(
       replayed.projection,
       effective,
-      refreshed_issues,
+      issue_observations,
       dependencies.now_ms(),
     )
     |> map_recovery_error,
@@ -114,7 +127,7 @@ pub fn load(
     workflow_recovery_observations(
       bundle,
       workflow_candidates,
-      refreshed_issues,
+      issue_observations,
     )
   use workflow_finalization <- try_startup(
     recovery.finalize_workflow_candidates_with_config(
@@ -160,8 +173,8 @@ pub fn load(
       recovery_plan,
     ),
     warnings: list.append(
-      recovery_plan.warnings,
-      workflow_finalization.warnings,
+      refresh.warnings,
+      list.append(recovery_plan.warnings, workflow_finalization.warnings),
     ),
     workflow_resumptions: workflow_finalization.resumptions,
     scheduled: scheduled,
@@ -694,17 +707,16 @@ fn optional_run_id(
 fn workflow_recovery_observations(
   bundle: runtime_bundle.RuntimeBundle,
   candidates: List(recovery.WorkflowRecoveryCandidate),
-  refreshed_issues: List(tracker_issue.Issue),
+  issue_observations: Dict(String, recovery.IssueRefreshObservation),
 ) -> Dict(String, recovery.CurrentWorkflowObservation) {
-  let issue_by_id =
-    refreshed_issues
-    |> list.map(fn(issue) { #(issue.id, issue) })
-    |> dict.from_list
   candidates
   |> list.map(fn(candidate) {
-    let observation = case dict.get(issue_by_id, candidate.issue_id) {
-      Error(Nil) -> recovery.IssueUnavailable
-      Ok(issue) -> current_workflow_observation(bundle, issue)
+    let observation = case dict.get(issue_observations, candidate.issue_id) {
+      Ok(recovery.RefreshedIssue(issue)) ->
+        current_workflow_observation(bundle, issue)
+      Ok(recovery.RefreshUnavailable) -> recovery.TrackerRefreshUnavailable
+      Ok(recovery.ConfirmedUnavailable) | Error(Nil) ->
+        recovery.IssueUnavailable
     }
     #(candidate.run_id, observation)
   })
@@ -755,36 +767,167 @@ pub fn fingerprint_error_message(
 fn fetch_recovery_task_states(
   tracker_adapter: adapter.TrackerAdapter,
   task_refs: List(record.TaskRefFields),
-) -> Result(List(tracker_issue.Issue), StartupError) {
+  dependencies: Dependencies,
+) -> RecoveryTaskRefresh {
   let refs =
     task_refs
     |> list.filter(fn(ref) { ref.task_backend_kind == tracker_adapter.kind })
     |> list.map(record_task_ref_to_task_ref)
-  fetch_recovery_task_chunks(tracker_adapter, chunk_task_refs(refs, 50), [])
+  fetch_recovery_task_chunks(
+    tracker_adapter,
+    chunk_task_refs(refs, 50),
+    dependencies,
+    [],
+    [],
+    [],
+    [],
+  )
 }
 
 fn fetch_recovery_task_chunks(
   tracker_adapter: adapter.TrackerAdapter,
   chunks: List(List(task.TaskRef)),
-  acc: List(tracker_issue.Issue),
-) -> Result(List(tracker_issue.Issue), StartupError) {
+  dependencies: Dependencies,
+  issue_acc: List(tracker_issue.Issue),
+  omitted_acc: List(String),
+  unrefreshed_acc: List(String),
+  warning_acc: List(String),
+) -> RecoveryTaskRefresh {
   case chunks {
-    [] -> Ok(list.reverse(acc))
-    [chunk, ..rest] ->
-      case refresh_runtime_issues_by_refs(tracker_adapter, chunk) {
-        Ok(issues) ->
+    [] ->
+      RecoveryTaskRefresh(
+        issues: list.reverse(issue_acc),
+        omitted_issue_ids: list.reverse(omitted_acc),
+        unrefreshed_issue_ids: list.reverse(unrefreshed_acc),
+        warnings: list.reverse(warning_acc),
+      )
+    [chunk, ..rest] -> {
+      let requested_issue_ids = list.map(chunk, fn(ref) { ref.remote_id })
+      case
+        fetch_recovery_task_chunk(tracker_adapter, chunk, dependencies, [
+          50,
+          200,
+        ])
+      {
+        Ok(issues) -> {
+          let refreshed_issue_ids = list.map(issues, fn(issue) { issue.id })
+          let omitted_issue_ids =
+            list.filter(requested_issue_ids, fn(issue_id) {
+              !list.contains(refreshed_issue_ids, issue_id)
+            })
           fetch_recovery_task_chunks(
             tracker_adapter,
             rest,
-            list.append(list.reverse(issues), acc),
+            dependencies,
+            list.append(list.reverse(issues), issue_acc),
+            list.append(list.reverse(omitted_issue_ids), omitted_acc),
+            unrefreshed_acc,
+            warning_acc,
           )
-        Error(err) ->
-          Error(StartupError(
-            "recovery_issue_fetch_failed",
-            tracker_error_message(err),
-          ))
+        }
+        Error(err) -> {
+          let stop_remaining = tracker_refresh_error_stops_remaining(err)
+          let remaining_issue_ids = case stop_remaining {
+            True -> issue_ids_for_chunks(rest)
+            False -> []
+          }
+          let remaining_chunks = case stop_remaining {
+            True -> []
+            False -> rest
+          }
+          fetch_recovery_task_chunks(
+            tracker_adapter,
+            remaining_chunks,
+            dependencies,
+            issue_acc,
+            omitted_acc,
+            list.append(
+              list.reverse(list.append(requested_issue_ids, remaining_issue_ids)),
+              unrefreshed_acc,
+            ),
+            [
+              "tracker_refresh_unavailable:"
+                <> tracker_adapter.kind
+                <> ":"
+                <> tracker_error_message(err),
+              ..warning_acc
+            ],
+          )
+        }
+      }
+    }
+  }
+}
+
+fn fetch_recovery_task_chunk(
+  tracker_adapter: adapter.TrackerAdapter,
+  refs: List(task.TaskRef),
+  dependencies: Dependencies,
+  retry_delays_ms: List(Int),
+) -> Result(List(tracker_issue.Issue), adapter.TrackerError) {
+  case refresh_runtime_issues_by_refs(tracker_adapter, refs) {
+    Ok(issues) -> Ok(issues)
+    Error(err) ->
+      case tracker_refresh_error_retryable(err), retry_delays_ms {
+        True, [delay_ms, ..rest] -> {
+          dependencies.sleep_ms(delay_ms)
+          fetch_recovery_task_chunk(tracker_adapter, refs, dependencies, rest)
+        }
+        _, _ -> Error(err)
       }
   }
+}
+
+fn tracker_refresh_error_retryable(err: adapter.TrackerError) -> Bool {
+  case err {
+    adapter.Transient(_) -> True
+    adapter.Unauthorized(_)
+    | adapter.NotFound(_)
+    | adapter.Permanent(_)
+    | adapter.UnsupportedCapability(_)
+    | adapter.DecodeFailed(_) -> False
+  }
+}
+
+fn tracker_refresh_error_stops_remaining(err: adapter.TrackerError) -> Bool {
+  case err {
+    adapter.Unauthorized(_) | adapter.UnsupportedCapability(_) -> True
+    adapter.NotFound(_)
+    | adapter.Transient(_)
+    | adapter.Permanent(_)
+    | adapter.DecodeFailed(_) -> False
+  }
+}
+
+fn issue_ids_for_chunks(chunks: List(List(task.TaskRef))) -> List(String) {
+  chunks
+  |> list.fold([], fn(issue_ids, chunk) {
+    list.append(issue_ids, list.map(chunk, fn(ref) { ref.remote_id }))
+  })
+}
+
+fn recovery_issue_observations(
+  refresh: RecoveryTaskRefresh,
+) -> Dict(String, recovery.IssueRefreshObservation) {
+  let observations =
+    refresh.issues
+    |> list.map(fn(issue) { #(issue.id, recovery.RefreshedIssue(issue)) })
+    |> dict.from_list
+  let observations =
+    list.fold(
+      refresh.omitted_issue_ids,
+      observations,
+      fn(observations, issue_id) {
+        dict.insert(observations, issue_id, recovery.ConfirmedUnavailable)
+      },
+    )
+  list.fold(
+    refresh.unrefreshed_issue_ids,
+    observations,
+    fn(observations, issue_id) {
+      dict.insert(observations, issue_id, recovery.RefreshUnavailable)
+    },
+  )
 }
 
 fn refresh_runtime_issues_by_refs(

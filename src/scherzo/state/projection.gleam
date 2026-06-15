@@ -3343,6 +3343,17 @@ pub fn known_task_refs(projection: Projection) -> List(record.TaskRefFields) {
   )
 }
 
+pub fn recovery_task_refs(
+  projection: Projection,
+) -> List(record.TaskRefFields) {
+  []
+  |> append_unique_task_refs(recovery_run_task_refs(projection.runs))
+  |> append_unique_task_refs(recovery_workflow_task_refs(projection))
+  |> append_unique_task_refs(retry_task_refs(projection))
+  |> append_unique_task_refs(parked_task_refs(projection.parked_issues))
+  |> append_unique_task_refs(recovery_issue_counter_task_refs(projection))
+}
+
 pub fn known_workspace_for_issue(
   projection: Projection,
   issue_id: String,
@@ -6516,6 +6527,119 @@ fn outbox_status_task_ref(status: OutboxStatus) -> record.TaskRefFields {
 
 fn linear_task_ref_for_issue_id(issue_id: String) -> record.TaskRefFields {
   record.linear_task_ref_fields(issue_id, None, None)
+}
+
+fn linear_task_ref_for_issue(
+  issue_id: String,
+  issue_identifier: Option(String),
+) -> record.TaskRefFields {
+  record.linear_task_ref_fields(issue_id, issue_identifier, None)
+}
+
+fn recovery_run_task_refs(
+  runs: Dict(String, RunStatus),
+) -> List(record.TaskRefFields) {
+  runs
+  |> dict.values
+  |> list.fold([], fn(refs, status) {
+    case status {
+      RunRunning(issue_id, issue_identifier, _, _) ->
+        append_unique_task_refs(refs, [
+          linear_task_ref_for_issue(issue_id, Some(issue_identifier)),
+        ])
+      RunInterrupted(issue_id, _, _) ->
+        append_unique_task_refs(refs, [linear_task_ref_for_issue_id(issue_id)])
+      RunFinished(..) -> refs
+    }
+  })
+}
+
+fn recovery_workflow_task_refs(
+  projection: Projection,
+) -> List(record.TaskRefFields) {
+  active_workflow_runs(projection)
+  |> list.fold([], fn(refs, entry) {
+    let #(run_id, status) = entry
+    case status {
+      WorkflowRunActive(_, _, issue_id, issue_identifier, _, _, _, _) -> {
+        let task_ref = case dict.get(projection.workflow_task_refs, run_id) {
+          Ok(task_ref) -> task_ref
+          Error(Nil) ->
+            linear_task_ref_for_issue(issue_id, Some(issue_identifier))
+        }
+        append_unique_task_refs(refs, [task_ref])
+      }
+      _ -> refs
+    }
+  })
+}
+
+fn retry_task_refs(projection: Projection) -> List(record.TaskRefFields) {
+  projection.retries
+  |> dict.to_list
+  |> list.fold([], fn(refs, entry) {
+    let #(issue_id, status) = entry
+    case status {
+      RetryScheduled(issue_identifier, _, _, _, _) ->
+        append_unique_task_refs(refs, [
+          recovery_task_ref_for_issue(
+            projection,
+            issue_id,
+            Some(issue_identifier),
+          ),
+        ])
+      RetryCancelled(..) -> refs
+    }
+  })
+}
+
+fn recovery_task_ref_for_issue(
+  projection: Projection,
+  issue_id: String,
+  issue_identifier: Option(String),
+) -> record.TaskRefFields {
+  let matching_refs =
+    known_task_refs(projection)
+    |> list.filter(fn(task_ref) { task_ref.task_remote_id == issue_id })
+
+  case
+    list.find(matching_refs, fn(task_ref) {
+      task_ref.task_backend_kind != "linear"
+    })
+  {
+    Ok(task_ref) -> task_ref
+    Error(Nil) -> linear_task_ref_for_issue(issue_id, issue_identifier)
+  }
+}
+
+fn parked_task_refs(
+  parked_issues: Dict(String, ParkedIssue),
+) -> List(record.TaskRefFields) {
+  parked_issues
+  |> dict.to_list
+  |> list.fold([], fn(refs, entry) {
+    let #(issue_id, parked) = entry
+    append_unique_task_refs(refs, [
+      linear_task_ref_for_issue(issue_id, Some(parked.issue_identifier)),
+    ])
+  })
+}
+
+fn recovery_issue_counter_task_refs(
+  projection: Projection,
+) -> List(record.TaskRefFields) {
+  projection.issue_counters
+  |> dict.to_list
+  |> list.fold([], fn(refs, entry) {
+    let #(issue_id, counter) = entry
+    case counter.failure_attempts > 0 || counter.worker_sessions > 0 {
+      True ->
+        append_unique_task_refs(refs, [
+          linear_task_ref_for_issue(issue_id, Some(counter.issue_identifier)),
+        ])
+      False -> refs
+    }
+  })
 }
 
 fn append_unique_task_refs(

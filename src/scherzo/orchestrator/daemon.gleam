@@ -794,6 +794,7 @@ pub fn start(
       startup_recovery.Dependencies(
         logger: dependencies.logger,
         now_ms: dependencies.now_ms,
+        sleep_ms: process.sleep,
       ),
       secrets,
     )

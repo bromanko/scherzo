@@ -467,8 +467,15 @@ pub fn ui_websocket_client_rejects_server_command_when_in_flight_limit_reached_t
       },
     )
   let assert Ok(handle) =
+    // This test intentionally holds apply workers at the barrier; keep periodic
+    // frames from interleaving with the overloaded-command assertion on slow CI.
     ui_websocket_client.start(
-      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      ui_websocket_client.Settings(
+        ..settings,
+        command_bridge_enabled: True,
+        heartbeat_interval_ms: 60_000,
+        state_interval_ms: 60_000,
+      ),
       deps,
     )
   expect_initial_outbound(outbound)

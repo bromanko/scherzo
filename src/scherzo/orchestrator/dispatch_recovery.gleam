@@ -7,7 +7,7 @@ import scherzo/ctl/artifact_publication_retry
 import scherzo/state/projection
 import scherzo/state/recovery.{
   type CurrentWorkflowObservation, CurrentWorkflow, IssueUnavailable,
-  WorkflowUnavailable,
+  TrackerRefreshUnavailable, WorkflowUnavailable,
 }
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_repair
@@ -148,6 +148,12 @@ fn validate_publication_recovery_provenance(
       Error(#(
         "publication_recovery_issue_unavailable",
         "current issue could not be refreshed for publication recovery: "
+          <> run_id,
+      ))
+    TrackerRefreshUnavailable ->
+      Error(#(
+        "publication_recovery_tracker_refresh_unavailable",
+        "current issue refresh is unavailable for publication recovery: "
           <> run_id,
       ))
     WorkflowUnavailable(reason) ->
