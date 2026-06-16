@@ -338,8 +338,15 @@ Replaces the old handoff section. When disabled, Scherzo does not update tracker
 state or comments after runs.
 
 `task_updates.states` names tracker states for lifecycle events: `claim`, `success`,
-`no_review_success`, `failure`, and `partial_success`. `comment_on` is a list of
-events to comment on; supported events are `claim`, `success`, `failure`, and `park`.
+`no_review_success`, `failure`, and `partial_success`. `task_updates.workflows`
+can override completion behavior for selected workflow ids. Each workflow override
+supports `requires_review` plus a nested `states` map with completion-related keys
+`success`, `no_review_success`, `failure`, and `partial_success`; flat state keys
+directly under the workflow id are rejected. Workflow override ids must match
+configured workflow ids.
+
+`comment_on` is a list of events to comment on; supported events are `claim`,
+`success`, `failure`, and `park`.
 
 `task_updates.result.on_success` is `none`, `comment`, or `attachment`.
 `task_updates.result.max_chars` limits result text included in tracker updates.

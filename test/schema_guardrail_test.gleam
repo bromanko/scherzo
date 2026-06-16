@@ -233,13 +233,13 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
   assert effective.handoff.result_max_chars == 4000
   let assert Some(completion_policy) = effective.handoff.completion_states
   assert completion_policy.default_completion_state
-    == workflow_completion_policy.StateByName("In Review")
+    == Some(workflow_completion_policy.StateByName("In Review"))
   assert completion_policy.no_review_completion_state
     == Some(workflow_completion_policy.StateByName("Done"))
   assert completion_policy.failure_state
-    == workflow_completion_policy.StateByName("Needs Attention")
+    == Some(workflow_completion_policy.StateByName("Needs Attention"))
   assert completion_policy.partial_success_state
-    == workflow_completion_policy.StateByName("Triage")
+    == Some(workflow_completion_policy.StateByName("Triage"))
   assert dict.to_list(completion_policy.workflows) == []
 
   assert effective.linear_contract.enabled == True

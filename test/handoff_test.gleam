@@ -824,12 +824,14 @@ fn completion_policy(
   default_state: workflow_completion_policy.LinearStateRef,
 ) -> workflow_completion_policy.CompletionStatePolicy {
   workflow_completion_policy.CompletionStatePolicy(
-    default_completion_state: default_state,
+    default_completion_state: Some(default_state),
     no_review_completion_state: None,
-    failure_state: workflow_completion_policy.StateByName("Needs Attention"),
-    partial_success_state: workflow_completion_policy.StateByName(
+    failure_state: Some(workflow_completion_policy.StateByName(
       "Needs Attention",
-    ),
+    )),
+    partial_success_state: Some(workflow_completion_policy.StateByName(
+      "Needs Attention",
+    )),
     cancellation_state: None,
     workflows: dict.new(),
   )

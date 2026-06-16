@@ -241,7 +241,10 @@ fn load_orchestrator(
     ),
   )
   use _ <- result.try(validate_publication_repositories(orchestrator, workflows))
-  let orchestrator = enrich_completion_state_policy(orchestrator, workflows)
+  use orchestrator <- result.try(enrich_completion_state_policy(
+    orchestrator,
+    workflows,
+  ))
   use orchestrator <- result.try(
     workspace_driver_discovery.enrich_orchestrator(orchestrator)
     |> result.map_error(workspace_driver_discovery_error_to_bundle_error),
@@ -287,12 +290,13 @@ fn load_orchestrator(
 fn enrich_completion_state_policy(
   orchestrator: config_types.OrchestratorConfig,
   workflows: Dict(String, workflow_dag.WorkflowDag),
-) -> config_types.OrchestratorConfig {
+) -> Result(config_types.OrchestratorConfig, BundleError) {
   let effective = orchestrator.effective
   let handoff = effective.handoff
   case handoff.completion_states {
-    None -> orchestrator
+    None -> Ok(orchestrator)
     Some(policy) -> {
+      use _ <- result.try(reject_unknown_workflow_overrides(policy, workflows))
       let completion_states =
         workflow_completion_policy.CompletionStatePolicy(
           ..policy,
@@ -304,8 +308,28 @@ fn enrich_completion_state_policy(
           completion_states: Some(completion_states),
         )
       let effective = config_types.EffectiveConfig(..effective, handoff:)
-      config_types.OrchestratorConfig(..orchestrator, effective:)
+      Ok(config_types.OrchestratorConfig(..orchestrator, effective:))
     }
+  }
+}
+
+fn reject_unknown_workflow_overrides(
+  policy: workflow_completion_policy.CompletionStatePolicy,
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+) -> Result(Nil, BundleError) {
+  case
+    policy.workflows
+    |> dict.keys
+    |> list.find(fn(workflow_id) { !dict.has_key(workflows, workflow_id) })
+  {
+    Ok(workflow_id) -> {
+      let message =
+        "task_updates.workflows."
+        <> workflow_id
+        <> " does not match a configured workflow"
+      Error(BundleError("unknown_task_update_workflow", message))
+    }
+    Error(Nil) -> Ok(Nil)
   }
 }
 
@@ -317,9 +341,15 @@ fn workflow_completion_overrides(
   |> dict.to_list
   |> list.fold(existing, fn(acc, entry) {
     let #(id, dag) = entry
-    case dict.has_key(acc, id) {
-      True -> acc
-      False -> dict.insert(acc, id, workflow_completion_override(dag))
+    let inferred = workflow_completion_override(dag)
+    case dict.get(acc, id) {
+      Ok(configured) ->
+        dict.insert(
+          acc,
+          id,
+          workflow_completion_policy.merge_overrides(inferred, configured),
+        )
+      Error(Nil) -> dict.insert(acc, id, inferred)
     }
   })
 }

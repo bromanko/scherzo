@@ -33,7 +33,35 @@ task_updates:
 
 The failure state does not need to be listed in `tracker.states.ready`. Ready states gate only new initial issue pickup; automatic failure retries and explicit operator retries can resume the same issue from `tracker.states.active` or configured task-update states while still enforcing parked, active/pending, terminal, workflow drift, and recovery safety checks.
 
-If your Linear team uses different names, configure those state names instead. The simplified YAML schema currently accepts names in `task_updates.states`; it does not define id-specific task-update fields. If `doctor --check tracker-contract` reports an ambiguous state name, rename or disambiguate the Linear states, or pause task updates until the board shape is fixed.
+Use global `task_updates.states.success`/`no_review_success` when the board policy should apply to every workflow. Use `task_updates.workflows.<workflow-id>` only for workflow-specific exceptions, such as a publish-commit-stack workflow that should not wait for review after it resolves merge conflicts:
+
+```yaml
+task_updates:
+  states:
+    success: In Review
+    no_review_success: Done
+    failure: Triage
+    partial_success: Triage
+  workflows:
+    merge-conflict-resolution:
+      requires_review: false
+      states:
+        no_review_success: Done
+```
+
+A workflow can also override the success target unconditionally without changing other reviewable workflows:
+
+```yaml
+task_updates:
+  workflows:
+    merge-conflict-resolution:
+      states:
+        success: Done
+```
+
+Keep workflow-specific state overrides nested under `states:`. Flat keys such as `task_updates.workflows.merge-conflict-resolution.success` are intentionally rejected so the shape mirrors top-level `task_updates.states`. Each workflow id under `task_updates.workflows` must also match a configured workflow id; Scherzo rejects typoed workflow ids during runtime-bundle loading instead of silently ignoring them.
+
+If your Linear team uses different names, configure those state names instead. The simplified YAML schema currently accepts names in `task_updates.states` and supported `task_updates.workflows.<workflow-id>.states` entries; it does not define id-specific task-update fields. If `doctor --check tracker-contract` reports an ambiguous state name, rename or disambiguate the Linear states, or pause task updates until the board shape is fixed.
 
 Before enabling daemon task updates, run:
 
