@@ -17,10 +17,14 @@
     },
     "LinearTaskScopePredicate": {
       "type": "object",
-      "description": "Linear task scope predicate. This build supports project/project(s) leaves with and/or composition.",
+      "description": "Linear task scope predicate node. This build supports project/project(s) and label leaves with and/or composition.",
+      "minProperties": 1,
+      "maxProperties": 1,
       "oneOf": [
         { "required": ["project"] },
         { "required": ["projects"] },
+        { "required": ["all_labels"] },
+        { "required": ["any_label"] },
         { "required": ["and"] },
         { "required": ["or"] }
       ],
@@ -28,6 +32,78 @@
       "properties": {
         "project": { "$ref": "#/$defs/LinearTaskScopeString" },
         "projects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopeString" }
+        },
+        "all_labels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopeString" }
+        },
+        "any_label": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopeString" }
+        },
+        "and": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopePredicate" }
+        },
+        "or": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopePredicate" }
+        }
+      }
+    },
+    "LinearTaskScopeAnchoredPredicate": {
+      "type": "object",
+      "description": "Linear task scope predicate accepted at the tasks_from root. Every complete match must be anchored by project/project(s).",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "oneOf": [
+        { "required": ["project"] },
+        { "required": ["projects"] },
+        {
+          "required": ["and"],
+          "properties": {
+            "and": {
+              "contains": { "$ref": "#/$defs/LinearTaskScopeAnchoredPredicate" }
+            }
+          }
+        },
+        {
+          "required": ["or"],
+          "properties": {
+            "or": {
+              "items": { "$ref": "#/$defs/LinearTaskScopeAnchoredPredicate" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "project": { "$ref": "#/$defs/LinearTaskScopeString" },
+        "projects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopeString" }
+        },
+        "all_labels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/LinearTaskScopeString" }
+        },
+        "any_label": {
           "type": "array",
           "minItems": 1,
           "maxItems": 32,
@@ -196,7 +272,7 @@
               "$ref": "#/$defs/LinearTaskScopeString",
               "description": "Compatibility syntax for tracker.linear.tasks_from.project."
             },
-            "tasks_from": { "$ref": "#/$defs/LinearTaskScopePredicate" },
+            "tasks_from": { "$ref": "#/$defs/LinearTaskScopeAnchoredPredicate" },
             "api_key_env": { "$ref": "#/$defs/EnvVarName" },
             "endpoint": { "$ref": "#/$defs/HttpsUrl" },
             "check_setup": { "type": "boolean" },

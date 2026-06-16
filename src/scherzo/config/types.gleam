@@ -21,6 +21,8 @@ pub fn config_warning_message(warning: ConfigWarning) -> String {
 pub type LinearTaskScope {
   LinearTaskProject(String)
   LinearTaskProjects(List(String))
+  LinearTaskAllLabels(List(String))
+  LinearTaskAnyLabel(List(String))
   LinearTaskAnd(List(LinearTaskScope))
   LinearTaskOr(List(LinearTaskScope))
 }
@@ -61,6 +63,7 @@ pub fn linear_task_scope_project_slugs(scope: LinearTaskScope) -> List(String) {
   case scope {
     LinearTaskProject(slug) -> normalize_project_slugs([slug])
     LinearTaskProjects(slugs) -> normalize_project_slugs(slugs)
+    LinearTaskAllLabels(_) | LinearTaskAnyLabel(_) -> []
     LinearTaskAnd(children) | LinearTaskOr(children) ->
       collect_linear_task_scope_project_slugs(children, [])
       |> normalize_project_slugs
@@ -70,21 +73,13 @@ pub fn linear_task_scope_project_slugs(scope: LinearTaskScope) -> List(String) {
 fn validate_linear_task_scope(
   scope: LinearTaskScope,
 ) -> Result(LinearTaskScope, LinearTaskScopeError) {
-  case scope {
-    LinearTaskProject(_) ->
-      case linear_task_scope_project_slugs(scope) {
-        [slug, ..] -> Ok(LinearTaskProject(slug))
-        [] -> Error(MissingLinearTaskScopeProject)
+  case validate_linear_task_scope_shape(scope) {
+    Ok(normalized) ->
+      case linear_task_scope_is_anchored(normalized) {
+        True -> Ok(normalized)
+        False -> Error(MissingLinearTaskScopeProject)
       }
-    LinearTaskProjects(_) ->
-      case linear_task_scope_project_slugs(scope) {
-        [slug, ..rest] -> Ok(LinearTaskProjects([slug, ..rest]))
-        [] -> Error(MissingLinearTaskScopeProject)
-      }
-    LinearTaskAnd(children) ->
-      validate_linear_task_scope_children(children, [], LinearTaskAnd)
-    LinearTaskOr(children) ->
-      validate_linear_task_scope_children(children, [], LinearTaskOr)
+    Error(error) -> Error(error)
   }
 }
 
@@ -97,24 +92,34 @@ fn legacy_project_scope(
   }
 }
 
-fn normalize_project_slugs(slugs: List(String)) -> List(String) {
-  slugs
-  |> list.map(string.trim)
-  |> list.filter(fn(slug) { slug != "" })
-  |> dedupe_preserving_first
-}
-
-fn collect_linear_task_scope_project_slugs(
-  scopes: List(LinearTaskScope),
-  acc: List(String),
-) -> List(String) {
-  case scopes {
-    [] -> acc
-    [scope, ..rest] ->
-      collect_linear_task_scope_project_slugs(
-        rest,
-        list.append(acc, linear_task_scope_project_slugs(scope)),
-      )
+fn validate_linear_task_scope_shape(
+  scope: LinearTaskScope,
+) -> Result(LinearTaskScope, LinearTaskScopeError) {
+  case scope {
+    LinearTaskProject(slug) ->
+      case normalize_project_slugs([slug]) {
+        [slug, ..] -> Ok(LinearTaskProject(slug))
+        [] -> Error(MissingLinearTaskScopeProject)
+      }
+    LinearTaskProjects(slugs) ->
+      case normalize_project_slugs(slugs) {
+        [slug, ..rest] -> Ok(LinearTaskProjects([slug, ..rest]))
+        [] -> Error(MissingLinearTaskScopeProject)
+      }
+    LinearTaskAllLabels(labels) ->
+      case normalize_label_names(labels) {
+        [label, ..rest] -> Ok(LinearTaskAllLabels([label, ..rest]))
+        [] -> Error(MissingLinearTaskScopeProject)
+      }
+    LinearTaskAnyLabel(labels) ->
+      case normalize_label_names(labels) {
+        [label, ..rest] -> Ok(LinearTaskAnyLabel([label, ..rest]))
+        [] -> Error(MissingLinearTaskScopeProject)
+      }
+    LinearTaskAnd(children) ->
+      validate_linear_task_scope_children(children, [], LinearTaskAnd)
+    LinearTaskOr(children) ->
+      validate_linear_task_scope_children(children, [], LinearTaskOr)
   }
 }
 
@@ -130,11 +135,51 @@ fn validate_linear_task_scope_children(
         _ -> Ok(wrap(list.reverse(acc)))
       }
     [child, ..rest] ->
-      case validate_linear_task_scope(child) {
+      case validate_linear_task_scope_shape(child) {
         Ok(valid_child) ->
           validate_linear_task_scope_children(rest, [valid_child, ..acc], wrap)
         Error(error) -> Error(error)
       }
+  }
+}
+
+fn linear_task_scope_is_anchored(scope: LinearTaskScope) -> Bool {
+  case scope {
+    LinearTaskProject(_) | LinearTaskProjects(_) ->
+      !list.is_empty(linear_task_scope_project_slugs(scope))
+    LinearTaskAllLabels(_) | LinearTaskAnyLabel(_) -> False
+    LinearTaskAnd(children) -> list.any(children, linear_task_scope_is_anchored)
+    LinearTaskOr(children) ->
+      !list.is_empty(children)
+      && list.all(children, linear_task_scope_is_anchored)
+  }
+}
+
+fn normalize_project_slugs(slugs: List(String)) -> List(String) {
+  slugs
+  |> list.map(string.trim)
+  |> list.filter(fn(slug) { slug != "" })
+  |> dedupe_preserving_first
+}
+
+fn normalize_label_names(labels: List(String)) -> List(String) {
+  labels
+  |> list.map(string.trim)
+  |> list.filter(fn(label) { label != "" })
+  |> dedupe_preserving_first
+}
+
+fn collect_linear_task_scope_project_slugs(
+  scopes: List(LinearTaskScope),
+  acc: List(String),
+) -> List(String) {
+  case scopes {
+    [] -> acc
+    [scope, ..rest] ->
+      collect_linear_task_scope_project_slugs(
+        rest,
+        list.append(acc, linear_task_scope_project_slugs(scope)),
+      )
   }
 }
 

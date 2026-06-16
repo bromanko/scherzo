@@ -758,6 +758,31 @@ pub fn linear_tasks_from_boolean_project_scopes_parse_test() {
   assert !linear_task_scope.matches_project_slug(scope, "scherzo-ops")
 }
 
+pub fn linear_tasks_from_label_predicates_parse_when_anchored_test() {
+  let front =
+    tasks_from_front(
+      "      and:\n"
+      <> "        - project: scherzo-core\n"
+      <> "        - all_labels: [workflow:implementation, backend, workflow:implementation]\n"
+      <> "        - any_label: [customer-visible, priority:high, customer-visible]\n",
+    )
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.tracker.project_slug == None
+  assert configured.tracker.task_scope
+    == Some(
+      config_types.LinearTaskAnd([
+        config_types.LinearTaskProject("scherzo-core"),
+        config_types.LinearTaskAllLabels(["workflow:implementation", "backend"]),
+        config_types.LinearTaskAnyLabel(["customer-visible", "priority:high"]),
+      ]),
+    )
+  let assert Some(scope) = configured.tracker.task_scope
+  assert linear_task_scope.summary(scope)
+    == "and(project(scherzo-core), all_labels([workflow:implementation, backend]), any_label([customer-visible, priority:high]))"
+}
+
 pub fn linear_tasks_from_rejects_legacy_project_conflict_test() {
   let front =
     "tracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: old-project\n    tasks_from:\n      projects: [scherzo-core, scherzo-bugs]\nhooks:\n  before_run: test -d .git\n"
@@ -840,6 +865,14 @@ pub fn linear_task_scope_summary_returns_canonical_predicates_test() {
       ]),
     )
     == "or(project(demo-project), and(projects([bugs, ops]), project(bugs)))"
+  assert linear_task_scope.summary(
+      config_types.LinearTaskAnd([
+        config_types.LinearTaskProject("demo-project"),
+        config_types.LinearTaskAllLabels(["backend", "backend", "api"]),
+        config_types.LinearTaskAnyLabel(["urgent", "support", "urgent"]),
+      ]),
+    )
+    == "and(project(demo-project), all_labels([backend, api]), any_label([urgent, support]))"
 }
 
 pub fn linear_task_scope_unresolved_env_errors_are_pathful_test() {
@@ -867,6 +900,14 @@ pub fn linear_task_scope_unresolved_env_errors_are_pathful_test() {
     #(
       tasks_from_front("      projects: [demo-project, \"$MISSING_PROJECT\"]\n"),
       "tracker.linear.tasks_from.projects[1] must resolve to a string",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - project: demo-project\n"
+        <> "        - any_label: [\"$MISSING_LABEL\"]\n",
+      ),
+      "tracker.linear.tasks_from.and[1].any_label[0] must resolve to a string",
     ),
   ]
 
@@ -904,7 +945,11 @@ pub fn linear_tasks_from_validation_errors_are_pathful_test() {
     ),
     #(
       tasks_from_front("      any_label: [workflow:implementation]\n"),
-      "tracker.linear.tasks_from.any_label is recognized",
+      "tracker.linear.tasks_from.any_label would select labels across all projects. Add project/projects bounds",
+    ),
+    #(
+      tasks_from_front("      all_labels: [workflow:implementation]\n"),
+      "tracker.linear.tasks_from.all_labels would select labels across all projects. Add project/projects bounds",
     ),
     #(
       tasks_from_front("      project: [demo-project]\n"),
@@ -933,6 +978,69 @@ pub fn linear_tasks_from_validation_errors_are_pathful_test() {
     #(
       tasks_from_front(oversized_projects),
       "tracker.linear.tasks_from.projects has 33 entries; maximum is 32",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - project: demo-project\n"
+        <> "        - all_labels: []\n",
+      ),
+      "tracker.linear.tasks_from.and[1].all_labels must contain at least one label",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - project: demo-project\n"
+        <> "        - any_label: workflow:implementation\n",
+      ),
+      "tracker.linear.tasks_from.and[1].any_label must be a string list",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - project: demo-project\n"
+        <> "        - all_labels: [workflow:implementation, \"\"]\n",
+      ),
+      "tracker.linear.tasks_from.and[1].all_labels[1] must be non-empty",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - project: demo-project\n"
+        <> "        - any_label: [workflow:implementation, [nested]]\n",
+      ),
+      "tracker.linear.tasks_from.and[1].any_label[1] must be a string",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - project: demo-project\n"
+        <> "        - all_labels: [\"bad\\nlabel\"]\n",
+      ),
+      "tracker.linear.tasks_from.and[1].all_labels[0] must not contain control characters",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - project: demo-project\n"
+        <> "        - any_label: ["
+        <> long_project
+        <> "]\n",
+      ),
+      "tracker.linear.tasks_from.and[1].any_label[0] must be at most 128 Unicode scalar values; got 129",
+    ),
+    #(
+      tasks_from_front(
+        "      and:\n"
+        <> "        - project: demo-project\n"
+        <> "        - all_labels: ["
+        <> string.join(
+          list.repeat("workflow:implementation", times: 33),
+          with: ", ",
+        )
+        <> "]\n",
+      ),
+      "tracker.linear.tasks_from.and[1].all_labels has 33 entries; maximum is 32",
     ),
   ]
 
@@ -999,7 +1107,7 @@ pub fn linear_tasks_from_boolean_validation_errors_are_pathful_test() {
         <> "        - project: demo-project\n"
         <> "        - any_label: [workflow:implementation]\n",
       ),
-      "tracker.linear.tasks_from.or[1].any_label is recognized",
+      "tracker.linear.tasks_from.or has an unanchored branch. Add project/projects bounds to every or branch",
     ),
     #(
       tasks_from_front(payload_yaml),

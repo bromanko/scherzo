@@ -55,6 +55,27 @@ fn composed_project_task_filter_body_fragment() -> String {
   "\"taskFilter\":{\"or\":[{\"project\":{\"slugId\":{\"eq\":\"PROJ\"}}},{\"and\":[{\"project\":{\"slugId\":{\"in\":[\"BUGS\",\"OPS\"]}}},{\"project\":{\"slugId\":{\"eq\":\"BUGS\"}}}]}]}"
 }
 
+fn labelled_tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
+    ..tracker_config(),
+    project_slug: None,
+    task_scope: Some(
+      config_types.LinearTaskAnd([
+        config_types.LinearTaskProject("PROJ"),
+        config_types.LinearTaskAllLabels([
+          "workflow:implementation",
+          "backend",
+        ]),
+        config_types.LinearTaskAnyLabel(["customer-visible", "urgent"]),
+      ]),
+    ),
+  )
+}
+
+fn labelled_task_filter_body_fragment() -> String {
+  "\"taskFilter\":{\"and\":[{\"project\":{\"slugId\":{\"eq\":\"PROJ\"}}},{\"and\":[{\"labels\":{\"some\":{\"name\":{\"eq\":\"workflow:implementation\"}}}},{\"labels\":{\"some\":{\"name\":{\"eq\":\"backend\"}}}}]},{\"or\":[{\"labels\":{\"some\":{\"name\":{\"eq\":\"customer-visible\"}}}},{\"labels\":{\"some\":{\"name\":{\"eq\":\"urgent\"}}}}]}]}"
+}
+
 fn base_request() -> reporter.FailureReportRequest {
   reporter.FailureReportRequest(
     job_id: "pr-conflict-repair",
@@ -447,6 +468,26 @@ pub fn scheduled_failure_reporter_real_search_uses_composed_task_filter_test() {
     search_body,
     composed_project_task_filter_body_fragment(),
   )
+  assert string.contains(
+    search_body,
+    "and: [$taskFilter, { and: $labelFilters }]",
+  )
+}
+
+pub fn scheduled_failure_reporter_real_search_uses_labelled_task_filter_test() {
+  let calls = process.new_subject()
+  let client =
+    reporter.real_client_with_transport(
+      labelled_tracker_config(),
+      real_search_transport_with_contract(calls, contract_response()),
+    )
+
+  assert client.report_failure(base_request())
+    == Ok(reporter.FailureReportUpdated("lin-open"))
+
+  let search_body =
+    receive_call_containing(calls, "ScherzoScheduledFailureIssues", 10)
+  assert string.contains(search_body, labelled_task_filter_body_fragment())
   assert string.contains(
     search_body,
     "and: [$taskFilter, { and: $labelFilters }]",

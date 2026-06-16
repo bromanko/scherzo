@@ -336,6 +336,20 @@ fn parse_task_scope_predicate(
           parse_tasks_from_project_value(value, env, path <> ".project")
         [#(yay.NodeStr("projects"), value)] ->
           parse_tasks_from_projects_value(value, env, path <> ".projects")
+        [#(yay.NodeStr("all_labels"), value)] ->
+          parse_tasks_from_label_values(
+            value,
+            env,
+            path <> ".all_labels",
+            config_types.LinearTaskAllLabels,
+          )
+        [#(yay.NodeStr("any_label"), value)] ->
+          parse_tasks_from_label_values(
+            value,
+            env,
+            path <> ".any_label",
+            config_types.LinearTaskAnyLabel,
+          )
         [#(yay.NodeStr("and"), value)] ->
           parse_tasks_from_boolean_value(
             value,
@@ -356,7 +370,8 @@ fn parse_task_scope_predicate(
         [#(_, _)] -> Error(error.InvalidConfig(path <> " keys must be strings"))
         [] ->
           Error(error.InvalidConfig(
-            path <> " must contain exactly one key: project, projects, and, or",
+            path
+            <> " must contain exactly one key: project, projects, all_labels, any_label, and, or",
           ))
         [_, ..] ->
           Error(error.InvalidConfig(
@@ -375,10 +390,7 @@ fn enforce_task_scope_predicate_bounds(
 ) -> Result(config_types.LinearTaskScope, error.ConfigError) {
   let stats = linear_task_scope.stats(scope)
   case linear_task_scope.is_anchored(scope) {
-    False ->
-      Error(error.InvalidConfig(
-        "tracker.linear.tasks_from is unanchored. Add project/projects bounds or use a future explicit workspace-wide opt-in when available.",
-      ))
+    False -> Error(error.InvalidConfig(unanchored_task_scope_message(scope)))
     True ->
       case stats.max_depth > linear_task_scope.max_predicate_depth {
         True ->
@@ -403,6 +415,21 @@ fn enforce_task_scope_predicate_bounds(
             }
           }
       }
+  }
+}
+
+fn unanchored_task_scope_message(
+  scope: config_types.LinearTaskScope,
+) -> String {
+  case scope {
+    config_types.LinearTaskAllLabels(_) ->
+      "tracker.linear.tasks_from.all_labels would select labels across all projects. Add project/projects bounds or use a future explicit workspace-wide opt-in when available."
+    config_types.LinearTaskAnyLabel(_) ->
+      "tracker.linear.tasks_from.any_label would select labels across all projects. Add project/projects bounds or use a future explicit workspace-wide opt-in when available."
+    config_types.LinearTaskOr(_) ->
+      "tracker.linear.tasks_from.or has an unanchored branch. Add project/projects bounds to every or branch or use a future explicit workspace-wide opt-in when available."
+    _ ->
+      "tracker.linear.tasks_from is unanchored. Add project/projects bounds or use a future explicit workspace-wide opt-in when available."
   }
 }
 
@@ -464,6 +491,24 @@ fn parse_tasks_from_projects_value(
         read_tasks_from_project_values(values, env, path, 0, []),
       )
       Ok(config_types.LinearTaskProjects(dedupe_preserving_first(projects)))
+    }
+    _ -> Error(error.InvalidConfig(path <> " must be a string list"))
+  }
+}
+
+fn parse_tasks_from_label_values(
+  value: yay.Node,
+  env: Env,
+  path: String,
+  wrap: fn(List(String)) -> config_types.LinearTaskScope,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
+  case value {
+    yay.NodeSeq(values) -> {
+      use _ <- result.try(validate_task_scope_array(values, path, "label"))
+      use labels <- result.try(
+        read_tasks_from_label_values(values, env, path, 0, []),
+      )
+      Ok(wrap(dedupe_preserving_first(labels)))
     }
     _ -> Error(error.InvalidConfig(path <> " must be a string list"))
   }
@@ -569,6 +614,28 @@ fn read_tasks_from_project_values(
   }
 }
 
+fn read_tasks_from_label_values(
+  values: List(yay.Node),
+  env: Env,
+  path: String,
+  index: Int,
+  acc: List(String),
+) -> Result(List(String), error.ConfigError) {
+  let item_path = path <> "[" <> int.to_string(index) <> "]"
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] -> {
+      use label <- result.try(
+        resolve_task_scope_label_value(value, item_path, env, fn(label) {
+          label
+        }),
+      )
+      read_tasks_from_label_values(rest, env, path, index + 1, [label, ..acc])
+    }
+    [_, ..] -> Error(error.InvalidConfig(item_path <> " must be a string"))
+  }
+}
+
 fn resolve_task_scope_project_value(
   value: String,
   path: String,
@@ -581,7 +648,35 @@ fn resolve_task_scope_project_value(
   }
 }
 
+fn resolve_task_scope_label_value(
+  value: String,
+  path: String,
+  env: Env,
+  wrap: fn(String) -> a,
+) -> Result(a, error.ConfigError) {
+  case resolve_optional_env(Some(value), env) {
+    Some(label) -> validate_label_name(label, path, wrap)
+    None -> Error(error.InvalidConfig(path <> " must resolve to a string"))
+  }
+}
+
 fn validate_project_slug(
+  value: String,
+  path: String,
+  wrap: fn(String) -> a,
+) -> Result(a, error.ConfigError) {
+  validate_task_scope_scalar(value, path, wrap)
+}
+
+fn validate_label_name(
+  value: String,
+  path: String,
+  wrap: fn(String) -> a,
+) -> Result(a, error.ConfigError) {
+  validate_task_scope_scalar(value, path, wrap)
+}
+
+fn validate_task_scope_scalar(
   value: String,
   path: String,
   wrap: fn(String) -> a,
@@ -622,25 +717,20 @@ fn primary_project_slug(scope: config_types.LinearTaskScope) -> Option(String) {
   case scope {
     config_types.LinearTaskProject(project) -> Some(project)
     config_types.LinearTaskProjects(_)
+    | config_types.LinearTaskAllLabels(_)
+    | config_types.LinearTaskAnyLabel(_)
     | config_types.LinearTaskAnd(_)
     | config_types.LinearTaskOr(_) -> None
   }
 }
 
 fn unsupported_tasks_from_key(path: String, key: String) -> error.ConfigError {
-  let path = path <> "." <> key
-  case key {
-    "all_labels" | "any_label" ->
-      error.InvalidConfig(
-        path
-        <> " is recognized for future label task-scope matching but is not enabled by this Scherzo build",
-      )
-    _ ->
-      error.InvalidConfig(
-        path
-        <> " is not supported by this Scherzo build; supported keys are project, projects, and, or",
-      )
-  }
+  error.InvalidConfig(
+    path
+    <> "."
+    <> key
+    <> " is not supported by this Scherzo build; supported keys are project, projects, all_labels, any_label, and, or",
+  )
 }
 
 fn dedupe_preserving_first(values: List(String)) -> List(String) {

@@ -329,6 +329,16 @@ pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
     "version: 1\n"
       <> "tracker:\n"
       <> "  linear:\n"
+      <> "    tasks_from:\n"
+      <> "      and:\n"
+      <> "        - project: demo-project\n"
+      <> "        - all_labels: [workflow:implementation, backend]\n"
+      <> "        - any_label: [customer-visible, urgent]\n"
+      <> "workflows:\n"
+      <> "  research: workflows/research.yaml\n",
+    "version: 1\n"
+      <> "tracker:\n"
+      <> "  linear:\n"
       <> "    project_slug: demo-project\n"
       <> "workflows:\n"
       <> "  research: workflows/research.yaml\n",
@@ -520,6 +530,28 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
         <> "    tasks_from:\n"
         <> "      project: demo-project\n"
         <> "      projects: [demo-project, bugs]\n"
+        <> "workflows:\n"
+        <> "  research: workflows/research.yaml\n",
+    ),
+    #(
+      "tasks_from label root is unanchored",
+      "version: 1\n"
+        <> "tracker:\n"
+        <> "  linear:\n"
+        <> "    tasks_from:\n"
+        <> "      any_label: [workflow:implementation]\n"
+        <> "workflows:\n"
+        <> "  research: workflows/research.yaml\n",
+    ),
+    #(
+      "tasks_from or label branch is unanchored",
+      "version: 1\n"
+        <> "tracker:\n"
+        <> "  linear:\n"
+        <> "    tasks_from:\n"
+        <> "      or:\n"
+        <> "        - project: demo-project\n"
+        <> "        - any_label: [workflow:implementation]\n"
         <> "workflows:\n"
         <> "  research: workflows/research.yaml\n",
     ),
