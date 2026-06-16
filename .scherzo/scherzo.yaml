@@ -82,6 +82,13 @@ task_updates:
     no_review_success: Done
     failure: Triage
     partial_success: Triage
+  workflows:
+    # Conflict repairs publish back to an existing PR branch and should finish
+    # the tracking issue once validation and publication succeed.
+    merge-conflict-resolution:
+      requires_review: false
+      states:
+        no_review_success: Done
   comment_on: [claim, success, failure]
   result:
     on_success: attachment
