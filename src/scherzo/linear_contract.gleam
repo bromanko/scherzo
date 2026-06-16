@@ -1,11 +1,89 @@
 import gleam/dict
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order}
 import gleam/string
+import scherzo/config/linear_task_scope
 import scherzo/config/types as config_types
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
+
+pub fn task_scope_issue_filter_variables(
+  scope: config_types.LinearTaskScope,
+  name: String,
+) -> List(#(String, json.Json)) {
+  linear_task_scope.issue_filter_variables(scope, name)
+}
+
+pub fn task_scope_issue_filter_declaration(name: String) -> String {
+  linear_task_scope.issue_filter_declaration(name)
+}
+
+pub fn task_scope_project_filter_variables(
+  scope: config_types.LinearTaskScope,
+  name: String,
+) -> List(#(String, json.Json)) {
+  linear_task_scope.project_filter_variables(scope, name)
+}
+
+pub fn task_scope_project_filter_declaration(name: String) -> String {
+  linear_task_scope.project_filter_declaration(name)
+}
+
+pub fn task_scope_configured_project_slug_variables(
+  scope: config_types.LinearTaskScope,
+  name: String,
+) -> List(#(String, json.Json)) {
+  linear_task_scope.configured_project_slug_variables(scope, name)
+}
+
+pub fn task_scope_graphql_variables(
+  scope: config_types.LinearTaskScope,
+  single_name: String,
+  multi_name: String,
+) -> List(#(String, json.Json)) {
+  linear_task_scope.graphql_variables(scope, single_name, multi_name)
+}
+
+pub fn task_scope_variable_declaration(
+  scope: config_types.LinearTaskScope,
+  single_name: String,
+  multi_name: String,
+) -> String {
+  linear_task_scope.variable_declaration(scope, single_name, multi_name)
+}
+
+pub fn task_scope_contract_project_first(
+  scope: config_types.LinearTaskScope,
+) -> String {
+  linear_task_scope.contract_project_first(scope)
+}
+
+pub fn task_scope_contract_configured_project_first(
+  scope: config_types.LinearTaskScope,
+) -> String {
+  linear_task_scope.contract_configured_project_first(scope)
+}
+
+pub fn task_scope_project_slugs(
+  scope: config_types.LinearTaskScope,
+) -> List(String) {
+  linear_task_scope.project_slugs(scope)
+}
+
+pub fn task_scope_matching_project_slugs(
+  scope: config_types.LinearTaskScope,
+) -> List(String) {
+  linear_task_scope.matching_project_slugs(scope)
+}
+
+pub fn task_scope_matches_project_slug(
+  scope: config_types.LinearTaskScope,
+  returned_slug: String,
+) -> Bool {
+  linear_task_scope.matches_project_slug(scope, returned_slug)
+}
 
 pub type RemoteBoard {
   RemoteBoard(

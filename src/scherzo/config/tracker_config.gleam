@@ -304,7 +304,12 @@ fn parse_tasks_from(
 ) -> Result(config_types.LinearTaskScope, error.ConfigError) {
   case node {
     yay.NodeMap(pairs) -> {
-      use scope <- result.try(parse_task_scope_predicate(pairs, env))
+      use scope <- result.try(parse_task_scope_predicate(
+        pairs,
+        env,
+        "tracker.linear.tasks_from",
+        1,
+      ))
       enforce_task_scope_predicate_bounds(scope)
     }
     _ -> Error(error.InvalidConfig("tracker.linear.tasks_from must be a map"))
@@ -314,25 +319,54 @@ fn parse_tasks_from(
 fn parse_task_scope_predicate(
   pairs: List(#(yay.Node, yay.Node)),
   env: Env,
+  path: String,
+  depth: Int,
 ) -> Result(config_types.LinearTaskScope, error.ConfigError) {
-  case pairs {
-    [#(yay.NodeStr("project"), _)] -> parse_tasks_from_project(pairs, env)
-    [#(yay.NodeStr("projects"), _)] -> parse_tasks_from_projects(pairs, env)
-    [#(yay.NodeStr(key), _)] -> Error(unsupported_tasks_from_key(key))
-    [#(_, _)] ->
+  case depth > linear_task_scope.max_predicate_depth {
+    True ->
       Error(error.InvalidConfig(
-        "tracker.linear.tasks_from keys must be strings",
+        "tracker.linear.tasks_from exceeds max predicate depth "
+        <> int.to_string(linear_task_scope.max_predicate_depth)
+        <> "; got "
+        <> int.to_string(depth),
       ))
-    [] ->
-      Error(error.InvalidConfig(
-        "tracker.linear.tasks_from must contain exactly one key: project or projects",
-      ))
-    [_, ..] ->
-      Error(error.InvalidConfig(
-        "tracker.linear.tasks_from must contain exactly one key; found "
-        <> int.to_string(list.length(pairs))
-        <> " keys at tracker.linear.tasks_from",
-      ))
+    False ->
+      case pairs {
+        [#(yay.NodeStr("project"), value)] ->
+          parse_tasks_from_project_value(value, env, path <> ".project")
+        [#(yay.NodeStr("projects"), value)] ->
+          parse_tasks_from_projects_value(value, env, path <> ".projects")
+        [#(yay.NodeStr("and"), value)] ->
+          parse_tasks_from_boolean_value(
+            value,
+            env,
+            path <> ".and",
+            depth,
+            config_types.LinearTaskAnd,
+          )
+        [#(yay.NodeStr("or"), value)] ->
+          parse_tasks_from_boolean_value(
+            value,
+            env,
+            path <> ".or",
+            depth,
+            config_types.LinearTaskOr,
+          )
+        [#(yay.NodeStr(key), _)] -> Error(unsupported_tasks_from_key(path, key))
+        [#(_, _)] -> Error(error.InvalidConfig(path <> " keys must be strings"))
+        [] ->
+          Error(error.InvalidConfig(
+            path <> " must contain exactly one key: project, projects, and, or",
+          ))
+        [_, ..] ->
+          Error(error.InvalidConfig(
+            path
+            <> " must contain exactly one key; found "
+            <> int.to_string(list.length(pairs))
+            <> " keys at "
+            <> path,
+          ))
+      }
   }
 }
 
@@ -340,75 +374,117 @@ fn enforce_task_scope_predicate_bounds(
   scope: config_types.LinearTaskScope,
 ) -> Result(config_types.LinearTaskScope, error.ConfigError) {
   let stats = linear_task_scope.stats(scope)
-  case stats.max_depth > linear_task_scope.max_predicate_depth {
-    True ->
-      Error(error.InvalidConfig(
-        "tracker.linear.tasks_from exceeds max predicate depth "
-        <> int.to_string(linear_task_scope.max_predicate_depth)
-        <> "; got "
-        <> int.to_string(stats.max_depth),
-      ))
+  case linear_task_scope.is_anchored(scope) {
     False ->
-      case stats.predicate_nodes > linear_task_scope.max_predicate_nodes {
+      Error(error.InvalidConfig(
+        "tracker.linear.tasks_from is unanchored. Add project/projects bounds or use a future explicit workspace-wide opt-in when available.",
+      ))
+    True ->
+      case stats.max_depth > linear_task_scope.max_predicate_depth {
         True ->
           Error(error.InvalidConfig(
-            "tracker.linear.tasks_from exceeds max predicate nodes "
-            <> int.to_string(linear_task_scope.max_predicate_nodes)
+            "tracker.linear.tasks_from exceeds max predicate depth "
+            <> int.to_string(linear_task_scope.max_predicate_depth)
             <> "; got "
-            <> int.to_string(stats.predicate_nodes),
+            <> int.to_string(stats.max_depth),
           ))
-        False -> Ok(scope)
+        False ->
+          case stats.predicate_nodes > linear_task_scope.max_predicate_nodes {
+            True ->
+              Error(error.InvalidConfig(
+                "tracker.linear.tasks_from exceeds max predicate nodes "
+                <> int.to_string(linear_task_scope.max_predicate_nodes)
+                <> "; got "
+                <> int.to_string(stats.predicate_nodes),
+              ))
+            False -> {
+              use _ <- result.try(enforce_task_scope_project_slug_bound(scope))
+              enforce_task_scope_issue_filter_payload_bound(scope)
+            }
+          }
       }
   }
 }
 
-fn parse_tasks_from_project(
-  pairs: List(#(yay.Node, yay.Node)),
-  env: Env,
+fn enforce_task_scope_project_slug_bound(
+  scope: config_types.LinearTaskScope,
 ) -> Result(config_types.LinearTaskScope, error.ConfigError) {
-  use value <- result.try(required_option(
-    get_pair(pairs, "project"),
-    error.InvalidConfig("tracker.linear.tasks_from.project is required"),
-  ))
-  case value {
-    yay.NodeStr(project) ->
-      resolve_task_scope_project_value(
-        project,
-        "tracker.linear.tasks_from.project",
-        env,
-        fn(slug) { config_types.LinearTaskProject(slug) },
-      )
-    _ ->
+  let project_count = linear_task_scope.project_slugs(scope) |> list.length
+  case project_count > linear_task_scope.max_array_entries {
+    True ->
       Error(error.InvalidConfig(
-        "tracker.linear.tasks_from.project must be a string",
+        "tracker.linear.tasks_from references "
+        <> int.to_string(project_count)
+        <> " unique projects; maximum is "
+        <> int.to_string(linear_task_scope.max_array_entries),
       ))
+    False -> Ok(scope)
   }
 }
 
-fn parse_tasks_from_projects(
-  pairs: List(#(yay.Node, yay.Node)),
-  env: Env,
+fn enforce_task_scope_issue_filter_payload_bound(
+  scope: config_types.LinearTaskScope,
 ) -> Result(config_types.LinearTaskScope, error.ConfigError) {
-  use value <- result.try(required_option(
-    get_pair(pairs, "projects"),
-    error.InvalidConfig("tracker.linear.tasks_from.projects is required"),
-  ))
+  let payload_bytes = linear_task_scope.issue_filter_payload_bytes(scope)
+  case payload_bytes > linear_task_scope.max_issue_filter_payload_bytes {
+    True ->
+      Error(error.InvalidConfig(
+        "tracker.linear.tasks_from compiled Linear IssueFilter payload is "
+        <> int.to_string(payload_bytes)
+        <> " bytes; maximum is "
+        <> int.to_string(linear_task_scope.max_issue_filter_payload_bytes),
+      ))
+    False -> Ok(scope)
+  }
+}
+
+fn parse_tasks_from_project_value(
+  value: yay.Node,
+  env: Env,
+  path: String,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
+  case value {
+    yay.NodeStr(project) ->
+      resolve_task_scope_project_value(project, path, env, fn(slug) {
+        config_types.LinearTaskProject(slug)
+      })
+    _ -> Error(error.InvalidConfig(path <> " must be a string"))
+  }
+}
+
+fn parse_tasks_from_projects_value(
+  value: yay.Node,
+  env: Env,
+  path: String,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
   case value {
     yay.NodeSeq(values) -> {
-      use _ <- result.try(validate_task_scope_array(
-        values,
-        "tracker.linear.tasks_from.projects",
-        "project",
-      ))
+      use _ <- result.try(validate_task_scope_array(values, path, "project"))
       use projects <- result.try(
-        read_tasks_from_project_values(values, env, 0, []),
+        read_tasks_from_project_values(values, env, path, 0, []),
       )
       Ok(config_types.LinearTaskProjects(dedupe_preserving_first(projects)))
     }
-    _ ->
-      Error(error.InvalidConfig(
-        "tracker.linear.tasks_from.projects must be a string list",
-      ))
+    _ -> Error(error.InvalidConfig(path <> " must be a string list"))
+  }
+}
+
+fn parse_tasks_from_boolean_value(
+  value: yay.Node,
+  env: Env,
+  path: String,
+  depth: Int,
+  wrap: fn(List(config_types.LinearTaskScope)) -> config_types.LinearTaskScope,
+) -> Result(config_types.LinearTaskScope, error.ConfigError) {
+  case value {
+    yay.NodeSeq(values) -> {
+      use _ <- result.try(validate_task_scope_array(values, path, "predicate"))
+      use children <- result.try(
+        read_task_scope_predicates(values, env, path, depth, 0, []),
+      )
+      Ok(wrap(children))
+    }
+    _ -> Error(error.InvalidConfig(path <> " must be a predicate list"))
   }
 }
 
@@ -438,23 +514,58 @@ fn validate_task_scope_array(
   }
 }
 
+fn read_task_scope_predicates(
+  values: List(yay.Node),
+  env: Env,
+  path: String,
+  depth: Int,
+  index: Int,
+  acc: List(config_types.LinearTaskScope),
+) -> Result(List(config_types.LinearTaskScope), error.ConfigError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeMap(pairs), ..rest] -> {
+      let child_path = path <> "[" <> int.to_string(index) <> "]"
+      use child <- result.try(parse_task_scope_predicate(
+        pairs,
+        env,
+        child_path,
+        depth + 1,
+      ))
+      read_task_scope_predicates(rest, env, path, depth, index + 1, [
+        child,
+        ..acc
+      ])
+    }
+    [_, ..] ->
+      Error(error.InvalidConfig(
+        path <> "[" <> int.to_string(index) <> "] must be a map",
+      ))
+  }
+}
+
 fn read_tasks_from_project_values(
   values: List(yay.Node),
   env: Env,
+  path: String,
   index: Int,
   acc: List(String),
 ) -> Result(List(String), error.ConfigError) {
-  let path =
-    "tracker.linear.tasks_from.projects[" <> int.to_string(index) <> "]"
+  let item_path = path <> "[" <> int.to_string(index) <> "]"
   case values {
     [] -> Ok(list.reverse(acc))
     [yay.NodeStr(value), ..rest] -> {
       use project <- result.try(
-        resolve_task_scope_project_value(value, path, env, fn(slug) { slug }),
+        resolve_task_scope_project_value(value, item_path, env, fn(slug) {
+          slug
+        }),
       )
-      read_tasks_from_project_values(rest, env, index + 1, [project, ..acc])
+      read_tasks_from_project_values(rest, env, path, index + 1, [
+        project,
+        ..acc
+      ])
     }
-    [_, ..] -> Error(error.InvalidConfig(path <> " must be a string"))
+    [_, ..] -> Error(error.InvalidConfig(item_path <> " must be a string"))
   }
 }
 
@@ -510,18 +621,15 @@ fn validate_task_scope_scalar_length(
 fn primary_project_slug(scope: config_types.LinearTaskScope) -> Option(String) {
   case scope {
     config_types.LinearTaskProject(project) -> Some(project)
-    config_types.LinearTaskProjects(_) -> None
+    config_types.LinearTaskProjects(_)
+    | config_types.LinearTaskAnd(_)
+    | config_types.LinearTaskOr(_) -> None
   }
 }
 
-fn unsupported_tasks_from_key(key: String) -> error.ConfigError {
-  let path = "tracker.linear.tasks_from." <> key
+fn unsupported_tasks_from_key(path: String, key: String) -> error.ConfigError {
+  let path = path <> "." <> key
   case key {
-    "and" | "or" ->
-      error.InvalidConfig(
-        path
-        <> " is recognized for future boolean task-scope composition but is not enabled by this Scherzo build",
-      )
     "all_labels" | "any_label" ->
       error.InvalidConfig(
         path
@@ -530,7 +638,7 @@ fn unsupported_tasks_from_key(key: String) -> error.ConfigError {
     _ ->
       error.InvalidConfig(
         path
-        <> " is not supported by this Scherzo build; supported keys are project and projects",
+        <> " is not supported by this Scherzo build; supported keys are project, projects, and, or",
       )
   }
 }

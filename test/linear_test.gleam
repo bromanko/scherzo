@@ -6,8 +6,10 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
+import scherzo/config/linear_task_scope
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/json_value
 import scherzo/linear
 import scherzo/linear/task_query
 import scherzo/tracker/issue as tracker_issue
@@ -35,6 +37,32 @@ fn multi_project_tracker_config() -> config_types.TrackerConfig {
     project_slug: None,
     task_scope: Some(config_types.LinearTaskProjects(["PROJ", "BUGS"])),
   )
+}
+
+fn composed_project_tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
+    ..tracker_config(),
+    project_slug: None,
+    task_scope: Some(composed_project_scope()),
+  )
+}
+
+fn composed_project_scope() -> config_types.LinearTaskScope {
+  config_types.LinearTaskOr([
+    config_types.LinearTaskProject("PROJ"),
+    config_types.LinearTaskAnd([
+      config_types.LinearTaskProjects(["BUGS", "OPS"]),
+      config_types.LinearTaskProject("BUGS"),
+    ]),
+  ])
+}
+
+fn composed_project_task_filter_json() -> String {
+  "{\"or\":[{\"project\":{\"slugId\":{\"eq\":\"PROJ\"}}},{\"and\":[{\"project\":{\"slugId\":{\"in\":[\"BUGS\",\"OPS\"]}}},{\"project\":{\"slugId\":{\"eq\":\"BUGS\"}}}]}]}"
+}
+
+fn composed_project_filter_json() -> String {
+  "{\"or\":[{\"slugId\":{\"eq\":\"PROJ\"}},{\"and\":[{\"slugId\":{\"in\":[\"BUGS\",\"OPS\"]}},{\"slugId\":{\"eq\":\"BUGS\"}}]}]}"
 }
 
 fn response_page(
@@ -86,6 +114,12 @@ fn optional_string_variable(body: String, name: String) -> Option(String) {
   value
 }
 
+fn json_variable(body: String, name: String) -> String {
+  let assert Ok(value) =
+    json.parse(body, decode.at(["variables", name], json_value.decoder()))
+  json_value.to_string(value)
+}
+
 fn variable_names(body: String) -> List(String) {
   let assert Ok(variables) =
     json.parse(
@@ -97,7 +131,7 @@ fn variable_names(body: String) -> List(String) {
   |> list.sort(by: string.compare)
 }
 
-pub fn candidate_query_uses_project_slug_filter_test() {
+pub fn candidate_query_uses_task_filter_variable_test() {
   let assert Error(error.LinearApiRequest(_)) =
     linear.build_candidate_request(
       config_types.TrackerConfig(
@@ -115,17 +149,18 @@ pub fn candidate_query_uses_project_slug_filter_test() {
     )
   let query = request_query(request.body)
   assert variable_names(request.body)
-    == ["after", "dispatchStates", "projectSlug"]
-  assert string_variable(request.body, "projectSlug") == "PROJ"
+    == ["after", "dispatchStates", "taskFilter"]
+  assert json_variable(request.body, "taskFilter")
+    == "{\"project\":{\"slugId\":{\"eq\":\"PROJ\"}}}"
   assert string_list_variable(request.body, "dispatchStates") == ["Todo"]
   assert optional_string_variable(request.body, "after") == Some("cursor")
   assert string.contains(
     query,
-    "query CandidateIssues($projectSlug: String!, $dispatchStates: [String!], $after: String)",
+    "query CandidateIssues($taskFilter: IssueFilter!, $dispatchStates: [String!], $after: String)",
   )
   assert string.contains(
     query,
-    "issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $dispatchStates } } })",
+    "issues(first: 50, after: $after, filter: { and: [$taskFilter], state: { name: { in: $dispatchStates } } })",
   )
   assert string.contains(
     query,
@@ -138,7 +173,7 @@ pub fn candidate_query_uses_project_slug_filter_test() {
     ]
 }
 
-pub fn candidate_query_uses_multi_project_scope_filter_test() {
+pub fn candidate_query_uses_multi_project_task_filter_test() {
   let assert Ok(request) =
     linear.build_candidate_request(
       multi_project_tracker_config(),
@@ -147,15 +182,62 @@ pub fn candidate_query_uses_multi_project_scope_filter_test() {
     )
   let query = request_query(request.body)
   assert variable_names(request.body)
-    == ["after", "dispatchStates", "projectSlugs"]
-  assert string_list_variable(request.body, "projectSlugs") == ["PROJ", "BUGS"]
+    == ["after", "dispatchStates", "taskFilter"]
+  assert json_variable(request.body, "taskFilter")
+    == "{\"project\":{\"slugId\":{\"in\":[\"PROJ\",\"BUGS\"]}}}"
   assert string.contains(
     query,
-    "query CandidateIssues($projectSlugs: [String!]!, $dispatchStates: [String!], $after: String)",
+    "query CandidateIssues($taskFilter: IssueFilter!, $dispatchStates: [String!], $after: String)",
   )
   assert string.contains(
     query,
-    "issues(first: 50, after: $after, filter: { project: { slugId: { in: $projectSlugs } }, state: { name: { in: $dispatchStates } } })",
+    "issues(first: 50, after: $after, filter: { and: [$taskFilter], state: { name: { in: $dispatchStates } } })",
+  )
+}
+
+pub fn composed_task_scope_uses_same_issue_filter_for_ownership_requests_test() {
+  let assert Ok(candidate_request) =
+    linear.build_candidate_request(
+      composed_project_tracker_config(),
+      issue_state.list_from_strings(["Todo"]),
+      None,
+    )
+  let assert Ok(list_request) =
+    task_query.build_list_request(
+      composed_project_tracker_config(),
+      issue_state.list_from_strings(["Todo"]),
+      None,
+    )
+  let assert Ok(detail_request) =
+    task_query.build_detail_by_id_request(
+      composed_project_tracker_config(),
+      "issue-id",
+    )
+  let assert Ok(identifier_request) =
+    task_query.build_detail_by_identifier_request(
+      composed_project_tracker_config(),
+      "BUG-1",
+    )
+
+  assert json_variable(candidate_request.body, "taskFilter")
+    == composed_project_task_filter_json()
+  assert json_variable(list_request.body, "taskFilter")
+    == composed_project_task_filter_json()
+  assert json_variable(detail_request.body, "taskFilter")
+    == composed_project_task_filter_json()
+  assert json_variable(identifier_request.body, "taskFilter")
+    == composed_project_task_filter_json()
+  assert linear_task_scope.matches_project_slug(
+    composed_project_scope(),
+    "PROJ",
+  )
+  assert linear_task_scope.matches_project_slug(
+    composed_project_scope(),
+    "BUGS",
+  )
+  assert !linear_task_scope.matches_project_slug(
+    composed_project_scope(),
+    "OPS",
   )
 }
 
@@ -424,7 +506,7 @@ pub fn missing_end_cursor_is_error_test() {
     linear.fetch_candidate_issues(tracker_config(), transport)
 }
 
-pub fn task_source_requests_use_multi_project_scope_filters_test() {
+pub fn task_source_requests_use_multi_project_task_filters_test() {
   let assert Ok(list_request) =
     task_query.build_list_request(
       multi_project_tracker_config(),
@@ -433,16 +515,16 @@ pub fn task_source_requests_use_multi_project_scope_filters_test() {
     )
   let list_query = request_query(list_request.body)
   assert variable_names(list_request.body)
-    == ["after", "projectSlugs", "stateNames"]
-  assert string_list_variable(list_request.body, "projectSlugs")
-    == ["PROJ", "BUGS"]
+    == ["after", "stateNames", "taskFilter"]
+  assert json_variable(list_request.body, "taskFilter")
+    == "{\"project\":{\"slugId\":{\"in\":[\"PROJ\",\"BUGS\"]}}}"
   assert string.contains(
     list_query,
-    "query ScherzoTaskList($projectSlugs: [String!]!, $stateNames: [String!], $after: String)",
+    "query ScherzoTaskList($taskFilter: IssueFilter!, $stateNames: [String!], $after: String)",
   )
   assert string.contains(
     list_query,
-    "filter: { project: { slugId: { in: $projectSlugs } }, state: { name: { in: $stateNames } } }",
+    "filter: { and: [$taskFilter], state: { name: { in: $stateNames } } }",
   )
 
   let assert Ok(detail_request) =
@@ -451,16 +533,37 @@ pub fn task_source_requests_use_multi_project_scope_filters_test() {
       "issue-id",
     )
   let detail_query = request_query(detail_request.body)
-  assert variable_names(detail_request.body) == ["ids", "projectSlugs"]
-  assert string_list_variable(detail_request.body, "projectSlugs")
-    == ["PROJ", "BUGS"]
+  assert variable_names(detail_request.body) == ["ids", "taskFilter"]
+  assert json_variable(detail_request.body, "taskFilter")
+    == "{\"project\":{\"slugId\":{\"in\":[\"PROJ\",\"BUGS\"]}}}"
   assert string.contains(
     detail_query,
-    "query ScherzoTaskDetailById($projectSlugs: [String!]!, $ids: [ID!]!)",
+    "query ScherzoTaskDetailById($taskFilter: IssueFilter!, $ids: [ID!]!)",
   )
   assert string.contains(
     detail_query,
-    "filter: { project: { slugId: { in: $projectSlugs } }, id: { in: $ids } }",
+    "filter: { and: [$taskFilter], id: { in: $ids } }",
+  )
+
+  let assert Ok(identifier_request) =
+    task_query.build_detail_by_identifier_request(
+      multi_project_tracker_config(),
+      "BUG-1",
+    )
+  let identifier_query = request_query(identifier_request.body)
+  assert variable_names(identifier_request.body)
+    == ["issueIdentifier", "issueRemoteId", "taskFilter"]
+  assert json_variable(identifier_request.body, "taskFilter")
+    == "{\"project\":{\"slugId\":{\"in\":[\"PROJ\",\"BUGS\"]}}}"
+  assert string_variable(identifier_request.body, "issueRemoteId") == "BUG-1"
+  assert string_variable(identifier_request.body, "issueIdentifier") == "BUG-1"
+  assert string.contains(
+    identifier_query,
+    "query ScherzoTaskDetailByIdentifier($taskFilter: IssueFilter!, $issueRemoteId: ID!, $issueIdentifier: String!)",
+  )
+  assert string.contains(
+    identifier_query,
+    "filter: { and: [$taskFilter], or: [{ id: { eq: $issueRemoteId } }, { identifier: { eq: $issueIdentifier } }] }",
   )
 }
 
@@ -488,18 +591,47 @@ pub fn task_source_detail_identifier_filters_multi_project_scope_test() {
     )
 }
 
+pub fn task_source_detail_identifier_decodes_composed_scope_responses_test() {
+  let scope = composed_project_scope()
+  let assert Ok(Some(found)) =
+    task_query.parse_detail_by_identifier_response(
+      linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_connection_response("BUG-1"),
+      ),
+      scope,
+      "BUG-1",
+    )
+  assert found.ref.key == Some("BUG-1")
+
+  let assert Ok(None) =
+    task_query.parse_detail_by_identifier_response(
+      linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_response("OPS-1", "OPS"),
+      ),
+      scope,
+      "OPS-1",
+    )
+}
+
 pub fn contract_request_uses_project_slug_and_read_only_query_test() {
   let assert Ok(request) = linear.build_contract_request(tracker_config())
   let query = request_query(request.body)
-  assert variable_names(request.body) == ["projectSlug"]
-  assert string_variable(request.body, "projectSlug") == "PROJ"
+  assert variable_names(request.body)
+    == ["configuredProjectSlugs", "projectFilter"]
+  assert json_variable(request.body, "projectFilter")
+    == "{\"slugId\":{\"eq\":\"PROJ\"}}"
+  assert string_list_variable(request.body, "configuredProjectSlugs")
+    == ["PROJ"]
   assert string.contains(
     query,
-    "query ScherzoLinearContract($projectSlug: String!)",
+    "query ScherzoLinearContract($projectFilter: ProjectFilter!, $configuredProjectSlugs: [String!]!)",
   )
+  assert string.contains(query, "projects(first: 2, filter: $projectFilter)")
   assert string.contains(
     query,
-    "projects(first: 2, filter: { slugId: { eq: $projectSlug } })",
+    "configuredProjects: projects(first: 1, filter: { slugId: { in: $configuredProjectSlugs } })",
   )
   assert string.contains(
     query,
@@ -525,15 +657,41 @@ pub fn contract_request_uses_multi_project_scope_filter_test() {
   let assert Ok(request) =
     linear.build_contract_request(multi_project_tracker_config())
   let query = request_query(request.body)
-  assert variable_names(request.body) == ["projectSlugs"]
-  assert string_list_variable(request.body, "projectSlugs") == ["PROJ", "BUGS"]
+  assert variable_names(request.body)
+    == ["configuredProjectSlugs", "projectFilter"]
+  assert json_variable(request.body, "projectFilter")
+    == "{\"slugId\":{\"in\":[\"PROJ\",\"BUGS\"]}}"
+  assert string_list_variable(request.body, "configuredProjectSlugs")
+    == ["PROJ", "BUGS"]
   assert string.contains(
     query,
-    "query ScherzoLinearContract($projectSlugs: [String!]!)",
+    "query ScherzoLinearContract($projectFilter: ProjectFilter!, $configuredProjectSlugs: [String!]!)",
   )
+  assert string.contains(query, "projects(first: 2, filter: $projectFilter)")
   assert string.contains(
     query,
-    "projects(first: 2, filter: { slugId: { in: $projectSlugs } })",
+    "configuredProjects: projects(first: 2, filter: { slugId: { in: $configuredProjectSlugs } })",
+  )
+}
+
+pub fn contract_request_uses_composed_scope_project_filter_test() {
+  let assert Ok(request) =
+    linear.build_contract_request(composed_project_tracker_config())
+  let query = request_query(request.body)
+  assert variable_names(request.body)
+    == ["configuredProjectSlugs", "projectFilter"]
+  assert json_variable(request.body, "projectFilter")
+    == composed_project_filter_json()
+  assert string_list_variable(request.body, "configuredProjectSlugs")
+    == ["PROJ", "BUGS", "OPS"]
+  assert string.contains(
+    query,
+    "query ScherzoLinearContract($projectFilter: ProjectFilter!, $configuredProjectSlugs: [String!]!)",
+  )
+  assert string.contains(query, "projects(first: 2, filter: $projectFilter)")
+  assert string.contains(
+    query,
+    "configuredProjects: projects(first: 3, filter: { slugId: { in: $configuredProjectSlugs } })",
   )
 }
 
@@ -581,6 +739,88 @@ pub fn contract_client_merges_multi_project_contract_without_synthetic_project_i
   assert board.project_slug == "PROJ,BUGS"
   let assert [team] = board.teams
   assert team.id == "team-ENG"
+}
+
+pub fn contract_client_uses_composed_scope_effective_projects_test() {
+  let effective_projects =
+    "["
+    <> contract_project_for(
+      "PROJ",
+      "[" <> contract_team("PROJ", "false", "false") <> "]",
+      "false",
+    )
+    <> ","
+    <> contract_project_for(
+      "BUGS",
+      "[" <> contract_team("BUGS", "false", "false") <> "]",
+      "false",
+    )
+    <> "]"
+  let configured_projects =
+    "["
+    <> contract_project_for("PROJ", "[]", "false")
+    <> ","
+    <> contract_project_for("BUGS", "[]", "false")
+    <> ","
+    <> contract_project_for("OPS", "[]", "false")
+    <> "]"
+  let client =
+    linear.contract_client(composed_project_tracker_config(), fn(request) {
+      assert json_variable(request.body, "projectFilter")
+        == composed_project_filter_json()
+      assert string_list_variable(request.body, "configuredProjectSlugs")
+        == ["PROJ", "BUGS", "OPS"]
+      Ok(linear.Response(
+        status: 200,
+        body: contract_response_with_configured_projects(
+          effective_projects,
+          configured_projects,
+          "false",
+        ),
+      ))
+    })
+
+  let assert Ok(board) = client.fetch_remote_contract()
+  assert board.project_slug == "PROJ,BUGS"
+  assert list.map(board.teams, fn(team) { team.key }) == ["PROJ", "BUGS"]
+}
+
+pub fn contract_client_validates_missing_configured_slug_for_composed_scope_test() {
+  let effective_projects =
+    "["
+    <> contract_project_for(
+      "PROJ",
+      "[" <> contract_team("PROJ", "false", "false") <> "]",
+      "false",
+    )
+    <> ","
+    <> contract_project_for(
+      "BUGS",
+      "[" <> contract_team("BUGS", "false", "false") <> "]",
+      "false",
+    )
+    <> "]"
+  let configured_projects =
+    "["
+    <> contract_project_for("PROJ", "[]", "false")
+    <> ","
+    <> contract_project_for("BUGS", "[]", "false")
+    <> "]"
+  let client =
+    linear.contract_client(composed_project_tracker_config(), fn(_) {
+      Ok(linear.Response(
+        status: 200,
+        body: contract_response_with_configured_projects(
+          effective_projects,
+          configured_projects,
+          "false",
+        ),
+      ))
+    })
+
+  let assert Error(error.LinearUnknownPayload(message)) =
+    client.fetch_remote_contract()
+  assert string.contains(message, "project slug(s) not found: OPS")
 }
 
 pub fn contract_response_decodes_project_teams_and_workspace_labels_test() {
@@ -746,9 +986,29 @@ fn task_detail_by_identifier_response(
   <> "\"},\"state\":{\"id\":\"state-id\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-id\",\"name\":\"workflow:bug\"}]}}}}"
 }
 
+fn task_detail_by_identifier_connection_response(identifier: String) -> String {
+  "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-id\",\"identifier\":\""
+  <> identifier
+  <> "\",\"title\":\"Task Detail\",\"description\":\"Desc\",\"priority\":1,\"branchName\":\"branch\",\"url\":\"https://linear/issue\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-id\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-id\",\"name\":\"workflow:bug\"}]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+}
+
 fn contract_response(projects: String, workspace_has_next: String) -> String {
+  contract_response_with_configured_projects(
+    projects,
+    projects,
+    workspace_has_next,
+  )
+}
+
+fn contract_response_with_configured_projects(
+  projects: String,
+  configured_projects: String,
+  workspace_has_next: String,
+) -> String {
   "{\"data\":{\"projects\":{\"nodes\":"
   <> projects
+  <> "},\"configuredProjects\":{\"nodes\":"
+  <> configured_projects
   <> "},\"issueLabels\":{\"nodes\":[{\"id\":\"workspace-research\",\"name\":\"workflow:research\"}],\"pageInfo\":"
   <> page_info(workspace_has_next)
   <> "}}}"

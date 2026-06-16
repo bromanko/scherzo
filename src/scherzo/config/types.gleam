@@ -1,6 +1,4 @@
 import gleam/dict.{type Dict}
-import gleam/int
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -23,6 +21,8 @@ pub fn config_warning_message(warning: ConfigWarning) -> String {
 pub type LinearTaskScope {
   LinearTaskProject(String)
   LinearTaskProjects(List(String))
+  LinearTaskAnd(List(LinearTaskScope))
+  LinearTaskOr(List(LinearTaskScope))
 }
 
 pub type LinearTaskScopeError {
@@ -61,93 +61,30 @@ pub fn linear_task_scope_project_slugs(scope: LinearTaskScope) -> List(String) {
   case scope {
     LinearTaskProject(slug) -> normalize_project_slugs([slug])
     LinearTaskProjects(slugs) -> normalize_project_slugs(slugs)
-  }
-}
-
-pub fn linear_task_scope_matches_project_slug(
-  scope: LinearTaskScope,
-  returned_slug: String,
-) -> Bool {
-  linear_task_scope_project_slugs(scope)
-  |> list.any(fn(expected_slug) {
-    project_slug_matches(expected_slug, returned_slug)
-  })
-}
-
-pub fn linear_task_scope_graphql_variables(
-  scope: LinearTaskScope,
-  single_name: String,
-  multi_name: String,
-) -> List(#(String, json.Json)) {
-  case scope {
-    LinearTaskProject(_) -> [
-      #(
-        single_name,
-        json.string(first_project_slug(linear_task_scope_project_slugs(scope))),
-      ),
-    ]
-    LinearTaskProjects(_) -> [
-      #(
-        multi_name,
-        json.array(linear_task_scope_project_slugs(scope), of: json.string),
-      ),
-    ]
-  }
-}
-
-pub fn linear_task_scope_variable_declaration(
-  scope: LinearTaskScope,
-  single_name: String,
-  multi_name: String,
-) -> String {
-  case scope {
-    LinearTaskProject(_) -> "$" <> single_name <> ": String!"
-    LinearTaskProjects(_) -> "$" <> multi_name <> ": [String!]!"
-  }
-}
-
-pub fn linear_task_scope_project_filter(
-  scope: LinearTaskScope,
-  single_variable: String,
-  multi_variable: String,
-) -> String {
-  case scope {
-    LinearTaskProject(_) ->
-      "project: { slugId: { eq: " <> single_variable <> " } }"
-    LinearTaskProjects(_) ->
-      "project: { slugId: { in: " <> multi_variable <> " } }"
-  }
-}
-
-pub fn linear_task_scope_contract_project_first(
-  scope: LinearTaskScope,
-) -> String {
-  case scope {
-    LinearTaskProject(_) -> "2"
-    LinearTaskProjects(_) ->
-      linear_task_scope_project_slugs(scope)
-      |> list.length
-      |> int.to_string
-  }
-}
-
-fn first_project_slug(slugs: List(String)) -> String {
-  case slugs {
-    [slug, ..] -> slug
-    [] -> ""
+    LinearTaskAnd(children) | LinearTaskOr(children) ->
+      collect_linear_task_scope_project_slugs(children, [])
+      |> normalize_project_slugs
   }
 }
 
 fn validate_linear_task_scope(
   scope: LinearTaskScope,
 ) -> Result(LinearTaskScope, LinearTaskScopeError) {
-  case linear_task_scope_project_slugs(scope) {
-    [] -> Error(MissingLinearTaskScopeProject)
-    [slug, ..rest] ->
-      case scope {
-        LinearTaskProject(_) -> Ok(LinearTaskProject(slug))
-        LinearTaskProjects(_) -> Ok(LinearTaskProjects([slug, ..rest]))
+  case scope {
+    LinearTaskProject(_) ->
+      case linear_task_scope_project_slugs(scope) {
+        [slug, ..] -> Ok(LinearTaskProject(slug))
+        [] -> Error(MissingLinearTaskScopeProject)
       }
+    LinearTaskProjects(_) ->
+      case linear_task_scope_project_slugs(scope) {
+        [slug, ..rest] -> Ok(LinearTaskProjects([slug, ..rest]))
+        [] -> Error(MissingLinearTaskScopeProject)
+      }
+    LinearTaskAnd(children) ->
+      validate_linear_task_scope_children(children, [], LinearTaskAnd)
+    LinearTaskOr(children) ->
+      validate_linear_task_scope_children(children, [], LinearTaskOr)
   }
 }
 
@@ -167,12 +104,37 @@ fn normalize_project_slugs(slugs: List(String)) -> List(String) {
   |> dedupe_preserving_first
 }
 
-fn project_slug_matches(expected: String, returned: String) -> Bool {
-  let expected = string.trim(expected) |> string.lowercase
-  let returned = string.trim(returned) |> string.lowercase
-  case expected == "" || returned == "" {
-    True -> False
-    False -> expected == returned || string.ends_with(expected, "-" <> returned)
+fn collect_linear_task_scope_project_slugs(
+  scopes: List(LinearTaskScope),
+  acc: List(String),
+) -> List(String) {
+  case scopes {
+    [] -> acc
+    [scope, ..rest] ->
+      collect_linear_task_scope_project_slugs(
+        rest,
+        list.append(acc, linear_task_scope_project_slugs(scope)),
+      )
+  }
+}
+
+fn validate_linear_task_scope_children(
+  children: List(LinearTaskScope),
+  acc: List(LinearTaskScope),
+  wrap: fn(List(LinearTaskScope)) -> LinearTaskScope,
+) -> Result(LinearTaskScope, LinearTaskScopeError) {
+  case children {
+    [] ->
+      case acc {
+        [] -> Error(MissingLinearTaskScopeProject)
+        _ -> Ok(wrap(list.reverse(acc)))
+      }
+    [child, ..rest] ->
+      case validate_linear_task_scope(child) {
+        Ok(valid_child) ->
+          validate_linear_task_scope_children(rest, [valid_child, ..acc], wrap)
+        Error(error) -> Error(error)
+      }
   }
 }
 

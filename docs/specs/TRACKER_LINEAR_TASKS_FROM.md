@@ -1,6 +1,6 @@
 # `tracker.linear.tasks_from` specification
 
-Status: design/specification for Linear task-scope predicates. This repository slice implements the phase-1 `project` and `projects` leaves; boolean composition, labels, team predicates, and overlap diagnostics remain future work.
+Status: design/specification for Linear task-scope predicates. This repository slice implements `project` and `projects` leaves plus `and`/`or` composition over those leaves; labels, team predicates, and overlap diagnostics remain future work.
 
 ## Purpose
 
@@ -10,33 +10,33 @@ The goal is to let operators express task scope precisely without exposing raw L
 
 ## Current baseline
 
-Current production behavior is project-scoped with explicit phase-1 multi-project support.
+Current production behavior is project-scoped with explicit multi-project support and project-anchored boolean composition.
 
-- `src/scherzo/config/tracker_config.gleam` reads `tracker.linear.tasks_from.project` and `tracker.linear.tasks_from.projects` into an internal task scope.
+- `src/scherzo/config/tracker_config.gleam` reads `tracker.linear.tasks_from.project`, `tracker.linear.tasks_from.projects`, `tracker.linear.tasks_from.and`, and `tracker.linear.tasks_from.or` into an internal task scope.
 - When `tracker.linear.tasks_from` is absent, `tracker.linear.project`, `tracker.linear.project_slug`, and `tracker.project_slug` desugar to the single-project task scope.
-- Linear read paths compile single-project scopes to `project.slugId.eq` and multi-project scopes to `project.slugId.in`.
+- Linear read paths compile the task scope to one shared `IssueFilter` variable.
 
-The phase-1 `tasks_from` implementation preserves the single-project default when no explicit predicate is present.
+The `tasks_from` implementation preserves the single-project default when no explicit predicate is present.
 
 ## Scope and non-goals
 
 This spec defines the configuration shape, semantics, validation rules, compatibility behavior, `doctor` expectations, and the Linear query paths that must share one compiled predicate.
 
-This phase adds parser support, schema fields, and runtime compilation for `project` and `projects` only. It does not add boolean composition, label predicates, team predicates, cache changes, provider-live changes, or overlap diagnostics.
+This phase adds parser support, schema fields, and runtime compilation for `project` and `projects` leaves plus `and`/`or` composition over those leaves. It does not add label predicates, team predicates, cache changes, provider-live changes, or overlap diagnostics.
 
 ## Predicate model
 
 `tracker.linear.tasks_from` is a restricted abstract syntax tree. Each node is a map with exactly one key. Raw Linear GraphQL fragments are not allowed.
 
-Phase 1 supports these keys at the root:
+This build supports these keys at any predicate node:
 
 - `project`
 - `projects`
+- `and`
+- `or`
 
 The full predicate language reserves these future keys, which current builds should reject until their follow-up issues are implemented:
 
-- `and`
-- `or`
 - `all_labels`
 - `any_label`
 
@@ -233,6 +233,7 @@ Required safety bounds for future runtime support:
 - maximum `project`, `projects`, `all_labels`, or `any_label` scalar length: 128 Unicode scalar values
 - scalar values must be non-empty UTF-8 strings without control characters; future project-slug parsing may apply stricter slug validation
 - duplicate entries in `projects`, `all_labels`, and `any_label` must be collapsed for canonical summaries and compiled filters, but raw array length is still checked before normalization
+- maximum unique project slugs referenced across the full predicate: 32
 - maximum serialized Linear `IssueFilter` variable payload for the compiled predicate: 16 KiB
 
 Rejected raw GraphQL passthrough example:
@@ -289,7 +290,7 @@ tracker:
         - any_label: [workflow:research]
 ```
 
-A future implementation may support additional leaves later, but this version of the spec requires current builds to reject unsupported future leaves with a targeted diagnostic instead of silently ignoring them.
+A future implementation may support additional leaves later, but this version of the spec requires current builds to reject unsupported future leaves with a targeted diagnostic instead of silently ignoring them. Current builds accept `and`/`or` only when every complete branch is anchored by `project` or `projects` leaves.
 
 ## Compatibility and desugaring
 
@@ -374,7 +375,7 @@ Required paths are:
 3. scheduled-failure search in `src/scherzo/scheduled_failure_reporter.gleam`
 4. contract validation in `src/scherzo/linear.gleam` and `src/scherzo/linear_contract.gleam`
 
-Today these paths are tied together by `projectSlug`. Future implementation must replace that shared single-project assumption with the same compiled `tasks_from` predicate everywhere. Updating only candidate polling would be incorrect if task detail, scheduled failure search, or contract validation still used a different scope.
+Today these paths are tied together by `projectSlug`. Future implementation must replace that shared single-project assumption with the same compiled `tasks_from` predicate everywhere. Updating only candidate polling would be incorrect if task detail, scheduled failure search, or contract validation still used a different scope. For project-only boolean predicates, contract validation should use the project-filter equivalent of the same predicate for the metadata board while separately checking every configured project slug for existence.
 
 ## Operator safety and overlap guidance
 
