@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -7,6 +8,8 @@ import scherzo/config/types as config_types
 import scherzo/control/query/backend
 import scherzo/control/query/types
 import scherzo/daemon_identity
+import scherzo/state/projection
+import scherzo/state/record
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/work_item
@@ -171,6 +174,8 @@ pub fn backend_work_item_list_paginates_and_invokes_provider_test() {
     )
   let assert [first] = first_page.items
   assert first.source.display_id == Some("CARD-1")
+  let assert [run_workflow] = first.actions
+  assert run_workflow.action_id == "work_item.run_workflow"
   assert first_page.has_more == True
   assert first_page.next_cursor == Some("cursor:1")
   let assert Ok("list") = process.receive(calls, within: 1000)
@@ -191,6 +196,28 @@ pub fn backend_work_item_list_paginates_and_invokes_provider_test() {
   let assert Ok("list") = process.receive(calls, within: 1000)
 }
 
+pub fn backend_work_item_list_does_not_require_projection_snapshot_test() {
+  let tracker_adapter = fake_tracker_adapter.read_only_adapter()
+
+  let assert Ok(types.WorkItemListResponse(page)) =
+    backend.run_with_projection(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      fn(_) { Error(Nil) },
+      types.WorkItemList(types.WorkItemListQuery(
+        states: [task.Ready],
+        limit: 1,
+        cursor: None,
+      )),
+    )
+
+  let assert [first] = page.items
+  let assert [run_workflow] = first.actions
+  assert run_workflow.action_id == "work_item.run_workflow"
+}
+
 pub fn backend_work_item_show_resolves_display_and_remote_refs_test() {
   let tracker_adapter = fake_tracker_adapter.read_only_adapter()
 
@@ -205,7 +232,16 @@ pub fn backend_work_item_show_resolves_display_and_remote_refs_test() {
       ),
     )
   assert by_display.summary.source.id == "card-1"
+  let assert [summary_action] = by_display.summary.actions
+  assert summary_action.action_id == "work_item.run_workflow"
   assert list.length(by_display.subtasks) == 2
+  let assert [first_subtask, ..] = by_display.subtasks
+  assert list.map(first_subtask.actions, fn(item) { item.action_id })
+    == [
+      "work_subtask.cancel",
+      "work_subtask.review_artifacts",
+      "work_subtask.fix_retry",
+    ]
 
   let assert Ok(types.WorkItemShowResponse(by_remote_id)) =
     backend.run(
@@ -221,6 +257,33 @@ pub fn backend_work_item_show_resolves_display_and_remote_refs_test() {
       ),
     )
   assert by_remote_id.summary.source.display_id == Some("CARD-1")
+}
+
+pub fn backend_work_item_show_uses_projection_for_review_artifact_availability_test() {
+  let tracker_adapter = fake_tracker_adapter.read_only_adapter()
+
+  let assert Ok(types.WorkItemShowResponse(detail)) =
+    backend.run_with_projection(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      fn(_) {
+        Ok(projection_with_retained_artifacts(
+          issue_id: "card-1-child-1",
+          issue_identifier: "CARD-1.1",
+        ))
+      },
+      types.WorkItemShow(
+        types.WorkItemShowQuery(ref: types.TaskDisplayId("CARD-1")),
+      ),
+    )
+
+  let assert [first_subtask, ..] = detail.subtasks
+  let assert [_, review_action, _] = first_subtask.actions
+  assert review_action.enabled
+  let assert [artifact, ..] = review_action.artifacts
+  assert artifact.ref == "artifact://run-1/output.json"
 }
 
 pub fn backend_work_item_query_maps_unsupported_capability_test() {
@@ -322,6 +385,61 @@ pub fn backend_rejects_invalid_work_item_cursor_before_querying_adapter_test() {
   assert message == "invalid query cursor"
 }
 
+fn projection_with_retained_artifacts(
+  issue_id issue_id: String,
+  issue_identifier issue_identifier: String,
+) -> projection.Projection {
+  projection.Projection(
+    ..projection.new(),
+    workflow_runs: dict.from_list([
+      #(
+        "run-1",
+        projection.WorkflowRunFinished(
+          workflow_id: "workflow:execplan",
+          issue_id: issue_id,
+          outcome: "completed",
+          token_total: 0,
+          turns: 0,
+          finished_at_ms: 100,
+          run_root: "runs/run-1",
+        ),
+      ),
+    ]),
+    workflow_run_provenances: dict.from_list([
+      #(
+        "run-1",
+        projection.WorkflowRunProvenance(
+          workflow_id: "workflow:execplan",
+          workflow_fingerprint: "wf-1",
+          issue_id: issue_id,
+          issue_identifier: issue_identifier,
+          issue_fingerprint: "issue-fingerprint",
+          observed_updated_at_ms: 90,
+          run_root: "runs/run-1",
+          task_ref: record.linear_task_ref_fields(
+            issue_id,
+            Some(issue_identifier),
+            None,
+          ),
+        ),
+      ),
+    ]),
+    workflow_output_manifests: dict.from_list([
+      #(
+        "run-1",
+        projection.WorkflowContractManifestRef(
+          workflow_id: "workflow:execplan",
+          workflow_fingerprint: "wf-1",
+          artifact_ref: "artifact://run-1/output.json",
+          artifact_sha256: "sha-output",
+          artifact_bytes: 128,
+          recorded_at_ms: 101,
+        ),
+      ),
+    ]),
+  )
+}
+
 fn instrumented_work_item_adapter(
   calls: process.Subject(String),
 ) -> adapter.TrackerAdapter {
@@ -344,6 +462,7 @@ fn instrumented_work_item_adapter(
       labels_truncated: False,
       created_at: None,
       updated_at: None,
+      actions: [],
     )
   let second =
     work_item.WorkItemSummary(

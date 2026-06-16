@@ -10,6 +10,7 @@ import scherzo/control/query/types
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/work_item
+import scherzo/work_item/action
 
 pub fn status_query_request_roundtrip_test() {
   let encoded = codec.request_to_string(types.Status)
@@ -217,11 +218,19 @@ pub fn work_item_query_request_response_roundtrip_test() {
     "\"state\":{\"id\":\"todo\",\"name\":\"Todo\",\"category\":\"ready\"}",
   )
   assert string.contains(encoded_list, "\"labels_truncated\":false")
+  assert string.contains(
+    encoded_list,
+    "\"action_id\":\"work_item.run_workflow\"",
+  )
   assert codec.decode_response(encoded_list) == Ok(list_response)
 
   let encoded_detail = codec.response_to_string(detail_response)
   assert string.contains(encoded_detail, "\"type\":\"work_item_show\"")
   assert string.contains(encoded_detail, "\"subtasks_truncated\":false")
+  assert string.contains(
+    encoded_detail,
+    "\"action_id\":\"work_item.run_workflow\"",
+  )
   assert !string.contains(encoded_detail, "description")
   assert codec.decode_response(encoded_detail) == Ok(detail_response)
 }
@@ -377,6 +386,25 @@ fn work_item_summary(
     labels_truncated: labels_truncated,
     created_at: None,
     updated_at: None,
+    actions: [
+      action.mutating(
+        action.run_workflow_action_id,
+        "Run workflow",
+        False,
+        Some(action.ActionDisabledReason(
+          code: "run_workflow_not_enabled",
+          message: "Run workflow is not enabled yet",
+        )),
+        action.ActionTargetSummary(
+          kind: "work_item",
+          provider: "linear",
+          id: "issue-1",
+          display_id: Some("LIV-770"),
+          workflow_id: Some("workflow:implementation"),
+          run_id: None,
+        ),
+      ),
+    ],
   )
 }
 

@@ -15,6 +15,7 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/query/backend as query_backend
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
@@ -75,6 +76,10 @@ import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
+import scherzo/work_item
+import scherzo/work_item/action_derivation
+import scherzo/work_item/action_executor
+import scherzo/work_item/action_receipts
 import scherzo/workflow_checkpoint
 import scherzo/workflow_completion_policy
 import scherzo/workflow_dag
@@ -131,6 +136,7 @@ pub type Message {
   Shutdown(process.Subject(Nil))
   GetSnapshot(process.Subject(orchestrator_state.RuntimeState))
   GetReadModelSnapshot(process.Subject(read_model.Snapshot))
+  GetProjectionSnapshot(process.Subject(projection.Projection))
   GetOutboxSnapshot(process.Subject(List(#(String, projection.OutboxStatus))))
   GetRemoteDispatchPaused(process.Subject(Bool))
   StartRemoteClient
@@ -236,6 +242,7 @@ type State {
       process.Subject(command.CommandResult),
     ),
     completed_operator_command_results: Dict(String, command.CommandResult),
+    work_item_action_receipts: Dict(String, action_receipts.Receipt),
     next_operator_command_correlation_id: Int,
     transition_invariant_violation_pending: Bool,
     dependencies: RuntimeDependencies,
@@ -419,6 +426,9 @@ fn start_query_service(
     },
     get_read_model_snapshot: fn(timeout_ms) {
       get_read_model_snapshot(daemon_subject, timeout_ms)
+    },
+    get_projection_snapshot: fn(timeout_ms) {
+      get_projection_snapshot(daemon_subject, timeout_ms)
     },
     get_outbox_snapshot: fn(timeout_ms) {
       get_outbox_snapshot(daemon_subject, timeout_ms)
@@ -922,6 +932,7 @@ pub fn start(
                           operator_paused: startup_recovery.projection.dispatch_paused,
                           pending_operator_command_replies: dict.new(),
                           completed_operator_command_results: dict.new(),
+                          work_item_action_receipts: action_receipts.empty(),
                           next_operator_command_correlation_id: 1,
                           transition_invariant_violation_pending: False,
                           dependencies: dependencies,
@@ -1023,6 +1034,15 @@ pub fn get_read_model_snapshot(
 ) -> Result(read_model.Snapshot, Nil) {
   let reply = process.new_subject()
   process.send(subject, GetReadModelSnapshot(reply))
+  process.receive(reply, within: timeout_ms)
+}
+
+pub fn get_projection_snapshot(
+  subject: process.Subject(Message),
+  timeout_ms: Int,
+) -> Result(projection.Projection, Nil) {
+  let reply = process.new_subject()
+  process.send(subject, GetProjectionSnapshot(reply))
   process.receive(reply, within: timeout_ms)
 }
 
@@ -1719,6 +1739,10 @@ fn handle_message(
       process.send(reply, read_model_snapshot_from_state(refreshed))
       actor.continue(refreshed)
     }
+    GetProjectionSnapshot(reply) -> {
+      process.send(reply, state.ledger_projection)
+      actor.continue(state)
+    }
     GetOutboxSnapshot(reply) -> {
       process.send(reply, dict.to_list(state.ledger_projection.outbox))
       actor.continue(state)
@@ -2041,6 +2065,8 @@ fn operator_command_reply(
   reply: process.Subject(command.CommandResult),
 ) -> State {
   case operator_command {
+    command.WorkItemAction(request) ->
+      reply_for_work_item_action(state, request, reply)
     command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
     | command.PromptSession(_, _)
@@ -2058,6 +2084,49 @@ fn operator_command_reply(
         timeout_ms,
         reply,
       )
+  }
+}
+
+fn reply_for_work_item_action(
+  state: State,
+  request: command.WorkItemActionRequest,
+  reply: process.Subject(command.CommandResult),
+) -> State {
+  let action_executor.Outcome(result: result, receipts: receipts) =
+    action_executor.execute(
+      state.work_item_action_receipts,
+      request,
+      fn(request) { live_work_item_detail(state, request) },
+    )
+  process.send(reply, result)
+  log_operator_result(state, result, [])
+  State(..state, work_item_action_receipts: receipts)
+}
+
+fn live_work_item_detail(
+  state: State,
+  request: command.WorkItemActionRequest,
+) -> Result(Option(work_item.WorkItemDetail), query_types.QueryError) {
+  case
+    query_backend.load_work_item_detail(
+      state.tracker_adapter,
+      ref: query_types.TaskRemoteId(
+        provider: request.target_provider,
+        id: request.target_id,
+      ),
+    )
+  {
+    Ok(Some(detail)) ->
+      Ok(
+        Some(action_derivation.detail_for_target_kind_in_projection(
+          detail,
+          target_kind: request.target_kind,
+          dispatch_paused: state.operator_paused,
+          projection_state: state.ledger_projection,
+        )),
+      )
+    Ok(None) -> Ok(None)
+    Error(error) -> Error(error)
   }
 }
 

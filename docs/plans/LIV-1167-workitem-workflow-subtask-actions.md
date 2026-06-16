@@ -89,6 +89,9 @@ Milestone 7 is validation and button-enable evidence. Reviewers should see focus
 - [x] (2026-06-16) Authored the original review document and delegated mechanical implementation steps, tests, interfaces, dependencies, and artifact notes to the structured implementation pack for LIV-1167.
 - [x] (2026-06-16) Incorporated first-pass review feedback by making acceptance evidence, test obligations, milestone specificity, provider-live/no-cache behavior, docs/helper non-migration scope, full validation, linting, and deferred dogfood timing explicit.
 - [x] (2026-06-16) Revised the plan from PR #532 feedback for LIV-1174 by sharpening the Core/daemon versus sidecar boundary, preventing action policy from regrowing in `src/scherzo/orchestrator/daemon.gleam`, and splitting the implementation sequence so read-only metadata and the action envelope precede lower-blast-radius mutations and separate `run_workflow` child creation.
+- [x] (2026-06-16 17:45Z) Implemented the Milestone 1 DTO contract slice: added Core WorkItem action types, deterministic instance-id/fingerprint helpers, `actions` fields on WorkItem summaries, JSON codec support, and round-trip tests without adding command execution or provider mutations yet.
+- [ ] Implement provider-live action derivation for WorkItem list/show so Core emits non-empty enabled/disabled action descriptors from tracker, daemon runtime, ledger, and artifact metadata.
+- [ ] Add the authenticated `work_item_action` command envelope with stale-state revalidation and idempotency before any mutating executor ships.
 
 ## Surprises & Discoveries
 
@@ -114,7 +117,9 @@ The largest implementation risk is not the descriptor DTO; it is allowing the tr
 
 ## Outcomes & Retrospective
 
-This plan has not been implemented yet. The intended outcome is a safe Core-owned action surface for WorkItem workflow subtasks, with UI rendering driven by query metadata and mutations routed through the authenticated daemon command plane. The main intentional gaps are browser rendering, browser/session authorization, copy/layout, confirmation UX, and raw artifact content browsing, which should be handled by follow-up sidecar/UI and artifact-query work after Core action behavior is proven.
+Milestone 1 is now partially implemented in production code. The tree has a Core-owned WorkItem action type system, stable action ids, deterministic instance-id/fingerprint helpers, `actions` arrays on WorkItem summaries, and JSON codec round-trips that keep artifact metadata allowlisted and continue to exclude descriptions/comments. The current intentional gap is that list/show queries still emit empty action arrays until the provider-live derivation slice lands.
+
+The broader intended outcome remains a safe Core-owned action surface for WorkItem workflow subtasks, with UI rendering driven by query metadata and mutations routed through the authenticated daemon command plane. Browser rendering, browser/session authorization, copy/layout, confirmation UX, raw artifact content browsing, and all mutating action execution remain deferred follow-up slices.
 
 This revision narrows the implementation path. It no longer asks implementers to build metadata, command execution, and tracker child creation as one lump. It proves read-only descriptors first, then the command envelope and idempotency without high-blast-radius mutations, then lower-blast-radius actions if still justified, and finally `run_workflow` child creation as its own tracker-capability slice.
 

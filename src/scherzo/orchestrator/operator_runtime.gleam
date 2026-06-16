@@ -153,7 +153,8 @@ pub fn operator_issue_resolution(
     | command.CleanupOrphanSteps(_, _)
     | command.PromptSession(_, _)
     | command.RespondUi(_, _, _)
-    | command.RunScheduleNow(_) -> transition_types.OperatorIssueNotResolved
+    | command.RunScheduleNow(_)
+    | command.WorkItemAction(_) -> transition_types.OperatorIssueNotResolved
   }
 }
 
@@ -185,7 +186,8 @@ pub fn parked_issue_resolution(
     | command.CleanupOrphanSteps(_, _)
     | command.PromptSession(_, _)
     | command.RespondUi(_, _, _)
-    | command.RunScheduleNow(_) -> transition_types.ParkedIssueNotResolved
+    | command.RunScheduleNow(_)
+    | command.WorkItemAction(_) -> transition_types.ParkedIssueNotResolved
   }
 }
 
@@ -265,7 +267,8 @@ pub fn apply_shell_operator_command(
     | command.ResumeDispatch
     | command.RetryIssue(_)
     | command.ParkIssue(_, _)
-    | command.UnparkIssue(_) -> #(
+    | command.UnparkIssue(_)
+    | command.WorkItemAction(_) -> #(
       state,
       command.rejected(
         operator_command,

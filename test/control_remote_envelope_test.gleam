@@ -16,6 +16,21 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
     "cmd-1",
     command.PromptSession("session-1", "  continue please  "),
   ))
+  assert_roundtrip(remote_envelope.RemoteServerCommand(
+    "cmd-work-item-action",
+    command.WorkItemAction(
+      command.WorkItemActionRequest(
+        action_id: "work_subtask.cancel",
+        action_instance_id: "wia_1",
+        target_kind: "workflow_subtask",
+        target_provider: Some("linear"),
+        target_id: "issue-1",
+        observed_fingerprint: "fp-1",
+        idempotency_key: "idem-1",
+        params: [],
+      ),
+    ),
+  ))
   assert_roundtrip(remote_envelope.RemoteQueryRequest(
     "query-1",
     query_types.Status,
@@ -112,6 +127,7 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
           labels_truncated: False,
           created_at: None,
           updated_at: None,
+          actions: [],
         ),
         subtasks: [],
         subtasks_truncated: False,

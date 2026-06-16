@@ -2,6 +2,7 @@ import birl.{type Time}
 import gleam/list
 import gleam/option.{type Option, Some}
 import scherzo/task
+import scherzo/work_item/action
 
 pub const default_page_limit = 50
 
@@ -32,6 +33,7 @@ pub type WorkItemSummary {
     labels_truncated: Bool,
     created_at: Option(Time),
     updated_at: Option(Time),
+    actions: List(action.WorkItemAction),
   )
 }
 
@@ -108,6 +110,7 @@ pub fn summary_from_task(item: task.Task, label_limit: Int) -> WorkItemSummary {
     labels_truncated: labels_truncated,
     created_at: item.created_at,
     updated_at: item.updated_at,
+    actions: [],
   )
 }
 

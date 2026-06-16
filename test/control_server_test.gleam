@@ -282,6 +282,7 @@ pub fn server_roundtrips_authenticated_work_item_queries_test() {
             labels_truncated: False,
             created_at: None,
             updated_at: None,
+            actions: [],
           ),
           subtasks: [],
           subtasks_truncated: False,
@@ -330,6 +331,39 @@ pub fn server_rejects_bad_token_test() {
   let assert Error(client.RequestFailed(code, _)) =
     client.ping(bad_control_file)
   assert code == "unauthorized"
+
+  server.stop(server_handle)
+  hub.stop(subject)
+}
+
+pub fn server_applies_authenticated_work_item_action_command_test() {
+  let subject = start_hub_with_session("session-work-item-command")
+  let command_subject = process.new_subject()
+  let #(server_handle, control_file) =
+    start_server_for_backend(
+      backend_with_command(subject, command_subject),
+      "token",
+      500,
+    )
+  let operator_command =
+    command.WorkItemAction(
+      command.WorkItemActionRequest(
+        action_id: "work_subtask.cancel",
+        action_instance_id: "wia_1",
+        target_kind: "workflow_subtask",
+        target_provider: Some("linear"),
+        target_id: "issue-1",
+        observed_fingerprint: "fp-1",
+        idempotency_key: "idem-1",
+        params: [],
+      ),
+    )
+
+  let assert Ok(result) = client.apply_command(control_file, operator_command)
+  assert result.command == "work_item_action"
+  let assert Ok(command.WorkItemAction(request)) =
+    process.receive(command_subject, within: 1000)
+  assert request.action_id == "work_subtask.cancel"
 
   server.stop(server_handle)
   hub.stop(subject)

@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import scherzo/control/query/types
 import scherzo/task
 import scherzo/work_item
+import scherzo/work_item/action
 
 pub fn work_item_list_to_json(page: work_item.WorkItemPage) -> json.Json {
   json.object([
@@ -76,6 +77,7 @@ fn work_item_summary_to_json(summary: work_item.WorkItemSummary) -> json.Json {
         of: json.string,
       ),
     ),
+    #("actions", json.array(summary.actions, of: work_item_action_to_json)),
   ])
 }
 
@@ -143,6 +145,10 @@ fn work_item_summary_decoder() -> decode.Decoder(work_item.WorkItemSummary) {
   use labels_truncated <- decode.field("labels_truncated", decode.bool)
   use created_at <- decode.field("created_at", decode.optional(decode.string))
   use updated_at <- decode.field("updated_at", decode.optional(decode.string))
+  use actions <- decode.field(
+    "actions",
+    decode.list(work_item_action_decoder()),
+  )
   decode.success(work_item.WorkItemSummary(
     id: id,
     source: source,
@@ -152,6 +158,7 @@ fn work_item_summary_decoder() -> decode.Decoder(work_item.WorkItemSummary) {
     labels_truncated: labels_truncated,
     created_at: parse_optional_time(created_at),
     updated_at: parse_optional_time(updated_at),
+    actions: actions,
   ))
 }
 
@@ -179,6 +186,138 @@ fn work_item_label_decoder() -> decode.Decoder(task.TaskLabel) {
   use id <- decode.field("id", decode.optional(decode.string))
   use name <- decode.field("name", decode.string)
   decode.success(task.TaskLabel(id: id, name: name))
+}
+
+fn work_item_action_to_json(action_value: action.WorkItemAction) -> json.Json {
+  json.object([
+    #("action_id", json.string(action_value.action_id)),
+    #("instance_id", json.string(action_value.instance_id)),
+    #("label", json.string(action_value.label)),
+    #("kind", json.string(action.kind_to_string(action_value.kind))),
+    #("enabled", json.bool(action_value.enabled)),
+    #(
+      "disabled_reason",
+      json.nullable(action_value.disabled_reason, of: disabled_reason_to_json),
+    ),
+    #("fingerprint", json.string(action_value.fingerprint)),
+    #("target", target_summary_to_json(action_value.target)),
+    #("artifacts", json.array(action_value.artifacts, of: artifact_to_json)),
+  ])
+}
+
+fn disabled_reason_to_json(reason: action.ActionDisabledReason) -> json.Json {
+  json.object([
+    #("code", json.string(reason.code)),
+    #("message", json.string(reason.message)),
+  ])
+}
+
+fn target_summary_to_json(target: action.ActionTargetSummary) -> json.Json {
+  json.object([
+    #("kind", json.string(target.kind)),
+    #("provider", json.string(target.provider)),
+    #("id", json.string(target.id)),
+    #("display_id", json.nullable(target.display_id, of: json.string)),
+    #("workflow_id", json.nullable(target.workflow_id, of: json.string)),
+    #("run_id", json.nullable(target.run_id, of: json.string)),
+  ])
+}
+
+fn artifact_to_json(artifact: action.ActionArtifactSummary) -> json.Json {
+  json.object([
+    #("kind", json.string(artifact.kind)),
+    #("ref", json.string(artifact.ref)),
+    #("sha256", json.string(artifact.sha256)),
+    #("bytes", json.int(artifact.bytes)),
+    #("display_path", json.string(artifact.display_path)),
+    #("run_id", json.nullable(artifact.run_id, of: json.string)),
+    #("step_id", json.nullable(artifact.step_id, of: json.string)),
+    #("publication_id", json.nullable(artifact.publication_id, of: json.string)),
+  ])
+}
+
+fn work_item_action_decoder() -> decode.Decoder(action.WorkItemAction) {
+  use action_id <- decode.field("action_id", decode.string)
+  use instance_id <- decode.field("instance_id", decode.string)
+  use label <- decode.field("label", decode.string)
+  use kind <- decode.field("kind", action_kind_decoder())
+  use enabled <- decode.field("enabled", decode.bool)
+  use disabled_reason <- decode.field(
+    "disabled_reason",
+    decode.optional(disabled_reason_decoder()),
+  )
+  use fingerprint <- decode.field("fingerprint", decode.string)
+  use target <- decode.field("target", action_target_decoder())
+  use artifacts <- decode.field(
+    "artifacts",
+    decode.list(action_artifact_decoder()),
+  )
+  decode.success(action.WorkItemAction(
+    action_id: action_id,
+    instance_id: instance_id,
+    label: label,
+    kind: kind,
+    enabled: enabled,
+    disabled_reason: disabled_reason,
+    fingerprint: fingerprint,
+    target: target,
+    artifacts: artifacts,
+  ))
+}
+
+fn disabled_reason_decoder() -> decode.Decoder(action.ActionDisabledReason) {
+  use code <- decode.field("code", decode.string)
+  use message <- decode.field("message", decode.string)
+  decode.success(action.ActionDisabledReason(code: code, message: message))
+}
+
+fn action_target_decoder() -> decode.Decoder(action.ActionTargetSummary) {
+  use kind <- decode.field("kind", decode.string)
+  use provider <- decode.field("provider", decode.string)
+  use id <- decode.field("id", decode.string)
+  use display_id <- decode.field("display_id", decode.optional(decode.string))
+  use workflow_id <- decode.field("workflow_id", decode.optional(decode.string))
+  use run_id <- decode.field("run_id", decode.optional(decode.string))
+  decode.success(action.ActionTargetSummary(
+    kind: kind,
+    provider: provider,
+    id: id,
+    display_id: display_id,
+    workflow_id: workflow_id,
+    run_id: run_id,
+  ))
+}
+
+fn action_artifact_decoder() -> decode.Decoder(action.ActionArtifactSummary) {
+  use kind <- decode.field("kind", decode.string)
+  use ref <- decode.field("ref", decode.string)
+  use sha256 <- decode.field("sha256", decode.string)
+  use bytes <- decode.field("bytes", decode.int)
+  use display_path <- decode.field("display_path", decode.string)
+  use run_id <- decode.field("run_id", decode.optional(decode.string))
+  use step_id <- decode.field("step_id", decode.optional(decode.string))
+  use publication_id <- decode.field(
+    "publication_id",
+    decode.optional(decode.string),
+  )
+  decode.success(action.ActionArtifactSummary(
+    kind: kind,
+    ref: ref,
+    sha256: sha256,
+    bytes: bytes,
+    display_path: display_path,
+    run_id: run_id,
+    step_id: step_id,
+    publication_id: publication_id,
+  ))
+}
+
+fn action_kind_decoder() -> decode.Decoder(action.ActionKind) {
+  use value <- decode.then(decode.string)
+  case action.kind_from_string(value) {
+    Ok(kind) -> decode.success(kind)
+    Error(Nil) -> decode.failure(action.ReadOnly, expected: "ActionKind")
+  }
 }
 
 fn page_decoder() -> decode.Decoder(types.PageDto) {
