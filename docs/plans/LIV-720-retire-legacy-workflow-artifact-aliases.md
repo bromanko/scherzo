@@ -69,6 +69,13 @@ Milestone 5 documents, migrates helpers, and validates the final taxonomy. It is
 - [x] (2026-06-08) Authored this future cleanup review document after inspecting descriptor-first workflow YAML, current legacy `ContractType` branches, manifest decoder compatibility, publication target checks, and execplan helper legacy constants. No source cleanup has started; implementation work remains intentionally deferred to the milestones after the future-start preconditions are met.
 - [x] (2026-06-09) Incorporated review feedback by tightening milestone evidence, test obligations, docs/helper migration scope, provider-live/cache boundaries, manual dogfood timing, and full validation/lint expectations in this review document and the updated implementation pack.
 - [x] (2026-06-09) Addressed single-operator feedback by replacing formal approval language with owner-recorded evidence, an explicit dogfood-soak waiver option, and documentation aimed at future-you and automation rather than an external user base.
+- [x] (2026-06-16) Completed the inventory/classification portion of Milestone 1 in `docs/plans/LIV-720-legacy-alias-retirement-inventory.md` and stopped before code cleanup because Milestone 1 readiness remains incomplete: the implementation task does not yet record the required owner dogfood-soak decision or explicit waiver, and it does not yet attach owner approval evidence for the decode-only historical-readability policy.
+- [ ] Start Milestone 2 only after the missing readiness evidence is recorded in the implementation task.
+
+## Surprises & Discoveries
+
+- Observation: checked-in dogfood workflow YAML is already descriptor-first for contract declarations, and the only grep hit shaped like a legacy declaration in workflow YAML was `artifact_type: artifact[]`, which is an opaque artifact-type string on `supporting_context`, not a live `type:` alias declaration.
+  Evidence: `direnv exec . sh -c 'grep -RIn -- "type: *\\(exec_plan_bundle\\|implementation_pack\\|code_change_bundle\\|code_change\\|artifact\\[\\]\\)" workflows/dogfood .scherzo/workflows || true'` returned only `workflows/dogfood/execplan.yaml:22:      artifact_type: artifact[]` and the installed `.scherzo/workflows/execplan.yaml` mirror.
 
 ## Decision Log
 
@@ -85,6 +92,12 @@ Decision: Treat docs, helper scripts, helper tests, and migration diagnostics as
 Decision: Provider-live dispatch and provider cache behavior are acceptance evidence boundaries, not automatic migration targets. Rationale: this cleanup retires workflow artifact aliases and should not clear caches or mutate provider state for proof; if implementation touches live provider or cache code, pre-publish disposable dogfood or live-probe evidence is required, otherwise owner/operator live inspection may be deferred and explicitly named. Date: 2026-06-09.
 
 Decision: Treat Scherzo's current single-user status as a reason to make approvals lightweight, not as a reason to delete compatibility evidence. Rationale: the blast radius is one owner, so external signoff can be replaced by an owner-recorded decision or explicit soak waiver, but future retained-artifact inspection and agent-run helper behavior still need objective proof. Date: 2026-06-09.
+
+Decision: Stop this implementation run after the Milestone 1 inventory/classification step instead of starting source cleanup without the recorded owner soak/waiver and decode-only policy evidence. Rationale: the plan explicitly makes those records a start condition, so proceeding into code removal would violate the approved rollout and recovery story. Date: 2026-06-16.
+
+## Outcomes & Retrospective
+
+2026-06-16: This implementation run completed the readiness inventory/classification work and deliberately stopped before production changes. The inventory confirms that descriptor compatibility, descriptor-first checked-in workflows, and descriptor-first helper behavior are present, but Milestone 1 readiness remains incomplete because the handoff materials do not yet record the required owner dogfood-soak decision or explicit waiver, and they do not attach explicit owner approval evidence for the decode-only historical-readability policy. Stopping before source cleanup keeps the tree safe, preserves the intended future-only status of the cleanup, and leaves a checked inventory for the next implementation attempt.
 
 ## Validation and Acceptance
 
