@@ -57,6 +57,27 @@ fn issue(id: String) -> tracker_issue.Issue {
 }
 
 fn write_config(dir: String, extra: String) -> String {
+  write_config_with_linear_fields(
+    dir,
+    "    api_key_env: HOME\n    project: TEST\n",
+    extra,
+  )
+}
+
+fn write_config_with_linear_fields(
+  dir: String,
+  linear_fields: String,
+  extra: String,
+) -> String {
+  write_config_with_tracker_and_linear_fields(dir, "", linear_fields, extra)
+}
+
+fn write_config_with_tracker_and_linear_fields(
+  dir: String,
+  tracker_fields: String,
+  linear_fields: String,
+  extra: String,
+) -> String {
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/workflows/prompts")
@@ -66,7 +87,11 @@ fn write_config(dir: String, extra: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
+      "version: 1\ntracker:\n"
+        <> tracker_fields
+        <> "  linear:\n"
+        <> linear_fields
+        <> "  states:\n    ready: [Todo]\n    active: [Todo]\n    terminal: [Done]\nworkspace:\n  root: workspaces\n  driver: noop\n  drivers:\n    noop:\n      type: custom\n      command: "
         <> driver_command
         <> "\n      timeout: 60s\nworkflows:\n    implementation: workflows/implementation.yaml\nagents:\n  concurrency: 1\n  max_turns: 1\n"
         <> extra,
@@ -329,6 +354,188 @@ pub fn doctor_workflow_config_success_prints_human_summary_test() {
     "Summary: 1 passed, 0 warnings, 0 failed, 0 skipped",
   )
   assert string.contains(output, "Selected checks passed.")
+}
+
+pub fn doctor_tracker_scope_reports_explicit_canonical_summary_test() {
+  let config_path =
+    write_config_with_linear_fields(
+      "test/tmp/doctor-tracker-scope-explicit",
+      "    api_key_env: HOME\n    tasks_from:\n      project: product-platform\n",
+      "",
+    )
+  let subject = process.new_subject()
+  let deps = successful_deps(subject)
+  let options =
+    doctor.Options(
+      path: Some(config_path),
+      checks: ["tracker-scope"],
+      list_checks: False,
+      output: doctor.Human,
+    )
+  let assert Ok(report) =
+    service.build_doctor_report_with_dependencies(options, deps)
+  let assert Some(result) = result_for(report, doctor.LinearTaskScope)
+  assert result.status == doctor.Pass
+  assert result.code == "ok"
+  assert field_value(result.fields, "task_scope_summary")
+    == Some("project(product-platform)")
+  assert field_value(result.fields, "task_scope_source")
+    == Some("tracker.linear.tasks_from")
+
+  assert service.start_doctor_with_dependencies(options, deps) == Ok(Nil)
+  let assert Ok(ListWritten(output)) = process.receive(subject, within: 1000)
+  assert string.contains(output, "✓ Tracker task scope")
+  assert string.contains(output, "Linear task scope: project(product-platform)")
+}
+
+pub fn doctor_tracker_scope_reports_legacy_desugaring_test() {
+  let config_path = write_config("test/tmp/doctor-tracker-scope-legacy", "")
+  assert_tracker_scope_legacy_desugaring(
+    config_path,
+    "tracker.linear.project",
+    "project(TEST)",
+  )
+}
+
+pub fn doctor_tracker_scope_reports_linear_project_slug_desugaring_test() {
+  let config_path =
+    write_config_with_linear_fields(
+      "test/tmp/doctor-tracker-scope-linear-project-slug",
+      "    api_key_env: HOME\n    project_slug: product-platform\n",
+      "",
+    )
+  assert_tracker_scope_legacy_desugaring(
+    config_path,
+    "tracker.linear.project_slug",
+    "project(product-platform)",
+  )
+}
+
+pub fn doctor_tracker_scope_reports_top_level_project_slug_desugaring_test() {
+  let config_path =
+    write_config_with_tracker_and_linear_fields(
+      "test/tmp/doctor-tracker-scope-top-level-project-slug",
+      "  project_slug: customer-success\n",
+      "    api_key_env: HOME\n",
+      "",
+    )
+  assert_tracker_scope_legacy_desugaring(
+    config_path,
+    "tracker.project_slug",
+    "project(customer-success)",
+  )
+}
+
+fn assert_tracker_scope_legacy_desugaring(
+  config_path: String,
+  expected_path: String,
+  expected_summary: String,
+) {
+  let subject = process.new_subject()
+  let deps = successful_deps(subject)
+  let options =
+    doctor.Options(
+      path: Some(config_path),
+      checks: ["tracker-scope"],
+      list_checks: False,
+      output: doctor.Human,
+    )
+  let assert Ok(report) =
+    service.build_doctor_report_with_dependencies(options, deps)
+  let assert Some(result) = result_for(report, doctor.LinearTaskScope)
+  assert result.status == doctor.Pass
+  assert field_value(result.fields, "task_scope_summary")
+    == Some(expected_summary)
+  assert field_value(result.fields, "task_scope_source") == Some(expected_path)
+  assert field_value(result.fields, "legacy_task_scope_path")
+    == Some(expected_path)
+
+  assert service.start_doctor_with_dependencies(options, deps) == Ok(Nil)
+  let assert Ok(ListWritten(output)) = process.receive(subject, within: 1000)
+  assert string.contains(
+    output,
+    "Legacy "
+      <> expected_path
+      <> " desugars to tracker.linear.tasks_from: "
+      <> expected_summary,
+  )
+}
+
+pub fn doctor_tracker_scope_warns_for_static_overlap_risk_test() {
+  let config_path =
+    write_config_with_linear_fields(
+      "test/tmp/doctor-tracker-scope-overlap",
+      "    api_key_env: HOME\n    tasks_from:\n      or:\n        - and:\n            - project: product-platform\n            - any_label: [workflow:implementation]\n        - projects: [customer-success, customer-support]\n",
+      "",
+    )
+  let subject = process.new_subject()
+  let deps = successful_deps(subject)
+  let options =
+    doctor.Options(
+      path: Some(config_path),
+      checks: ["tracker-scope"],
+      list_checks: False,
+      output: doctor.Human,
+    )
+  let assert Ok(report) =
+    service.build_doctor_report_with_dependencies(options, deps)
+  let assert Some(result) = result_for(report, doctor.LinearTaskScope)
+  assert result.status == doctor.Warn
+  assert result.code == "linear_task_scope_overlap"
+  assert field_value(result.fields, "task_scope_summary")
+    == Some(
+      "or(and(project(product-platform), any_label([workflow:implementation])), projects([customer-success, customer-support]))",
+    )
+  assert field_value(result.fields, "overlap_warning_count") == Some("3")
+  let assert Some(first_warning) =
+    field_value(result.fields, "first_overlap_warning")
+  let assert Some(second_warning) =
+    field_value(result.fields, "overlap_warning_2")
+  let assert Some(third_warning) =
+    field_value(result.fields, "overlap_warning_3")
+  assert string.contains(first_warning, "or scope")
+  assert string.contains(second_warning, "label-narrowed scope")
+  assert string.contains(third_warning, "multi-project scope")
+
+  assert service.start_doctor_with_dependencies(options, deps) == Ok(Nil)
+  let assert Ok(ListWritten(output)) = process.receive(subject, within: 1000)
+  assert string.contains(output, "! Tracker task scope")
+  assert string.contains(
+    output,
+    "Linear task scope: or(and(project(product-platform), any_label([workflow:implementation])), projects([customer-success, customer-support]))",
+  )
+  assert string.contains(output, "Overlap warning: " <> first_warning)
+  assert string.contains(output, "Overlap warning: " <> second_warning)
+  assert string.contains(output, "Overlap warning: " <> third_warning)
+}
+
+pub fn doctor_invalid_tasks_from_failure_is_pathful_test() {
+  let config_path =
+    write_config_with_linear_fields(
+      "test/tmp/doctor-invalid-tasks-from",
+      "    api_key_env: HOME\n    tasks_from:\n      any_label: [workflow:implementation]\n",
+      "",
+    )
+  let subject = process.new_subject()
+  let deps = successful_deps(subject)
+  let assert Ok(report) =
+    service.build_doctor_report_with_dependencies(
+      doctor.Options(
+        path: Some(config_path),
+        checks: ["workflow-config", "tracker-scope"],
+        list_checks: False,
+        output: doctor.Human,
+      ),
+      deps,
+    )
+  let assert Some(config_result) = result_for(report, doctor.WorkflowConfig)
+  assert config_result.status == doctor.Fail
+  assert string.contains(
+    config_result.message,
+    "tracker.linear.tasks_from.any_label would select labels across all projects",
+  )
+  let assert Some(scope_result) = result_for(report, doctor.LinearTaskScope)
+  assert scope_result.status == doctor.Skip
 }
 
 pub fn doctor_legacy_publish_change_requirement_failure_is_actionable_test() {
@@ -897,6 +1104,8 @@ pub fn doctor_list_checks_writes_names_without_loading_config_test() {
     )
     == Ok(Nil)
   let assert Ok(ListWritten("workflow-config")) =
+    process.receive(subject, within: 1000)
+  let assert Ok(ListWritten("tracker-scope")) =
     process.receive(subject, within: 1000)
   let assert Ok(ListWritten("scheduled-jobs")) =
     process.receive(subject, within: 1000)

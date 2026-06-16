@@ -389,34 +389,10 @@ fn doctor_bundle_failure_report(
       fields: [],
     ),
   ]
-  doctor.Report(skip_after_workflow_failure(
+  doctor.Report(doctor.skip_after_workflow_failure(
     doctor.canonical_checks(selected),
     results,
   ))
-}
-
-fn skip_after_workflow_failure(
-  checks: List(doctor.CheckName),
-  results: List(doctor.CheckResult),
-) -> List(doctor.CheckResult) {
-  case checks {
-    [] -> results
-    [doctor.WorkflowConfig, ..rest] ->
-      skip_after_workflow_failure(rest, results)
-    [check, ..rest] ->
-      skip_after_workflow_failure(
-        rest,
-        list.append(results, [
-          doctor.CheckResult(
-            check: check,
-            status: doctor.Skip,
-            code: "workflow_config_failed",
-            message: "workflow config did not load",
-            fields: [],
-          ),
-        ]),
-      )
-  }
 }
 
 fn run_loaded_doctor_checks(
@@ -426,6 +402,7 @@ fn run_loaded_doctor_checks(
 ) -> doctor.Report {
   []
   |> maybe_workflow_config_result(selected, bundle)
+  |> maybe_linear_task_scope_result(selected, bundle)
   |> maybe_scheduled_jobs_result(selected, bundle)
   |> maybe_linear_contract_result(selected, bundle, dependencies)
   |> maybe_linear_smoke_result(selected, bundle, dependencies)
@@ -454,6 +431,23 @@ fn maybe_workflow_config_result(
               int_to_string(list.length(dict.to_list(bundle.workflows))),
             ),
           ],
+        ),
+      ])
+  }
+}
+
+fn maybe_linear_task_scope_result(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.LinearTaskScope) {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.linear_task_scope_check_result(
+          bundle.effective.tracker,
+          bundle.config_contents,
         ),
       ])
   }

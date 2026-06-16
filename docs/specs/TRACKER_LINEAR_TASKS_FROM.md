@@ -1,6 +1,6 @@
 # `tracker.linear.tasks_from` specification
 
-Status: design/specification for Linear task-scope predicates. This repository slice implements `project`, `projects`, `all_labels`, and `any_label` leaves plus `and`/`or` composition; team predicates and overlap diagnostics remain future work.
+Status: design/specification for Linear task-scope predicates. This repository slice implements `project`, `projects`, `all_labels`, and `any_label` leaves plus `and`/`or` composition, plus doctor summaries and static overlap warnings for the supported shapes; team predicates remain future work.
 
 ## Purpose
 
@@ -22,7 +22,7 @@ The `tasks_from` implementation preserves the single-project default when no exp
 
 This spec defines the configuration shape, semantics, validation rules, compatibility behavior, `doctor` expectations, and the Linear query paths that must share one compiled predicate.
 
-This phase adds parser support, schema fields, and runtime compilation for `project`, `projects`, `all_labels`, and `any_label` leaves plus `and`/`or` composition over those leaves. It does not add team predicates, cache changes, provider-live changes, or overlap diagnostics.
+This phase adds parser support, schema fields, runtime compilation, and doctor/operator diagnostics for `project`, `projects`, `all_labels`, and `any_label` leaves plus `and`/`or` composition over those leaves. It does not add team predicates, cache changes, or provider-live changes.
 
 ## Predicate model
 
@@ -326,7 +326,7 @@ That config is invalid because it combines the legacy single-project field with 
 
 ## `doctor` expectations
 
-`doctor`/contract validation treats `tasks_from.project` and `tasks_from.projects` anchors as the task-scope source for project validation, including when label predicates narrow those project scopes. Future `doctor` output should add the richer first-class overlap diagnostics below.
+`doctor`/contract validation treats `tasks_from.project` and `tasks_from.projects` anchors as the task-scope source for project validation, including when label predicates narrow those project scopes. `doctor --check tracker-scope` prints the canonical task-scope summary, reports compatibility desugaring from legacy project fields, and emits static overlap warnings when the supported predicate shape makes overlap with another daemon inferable.
 
 Expected behavior:
 
@@ -388,7 +388,7 @@ Examples of overlap risk:
 - `project: product-platform` overlaps `and: [project: product-platform, any_label: [workflow:implementation]]`
 - `or: [project: product-platform, project: customer-success]` may overlap either single-project daemon
 
-Future `doctor` checks should warn when overlap can be inferred statically and should show the canonical task-scope summary so operators can compare daemons.
+Current `doctor` checks warn when overlap can be inferred statically from supported shapes and show the canonical task-scope summary so operators can compare daemons.
 
 ## Simplified YAML relationship
 
@@ -415,4 +415,4 @@ Manual review of the full predicate spec should confirm coverage for:
 
 ## Deferred implementation notes
 
-Parser support, runtime query compilation, live Linear validation, cache behavior, provider-live behavior, and automated parser tests are intentionally deferred to later implementation work. That later work should treat this document as the semantic contract it must satisfy.
+Team predicates, cache-specific behavior, provider-live behavior, and any explicit workspace-wide scope remain intentionally deferred to later specification and implementation work. Future work should keep using this document as the semantic contract for the supported predicate language and doctor/operator diagnostics.

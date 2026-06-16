@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/config/linear_task_scope
+import scherzo/config/linear_task_scope_diagnostics
 import scherzo/config/types as config_types
 import scherzo/control/file as control_file
 import scherzo/control/server as control_server
@@ -875,6 +876,69 @@ pub fn linear_task_scope_summary_returns_canonical_predicates_test() {
     == "and(project(demo-project), all_labels([backend, api]), any_label([urgent, support]))"
 }
 
+pub fn linear_task_scope_overlap_warnings_cover_supported_static_cases_test() {
+  let multi_project =
+    linear_task_scope_diagnostics.overlap_warnings(
+      config_types.LinearTaskProjects(["product-platform", "customer-success"]),
+    )
+  let assert [multi_warning] = multi_project
+  assert string.contains(multi_warning, "multi-project scope")
+  assert string.contains(multi_warning, "project(product-platform)")
+  assert string.contains(multi_warning, "project(customer-success)")
+
+  let label_narrowed =
+    linear_task_scope_diagnostics.overlap_warnings(
+      config_types.LinearTaskAnd([
+        config_types.LinearTaskProject("product-platform"),
+        config_types.LinearTaskAnyLabel(["workflow:implementation"]),
+      ]),
+    )
+  let assert [label_warning] = label_narrowed
+  assert string.contains(label_warning, "label-narrowed scope")
+  assert string.contains(label_warning, "project(product-platform)")
+
+  let either_project =
+    linear_task_scope_diagnostics.overlap_warnings(
+      config_types.LinearTaskOr([
+        config_types.LinearTaskProject("product-platform"),
+        config_types.LinearTaskProject("customer-success"),
+      ]),
+    )
+  let assert [or_warning] = either_project
+  assert string.contains(or_warning, "or scope")
+  assert string.contains(
+    or_warning,
+    "or(project(product-platform), project(customer-success))",
+  )
+
+  let nested_scope =
+    config_types.LinearTaskOr([
+      config_types.LinearTaskAnd([
+        config_types.LinearTaskProject("product-platform"),
+        config_types.LinearTaskAnyLabel(["workflow:implementation"]),
+      ]),
+      config_types.LinearTaskProjects([
+        "customer-success",
+        "customer-support",
+      ]),
+    ])
+  let nested_warnings =
+    linear_task_scope_diagnostics.overlap_warnings(nested_scope)
+  let assert [nested_or, nested_label, nested_multi] = nested_warnings
+  assert string.contains(nested_or, "or scope")
+  assert string.contains(nested_label, "label-narrowed scope")
+  assert string.contains(nested_multi, "multi-project scope")
+  let message =
+    linear_task_scope_diagnostics.message(
+      nested_scope,
+      linear_task_scope_diagnostics.ExplicitTasksFrom,
+      nested_warnings,
+    )
+  assert string.contains(message, "Overlap warning: " <> nested_or)
+  assert string.contains(message, "Overlap warning: " <> nested_label)
+  assert string.contains(message, "Overlap warning: " <> nested_multi)
+}
+
 pub fn linear_task_scope_unresolved_env_errors_are_pathful_test() {
   let cases = [
     #(
@@ -938,6 +1002,12 @@ pub fn linear_tasks_from_validation_errors_are_pathful_test() {
     #(
       tasks_from_front("      team: CORE\n"),
       "tracker.linear.tasks_from.team is not supported",
+    ),
+    #(
+      tasks_from_front(
+        "      filter:\n        project:\n          slugId:\n            eq: demo-project\n",
+      ),
+      "tracker.linear.tasks_from.filter looks like raw Linear GraphQL passthrough",
     ),
     #(
       tasks_from_front("      123: demo-project\n"),
