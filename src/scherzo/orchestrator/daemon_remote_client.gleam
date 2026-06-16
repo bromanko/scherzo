@@ -11,6 +11,7 @@ import scherzo/daemon_identity
 import scherzo/log
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/work_item_invalidation
 
 pub type StartError {
   StartError(code: String, message: String)
@@ -134,6 +135,14 @@ pub fn monitor(handle: Handle) -> process.Monitor {
 pub fn kill(handle: Handle) -> Nil {
   let Handle(handle) = handle
   ui_websocket_client.kill(handle)
+}
+
+pub fn notify_work_item_invalidation(
+  handle: Handle,
+  event: work_item_invalidation.Event,
+) -> Nil {
+  let Handle(handle) = handle
+  ui_websocket_client.notify_work_item_invalidation(handle, event)
 }
 
 fn load_daemon_identity(

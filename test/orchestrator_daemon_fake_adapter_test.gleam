@@ -12,6 +12,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/tracker
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
+import scherzo/work_item_invalidation
 import scherzo/workflow_attempt
 import scherzo/workflow_run
 import simplifile
@@ -182,6 +183,89 @@ fn record_agent_refresh(
   }
 }
 
+pub fn daemon_poll_emits_work_item_invalidation_for_candidate_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-fake-adapter-invalidation")
+  let handoff_subject = process.new_subject()
+  let log_subject = process.new_subject()
+  let invalidation_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let base_deps =
+    dependencies(handoff_subject, log_subject, fn(_, _, _, _, _, _, _, _) {
+      test_async.block_until_released(worker_barrier)
+      Error(agent_types.WorkerFailure(
+        reason: error.PiFailed(error.PiProtocolError("released")),
+        workspace_path: None,
+        tokens: session_tokens.zero_token_totals(),
+        final_issue: None,
+      ))
+    })
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_deps,
+      emit_work_item_invalidation: fn(_, event) {
+        process.send(invalidation_subject, event)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  let assert Ok(event) = process.receive(invalidation_subject, within: 5000)
+  assert event.source == work_item_invalidation.PollRefresh
+  assert_fake_task_invalidation(event)
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_dispatch_emits_tracker_and_workflow_invalidation_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-fake-adapter-dispatch-invalidation")
+  let handoff_subject = process.new_subject()
+  let log_subject = process.new_subject()
+  let invalidation_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let base_deps =
+    dependencies(handoff_subject, log_subject, fn(_, _, _, _, _, _, _, _) {
+      test_async.block_until_released(worker_barrier)
+      Error(agent_types.WorkerFailure(
+        reason: error.PiFailed(error.PiProtocolError("released")),
+        workspace_path: None,
+        tokens: session_tokens.zero_token_totals(),
+        final_issue: None,
+      ))
+    })
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_deps,
+      emit_work_item_invalidation: fn(_, event) {
+        process.send(invalidation_subject, event)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  let assert Ok(tracker_event) =
+    wait_for_invalidation_source(
+      invalidation_subject,
+      work_item_invalidation.TrackerRefresh,
+      50,
+    )
+  assert_fake_task_invalidation(tracker_event)
+  let assert Ok(workflow_event) =
+    wait_for_invalidation_source(
+      invalidation_subject,
+      work_item_invalidation.WorkflowObserved,
+      50,
+    )
+  assert_fake_task_invalidation(workflow_event)
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn fake_non_linear_adapter_dispatches_validates_and_hands_off_test() {
   let #(workflow_path, _root) =
     write_workflow("test/tmp/daemon-fake-adapter-dispatch")
@@ -269,6 +353,33 @@ pub fn fake_non_linear_active_workflow_success_releases_without_retry_test() {
   assert dict.values(snapshot.retry_attempts) == []
   assert dict.values(snapshot.running) == []
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+fn wait_for_invalidation_source(
+  subject: process.Subject(work_item_invalidation.Event),
+  source: work_item_invalidation.Source,
+  attempts: Int,
+) -> Result(work_item_invalidation.Event, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case process.receive(subject, within: 250) {
+        Ok(event) ->
+          case event.source == source {
+            True -> Ok(event)
+            False -> wait_for_invalidation_source(subject, source, attempts - 1)
+          }
+        Error(_) -> wait_for_invalidation_source(subject, source, attempts - 1)
+      }
+  }
+}
+
+fn assert_fake_task_invalidation(event: work_item_invalidation.Event) -> Nil {
+  let assert [ref] = event.task_refs
+  assert ref.provider == fake_tracker_adapter.backend_kind
+  assert ref.id == "card-1"
+  assert ref.display_id == Some("CARD-1")
+  assert !event.has_unknown_refs
 }
 
 fn wait_for_log(

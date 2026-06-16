@@ -5,6 +5,7 @@ import scherzo/control/query/types as query_types
 import scherzo/log
 import scherzo/orchestrator/daemon_remote_client
 import scherzo/session/hub
+import scherzo/work_item_invalidation
 
 pub type Handle =
   daemon_remote_client.Handle
@@ -124,4 +125,11 @@ pub fn monitor(handle: Handle) -> process.Monitor {
 
 pub fn kill(handle: Handle) -> Nil {
   daemon_remote_client.kill(handle)
+}
+
+pub fn notify_work_item_invalidation(
+  handle: Handle,
+  event: work_item_invalidation.Event,
+) -> Nil {
+  daemon_remote_client.notify_work_item_invalidation(handle, event)
 }

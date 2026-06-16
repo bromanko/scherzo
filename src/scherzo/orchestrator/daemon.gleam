@@ -75,6 +75,7 @@ import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
+import scherzo/work_item_invalidation
 import scherzo/workflow_checkpoint
 import scherzo/workflow_completion_policy
 import scherzo/workflow_dag
@@ -188,6 +189,10 @@ pub type RuntimeDependencies {
     stop_remote_client: fn(remote_command_runtime.Handle, Int) ->
       Result(Nil, Nil),
     monitor_remote_client: fn(remote_command_runtime.Handle) -> process.Monitor,
+    emit_work_item_invalidation: fn(
+      Option(remote_command_runtime.Handle),
+      work_item_invalidation.Event,
+    ) -> Nil,
     check_transition_invariants: daemon_transition_shell.InvariantChecker,
   )
 }
@@ -307,6 +312,13 @@ pub fn default_dependencies() -> RuntimeDependencies {
     },
     stop_remote_client: remote_command_runtime.stop,
     monitor_remote_client: remote_command_runtime.monitor,
+    emit_work_item_invalidation: fn(remote_client, event) {
+      case remote_client {
+        Some(handle) ->
+          remote_command_runtime.notify_work_item_invalidation(handle, event)
+        None -> Nil
+      }
+    },
     check_transition_invariants: daemon_transition_shell.default_invariant_checker,
   )
 }
@@ -1800,6 +1812,7 @@ fn handle_yaml_step_started(
   step_id: String,
   attempt_index: Int,
 ) -> State {
+  emit_work_item_invalidation_for_run(state, run_id)
   let parent_session_id = parent_session_id_for_run(state, run_id)
   let registry =
     worker_registry.register_active_yaml_step_started(
@@ -1849,6 +1862,10 @@ fn handle_yaml_step_finished(
   session_id: String,
   tokens: session_tokens.TokenTotals,
 ) -> State {
+  case worker_registry.active_yaml_step_handle(state.registry, session_id) {
+    Ok(handle) -> emit_work_item_invalidation_for_run(state, handle.run_id)
+    Error(Nil) -> Nil
+  }
   let state =
     State(
       ..state,
@@ -3018,7 +3035,11 @@ fn reload_workflow_for_operator(
   let reloaded = command.applied(operator_command, Some("workflow reloaded"))
   let failure_message = workflow_reloader.invalid_operator_message(outcome)
   case state.workflow.reload_state.current_status {
-    config.CurrentValid -> #(state, reloaded, follow_ups)
+    config.CurrentValid -> {
+      work_item_invalidation.unknown(work_item_invalidation.ManualRefresh)
+      |> emit_work_item_invalidation_event(state, _)
+      #(state, reloaded, follow_ups)
+    }
     config.CurrentInvalid(reason) -> #(
       state,
       command.rejected(operator_command, reason, failure_message),
@@ -3796,6 +3817,15 @@ fn handle_running_refresh_finished(
   generation: Int,
   result: Result(List(tracker_issue.Issue), error.TrackerError),
 ) -> State {
+  case result {
+    Ok(issues) ->
+      emit_work_item_invalidation_for_issues(
+        state,
+        work_item_invalidation.TrackerRefresh,
+        issues,
+      )
+    Error(_tracker_error) -> Nil
+  }
   let result = case result {
     Ok(issues) -> Ok(issues)
     Error(err) -> Error(error.tracker_code(err))
@@ -3815,6 +3845,15 @@ fn handle_candidate_fetch_finished(
   generation: Int,
   result: Result(List(tracker_issue.Issue), error.TrackerError),
 ) -> State {
+  case result {
+    Ok(candidates) ->
+      emit_work_item_invalidation_for_issues(
+        state,
+        work_item_invalidation.PollRefresh,
+        candidates,
+      )
+    Error(_tracker_error) -> Nil
+  }
   let result = case result {
     Ok(candidates) -> Ok(candidates)
     Error(err) -> Error(error.tracker_code(err))
@@ -3840,6 +3879,76 @@ fn append_unique(values: List(String), value: String) -> List(String) {
   case list.contains(values, value) {
     True -> values
     False -> list.append(values, [value])
+  }
+}
+
+fn emit_work_item_invalidation_event(
+  state: State,
+  event: work_item_invalidation.Event,
+) -> Nil {
+  state.dependencies.emit_work_item_invalidation(state.remote_client, event)
+}
+
+fn emit_work_item_invalidation_for_issues(
+  state: State,
+  source: work_item_invalidation.Source,
+  issues: List(tracker_issue.Issue),
+) -> Nil {
+  case issues {
+    [] -> Nil
+    _ ->
+      work_item_invalidation.from_issues(
+        source,
+        state.tracker_adapter.kind,
+        issues,
+      )
+      |> emit_work_item_invalidation_event(state, _)
+  }
+}
+
+fn emit_work_item_invalidation_for_issue(
+  state: State,
+  source: work_item_invalidation.Source,
+  issue: tracker_issue.Issue,
+) -> Nil {
+  emit_work_item_invalidation_for_issues(state, source, [issue])
+}
+
+fn emit_work_item_invalidation_for_task_ref(
+  state: State,
+  source: work_item_invalidation.Source,
+  ref: task.TaskRef,
+) -> Nil {
+  work_item_invalidation.from_task_refs(source, [ref])
+  |> emit_work_item_invalidation_event(state, _)
+}
+
+fn emit_work_item_invalidation_for_outbox_result(
+  state: State,
+  source: work_item_invalidation.Source,
+  outbox: outbox_effects.Intent,
+  result: Result(a, error.TrackerError),
+) -> Nil {
+  case result {
+    Ok(_) ->
+      emit_work_item_invalidation_for_task_ref(
+        state,
+        source,
+        outbox_effects.task_ref_from_fields(outbox.task_ref),
+      )
+    Error(_tracker_error) -> Nil
+  }
+}
+
+fn emit_work_item_invalidation_for_run(state: State, run_id: String) -> Nil {
+  case worker_registry.worker_for_run(state.registry, run_id) {
+    Ok(handle) ->
+      emit_work_item_invalidation_for_task_ref(
+        state,
+        work_item_invalidation.WorkflowObserved,
+        handle.task_ref,
+      )
+    Error(Nil) -> Nil
   }
 }
 
@@ -5711,6 +5820,15 @@ fn handle_retry_refresh_finished(
   generation: Int,
   result: Result(List(tracker_issue.Issue), error.TrackerError),
 ) -> State {
+  case result {
+    Ok(issues) ->
+      emit_work_item_invalidation_for_issues(
+        state,
+        work_item_invalidation.TrackerRefresh,
+        issues,
+      )
+    Error(_tracker_error) -> Nil
+  }
   let result = case result {
     Ok(issues) -> Ok(issues)
     Error(err) -> Error(error.tracker_code(err))
@@ -6719,6 +6837,11 @@ fn handle_scheduled_failure_report_success(
   publication: adapter.ScheduledFailurePublication,
   receipt: adapter.ScheduledFailureReceipt,
 ) -> State {
+  emit_work_item_invalidation_for_task_ref(
+    state,
+    work_item_invalidation.WorkflowObserved,
+    receipt.task,
+  )
   let issue_id = receipt.task.remote_id
   let action = case receipt.created {
     True -> "created"
@@ -7175,6 +7298,15 @@ fn handle_dispatch_claim_validation_finished(
     effect_runner.DispatchClaimValidationError,
   ),
 ) -> State {
+  case result {
+    Ok(issue) ->
+      emit_work_item_invalidation_for_issue(
+        state,
+        work_item_invalidation.TrackerRefresh,
+        issue,
+      )
+    Error(_validation_error) -> Nil
+  }
   let result = case result {
     Ok(issue) -> Ok(issue)
     Error(err) -> Error(dispatch_validation_error_to_transition(err))
@@ -7233,6 +7365,12 @@ fn handle_handoff_claim_finished(
   run_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  emit_work_item_invalidation_for_outbox_result(
+    state,
+    work_item_invalidation.WorkflowObserved,
+    outbox,
+    result,
+  )
   let task_identity =
     orchestrator_state.issue_id_identity_for_backend(
       issue_id,
@@ -7431,6 +7569,12 @@ fn handle_handoff_success_finished(
   issue_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  emit_work_item_invalidation_for_outbox_result(
+    state,
+    work_item_invalidation.WorkflowObserved,
+    outbox,
+    result,
+  )
   let state = append_outbox_result(state, outbox, result)
   case result {
     Ok(Nil) -> state
@@ -7450,6 +7594,12 @@ fn handle_handoff_failure_finished(
   issue_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  emit_work_item_invalidation_for_outbox_result(
+    state,
+    work_item_invalidation.WorkflowObserved,
+    outbox,
+    result,
+  )
   let state = append_outbox_result(state, outbox, result)
   case result {
     Ok(Nil) -> state
@@ -7469,6 +7619,12 @@ fn handle_handoff_park_finished(
   issue_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  emit_work_item_invalidation_for_outbox_result(
+    state,
+    work_item_invalidation.WorkflowObserved,
+    outbox,
+    result,
+  )
   let state = append_outbox_result(state, outbox, result)
   case result {
     Ok(Nil) -> state
@@ -7490,6 +7646,15 @@ fn handle_invalid_workflow_report_finished(
   reporting_policy_fingerprint: String,
   result: Result(effect_runner.InvalidWorkflowReportOutcome, error.TrackerError),
 ) -> State {
+  case result {
+    Ok(effect_runner.InvalidWorkflowReportNoop) | Error(_) -> Nil
+    Ok(_) ->
+      emit_work_item_invalidation_for_task_ref(
+        state,
+        work_item_invalidation.WorkflowObserved,
+        outbox_effects.task_ref_from_fields(outbox.task_ref),
+      )
+  }
   let state = append_outbox_result(state, outbox, result)
   case result {
     Ok(effect_runner.InvalidWorkflowReportNoop) -> {
@@ -7580,6 +7745,12 @@ fn handle_outbox_replay_finished(
   let recovery.OutboxReplay(outbox_id, task_ref, outbox_kind, _, _) =
     outbox_replay
   let intent = outbox_effects.recovered_intent(outbox_replay)
+  emit_work_item_invalidation_for_outbox_result(
+    state,
+    work_item_invalidation.WorkflowObserved,
+    intent,
+    result,
+  )
   case result {
     Ok(Nil) -> {
       let state =
