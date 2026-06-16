@@ -4,10 +4,12 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/control/query/dto
 import scherzo/control/query/types
 import scherzo/control/query/work_item_dto
 import scherzo/task
+import scherzo/work_item
 
 pub const version = 1
 
@@ -66,10 +68,22 @@ fn task_list_query_entries(
 fn work_item_list_query_entries(
   query: types.WorkItemListQuery,
 ) -> List(#(String, json.Json)) {
+  let state_entries = case query.state_filter {
+    work_item.CategoryWorkItems(states) -> [
+      #("states", json.array(states, of: task_state_category_to_json)),
+    ]
+    _ -> []
+  }
   [
-    #("states", json.array(query.states, of: task_state_category_to_json)),
+    #(
+      "state_filter",
+      json.string(work_item.state_filter_to_string(query.state_filter)),
+    ),
+    #("search", json.nullable(query.search, of: json.string)),
+    #("sort", json.string(work_item.sort_to_string(query.sort))),
     #("limit", json.int(query.limit)),
     #("cursor", json.nullable(query.cursor, of: json.string)),
+    ..state_entries
   ]
 }
 
@@ -251,6 +265,9 @@ type RequestFields {
     type_: Option(String),
     limit: Option(Int),
     cursor: Option(String),
+    state_filter: Option(String),
+    search: Option(String),
+    sort: Option(String),
     states: List(String),
     statuses: List(String),
     kinds: List(String),
@@ -306,6 +323,21 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use state_filter <- decode.optional_field(
+    "state_filter",
+    None,
+    decode.optional(decode.string),
+  )
+  use search <- decode.optional_field(
+    "search",
+    None,
+    decode.optional(decode.string),
+  )
+  use sort <- decode.optional_field(
+    "sort",
+    None,
+    decode.optional(decode.string),
+  )
   use states <- decode.optional_field("states", [], decode.list(decode.string))
   use statuses <- decode.optional_field(
     "statuses",
@@ -328,6 +360,9 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     type_: type_,
     limit: limit,
     cursor: cursor,
+    state_filter: state_filter,
+    search: search,
+    sort: sort,
     states: states,
     statuses: statuses,
     kinds: kinds,
@@ -503,14 +538,21 @@ fn task_show_request_from_fields(
 fn work_item_list_request_from_fields(
   fields: RequestFields,
 ) -> Result(types.QueryRequest, types.QueryError) {
-  use states <- result.try(decode_state_categories(fields.states))
+  use state_filter <- result.try(decode_work_item_state_filter(
+    fields.state_filter,
+    fields.states,
+  ))
   use limit <- result.try(required_positive_limit_named(
     fields.limit,
     "work item list",
   ))
+  use sort <- result.try(decode_work_item_sort(fields.sort))
+  let search = work_item.normalize_search(fields.search)
   Ok(
     types.WorkItemList(types.WorkItemListQuery(
-      states: states,
+      state_filter: state_filter,
+      search: search,
+      sort: sort,
       limit: limit,
       cursor: fields.cursor,
     )),
@@ -563,25 +605,90 @@ fn outbox_show_request_from_fields(
   }
 }
 
+fn decode_work_item_state_filter(
+  state_filter: Option(String),
+  states: List(String),
+) -> Result(work_item.WorkItemStateFilter, types.QueryError) {
+  case state_filter {
+    Some(state_filter) ->
+      case state_filter |> string.trim |> string.lowercase {
+        "active" -> Ok(work_item.ActiveWorkItems)
+        "archive" -> Ok(work_item.ArchiveWorkItems)
+        "categories" -> {
+          use categories <- result.try(decode_state_categories_named(
+            states,
+            "state_filter categories",
+          ))
+          case categories {
+            [] ->
+              Error(types.QueryError(
+                types.QueryBackendFailed,
+                "work item state_filter categories requires non-empty states",
+              ))
+            categories -> Ok(work_item.CategoryWorkItems(categories))
+          }
+        }
+        other ->
+          Error(types.QueryError(
+            types.QueryBackendFailed,
+            "invalid work item state_filter: " <> other,
+          ))
+      }
+    None ->
+      case states {
+        [] -> Ok(work_item.default_state_filter())
+        _ ->
+          decode_state_categories_named(states, "work item state")
+          |> result.map(work_item.CategoryWorkItems)
+      }
+  }
+}
+
+fn decode_work_item_sort(
+  sort: Option(String),
+) -> Result(work_item.WorkItemSort, types.QueryError) {
+  case sort {
+    Some(sort) ->
+      case work_item.sort_from_string(sort) {
+        Ok(sort) -> Ok(sort)
+        Error(Nil) ->
+          Error(types.QueryError(
+            types.QueryBackendFailed,
+            "invalid work item sort: " <> sort,
+          ))
+      }
+    None -> Ok(work_item.default_sort())
+  }
+}
+
 fn decode_state_categories(
   values: List(String),
 ) -> Result(List(task.TaskStateCategory), types.QueryError) {
-  decode_state_categories_loop(values, [])
+  decode_state_categories_named(values, "task state")
+}
+
+fn decode_state_categories_named(
+  values: List(String),
+  label: String,
+) -> Result(List(task.TaskStateCategory), types.QueryError) {
+  decode_state_categories_loop(values, [], label)
 }
 
 fn decode_state_categories_loop(
   values: List(String),
   acc: List(task.TaskStateCategory),
+  label: String,
 ) -> Result(List(task.TaskStateCategory), types.QueryError) {
   case values {
     [] -> Ok(list.reverse(acc))
     [value, ..rest] ->
       case task.state_category_from_string(value) {
-        Ok(category) -> decode_state_categories_loop(rest, [category, ..acc])
+        Ok(category) ->
+          decode_state_categories_loop(rest, [category, ..acc], label)
         Error(_) ->
           Error(types.QueryError(
             types.QueryBackendFailed,
-            "invalid task state: " <> value,
+            "invalid " <> label <> ": " <> value,
           ))
       }
   }

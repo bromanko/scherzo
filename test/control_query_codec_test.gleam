@@ -181,9 +181,13 @@ pub fn task_query_request_response_roundtrip_test() {
 pub fn work_item_query_request_response_roundtrip_test() {
   let list_request =
     types.WorkItemList(types.WorkItemListQuery(
-      states: [task.Ready, task.Active],
+      state_filter: work_item.CategoryWorkItems([task.Ready, task.Active]),
+      search: Some("workflow"),
+      sort: work_item.UpdatedDescWorkItems,
       limit: 25,
-      cursor: Some("cursor:25"),
+      cursor: Some(
+        "work-item:25:categories:active,ready|search:workflow|updated_desc",
+      ),
     ))
   let show_request =
     types.WorkItemShow(
@@ -201,7 +205,7 @@ pub fn work_item_query_request_response_roundtrip_test() {
   let list_response =
     types.WorkItemListResponse(work_item.WorkItemPage(
       items: [work_item_summary(labels_truncated: False)],
-      next_cursor: Some("cursor:1"),
+      next_cursor: Some("work-item:1:active|search:|updated_desc"),
       has_more: True,
     ))
   let detail_response =
@@ -233,6 +237,78 @@ pub fn work_item_query_request_response_roundtrip_test() {
   )
   assert !string.contains(encoded_detail, "description")
   assert codec.decode_response(encoded_detail) == Ok(detail_response)
+}
+
+pub fn work_item_query_decodes_defaults_and_legacy_states_test() {
+  let assert Ok(types.WorkItemList(active_default)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"limit\":5,\"cursor\":null}",
+    )
+  assert active_default.state_filter == work_item.ActiveWorkItems
+  assert active_default.search == None
+  assert active_default.sort == work_item.UpdatedDescWorkItems
+
+  let assert Ok(types.WorkItemList(legacy_states)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"states\":[\"ready\",\"active\"],\"search\":\"   \",\"limit\":5,\"cursor\":null}",
+    )
+  assert legacy_states.state_filter
+    == work_item.CategoryWorkItems([task.Ready, task.Active])
+  assert legacy_states.search == None
+  assert legacy_states.sort == work_item.UpdatedDescWorkItems
+}
+
+pub fn work_item_query_decodes_active_archive_and_categories_test() {
+  let assert Ok(types.WorkItemList(active_query)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"state_filter\":\"active\",\"search\":\"Workflow\",\"sort\":\"updated_desc\",\"limit\":5,\"cursor\":null}",
+    )
+  assert active_query.state_filter == work_item.ActiveWorkItems
+  assert active_query.search == Some("Workflow")
+
+  let assert Ok(types.WorkItemList(archive_query)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"state_filter\":\"archive\",\"limit\":5,\"cursor\":null}",
+    )
+  assert archive_query.state_filter == work_item.ArchiveWorkItems
+
+  let assert Ok(types.WorkItemList(category_query)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"state_filter\":\"categories\",\"states\":[\"ready\",\"active\"],\"limit\":5,\"cursor\":null}",
+    )
+  assert category_query.state_filter
+    == work_item.CategoryWorkItems([task.Ready, task.Active])
+}
+
+pub fn work_item_query_rejects_invalid_filter_sort_and_categories_test() {
+  let assert Error(types.QueryError(code: code_1, message: message_1)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"state_filter\":\"bogus\",\"limit\":5,\"cursor\":null}",
+    )
+  assert code_1 == types.QueryBackendFailed
+  assert message_1 == "invalid work item state_filter: bogus"
+
+  let assert Error(types.QueryError(code: code_2, message: message_2)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"state_filter\":\"categories\",\"states\":[],\"limit\":5,\"cursor\":null}",
+    )
+  assert code_2 == types.QueryBackendFailed
+  assert message_2
+    == "work item state_filter categories requires non-empty states"
+
+  let assert Error(types.QueryError(code: code_3, message: message_3)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"state_filter\":\"categories\",\"states\":[\"bogus\"],\"limit\":5,\"cursor\":null}",
+    )
+  assert code_3 == types.QueryBackendFailed
+  assert message_3 == "invalid state_filter categories: bogus"
+
+  let assert Error(types.QueryError(code: code_4, message: message_4)) =
+    codec.decode_request(
+      "{\"version\":1,\"type\":\"work_item_list\",\"state_filter\":\"active\",\"sort\":\"bogus\",\"limit\":5,\"cursor\":null}",
+    )
+  assert code_4 == types.QueryBackendFailed
+  assert message_4 == "invalid work item sort: bogus"
 }
 
 pub fn supported_queries_include_work_item_queries_test() {
@@ -268,9 +344,28 @@ pub fn cursor_encode_decode_roundtrip_test() {
   assert cursor.decode_offset(encoded) == Ok(42)
 }
 
+pub fn work_item_cursor_encode_decode_roundtrip_test() {
+  let fingerprint = "active|search:workflow|updated_desc"
+  let encoded = cursor.encode_work_item_offset(42, fingerprint)
+
+  assert encoded == "work-item:42:active|search:workflow|updated_desc"
+  assert cursor.decode_work_item_offset(encoded, fingerprint) == Ok(42)
+}
+
 pub fn invalid_cursor_maps_to_safe_query_error_test() {
   let assert Error(types.QueryError(code: code, message: message)) =
     cursor.decode_offset("cursor:-1")
+
+  assert code == types.InvalidCursor
+  assert message == "invalid query cursor"
+}
+
+pub fn invalid_work_item_cursor_maps_to_safe_query_error_test() {
+  let assert Error(types.QueryError(code: code, message: message)) =
+    cursor.decode_work_item_offset(
+      "work-item:1:archive|search:workflow|updated_desc",
+      "active|search:workflow|updated_desc",
+    )
 
   assert code == types.InvalidCursor
   assert message == "invalid query cursor"

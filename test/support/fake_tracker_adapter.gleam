@@ -42,11 +42,18 @@ pub fn read_only_adapter() -> adapter.TrackerAdapter {
 pub fn read_only_adapter_with_tasks(
   tasks: List(task.Task),
 ) -> adapter.TrackerAdapter {
+  read_only_adapter_with_work_item_details(tasks, default_work_item_details())
+}
+
+pub fn read_only_adapter_with_work_item_details(
+  tasks: List(task.Task),
+  details: List(work_item.WorkItemDetail),
+) -> adapter.TrackerAdapter {
   adapter.TrackerAdapter(
     kind: backend_kind,
     display_name: "Test memory tracker",
     task_source: task_source_capability(tasks),
-    work_items: Some(work_item_read_capability(default_work_item_details())),
+    work_items: Some(work_item_read_capability(details)),
     comments: None,
     remote_commands: None,
     state_transitions: None,
@@ -252,19 +259,10 @@ fn list_work_items(
   details: List(work_item.WorkItemDetail),
   request: work_item.WorkItemListRequest,
 ) -> Result(work_item.WorkItemProviderPage, adapter.TrackerError) {
-  let matching =
-    list.filter(details, fn(detail) {
-      matches_work_item_state_categories(
-        detail.summary.state.category,
-        request.state_categories,
-      )
-    })
-  let summaries = list.map(matching, fn(detail) { detail.summary })
-  let remaining = drop_first(summaries, request.offset)
-  Ok(work_item.WorkItemProviderPage(
-    items: take_first(remaining, request.limit),
-    has_more: list.length(remaining) > request.limit,
-  ))
+  details
+  |> list.map(fn(detail) { detail.summary })
+  |> work_item.apply_list_request(request)
+  |> Ok
 }
 
 fn lookup_work_item(
@@ -290,16 +288,6 @@ fn matches_work_item_lookup_ref(
       option_equals(source.display_id, value)
     work_item.WorkItemLookupByRemoteId(provider: provider, id: value) ->
       provider_matches(source.provider, provider) && source.id == value
-  }
-}
-
-fn matches_work_item_state_categories(
-  category: task.TaskStateCategory,
-  categories: List(task.TaskStateCategory),
-) -> Bool {
-  case categories {
-    [] -> True
-    categories -> list.contains(categories, category)
   }
 }
 

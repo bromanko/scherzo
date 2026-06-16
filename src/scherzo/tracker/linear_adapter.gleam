@@ -18,6 +18,8 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/work_item
 
+const linear_work_item_scan_limit = 250
+
 pub type Dependencies {
   Dependencies(
     transport: linear.Transport,
@@ -323,87 +325,65 @@ fn list_work_items(
   transport: linear.Transport,
   request: work_item.WorkItemListRequest,
 ) -> Result(work_item.WorkItemProviderPage, adapter.TrackerError) {
-  let state_names =
-    linear_state_names_for_query(config, request.state_categories)
-  case state_names {
-    [] ->
-      Error(adapter.UnsupportedCapability(
-        "unfiltered Linear work item list; pass at least one configured --state filter",
-      ))
-    state_names ->
-      fetch_work_item_page_from_offset(
-        config,
-        transport,
-        state_names,
-        request.state_categories,
-        request.offset,
-        request.limit,
-        request.subtask_limit,
-        request.label_limit,
-        None,
-        0,
-        [],
-      )
-  }
+  fetch_work_item_scan(
+    config,
+    transport,
+    linear_state_names_for_query(config, request.state_categories),
+    request,
+    None,
+    [],
+  )
 }
 
-fn fetch_work_item_page_from_offset(
+fn fetch_work_item_scan(
   config: config_types.TrackerConfig,
   transport: linear.Transport,
   state_names: List(issue_state.IssueState),
-  categories: List(task.TaskStateCategory),
-  offset: Int,
-  limit: Int,
-  subtask_limit: Int,
-  label_limit: Int,
+  request: work_item.WorkItemListRequest,
   after: Option(String),
-  skipped: Int,
   acc: List(work_item.WorkItemSummary),
 ) -> Result(work_item.WorkItemProviderPage, adapter.TrackerError) {
   use page <- try_adapter(linear_work_item_query.fetch_page(
     config,
     state_names,
     after,
-    subtask_limit,
-    label_limit,
+    request.subtask_limit,
+    request.label_limit,
     transport,
   ))
-  let tasks = filter_work_item_categories(page.items, categories)
-  let #(skipped, acc, reached_limit, has_buffered_more) =
-    collect_work_item_page(tasks, offset, limit, skipped, acc)
-  case reached_limit {
+  let scanned = list.append(acc, page.items)
+  let reached_scan_limit = list.length(scanned) >= linear_work_item_scan_limit
+  case reached_scan_limit {
     True ->
-      Ok(work_item.WorkItemProviderPage(
-        items: list.reverse(acc),
-        has_more: has_buffered_more || page.has_next_page,
-      ))
+      finish_work_item_scan(
+        take_first(scanned, linear_work_item_scan_limit),
+        request,
+      )
     False ->
       case page.has_next_page, page.end_cursor {
         True, Some(cursor) ->
-          fetch_work_item_page_from_offset(
+          fetch_work_item_scan(
             config,
             transport,
             state_names,
-            categories,
-            offset,
-            limit,
-            subtask_limit,
-            label_limit,
+            request,
             Some(cursor),
-            skipped,
-            acc,
+            scanned,
           )
         True, None ->
           Error(adapter.DecodeFailed(
             "Linear response missing pagination endCursor",
           ))
-        False, _ ->
-          Ok(work_item.WorkItemProviderPage(
-            items: list.reverse(acc),
-            has_more: False,
-          ))
+        False, _ -> finish_work_item_scan(scanned, request)
       }
   }
+}
+
+fn finish_work_item_scan(
+  scanned: List(work_item.WorkItemSummary),
+  request: work_item.WorkItemListRequest,
+) -> Result(work_item.WorkItemProviderPage, adapter.TrackerError) {
+  Ok(work_item.apply_list_request(scanned, request))
 }
 
 fn lookup_work_item(
@@ -598,19 +578,6 @@ fn filter_categories(
   }
 }
 
-fn filter_work_item_categories(
-  items: List(work_item.WorkItemSummary),
-  categories: List(task.TaskStateCategory),
-) -> List(work_item.WorkItemSummary) {
-  case categories {
-    [] -> items
-    categories ->
-      list.filter(items, fn(item) {
-        list.contains(categories, item.state.category)
-      })
-  }
-}
-
 fn collect_page(
   tasks: List(task.Task),
   offset: Int,
@@ -632,25 +599,11 @@ fn collect_page(
   }
 }
 
-fn collect_work_item_page(
-  items: List(work_item.WorkItemSummary),
-  offset: Int,
-  limit: Int,
-  skipped: Int,
-  acc: List(work_item.WorkItemSummary),
-) -> #(Int, List(work_item.WorkItemSummary), Bool, Bool) {
-  case items {
-    [] -> #(skipped, acc, False, False)
-    [item, ..rest] ->
-      case skipped < offset {
-        True -> collect_work_item_page(rest, offset, limit, skipped + 1, acc)
-        False ->
-          case list.length(acc) >= limit {
-            True -> #(skipped, acc, True, True)
-            False ->
-              collect_work_item_page(rest, offset, limit, skipped, [item, ..acc])
-          }
-      }
+fn take_first(values: List(a), count: Int) -> List(a) {
+  case count <= 0, values {
+    True, _ -> []
+    _, [] -> []
+    False, [first, ..rest] -> [first, ..take_first(rest, count - 1)]
   }
 }
 

@@ -1,3 +1,4 @@
+import birl
 import gleam/dict
 import gleam/erlang/process
 import gleam/list
@@ -6,6 +7,7 @@ import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/query/backend
+import scherzo/control/query/cursor
 import scherzo/control/query/types
 import scherzo/daemon_identity
 import scherzo/state/projection
@@ -167,7 +169,9 @@ pub fn backend_work_item_list_paginates_and_invokes_provider_test() {
       tracker_adapter,
       fn(_) { Ok(False) },
       types.WorkItemList(types.WorkItemListQuery(
-        states: [task.Ready],
+        state_filter: work_item.CategoryWorkItems([task.Ready]),
+        search: None,
+        sort: work_item.UpdatedDescWorkItems,
         limit: 1,
         cursor: None,
       )),
@@ -177,7 +181,8 @@ pub fn backend_work_item_list_paginates_and_invokes_provider_test() {
   let assert [run_workflow] = first.actions
   assert run_workflow.action_id == "work_item.run_workflow"
   assert first_page.has_more == True
-  assert first_page.next_cursor == Some("cursor:1")
+  let assert Some(first_cursor) = first_page.next_cursor
+  assert string.starts_with(first_cursor, "work-item:1:")
   let assert Ok("list") = process.receive(calls, within: 1000)
 
   let assert Ok(types.WorkItemListResponse(second_page)) =
@@ -187,9 +192,11 @@ pub fn backend_work_item_list_paginates_and_invokes_provider_test() {
       tracker_adapter,
       fn(_) { Ok(False) },
       types.WorkItemList(types.WorkItemListQuery(
-        states: [task.Ready],
+        state_filter: work_item.CategoryWorkItems([task.Ready]),
+        search: None,
+        sort: work_item.UpdatedDescWorkItems,
         limit: 1,
-        cursor: Some("cursor:1"),
+        cursor: Some(first_cursor),
       )),
     )
   assert second_page.has_more == False
@@ -207,7 +214,9 @@ pub fn backend_work_item_list_does_not_require_projection_snapshot_test() {
       fn(_) { Ok(False) },
       fn(_) { Error(Nil) },
       types.WorkItemList(types.WorkItemListQuery(
-        states: [task.Ready],
+        state_filter: work_item.CategoryWorkItems([task.Ready]),
+        search: None,
+        sort: work_item.UpdatedDescWorkItems,
         limit: 1,
         cursor: None,
       )),
@@ -300,7 +309,9 @@ pub fn backend_work_item_query_maps_unsupported_capability_test() {
       tracker_adapter,
       fn(_) { Ok(False) },
       types.WorkItemList(types.WorkItemListQuery(
-        states: [],
+        state_filter: work_item.default_state_filter(),
+        search: None,
+        sort: work_item.default_sort(),
         limit: 5,
         cursor: None,
       )),
@@ -335,7 +346,9 @@ pub fn backend_work_item_redacts_backend_failure_and_bounds_test() {
       tracker_adapter,
       fn(_) { Ok(False) },
       types.WorkItemList(types.WorkItemListQuery(
-        states: [task.Ready],
+        state_filter: work_item.CategoryWorkItems([task.Ready]),
+        search: None,
+        sort: work_item.UpdatedDescWorkItems,
         limit: 999,
         cursor: None,
       )),
@@ -343,6 +356,8 @@ pub fn backend_work_item_redacts_backend_failure_and_bounds_test() {
 
   let assert Ok(forwarded) = process.receive(requests, within: 1000)
   assert forwarded.limit == work_item.max_page_limit
+  assert forwarded.search == None
+  assert forwarded.sort == work_item.UpdatedDescWorkItems
   assert forwarded.subtask_limit == work_item.default_list_subtask_limit
   assert forwarded.label_limit == work_item.default_label_limit
   assert code == types.QueryBackendFailed
@@ -375,7 +390,9 @@ pub fn backend_rejects_invalid_work_item_cursor_before_querying_adapter_test() {
       fake_tracker_adapter.read_only_adapter(),
       fn(_) { Ok(False) },
       types.WorkItemList(types.WorkItemListQuery(
-        states: [],
+        state_filter: work_item.default_state_filter(),
+        search: None,
+        sort: work_item.default_sort(),
         limit: 10,
         cursor: Some("linear-raw-cursor"),
       )),
@@ -437,6 +454,272 @@ fn projection_with_retained_artifacts(
         ),
       ),
     ]),
+  )
+}
+
+pub fn backend_work_item_list_defaults_to_active_filter_test() {
+  let requests = process.new_subject()
+  let tracker_adapter =
+    adapter.TrackerAdapter(
+      ..fake_tracker_adapter.read_only_adapter(),
+      work_items: Some(
+        adapter.WorkItemReadCapability(
+          list_work_items: fn(request) {
+            process.send(requests, request)
+            Ok(work_item.WorkItemProviderPage(items: [], has_more: False))
+          },
+          lookup_work_item: fn(_) { Ok(None) },
+        ),
+      ),
+    )
+
+  let assert Ok(types.WorkItemListResponse(_)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.default_work_item_list_query()),
+    )
+
+  let assert Ok(forwarded) = process.receive(requests, within: 1000)
+  assert forwarded.state_categories
+    == [task.Backlog, task.Ready, task.Active, task.Unknown]
+  assert forwarded.search == None
+  assert forwarded.sort == work_item.UpdatedDescWorkItems
+}
+
+pub fn backend_rejects_mismatched_work_item_cursor_before_querying_adapter_test() {
+  let requests = process.new_subject()
+  let tracker_adapter =
+    adapter.TrackerAdapter(
+      ..fake_tracker_adapter.read_only_adapter(),
+      work_items: Some(
+        adapter.WorkItemReadCapability(
+          list_work_items: fn(request) {
+            process.send(requests, request)
+            Ok(work_item.WorkItemProviderPage(items: [], has_more: False))
+          },
+          lookup_work_item: fn(_) { Ok(None) },
+        ),
+      ),
+    )
+
+  let bad_cursor =
+    cursor.encode_work_item_offset(1, "archive|search:|updated_desc")
+  let assert Error(types.QueryError(code: code, message: message)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        state_filter: work_item.ActiveWorkItems,
+        search: None,
+        sort: work_item.UpdatedDescWorkItems,
+        limit: 10,
+        cursor: Some(bad_cursor),
+      )),
+    )
+
+  assert code == types.InvalidCursor
+  assert message == "invalid query cursor"
+  let assert Error(Nil) = process.receive(requests, within: 20)
+}
+
+pub fn backend_work_item_list_applies_search_archive_sort_and_cursor_test() {
+  let tracker_adapter =
+    fake_tracker_adapter.read_only_adapter_with_work_item_details(
+      [fake_tracker_adapter.task()],
+      searchable_work_item_details(),
+    )
+
+  let assert Ok(types.WorkItemListResponse(active_page)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        state_filter: work_item.ActiveWorkItems,
+        search: Some("workflow:execplan"),
+        sort: work_item.UpdatedDescWorkItems,
+        limit: 1,
+        cursor: None,
+      )),
+    )
+  let assert [first] = active_page.items
+  assert first.source.display_id == Some("CARD-ACTIVE")
+  assert active_page.has_more == True
+  let assert Some(next_cursor) = active_page.next_cursor
+
+  let assert Ok(types.WorkItemListResponse(second_page)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        state_filter: work_item.ActiveWorkItems,
+        search: Some("workflow:execplan"),
+        sort: work_item.UpdatedDescWorkItems,
+        limit: 1,
+        cursor: Some(next_cursor),
+      )),
+    )
+  let assert [second] = second_page.items
+  assert second.source.display_id == Some("CARD-READY")
+  assert second_page.has_more == False
+
+  let assert Ok(types.WorkItemListResponse(archive_page)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        state_filter: work_item.ArchiveWorkItems,
+        search: Some("done"),
+        sort: work_item.UpdatedDescWorkItems,
+        limit: 10,
+        cursor: None,
+      )),
+    )
+  let assert [archived] = archive_page.items
+  assert archived.source.display_id == Some("CARD-DONE")
+
+  let assert Ok(types.WorkItemListResponse(miss_page)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        state_filter: work_item.ActiveWorkItems,
+        search: Some("missing"),
+        sort: work_item.UpdatedDescWorkItems,
+        limit: 10,
+        cursor: None,
+      )),
+    )
+  assert miss_page.items == []
+
+  assert_active_search_returns_display_id(
+    tracker_adapter,
+    fake_tracker_adapter.backend_kind <> ":provider-unique",
+    "DISPLAY-UNIQUE",
+  )
+  assert_active_search_returns_display_id(
+    tracker_adapter,
+    "DISPLAY-UNIQUE",
+    "DISPLAY-UNIQUE",
+  )
+  assert_active_search_returns_display_id(
+    tracker_adapter,
+    "provider-unique",
+    "DISPLAY-UNIQUE",
+  )
+}
+
+fn assert_active_search_returns_display_id(
+  tracker_adapter: adapter.TrackerAdapter,
+  search: String,
+  expected_display_id: String,
+) -> Nil {
+  let assert Ok(types.WorkItemListResponse(page)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        state_filter: work_item.ActiveWorkItems,
+        search: Some(search),
+        sort: work_item.UpdatedDescWorkItems,
+        limit: 10,
+        cursor: None,
+      )),
+    )
+  let assert [item] = page.items
+  assert item.source.display_id == Some(expected_display_id)
+}
+
+fn searchable_work_item_details() -> List(work_item.WorkItemDetail) {
+  [
+    work_item.WorkItemDetail(
+      summary: build_work_item_summary(
+        remote_id: "card-ready",
+        display_id: "CARD-READY",
+        title: "Ready work item",
+        category: task.Ready,
+        label_name: "workflow:execplan",
+        updated_at_ms: 2000,
+      ),
+      subtasks: [],
+      subtasks_truncated: False,
+    ),
+    work_item.WorkItemDetail(
+      summary: build_work_item_summary(
+        remote_id: "card-active",
+        display_id: "CARD-ACTIVE",
+        title: "Active work item",
+        category: task.Active,
+        label_name: "workflow:execplan",
+        updated_at_ms: 2000,
+      ),
+      subtasks: [],
+      subtasks_truncated: False,
+    ),
+    work_item.WorkItemDetail(
+      summary: build_work_item_summary(
+        remote_id: "provider-unique",
+        display_id: "DISPLAY-UNIQUE",
+        title: "Identifier search item",
+        category: task.Active,
+        label_name: "identifier-only",
+        updated_at_ms: 3000,
+      ),
+      subtasks: [],
+      subtasks_truncated: False,
+    ),
+    work_item.WorkItemDetail(
+      summary: build_work_item_summary(
+        remote_id: "card-done",
+        display_id: "CARD-DONE",
+        title: "Done archive item",
+        category: task.Done,
+        label_name: "archive",
+        updated_at_ms: 1000,
+      ),
+      subtasks: [],
+      subtasks_truncated: False,
+    ),
+  ]
+}
+
+fn build_work_item_summary(
+  remote_id remote_id: String,
+  display_id display_id: String,
+  title title: String,
+  category category: task.TaskStateCategory,
+  label_name label_name: String,
+  updated_at_ms updated_at_ms: Int,
+) -> work_item.WorkItemSummary {
+  work_item.WorkItemSummary(
+    id: fake_tracker_adapter.backend_kind <> ":" <> remote_id,
+    source: work_item.WorkItemSource(
+      provider: fake_tracker_adapter.backend_kind,
+      id: remote_id,
+      display_id: Some(display_id),
+      url: None,
+    ),
+    title: title,
+    state: task.TaskState(id: Some(remote_id), name: title, category: category),
+    labels: [task.TaskLabel(id: None, name: label_name)],
+    labels_truncated: False,
+    created_at: None,
+    updated_at: Some(birl.from_unix_milli(updated_at_ms)),
+    actions: [],
   )
 }
 

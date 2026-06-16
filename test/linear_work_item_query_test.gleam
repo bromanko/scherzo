@@ -40,6 +40,16 @@ pub fn work_item_query_builds_allowlisted_requests_test() {
   assert !string.contains(request.body, "bodyData")
 }
 
+pub fn work_item_query_builds_unfiltered_scoped_requests_test() {
+  let assert Ok(request) =
+    work_item_query.build_list_request(tracker_config(), [], None, 10, 50)
+
+  assert string.contains(request.body, "ScherzoWorkItemList")
+  assert string.contains(request.body, "and: [$taskFilter]")
+  assert !string.contains(request.body, "stateNames")
+  assert !string.contains(request.body, "state: { name: { in: $stateNames } }")
+}
+
 pub fn work_item_query_parses_list_fixture_test() {
   let assert Ok(body) =
     simplifile.read("test/fixtures/linear_work_item/list_with_children.json")
