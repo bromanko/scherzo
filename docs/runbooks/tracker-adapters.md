@@ -23,14 +23,15 @@ The old Linear-named smoke and contract operator aliases are retired:
 
 ## Preferred Linear tracker config
 
-New examples should use the simplified tracker shape. Keep the API key in the environment, name the Linear project under `tracker.linear.project`, and use `tracker.states.ready` for initial dispatch states.
+New examples should use the simplified tracker shape. Keep the API key in the environment, name the Linear task scope under `tracker.linear.tasks_from.project` (or `tracker.linear.tasks_from.projects` for an explicit non-empty list), and use `tracker.states.ready` for initial dispatch states. `tracker.linear.project` remains compatibility syntax for existing single-project configs and desugars to `tasks_from.project` in doctor diagnostics.
 
 ```yaml
 version: 1
 
 tracker:
   linear:
-    project: YOUR_LINEAR_PROJECT_SLUG
+    tasks_from:
+      project: YOUR_LINEAR_PROJECT_SLUG
     api_key_env: LINEAR_API_KEY
     endpoint: https://api.linear.app/graphql
     check_setup: true
@@ -45,13 +46,14 @@ workflows:
   research: workflows/research.yaml
 ```
 
-Older tracker fields such as `tracker.kind`, `tracker.credentials.api_key_env`, `tracker.linear.project_slug`, `tracker.dispatch_states`, and `polling.interval_ms` belong to the pre-simplified config shape. Migrate them with [simplified YAML migration](simplified-yaml-migration.md).
+Older tracker fields such as `tracker.kind`, `tracker.credentials.api_key_env`, `tracker.linear.project`, `tracker.linear.project_slug`, `tracker.dispatch_states`, and `polling.interval_ms` belong to compatibility or pre-simplified config shapes. Prefer `tracker.linear.tasks_from.project` / `tracker.linear.tasks_from.projects` and migrate the rest with [simplified YAML migration](simplified-yaml-migration.md). See the full [`tracker.linear.tasks_from` specification](../specs/TRACKER_LINEAR_TASKS_FROM.md) before using label predicates or boolean composition.
 
 Use the backend-neutral doctor check names:
 
 ```sh
 LINEAR_API_KEY=lin_api_... scherzo doctor \
   --check workflow-config \
+  --check tracker-scope \
   --check tracker-contract \
   --check tracker-smoke \
   .scherzo/scherzo.yaml

@@ -134,7 +134,7 @@ Old shapes include:
 Current target fields include:
 
 - `tracker.linear.api_key_env`
-- `tracker.linear.project`
+- `tracker.linear.tasks_from.project` (or `tracker.linear.tasks_from.projects` for an explicit list); `tracker.linear.project` remains compatibility syntax for existing single-project configs
 - `tracker.states.active`, `tracker.states.ready`, and `tracker.states.terminal`
 - `tracker.polling.every`
 - top-level `workflows`

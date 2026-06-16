@@ -725,12 +725,20 @@ fn primary_project_slug(scope: config_types.LinearTaskScope) -> Option(String) {
 }
 
 fn unsupported_tasks_from_key(path: String, key: String) -> error.ConfigError {
-  error.InvalidConfig(
-    path
-    <> "."
-    <> key
-    <> " is not supported by this Scherzo build; supported keys are project, projects, all_labels, any_label, and, or",
-  )
+  case key {
+    "filter" ->
+      error.InvalidConfig(
+        path
+        <> ".filter looks like raw Linear GraphQL passthrough and is not supported. Use Scherzo task-scope keys: project, projects, all_labels, any_label, and, or",
+      )
+    _ ->
+      error.InvalidConfig(
+        path
+        <> "."
+        <> key
+        <> " is not supported by this Scherzo build; supported keys are project, projects, all_labels, any_label, and, or",
+      )
+  }
 }
 
 fn dedupe_preserving_first(values: List(String)) -> List(String) {

@@ -3,10 +3,14 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/config/linear_task_scope
+import scherzo/config/linear_task_scope_diagnostics
+import scherzo/config/types as config_types
 import scherzo/log
 
 pub type CheckName {
   WorkflowConfig
+  LinearTaskScope
   ScheduledJobs
   LinearContract
   LinearSmoke
@@ -57,6 +61,7 @@ pub type Options {
 pub fn default_checks() -> List(CheckName) {
   [
     WorkflowConfig,
+    LinearTaskScope,
     ScheduledJobs,
     LinearContract,
     LinearSmoke,
@@ -74,6 +79,7 @@ pub fn list_check_names() -> List(String) {
 pub fn check_name_to_string(check: CheckName) -> String {
   case check {
     WorkflowConfig -> "workflow-config"
+    LinearTaskScope -> "tracker-scope"
     ScheduledJobs -> "scheduled-jobs"
     LinearContract -> "tracker-contract"
     LinearSmoke -> "tracker-smoke"
@@ -86,6 +92,7 @@ pub fn check_name_to_string(check: CheckName) -> String {
 pub fn parse_check_name(name: String) -> Result(CheckName, String) {
   case name {
     "workflow-config" -> Ok(WorkflowConfig)
+    "tracker-scope" -> Ok(LinearTaskScope)
     "scheduled-jobs" -> Ok(ScheduledJobs)
     "tracker-contract" -> Ok(LinearContract)
     "tracker-smoke" -> Ok(LinearSmoke)
@@ -124,12 +131,111 @@ pub fn has_failures(report: Report) -> Bool {
   counts.failed > 0
 }
 
+pub fn skip_after_workflow_failure(
+  checks: List(CheckName),
+  results: List(CheckResult),
+) -> List(CheckResult) {
+  case checks {
+    [] -> results
+    [WorkflowConfig, ..rest] -> skip_after_workflow_failure(rest, results)
+    [check, ..rest] ->
+      skip_after_workflow_failure(
+        rest,
+        list.append(results, [
+          CheckResult(
+            check: check,
+            status: Skip,
+            code: "workflow_config_failed",
+            message: "workflow config did not load",
+            fields: [],
+          ),
+        ]),
+      )
+  }
+}
+
+pub fn linear_task_scope_check_result(
+  tracker: config_types.TrackerConfig,
+  config_contents: String,
+) -> CheckResult {
+  case config_types.linear_task_scope_from_tracker_config(tracker) {
+    Error(err) ->
+      CheckResult(
+        check: LinearTaskScope,
+        status: Fail,
+        code: "missing_tracker_project_slug",
+        message: config_types.linear_task_scope_error_message(err),
+        fields: [],
+      )
+    Ok(scope) -> {
+      let source =
+        linear_task_scope_diagnostics.source_from_yaml(config_contents)
+      let warnings = linear_task_scope_diagnostics.overlap_warnings(scope)
+      CheckResult(
+        check: LinearTaskScope,
+        status: task_scope_status(warnings),
+        code: task_scope_code(warnings),
+        message: linear_task_scope_diagnostics.message(scope, source, warnings),
+        fields: linear_task_scope_fields(scope, source, warnings),
+      )
+    }
+  }
+}
+
 pub fn result_event(result: CheckResult) -> String {
   case result.status {
     Pass -> "doctor_check_pass"
     Warn -> "doctor_check_warn"
     Fail -> "doctor_check_fail"
     Skip -> "doctor_check_skip"
+  }
+}
+
+fn task_scope_status(warnings: List(String)) -> CheckStatus {
+  case warnings {
+    [] -> Pass
+    _ -> Warn
+  }
+}
+
+fn task_scope_code(warnings: List(String)) -> String {
+  case warnings {
+    [] -> "ok"
+    _ -> "linear_task_scope_overlap"
+  }
+}
+
+fn linear_task_scope_fields(
+  scope: config_types.LinearTaskScope,
+  source: linear_task_scope_diagnostics.Source,
+  warnings: List(String),
+) -> List(log.Field) {
+  let base = [
+    #("task_scope_summary", linear_task_scope.summary(scope)),
+    #("task_scope_source", linear_task_scope_diagnostics.source_field(source)),
+    #("overlap_warning_count", int.to_string(list.length(warnings))),
+  ]
+  let base = case linear_task_scope_diagnostics.legacy_path(source) {
+    Some(path) -> list.append(base, [#("legacy_task_scope_path", path)])
+    None -> base
+  }
+  list.append(base, overlap_warning_fields(warnings, 1))
+}
+
+fn overlap_warning_fields(
+  warnings: List(String),
+  index: Int,
+) -> List(log.Field) {
+  case warnings {
+    [] -> []
+    [warning, ..rest] -> {
+      let name = "overlap_warning_" <> int.to_string(index)
+      let fields = case index == 1 {
+        True -> [#("first_overlap_warning", warning), #(name, warning)]
+        False -> [#(name, warning)]
+      }
+      list.append(fields, overlap_warning_fields(rest, index + 1))
+    }
   }
 }
 
@@ -207,6 +313,7 @@ fn human_pass_body(result: CheckResult) -> String {
         <> plural(field_or(result.fields, "workflow_count", ""), "DAG", "DAGs")
         <> ".",
       ])
+    LinearTaskScope -> indent(linear_task_scope_pass_lines(result))
     ScheduledJobs ->
       indent([
         "Scheduled job configuration is valid for the fixed-interval MVP.",
@@ -258,6 +365,22 @@ fn human_problem_body(result: CheckResult, heading: String) -> String {
     "Try:",
     ..list.map(remediation(result.check, result.code), fn(line) { "  " <> line })
   ])
+}
+
+fn linear_task_scope_pass_lines(result: CheckResult) -> List(String) {
+  let summary = field_or(result.fields, "task_scope_summary", "?")
+  let lines = ["Linear task scope: " <> summary <> "."]
+  case field_value(result.fields, "legacy_task_scope_path") {
+    Some(path) ->
+      list.append(lines, [
+        "Legacy "
+        <> path
+        <> " desugars to tracker.linear.tasks_from: "
+        <> summary
+        <> ".",
+      ])
+    None -> lines
+  }
 }
 
 fn human_skip_body(result: CheckResult) -> String {
@@ -367,6 +490,7 @@ fn status_marker(status: CheckStatus) -> String {
 fn check_title(check: CheckName) -> String {
   case check {
     WorkflowConfig -> "Workflow config"
+    LinearTaskScope -> "Tracker task scope"
     ScheduledJobs -> "Scheduled jobs"
     LinearContract -> "Tracker contract"
     LinearSmoke -> "Tracker smoke"
@@ -380,6 +504,8 @@ fn impact(check: CheckName) -> String {
   case check {
     WorkflowConfig ->
       "Scherzo cannot safely start because config, workflow DAGs, or prompt templates did not load."
+    LinearTaskScope ->
+      "Another Scherzo daemon may claim the same Linear task if configured Linear task scopes overlap."
     ScheduledJobs ->
       "Scheduled jobs may fail before dispatch, create noisy failure tasks in Linear, or reference source-task variables (`issue.*`) that do not exist for scheduled runs."
     LinearContract ->
@@ -401,6 +527,12 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- Confirm the YAML path is correct and ends in .yaml or .yml.",
       "- Confirm LINEAR_API_KEY and any referenced environment variables are set.",
       "- Confirm routed workflow DAG and prompt-template files exist.",
+    ]
+    LinearTaskScope -> [
+      "- Prefer tracker.linear.tasks_from.project or tracker.linear.tasks_from.projects for new Linear task scopes.",
+      "- Run only one daemon per non-overlapping Linear task scope/root.",
+      "- Compare the canonical Linear task-scope summary with other running daemon configs.",
+      "- See docs/specs/TRACKER_LINEAR_TASKS_FROM.md for supported task-scope predicates.",
     ]
     ScheduledJobs -> [
       "- Confirm schedules entries reference existing workflows and use every: <n><ms|s|m|h> with at least 1000ms.",

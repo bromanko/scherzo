@@ -213,7 +213,7 @@ A step with `prompt` is inferred to be an agent step, and a step with `run` is i
 | --- | --- |
 | `tracker.kind` | Removed; configure `tracker.linear` directly. |
 | `tracker.credentials.api_key_env` | `tracker.linear.api_key_env` |
-| `tracker.linear.project_slug` | `tracker.linear.project` |
+| `tracker.linear.project_slug` | `tracker.linear.tasks_from.project` (`tracker.linear.project` remains compatibility syntax for existing single-project configs) |
 | `tracker.active_states` | `tracker.states.active` |
 | `tracker.dispatch_states` | `tracker.states.ready` |
 | `tracker.terminal_states` | `tracker.states.terminal` |

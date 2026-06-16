@@ -31,7 +31,7 @@ Before configuring Scherzo for a repository, collect these inputs.
 ### Tracker adapter and Linear
 
 - A Linear API key available as `LINEAR_API_KEY` or another environment variable referenced by config.
-- The Linear project slug for tasks Scherzo should poll today, or a future non-overlapping Linear task scope once `tracker.linear.tasks_from` runtime support exists.
+- The Linear project slug or non-overlapping `tracker.linear.tasks_from` project scope Scherzo should poll (`tasks_from.project` for one project, `tasks_from.projects` for an explicit list).
 - The state names used for dispatch and lifecycle decisions, for example `Todo`, `In Progress`, `In Review`, `Done`, `Canceled`, and `Duplicate`.
 - The workflow labels you want to route, usually labels with the `workflow:` prefix such as `workflow:research` and `workflow:implementation`.
 - Whether Scherzo should post tracker comments or move states after runs. Start with task updates disabled until `doctor` and a single `--once` run are understood.
@@ -288,7 +288,7 @@ tracker:
       projects: [scherzo-core, scherzo-bugs]
 ```
 
-`tracker.linear.project: scherzo-core` remains accepted as compatibility syntax for the single-project form, but new configs should prefer `tasks_from`. See [docs/specs/TRACKER_LINEAR_TASKS_FROM.md](specs/TRACKER_LINEAR_TASKS_FROM.md). Keep the API key in the environment rather than committing a secret:
+`tracker.linear.project: scherzo-core` remains accepted as compatibility syntax for the single-project form and doctor reports the canonical `tasks_from.project` predicate it desugars to, but new configs should prefer `tasks_from`. See [docs/specs/TRACKER_LINEAR_TASKS_FROM.md](specs/TRACKER_LINEAR_TASKS_FROM.md) for label-narrowed and boolean-composed scopes. Keep the API key in the environment rather than committing a secret:
 
 ```sh
 export LINEAR_API_KEY=lin_api_...
@@ -770,7 +770,7 @@ Before daemon mode:
 - Enable task updates or establish a manual policy that removes completed tasks from ready states.
 - Keep an operator watching the first several runs.
 - Run only one Scherzo instance per non-overlapping Linear task scope/root.
-- Be especially careful with multi-project and future `or`, team, or label-based scopes because two predicates can overlap even when their config does not look identical at a glance.
+- Be especially careful with multi-project, `or`, and label-narrowed `tasks_from` scopes because two predicates can overlap even when their config does not look identical at a glance; `scherzo doctor --check tracker-scope` prints the canonical scope and static overlap warnings it can infer.
 - For multi-repo or multi-instance operations, rely on the built-in poll jitter; it spreads recurring tracker requests around `tracker.polling.every` and logs `next_poll_scheduled` with the effective next delay.
 
 Set `agents.concurrency: 0` to pause new dispatch while keeping daemon reload and reconciliation alive.

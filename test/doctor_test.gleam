@@ -6,6 +6,7 @@ pub fn default_checks_are_stable_test() {
   assert doctor.default_checks()
     == [
       doctor.WorkflowConfig,
+      doctor.LinearTaskScope,
       doctor.ScheduledJobs,
       doctor.LinearContract,
       doctor.LinearSmoke,
@@ -16,6 +17,7 @@ pub fn default_checks_are_stable_test() {
   assert doctor.list_check_names()
     == [
       "workflow-config",
+      "tracker-scope",
       "scheduled-jobs",
       "tracker-contract",
       "tracker-smoke",
@@ -27,6 +29,7 @@ pub fn default_checks_are_stable_test() {
 
 pub fn parse_check_name_accepts_known_names_test() {
   assert doctor.parse_check_name("workflow-config") == Ok(doctor.WorkflowConfig)
+  assert doctor.parse_check_name("tracker-scope") == Ok(doctor.LinearTaskScope)
   assert doctor.parse_check_name("scheduled-jobs") == Ok(doctor.ScheduledJobs)
   assert doctor.parse_check_name("tracker-contract")
     == Ok(doctor.LinearContract)
@@ -49,18 +52,26 @@ pub fn selected_checks_deduplicates_in_first_seen_order_test() {
       "tracker-smoke",
       "pi-probe",
       "workflow-config",
+      "tracker-scope",
     ])
     == Ok([
       doctor.PiProbe,
       doctor.LinearSmoke,
       doctor.WorkflowConfig,
+      doctor.LinearTaskScope,
     ])
   assert doctor.canonical_checks([
       doctor.PiProbe,
       doctor.LinearSmoke,
       doctor.WorkflowConfig,
+      doctor.LinearTaskScope,
     ])
-    == [doctor.WorkflowConfig, doctor.LinearSmoke, doctor.PiProbe]
+    == [
+      doctor.WorkflowConfig,
+      doctor.LinearTaskScope,
+      doctor.LinearSmoke,
+      doctor.PiProbe,
+    ]
   assert doctor.selected_checks(["tracker-smoke", "tracker-smoke"])
     == Ok([doctor.LinearSmoke])
 }
