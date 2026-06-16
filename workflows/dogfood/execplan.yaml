@@ -58,7 +58,7 @@ artifacts:
       required: true
       mode: commit_stack
       pull_request:
-        title: "{{ work.identifier }}: publish ExecPlan review doc"
+        title: "{{ work.identifier }}: ExecPlan — {% if work.title %}{{ work.title }}{% else %}review doc{% endif %}"
         body_template: prompts/execplan-pr-body.md
       commit_stack:
         select:

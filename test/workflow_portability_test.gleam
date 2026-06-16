@@ -389,6 +389,10 @@ pub fn execplan_workflows_publish_review_docs_with_workspace_driver_test() {
   assert_contains(drafting, "output: commit_stack")
   assert_contains(drafting, "kind: stable_branch")
   assert_contains(drafting, "body_template: prompts/execplan-pr-body.md")
+  assert_contains(
+    drafting,
+    "title: \"{{ work.identifier }}: ExecPlan — {% if work.title %}{{ work.title }}{% else %}review doc{% endif %}\"",
+  )
   assert_contains(drafting, "- id: materialize_commit_stack")
   assert_contains(drafting, "materialize-commit-stack")
   assert_not_contains(drafting, "publish-review-doc")
