@@ -385,6 +385,7 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
       retry_max_ms: 100,
       connect_timeout_ms: 50,
       command_timeout_ms: 75,
+      query_timeout_ms: 75,
       command_bridge_enabled: False,
       redaction_secrets: ["dcred_secret_1"],
     )
@@ -407,6 +408,12 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
           operator_command,
           "remote_command_unavailable",
           Some("remote command bridge is unavailable"),
+        ))
+      },
+      execute_query: fn(_, _) {
+        Error(query_types.QueryError(
+          query_types.UnsupportedQuery,
+          "ui websocket query bridge is unavailable",
         ))
       },
       logger: fn(_, _, _, _) { Ok(Nil) },

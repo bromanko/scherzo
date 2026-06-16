@@ -5,12 +5,15 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_protocol
 import scherzo/control/remote_command_router
 import scherzo/log
 import scherzo/session/event
 
 const max_in_flight_commands = 8
+
+const max_in_flight_queries = 8
 
 pub type Settings {
   Settings(
@@ -26,6 +29,7 @@ pub type Settings {
     retry_max_ms: Int,
     connect_timeout_ms: Int,
     command_timeout_ms: Int,
+    query_timeout_ms: Int,
     command_bridge_enabled: Bool,
     redaction_secrets: List(String),
   )
@@ -44,6 +48,8 @@ pub type Dependencies(connection, timer) {
     dispatch_paused: fn(Int) -> Result(Bool, String),
     apply_command: fn(command.OperatorCommand, Int) ->
       Result(command.CommandResult, Nil),
+    execute_query: fn(query_types.QueryRequest, Int) ->
+      Result(query_types.QueryResponse, query_types.QueryError),
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
   )
@@ -64,7 +70,23 @@ pub opaque type Message {
   ReaderText(Int, String)
   ReaderFailed(Int, String)
   ApplyCompleted(Int, String, command.OperatorCommand, command.CommandResult)
+  QueryCompleted(
+    Int,
+    String,
+    process.Pid,
+    Result(query_types.QueryResponse, query_types.QueryError),
+  )
+  QueryTimedOut(Int, String, process.Pid)
   Shutdown(process.Subject(Nil))
+}
+
+type RunningQuery(timer) {
+  RunningQuery(
+    query_id: String,
+    worker: process.Pid,
+    generation: Int,
+    timer: timer,
+  )
 }
 
 type State(connection, timer) {
@@ -82,6 +104,7 @@ type State(connection, timer) {
     stopped_for_repair: Bool,
     router: remote_command_router.State,
     last_known_dispatch_paused: Bool,
+    running_queries: List(RunningQuery(timer)),
   )
 }
 
@@ -108,6 +131,7 @@ pub fn start(
           stopped_for_repair: False,
           router: remote_command_router.new(),
           last_known_dispatch_paused: False,
+          running_queries: [],
         )
         |> schedule_attempt_connect(0)
       let selector = process.new_selector() |> process.select(subject)
@@ -168,6 +192,16 @@ fn handle_message(
         operator_command,
         result,
       ))
+    QueryCompleted(generation, query_id, worker, result) ->
+      actor.continue(handle_query_completed(
+        state,
+        generation,
+        query_id,
+        worker,
+        result,
+      ))
+    QueryTimedOut(generation, query_id, worker) ->
+      actor.continue(handle_query_timed_out(state, generation, query_id, worker))
     Shutdown(reply) -> {
       shutdown_runtime(state)
       process.send(reply, Nil)
@@ -338,6 +372,16 @@ fn handle_reader_text(
             boot_id,
             operator_command,
           )
+        Ok(ui_protocol.QueryRequest(query_id, daemon_id, boot_id, query)) ->
+          handle_query_request(
+            state,
+            connection,
+            generation,
+            query_id,
+            daemon_id,
+            boot_id,
+            query,
+          )
         Ok(ui_protocol.UnknownServerMessage(type_)) -> {
           emit_log(state, "debug", "ui_websocket_unknown_inbound", [
             #("type", type_),
@@ -365,10 +409,16 @@ fn handle_bad_inbound(
     Ok(#(command_id, result)) ->
       handle_bad_server_command(state, connection, command_id, result)
     Error(ui_protocol.DecodeError(code: rejection_code, message: _)) -> {
-      emit_log(state, "debug", "ui_websocket_unrepliable_bad_inbound", [
-        #("code", rejection_code),
-      ])
-      state
+      case ui_protocol.decode_query_request_rejection(payload) {
+        Ok(#(query_id, query_error)) ->
+          send_query_error_for_state(state, connection, query_id, query_error)
+        Error(_) -> {
+          emit_log(state, "debug", "ui_websocket_unrepliable_bad_inbound", [
+            #("code", rejection_code),
+          ])
+          state
+        }
+      }
     }
   }
 }
@@ -496,6 +546,107 @@ fn command_without_apply_result(
   }
 }
 
+fn handle_query_request(
+  state: State(connection, timer),
+  connection: connection,
+  generation: Int,
+  query_id: String,
+  daemon_id: String,
+  boot_id: String,
+  query: query_types.QueryRequest,
+) -> State(connection, timer) {
+  case query_without_execute_error(state, daemon_id, boot_id) {
+    Some(error) ->
+      send_query_error_for_state(state, connection, query_id, error)
+    None ->
+      case list.length(state.running_queries) >= max_in_flight_queries {
+        True ->
+          send_query_error_for_state(
+            state,
+            connection,
+            query_id,
+            query_types.QueryError(
+              query_types.QueryOverloaded,
+              "query service overloaded",
+            ),
+          )
+        False -> {
+          emit_log(state, "info", "ui_websocket_query_received", [
+            #("query_id", query_id),
+            #("query_type", query_types.query_type(query)),
+          ])
+          let subject = state.subject
+          let execute_query = state.dependencies.execute_query
+          let query_timeout_ms = state.settings.query_timeout_ms
+          let worker =
+            process.spawn_unlinked(fn() {
+              let worker = process.self()
+              let result = execute_query(query, query_timeout_ms)
+              process.send(
+                subject,
+                QueryCompleted(generation, query_id, worker, result),
+              )
+            })
+          let timer =
+            state.dependencies.send_after(
+              state.subject,
+              state.settings.query_timeout_ms,
+              QueryTimedOut(generation, query_id, worker),
+            )
+          State(..state, running_queries: [
+            RunningQuery(
+              query_id: query_id,
+              worker: worker,
+              generation: generation,
+              timer: timer,
+            ),
+            ..state.running_queries
+          ])
+        }
+      }
+  }
+}
+
+fn query_without_execute_error(
+  state: State(connection, timer),
+  daemon_id: String,
+  boot_id: String,
+) -> Option(query_types.QueryError) {
+  case
+    daemon_id == state.settings.daemon_id,
+    boot_id == state.settings.boot_id
+  {
+    False, _ ->
+      Some(query_types.QueryError(
+        query_types.QueryBackendFailed,
+        "query_request daemonId does not match this daemon",
+      ))
+    _, False ->
+      Some(query_types.QueryError(
+        query_types.QueryBackendFailed,
+        "query_request bootId does not match this daemon boot",
+      ))
+    True, True -> None
+  }
+}
+
+fn handle_reader_failed(
+  state: State(connection, timer),
+  generation: Int,
+  message: String,
+) -> State(connection, timer) {
+  case generation == state.connection_generation, state.connection {
+    True, Some(connection) ->
+      retry_after_send_failure(
+        state,
+        connection,
+        "ui_websocket_recv_failed",
+        message,
+      )
+    _, _ -> state
+  }
+}
+
 fn handle_apply_completed(
   state: State(connection, timer),
   generation: Int,
@@ -522,6 +673,75 @@ fn handle_apply_completed(
     True, Some(connection) ->
       send_command_result_and_state(state, connection, command_id, result)
     _, _ -> state
+  }
+}
+
+fn handle_query_completed(
+  state: State(connection, timer),
+  generation: Int,
+  query_id: String,
+  worker: process.Pid,
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> State(connection, timer) {
+  case pop_running_query(state.running_queries, worker) {
+    Error(Nil) -> state
+    Ok(#(running_query, remaining_queries)) -> {
+      state.dependencies.cancel_timer(running_query.timer)
+      let state = State(..state, running_queries: remaining_queries)
+      case generation == state.connection_generation, state.connection {
+        True, Some(connection) -> {
+          emit_query_completion_log(state, query_id, result)
+          send_query_result_for_state(state, connection, query_id, result)
+        }
+        _, _ -> state
+      }
+    }
+  }
+}
+
+fn handle_query_timed_out(
+  state: State(connection, timer),
+  generation: Int,
+  query_id: String,
+  worker: process.Pid,
+) -> State(connection, timer) {
+  case pop_running_query(state.running_queries, worker) {
+    Error(Nil) -> state
+    Ok(#(running_query, remaining_queries)) -> {
+      process.kill(running_query.worker)
+      let state = State(..state, running_queries: remaining_queries)
+      let error =
+        query_types.QueryError(query_types.QueryTimeout, "query timed out")
+      emit_log(state, "warn", "ui_websocket_query_timed_out", [
+        #("query_id", query_id),
+      ])
+      case generation == state.connection_generation, state.connection {
+        True, Some(connection) ->
+          send_query_error_for_state(state, connection, query_id, error)
+        _, _ -> state
+      }
+    }
+  }
+}
+
+fn emit_query_completion_log(
+  state: State(connection, timer),
+  query_id: String,
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> Nil {
+  case result {
+    Ok(response) ->
+      emit_log(state, "info", "ui_websocket_query_completed", [
+        #("query_id", query_id),
+        #("query_type", query_types.response_type(response)),
+        #("status", "ok"),
+      ])
+    Error(query_types.QueryError(code: code, message: message)) ->
+      emit_log(state, "warn", "ui_websocket_query_failed", [
+        #("query_id", query_id),
+        #("code", query_types.error_code_to_string(code)),
+        #("reason", message),
+      ])
   }
 }
 
@@ -599,6 +819,47 @@ fn send_command_result(
   )
 }
 
+fn send_query_result_for_state(
+  state: State(connection, timer),
+  connection: connection,
+  query_id: String,
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> State(connection, timer) {
+  case send_query_result(connection, state, query_id, result) {
+    Ok(Nil) -> state
+    Error(message) ->
+      retry_after_send_failure(
+        state,
+        connection,
+        "ui_websocket_query_result_send_failed",
+        message,
+      )
+  }
+}
+
+fn send_query_error_for_state(
+  state: State(connection, timer),
+  connection: connection,
+  query_id: String,
+  error: query_types.QueryError,
+) -> State(connection, timer) {
+  send_query_result_for_state(state, connection, query_id, Error(error))
+}
+
+fn send_query_result(
+  connection: connection,
+  state: State(connection, timer),
+  query_id: String,
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> Result(Nil, String) {
+  ui_protocol.encode_query_response(query_id, result)
+  |> state.dependencies.send_text(
+    connection,
+    _,
+    state.settings.connect_timeout_ms,
+  )
+}
+
 fn apply_server_hello(
   state: State(connection, timer),
   interval: Option(Int),
@@ -611,23 +872,6 @@ fn apply_server_hello(
   cancel_optional_timer(state.dependencies.cancel_timer, state.heartbeat_timer)
   State(..state, heartbeat_timer: None, current_heartbeat_interval_ms: interval)
   |> schedule_heartbeat_timer()
-}
-
-fn handle_reader_failed(
-  state: State(connection, timer),
-  generation: Int,
-  message: String,
-) -> State(connection, timer) {
-  case generation == state.connection_generation, state.connection {
-    True, Some(connection) ->
-      retry_after_send_failure(
-        state,
-        connection,
-        "ui_websocket_recv_failed",
-        message,
-      )
-    _, _ -> state
-  }
 }
 
 fn send_hello(
@@ -692,6 +936,7 @@ fn retry_after_send_failure(
   event: String,
   message: String,
 ) -> State(connection, timer) {
+  let state = cancel_running_queries(state)
   state.dependencies.close(connection)
   schedule_retry_after_failure(State(..state, connection: None), event, message)
 }
@@ -702,6 +947,7 @@ fn stop_for_repair(
   event: String,
   reason: String,
 ) -> State(connection, timer) {
+  let state = cancel_running_queries(state)
   state.dependencies.close(connection)
   emit_log(state, "warn", event, [#("reason", reason)])
   cancel_connection_timers(
@@ -789,11 +1035,64 @@ fn cancel_optional_timer(
   }
 }
 
+fn cancel_running_queries(
+  state: State(connection, timer),
+) -> State(connection, timer) {
+  list.each(state.running_queries, fn(running_query) {
+    state.dependencies.cancel_timer(running_query.timer)
+    process.kill(running_query.worker)
+  })
+  State(..state, running_queries: [])
+}
+
+fn pop_running_query(
+  running_queries: List(RunningQuery(timer)),
+  worker: process.Pid,
+) -> Result(#(RunningQuery(timer), List(RunningQuery(timer))), Nil) {
+  pop_running_query_loop(running_queries, worker, [])
+}
+
+fn pop_running_query_loop(
+  remaining: List(RunningQuery(timer)),
+  worker: process.Pid,
+  acc: List(RunningQuery(timer)),
+) -> Result(#(RunningQuery(timer), List(RunningQuery(timer))), Nil) {
+  case remaining {
+    [] -> Error(Nil)
+    [entry, ..rest] ->
+      case entry.worker == worker {
+        True -> Ok(#(entry, list.append(list.reverse(acc), rest)))
+        False -> pop_running_query_loop(rest, worker, [entry, ..acc])
+      }
+  }
+}
+
 fn shutdown_runtime(state: State(connection, timer)) -> Nil {
   let state = cancel_connection_timers(state)
   case state.connection {
-    Some(connection) -> state.dependencies.close(connection)
-    None -> Nil
+    Some(connection) -> {
+      let queries = state.running_queries
+      list.each(queries, fn(running_query) {
+        state.dependencies.cancel_timer(running_query.timer)
+        process.kill(running_query.worker)
+        let _ =
+          send_query_result(
+            connection,
+            state,
+            running_query.query_id,
+            Error(query_types.QueryError(
+              query_types.QueryShutdown,
+              "query client shutting down",
+            )),
+          )
+        Nil
+      })
+      state.dependencies.close(connection)
+    }
+    None -> {
+      let _ = cancel_running_queries(state)
+      Nil
+    }
   }
 }
 
@@ -921,6 +1220,7 @@ fn normalize_settings(settings: Settings) -> Settings {
     retry_max_ms: retry_max_ms,
     connect_timeout_ms: normalize_positive(settings.connect_timeout_ms),
     command_timeout_ms: normalize_positive(settings.command_timeout_ms),
+    query_timeout_ms: normalize_positive(settings.query_timeout_ms),
   )
 }
 

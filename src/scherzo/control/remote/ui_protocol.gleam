@@ -5,6 +5,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/control/command
+import scherzo/control/query/codec as query_codec
+import scherzo/control/query/types as query_types
 import scherzo/session/event
 
 pub type SessionSnapshot {
@@ -28,6 +30,10 @@ pub type ClientMessage {
     sessions: List(SessionSnapshot),
   )
   CommandResult(server_command_id: String, result: command.CommandResult)
+  QueryResponse(
+    query_id: String,
+    result: Result(query_types.QueryResponse, query_types.QueryError),
+  )
 }
 
 pub type ServerMessage {
@@ -39,6 +45,12 @@ pub type ServerMessage {
     daemon_id: String,
     boot_id: String,
     command: command.OperatorCommand,
+  )
+  QueryRequest(
+    query_id: String,
+    daemon_id: String,
+    boot_id: String,
+    query: query_types.QueryRequest,
   )
   UnknownServerMessage(String)
 }
@@ -56,6 +68,8 @@ type ServerMessageFields {
     daemon_id: Option(String),
     boot_id: Option(String),
     command: Option(Dynamic),
+    query_id: Option(String),
+    query: Option(Dynamic),
   )
 }
 
@@ -80,6 +94,7 @@ pub fn encode_client_message(message: ClientMessage) -> String {
       encode_daemon_state(sent_at_ms, dispatch_paused, daemon_label, sessions)
     CommandResult(server_command_id, result) ->
       encode_command_result(server_command_id, result)
+    QueryResponse(query_id, result) -> encode_query_response(query_id, result)
   }
 }
 
@@ -140,6 +155,23 @@ pub fn encode_command_result(
   |> json.to_string
 }
 
+pub fn encode_query_response(
+  query_id: String,
+  result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> String {
+  let result_json = case result {
+    Ok(response) -> query_codec.response_to_json(response)
+    Error(error) -> query_codec.error_to_json(error)
+  }
+
+  json.object([
+    #("type", json.string("query_response")),
+    #("queryId", json.string(query_id)),
+    #("result", result_json),
+  ])
+  |> json.to_string
+}
+
 fn with_optional_daemon_label(
   fields: List(#(String, json.Json)),
   daemon_label: Option(String),
@@ -164,6 +196,15 @@ pub fn decode_server_command_rejection(
 ) -> Result(#(String, command.CommandResult), DecodeError) {
   case json.parse(payload, decode.dynamic) {
     Ok(value) -> decode_server_command_rejection_dynamic(value)
+    Error(_) -> Error(DecodeError("bad_json", "malformed UI websocket JSON"))
+  }
+}
+
+pub fn decode_query_request_rejection(
+  payload: String,
+) -> Result(#(String, query_types.QueryError), DecodeError) {
+  case json.parse(payload, decode.dynamic) {
+    Ok(value) -> decode_query_request_rejection_dynamic(value)
     Error(_) -> Error(DecodeError("bad_json", "malformed UI websocket JSON"))
   }
 }
@@ -214,6 +255,16 @@ fn server_message_fields_decoder() -> decode.Decoder(ServerMessageFields) {
     None,
     decode.optional(decode.dynamic),
   )
+  use query_id <- decode.optional_field(
+    "queryId",
+    None,
+    decode.optional(decode.string),
+  )
+  use query_value <- decode.optional_field(
+    "query",
+    None,
+    decode.optional(decode.dynamic),
+  )
   decode.success(ServerMessageFields(
     type_: type_,
     heartbeat_interval_ms: heartbeat_interval_ms,
@@ -222,6 +273,8 @@ fn server_message_fields_decoder() -> decode.Decoder(ServerMessageFields) {
     daemon_id: daemon_id,
     boot_id: boot_id,
     command: command_value,
+    query_id: query_id,
+    query: query_value,
   ))
 }
 
@@ -253,6 +306,20 @@ fn server_message_from_fields(
       use nested <- result.try(required_dynamic_field(fields.command, "command"))
       use operator_command <- result.try(decode_nested_command(nested))
       Ok(ServerCommand(server_command_id, daemon_id, boot_id, operator_command))
+    }
+    "query_request" -> {
+      use query_id <- result.try(required_string_field(
+        fields.query_id,
+        "queryId",
+      ))
+      use daemon_id <- result.try(required_string_field(
+        fields.daemon_id,
+        "daemonId",
+      ))
+      use boot_id <- result.try(required_string_field(fields.boot_id, "bootId"))
+      use nested <- result.try(required_dynamic_field(fields.query, "query"))
+      use query <- result.try(decode_nested_query_as_decode_error(nested))
+      Ok(QueryRequest(query_id, daemon_id, boot_id, query))
     }
     other -> Ok(UnknownServerMessage(other))
   }
@@ -331,6 +398,57 @@ fn server_command_rejection_from_fields(
   }
 }
 
+fn decode_query_request_rejection_dynamic(
+  value: Dynamic,
+) -> Result(#(String, query_types.QueryError), DecodeError) {
+  case decode.run(value, server_message_fields_decoder()) {
+    Ok(fields) -> query_request_rejection_from_fields(fields)
+    Error(_) ->
+      Error(DecodeError("invalid_message", "invalid UI websocket message"))
+  }
+}
+
+fn query_request_rejection_from_fields(
+  fields: ServerMessageFields,
+) -> Result(#(String, query_types.QueryError), DecodeError) {
+  use type_ <- result.try(required_type(fields.type_))
+  case type_ {
+    "query_request" -> {
+      use query_id <- result.try(required_string_field(
+        fields.query_id,
+        "queryId",
+      ))
+      case required_string_field(fields.daemon_id, "daemonId") {
+        Error(error) -> Ok(#(query_id, query_error_from_decode_error(error)))
+        Ok(_) ->
+          case required_string_field(fields.boot_id, "bootId") {
+            Error(error) ->
+              Ok(#(query_id, query_error_from_decode_error(error)))
+            Ok(_) ->
+              case required_dynamic_field(fields.query, "query") {
+                Ok(nested) ->
+                  case decode_nested_query(nested) {
+                    Ok(_) ->
+                      Error(DecodeError(
+                        "valid_query_request",
+                        "query_request payload is valid",
+                      ))
+                    Error(error) -> Ok(#(query_id, error))
+                  }
+                Error(error) ->
+                  Ok(#(query_id, query_error_from_decode_error(error)))
+              }
+          }
+      }
+    }
+    _ ->
+      Error(DecodeError(
+        "not_query_request",
+        "UI websocket message is not a query_request",
+      ))
+  }
+}
+
 fn required_type(type_: Option(String)) -> Result(String, DecodeError) {
   case type_ {
     Some(type_) -> {
@@ -384,6 +502,22 @@ fn decode_nested_command(
   }
 }
 
+fn decode_nested_query(
+  value: Dynamic,
+) -> Result(query_types.QueryRequest, query_types.QueryError) {
+  query_codec.decode_request_dynamic(value)
+}
+
+fn decode_nested_query_as_decode_error(
+  value: Dynamic,
+) -> Result(query_types.QueryRequest, DecodeError) {
+  case decode_nested_query(value) {
+    Ok(query) -> Ok(query)
+    Error(query_types.QueryError(code: code, message: message)) ->
+      Error(DecodeError(query_types.error_code_to_string(code), message))
+  }
+}
+
 fn rejected_decode_result(
   command_name: String,
   error: DecodeError,
@@ -395,6 +529,11 @@ fn rejected_decode_result(
     target: None,
     message: Some(message),
   )
+}
+
+fn query_error_from_decode_error(error: DecodeError) -> query_types.QueryError {
+  let DecodeError(message: message, ..) = error
+  query_types.QueryError(query_types.QueryBackendFailed, message)
 }
 
 fn command_name_from_optional_dynamic(value: Option(Dynamic)) -> String {
