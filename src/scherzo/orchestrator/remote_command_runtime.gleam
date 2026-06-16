@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import scherzo/config/types as config_types
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/log
 import scherzo/orchestrator/daemon_remote_client
 import scherzo/session/hub
@@ -25,6 +26,8 @@ pub opaque type ControlDependencies(message) {
     ) -> Result(command.CommandResult, Nil),
     get_remote_dispatch_paused: fn(process.Subject(message), Int) ->
       Result(Bool, Nil),
+    execute_query: fn(process.Subject(message), query_types.QueryRequest, Int) ->
+      Result(query_types.QueryResponse, query_types.QueryError),
   )
 }
 
@@ -38,10 +41,16 @@ pub fn control_dependencies(
     process.Subject(message),
     Int,
   ) -> Result(Bool, Nil),
+  execute_query execute_query: fn(
+    process.Subject(message),
+    query_types.QueryRequest,
+    Int,
+  ) -> Result(query_types.QueryResponse, query_types.QueryError),
 ) -> ControlDependencies(message) {
   ControlDependencies(
     apply_operator_command: apply_operator_command,
     get_remote_dispatch_paused: get_remote_dispatch_paused,
+    execute_query: execute_query,
   )
 }
 
@@ -66,6 +75,15 @@ pub fn read_remote_dispatch_paused(
   dependencies.get_remote_dispatch_paused(daemon_subject, timeout_ms)
 }
 
+pub fn execute_remote_query(
+  daemon_subject: process.Subject(message),
+  query: query_types.QueryRequest,
+  timeout_ms: Int,
+  dependencies: ControlDependencies(message),
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  dependencies.execute_query(daemon_subject, query, timeout_ms)
+}
+
 pub fn start_remote_client(
   effective: config_types.EffectiveConfig,
   event_hub: process.Subject(hub.Message),
@@ -87,6 +105,9 @@ pub fn start_remote_client(
     },
     fn(timeout_ms) {
       read_remote_dispatch_paused(daemon_subject, timeout_ms, dependencies)
+    },
+    fn(query, timeout_ms) {
+      execute_remote_query(daemon_subject, query, timeout_ms, dependencies)
     },
     secrets,
     logger,

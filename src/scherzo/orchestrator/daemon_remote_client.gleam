@@ -3,6 +3,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import scherzo/config/types as config_types
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/credential_store
 import scherzo/control/remote/ui_websocket_client
 import scherzo/control/remote/url
@@ -38,6 +39,12 @@ pub fn start(
       ))
     },
     fn(_) { Ok(False) },
+    fn(_, _) {
+      Error(query_types.QueryError(
+        query_types.UnsupportedQuery,
+        "ui websocket query bridge is unavailable",
+      ))
+    },
     secrets,
     logger,
   )
@@ -49,6 +56,8 @@ pub fn start_with_control(
   apply_command: fn(command.OperatorCommand, Int) ->
     Result(command.CommandResult, Nil),
   dispatch_paused: fn(Int) -> Result(Bool, Nil),
+  execute_query: fn(query_types.QueryRequest, Int) ->
+    Result(query_types.QueryResponse, query_types.QueryError),
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
@@ -74,6 +83,7 @@ pub fn start_with_control(
       retry_max_ms: effective.ui_server.retry_max_ms,
       connect_timeout_ms: 1000,
       command_timeout_ms: effective.control.command_timeout_ms,
+      query_timeout_ms: effective.control.command_timeout_ms,
       command_bridge_enabled: effective.ui_server.command_bridge_enabled,
       redaction_secrets: [stored.secret, ..secrets],
     )
@@ -97,6 +107,7 @@ pub fn start_with_control(
         }
       },
       apply_command: apply_command,
+      execute_query: execute_query,
       logger: logger,
     )
   case ui_websocket_client.start(settings, dependencies) {

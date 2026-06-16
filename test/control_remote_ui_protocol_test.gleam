@@ -1,5 +1,6 @@
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_protocol
 
 pub fn ui_protocol_encodes_daemon_messages_test() {
@@ -69,4 +70,75 @@ pub fn ui_protocol_decodes_server_messages_test() {
       "{\"type\":\"daemon_identity_revoked\",\"reason\":\"identity revoked\"}",
     )
   assert identity_reason == "identity revoked"
+}
+
+pub fn ui_protocol_decodes_query_request_test() {
+  let payload =
+    "{\"type\":\"query_request\",\"queryId\":\"query-1\",\"daemonId\":\"daemon_abc\",\"bootId\":\"boot_abc\",\"query\":{\"version\":1,\"type\":\"status\"}}"
+
+  let assert Ok(ui_protocol.QueryRequest(query_id, daemon_id, boot_id, query)) =
+    ui_protocol.decode_server_message(payload)
+
+  assert query_id == "query-1"
+  assert daemon_id == "daemon_abc"
+  assert boot_id == "boot_abc"
+  assert query == query_types.Status
+}
+
+pub fn ui_protocol_encodes_query_response_test() {
+  let ok_payload =
+    ui_protocol.encode_query_response(
+      "query-ok",
+      Ok(
+        query_types.StatusResponse(
+          query_types.StatusDto(
+            daemon_id: "daemon_abc",
+            boot_id: "boot_abc",
+            dispatch_paused: False,
+            ui_server_enabled: True,
+            supported_queries: ["status"],
+          ),
+        ),
+      ),
+    )
+  assert string.contains(ok_payload, "\"type\":\"query_response\"")
+  assert string.contains(ok_payload, "\"queryId\":\"query-ok\"")
+  assert string.contains(ok_payload, "\"ok\":true")
+  assert string.contains(ok_payload, "\"status\":{")
+
+  let error_payload =
+    ui_protocol.encode_query_response(
+      "query-error",
+      Error(query_types.QueryError(query_types.QueryTimeout, "query timed out")),
+    )
+  assert string.contains(error_payload, "\"type\":\"query_response\"")
+  assert string.contains(error_payload, "\"queryId\":\"query-error\"")
+  assert string.contains(error_payload, "\"ok\":false")
+  assert string.contains(error_payload, "\"code\":\"query_timeout\"")
+}
+
+pub fn ui_protocol_rejects_malformed_query_request_with_query_id_test() {
+  let payload =
+    "{\"type\":\"query_request\",\"queryId\":\"query-bad\",\"daemonId\":\"daemon_abc\",\"bootId\":\"boot_abc\",\"query\":{\"version\":1,\"type\":\"mystery\"}}"
+
+  let assert Error(ui_protocol.DecodeError(code: code, message: message)) =
+    ui_protocol.decode_server_message(payload)
+  assert code == "unsupported_query"
+  assert string.contains(message, "unsupported query type")
+
+  let assert Ok(#(query_id, query_error)) =
+    ui_protocol.decode_query_request_rejection(payload)
+  assert query_id == "query-bad"
+  assert query_error
+    == query_types.QueryError(
+      query_types.UnsupportedQuery,
+      "unsupported query type: mystery",
+    )
+}
+
+pub fn ui_protocol_rejects_bad_json_test() {
+  let assert Error(ui_protocol.DecodeError(code: code, message: message)) =
+    ui_protocol.decode_server_message("{not-json}")
+  assert code == "bad_json"
+  assert message == "malformed UI websocket JSON"
 }

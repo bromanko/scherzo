@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/command
+import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_websocket_client
 import scherzo/log
 import scherzo/session/event
@@ -24,6 +25,16 @@ type ApplyRequest {
   ApplyRequest(command: command.OperatorCommand, timeout_ms: Int)
 }
 
+type QueryRequestCall {
+  QueryRequestCall(query: query_types.QueryRequest, timeout_ms: Int)
+}
+
+type QueryBehavior {
+  QueryImmediately
+  QueryError(query_types.QueryError)
+  QueryBlock(test_async.Barrier)
+}
+
 type Fixture {
   Fixture(
     settings: ui_websocket_client.Settings,
@@ -33,12 +44,17 @@ type Fixture {
     delays: process.Subject(Int),
     logs: process.Subject(String),
     apply_requests: process.Subject(ApplyRequest),
+    query_requests: process.Subject(QueryRequestCall),
     closes: process.Subject(Nil),
     inbound_path: String,
   )
 }
 
 fn new_fixture() -> Fixture {
+  new_fixture_with_behavior(QueryImmediately)
+}
+
+fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
   let root = "test/tmp/ui-websocket-client/" <> int.to_string(unique_integer())
   test_helpers.reset_dir(root)
   let outbound = process.new_subject()
@@ -46,6 +62,7 @@ fn new_fixture() -> Fixture {
   let delays = process.new_subject()
   let logs = process.new_subject()
   let apply_requests = process.new_subject()
+  let query_requests = process.new_subject()
   let closes = process.new_subject()
   let inbound_path = root <> "/inbound.txt"
   let connection = Connection(outbound, inbound_path)
@@ -63,6 +80,7 @@ fn new_fixture() -> Fixture {
       retry_max_ms: 100,
       connect_timeout_ms: 50,
       command_timeout_ms: 75,
+      query_timeout_ms: 75,
       command_bridge_enabled: False,
       redaction_secrets: ["dcred_secret_1"],
     )
@@ -98,6 +116,17 @@ fn new_fixture() -> Fixture {
         process.send(apply_requests, ApplyRequest(operator_command, timeout_ms))
         Ok(command_result_for(operator_command))
       },
+      execute_query: fn(query, timeout_ms) {
+        process.send(query_requests, QueryRequestCall(query, timeout_ms))
+        case query_behavior {
+          QueryImmediately -> status_query_result(settings)
+          QueryError(error) -> Error(error)
+          QueryBlock(barrier) -> {
+            test_async.block_until_released(barrier)
+            status_query_result(settings)
+          }
+        }
+      },
       logger: fn(level, event, fields, secrets) {
         process.send(logs, log.format(level, event, fields, secrets))
         Ok(Nil)
@@ -111,6 +140,7 @@ fn new_fixture() -> Fixture {
     delays,
     logs,
     apply_requests,
+    query_requests,
     closes,
     inbound_path,
   )
@@ -131,6 +161,22 @@ fn command_result_for(
       command.applied(operator_command, Some("workflow reloaded"))
     _ -> command.not_found(operator_command, Some("not found"))
   }
+}
+
+fn status_query_result(
+  settings: ui_websocket_client.Settings,
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  Ok(
+    query_types.StatusResponse(
+      query_types.StatusDto(
+        daemon_id: settings.daemon_id,
+        boot_id: settings.boot_id,
+        dispatch_paused: False,
+        ui_server_enabled: True,
+        supported_queries: ["status"],
+      ),
+    ),
+  )
 }
 
 pub fn ui_websocket_client_sends_handshake_hello_heartbeat_and_state_test() {
@@ -186,9 +232,7 @@ pub fn ui_websocket_client_reconnects_after_reader_failure_test() {
   let assert Ok(handle) =
     ui_websocket_client.start(fixture.settings, fixture.deps)
   let _ = test_async.expect_message(fixture.connects)
-  let _ = test_async.expect_message(fixture.outbound)
-  let _ = test_async.expect_message(fixture.outbound)
-  let _ = test_async.expect_message(fixture.outbound)
+  expect_initial_outbound(fixture.outbound)
   append_inbound_line(fixture.inbound_path, "FAIL:down")
   let delay = test_async.expect_message(fixture.delays)
   assert delay == 0 || delay == 1000 || delay == 50
@@ -203,9 +247,7 @@ pub fn ui_websocket_client_stops_retrying_after_revocation_test() {
   let assert Ok(handle) =
     ui_websocket_client.start(fixture.settings, fixture.deps)
   let _ = test_async.expect_message(fixture.connects)
-  let _ = test_async.expect_message(fixture.outbound)
-  let _ = test_async.expect_message(fixture.outbound)
-  let _ = test_async.expect_message(fixture.outbound)
+  expect_initial_outbound(fixture.outbound)
   append_inbound_line(
     fixture.inbound_path,
     "{\"type\":\"credential_revoked\",\"reason\":\"server revoked dcred_secret_1\"}",
@@ -222,9 +264,7 @@ pub fn ui_websocket_client_stops_after_daemon_identity_revocation_test() {
   let assert Ok(handle) =
     ui_websocket_client.start(fixture.settings, fixture.deps)
   let _ = test_async.expect_message(fixture.connects)
-  let _ = test_async.expect_message(fixture.outbound)
-  let _ = test_async.expect_message(fixture.outbound)
-  let _ = test_async.expect_message(fixture.outbound)
+  expect_initial_outbound(fixture.outbound)
   append_inbound_line(
     fixture.inbound_path,
     "{\"type\":\"daemon_identity_revoked\",\"reason\":\"operator revoked daemon\"}",
@@ -247,6 +287,263 @@ pub fn ui_websocket_client_logs_when_command_bridge_is_enabled_test() {
   let entry = expect_log_contains(logs, "ui_websocket_command_bridge_enabled")
   assert string.contains(entry, "remote command/result bridge enabled")
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_handles_query_request_test() {
+  let Fixture(settings:, deps:, outbound:, query_requests:, inbound_path:, ..) =
+    new_fixture()
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(inbound_path, status_query_request("query-1"))
+  let QueryRequestCall(query, timeout_ms) =
+    test_async.expect_message(query_requests)
+  assert query == query_types.Status
+  assert timeout_ms == settings.query_timeout_ms
+  let response =
+    expect_next_outbound_contains(outbound, "\"queryId\":\"query-1\"")
+  assert string.contains(response, "\"type\":\"query_response\"")
+  assert string.contains(response, "\"ok\":true")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_malformed_query_request_without_execution_test() {
+  let fixture = new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(fixture.settings, fixture.deps)
+  expect_initial_outbound(fixture.outbound)
+
+  append_inbound_line(
+    fixture.inbound_path,
+    "{\"type\":\"query_request\",\"queryId\":\"query-bad\",\"daemonId\":\"daemon_abc\",\"bootId\":\"boot_abc\",\"query\":{\"version\":1,\"type\":\"mystery\",\"raw\":\"dcred_secret_1 provider payload\"}}",
+  )
+  let response =
+    expect_next_outbound_contains(fixture.outbound, "\"queryId\":\"query-bad\"")
+  assert string.contains(response, "\"ok\":false")
+  assert string.contains(response, "\"code\":\"unsupported_query\"")
+  assert !string.contains(response, "dcred_secret_1")
+  assert !string.contains(response, "provider payload")
+  test_async.assert_no_extra_message_within(fixture.query_requests, 50)
+  let log_entry = expect_log_contains(fixture.logs, "ui_websocket_bad_inbound")
+  assert !string.contains(log_entry, "dcred_secret_1")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_query_for_identity_mismatch_test() {
+  let fixture = new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(fixture.settings, fixture.deps)
+  expect_initial_outbound(fixture.outbound)
+
+  append_inbound_line(
+    fixture.inbound_path,
+    status_query_request_for("query-wrong-daemon", "other_daemon", "boot_abc"),
+  )
+  let daemon_response =
+    expect_next_outbound_contains(
+      fixture.outbound,
+      "\"queryId\":\"query-wrong-daemon\"",
+    )
+  assert string.contains(daemon_response, "\"code\":\"query_backend_failed\"")
+
+  append_inbound_line(
+    fixture.inbound_path,
+    status_query_request_for("query-wrong-boot", "daemon_abc", "other_boot"),
+  )
+  let boot_response =
+    expect_next_outbound_contains(
+      fixture.outbound,
+      "\"queryId\":\"query-wrong-boot\"",
+    )
+  assert string.contains(boot_response, "\"code\":\"query_backend_failed\"")
+  test_async.assert_no_extra_message_within(fixture.query_requests, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_propagates_query_backend_error_test() {
+  let query_error =
+    query_types.QueryError(query_types.QueryBackendFailed, "backend failed")
+  let fixture = new_fixture_with_behavior(QueryError(query_error))
+  let assert Ok(handle) =
+    ui_websocket_client.start(fixture.settings, fixture.deps)
+  expect_initial_outbound(fixture.outbound)
+
+  append_inbound_line(fixture.inbound_path, status_query_request("query-error"))
+  let QueryRequestCall(query, _) =
+    test_async.expect_message(fixture.query_requests)
+  assert query == query_types.Status
+  let response =
+    expect_next_outbound_contains(
+      fixture.outbound,
+      "\"queryId\":\"query-error\"",
+    )
+  assert string.contains(response, "\"ok\":false")
+  assert string.contains(response, "\"code\":\"query_backend_failed\"")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_times_out_blocked_query_test() {
+  let barrier = test_async.new_barrier()
+  let Fixture(settings:, deps:, outbound:, query_requests:, inbound_path:, ..) =
+    new_fixture_with_behavior(QueryBlock(barrier))
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, query_timeout_ms: 20),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(inbound_path, status_query_request("query-timeout"))
+  let QueryRequestCall(query, timeout_ms) =
+    test_async.expect_message(query_requests)
+  assert query == query_types.Status
+  assert timeout_ms == 20
+  let response =
+    expect_next_outbound_contains(outbound, "\"queryId\":\"query-timeout\"")
+  assert string.contains(response, "\"code\":\"query_timeout\"")
+  test_async.release_barrier_if_waiting(barrier)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_ninth_in_flight_query_test() {
+  let barrier = test_async.new_barrier()
+  let Fixture(settings:, deps:, outbound:, query_requests:, inbound_path:, ..) =
+    new_fixture_with_behavior(QueryBlock(barrier))
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(
+        ..settings,
+        heartbeat_interval_ms: 60_000,
+        state_interval_ms: 60_000,
+      ),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_block(inbound_path, query_request_block("query-", 1, 9))
+  expect_status_query_requests(query_requests, 8)
+  let response =
+    expect_next_outbound_contains(outbound, "\"queryId\":\"query-9\"")
+  assert string.contains(response, "\"code\":\"query_overloaded\"")
+  release_barriers(barrier, 8)
+  let _ = test_async.drain_subject(outbound)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_query_does_not_block_heartbeat_test() {
+  let barrier = test_async.new_barrier()
+  let Fixture(settings:, deps:, outbound:, query_requests:, inbound_path:, ..) =
+    new_fixture_with_behavior(QueryBlock(barrier))
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(
+        ..settings,
+        heartbeat_interval_ms: 20,
+        state_interval_ms: 30,
+        query_timeout_ms: 100,
+      ),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(inbound_path, status_query_request("query-blocked"))
+  let _ = test_async.expect_message(query_requests)
+  assert eventually_has_outbound(outbound, "\"type\":\"heartbeat\"")
+  assert eventually_has_outbound(outbound, "\"type\":\"daemon_state\"")
+  test_async.release_barrier(barrier)
+  let _ =
+    expect_next_outbound_contains(outbound, "\"queryId\":\"query-blocked\"")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_query_and_command_are_compatible_test() {
+  let barrier = test_async.new_barrier()
+  let Fixture(
+    settings:,
+    deps:,
+    outbound:,
+    apply_requests:,
+    query_requests:,
+    inbound_path:,
+    ..,
+  ) = new_fixture_with_behavior(QueryBlock(barrier))
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(
+        ..settings,
+        command_bridge_enabled: True,
+        query_timeout_ms: 100,
+      ),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(inbound_path, status_query_request("query-compat"))
+  let _ = test_async.expect_message(query_requests)
+
+  append_inbound_line(inbound_path, server_command_frame("scmd_pause", "pause"))
+  let ApplyRequest(command_, _) = test_async.expect_message(apply_requests)
+  assert command_ == command.PauseDispatch
+  let command_result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_pause\"",
+    )
+  assert string.contains(command_result, "\"type\":\"command_result\"")
+  let state =
+    expect_next_outbound_contains(outbound, "\"type\":\"daemon_state\"")
+  assert string.contains(state, "\"dispatchPaused\"")
+
+  test_async.release_barrier(barrier)
+  let query_result =
+    expect_next_outbound_contains(outbound, "\"queryId\":\"query-compat\"")
+  assert string.contains(query_result, "\"type\":\"query_response\"")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_suppresses_stale_query_completion_after_reconnect_test() {
+  let barrier = test_async.new_barrier()
+  let fixture = new_fixture_with_behavior(QueryBlock(barrier))
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..fixture.settings, query_timeout_ms: 200),
+      fixture.deps,
+    )
+  let _ = test_async.expect_message(fixture.connects)
+  expect_initial_outbound(fixture.outbound)
+
+  append_inbound_line(fixture.inbound_path, status_query_request("query-stale"))
+  let _ = test_async.expect_message(fixture.query_requests)
+  append_inbound_line(fixture.inbound_path, "FAIL:down")
+  let _ = expect_log_contains(fixture.logs, "ui_websocket_recv_failed")
+  let _ = test_async.expect_message(fixture.connects)
+  expect_initial_outbound(fixture.outbound)
+  test_async.release_barrier_if_waiting(barrier)
+  test_async.assert_no_extra_message_within(fixture.outbound, 100)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_shutdown_cleans_up_queries_test() {
+  let barrier = test_async.new_barrier()
+  let fixture = new_fixture_with_behavior(QueryBlock(barrier))
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..fixture.settings, query_timeout_ms: 200),
+      fixture.deps,
+    )
+  expect_initial_outbound(fixture.outbound)
+
+  append_inbound_line(fixture.inbound_path, status_query_request("query-stop"))
+  let _ = test_async.expect_message(fixture.query_requests)
+  let assert Ok(Nil) = ui_websocket_client.stop(handle, 1000)
+  let response =
+    expect_next_outbound_contains(
+      fixture.outbound,
+      "\"queryId\":\"query-stop\"",
+    )
+  assert string.contains(response, "\"code\":\"query_shutdown\"")
+  let _ = test_async.expect_message(fixture.closes)
+  test_async.release_barrier_if_waiting(barrier)
 }
 
 pub fn ui_websocket_client_applies_pause_resume_reload_server_commands_test() {
@@ -467,8 +764,6 @@ pub fn ui_websocket_client_rejects_server_command_when_in_flight_limit_reached_t
       },
     )
   let assert Ok(handle) =
-    // This test intentionally holds apply workers at the barrier; keep periodic
-    // frames from interleaving with the overloaded-command assertion on slow CI.
     ui_websocket_client.start(
       ui_websocket_client.Settings(
         ..settings,
@@ -572,9 +867,7 @@ pub fn ui_websocket_client_ignores_too_fast_server_heartbeat_test() {
   let assert Ok(handle) =
     ui_websocket_client.start(fixture.settings, fixture.deps)
   let _ = test_async.expect_message(fixture.connects)
-  let _ = test_async.expect_message(fixture.outbound)
-  let _ = test_async.expect_message(fixture.outbound)
-  let _ = test_async.expect_message(fixture.outbound)
+  expect_initial_outbound(fixture.outbound)
   let _ = test_async.drain_subject(fixture.delays)
 
   append_inbound_line(
@@ -600,6 +893,17 @@ fn expect_next_outbound_contains(
   let message = test_async.expect_message(outbound)
   assert string.contains(message, fragment)
   message
+}
+
+fn eventually_has_outbound(
+  outbound: process.Subject(String),
+  fragment: String,
+) -> Bool {
+  let message = test_async.expect_message(outbound)
+  case string.contains(message, fragment) {
+    True -> True
+    False -> eventually_has_outbound(outbound, fragment)
+  }
 }
 
 fn append_pause_commands(
@@ -631,6 +935,16 @@ fn pause_command_block(
   }
 }
 
+fn query_request_block(prefix: String, next: Int, last: Int) -> String {
+  case next > last {
+    True -> ""
+    False ->
+      status_query_request(prefix <> int.to_string(next))
+      <> "\n"
+      <> query_request_block(prefix, next + 1, last)
+  }
+}
+
 fn append_inbound_block(path: String, block: String) -> Nil {
   let existing = case simplifile.read(path) {
     Ok(contents) -> contents
@@ -654,6 +968,20 @@ fn expect_pause_apply_requests(
   }
 }
 
+fn expect_status_query_requests(
+  subject: process.Subject(QueryRequestCall),
+  remaining: Int,
+) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False -> {
+      let QueryRequestCall(query, _) = test_async.expect_message(subject)
+      assert query == query_types.Status
+      expect_status_query_requests(subject, remaining - 1)
+    }
+  }
+}
+
 fn release_barriers(barrier: test_async.Barrier, remaining: Int) -> Nil {
   case remaining <= 0 {
     True -> Nil
@@ -662,6 +990,24 @@ fn release_barriers(barrier: test_async.Barrier, remaining: Int) -> Nil {
       release_barriers(barrier, remaining - 1)
     }
   }
+}
+
+fn status_query_request(query_id: String) -> String {
+  status_query_request_for(query_id, "daemon_abc", "boot_abc")
+}
+
+fn status_query_request_for(
+  query_id: String,
+  daemon_id: String,
+  boot_id: String,
+) -> String {
+  "{\"type\":\"query_request\",\"queryId\":\""
+  <> query_id
+  <> "\",\"daemonId\":\""
+  <> daemon_id
+  <> "\",\"bootId\":\""
+  <> boot_id
+  <> "\",\"query\":{\"version\":1,\"type\":\"status\"}}"
 }
 
 fn server_command_frame(command_id: String, command_type: String) -> String {
