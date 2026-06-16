@@ -157,7 +157,7 @@
         scherzo-start = {
           type = "app";
           program = "${self.packages.${system}.scherzo}/bin/scherzo-start";
-          meta.description = "Run Scherzo with graceful Ctrl-C handling";
+          meta.description = "Deprecated compatibility alias for graceful Scherzo daemon startup";
         };
         scherzoctl = {
           type = "app";

@@ -92,6 +92,8 @@ The lock FFI backs `src/scherzo/instance_lock.gleam`.
 
 The signal FFI is wrapped by `src/scherzo/signal.gleam`. It mutates VM-global SIGTERM handling, so ownership is global to the running Erlang VM.
 
+Scherzo does not currently handle SIGINT directly in Gleam/OTP. The FFI below installs only a SIGTERM handler, and direct terminal Ctrl-C/SIGINT can bypass the daemon lifecycle cleanup that runs from that handler. Packaged foreground daemon startup therefore uses a shell launcher to translate interactive Ctrl-C into SIGTERM; `scherzo-start` is the deprecated compatibility alias for that same wrapper.
+
 `install_sigterm/1` accepts a Gleam process subject, installs a SIGTERM handler, returns an opaque signal handle plus the OS process id as text, and sends exactly one stop message to the subject for the first SIGTERM handled by that installation. Errors are categorized by the wrapper as signal-server unavailable, install failed, handler verification failed, or unexpected FFI failure.
 
 `cleanup_sigterm/1` removes the custom handler, restores the default handler when this installation replaced it, is idempotent, and returns `Nil`.

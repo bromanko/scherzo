@@ -162,6 +162,24 @@ pub fn usage_error_hint_reports_retired_flag_replacements_test() {
   assert main.usage_error_hint(["--unknown"]) == None
 }
 
+pub fn launcher_route_uses_canonical_cli_parser_test() {
+  assert main.launcher_route([]) == main.LauncherDaemon
+  assert main.launcher_route([".scherzo/scherzo.yaml"]) == main.LauncherDaemon
+  assert main.launcher_route(["--help"]) == main.LauncherDirect
+  assert main.launcher_route(["--version"]) == main.LauncherDirect
+  assert main.launcher_route(["doctor", "--list-checks"]) == main.LauncherDirect
+  assert main.launcher_route(["workflow", "run", "workflow.yml"])
+    == main.LauncherDirect
+  assert main.launcher_route(["tracker-conformance", "run", "manifest.json"])
+    == main.LauncherDirect
+  assert main.launcher_route(["ctl", "--help"]) == main.LauncherDirect
+  assert main.launcher_route(["connect", "--help"]) == main.LauncherDirect
+  assert main.launcher_route(["--once", ".scherzo/scherzo.yaml"])
+    == main.LauncherDirect
+  assert main.launcher_route(["--linear-smoke"]) == main.LauncherDirect
+  assert main.launcher_route(["one.yaml", "two.yaml"]) == main.LauncherDirect
+}
+
 pub fn usage_mentions_required_operational_constraints_test() {
   let usage = main.usage()
   assert string.contains(usage, "scherzo [mode] [path-to-scherzo.yaml]")
@@ -204,7 +222,12 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "daemon mode")
   assert string.contains(usage, "SIGTERM gracefully")
   assert string.contains(usage, "Ctrl-C/SIGINT")
-  assert string.contains(usage, "scherzo-start helper")
+  assert string.contains(usage, "packaged scherzo launcher")
+  assert string.contains(usage, "compatibility scherzo-start helper")
+  assert string.contains(
+    usage,
+    "Erlang signal FFI installs only the SIGTERM handler",
+  )
   assert string.contains(usage, "kill -9")
   assert string.contains(usage, "only one Scherzo instance")
 }

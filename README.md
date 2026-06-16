@@ -38,11 +38,11 @@ The usual first run is:
 scherzo --version
 LINEAR_API_KEY=lin_api_... scherzo doctor .scherzo/scherzo.yaml
 LINEAR_API_KEY=lin_api_... scherzo --once .scherzo/scherzo.yaml
-LINEAR_API_KEY=lin_api_... scherzo-start .scherzo/scherzo.yaml
+LINEAR_API_KEY=lin_api_... scherzo .scherzo/scherzo.yaml
 scherzoctl ps
 ```
 
-When working from this source checkout, run the same entrypoints through devenv, for example `direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` or `direnv exec . scripts/scherzoctl ps`.
+The packaged `scherzo` launcher is the primary foreground daemon command and translates terminal Ctrl-C into Scherzo's graceful SIGTERM shutdown path. `scherzo-start` remains available only as a deprecated compatibility alias for existing scripts. When working from this source checkout, run non-daemon entrypoints through devenv, for example `direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` or `direnv exec . scripts/scherzoctl ps`.
 
 ## Documentation map
 
@@ -132,8 +132,8 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor .scherzo/scherzo.ya
 # Cautious one-task run; with the current production adapter this dispatches one eligible Linear task
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.yaml
 
-# Ctrl-C-friendly daemon mode and control UI
-LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
+# Ctrl-C-friendly packaged daemon mode and control UI
+LINEAR_API_KEY=lin_api_... nix run .#scherzo -- .scherzo/scherzo.yaml
 direnv exec . scripts/scherzoctl ps
 ```
 
