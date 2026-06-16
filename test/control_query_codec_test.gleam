@@ -311,6 +311,55 @@ pub fn work_item_query_rejects_invalid_filter_sort_and_categories_test() {
   assert message_4 == "invalid work item sort: bogus"
 }
 
+pub fn work_item_query_decoder_accepts_missing_parent_field_test() {
+  let response =
+    types.WorkItemShowResponse(work_item.WorkItemDetail(
+      summary: work_item_summary(labels_truncated: False),
+      subtasks: [work_item_summary(labels_truncated: False)],
+      subtasks_truncated: False,
+    ))
+  let encoded =
+    codec.response_to_string(response)
+    |> string.replace(each: "\"parent\":null,", with: "")
+
+  assert !string.contains(encoded, "\"parent\"")
+  assert codec.decode_response(encoded) == Ok(response)
+}
+
+pub fn work_item_query_response_roundtrips_subtask_parent_test() {
+  let parent = work_item_summary(labels_truncated: True)
+  let child_source =
+    work_item.WorkItemSource(
+      provider: "linear",
+      id: "issue-child-1",
+      display_id: Some("LIV-771"),
+      url: Some("https://linear.app/living-systems/issue/LIV-771"),
+    )
+  let child =
+    work_item.WorkItemSummary(
+      ..work_item_summary(labels_truncated: False),
+      id: "linear:issue-child-1",
+      source: child_source,
+      parent: Some(parent.source),
+      title: "Implement child work item",
+    )
+  let detail =
+    work_item.WorkItemDetail(
+      summary: parent,
+      subtasks: [child],
+      subtasks_truncated: False,
+    )
+  let response = types.WorkItemShowResponse(detail)
+  let encoded = codec.response_to_string(response)
+
+  assert string.contains(encoded, "\"parent\":{")
+  let assert Ok(types.WorkItemShowResponse(decoded)) =
+    codec.decode_response(encoded)
+  assert decoded == detail
+  let assert [decoded_child] = decoded.subtasks
+  assert decoded_child.parent == Some(parent.source)
+}
+
 pub fn supported_queries_include_work_item_queries_test() {
   let queries = types.supported_queries()
   assert list.contains(queries, "work_item_list")
@@ -470,6 +519,7 @@ fn work_item_summary(
       display_id: Some("LIV-770"),
       url: Some("https://linear.app/living-systems/issue/LIV-770"),
     ),
+    parent: None,
     title: "Implement work item queries",
     state: task.TaskState(id: Some("todo"), name: "Todo", category: task.Ready),
     labels: [

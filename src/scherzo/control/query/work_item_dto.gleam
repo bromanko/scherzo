@@ -59,6 +59,7 @@ fn work_item_summary_to_json(summary: work_item.WorkItemSummary) -> json.Json {
   json.object([
     #("id", json.string(summary.id)),
     #("source", work_item_source_to_json(summary.source)),
+    #("parent", json.nullable(summary.parent, of: work_item_source_to_json)),
     #("title", json.string(summary.title)),
     #("state", work_item_state_to_json(summary.state)),
     #("labels", json.array(summary.labels, of: label_to_json)),
@@ -139,6 +140,11 @@ fn work_item_detail_decoder() -> decode.Decoder(work_item.WorkItemDetail) {
 fn work_item_summary_decoder() -> decode.Decoder(work_item.WorkItemSummary) {
   use id <- decode.field("id", decode.string)
   use source <- decode.field("source", work_item_source_decoder())
+  use parent <- decode.optional_field(
+    "parent",
+    None,
+    decode.optional(work_item_source_decoder()),
+  )
   use title <- decode.field("title", decode.string)
   use state <- decode.field("state", work_item_state_decoder())
   use labels <- decode.field("labels", decode.list(work_item_label_decoder()))
@@ -152,6 +158,7 @@ fn work_item_summary_decoder() -> decode.Decoder(work_item.WorkItemSummary) {
   decode.success(work_item.WorkItemSummary(
     id: id,
     source: source,
+    parent: parent,
     title: title,
     state: state,
     labels: labels,

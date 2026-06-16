@@ -42,10 +42,19 @@ pub fn read_only_adapter() -> adapter.TrackerAdapter {
 pub fn read_only_adapter_with_tasks(
   tasks: List(task.Task),
 ) -> adapter.TrackerAdapter {
-  read_only_adapter_with_work_item_details(tasks, default_work_item_details())
+  read_only_adapter_with_tasks_and_work_item_details(
+    tasks,
+    default_work_item_details(),
+  )
 }
 
 pub fn read_only_adapter_with_work_item_details(
+  details: List(work_item.WorkItemDetail),
+) -> adapter.TrackerAdapter {
+  read_only_adapter_with_tasks_and_work_item_details([task()], details)
+}
+
+pub fn read_only_adapter_with_tasks_and_work_item_details(
   tasks: List(task.Task),
   details: List(work_item.WorkItemDetail),
 ) -> adapter.TrackerAdapter {

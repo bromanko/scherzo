@@ -86,6 +86,7 @@ pub fn work_item_query_parses_detail_fixture_with_truncation_test() {
   assert detail.summary.labels_truncated == True
   assert detail.subtasks_truncated == True
   let assert [first] = detail.subtasks
+  assert first.parent == Some(detail.summary.source)
   assert first.source.display_id == Some("LIV-1169")
 }
 

@@ -272,6 +272,7 @@ pub fn server_roundtrips_authenticated_work_item_queries_test() {
               display_id: Some("LIV-1"),
               url: None,
             ),
+            parent: None,
             title: "Work item",
             state: task.TaskState(
               id: Some("todo"),

@@ -20,6 +20,7 @@ pub fn daemon_id_generation_and_state_preservation_test() {
   assert summary.id == "linear:issue-1"
   assert summary.source.provider == "linear"
   assert summary.source.display_id == Some("LIV-1168")
+  assert summary.parent == None
   assert summary.state.id == Some("todo")
   assert summary.state.name == "Todo"
   assert summary.state.category == task.Ready
@@ -61,6 +62,7 @@ pub fn zero_child_parent_test() {
       work_item.default_show_subtask_limit,
     )
 
+  assert detail.summary.parent == None
   assert detail.subtasks == []
   assert detail.subtasks_truncated == False
 }
@@ -207,16 +209,49 @@ pub fn work_item_action_descriptor_roundtrip_and_fingerprint_test() {
   assert decoded_action.fingerprint == expected_action.fingerprint
 }
 
+pub fn one_child_parent_ref_and_labels_test() {
+  let child =
+    task.Task(..base_task(remote_id: "child-1", display_id: "LIV-C1"), labels: [
+      task.TaskLabel(id: Some("label-kind"), name: "kind:workflow"),
+    ])
+  let detail =
+    work_item.detail_from_task_and_subtasks(
+      base_task(remote_id: "parent-3", display_id: "LIV-P3"),
+      [child],
+      work_item.default_label_limit,
+      work_item.default_show_subtask_limit,
+    )
+
+  let assert [child_summary] = detail.subtasks
+  assert child_summary.parent == Some(detail.summary.source)
+  assert child_summary.source.display_id == Some("LIV-C1")
+  assert child_summary.labels
+    == [
+      task.TaskLabel(id: Some("label-kind"), name: "kind:workflow"),
+    ]
+
+  let encoded = work_item_dto.work_item_detail_to_json(detail) |> json.to_string
+  assert string.contains(encoded, "kind:workflow")
+  assert !string.contains(encoded, "\"kind\"")
+  assert !string.contains(encoded, "\"type\"")
+}
+
 pub fn work_item_json_excludes_description_and_comment_fields_test() {
   let item =
     task.Task(
       ..base_task(remote_id: "issue-3", display_id: "LIV-3000"),
       description: Some("SECRET_DESCRIPTION"),
     )
+  let child =
+    task.Task(
+      ..base_task(remote_id: "child-secret", display_id: "LIV-CSECRET"),
+      description: Some("RAW_PROVIDER_PAYLOAD_SECRET"),
+      branch_hint: Some("RAW_PROMPT_SECRET"),
+    )
   let detail =
     work_item.detail_from_task_and_subtasks(
       item,
-      [],
+      [child],
       work_item.default_label_limit,
       work_item.default_show_subtask_limit,
     )
@@ -225,7 +260,10 @@ pub fn work_item_json_excludes_description_and_comment_fields_test() {
   assert string.contains(encoded, "Implement work item projection")
   assert !string.contains(encoded, "description")
   assert !string.contains(encoded, "SECRET_DESCRIPTION")
+  assert !string.contains(encoded, "RAW_PROVIDER_PAYLOAD_SECRET")
+  assert !string.contains(encoded, "RAW_PROMPT_SECRET")
   assert !string.contains(encoded, "comment")
+  assert !string.contains(encoded, "branch_hint")
 }
 
 fn base_task(

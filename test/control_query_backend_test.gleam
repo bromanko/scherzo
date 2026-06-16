@@ -1,6 +1,7 @@
 import birl
 import gleam/dict
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -295,6 +296,69 @@ pub fn backend_work_item_show_uses_projection_for_review_artifact_availability_t
   assert artifact.ref == "artifact://run-1/output.json"
 }
 
+pub fn backend_work_item_show_projects_zero_one_many_child_summaries_test() {
+  let tracker_adapter =
+    fake_tracker_adapter.read_only_adapter_with_work_item_details([
+      fake_work_item_detail(
+        remote_id: "card-zero",
+        display_id: "CARD-ZERO",
+        child_count: 0,
+      ),
+      fake_work_item_detail(
+        remote_id: "card-one",
+        display_id: "CARD-ONE",
+        child_count: 1,
+      ),
+      fake_work_item_detail(
+        remote_id: "card-many",
+        display_id: "CARD-MANY",
+        child_count: 3,
+      ),
+    ])
+
+  let assert Ok(types.WorkItemShowResponse(zero)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemShow(
+        types.WorkItemShowQuery(ref: types.TaskDisplayId("CARD-ZERO")),
+      ),
+    )
+  assert zero.subtasks == []
+
+  let assert Ok(types.WorkItemShowResponse(one)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemShow(
+        types.WorkItemShowQuery(ref: types.TaskDisplayId("CARD-ONE")),
+      ),
+    )
+  let assert [only_child] = one.subtasks
+  assert only_child.parent == Some(one.summary.source)
+  assert only_child.source.display_id == Some("CARD-ONE.1")
+  assert only_child.labels
+    == [
+      task.TaskLabel(id: Some("label-child"), name: "workflow:implementation"),
+    ]
+
+  let assert Ok(types.WorkItemShowResponse(many)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemShow(
+        types.WorkItemShowQuery(ref: types.TaskDisplayId("CARD-MANY")),
+      ),
+    )
+  assert list.length(many.subtasks) == 3
+}
+
 pub fn backend_work_item_query_maps_unsupported_capability_test() {
   let tracker_adapter =
     adapter.TrackerAdapter(
@@ -529,7 +593,7 @@ pub fn backend_rejects_mismatched_work_item_cursor_before_querying_adapter_test(
 
 pub fn backend_work_item_list_applies_search_archive_sort_and_cursor_test() {
   let tracker_adapter =
-    fake_tracker_adapter.read_only_adapter_with_work_item_details(
+    fake_tracker_adapter.read_only_adapter_with_tasks_and_work_item_details(
       [fake_tracker_adapter.task()],
       searchable_work_item_details(),
     )
@@ -713,6 +777,7 @@ fn build_work_item_summary(
       display_id: Some(display_id),
       url: None,
     ),
+    parent: None,
     title: title,
     state: task.TaskState(id: Some(remote_id), name: title, category: category),
     labels: [task.TaskLabel(id: None, name: label_name)],
@@ -721,6 +786,65 @@ fn build_work_item_summary(
     updated_at: Some(birl.from_unix_milli(updated_at_ms)),
     actions: [],
   )
+}
+
+fn fake_work_item_detail(
+  remote_id remote_id: String,
+  display_id display_id: String,
+  child_count child_count: Int,
+) -> work_item.WorkItemDetail {
+  let parent = fake_task(remote_id: remote_id, display_id: display_id)
+  work_item.detail_from_task_and_subtasks(
+    parent,
+    fake_children(display_id, child_count, []),
+    work_item.default_label_limit,
+    work_item.default_show_subtask_limit,
+  )
+}
+
+fn fake_task(
+  remote_id remote_id: String,
+  display_id display_id: String,
+) -> task.Task {
+  task.Task(
+    ..fake_tracker_adapter.task(),
+    ref: task.TaskRef(
+      backend_kind: fake_tracker_adapter.backend_kind,
+      remote_id: remote_id,
+      key: Some(display_id),
+      url: Some("https://tracker.test/cards/" <> display_id),
+    ),
+    title: "Fake work item " <> display_id,
+  )
+}
+
+fn fake_children(
+  parent_display_id: String,
+  remaining: Int,
+  acc: List(task.Task),
+) -> List(task.Task) {
+  case remaining <= 0 {
+    True -> list.reverse(acc)
+    False -> {
+      let index = int.to_string(remaining)
+      let display_id = parent_display_id <> "." <> index
+      fake_children(parent_display_id, remaining - 1, [
+        task.Task(
+          ..fake_task(
+            remote_id: parent_display_id <> "-child-" <> index,
+            display_id: display_id,
+          ),
+          labels: [
+            task.TaskLabel(
+              id: Some("label-child"),
+              name: "workflow:implementation",
+            ),
+          ],
+        ),
+        ..acc
+      ])
+    }
+  }
 }
 
 fn instrumented_work_item_adapter(
@@ -735,6 +859,7 @@ fn instrumented_work_item_adapter(
         display_id: Some("CARD-1"),
         url: None,
       ),
+      parent: None,
       title: "First work item",
       state: task.TaskState(
         id: Some("todo"),
