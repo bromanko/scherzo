@@ -304,12 +304,14 @@ fn retry_issue(
                 True -> {
                   let state = reset_issue_for_operator_retry(state, issue)
                   let effects = operator_retry_effects(issue, context)
+                  let claim_context =
+                    context_without_retried_recovery(context, issue.id)
                   let claim =
                     claims.begin_for_issue(
                       state,
                       issue,
                       [],
-                      context,
+                      claim_context,
                       claims.Callbacks(dispatch_candidates: dispatch),
                     )
                   transition_types.Outcome(
@@ -333,6 +335,16 @@ fn retry_issue(
       }
     }
   }
+}
+
+fn context_without_retried_recovery(
+  context: transition_types.DispatchContext,
+  issue_id: String,
+) -> transition_types.DispatchContext {
+  transition_types.DispatchContext(
+    ..context,
+    recovery_by_issue: dict.delete(context.recovery_by_issue, issue_id),
+  )
 }
 
 fn reset_issue_for_operator_retry(
