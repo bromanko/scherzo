@@ -8,6 +8,7 @@ import scherzo/control/command
 import scherzo/control/query/codec as query_codec
 import scherzo/control/query/types as query_types
 import scherzo/session/event
+import scherzo/work_item_invalidation
 
 pub type SessionSnapshot {
   SessionSnapshot(
@@ -33,6 +34,13 @@ pub type ClientMessage {
   QueryResponse(
     query_id: String,
     result: Result(query_types.QueryResponse, query_types.QueryError),
+  )
+  WorkItemInvalidation(
+    daemon_id: String,
+    boot_id: String,
+    sent_at_ms: Int,
+    daemon_label: Option(String),
+    event: work_item_invalidation.Event,
   )
 }
 
@@ -95,6 +103,14 @@ pub fn encode_client_message(message: ClientMessage) -> String {
     CommandResult(server_command_id, result) ->
       encode_command_result(server_command_id, result)
     QueryResponse(query_id, result) -> encode_query_response(query_id, result)
+    WorkItemInvalidation(daemon_id, boot_id, sent_at_ms, daemon_label, event) ->
+      encode_work_item_invalidation(
+        daemon_id,
+        boot_id,
+        sent_at_ms,
+        daemon_label,
+        event,
+      )
   }
 }
 
@@ -170,6 +186,52 @@ pub fn encode_query_response(
     #("result", result_json),
   ])
   |> json.to_string
+}
+
+pub fn encode_work_item_invalidation(
+  daemon_id: String,
+  boot_id: String,
+  sent_at_ms: Int,
+  daemon_label: Option(String),
+  event: work_item_invalidation.Event,
+) -> String {
+  [
+    #("type", json.string("work_item_invalidation")),
+    #("daemonId", json.string(daemon_id)),
+    #("bootId", json.string(boot_id)),
+    #("sentAtMs", json.int(sent_at_ms)),
+    #("source", json.string(invalidation_source_to_string(event.source))),
+    #("taskRefs", json.array(event.task_refs, of: task_ref_to_json)),
+    #("hasUnknownRefs", json.bool(event.has_unknown_refs)),
+    #("refsTruncated", json.bool(event.refs_truncated)),
+  ]
+  |> with_optional_daemon_label(daemon_label)
+  |> json.object
+  |> json.to_string
+}
+
+fn invalidation_source_to_string(
+  source: work_item_invalidation.Source,
+) -> String {
+  case source {
+    work_item_invalidation.PollRefresh -> "poll_refresh"
+    work_item_invalidation.TrackerRefresh -> "tracker_refresh"
+    work_item_invalidation.WorkflowObserved -> "workflow_observed"
+    work_item_invalidation.ManualRefresh -> "manual_refresh"
+  }
+}
+
+fn task_ref_to_json(ref: work_item_invalidation.AffectedTaskRef) -> json.Json {
+  let fields = [
+    #("provider", json.string(ref.provider)),
+    #("id", json.string(ref.id)),
+  ]
+  case ref.display_id {
+    Some(display_id) ->
+      [#("displayId", json.string(display_id)), ..fields]
+      |> json.object
+    None -> json.object(fields)
+  }
 }
 
 fn with_optional_daemon_label(

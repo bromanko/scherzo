@@ -36,6 +36,7 @@ import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/turn_telemetry
+import scherzo/work_item_invalidation
 import scherzo/workflow_attempt
 import scherzo/workflow_run
 import simplifile
@@ -1855,6 +1856,46 @@ pub fn reload_workflow_updates_runtime_limits_before_reply_test() {
 
   let assert Ok(reloaded_snapshot) = daemon.get_snapshot(started.data, 1000)
   assert reloaded_snapshot.max_concurrent_agents == 2
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn reload_workflow_emits_manual_work_item_invalidation_test() {
+  let #(workflow_path, _root) =
+    write_workflow_with_limits(
+      "test/tmp/daemon-control-reload-invalidation",
+      0,
+      1,
+    )
+  let log_subject = process.new_subject()
+  let invalidation_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(10, fn() { 42 })
+  let base_deps =
+    in_process_dependencies(
+      log_subject,
+      empty_tracker(),
+      disabled_handoff(),
+      hub_subject,
+      failing_agent(log_subject),
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_deps,
+      emit_work_item_invalidation: fn(_, event) {
+        process.send(invalidation_subject, event)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(reloaded) =
+    daemon.apply_operator_command(started.data, command.ReloadWorkflow, 1000)
+  assert command.status_to_string(reloaded.status) == "applied"
+  let assert Ok(event) = process.receive(invalidation_subject, within: 1000)
+  assert event.source == work_item_invalidation.ManualRefresh
+  assert event.task_refs == []
+  assert event.has_unknown_refs
+  assert !event.refs_truncated
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
