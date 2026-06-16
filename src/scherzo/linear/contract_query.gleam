@@ -217,7 +217,10 @@ fn raw_contract_to_board_for_scope(
       let expected_slugs = linear_contract.task_scope_project_slugs(scope)
       contract_projects_to_board(data, expected_slugs)
     }
-    config_types.LinearTaskAnd(_) | config_types.LinearTaskOr(_) -> {
+    config_types.LinearTaskAllLabels(_)
+    | config_types.LinearTaskAnyLabel(_)
+    | config_types.LinearTaskAnd(_)
+    | config_types.LinearTaskOr(_) -> {
       let expected_slugs =
         linear_contract.task_scope_matching_project_slugs(scope)
       contract_projects_to_board(data, expected_slugs)

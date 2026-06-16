@@ -292,7 +292,11 @@ fn legacy_detail_by_identifier_decoder(
     None -> Ok(None)
     Some(IssueDetail(task: item, project_slug: Some(project_slug))) ->
       case
-        linear_task_scope.matches_project_slug(expected_scope, project_slug),
+        linear_task_scope.matches_issue(
+          expected_scope,
+          project_slug,
+          list.map(item.labels, fn(label) { label.name }),
+        ),
         identifier_matches(expected_identifier, task.display_key(item.ref))
       {
         True, True -> Ok(Some(item))

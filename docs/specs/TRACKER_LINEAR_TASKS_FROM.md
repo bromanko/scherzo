@@ -1,6 +1,6 @@
 # `tracker.linear.tasks_from` specification
 
-Status: design/specification for Linear task-scope predicates. This repository slice implements `project` and `projects` leaves plus `and`/`or` composition over those leaves; labels, team predicates, and overlap diagnostics remain future work.
+Status: design/specification for Linear task-scope predicates. This repository slice implements `project`, `projects`, `all_labels`, and `any_label` leaves plus `and`/`or` composition; team predicates and overlap diagnostics remain future work.
 
 ## Purpose
 
@@ -10,9 +10,9 @@ The goal is to let operators express task scope precisely without exposing raw L
 
 ## Current baseline
 
-Current production behavior is project-scoped with explicit multi-project support and project-anchored boolean composition.
+Current production behavior is project-scoped with explicit multi-project support, project-anchored label predicates, and boolean composition.
 
-- `src/scherzo/config/tracker_config.gleam` reads `tracker.linear.tasks_from.project`, `tracker.linear.tasks_from.projects`, `tracker.linear.tasks_from.and`, and `tracker.linear.tasks_from.or` into an internal task scope.
+- `src/scherzo/config/tracker_config.gleam` reads `tracker.linear.tasks_from.project`, `tracker.linear.tasks_from.projects`, `tracker.linear.tasks_from.all_labels`, `tracker.linear.tasks_from.any_label`, `tracker.linear.tasks_from.and`, and `tracker.linear.tasks_from.or` into an internal task scope.
 - When `tracker.linear.tasks_from` is absent, `tracker.linear.project`, `tracker.linear.project_slug`, and `tracker.project_slug` desugar to the single-project task scope.
 - Linear read paths compile the task scope to one shared `IssueFilter` variable.
 
@@ -22,7 +22,7 @@ The `tasks_from` implementation preserves the single-project default when no exp
 
 This spec defines the configuration shape, semantics, validation rules, compatibility behavior, `doctor` expectations, and the Linear query paths that must share one compiled predicate.
 
-This phase adds parser support, schema fields, and runtime compilation for `project` and `projects` leaves plus `and`/`or` composition over those leaves. It does not add label predicates, team predicates, cache changes, provider-live changes, or overlap diagnostics.
+This phase adds parser support, schema fields, and runtime compilation for `project`, `projects`, `all_labels`, and `any_label` leaves plus `and`/`or` composition over those leaves. It does not add team predicates, cache changes, provider-live changes, or overlap diagnostics.
 
 ## Predicate model
 
@@ -32,13 +32,10 @@ This build supports these keys at any predicate node:
 
 - `project`
 - `projects`
-- `and`
-- `or`
-
-The full predicate language reserves these future keys, which current builds should reject until their follow-up issues are implemented:
-
 - `all_labels`
 - `any_label`
+- `and`
+- `or`
 
 `all_labels` and `any_label` are valid predicate leaves, but this version requires every accepted complete predicate branch to be anchored by `project` or `projects`. Label-only task scopes are intentionally reserved until a later design adds a `team` leaf or an explicit workspace-wide opt-in.
 
@@ -114,7 +111,7 @@ tracker:
         - all_labels: [workflow:implementation, backend]
 ```
 
-Intended future Linear compilation for the label leaf uses conjunction over per-label filters, not a single loose membership check:
+Linear compilation for the label leaf uses conjunction over per-label filters, not a single loose membership check:
 
     {
       and: [
@@ -138,7 +135,7 @@ tracker:
         - any_label: [workflow:implementation, workflow:research]
 ```
 
-Intended future Linear compilation for the label leaf uses disjunction over per-label filters:
+Linear compilation for the label leaf uses disjunction over per-label filters:
 
     {
       or: [
@@ -164,7 +161,7 @@ tracker:
         - all_labels: [workflow:implementation, backend]
 ```
 
-Intended future Linear compilation:
+Linear compilation:
 
     {
       and: [
@@ -193,7 +190,7 @@ tracker:
             - any_label: [workflow:implementation]
 ```
 
-Intended future Linear compilation:
+Linear compilation:
 
     {
       or: [
@@ -225,7 +222,7 @@ The parser rejects unsupported shapes in this phase and future parser/config val
 
 A predicate is anchored when the current build can prove that every possible match is constrained by at least one supported ownership-boundary leaf. In this version, `project` and `projects` are anchoring leaves. An `and` node is anchored if any child is anchored. An `or` node is anchored only if every child is anchored. A future `team` leaf or workspace-wide scope may satisfy this rule only after a later spec revision defines explicit opt-in behavior.
 
-Required safety bounds for future runtime support:
+Required safety bounds:
 
 - maximum predicate depth: 4 predicate-map nodes, counted from the `tasks_from` root
 - maximum total predicate nodes after parsing: 64
@@ -329,7 +326,7 @@ That config is invalid because it combines the legacy single-project field with 
 
 ## `doctor` expectations
 
-Phase-1 `doctor`/contract validation treats `tasks_from.project` and `tasks_from.projects` as the task-scope source for project validation. Future `doctor` output should add the richer first-class summaries and overlap diagnostics below.
+`doctor`/contract validation treats `tasks_from.project` and `tasks_from.projects` anchors as the task-scope source for project validation, including when label predicates narrow those project scopes. Future `doctor` output should add the richer first-class overlap diagnostics below.
 
 Expected behavior:
 
@@ -375,13 +372,13 @@ Required paths are:
 3. scheduled-failure search in `src/scherzo/scheduled_failure_reporter.gleam`
 4. contract validation in `src/scherzo/linear.gleam` and `src/scherzo/linear_contract.gleam`
 
-Today these paths are tied together by `projectSlug`. Future implementation must replace that shared single-project assumption with the same compiled `tasks_from` predicate everywhere. Updating only candidate polling would be incorrect if task detail, scheduled failure search, or contract validation still used a different scope. For project-only boolean predicates, contract validation should use the project-filter equivalent of the same predicate for the metadata board while separately checking every configured project slug for existence.
+These paths are tied together by the same compiled `tasks_from` predicate. Updating only candidate polling would be incorrect if task detail, scheduled failure search, or contract validation still used a different scope. For project-only and label-narrowed predicates, contract validation should use the project-filter equivalent of the same predicate for the metadata board while separately checking every configured project slug for existence.
 
 ## Operator safety and overlap guidance
 
 The safety invariant is no longer "one daemon per project/root." The future rule is one daemon per non-overlapping Linear task scope/root.
 
-Operators must avoid running two daemons whose `tasks_from` predicates can match the same issue, even if their workspace roots differ. This matters most for future `or`, label, and team-based scopes because overlap becomes harder to see by inspection.
+Operators must avoid running two daemons whose `tasks_from` predicates can match the same issue, even if their workspace roots differ. This matters most for `or`, label, and future team-based scopes because overlap becomes harder to see by inspection.
 
 This version intentionally rejects label-only task scopes. Label predicates should narrow an anchored project or projects scope, not silently opt a daemon into every project that happens to use a common workflow label. If a later runtime supports workspace-wide label scopes, that support must be explicit in config, prominent in `doctor`, and included in overlap diagnostics.
 

@@ -65,6 +65,69 @@ fn composed_project_filter_json() -> String {
   "{\"or\":[{\"slugId\":{\"eq\":\"PROJ\"}},{\"and\":[{\"slugId\":{\"in\":[\"BUGS\",\"OPS\"]}},{\"slugId\":{\"eq\":\"BUGS\"}}]}]}"
 }
 
+fn labelled_tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
+    ..tracker_config(),
+    project_slug: None,
+    task_scope: Some(labelled_task_scope()),
+  )
+}
+
+fn labelled_task_scope() -> config_types.LinearTaskScope {
+  config_types.LinearTaskAnd([
+    config_types.LinearTaskProject("PROJ"),
+    config_types.LinearTaskAllLabels([
+      "workflow:implementation",
+      "backend",
+      "workflow:implementation",
+    ]),
+    config_types.LinearTaskAnyLabel(["customer-visible", "urgent"]),
+  ])
+}
+
+fn labelled_task_filter_json() -> String {
+  "{\"and\":[{\"project\":{\"slugId\":{\"eq\":\"PROJ\"}}},{\"and\":[{\"labels\":{\"some\":{\"name\":{\"eq\":\"workflow:implementation\"}}}},{\"labels\":{\"some\":{\"name\":{\"eq\":\"backend\"}}}}]},{\"or\":[{\"labels\":{\"some\":{\"name\":{\"eq\":\"customer-visible\"}}}},{\"labels\":{\"some\":{\"name\":{\"eq\":\"urgent\"}}}}]}]}"
+}
+
+fn labelled_project_filter_json() -> String {
+  "{\"and\":[{\"slugId\":{\"eq\":\"PROJ\"}}]}"
+}
+
+pub fn direct_task_scope_validation_rejects_invalid_nested_scopes_test() {
+  let invalid_scopes = [
+    config_types.LinearTaskAnd([
+      config_types.LinearTaskProject("PROJ"),
+      config_types.LinearTaskOr([]),
+    ]),
+    config_types.LinearTaskAnd([
+      config_types.LinearTaskProject("PROJ"),
+      config_types.LinearTaskAllLabels([]),
+    ]),
+    config_types.LinearTaskAnd([
+      config_types.LinearTaskProject("PROJ"),
+      config_types.LinearTaskAnyLabel(["  "]),
+    ]),
+  ]
+
+  list.each(invalid_scopes, fn(scope) {
+    let config =
+      config_types.TrackerConfig(
+        ..tracker_config(),
+        project_slug: None,
+        task_scope: Some(scope),
+      )
+    let assert Error(config_types.MissingLinearTaskScopeProject) =
+      config_types.linear_task_scope_from_tracker_config(config)
+  })
+
+  let assert Ok(valid_scope) =
+    config_types.linear_task_scope_from_tracker_config(
+      labelled_tracker_config(),
+    )
+  assert linear_task_scope.summary(valid_scope)
+    == "and(project(PROJ), all_labels([workflow:implementation, backend]), any_label([customer-visible, urgent]))"
+}
+
 fn response_page(
   identifier: String,
   has_next: String,
@@ -239,6 +302,46 @@ pub fn composed_task_scope_uses_same_issue_filter_for_ownership_requests_test() 
     composed_project_scope(),
     "OPS",
   )
+}
+
+pub fn labelled_task_scope_uses_same_issue_filter_for_ownership_requests_test() {
+  let assert Ok(candidate_request) =
+    linear.build_candidate_request(
+      labelled_tracker_config(),
+      issue_state.list_from_strings(["Todo"]),
+      None,
+    )
+  let assert Ok(list_request) =
+    task_query.build_list_request(
+      labelled_tracker_config(),
+      issue_state.list_from_strings(["Todo"]),
+      None,
+    )
+  let assert Ok(detail_request) =
+    task_query.build_detail_by_id_request(labelled_tracker_config(), "issue-id")
+  let assert Ok(identifier_request) =
+    task_query.build_detail_by_identifier_request(
+      labelled_tracker_config(),
+      "PROJ-1",
+    )
+
+  assert json_variable(candidate_request.body, "taskFilter")
+    == labelled_task_filter_json()
+  assert json_variable(list_request.body, "taskFilter")
+    == labelled_task_filter_json()
+  assert json_variable(detail_request.body, "taskFilter")
+    == labelled_task_filter_json()
+  assert json_variable(identifier_request.body, "taskFilter")
+    == labelled_task_filter_json()
+  assert linear_task_scope.matches_issue(labelled_task_scope(), "PROJ", [
+    "workflow:implementation",
+    "backend",
+    "urgent",
+  ])
+  assert !linear_task_scope.matches_issue(labelled_task_scope(), "PROJ", [
+    "workflow:implementation",
+    "urgent",
+  ])
 }
 
 pub fn state_refresh_query_uses_graphql_id_list_test() {
@@ -591,6 +694,42 @@ pub fn task_source_detail_identifier_filters_multi_project_scope_test() {
     )
 }
 
+pub fn task_source_detail_identifier_decodes_labelled_scope_legacy_response_test() {
+  let matching_labels =
+    "[{\"id\":\"implementation\",\"name\":\"workflow:implementation\"},{\"id\":\"backend\",\"name\":\"backend\"},{\"id\":\"urgent\",\"name\":\"urgent\"}]"
+  let missing_required_label =
+    "[{\"id\":\"implementation\",\"name\":\"workflow:implementation\"},{\"id\":\"urgent\",\"name\":\"urgent\"}]"
+
+  let assert Ok(Some(found)) =
+    task_query.parse_detail_by_identifier_response(
+      linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_response_with_labels(
+          "PROJ-1",
+          "PROJ",
+          matching_labels,
+        ),
+      ),
+      labelled_task_scope(),
+      "PROJ-1",
+    )
+  assert found.ref.key == Some("PROJ-1")
+
+  let assert Ok(None) =
+    task_query.parse_detail_by_identifier_response(
+      linear.Response(
+        status: 200,
+        body: task_detail_by_identifier_response_with_labels(
+          "PROJ-1",
+          "PROJ",
+          missing_required_label,
+        ),
+      ),
+      labelled_task_scope(),
+      "PROJ-1",
+    )
+}
+
 pub fn task_source_detail_identifier_decodes_composed_scope_responses_test() {
   let scope = composed_project_scope()
   let assert Ok(Some(found)) =
@@ -693,6 +832,79 @@ pub fn contract_request_uses_composed_scope_project_filter_test() {
     query,
     "configuredProjects: projects(first: 3, filter: { slugId: { in: $configuredProjectSlugs } })",
   )
+}
+
+pub fn contract_request_uses_labelled_scope_project_filter_test() {
+  let assert Ok(request) =
+    linear.build_contract_request(labelled_tracker_config())
+  let query = request_query(request.body)
+  assert variable_names(request.body)
+    == ["configuredProjectSlugs", "projectFilter"]
+  assert json_variable(request.body, "projectFilter")
+    == labelled_project_filter_json()
+  assert string_list_variable(request.body, "configuredProjectSlugs")
+    == ["PROJ"]
+  assert string.contains(query, "projects(first: 1, filter: $projectFilter)")
+  assert string.contains(
+    query,
+    "configuredProjects: projects(first: 1, filter: { slugId: { in: $configuredProjectSlugs } })",
+  )
+}
+
+pub fn contract_client_uses_labelled_scope_effective_projects_test() {
+  let effective_projects =
+    "["
+    <> contract_project_for(
+      "PROJ",
+      "[" <> contract_team("PROJ", "false", "false") <> "]",
+      "false",
+    )
+    <> "]"
+  let client =
+    linear.contract_client(labelled_tracker_config(), fn(request) {
+      assert json_variable(request.body, "projectFilter")
+        == labelled_project_filter_json()
+      assert string_list_variable(request.body, "configuredProjectSlugs")
+        == ["PROJ"]
+      Ok(linear.Response(
+        status: 200,
+        body: contract_response_with_configured_projects(
+          effective_projects,
+          effective_projects,
+          "false",
+        ),
+      ))
+    })
+
+  let assert Ok(board) = client.fetch_remote_contract()
+  assert board.project_slug == "PROJ"
+  assert list.map(board.teams, fn(team) { team.key }) == ["PROJ"]
+}
+
+pub fn contract_client_validates_missing_configured_slug_for_labelled_scope_test() {
+  let effective_projects =
+    "["
+    <> contract_project_for(
+      "PROJ",
+      "[" <> contract_team("PROJ", "false", "false") <> "]",
+      "false",
+    )
+    <> "]"
+  let client =
+    linear.contract_client(labelled_tracker_config(), fn(_) {
+      Ok(linear.Response(
+        status: 200,
+        body: contract_response_with_configured_projects(
+          effective_projects,
+          "[]",
+          "false",
+        ),
+      ))
+    })
+
+  let assert Error(error.LinearUnknownPayload(message)) =
+    client.fetch_remote_contract()
+  assert string.contains(message, "project slug(s) not found: PROJ")
 }
 
 pub fn contract_client_validates_all_configured_project_slugs_test() {
@@ -979,11 +1191,25 @@ fn task_detail_by_identifier_response(
   identifier: String,
   project_slug: String,
 ) -> String {
+  task_detail_by_identifier_response_with_labels(
+    identifier,
+    project_slug,
+    "[{\"id\":\"label-id\",\"name\":\"workflow:bug\"}]",
+  )
+}
+
+fn task_detail_by_identifier_response_with_labels(
+  identifier: String,
+  project_slug: String,
+  label_nodes: String,
+) -> String {
   "{\"data\":{\"issue\":{\"id\":\"issue-id\",\"identifier\":\""
   <> identifier
   <> "\",\"title\":\"Task Detail\",\"description\":\"Desc\",\"priority\":1,\"branchName\":\"branch\",\"url\":\"https://linear/issue\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"project\":{\"slugId\":\""
   <> project_slug
-  <> "\"},\"state\":{\"id\":\"state-id\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-id\",\"name\":\"workflow:bug\"}]}}}}"
+  <> "\"},\"state\":{\"id\":\"state-id\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":"
+  <> label_nodes
+  <> "}}}}"
 }
 
 fn task_detail_by_identifier_connection_response(identifier: String) -> String {
