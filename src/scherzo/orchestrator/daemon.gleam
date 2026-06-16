@@ -77,7 +77,7 @@ import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
 import scherzo/work_item_invalidation
 import scherzo/workflow_checkpoint
-import scherzo/workflow_completion_policy
+import scherzo/workflow_completion_policy.{type LinearStateRef}
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
 import scherzo/workflow_repair
@@ -4312,6 +4312,38 @@ fn dispatch_time_recovery_claim_issue(
             run_id,
             workflow_id,
           )
+        dispatch_recovery.PublicationAlreadyPublished(run_id, workflow_id) -> {
+          let state = clear_pending_claim_for_task_ref(state, task_ref)
+          log_state(state, "info", "dispatch_recovery_already_published", [
+            #("issue_id", issue.id),
+            #("run_id", run_id),
+            #("workflow_id", workflow_id),
+          ])
+          case
+            complete_dispatch_publication_recovery(
+              state,
+              issue,
+              run_id,
+              0,
+              workflow_id,
+            )
+          {
+            Ok(state) ->
+              continue_dispatching_remaining_candidates(
+                state,
+                remaining_candidates,
+              )
+            Error(#(state, reason, message)) ->
+              park_dispatch_recovery_rejection(
+                state,
+                remaining_candidates,
+                task_ref,
+                issue,
+                reason,
+                message,
+              )
+          }
+        }
         dispatch_recovery.RejectRecovery(reason, message) ->
           park_dispatch_recovery_rejection(
             clear_pending_claim_for_task_ref(state, task_ref),
@@ -4525,13 +4557,16 @@ fn complete_dispatch_publication_recovery(
   attempt_count: Int,
   workflow_id: String,
 ) -> Result(State, #(State, String, String)) {
-  let state =
-    post_dispatch_publication_recovery_comment(
-      state,
-      issue,
-      run_id,
-      attempt_count,
-    )
+  let state = case attempt_count {
+    0 -> state
+    _ ->
+      post_dispatch_publication_recovery_comment(
+        state,
+        issue,
+        run_id,
+        attempt_count,
+      )
+  }
   case
     publication_recovery_completion_target(
       state.workflow.effective.handoff,
@@ -4542,16 +4577,23 @@ fn complete_dispatch_publication_recovery(
       Error(#(state, "publication_retry_completion_target_missing", message))
     Ok(#(target_state_id, target_state_name)) ->
       case
-        transition_issue_state(
-          state,
-          issue,
-          target_state_id,
-          target_state_name,
-          "dispatch_recovery:publication_retry_recorded",
+        issue_state.equals_normalized(
+          issue.state,
+          issue_state.from_string_unchecked(target_state_name),
         )
       {
-        Ok(state) -> Ok(state)
-        Error(#(state, reason, message)) -> Error(#(state, reason, message))
+        True -> Ok(state)
+        False ->
+          transition_issue_state(
+            state,
+            issue,
+            target_state_id,
+            target_state_name,
+            case attempt_count {
+              0 -> "dispatch_recovery:publication_already_published"
+              _ -> "dispatch_recovery:publication_retry_recorded"
+            },
+          )
       }
   }
 }
@@ -4608,7 +4650,13 @@ fn publication_recovery_completion_target(
       policy
       |> workflow_completion_policy.choose_linear_completion_state(
         workflow_id,
-        publication_recovery_success_outcome(),
+        workflow_completion_policy.WorkflowCompletionOutcome(
+          workflow_completion_policy.CompletionSucceeded,
+          [],
+          workflow_completion_policy.ReviewUnknown,
+          None,
+          False,
+        ),
       )
       |> publication_recovery_decision_target
     None ->
@@ -4616,16 +4664,6 @@ fn publication_recovery_completion_target(
       |> option.to_result(missing)
       |> result.map(linear_state_target)
   }
-}
-
-fn publication_recovery_success_outcome() -> workflow_completion_policy.WorkflowCompletionOutcome {
-  workflow_completion_policy.WorkflowCompletionOutcome(
-    status: workflow_completion_policy.CompletionSucceeded,
-    artifacts: [],
-    requires_review: workflow_completion_policy.ReviewUnknown,
-    target_linear_state: None,
-    expected_artifacts_missing: False,
-  )
 }
 
 fn publication_recovery_decision_target(
@@ -4639,9 +4677,7 @@ fn publication_recovery_decision_target(
   }
 }
 
-fn linear_state_target(
-  state_ref: workflow_completion_policy.LinearStateRef,
-) -> #(Option(String), String) {
+fn linear_state_target(state_ref: LinearStateRef) -> #(Option(String), String) {
   case state_ref {
     workflow_completion_policy.StateById(value) -> #(Some(value), value)
     workflow_completion_policy.StateByName(value) -> #(None, value)

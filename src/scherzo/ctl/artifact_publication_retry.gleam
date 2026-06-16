@@ -106,6 +106,13 @@ pub fn retry_attempts_with_bundle_runner(
   )
 }
 
+pub type PublicationRecoveryInspection {
+  RetryablePublicationAttempts(attempts: List(projection.PublicationAttempt))
+  RequiredPublicationsAlreadyPublished(
+    attempts: List(projection.PublicationAttempt),
+  )
+}
+
 pub fn inspect_retryable_attempts(
   projected: projection.Projection,
   run_id: String,
@@ -118,7 +125,27 @@ pub fn inspect_retryable_attempts(
     publication_id,
   ))
   use _ <- result.try(require_output_manifest_ref(projected, run_id))
-  Ok(list.map(targets, fn(target) { target.latest }))
+  Ok(retry_targets_to_attempts(targets))
+}
+
+pub fn inspect_publication_recovery(
+  projected: projection.Projection,
+  run_id: String,
+) -> Result(PublicationRecoveryInspection, #(String, String)) {
+  use _ <- result.try(require_publication_run(projected, run_id))
+  use _ <- result.try(require_output_manifest_ref(projected, run_id))
+  case select_retry_targets(projected, run_id, None) {
+    Ok(targets) ->
+      Ok(RetryablePublicationAttempts(retry_targets_to_attempts(targets)))
+    Error(#("publication_retry_targets_not_found", _)) -> {
+      use attempts <- result.try(require_required_publications_published(
+        projected,
+        run_id,
+      ))
+      Ok(RequiredPublicationsAlreadyPublished(attempts))
+    }
+    Error(error) -> Error(error)
+  }
 }
 
 type RetrySelection {
@@ -208,15 +235,75 @@ fn select_retry_targets(
             latest.publication_id,
             reason,
           ))
-        [], [] ->
-          Error(#(
-            "publication_retry_targets_not_found",
-            "no failed retryable publications found for run: " <> run_id,
-          ))
+        [], [] -> Error(publication_retry_targets_not_found_error(run_id))
         [], targets -> Ok(targets)
       }
     }
   }
+}
+
+fn retry_targets_to_attempts(
+  targets: List(RetrySelection),
+) -> List(projection.PublicationAttempt) {
+  list.map(targets, fn(target) { target.latest })
+}
+
+fn require_required_publications_published(
+  projected: projection.Projection,
+  run_id: String,
+) -> Result(List(projection.PublicationAttempt), #(String, String)) {
+  case projection.publication_ids_for_run(projected, run_id) {
+    [] -> Error(publication_retry_targets_not_found_error(run_id))
+    publication_ids -> {
+      use attempts <- result.try(
+        latest_publication_attempts(projected, run_id, publication_ids, []),
+      )
+      case list.all(attempts, required_publication_attempt_is_published) {
+        True -> Ok(attempts)
+        False -> Error(publication_retry_targets_not_found_error(run_id))
+      }
+    }
+  }
+}
+
+fn latest_publication_attempts(
+  projected: projection.Projection,
+  run_id: String,
+  publication_ids: List(String),
+  acc: List(projection.PublicationAttempt),
+) -> Result(List(projection.PublicationAttempt), #(String, String)) {
+  case publication_ids {
+    [] -> Ok(list.reverse(acc))
+    [publication_id, ..rest] ->
+      case
+        projection.latest_publication_for_run(projected, run_id, publication_id)
+      {
+        Ok(latest) ->
+          latest_publication_attempts(projected, run_id, rest, [latest, ..acc])
+        Error(Nil) ->
+          Error(#(
+            "publication_not_found",
+            "publication not found: " <> publication_id,
+          ))
+      }
+  }
+}
+
+fn required_publication_attempt_is_published(
+  attempt: projection.PublicationAttempt,
+) -> Bool {
+  !attempt.required
+  || attempt.status == "published"
+  || attempt.status == "unchanged"
+}
+
+fn publication_retry_targets_not_found_error(
+  run_id: String,
+) -> #(String, String) {
+  #(
+    "publication_retry_targets_not_found",
+    "no failed retryable publications found for run: " <> run_id,
+  )
 }
 
 fn retry_selected_publications(
