@@ -1097,6 +1097,129 @@ pub fn explicit_park_blocks_even_when_issue_changes_test() {
   assert !core.should_dispatch(kept, config(), changed)
 }
 
+pub fn auto_park_clears_on_same_fingerprint_dispatch_retry_intent_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let identity = orchestrator_state.issue_identity(issue)
+  let state =
+    orchestrator_state.RuntimeState(
+      ..core.new_state(config()),
+      claimed: dict.from_list([#(identity, issue.identifier)]),
+      retry_attempts: dict.from_list([
+        #(
+          identity,
+          orchestrator_state.RetryEntry(
+            task_ref: task.from_legacy_issue(issue).ref,
+            issue_id: issue.id,
+            delay_ms: 1000,
+            timer_generation: 1,
+          ),
+        ),
+      ]),
+      issue_counters: dict.from_list([
+        #(
+          identity,
+          orchestrator_state.IssueCounter(
+            failure_attempts: 1,
+            worker_sessions: 1,
+          ),
+        ),
+      ]),
+      parked: dict.from_list([
+        #(identity, auto_parked_entry(issue, reason.ParkWorkerFailure)),
+      ]),
+    )
+
+  let unparked =
+    core.unpark_if_issue_changed_or_retry_intent(state, config(), issue)
+
+  assert !dict.has_key(unparked.parked, identity)
+  assert !dict.has_key(unparked.claimed, identity)
+  assert !dict.has_key(unparked.retry_attempts, identity)
+  assert !dict.has_key(unparked.issue_counters, identity)
+  assert core.should_dispatch(unparked, config(), issue)
+}
+
+pub fn explicit_park_stays_blocked_for_dispatch_retry_intent_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let state =
+    state_with_parked(
+      core.new_state(config()),
+      issue,
+      explicit_parked_entry(issue, reason.ParkOperator("operator_hold")),
+    )
+
+  let kept =
+    core.unpark_if_issue_changed_or_retry_intent(state, config(), issue)
+
+  assert dict.has_key(kept.parked, orchestrator_state.issue_identity(issue))
+  assert !core.should_dispatch(kept, config(), issue)
+}
+
+pub fn auto_park_stays_blocked_for_non_dispatch_retry_state_test() {
+  let issue = issue("a", "ABC-1", "In Progress", Some(1))
+  let state =
+    state_with_parked(
+      core.new_state(config()),
+      issue,
+      auto_parked_entry(issue, reason.ParkWorkerFailure),
+    )
+
+  let kept =
+    core.unpark_if_issue_changed_or_retry_intent(state, config(), issue)
+
+  assert dict.has_key(kept.parked, orchestrator_state.issue_identity(issue))
+  assert !core.should_dispatch(kept, config(), issue)
+}
+
+pub fn dispatch_retry_intent_still_honors_blockers_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..issue("a", "ABC-1", "Todo", Some(1)),
+      blocked_by: [
+        tracker_issue.BlockerRef(
+          id: Some("block-1"),
+          identifier: Some("ABC-0"),
+          state: Some(issue_state.from_string_unchecked("In Progress")),
+        ),
+      ],
+      blocked_by_complete: True,
+    )
+  let state =
+    state_with_parked(
+      core.new_state(config()),
+      issue,
+      auto_parked_entry(issue, reason.ParkWorkerFailure),
+    )
+
+  let unparked =
+    core.unpark_if_issue_changed_or_retry_intent(state, config(), issue)
+
+  assert !dict.has_key(
+    unparked.parked,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !core.should_dispatch(unparked, config(), issue)
+}
+
+pub fn dispatch_retry_intent_does_not_release_recovery_rejection_park_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let state =
+    state_with_parked(
+      core.new_state(config()),
+      issue,
+      auto_parked_entry(
+        issue,
+        reason.ParkOperator("dispatch_recovery_rejected"),
+      ),
+    )
+
+  let kept =
+    core.unpark_if_issue_changed_or_retry_intent(state, config(), issue)
+
+  assert dict.has_key(kept.parked, orchestrator_state.issue_identity(issue))
+  assert !core.should_dispatch(kept, config(), issue)
+}
+
 pub fn auto_park_ignores_comment_and_non_core_changes_test() {
   let issue = rich_issue()
   let state =

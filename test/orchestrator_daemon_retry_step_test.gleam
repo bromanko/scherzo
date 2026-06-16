@@ -1778,6 +1778,167 @@ pub fn dispatch_recovery_repeated_poll_is_idempotent_while_recovered_run_active_
   hub.stop(hub_subject)
 }
 
+pub fn dispatch_recovery_reuses_retry_step_for_same_fingerprint_auto_parked_todo_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-step-auto-parked"
+  let issue = issue("issue-1", "LIV-1059", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  append_auto_unpark_issue_change_parked_record(root, issue, 20)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with_candidate(issue),
+      hub_subject,
+      fn(issue, _context, effective) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        process.send(
+          log_subject,
+          recovery_append_state(log_subject, effective.workspace.root),
+        )
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+  assert wait_for_log(log_subject, "retry_step_ledger_ready", 100)
+  assert !wait_for_log(log_subject, "dispatch_started", 5)
+  assert contains_kind_sequence(root, [
+    "issue_parked_v2",
+    "workflow_repair_requested",
+    "step_attempt_superseded",
+    "workflow_run_started",
+    "known_workspace",
+    "issue_counter_updated",
+  ])
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_same_fingerprint_auto_parked_todo_without_retained_run_starts_fresh_dispatch_test() {
+  let dir = "test/tmp/dr-auto-parked-fresh"
+  let issue = issue("issue-1", "LIV-1059", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  append_auto_unpark_issue_change_parked_record(root, issue, 20)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let base_deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with_candidate(issue),
+      hub_subject,
+      fn(issue, _context, _effective) {
+        process.send(log_subject, "agent_run:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_deps,
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..base_deps.workflow_run_dependencies,
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _command: String,
+          _timeout_ms: Int,
+          _secrets: List(String),
+          limits: config_types.ArtifactLimits,
+        ) {
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "seeded",
+            "",
+            False,
+            [],
+            limits,
+          )
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "dispatch_started", 100)
+  assert wait_for_log(log_subject, "agent_run:issue-1", 100)
+  assert count_kind(root, "workflow_repair_requested") == 0
+  assert count_kind(root, "step_attempt_superseded") == 0
+  assert contains_kind_sequence(root, [
+    "issue_parked_v2",
+    "outbox_pending_v2",
+    "outbox_attempted",
+    "workflow_run_started",
+    "known_workspace",
+    "issue_counter_updated",
+  ])
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_same_fingerprint_auto_parked_todo_is_idempotent_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-step-auto-parked-idempotent"
+  let issue = issue("issue-1", "LIV-1059", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  append_auto_unpark_issue_change_parked_record(root, issue, 20)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with_candidate(issue),
+      hub_subject,
+      fn(issue, _context, _effective) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+
+  process.send(started.data, daemon.PollTick(2))
+
+  assert !wait_for_log(log_subject, "recovered_worker_started:issue-1", 5)
+  assert count_kind(root, "workflow_repair_requested") == 1
+  assert count_kind(root, "step_attempt_superseded") == 1
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn dispatch_recovery_tracker_transition_failure_parks_and_suppresses_repeat_poll_test() {
   let dir = "test/tmp/daemon-dispatch-recovery-transition-failure"
   let issue = issue("issue-1", "LIV-739", "Todo")
@@ -3085,6 +3246,34 @@ fn publication_retry_runner() -> command_runner.Runner {
       _, _ -> Error(command_runner.command_error("unexpected_command"))
     }
   })
+}
+
+fn append_auto_unpark_issue_change_parked_record(
+  root: String,
+  issue: tracker_issue.Issue,
+  at_ms: Int,
+) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "issue-auto-parked",
+          at_ms,
+          record.IssueParkedV2(
+            issue.id,
+            issue.identifier,
+            "worker_failure",
+            "auto_unpark_on_issue_change",
+            tracker_issue.content_fingerprint(issue),
+            at_ms,
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
 }
 
 fn seed_interrupted_retry_step_run(
