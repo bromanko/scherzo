@@ -1,7 +1,7 @@
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/artifact_publication_manifest
@@ -1467,8 +1467,90 @@ pub fn dispatch_recovery_classifier_rejects_publication_issue_drift_test() {
   assert reason == "publication_recovery_issue_drift"
 }
 
-pub fn dispatch_recovery_classifier_rejects_retained_run_without_retryable_publication_test() {
+pub fn dispatch_recovery_classifier_skips_retained_run_with_published_publication_test() {
   let dir = "test/tmp/dispatch-recovery-classifier-publication-complete"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_recovered_published_publication_run(root, issue, "run-1", 1000)
+
+  let assert dispatch_recovery.PublicationAlreadyPublished("run-1", "execplan") =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+}
+
+pub fn dispatch_recovery_classifier_skips_retained_run_with_unchanged_publication_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-unchanged"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_recovered_published_publication_run(root, issue, "run-1", 1000)
+  seed_non_retryable_unchanged_publication_attempt(root, "run-1", at_ms: 1060)
+
+  let assert dispatch_recovery.PublicationAlreadyPublished("run-1", "execplan") =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+}
+
+pub fn dispatch_recovery_classifier_skips_multi_publication_when_required_complete_and_optional_failed_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-multi-complete"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_multi_publication_workflow(dir)
+  seed_recovered_publication_attempts_run(root, issue, "run-1", 1000, [
+    seed_publication_attempt("execplan_review_doc", "published", required: True),
+    seed_publication_attempt(
+      "execplan_supporting_doc",
+      "published",
+      required: True,
+    ),
+    seed_publication_attempt(
+      "execplan_optional_note",
+      "failed",
+      required: False,
+    ),
+  ])
+
+  let assert dispatch_recovery.PublicationAlreadyPublished("run-1", "execplan") =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+}
+
+pub fn dispatch_recovery_classifier_rejects_multi_publication_with_failed_required_publication_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-multi-failed"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_multi_publication_workflow(dir)
+  seed_recovered_publication_attempts_run(root, issue, "run-1", 1000, [
+    seed_publication_attempt("execplan_review_doc", "published", required: True),
+    seed_publication_attempt(
+      "execplan_supporting_doc",
+      "failed",
+      required: True,
+    ),
+    seed_publication_attempt(
+      "execplan_optional_note",
+      "failed",
+      required: False,
+    ),
+  ])
+
+  let assert dispatch_recovery.RejectRecovery(reason, _) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+  assert reason == "publication_retry_targets_not_found"
+}
+
+pub fn dispatch_recovery_classifier_rejects_non_retryable_failed_publication_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-nonretryable"
   let issue = issue("issue-1", "LIV-739", "Todo")
   let #(workflow_path, root) = write_retry_publication_workflow(dir)
   seed_failed_publication_retry_run(
@@ -1478,7 +1560,7 @@ pub fn dispatch_recovery_classifier_rejects_retained_run_without_retryable_publi
     1000,
     include_output_manifest: True,
   )
-  seed_successful_publication_attempt(root, "run-1", at_ms: 1030)
+  seed_non_retryable_failed_publication_attempt(root, "run-1", at_ms: 1030)
 
   let assert dispatch_recovery.RejectRecovery(reason, _) =
     dispatch_recovery.classify(
@@ -1559,6 +1641,50 @@ pub fn dispatch_recovery_rejects_unsafe_publication_candidate_with_state_move_te
   assert wait_for_log(log_subject, "dispatch_recovery_rejected", 100)
   assert !wait_for_log(log_subject, "agent_run:issue-1", 5)
   assert contains_kind_sequence(root, ["issue_parked_v2"])
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_skips_recovered_published_run_without_parking_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-publication-published"
+  let issue = issue("issue-1", "LIV-1175", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_recovered_published_publication_run(root, issue, "run-1", 1000)
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_with_candidate(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_with_candidate(issue),
+      ),
+      hub_subject,
+      fn(issue, _, _) {
+        process.send(log_subject, "agent_run:" <> issue.id)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      command_runner.Runner(run: fn(_) {
+        Error(command_runner.command_error("unexpected_publication_retry"))
+      }),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "dispatch_recovery_already_published", 100)
+  assert wait_for_log(log_subject, "state_transition:Done", 100)
+  assert !wait_for_log(log_subject, "state_transition:Triage", 5)
+  assert !wait_for_log(log_subject, "comment:publication_retry", 5)
+  assert !wait_for_log(log_subject, "agent_run:issue-1", 5)
+  assert count_kind(root, "issue_parked_v2") == 0
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -2120,13 +2246,37 @@ fn load_projection_or_panic(root: String) -> projection.Projection {
 fn write_retry_publication_workflow(dir: String) -> #(String, String) {
   write_retry_publication_workflow_with_task_updates(
     dir,
-    "task_updates:\n  enabled: true\n  states:\n    success: Done\n    failure: Triage\n",
+    retry_publication_task_updates_yaml(),
+  )
+}
+
+fn write_retry_multi_publication_workflow(dir: String) -> #(String, String) {
+  write_retry_publication_workflow_with_publications(
+    dir,
+    retry_publication_task_updates_yaml(),
+    multi_publication_routes_yaml(),
   )
 }
 
 fn write_retry_publication_workflow_with_task_updates(
   dir: String,
   task_updates_yaml: String,
+) -> #(String, String) {
+  write_retry_publication_workflow_with_publications(
+    dir,
+    task_updates_yaml,
+    single_publication_routes_yaml(),
+  )
+}
+
+fn retry_publication_task_updates_yaml() -> String {
+  "task_updates:\n  enabled: true\n  states:\n    success: Done\n    failure: Triage\n"
+}
+
+fn write_retry_publication_workflow_with_publications(
+  dir: String,
+  task_updates_yaml: String,
+  publication_routes_yaml: String,
 ) -> #(String, String) {
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
   let assert Ok(base) = path.dirname(root)
@@ -2148,7 +2298,9 @@ fn write_retry_publication_workflow_with_task_updates(
   let assert Ok(Nil) =
     simplifile.write(
       workflow_dir <> "/execplan.yaml",
-      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: materialize\n        path: tmp/commit-stack.json\nartifacts:\n  publications:\n    - id: execplan_review_doc\n      repository: github.docs\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: '{{ work.identifier }} publication'\n        body_template: templates/publication.md\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: materialize\n        path: tmp/commit-stack.json\nartifacts:\n  publications:\n"
+        <> publication_routes_yaml
+        <> "steps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
     )
   let assert Ok(Nil) =
     simplifile.write(template_dir <> "/publication.md", "Published by Scherzo.")
@@ -2162,6 +2314,197 @@ fn write_retry_publication_workflow_with_task_updates(
         <> "agents:\n  concurrency: 1\n  sessions_per_task: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
     )
   #(config_path, root)
+}
+
+fn single_publication_routes_yaml() -> String {
+  "    - id: execplan_review_doc\n      repository: github.docs\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: '{{ work.identifier }} publication'\n        body_template: templates/publication.md\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\n"
+}
+
+fn multi_publication_routes_yaml() -> String {
+  single_publication_routes_yaml()
+  <> "    - id: execplan_supporting_doc\n      repository: github.docs\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: '{{ work.identifier }} supporting publication'\n        body_template: templates/publication.md\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\n"
+  <> "    - id: execplan_optional_note\n      repository: github.docs\n      required: false\n      mode: commit_stack\n      pull_request:\n        title: '{{ work.identifier }} optional publication'\n        body_template: templates/publication.md\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\n"
+}
+
+type SeedPublicationAttempt {
+  SeedPublicationAttempt(publication_id: String, status: String, required: Bool)
+}
+
+fn seed_publication_attempt(
+  publication_id: String,
+  status: String,
+  required required: Bool,
+) -> SeedPublicationAttempt {
+  SeedPublicationAttempt(publication_id, status, required)
+}
+
+fn seed_recovered_publication_attempts_run(
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+  attempts: List(SeedPublicationAttempt),
+) -> Nil {
+  write_seed_artifact(
+    root,
+    run_output_ref(run_id),
+    commit_stack_payload(run_id),
+  )
+  write_seed_artifact(root, run_bundle_ref(run_id), "bundle")
+  write_publication_retained_workspace_manifest(root, run_id)
+  let config_path = publication_config_path(root)
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "execplan")
+  let assert Ok(fingerprint) =
+    workflow_fingerprint_module.fingerprint_for_execution(
+      workflow,
+      bundle.orchestrator,
+    )
+  let publication_records =
+    list.index_map(attempts, fn(attempt, index) {
+      seed_publication_attempt_record(run_id, at_ms + 50 + index, attempt)
+    })
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      list.append(
+        recovered_publication_run_records(
+          root,
+          issue,
+          run_id,
+          at_ms,
+          fingerprint,
+        ),
+        publication_records,
+      ),
+      True,
+    )
+  Nil
+}
+
+fn recovered_publication_run_records(
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+  fingerprint: String,
+) -> List(record.LedgerRecord) {
+  [
+    record.with_id(
+      "workflow-started-" <> run_id,
+      at_ms,
+      record.WorkflowRunStarted(
+        run_id: run_id,
+        workflow_id: "execplan",
+        workflow_fingerprint: fingerprint,
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        issue_fingerprint: tracker_issue.content_fingerprint(issue),
+        observed_updated_at_ms: at_ms - 1,
+        run_root: root <> "/runs/" <> run_id,
+      ),
+    ),
+    record.with_id(
+      "workflow-failed-before-recovery-" <> run_id,
+      at_ms + 10,
+      record.WorkflowRunFinished(
+        run_id: run_id,
+        workflow_id: "execplan",
+        issue_id: issue.id,
+        outcome: "failed_fatal",
+        token_total: 0,
+        turns: 1,
+      ),
+    ),
+    record.with_id(
+      "workflow-repair-requested-" <> run_id,
+      at_ms + 20,
+      record.WorkflowRepairRequested(
+        run_id: run_id,
+        workflow_id: "execplan",
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        requested_target: run_id,
+        requested_step_id: Some("final_validate"),
+        selected_step_id: "final_validate",
+        failed_attempt_index: 2,
+        next_attempt_index: 3,
+        reason: "retry-step",
+      ),
+    ),
+    record.with_id(
+      "workflow-recovered-started-" <> run_id,
+      at_ms + 30,
+      record.WorkflowRunStarted(
+        run_id: run_id,
+        workflow_id: "execplan",
+        workflow_fingerprint: fingerprint,
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        issue_fingerprint: tracker_issue.content_fingerprint(issue),
+        observed_updated_at_ms: at_ms - 1,
+        run_root: root <> "/runs/" <> run_id,
+      ),
+    ),
+    seeded_output_manifest_record(root, run_id),
+    record.with_id(
+      "workflow-recovered-finished-" <> run_id,
+      at_ms + 40,
+      record.WorkflowRunFinished(
+        run_id: run_id,
+        workflow_id: "execplan",
+        issue_id: issue.id,
+        outcome: "succeeded_after_recovery",
+        token_total: 0,
+        turns: 1,
+      ),
+    ),
+  ]
+}
+
+fn seed_publication_attempt_record(
+  run_id: String,
+  at_ms: Int,
+  attempt: SeedPublicationAttempt,
+) -> record.LedgerRecord {
+  let SeedPublicationAttempt(publication_id, status, required) = attempt
+  record.with_id(
+    "publication-" <> publication_id <> "-" <> run_id,
+    at_ms,
+    record.PublicationAttemptRecorded(
+      run_id: run_id,
+      workflow_id: "execplan",
+      publication_id: publication_id,
+      series_id: "series-" <> publication_id,
+      attempt_id: status <> "-" <> publication_id,
+      status: status,
+      required: required,
+      retryable: False,
+      retry_execution_available: False,
+      version_id: Some("version-" <> publication_id),
+      manifest_ref: None,
+      manifest_sha256: None,
+      manifest_bytes: None,
+      error_code: publication_seed_error_code(status),
+      error_message: publication_seed_error_message(status),
+    ),
+  )
+}
+
+fn publication_seed_error_code(status: String) -> Option(String) {
+  case status {
+    "failed" -> Some("publication_not_retryable")
+    _ -> None
+  }
+}
+
+fn publication_seed_error_message(status: String) -> Option(String) {
+  case status {
+    "failed" -> Some("publication failure cannot be retried")
+    _ -> None
+  }
 }
 
 fn seed_failed_publication_retry_run(
@@ -2300,10 +2643,49 @@ fn seed_failed_publication_retry_run(
   Nil
 }
 
-fn seed_successful_publication_attempt(
+fn seed_non_retryable_failed_publication_attempt(
   root: String,
   run_id: String,
   at_ms at_ms: Int,
+) -> Nil {
+  append_latest_publication_attempt(
+    root,
+    run_id,
+    at_ms,
+    "publication-nonretryable-failed-",
+    "failed-non-retryable-1",
+    "failed",
+    Some("publication_not_retryable"),
+    Some("publication failure cannot be retried"),
+  )
+}
+
+fn seed_non_retryable_unchanged_publication_attempt(
+  root: String,
+  run_id: String,
+  at_ms at_ms: Int,
+) -> Nil {
+  append_latest_publication_attempt(
+    root,
+    run_id,
+    at_ms,
+    "publication-nonretryable-unchanged-",
+    "unchanged-non-retryable-1",
+    "unchanged",
+    None,
+    None,
+  )
+}
+
+fn append_latest_publication_attempt(
+  root: String,
+  run_id: String,
+  at_ms: Int,
+  record_id_prefix: String,
+  attempt_id: String,
+  status: String,
+  error_code: Option(String),
+  error_message: Option(String),
 ) -> Nil {
   let assert [latest, ..] =
     projection.publication_attempts_for_run(
@@ -2318,15 +2700,15 @@ fn seed_successful_publication_attempt(
       ledger_path,
       [
         record.with_id(
-          "publication-published-" <> run_id,
+          record_id_prefix <> run_id,
           at_ms,
           record.PublicationAttemptRecorded(
             run_id: run_id,
             workflow_id: latest.workflow_id,
             publication_id: latest.publication_id,
             series_id: latest.series_id,
-            attempt_id: "published-1",
-            status: "published",
+            attempt_id: attempt_id,
+            status: status,
             required: latest.required,
             retryable: False,
             retry_execution_available: False,
@@ -2334,6 +2716,169 @@ fn seed_successful_publication_attempt(
             manifest_ref: None,
             manifest_sha256: None,
             manifest_bytes: None,
+            error_code: error_code,
+            error_message: error_message,
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
+}
+
+fn seed_recovered_published_publication_run(
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+) -> Nil {
+  write_seed_artifact(
+    root,
+    run_output_ref(run_id),
+    commit_stack_payload(run_id),
+  )
+  write_seed_artifact(root, run_bundle_ref(run_id), "bundle")
+  write_publication_retained_workspace_manifest(root, run_id)
+  let output_manifest = seeded_output_manifest(run_id)
+  let config_path = publication_config_path(root)
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "execplan")
+  let assert Ok(body_templates) =
+    artifact_publication_recording.load_body_templates(
+      workflow.publication_routes,
+      bundle.orchestrator.artifact_repositories,
+      bundle.orchestrator.config_dir,
+      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
+    )
+  let assert Ok(fingerprint) =
+    workflow_fingerprint_module.fingerprint_for_execution(
+      workflow,
+      bundle.orchestrator,
+    )
+  let assert [route] = workflow.publication_routes
+  let assert Ok(planned) =
+    artifact_publication_planner.plan_publication(
+      output_manifest,
+      bundle.orchestrator.artifact_repositories,
+      route,
+      artifact_store.new(root),
+      artifact_publication_planner.PublicationWork(
+        kind: artifact_publication_planner.TaskWork,
+        id: issue.id,
+        identifier: issue.identifier,
+        slug: issue.identifier,
+        title: None,
+        url: None,
+      ),
+      run_id,
+      body_templates,
+    )
+  let published_ref =
+    "runs/" <> run_id <> "/publications/execplan_review_doc/published-1.json"
+  let published_manifest =
+    artifact_publication_manifest.published_manifest(
+      planned,
+      "published-1",
+      at_ms + 50,
+      retry_commit_stack_head_sha(),
+      Some("https://example.test/pr/543"),
+      [],
+      [],
+    )
+  let #(published_sha, published_bytes) =
+    write_publication_manifest(root, published_ref, published_manifest)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started-" <> run_id,
+          at_ms,
+          record.WorkflowRunStarted(
+            run_id: run_id,
+            workflow_id: "execplan",
+            workflow_fingerprint: fingerprint,
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            issue_fingerprint: tracker_issue.content_fingerprint(issue),
+            observed_updated_at_ms: at_ms - 1,
+            run_root: root <> "/runs/" <> run_id,
+          ),
+        ),
+        record.with_id(
+          "workflow-failed-before-recovery-" <> run_id,
+          at_ms + 10,
+          record.WorkflowRunFinished(
+            run_id: run_id,
+            workflow_id: "execplan",
+            issue_id: issue.id,
+            outcome: "failed_fatal",
+            token_total: 0,
+            turns: 1,
+          ),
+        ),
+        record.with_id(
+          "workflow-repair-requested-" <> run_id,
+          at_ms + 20,
+          record.WorkflowRepairRequested(
+            run_id: run_id,
+            workflow_id: "execplan",
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            requested_target: run_id,
+            requested_step_id: Some("final_validate"),
+            selected_step_id: "final_validate",
+            failed_attempt_index: 2,
+            next_attempt_index: 3,
+            reason: "retry-step",
+          ),
+        ),
+        record.with_id(
+          "workflow-recovered-started-" <> run_id,
+          at_ms + 30,
+          record.WorkflowRunStarted(
+            run_id: run_id,
+            workflow_id: "execplan",
+            workflow_fingerprint: fingerprint,
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            issue_fingerprint: tracker_issue.content_fingerprint(issue),
+            observed_updated_at_ms: at_ms - 1,
+            run_root: root <> "/runs/" <> run_id,
+          ),
+        ),
+        seeded_output_manifest_record(root, run_id),
+        record.with_id(
+          "workflow-recovered-finished-" <> run_id,
+          at_ms + 40,
+          record.WorkflowRunFinished(
+            run_id: run_id,
+            workflow_id: "execplan",
+            issue_id: issue.id,
+            outcome: "succeeded_after_recovery",
+            token_total: 0,
+            turns: 1,
+          ),
+        ),
+        record.with_id(
+          "publication-published-" <> run_id,
+          at_ms + 50,
+          record.PublicationAttemptRecorded(
+            run_id: run_id,
+            workflow_id: "execplan",
+            publication_id: "execplan_review_doc",
+            series_id: planned.series_id,
+            attempt_id: "published-1",
+            status: "published",
+            required: True,
+            retryable: False,
+            retry_execution_available: True,
+            version_id: Some(planned.version_id),
+            manifest_ref: Some(published_ref),
+            manifest_sha256: Some(published_sha),
+            manifest_bytes: Some(published_bytes),
             error_code: None,
             error_message: None,
           ),
