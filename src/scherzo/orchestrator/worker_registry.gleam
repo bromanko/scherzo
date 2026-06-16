@@ -621,6 +621,13 @@ pub fn active_yaml_step_handles_for_run(
   |> list.filter(fn(handle) { handle.run_id == run_id })
 }
 
+pub fn active_yaml_step_handle(
+  registry: Registry,
+  session_id: String,
+) -> Result(YamlStepHandle, Nil) {
+  dict.get(registry.yaml_step_handles, session_id)
+}
+
 pub fn delete_yaml_step_sessions(
   registry: Registry,
   session_ids: List(String),

@@ -9,6 +9,7 @@ import scherzo/control/remote/ui_websocket_client
 import scherzo/log
 import scherzo/session/event
 import scherzo/session/tokens as session_tokens
+import scherzo/work_item_invalidation
 import simplifile
 import support/test_helpers
 import test_async
@@ -286,6 +287,39 @@ pub fn ui_websocket_client_logs_when_command_bridge_is_enabled_test() {
 
   let entry = expect_log_contains(logs, "ui_websocket_command_bridge_enabled")
   assert string.contains(entry, "remote command/result bridge enabled")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_sends_work_item_invalidation_event_test() {
+  let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+  expect_initial_outbound(outbound)
+
+  ui_websocket_client.notify_work_item_invalidation(
+    handle,
+    work_item_invalidation.new(
+      work_item_invalidation.PollRefresh,
+      [
+        work_item_invalidation.AffectedTaskRef(
+          "linear",
+          "issue-1",
+          Some("LIV-1"),
+        ),
+      ],
+      has_unknown_refs: False,
+    ),
+  )
+
+  let invalidation =
+    expect_next_outbound_contains(
+      outbound,
+      "\"type\":\"work_item_invalidation\"",
+    )
+  assert string.contains(invalidation, "\"daemonId\":\"daemon_abc\"")
+  assert string.contains(invalidation, "\"bootId\":\"boot_abc\"")
+  assert string.contains(invalidation, "\"sentAtMs\":42")
+  assert string.contains(invalidation, "\"source\":\"poll_refresh\"")
+  assert string.contains(invalidation, "\"displayId\":\"LIV-1\"")
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -858,6 +892,46 @@ pub fn ui_websocket_client_reconnects_after_command_result_send_failure_test() {
   let log_entry =
     expect_log_contains(logs, "ui_websocket_command_result_send_failed")
   assert string.contains(log_entry, "send failed")
+  let _ = test_async.expect_message(connects)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_reconnects_after_work_item_invalidation_send_failure_test() {
+  let Fixture(settings:, deps:, outbound:, connects:, logs:, closes:, ..) =
+    new_fixture()
+  let deps =
+    ui_websocket_client.Dependencies(..deps, send_text: fn(_, payload, _) {
+      case string.contains(payload, "\"type\":\"work_item_invalidation\"") {
+        True -> Error("invalidation send failed")
+        False -> {
+          process.send(outbound, payload)
+          Ok(Nil)
+        }
+      }
+    })
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+  let _ = test_async.expect_message(connects)
+  expect_initial_outbound(outbound)
+
+  ui_websocket_client.notify_work_item_invalidation(
+    handle,
+    work_item_invalidation.new(
+      work_item_invalidation.PollRefresh,
+      [
+        work_item_invalidation.AffectedTaskRef(
+          "linear",
+          "issue-1",
+          Some("LIV-1"),
+        ),
+      ],
+      has_unknown_refs: False,
+    ),
+  )
+
+  let _ = test_async.expect_message(closes)
+  let log_entry =
+    expect_log_contains(logs, "ui_websocket_work_item_invalidation_send_failed")
+  assert string.contains(log_entry, "invalidation send failed")
   let _ = test_async.expect_message(connects)
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }

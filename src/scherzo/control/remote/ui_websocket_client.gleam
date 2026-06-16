@@ -10,6 +10,7 @@ import scherzo/control/remote/ui_protocol
 import scherzo/control/remote_command_router
 import scherzo/log
 import scherzo/session/event
+import scherzo/work_item_invalidation
 
 const max_in_flight_commands = 8
 
@@ -77,6 +78,7 @@ pub opaque type Message {
     Result(query_types.QueryResponse, query_types.QueryError),
   )
   QueryTimedOut(Int, String, process.Pid)
+  NotifyWorkItemInvalidation(work_item_invalidation.Event)
   Shutdown(process.Subject(Nil))
 }
 
@@ -172,6 +174,14 @@ pub fn kill(handle: Handle) -> Nil {
   process.kill(pid)
 }
 
+pub fn notify_work_item_invalidation(
+  handle: Handle,
+  event: work_item_invalidation.Event,
+) -> Nil {
+  let Handle(subject, _) = handle
+  process.send(subject, NotifyWorkItemInvalidation(event))
+}
+
 fn handle_message(
   state: State(connection, timer),
   message: Message,
@@ -202,6 +212,8 @@ fn handle_message(
       ))
     QueryTimedOut(generation, query_id, worker) ->
       actor.continue(handle_query_timed_out(state, generation, query_id, worker))
+    NotifyWorkItemInvalidation(event) ->
+      actor.continue(send_work_item_invalidation_for_state(state, event))
     Shutdown(reply) -> {
       shutdown_runtime(state)
       process.send(reply, Nil)
@@ -853,6 +865,45 @@ fn send_query_result(
   result: Result(query_types.QueryResponse, query_types.QueryError),
 ) -> Result(Nil, String) {
   ui_protocol.encode_query_response(query_id, result)
+  |> state.dependencies.send_text(
+    connection,
+    _,
+    state.settings.connect_timeout_ms,
+  )
+}
+
+fn send_work_item_invalidation_for_state(
+  state: State(connection, timer),
+  event: work_item_invalidation.Event,
+) -> State(connection, timer) {
+  case state.connection {
+    Some(connection) ->
+      case send_work_item_invalidation(connection, state, event) {
+        Ok(Nil) -> state
+        Error(message) ->
+          retry_after_send_failure(
+            state,
+            connection,
+            "ui_websocket_work_item_invalidation_send_failed",
+            message,
+          )
+      }
+    None -> state
+  }
+}
+
+fn send_work_item_invalidation(
+  connection: connection,
+  state: State(connection, timer),
+  event: work_item_invalidation.Event,
+) -> Result(Nil, String) {
+  ui_protocol.encode_work_item_invalidation(
+    state.settings.daemon_id,
+    state.settings.boot_id,
+    state.dependencies.now_ms(),
+    state.settings.daemon_label,
+    event,
+  )
   |> state.dependencies.send_text(
     connection,
     _,

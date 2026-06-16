@@ -16,6 +16,7 @@ pub type Outcome {
   FreshDispatch
   StepRecovery(plan: workflow_repair.RepairPlan)
   PublicationRecovery(run_id: String, workflow_id: String)
+  PublicationAlreadyPublished(run_id: String, workflow_id: String)
   RejectRecovery(reason: String, message: String)
 }
 
@@ -85,13 +86,15 @@ fn classify_by_publication_retry(
     Error(#(reason, message)) -> RejectRecovery(reason, message)
     Ok(workflow_id) ->
       case
-        artifact_publication_retry.inspect_retryable_attempts(
+        artifact_publication_retry.inspect_publication_recovery(
           projected,
           run_id,
-          None,
         )
       {
-        Ok(_) -> PublicationRecovery(run_id, workflow_id)
+        Ok(artifact_publication_retry.RetryablePublicationAttempts(_)) ->
+          PublicationRecovery(run_id, workflow_id)
+        Ok(artifact_publication_retry.RequiredPublicationsAlreadyPublished(_)) ->
+          PublicationAlreadyPublished(run_id, workflow_id)
         Error(#(publication_reason, publication_message)) ->
           RejectRecovery(publication_reason, publication_message)
       }

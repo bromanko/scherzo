@@ -1035,6 +1035,107 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
   assert conflict_scout.workspace_capabilities == []
 }
 
+pub fn checked_in_merge_conflict_completion_policy_completes_without_review_test() {
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
+  let assert Some(policy) = bundle.effective.handoff.completion_states
+
+  assert policy.default_completion_state
+    == Some(workflow_completion_policy.StateByName("In Review"))
+  let assert Ok(merge_conflict) =
+    dict.get(policy.workflows, "merge-conflict-resolution")
+  let assert Ok(implementation) = dict.get(policy.workflows, "implementation")
+  let assert Ok(execplan) = dict.get(policy.workflows, "execplan")
+
+  assert merge_conflict.produces_reviewable_artifacts == Some(False)
+  assert merge_conflict.requires_review == Some(False)
+  assert merge_conflict.no_review_completion_state
+    == Some(workflow_completion_policy.StateByName("Done"))
+  assert implementation.requires_review == Some(True)
+  assert implementation.success_state == None
+  assert execplan.requires_review == Some(True)
+  assert execplan.success_state == None
+
+  let success =
+    worker_success(result_artifact.from_final_response(
+      Some("published commit stack"),
+      False,
+      "test",
+    ))
+  let merge_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "merge-conflict-resolution",
+      success,
+    )
+  assert merge_outcome.requires_review
+    == workflow_completion_policy.ReviewNotRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "merge-conflict-resolution",
+      merge_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("Done"),
+      "no review is required",
+    )
+
+  let empty_merge_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "merge-conflict-resolution",
+      worker_success(result_artifact.empty()),
+    )
+  assert empty_merge_outcome.expected_artifacts_missing == False
+  assert empty_merge_outcome.requires_review
+    == workflow_completion_policy.ReviewNotRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "merge-conflict-resolution",
+      empty_merge_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("Done"),
+      "no review is required",
+    )
+
+  let implementation_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "implementation",
+      success,
+    )
+  assert implementation_outcome.requires_review
+    == workflow_completion_policy.ReviewRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "implementation",
+      implementation_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("In Review"),
+      "reviewable artifacts were produced",
+    )
+
+  let execplan_outcome =
+    workflow_completion_policy.success_outcome(
+      Some(policy),
+      "execplan",
+      success,
+    )
+  assert execplan_outcome.requires_review
+    == workflow_completion_policy.ReviewRequired
+  assert workflow_completion_policy.choose_linear_completion_state(
+      policy,
+      "execplan",
+      execplan_outcome,
+    )
+    == workflow_completion_policy.MoveToState(
+      workflow_completion_policy.StateByName("In Review"),
+      "reviewable artifacts were produced",
+    )
+}
+
 fn assert_dogfood_workflows_select_profile(
   ids: List(String),
   workflows: dict.Dict(String, workflow_dag.WorkflowDag),
