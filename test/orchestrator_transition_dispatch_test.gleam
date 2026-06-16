@@ -16,6 +16,7 @@ import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
+import scherzo/session/event as session_event
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -165,26 +166,24 @@ pub fn automatic_retry_non_retryable_state_is_rejected_test() {
 
 pub fn automatic_retry_dispatch_state_dispatches_test() {
   let issue = orchestrator_transition_test.fixture_issue()
+  let recovery = recovery_info("recovered-run")
+  let context =
+    transition_types.DispatchContext(
+      ..orchestrator_transition_test.fixture_context(),
+      recovery_by_issue: dict.from_list([#(issue.id, recovery)]),
+    )
 
   let transition_types.Outcome(state: next, effects: effects) =
     invariant_helpers.handle_and_assert(
-      transition_types.RetryRefreshCompleted(
-        issue.id,
-        1,
-        Ok([issue]),
-        orchestrator_transition_test.fixture_context(),
-      ),
+      transition_types.RetryRefreshCompleted(issue.id, 1, Ok([issue]), context),
       state_with_retry(issue),
     )
 
-  assert dict.has_key(
-    next.pending_claims,
-    orchestrator_state.issue_identity(issue),
-  )
-  assert !dict.has_key(
-    next.runtime.retry_attempts,
-    orchestrator_state.issue_identity(issue),
-  )
+  let task_identity = orchestrator_state.issue_identity(issue)
+  assert dict.has_key(next.pending_claims, task_identity)
+  let assert Ok(pending) = dict.get(next.pending_claims, task_identity)
+  assert pending.recovery == Some(recovery)
+  assert !dict.has_key(next.runtime.retry_attempts, task_identity)
   assert has_claim_issue(effects)
   assert has_pending_retry_cancellation(next, issue.id, "retry_dispatch")
 }
@@ -389,6 +388,61 @@ pub fn explicit_retry_non_dispatch_state_dispatches_test() {
   )
   assert has_claim_issue(effects)
   assert has_finished_operator_applied(effects)
+}
+
+pub fn explicit_retry_discards_stale_recovery_for_claim_and_worker_start_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let request = retry_request(issue.id)
+  let other_issue_id = "other-issue"
+  let other_recovery = recovery_info("other-run")
+  let context =
+    transition_types.DispatchContext(
+      ..orchestrator_transition_test.fixture_context(),
+      recovery_by_issue: dict.from_list([
+        #(issue.id, recovery_info("stale-run")),
+        #(other_issue_id, other_recovery),
+      ]),
+    )
+
+  let transition_types.Outcome(state: claiming, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: context,
+        issue_resolution: transition_types.OperatorIssueResolved(issue),
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      orchestrator_transition_test.fixture_state(),
+    )
+
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let assert Ok(pending) = dict.get(claiming.pending_claims, task_identity)
+  assert pending.recovery == None
+  assert dict.get(pending.dispatch_context.recovery_by_issue, issue.id)
+    == Error(Nil)
+  assert dict.get(pending.dispatch_context.recovery_by_issue, other_issue_id)
+    == Ok(other_recovery)
+  assert list.any(effects, fn(effect) {
+    effect == effects_types.ClearRecovery(issue.id)
+  })
+
+  let transition_types.Outcome(effects: worker_effects, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.LedgerAppendCompleted(
+        correlation_id: "claim-start",
+        continuation: transition_types.SpawnClaimedWorkerAfterAppend(
+          task_identity: task_identity,
+          issue_id: identity.issue_id_from_string(issue.id),
+          run_id: identity.run_id_from_string(pending.run_id),
+          session_id: identity.session_id_from_string(pending.session_id),
+        ),
+        result: Ok(Nil),
+        now_ms: 123,
+      ),
+      claiming,
+    )
+  let assert [worker_start] = worker_start_requests(worker_effects)
+  assert worker_start.recovery == None
 }
 
 pub fn explicit_retry_non_retryable_state_is_rejected_test() {
@@ -1700,6 +1754,42 @@ fn has_start_worker(effects: List(effects_types.Effect)) -> Bool {
       _ -> False
     }
   })
+}
+
+fn worker_start_requests(
+  effects: List(effects_types.Effect),
+) -> List(effects_types.WorkerStart) {
+  list.filter_map(effects, fn(effect) {
+    case effect {
+      effects_types.StartWorker(request) -> Ok(request)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn recovery_info(run_id: String) -> session_event.RecoveryInfo {
+  session_event.RecoveryInfo(
+    status: session_event.Interrupted,
+    source: "projection.run_interrupted",
+    message: Some("daemon_restart"),
+    safe_actions: [session_event.Retry],
+    workflow_run_id: Some(run_id),
+    workflow_step_id: None,
+    workflow_attempt_index: None,
+    parent_session_id: None,
+    orphan_status: None,
+    issue_state: None,
+    recommended_action: Some("retry"),
+    current_pi_session_id: None,
+    previous_pi_session_id: Some("previous-" <> run_id),
+    park_reason: None,
+    park_release_policy: None,
+    parked_at_ms: None,
+    drift_kind: None,
+    retention_until_ms: None,
+    cleanup_eligible_at_ms: None,
+    cleanup_phase: None,
+  )
 }
 
 fn has_park_issue(effects: List(effects_types.Effect)) -> Bool {
