@@ -121,6 +121,7 @@ pub fn contract_test_files() -> List(String) {
     "portable_research_workflow_test.gleam",
     "review_artifacts_test.gleam",
     "review_lane_contract_test.gleam",
+    "scherzo_launcher_test.gleam",
     "scherzoctl_wrapper_test.gleam",
     "structured_output_contract_command_test.gleam",
     "tracker_conformance_cli_test.gleam",

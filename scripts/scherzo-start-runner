@@ -16,6 +16,8 @@ child_pid=""
 shutdown_requested=0
 shutdown_watchdog_pid=""
 shutdown_grace_seconds=${SCHERZO_START_SHUTDOWN_GRACE_SECONDS:-15}
+runner_name=${SCHERZO_START_RUNNER_NAME:-scherzo-start}
+unset SCHERZO_START_RUNNER_NAME
 use_process_group=0
 
 # With job control enabled, Bash starts the background child in its own process
@@ -76,7 +78,7 @@ start_shutdown_watchdog() {
       elapsed=$((elapsed + 1))
 
       if [[ "$elapsed" -ge "$shutdown_grace_seconds" ]]; then
-        echo "scherzo-start: graceful shutdown still running after ${shutdown_grace_seconds}s; forwarding SIGKILL" >&2
+        echo "${runner_name}: graceful shutdown still running after ${shutdown_grace_seconds}s; forwarding SIGKILL" >&2
         signal_child KILL
         exit 0
       fi
@@ -93,12 +95,12 @@ request_shutdown() {
 
   if [[ "$shutdown_requested" -eq 0 ]]; then
     shutdown_requested=1
-    echo "scherzo-start: received SIG$received_signal; forwarding SIGTERM for graceful shutdown" >&2
+    echo "${runner_name}: received SIG$received_signal; forwarding SIGTERM for graceful shutdown" >&2
     signal_child TERM
     signal_child CONT
     start_shutdown_watchdog
   else
-    echo "scherzo-start: received SIG$received_signal again; forwarding SIGKILL" >&2
+    echo "${runner_name}: received SIG$received_signal again; forwarding SIGKILL" >&2
     signal_child KILL
   fi
 }

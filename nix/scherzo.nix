@@ -140,17 +140,19 @@ stdenvNoCC.mkDerivation {
 
     mkdir -p "$out/lib/${pname}" "$out/libexec/${pname}" "$out/bin"
     cp -R build/erlang-shipment/. "$out/lib/${pname}/"
-    cp scripts/scherzo-start-runner "$out/libexec/${pname}/scherzo-start-runner"
+    install -m755 scripts/scherzo-launcher "$out/libexec/${pname}/scherzo-launcher"
+    install -m755 scripts/scherzo-start-runner "$out/libexec/${pname}/scherzo-start-runner"
     install -m755 scripts/scherzo-json-schema-validate "$out/libexec/${pname}/scherzo-json-schema-validate"
     install -m755 scripts/scherzo-workspace-noop "$out/libexec/${pname}/scherzo-workspace-noop"
     install -m755 scripts/scherzo-workspace-jj "$out/libexec/${pname}/scherzo-workspace-jj"
 
     patchShebangs "$out/lib/${pname}/entrypoint.sh"
+    patchShebangs "$out/libexec/${pname}/scherzo-launcher"
     patchShebangs "$out/libexec/${pname}/scherzo-start-runner"
     patchShebangs "$out/libexec/${pname}/scherzo-json-schema-validate"
     patchShebangs "$out/libexec/${pname}/scherzo-workspace-noop"
     patchShebangs "$out/libexec/${pname}/scherzo-workspace-jj"
-    makeWrapper "$out/lib/${pname}/entrypoint.sh" "$out/bin/scherzo" \
+    makeWrapper "$out/lib/${pname}/entrypoint.sh" "$out/libexec/${pname}/scherzo-direct" \
       --add-flags run \
       --set-default SCHERZO_SOURCE_REVISION "${sourceRevision}" \
       --set-default SCHERZO_SOURCE_DATE "${sourceDate}" \
@@ -158,11 +160,17 @@ stdenvNoCC.mkDerivation {
       --set-default SCHERZO_JSON_SCHEMA_HELPER "$out/libexec/${pname}/scherzo-json-schema-validate" \
       --set-default SCHERZO_PI_BIN "${pi}/bin/pi" \
       --prefix PATH : ${runtimePath}
-    makeWrapper "$out/bin/scherzo" "$out/bin/scherzoctl" \
+    makeWrapper "$out/libexec/${pname}/scherzo-launcher" "$out/bin/scherzo" \
+      --set SCHERZO_DIRECT_BIN "$out/libexec/${pname}/scherzo-direct" \
+      --set SCHERZO_START_RUNNER "$out/libexec/${pname}/scherzo-start-runner" \
+      --set-default SCHERZO_LAUNCHER_NAME "scherzo" \
+      --prefix PATH : ${startRunnerPath}
+    makeWrapper "$out/libexec/${pname}/scherzo-direct" "$out/bin/scherzoctl" \
       --add-flags ctl
     makeWrapper "$out/libexec/${pname}/scherzo-start-runner" "$out/bin/scherzo-start" \
+      --set-default SCHERZO_START_RUNNER_NAME "scherzo-start" \
       --add-flags -- \
-      --add-flags "$out/bin/scherzo" \
+      --add-flags "$out/libexec/${pname}/scherzo-direct" \
       --prefix PATH : ${startRunnerPath}
     makeWrapper "$out/libexec/${pname}/scherzo-workspace-noop" "$out/bin/scherzo-workspace-noop" \
       --prefix PATH : ${noopDriverRuntimePath}
@@ -186,6 +194,15 @@ stdenvNoCC.mkDerivation {
         grep -q "^scherzo revision=" scherzo-version
         grep -q " date=" scherzo-version
         grep -q " dirty=" scherzo-version
+
+        PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" doctor --list-checks > scherzo-doctor-checks
+        grep -q "^workflow-config$" scherzo-doctor-checks
+
+        PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" ctl --help > scherzo-ctl-help
+        grep -q "Usage: scherzo ctl" scherzo-ctl-help
+
+        PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" connect --help > scherzo-connect-help
+        grep -q "Usage: scherzo connect" scherzo-connect-help
 
         json_schema_repo="$TMPDIR/json-schema-repo"
         mkdir -p "$json_schema_repo/.scherzo" "$json_schema_repo/schemas"

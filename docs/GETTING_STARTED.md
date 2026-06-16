@@ -40,7 +40,7 @@ See the [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md) for the n
 
 ### Agent runtime and model/provider credentials
 
-Scherzo executes agent steps through `pi`. The Nix-packaged `scherzo`/`scherzo-start` wrappers and the source checkout direnv/devenv shell provide Scherzo's pinned `pi` fork. Non-Nix deployments should install a compatible `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo.
+Scherzo executes agent steps through `pi`. The Nix-packaged `scherzo` wrapper and the source checkout direnv/devenv shell provide Scherzo's pinned `pi` fork. `scherzo-start` remains as a deprecated compatibility alias for older daemon scripts. Non-Nix deployments should install a compatible `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo.
 
 The minimal config uses the default `pi` executable. Add `agents.model`, `agents.thinking`, or an `agents.runtime` block only after you know the provider and runtime settings that work in your `pi` installation.
 
@@ -48,8 +48,8 @@ The minimal config uses the default `pi` executable. Add `agents.model`, `agents
 
 Use either the packaged Scherzo command or a source checkout:
 
-- Packaged/devenv usage exposes `scherzo`, `scherzo-start`, `scherzoctl`, `scherzo-workspace-noop`, and `scherzo-workspace-jj` on `PATH`.
-- Source-checkout usage normally runs `direnv exec . gleam run -- ...`, `direnv exec . scherzo-start ...`, and `direnv exec . scripts/scherzoctl ...` from the Scherzo repository.
+- Packaged usage exposes `scherzo`, `scherzoctl`, `scherzo-workspace-noop`, and `scherzo-workspace-jj` on `PATH`; it also keeps deprecated `scherzo-start` for compatibility.
+- Source-checkout usage normally runs `direnv exec . gleam run -- ...` for non-daemon commands and `direnv exec . scripts/scherzoctl ...` for local control. For Ctrl-C-friendly foreground daemon testing from the source tree, prefer the packaged launcher via `nix run .#scherzo -- ...`; the `direnv exec . scherzo-start ...` helper is the compatibility fallback.
 
 Install any tools used by your workflows and drivers, such as `jj`, `git`, `gh`, `python3`, `node`, project test runners, or JSON-schema validator dependencies.
 
@@ -746,13 +746,23 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.ya
 
 Inspect the workspace root, retained artifacts, command output, and tracker comments before moving to daemon mode. If task updates are disabled, manually move or relabel the task so it does not remain eligible for repeated dispatch.
 
-## 12. Start daemon mode with `scherzo-start`
+## 12. Start daemon mode with `scherzo`
 
-Use `scherzo-start` for interactive daemon mode. It translates Ctrl-C/SIGINT into Scherzo's graceful SIGTERM shutdown path.
+Use the packaged `scherzo` command for interactive foreground daemon mode. When the arguments select daemon mode, the launcher runs the existing signal-translation wrapper so terminal Ctrl-C/SIGINT becomes SIGTERM and Scherzo reaches its graceful daemon shutdown path.
 
 ```sh
-LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
+LINEAR_API_KEY=lin_api_... scherzo .scherzo/scherzo.yaml
 ```
+
+For source-checkout daemon testing without installing the package, use the same packaged launcher through Nix:
+
+```sh
+LINEAR_API_KEY=lin_api_... nix run .#scherzo -- .scherzo/scherzo.yaml
+```
+
+`gleam run -- .scherzo/scherzo.yaml` is still useful for low-level development, but direct Ctrl-C may terminate abruptly. Scherzo's current Erlang/Gleam signal FFI installs a SIGTERM handler for daemon lifecycle cleanup; it does not currently install or own a SIGINT handler, and adding native SIGINT handling is out of scope. The packaging wrapper remains necessary to translate interactive Ctrl-C into the already-tested SIGTERM path. `scherzo-start .scherzo/scherzo.yaml` remains available as a deprecated compatibility alias for existing scripts.
+
+For systemd, launchd, or another service manager, use the same `scherzo .scherzo/scherzo.yaml` command. Service managers normally stop services with SIGTERM, so they can rely on Scherzo's daemon shutdown path directly.
 
 Before daemon mode:
 
@@ -829,7 +839,7 @@ Use `ps --json` and `session --json` when scripting or when an agent is acting a
 | Agent cannot start | `pi --mode rpc --no-session --rpc-message-updates off` | Fix `pi` install, model/provider credentials, or `agents.runtime` config |
 | Structured output rejected | Read retained step diagnostics and schema validator stderr | Final-response source must be one JSON document; command validators should print concise stderr |
 | Daemon appears stuck | `scherzoctl ps`, `scherzoctl session <id>`, `scherzoctl events --pretty <id>` | Use `attach` for live output and UI requests |
-| Need to stop safely | `scherzoctl stop-after-turn <id> --yes` or Ctrl-C the `scherzo-start` terminal | Use `abort` only when you accept the interrupted-run implications |
+| Need to stop safely | `scherzoctl stop-after-turn <id> --yes` or Ctrl-C the foreground `scherzo` terminal | Use `abort` only when you accept the interrupted-run implications |
 | Recovery/cleanup confusion | `scherzoctl ps --json` and [workflow recovery runbook](runbooks/workflow-recovery.md) | Keep live worker status separate from durable recovery status |
 
 If a workflow starts to require repository-specific policy that does not fit config, prompts, validators, or workflow YAML, prefer a custom workspace driver or local validation script over embedding more shell in every workflow step.

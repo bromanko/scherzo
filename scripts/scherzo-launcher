@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+launcher_name=${SCHERZO_LAUNCHER_NAME:-scherzo}
+direct_bin=${SCHERZO_DIRECT_BIN:-}
+start_runner=${SCHERZO_START_RUNNER:-}
+
+if [[ -z "$direct_bin" ]]; then
+  echo "${launcher_name}: SCHERZO_DIRECT_BIN is required" >&2
+  exit 2
+fi
+
+if [[ -z "$start_runner" ]]; then
+  echo "${launcher_name}: SCHERZO_START_RUNNER is required" >&2
+  exit 2
+fi
+
+# Ask the canonical Gleam CLI parser whether these arguments select daemon
+# mode. Keeping the mode decision in src/scherzo/main.gleam prevents the shell
+# wrapper from drifting as non-daemon commands are added or retired.
+if ! route=$(SCHERZO_LAUNCHER_ROUTE_ONLY=1 "$direct_bin" "$@"); then
+  echo "${launcher_name}: failed to classify launcher arguments" >&2
+  exit 2
+fi
+
+case "$route" in
+  daemon)
+    export SCHERZO_START_RUNNER_NAME="${SCHERZO_START_RUNNER_NAME:-$launcher_name}"
+    unset SCHERZO_DIRECT_BIN SCHERZO_START_RUNNER SCHERZO_LAUNCHER_NAME SCHERZO_LAUNCHER_ROUTE_ONLY
+    exec "$start_runner" -- "$direct_bin" "$@"
+    ;;
+  direct)
+    unset SCHERZO_DIRECT_BIN SCHERZO_START_RUNNER SCHERZO_LAUNCHER_NAME SCHERZO_LAUNCHER_ROUTE_ONLY
+    exec "$direct_bin" "$@"
+    ;;
+  *)
+    echo "${launcher_name}: unexpected launcher route from direct command: ${route}" >&2
+    exit 2
+    ;;
+esac
