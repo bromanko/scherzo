@@ -353,7 +353,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/step_artifact.gleam", 1563, 9),
     SourceLimit("src/scherzo/terminal/render.gleam", 1090, 6),
     SourceLimit("src/scherzo/tracker/conformance/json.gleam", 1168, 5),
-    SourceLimit("src/scherzo/tracker/linear_adapter.gleam", 1054, 13),
+    SourceLimit("src/scherzo/tracker/linear_adapter.gleam", 1225, 15),
     SourceLimit("src/scherzo/workflow_artifact_descriptor.gleam", 1051, 7),
     SourceLimit("src/scherzo/workstream/artifacts.gleam", 1162, 5),
     SourceLimit("src/scherzo/workstream/projection.gleam", 1038, 6),

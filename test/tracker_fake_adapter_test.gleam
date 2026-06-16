@@ -5,6 +5,7 @@ import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/adapter_legacy
 import scherzo/tracker/state as issue_state
+import scherzo/work_item
 import simplifile
 import support/fake_tracker_adapter
 
@@ -310,6 +311,31 @@ pub fn fake_adapter_comment_remote_handoff_transition_and_scheduled_failure_seam
       created: True,
       comment_id: Some("scheduled-comment-run-1"),
     )
+}
+
+pub fn fake_adapter_work_item_lookup_supports_display_and_remote_refs_test() {
+  let tracker = fake_tracker_adapter.read_only_adapter()
+  let assert Some(work_items) = tracker.work_items
+
+  let assert Ok(Some(by_display)) =
+    work_items.lookup_work_item(work_item.WorkItemShowRequest(
+      ref: work_item.WorkItemLookupByDisplayId("CARD-1"),
+      subtask_limit: work_item.default_show_subtask_limit,
+      label_limit: work_item.default_label_limit,
+    ))
+  assert by_display.summary.source.id == "card-1"
+  assert list.length(by_display.subtasks) == 2
+
+  let assert Ok(Some(by_remote)) =
+    work_items.lookup_work_item(work_item.WorkItemShowRequest(
+      ref: work_item.WorkItemLookupByRemoteId(
+        provider: Some(fake_tracker_adapter.backend_kind),
+        id: "card-1",
+      ),
+      subtask_limit: work_item.default_show_subtask_limit,
+      label_limit: work_item.default_label_limit,
+    ))
+  assert by_remote.summary.source.display_id == Some("CARD-1")
 }
 
 pub fn fake_adapter_validation_rejects_unsupported_dispatch_before_work_test() {

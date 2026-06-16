@@ -5,6 +5,7 @@ import scherzo/control/query/dto as query_dto
 import scherzo/control/query/types as query_types
 import scherzo/control/remote_envelope
 import scherzo/task
+import scherzo/work_item
 
 pub fn remote_envelope_roundtrips_all_message_shapes_test() {
   assert_roundtrip(
@@ -80,6 +81,40 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
       query_types.TaskListResponse(query_types.TaskListDto(
         items: [task_summary()],
         page: query_types.PageDto(next_cursor: None, has_more: False),
+      )),
+    ),
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryRequest(
+    "query-work-item-show",
+    query_types.WorkItemShow(
+      query_types.WorkItemShowQuery(ref: query_types.TaskDisplayId("LIV-1")),
+    ),
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryResponse(
+    "query-work-item-show-response",
+    Ok(
+      query_types.WorkItemShowResponse(work_item.WorkItemDetail(
+        summary: work_item.WorkItemSummary(
+          id: "linear:issue-1",
+          source: work_item.WorkItemSource(
+            provider: "linear",
+            id: "issue-1",
+            display_id: Some("LIV-1"),
+            url: None,
+          ),
+          title: "Work item",
+          state: task.TaskState(
+            id: Some("todo"),
+            name: "Todo",
+            category: task.Ready,
+          ),
+          labels: [],
+          labels_truncated: False,
+          created_at: None,
+          updated_at: None,
+        ),
+        subtasks: [],
+        subtasks_truncated: False,
       )),
     ),
   ))

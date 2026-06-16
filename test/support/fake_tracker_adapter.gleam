@@ -3,6 +3,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/task
 import scherzo/tracker/adapter
+import scherzo/work_item
 
 pub const backend_kind = "test-memory"
 
@@ -45,6 +46,7 @@ pub fn read_only_adapter_with_tasks(
     kind: backend_kind,
     display_name: "Test memory tracker",
     task_source: task_source_capability(tasks),
+    work_items: Some(work_item_read_capability(default_work_item_details())),
     comments: None,
     remote_commands: None,
     state_transitions: None,
@@ -200,6 +202,104 @@ fn option_equals(value: Option(String), expected: String) -> Bool {
   case value {
     Some(value) -> value == expected
     None -> False
+  }
+}
+
+pub fn parent_task() -> task.Task {
+  task()
+}
+
+pub fn child_task(
+  remote_id remote_id: String,
+  display_id display_id: String,
+) -> task.Task {
+  task.Task(
+    ..task(),
+    ref: task.TaskRef(
+      backend_kind: backend_kind,
+      remote_id: remote_id,
+      key: Some(display_id),
+      url: Some("https://tracker.test/cards/" <> display_id),
+    ),
+    title: "Child card " <> display_id,
+  )
+}
+
+pub fn default_work_item_details() -> List(work_item.WorkItemDetail) {
+  [
+    work_item.detail_from_task_and_subtasks(
+      parent_task(),
+      [
+        child_task(remote_id: "card-1-child-1", display_id: "CARD-1.1"),
+        child_task(remote_id: "card-1-child-2", display_id: "CARD-1.2"),
+      ],
+      work_item.default_label_limit,
+      work_item.default_show_subtask_limit,
+    ),
+  ]
+}
+
+fn work_item_read_capability(
+  details: List(work_item.WorkItemDetail),
+) -> adapter.WorkItemReadCapability {
+  adapter.WorkItemReadCapability(
+    list_work_items: fn(request) { list_work_items(details, request) },
+    lookup_work_item: fn(request) { lookup_work_item(details, request) },
+  )
+}
+
+fn list_work_items(
+  details: List(work_item.WorkItemDetail),
+  request: work_item.WorkItemListRequest,
+) -> Result(work_item.WorkItemProviderPage, adapter.TrackerError) {
+  let matching =
+    list.filter(details, fn(detail) {
+      matches_work_item_state_categories(
+        detail.summary.state.category,
+        request.state_categories,
+      )
+    })
+  let summaries = list.map(matching, fn(detail) { detail.summary })
+  let remaining = drop_first(summaries, request.offset)
+  Ok(work_item.WorkItemProviderPage(
+    items: take_first(remaining, request.limit),
+    has_more: list.length(remaining) > request.limit,
+  ))
+}
+
+fn lookup_work_item(
+  details: List(work_item.WorkItemDetail),
+  request: work_item.WorkItemShowRequest,
+) -> Result(Option(work_item.WorkItemDetail), adapter.TrackerError) {
+  let matches =
+    list.filter(details, fn(detail) {
+      matches_work_item_lookup_ref(detail.summary.source, request.ref)
+    })
+  case matches {
+    [] -> Ok(None)
+    [first, ..] -> Ok(Some(first))
+  }
+}
+
+fn matches_work_item_lookup_ref(
+  source: work_item.WorkItemSource,
+  lookup: work_item.WorkItemLookupRef,
+) -> Bool {
+  case lookup {
+    work_item.WorkItemLookupByDisplayId(value) ->
+      option_equals(source.display_id, value)
+    work_item.WorkItemLookupByRemoteId(provider: provider, id: value) ->
+      provider_matches(source.provider, provider) && source.id == value
+  }
+}
+
+fn matches_work_item_state_categories(
+  category: task.TaskStateCategory,
+  categories: List(task.TaskStateCategory),
+) -> Bool {
+  case categories {
+    [] -> True
+    categories -> list.contains(categories, category)
   }
 }
 

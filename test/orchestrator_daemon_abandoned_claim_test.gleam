@@ -147,6 +147,7 @@ fn tracker_adapter(
       list_tasks: fn(_) { Ok(adapter.TaskPage(items: [], has_more: False)) },
       lookup_task_detail: fn(_) { Ok(None) },
     ),
+    work_items: None,
     comments: Some(comment_capability(comment_subject)),
     remote_commands: None,
     state_transitions: None,

@@ -4,12 +4,14 @@ import scherzo/agent/types as agent_types
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/work_item
 
 pub type TrackerAdapter {
   TrackerAdapter(
     kind: String,
     display_name: String,
     task_source: TaskSourceCapability,
+    work_items: Option(WorkItemReadCapability),
     comments: Option(CommentCapability),
     remote_commands: Option(RemoteCommandCapability),
     state_transitions: Option(StateTransitionCapability),
@@ -61,6 +63,15 @@ pub type TaskSourceCapability {
     list_tasks: fn(TaskListRequest) -> Result(TaskPage, TrackerError),
     lookup_task_detail: fn(TaskLookupRef) ->
       Result(Option(task.Task), TrackerError),
+  )
+}
+
+pub type WorkItemReadCapability {
+  WorkItemReadCapability(
+    list_work_items: fn(work_item.WorkItemListRequest) ->
+      Result(work_item.WorkItemProviderPage, TrackerError),
+    lookup_work_item: fn(work_item.WorkItemShowRequest) ->
+      Result(Option(work_item.WorkItemDetail), TrackerError),
   )
 }
 

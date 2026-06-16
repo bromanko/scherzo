@@ -1,4 +1,7 @@
+import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/control/query/backend
@@ -6,6 +9,7 @@ import scherzo/control/query/types
 import scherzo/daemon_identity
 import scherzo/task
 import scherzo/tracker/adapter
+import scherzo/work_item
 import support/fake_tracker_adapter
 
 fn effective_config() -> config_types.EffectiveConfig {
@@ -149,6 +153,139 @@ pub fn backend_task_list_maps_unsupported_tracker_request_test() {
     == "tracker adapter does not support unfiltered Linear task list; pass --state"
 }
 
+pub fn backend_work_item_list_paginates_and_invokes_provider_test() {
+  let calls = process.new_subject()
+  let tracker_adapter = instrumented_work_item_adapter(calls)
+
+  let assert Ok(types.WorkItemListResponse(first_page)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        states: [task.Ready],
+        limit: 1,
+        cursor: None,
+      )),
+    )
+  let assert [first] = first_page.items
+  assert first.source.display_id == Some("CARD-1")
+  assert first_page.has_more == True
+  assert first_page.next_cursor == Some("cursor:1")
+  let assert Ok("list") = process.receive(calls, within: 1000)
+
+  let assert Ok(types.WorkItemListResponse(second_page)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        states: [task.Ready],
+        limit: 1,
+        cursor: Some("cursor:1"),
+      )),
+    )
+  assert second_page.has_more == False
+  let assert Ok("list") = process.receive(calls, within: 1000)
+}
+
+pub fn backend_work_item_show_resolves_display_and_remote_refs_test() {
+  let tracker_adapter = fake_tracker_adapter.read_only_adapter()
+
+  let assert Ok(types.WorkItemShowResponse(by_display)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemShow(
+        types.WorkItemShowQuery(ref: types.TaskDisplayId("CARD-1")),
+      ),
+    )
+  assert by_display.summary.source.id == "card-1"
+  assert list.length(by_display.subtasks) == 2
+
+  let assert Ok(types.WorkItemShowResponse(by_remote_id)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemShow(
+        types.WorkItemShowQuery(ref: types.TaskRemoteId(
+          provider: Some(fake_tracker_adapter.backend_kind),
+          id: "card-1",
+        )),
+      ),
+    )
+  assert by_remote_id.summary.source.display_id == Some("CARD-1")
+}
+
+pub fn backend_work_item_query_maps_unsupported_capability_test() {
+  let tracker_adapter =
+    adapter.TrackerAdapter(
+      ..fake_tracker_adapter.read_only_adapter(),
+      work_items: None,
+    )
+
+  let assert Error(types.QueryError(code: code, message: message)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        states: [],
+        limit: 5,
+        cursor: None,
+      )),
+    )
+
+  assert code == types.UnsupportedQuery
+  assert message == "tracker adapter does not support work_items"
+}
+
+pub fn backend_work_item_redacts_backend_failure_and_bounds_test() {
+  let requests = process.new_subject()
+  let tracker_adapter =
+    adapter.TrackerAdapter(
+      ..fake_tracker_adapter.read_only_adapter(),
+      work_items: Some(
+        adapter.WorkItemReadCapability(
+          list_work_items: fn(request) {
+            process.send(requests, request)
+            Error(adapter.Permanent(
+              "invalid JSON payload without RAW_PROVIDER_BODY_SECRET",
+            ))
+          },
+          lookup_work_item: fn(_) { Ok(None) },
+        ),
+      ),
+    )
+
+  let assert Error(types.QueryError(code: code, message: message)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      tracker_adapter,
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        states: [task.Ready],
+        limit: 999,
+        cursor: None,
+      )),
+    )
+
+  let assert Ok(forwarded) = process.receive(requests, within: 1000)
+  assert forwarded.limit == work_item.max_page_limit
+  assert forwarded.subtask_limit == work_item.default_list_subtask_limit
+  assert forwarded.label_limit == work_item.default_label_limit
+  assert code == types.QueryBackendFailed
+  assert !string.contains(message, "RAW_PROVIDER_BODY_SECRET")
+}
+
 pub fn backend_rejects_invalid_task_cursor_before_querying_adapter_test() {
   let assert Error(types.QueryError(code: code, message: message)) =
     backend.run(
@@ -165,4 +302,78 @@ pub fn backend_rejects_invalid_task_cursor_before_querying_adapter_test() {
 
   assert code == types.InvalidCursor
   assert message == "invalid query cursor"
+}
+
+pub fn backend_rejects_invalid_work_item_cursor_before_querying_adapter_test() {
+  let assert Error(types.QueryError(code: code, message: message)) =
+    backend.run(
+      effective_config(),
+      identity(),
+      fake_tracker_adapter.read_only_adapter(),
+      fn(_) { Ok(False) },
+      types.WorkItemList(types.WorkItemListQuery(
+        states: [],
+        limit: 10,
+        cursor: Some("linear-raw-cursor"),
+      )),
+    )
+
+  assert code == types.InvalidCursor
+  assert message == "invalid query cursor"
+}
+
+fn instrumented_work_item_adapter(
+  calls: process.Subject(String),
+) -> adapter.TrackerAdapter {
+  let first =
+    work_item.WorkItemSummary(
+      id: "test-memory:card-1",
+      source: work_item.WorkItemSource(
+        provider: fake_tracker_adapter.backend_kind,
+        id: "card-1",
+        display_id: Some("CARD-1"),
+        url: None,
+      ),
+      title: "First work item",
+      state: task.TaskState(
+        id: Some("todo"),
+        name: "Todo",
+        category: task.Ready,
+      ),
+      labels: [],
+      labels_truncated: False,
+      created_at: None,
+      updated_at: None,
+    )
+  let second =
+    work_item.WorkItemSummary(
+      ..first,
+      id: "test-memory:card-2",
+      source: work_item.WorkItemSource(
+        provider: fake_tracker_adapter.backend_kind,
+        id: "card-2",
+        display_id: Some("CARD-2"),
+        url: None,
+      ),
+      title: "Second work item",
+    )
+  adapter.TrackerAdapter(
+    ..fake_tracker_adapter.read_only_adapter(),
+    work_items: Some(
+      adapter.WorkItemReadCapability(
+        list_work_items: fn(request) {
+          process.send(calls, "list")
+          let items = case request.offset {
+            0 -> [first]
+            _ -> [second]
+          }
+          Ok(work_item.WorkItemProviderPage(
+            items: items,
+            has_more: request.offset == 0,
+          ))
+        },
+        lookup_work_item: fn(_) { Ok(None) },
+      ),
+    ),
+  )
 }

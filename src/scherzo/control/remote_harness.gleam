@@ -445,6 +445,11 @@ fn client_dependencies(
             query_types.QueryNotFound,
             "task not found",
           ))
+        query_types.WorkItemList(_) | query_types.WorkItemShow(_) ->
+          Error(query_types.QueryError(
+            query_types.UnsupportedQuery,
+            "unsupported query type: " <> query_types.query_type(query),
+          ))
         query_types.OutboxList(_) ->
           Ok(
             query_types.OutboxListResponse(query_types.OutboxListDto(

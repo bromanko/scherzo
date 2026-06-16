@@ -19,6 +19,7 @@ import scherzo/tracker/idempotency
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
+import scherzo/work_item
 import scherzo/workflow_completion_policy
 import simplifile
 import test_async
@@ -554,6 +555,106 @@ pub fn linear_adapter_task_detail_identifier_backend_errors_stay_backend_errors_
       tracker_adapter.TaskLookupByDisplayId("LIV-770"),
     )
   assert string.contains(message, "Linear GraphQL errors: denied")
+}
+
+pub fn linear_adapter_work_item_list_and_show_wiring_test() {
+  let list_body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-parent-1\",\"identifier\":\"LIV-1168\",\"title\":\"Implement work items\",\"url\":\"https://linear.app/living-systems/issue/LIV-1168\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-workflow\",\"name\":\"workflow:implementation\"}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}},\"children\":{\"nodes\":[{\"id\":\"issue-child-1\",\"identifier\":\"LIV-1169\",\"title\":\"Child one\",\"url\":\"https://linear.app/living-systems/issue/LIV-1169\",\"createdAt\":\"2026-04-28T12:00:00Z\",\"updatedAt\":\"2026-04-28T13:00:00Z\",\"state\":{\"id\":\"state-progress\",\"name\":\"In Progress\",\"type\":\"started\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  let detail_body =
+    "{\"data\":{\"issue\":{\"project\":{\"slugId\":\"PROJ\"},\"id\":\"issue-parent-1\",\"identifier\":\"LIV-1168\",\"title\":\"Implement work items\",\"url\":\"https://linear.app/living-systems/issue/LIV-1168\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}},\"children\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}"
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      case string.contains(request.body, "ScherzoWorkItemList") {
+        True -> Ok(linear.Response(status: 200, body: list_body))
+        False -> Ok(linear.Response(status: 200, body: detail_body))
+      }
+    })
+  let assert Some(work_items) = linear_tracker.work_items
+
+  let assert Ok(page) =
+    work_items.list_work_items(work_item.WorkItemListRequest(
+      state_categories: [task.Ready],
+      limit: 10,
+      offset: 0,
+      subtask_limit: 10,
+      label_limit: 50,
+    ))
+  let assert [summary] = page.items
+  assert summary.source.display_id == Some("LIV-1168")
+
+  let assert Ok(Some(detail)) =
+    work_items.lookup_work_item(work_item.WorkItemShowRequest(
+      ref: work_item.WorkItemLookupByDisplayId("LIV-1168"),
+      subtask_limit: 50,
+      label_limit: 50,
+    ))
+  assert detail.summary.source.id == "issue-parent-1"
+}
+
+pub fn linear_adapter_work_item_remote_id_lookup_uses_by_id_query_test() {
+  let detail_body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-parent-1\",\"identifier\":\"LIV-1168\",\"title\":\"Implement work items\",\"url\":\"https://linear.app/living-systems/issue/LIV-1168\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}},\"children\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoWorkItemDetailById")
+      assert string.contains(request.body, "\"ids\":[\"issue-parent-1\"]")
+      assert !string.contains(request.body, "issue(id: $issueId)")
+      Ok(linear.Response(status: 200, body: detail_body))
+    })
+  let assert Some(work_items) = linear_tracker.work_items
+
+  let assert Ok(Some(detail)) =
+    work_items.lookup_work_item(work_item.WorkItemShowRequest(
+      ref: work_item.WorkItemLookupByRemoteId(
+        provider: Some("linear"),
+        id: "linear:issue-parent-1",
+      ),
+      subtask_limit: 50,
+      label_limit: 50,
+    ))
+  assert detail.summary.source.display_id == Some("LIV-1168")
+}
+
+pub fn linear_adapter_work_item_uses_configured_state_categories_test() {
+  let config =
+    config_types.TrackerConfig(
+      ..tracker_config(),
+      active_states: issue_state.list_from_strings(["Queued", "In Progress"]),
+      dispatch_states: issue_state.list_from_strings(["Queued"]),
+    )
+  let list_body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-queued-1\",\"identifier\":\"LIV-1200\",\"title\":\"Queued work item\",\"url\":\"https://linear.app/living-systems/issue/LIV-1200\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-queued\",\"name\":\"Queued\",\"type\":\"started\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  let detail_body =
+    "{\"data\":{\"issue\":{\"project\":{\"slugId\":\"PROJ\"},\"id\":\"issue-queued-1\",\"identifier\":\"LIV-1200\",\"title\":\"Queued work item\",\"url\":\"https://linear.app/living-systems/issue/LIV-1200\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-queued\",\"name\":\"Queued\",\"type\":\"started\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}},\"children\":{\"nodes\":[{\"id\":\"issue-queued-child\",\"identifier\":\"LIV-1201\",\"title\":\"Queued child\",\"url\":\"https://linear.app/living-systems/issue/LIV-1201\",\"createdAt\":\"2026-04-28T12:00:00Z\",\"updatedAt\":\"2026-04-28T13:00:00Z\",\"state\":{\"id\":\"state-queued\",\"name\":\"Queued\",\"type\":\"started\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}"
+  let linear_tracker =
+    linear_adapter.from_tracker_config(config, fn(request) {
+      case string.contains(request.body, "ScherzoWorkItemList") {
+        True -> Ok(linear.Response(status: 200, body: list_body))
+        False -> Ok(linear.Response(status: 200, body: detail_body))
+      }
+    })
+  let assert Some(work_items) = linear_tracker.work_items
+
+  let assert Ok(page) =
+    work_items.list_work_items(work_item.WorkItemListRequest(
+      state_categories: [task.Ready],
+      limit: 10,
+      offset: 0,
+      subtask_limit: 10,
+      label_limit: 50,
+    ))
+  let assert [summary] = page.items
+  assert summary.state.category == task.Ready
+
+  let assert Ok(Some(detail)) =
+    work_items.lookup_work_item(work_item.WorkItemShowRequest(
+      ref: work_item.WorkItemLookupByDisplayId("LIV-1200"),
+      subtask_limit: 50,
+      label_limit: 50,
+    ))
+  assert detail.summary.state.category == task.Ready
+  let assert [child] = detail.subtasks
+  assert child.state.category == task.Ready
 }
 
 pub fn linear_adapter_task_list_rejects_unfiltered_requests_without_transport_test() {

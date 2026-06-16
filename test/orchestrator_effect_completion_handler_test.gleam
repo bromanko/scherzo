@@ -424,6 +424,7 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
         list_tasks: fn(_) { Ok(adapter.TaskPage(items: [], has_more: False)) },
         lookup_task_detail: fn(_) { Ok(None) },
       ),
+      work_items: None,
       comments: None,
       remote_commands: None,
       state_transitions: None,
