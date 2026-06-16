@@ -1,5 +1,6 @@
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/query/codec
@@ -8,6 +9,7 @@ import scherzo/control/query/dto
 import scherzo/control/query/types
 import scherzo/session/tokens as session_tokens
 import scherzo/task
+import scherzo/work_item
 
 pub fn status_query_request_roundtrip_test() {
   let encoded = codec.request_to_string(types.Status)
@@ -175,6 +177,81 @@ pub fn task_query_request_response_roundtrip_test() {
   assert codec.decode_response(encoded_detail) == Ok(detail_response)
 }
 
+pub fn work_item_query_request_response_roundtrip_test() {
+  let list_request =
+    types.WorkItemList(types.WorkItemListQuery(
+      states: [task.Ready, task.Active],
+      limit: 25,
+      cursor: Some("cursor:25"),
+    ))
+  let show_request =
+    types.WorkItemShow(
+      types.WorkItemShowQuery(ref: types.TaskRemoteId(
+        provider: Some("linear"),
+        id: "issue-1",
+      )),
+    )
+
+  assert codec.decode_request(codec.request_to_string(list_request))
+    == Ok(list_request)
+  assert codec.decode_request(codec.request_to_string(show_request))
+    == Ok(show_request)
+
+  let list_response =
+    types.WorkItemListResponse(work_item.WorkItemPage(
+      items: [work_item_summary(labels_truncated: False)],
+      next_cursor: Some("cursor:1"),
+      has_more: True,
+    ))
+  let detail_response =
+    types.WorkItemShowResponse(work_item.WorkItemDetail(
+      summary: work_item_summary(labels_truncated: True),
+      subtasks: [work_item_summary(labels_truncated: False)],
+      subtasks_truncated: False,
+    ))
+
+  let encoded_list = codec.response_to_string(list_response)
+  assert string.contains(encoded_list, "\"type\":\"work_item_list\"")
+  assert string.contains(
+    encoded_list,
+    "\"state\":{\"id\":\"todo\",\"name\":\"Todo\",\"category\":\"ready\"}",
+  )
+  assert string.contains(encoded_list, "\"labels_truncated\":false")
+  assert codec.decode_response(encoded_list) == Ok(list_response)
+
+  let encoded_detail = codec.response_to_string(detail_response)
+  assert string.contains(encoded_detail, "\"type\":\"work_item_show\"")
+  assert string.contains(encoded_detail, "\"subtasks_truncated\":false")
+  assert !string.contains(encoded_detail, "description")
+  assert codec.decode_response(encoded_detail) == Ok(detail_response)
+}
+
+pub fn supported_queries_include_work_item_queries_test() {
+  let queries = types.supported_queries()
+  assert list.contains(queries, "work_item_list")
+  assert list.contains(queries, "work_item_show")
+}
+
+pub fn malformed_work_item_response_payload_is_rejected_test() {
+  let response =
+    types.WorkItemShowResponse(work_item.WorkItemDetail(
+      summary: work_item_summary(labels_truncated: False),
+      subtasks: [],
+      subtasks_truncated: False,
+    ))
+  let encoded =
+    codec.response_to_string(response)
+    |> string.replace(
+      each: "\"subtasks_truncated\":false",
+      with: "\"subtasks_truncated\":\"no\"",
+    )
+
+  let assert Error(types.QueryError(code: code, message: message)) =
+    codec.decode_response(encoded)
+  assert code == types.QueryBackendFailed
+  assert message == "invalid work item detail query payload"
+}
+
 pub fn cursor_encode_decode_roundtrip_test() {
   let encoded = cursor.encode_offset(42)
 
@@ -276,6 +353,31 @@ pub fn metrics_dto_uses_narrow_non_secret_source_test() {
   assert !string.contains(encoded, "api_key")
   assert !string.contains(encoded, "provider:linear")
   assert !string.contains(encoded, "raw failure payload")
+}
+
+fn work_item_summary(
+  labels_truncated labels_truncated: Bool,
+) -> work_item.WorkItemSummary {
+  work_item.WorkItemSummary(
+    id: "linear:issue-1",
+    source: work_item.WorkItemSource(
+      provider: "linear",
+      id: "issue-1",
+      display_id: Some("LIV-770"),
+      url: Some("https://linear.app/living-systems/issue/LIV-770"),
+    ),
+    title: "Implement work item queries",
+    state: task.TaskState(id: Some("todo"), name: "Todo", category: task.Ready),
+    labels: [
+      task.TaskLabel(
+        id: Some("label-workflow"),
+        name: "workflow:implementation",
+      ),
+    ],
+    labels_truncated: labels_truncated,
+    created_at: None,
+    updated_at: None,
+  )
 }
 
 fn outbox_record() -> types.OutboxRecordDto {

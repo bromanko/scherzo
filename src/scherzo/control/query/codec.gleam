@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/control/query/dto
 import scherzo/control/query/types
+import scherzo/control/query/work_item_dto
 import scherzo/task
 
 pub const version = 1
@@ -27,6 +28,15 @@ fn request_entries(request: types.QueryRequest) -> List(#(String, json.Json)) {
       #("ref", task_query_ref_to_json(query.ref)),
       ..base_request_entries(types.query_type(request))
     ]
+    types.WorkItemList(query) ->
+      list.append(
+        work_item_list_query_entries(query),
+        base_request_entries(types.query_type(request)),
+      )
+    types.WorkItemShow(query) -> [
+      #("ref", task_query_ref_to_json(query.ref)),
+      ..base_request_entries(types.query_type(request))
+    ]
     types.OutboxList(query) ->
       list.append(
         outbox_list_query_entries(query),
@@ -45,6 +55,16 @@ fn base_request_entries(type_: String) -> List(#(String, json.Json)) {
 
 fn task_list_query_entries(
   query: types.TaskListQuery,
+) -> List(#(String, json.Json)) {
+  [
+    #("states", json.array(query.states, of: task_state_category_to_json)),
+    #("limit", json.int(query.limit)),
+    #("cursor", json.nullable(query.cursor, of: json.string)),
+  ]
+}
+
+fn work_item_list_query_entries(
+  query: types.WorkItemListQuery,
 ) -> List(#(String, json.Json)) {
   [
     #("states", json.array(query.states, of: task_state_category_to_json)),
@@ -145,6 +165,23 @@ pub fn response_to_json(response: types.QueryResponse) -> json.Json {
         #("type", json.string(types.response_type(response))),
         #("task", dto.task_detail_to_json(task)),
       ])
+    types.WorkItemListResponse(work_item_list) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #(
+          "work_item_list",
+          work_item_dto.work_item_list_to_json(work_item_list),
+        ),
+      ])
+    types.WorkItemShowResponse(work_item) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #("work_item", work_item_dto.work_item_detail_to_json(work_item)),
+      ])
     types.OutboxListResponse(outbox) ->
       json.object([
         #("version", json.int(version)),
@@ -240,6 +277,8 @@ type ResponseFields {
     metrics: Option(Dynamic),
     task_list: Option(Dynamic),
     task: Option(Dynamic),
+    work_item_list: Option(Dynamic),
+    work_item: Option(Dynamic),
     outbox: Option(Dynamic),
     outbox_record: Option(Dynamic),
     error: Option(ErrorFields),
@@ -354,6 +393,16 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     None,
     decode.optional(decode.dynamic),
   )
+  use work_item_list <- decode.optional_field(
+    "work_item_list",
+    None,
+    decode.optional(decode.dynamic),
+  )
+  use work_item <- decode.optional_field(
+    "work_item",
+    None,
+    decode.optional(decode.dynamic),
+  )
   use outbox <- decode.optional_field(
     "outbox",
     None,
@@ -377,6 +426,8 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     metrics: metrics,
     task_list: task_list,
     task: task,
+    work_item_list: work_item_list,
+    work_item: work_item,
     outbox: outbox,
     outbox_record: outbox_record,
     error: error,
@@ -408,6 +459,8 @@ fn request_from_fields(
         Some("metrics") -> Ok(types.Metrics)
         Some("task_list") -> task_list_request_from_fields(fields)
         Some("task_show") -> task_show_request_from_fields(fields)
+        Some("work_item_list") -> work_item_list_request_from_fields(fields)
+        Some("work_item_show") -> work_item_show_request_from_fields(fields)
         Some("outbox_list") -> outbox_list_request_from_fields(fields)
         Some("outbox_show") -> outbox_show_request_from_fields(fields)
         Some(other) ->
@@ -444,6 +497,40 @@ fn task_show_request_from_fields(
       |> result.map(fn(ref) { types.TaskShow(types.TaskShowQuery(ref: ref)) })
     None ->
       Error(types.QueryError(types.QueryBackendFailed, "missing task reference"))
+  }
+}
+
+fn work_item_list_request_from_fields(
+  fields: RequestFields,
+) -> Result(types.QueryRequest, types.QueryError) {
+  use states <- result.try(decode_state_categories(fields.states))
+  use limit <- result.try(required_positive_limit_named(
+    fields.limit,
+    "work item list",
+  ))
+  Ok(
+    types.WorkItemList(types.WorkItemListQuery(
+      states: states,
+      limit: limit,
+      cursor: fields.cursor,
+    )),
+  )
+}
+
+fn work_item_show_request_from_fields(
+  fields: RequestFields,
+) -> Result(types.QueryRequest, types.QueryError) {
+  case fields.ref {
+    Some(ref) ->
+      ref_from_fields(ref)
+      |> result.map(fn(ref) {
+        types.WorkItemShow(types.WorkItemShowQuery(ref: ref))
+      })
+    None ->
+      Error(types.QueryError(
+        types.QueryBackendFailed,
+        "missing work item reference",
+      ))
   }
 }
 
@@ -612,6 +699,20 @@ fn decode_success_response(
         Some(task) ->
           dto.decode_task_detail_dynamic(task)
           |> result.map(types.TaskShowResponse)
+        None -> missing_response_payload()
+      }
+    Some("work_item_list") ->
+      case fields.work_item_list {
+        Some(work_item_list) ->
+          work_item_dto.decode_work_item_page_dynamic(work_item_list)
+          |> result.map(types.WorkItemListResponse)
+        None -> missing_response_payload()
+      }
+    Some("work_item_show") ->
+      case fields.work_item {
+        Some(work_item) ->
+          work_item_dto.decode_work_item_detail_dynamic(work_item)
+          |> result.map(types.WorkItemShowResponse)
         None -> missing_response_payload()
       }
     Some("outbox_list") ->

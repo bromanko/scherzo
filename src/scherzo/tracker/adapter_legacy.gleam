@@ -120,6 +120,7 @@ pub fn adapter_from_legacy_client(
     kind: kind,
     display_name: kind,
     task_source: task_source_from_legacy_client(client),
+    work_items: None,
     comments: None,
     remote_commands: None,
     state_transitions: None,

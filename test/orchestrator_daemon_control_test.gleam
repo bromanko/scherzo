@@ -2515,6 +2515,7 @@ fn probed_tracker_adapter(
         Ok(None)
       },
     ),
+    work_items: None,
     comments: None,
     remote_commands: None,
     state_transitions: None,

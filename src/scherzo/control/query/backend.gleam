@@ -1,11 +1,13 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/control/query/cursor
 import scherzo/control/query/dto
 import scherzo/control/query/types
 import scherzo/daemon_identity
 import scherzo/tracker/adapter
+import scherzo/work_item
 
 pub type DispatchPausedReader =
   fn(Int) -> Result(Bool, Nil)
@@ -29,6 +31,10 @@ pub fn run(
       execute_task_list_query(tracker_adapter, task_query)
     types.TaskShow(task_query) ->
       execute_task_show_query(tracker_adapter, task_query)
+    types.WorkItemList(work_item_query) ->
+      execute_work_item_list_query(tracker_adapter, work_item_query)
+    types.WorkItemShow(work_item_query) ->
+      execute_work_item_show_query(tracker_adapter, work_item_query)
     types.OutboxList(_) | types.OutboxShow(_) ->
       Error(types.QueryError(
         types.UnsupportedQuery,
@@ -110,6 +116,58 @@ fn execute_task_show_query(
   }
 }
 
+fn execute_work_item_list_query(
+  tracker_adapter: adapter.TrackerAdapter,
+  query: types.WorkItemListQuery,
+) -> Result(types.QueryResponse, types.QueryError) {
+  use capability <- try_query(required_work_item_capability(tracker_adapter))
+  use offset <- try_query(decode_task_cursor(query.cursor))
+  let limit = work_item.clamp_page_limit(query.limit)
+  use page <- try_query(
+    map_tracker_query_error(
+      capability.list_work_items(work_item.WorkItemListRequest(
+        state_categories: query.states,
+        limit: limit,
+        offset: offset,
+        subtask_limit: work_item.default_list_subtask_limit,
+        label_limit: work_item.default_label_limit,
+      )),
+    ),
+  )
+  let next_cursor = case page.has_more {
+    True -> Some(cursor.encode_offset(offset + list.length(page.items)))
+    False -> None
+  }
+  Ok(
+    types.WorkItemListResponse(work_item.WorkItemPage(
+      items: page.items,
+      next_cursor: next_cursor,
+      has_more: page.has_more,
+    )),
+  )
+}
+
+fn execute_work_item_show_query(
+  tracker_adapter: adapter.TrackerAdapter,
+  query: types.WorkItemShowQuery,
+) -> Result(types.QueryResponse, types.QueryError) {
+  use capability <- try_query(required_work_item_capability(tracker_adapter))
+  use ref <- try_query(work_item_query_ref_to_adapter_ref(query.ref))
+  use found <- try_query(
+    map_tracker_query_error(
+      capability.lookup_work_item(work_item.WorkItemShowRequest(
+        ref: ref,
+        subtask_limit: work_item.default_show_subtask_limit,
+        label_limit: work_item.default_label_limit,
+      )),
+    ),
+  )
+  case found {
+    Some(item) -> Ok(types.WorkItemShowResponse(item))
+    None -> Error(types.QueryError(types.QueryNotFound, "task not found"))
+  }
+}
+
 fn bounded_task_limit(limit: Int) -> Int {
   case limit < 1 {
     True -> 1
@@ -140,6 +198,29 @@ fn task_query_ref_to_adapter_ref(
   }
 }
 
+fn required_work_item_capability(
+  tracker_adapter: adapter.TrackerAdapter,
+) -> Result(adapter.WorkItemReadCapability, types.QueryError) {
+  case tracker_adapter.work_items {
+    Some(capability) -> Ok(capability)
+    None ->
+      Error(types.QueryError(
+        types.UnsupportedQuery,
+        "tracker adapter does not support work_items",
+      ))
+  }
+}
+
+fn work_item_query_ref_to_adapter_ref(
+  ref: types.TaskQueryRef,
+) -> Result(work_item.WorkItemLookupRef, types.QueryError) {
+  case ref {
+    types.TaskDisplayId(value) -> Ok(work_item.WorkItemLookupByDisplayId(value))
+    types.TaskRemoteId(provider: provider, id: id) ->
+      Ok(work_item.WorkItemLookupByRemoteId(provider: provider, id: id))
+  }
+}
+
 fn map_tracker_query_error(
   result: Result(a, adapter.TrackerError),
 ) -> Result(a, types.QueryError) {
@@ -157,12 +238,27 @@ fn query_error_from_tracker(error: adapter.TrackerError) -> types.QueryError {
     | adapter.Transient(message)
     | adapter.Permanent(message)
     | adapter.DecodeFailed(message) ->
-      types.QueryError(types.QueryBackendFailed, message)
+      types.QueryError(
+        types.QueryBackendFailed,
+        sanitize_tracker_message(message),
+      )
     adapter.UnsupportedCapability(capability) ->
       types.QueryError(
         types.UnsupportedQuery,
         "tracker adapter does not support " <> capability,
       )
+  }
+}
+
+fn sanitize_tracker_message(message: String) -> String {
+  case
+    string.contains(message, "RAW_PROVIDER_BODY")
+    || string.contains(message, "local_control_token")
+    || string.contains(message, "enrollment_token")
+    || string.contains(message, "api_key")
+  {
+    True -> "query backend failed"
+    False -> message
   }
 }
 

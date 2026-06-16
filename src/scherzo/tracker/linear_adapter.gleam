@@ -8,6 +8,7 @@ import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear/task_query as linear_task_query
+import scherzo/linear/work_item_query as linear_work_item_query
 import scherzo/scheduled_failure_reporter
 import scherzo/smoke
 import scherzo/task
@@ -15,6 +16,7 @@ import scherzo/tracker/adapter
 import scherzo/tracker/idempotency
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/work_item
 
 pub type Dependencies {
   Dependencies(
@@ -77,6 +79,7 @@ pub fn from_dependencies(
     kind: "linear",
     display_name: "Linear",
     task_source: task_source_capability(config, transport),
+    work_items: Some(work_item_read_capability(config, transport)),
     comments: Some(comment_capability(config, transport)),
     remote_commands: None,
     state_transitions: Some(state_transition_capability(config, transport)),
@@ -106,6 +109,18 @@ fn task_source_capability(
     },
     list_tasks: fn(request) { list_tasks(config, transport, request) },
     lookup_task_detail: fn(ref) { lookup_task_detail(config, transport, ref) },
+  )
+}
+
+fn work_item_read_capability(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+) -> adapter.WorkItemReadCapability {
+  adapter.WorkItemReadCapability(
+    list_work_items: fn(request) { list_work_items(config, transport, request) },
+    lookup_work_item: fn(request) {
+      lookup_work_item(config, transport, request)
+    },
   )
 }
 
@@ -303,6 +318,135 @@ fn lookup_task_detail(
   }
 }
 
+fn list_work_items(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  request: work_item.WorkItemListRequest,
+) -> Result(work_item.WorkItemProviderPage, adapter.TrackerError) {
+  let state_names =
+    linear_state_names_for_query(config, request.state_categories)
+  case state_names {
+    [] ->
+      Error(adapter.UnsupportedCapability(
+        "unfiltered Linear work item list; pass at least one configured --state filter",
+      ))
+    state_names ->
+      fetch_work_item_page_from_offset(
+        config,
+        transport,
+        state_names,
+        request.state_categories,
+        request.offset,
+        request.limit,
+        request.subtask_limit,
+        request.label_limit,
+        None,
+        0,
+        [],
+      )
+  }
+}
+
+fn fetch_work_item_page_from_offset(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  state_names: List(issue_state.IssueState),
+  categories: List(task.TaskStateCategory),
+  offset: Int,
+  limit: Int,
+  subtask_limit: Int,
+  label_limit: Int,
+  after: Option(String),
+  skipped: Int,
+  acc: List(work_item.WorkItemSummary),
+) -> Result(work_item.WorkItemProviderPage, adapter.TrackerError) {
+  use page <- try_adapter(linear_work_item_query.fetch_page(
+    config,
+    state_names,
+    after,
+    subtask_limit,
+    label_limit,
+    transport,
+  ))
+  let tasks = filter_work_item_categories(page.items, categories)
+  let #(skipped, acc, reached_limit, has_buffered_more) =
+    collect_work_item_page(tasks, offset, limit, skipped, acc)
+  case reached_limit {
+    True ->
+      Ok(work_item.WorkItemProviderPage(
+        items: list.reverse(acc),
+        has_more: has_buffered_more || page.has_next_page,
+      ))
+    False ->
+      case page.has_next_page, page.end_cursor {
+        True, Some(cursor) ->
+          fetch_work_item_page_from_offset(
+            config,
+            transport,
+            state_names,
+            categories,
+            offset,
+            limit,
+            subtask_limit,
+            label_limit,
+            Some(cursor),
+            skipped,
+            acc,
+          )
+        True, None ->
+          Error(adapter.DecodeFailed(
+            "Linear response missing pagination endCursor",
+          ))
+        False, _ ->
+          Ok(work_item.WorkItemProviderPage(
+            items: list.reverse(acc),
+            has_more: False,
+          ))
+      }
+  }
+}
+
+fn lookup_work_item(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  request: work_item.WorkItemShowRequest,
+) -> Result(Option(work_item.WorkItemDetail), adapter.TrackerError) {
+  case request.ref {
+    work_item.WorkItemLookupByDisplayId(display_id) -> {
+      let display_id = string.trim(display_id)
+      case display_id == "" {
+        True -> Ok(None)
+        False -> {
+          use found <- try_adapter(
+            linear_work_item_query.fetch_detail_by_identifier(
+              config,
+              display_id,
+              request.subtask_limit,
+              request.label_limit,
+              transport,
+            ),
+          )
+          Ok(found)
+        }
+      }
+    }
+    work_item.WorkItemLookupByRemoteId(provider: provider, id: id) ->
+      case provider_allowed(provider) {
+        False -> Ok(None)
+        True -> {
+          use found <- try_adapter(linear_work_item_query.fetch_detail_by_id(
+            config,
+            normalize_linear_remote_id(id),
+            request.subtask_limit,
+            request.label_limit,
+            transport,
+          ))
+          Ok(found)
+        }
+      }
+  }
+}
+
 fn linear_state_names_for_query(
   config: config_types.TrackerConfig,
   categories: List(task.TaskStateCategory),
@@ -454,6 +598,19 @@ fn filter_categories(
   }
 }
 
+fn filter_work_item_categories(
+  items: List(work_item.WorkItemSummary),
+  categories: List(task.TaskStateCategory),
+) -> List(work_item.WorkItemSummary) {
+  case categories {
+    [] -> items
+    categories ->
+      list.filter(items, fn(item) {
+        list.contains(categories, item.state.category)
+      })
+  }
+}
+
 fn collect_page(
   tasks: List(task.Task),
   offset: Int,
@@ -470,6 +627,28 @@ fn collect_page(
           case list.length(acc) >= limit {
             True -> #(skipped, acc, True, True)
             False -> collect_page(rest, offset, limit, skipped, [item, ..acc])
+          }
+      }
+  }
+}
+
+fn collect_work_item_page(
+  items: List(work_item.WorkItemSummary),
+  offset: Int,
+  limit: Int,
+  skipped: Int,
+  acc: List(work_item.WorkItemSummary),
+) -> #(Int, List(work_item.WorkItemSummary), Bool, Bool) {
+  case items {
+    [] -> #(skipped, acc, False, False)
+    [item, ..rest] ->
+      case skipped < offset {
+        True -> collect_work_item_page(rest, offset, limit, skipped + 1, acc)
+        False ->
+          case list.length(acc) >= limit {
+            True -> #(skipped, acc, True, True)
+            False ->
+              collect_work_item_page(rest, offset, limit, skipped, [item, ..acc])
           }
       }
   }

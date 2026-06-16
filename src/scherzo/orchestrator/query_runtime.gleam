@@ -27,7 +27,10 @@ pub fn start(
           query_metrics.execute_status(get_snapshot: get_read_model_snapshot)
         query_types.Metrics ->
           query_metrics.execute_metrics(get_snapshot: get_read_model_snapshot)
-        query_types.TaskList(_) | query_types.TaskShow(_) ->
+        query_types.TaskList(_)
+        | query_types.TaskShow(_)
+        | query_types.WorkItemList(_)
+        | query_types.WorkItemShow(_) ->
           query_backend.run(
             effective,
             identity,

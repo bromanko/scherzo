@@ -17,6 +17,7 @@ import scherzo/session/hub
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/task
+import scherzo/work_item
 
 fn summary(session_id: String) -> event.SessionSummary {
   event.SessionSummary(
@@ -244,6 +245,55 @@ pub fn server_roundtrips_authenticated_task_list_query_test() {
   let assert [item] = tasks.items
   assert item.title == "Task list item"
   assert tasks.page.has_more == False
+  let assert Ok(called_query) = process.receive(query_subject, within: 1000)
+  assert called_query == expected_query
+
+  server.stop(server_handle)
+  hub.stop(subject)
+}
+
+pub fn server_roundtrips_authenticated_work_item_queries_test() {
+  let subject = start_hub_with_session("session-work-item-query")
+  let query_subject = process.new_subject()
+  let expected_query =
+    query_types.WorkItemShow(
+      query_types.WorkItemShowQuery(ref: query_types.TaskDisplayId("LIV-1")),
+    )
+  let backend =
+    server.Backend(..server.event_hub_store(subject), query: fn(query) {
+      process.send(query_subject, query)
+      Ok(
+        query_types.WorkItemShowResponse(work_item.WorkItemDetail(
+          summary: work_item.WorkItemSummary(
+            id: "linear:issue-1",
+            source: work_item.WorkItemSource(
+              provider: "linear",
+              id: "issue-1",
+              display_id: Some("LIV-1"),
+              url: None,
+            ),
+            title: "Work item",
+            state: task.TaskState(
+              id: Some("todo"),
+              name: "Todo",
+              category: task.Ready,
+            ),
+            labels: [],
+            labels_truncated: False,
+            created_at: None,
+            updated_at: None,
+          ),
+          subtasks: [],
+          subtasks_truncated: False,
+        )),
+      )
+    })
+  let #(server_handle, control_file) =
+    start_server_for_backend(backend, "token", 500)
+
+  let assert Ok(query_types.WorkItemShowResponse(work_item_value)) =
+    client.query(control_file, expected_query)
+  assert work_item_value.summary.title == "Work item"
   let assert Ok(called_query) = process.receive(query_subject, within: 1000)
   assert called_query == expected_query
 

@@ -313,6 +313,7 @@ fn fake_refresh_adapter(
         list_tasks: fn(_) { Ok(adapter.TaskPage([], False)) },
         lookup_task_detail: fn(_) { Ok(None) },
       ),
+      work_items: None,
       comments: None,
       remote_commands: None,
       state_transitions: None,

@@ -2,12 +2,15 @@ import gleam/list
 import gleam/option.{type Option, None}
 import scherzo/session/tokens as session_tokens
 import scherzo/task
+import scherzo/work_item
 
 pub type QueryRequest {
   Status
   Metrics
   TaskList(TaskListQuery)
   TaskShow(TaskShowQuery)
+  WorkItemList(WorkItemListQuery)
+  WorkItemShow(WorkItemShowQuery)
   OutboxList(OutboxListQuery)
   OutboxShow(OutboxShowQuery)
 }
@@ -17,6 +20,8 @@ pub type QueryResponse {
   MetricsResponse(metrics: OperationalMetricsDto)
   TaskListResponse(tasks: TaskListDto)
   TaskShowResponse(task: TaskDetailDto)
+  WorkItemListResponse(work_item_list: work_item.WorkItemPage)
+  WorkItemShowResponse(work_item: work_item.WorkItemDetail)
   OutboxListResponse(outbox: OutboxListDto)
   OutboxShowResponse(outbox: OutboxRecordDto)
 }
@@ -31,6 +36,18 @@ pub type TaskListQuery {
 
 pub type TaskShowQuery {
   TaskShowQuery(ref: TaskQueryRef)
+}
+
+pub type WorkItemListQuery {
+  WorkItemListQuery(
+    states: List(task.TaskStateCategory),
+    limit: Int,
+    cursor: Option(String),
+  )
+}
+
+pub type WorkItemShowQuery {
+  WorkItemShowQuery(ref: TaskQueryRef)
 }
 
 pub type OutboxListQuery {
@@ -276,6 +293,8 @@ pub fn supported_queries() -> List(String) {
     "metrics",
     "task_list",
     "task_show",
+    "work_item_list",
+    "work_item_show",
     "outbox_list",
     "outbox_show",
   ]
@@ -312,6 +331,8 @@ pub fn query_type(request: QueryRequest) -> String {
     Metrics -> "metrics"
     TaskList(_) -> "task_list"
     TaskShow(_) -> "task_show"
+    WorkItemList(_) -> "work_item_list"
+    WorkItemShow(_) -> "work_item_show"
     OutboxList(_) -> "outbox_list"
     OutboxShow(_) -> "outbox_show"
   }
@@ -323,6 +344,8 @@ pub fn response_type(response: QueryResponse) -> String {
     MetricsResponse(_) -> "metrics"
     TaskListResponse(_) -> "task_list"
     TaskShowResponse(_) -> "task_show"
+    WorkItemListResponse(_) -> "work_item_list"
+    WorkItemShowResponse(_) -> "work_item_show"
     OutboxListResponse(_) -> "outbox_list"
     OutboxShowResponse(_) -> "outbox_show"
   }
@@ -330,6 +353,10 @@ pub fn response_type(response: QueryResponse) -> String {
 
 pub fn default_task_list_query() -> TaskListQuery {
   TaskListQuery(states: [], limit: 50, cursor: None)
+}
+
+pub fn default_work_item_list_query() -> WorkItemListQuery {
+  WorkItemListQuery(states: [], limit: 50, cursor: None)
 }
 
 pub fn default_outbox_list_query() -> OutboxListQuery {

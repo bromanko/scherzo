@@ -1082,6 +1082,12 @@ pub fn run_with_deps(
               task_output.print_detail(task_detail, output.line)
               Ok(Nil)
             }
+            Ok(query_types.WorkItemListResponse(_))
+            | Ok(query_types.WorkItemShowResponse(_)) ->
+              Error(Failed(
+                "unsupported_query_response",
+                "work item query output is not available yet",
+              ))
             Ok(query_types.OutboxListResponse(outbox)) -> {
               task_output.print_outbox_list(outbox, output.line)
               Ok(Nil)

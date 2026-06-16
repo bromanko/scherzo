@@ -1,0 +1,52 @@
+{
+  "data": {
+    "issue": {
+      "project": { "slugId": "PROJ" },
+      "id": "issue-parent-1",
+      "identifier": "LIV-1168",
+      "title": "Implement work items",
+      "url": "https://linear.app/living-systems/issue/LIV-1168",
+      "createdAt": "2026-04-28T10:00:00Z",
+      "updatedAt": "2026-04-28T11:00:00Z",
+      "state": { "id": "state-todo", "name": "Todo", "type": "unstarted" },
+      "labels": {
+        "nodes": [
+          { "id": "label-workflow", "name": "workflow:implementation" },
+          { "id": "label-kind", "name": "kind:feature" }
+        ],
+        "pageInfo": { "hasNextPage": true, "endCursor": "label-cursor" }
+      },
+      "children": {
+        "nodes": [
+          {
+            "id": "issue-child-1",
+            "identifier": "LIV-1169",
+            "title": "Child one",
+            "url": "https://linear.app/living-systems/issue/LIV-1169",
+            "createdAt": "2026-04-28T12:00:00Z",
+            "updatedAt": "2026-04-28T13:00:00Z",
+            "state": { "id": "state-progress", "name": "In Progress", "type": "started" },
+            "labels": {
+              "nodes": [],
+              "pageInfo": { "hasNextPage": false, "endCursor": null }
+            }
+          },
+          {
+            "id": "issue-child-2",
+            "identifier": "LIV-1170",
+            "title": "Child two",
+            "url": "https://linear.app/living-systems/issue/LIV-1170",
+            "createdAt": "2026-04-28T14:00:00Z",
+            "updatedAt": "2026-04-28T15:00:00Z",
+            "state": { "id": "state-done", "name": "Done", "type": "completed" },
+            "labels": {
+              "nodes": [],
+              "pageInfo": { "hasNextPage": false, "endCursor": null }
+            }
+          }
+        ],
+        "pageInfo": { "hasNextPage": true, "endCursor": "child-cursor" }
+      }
+    }
+  }
+}

@@ -98,6 +98,7 @@ fn read_only_adapter() -> adapter.TrackerAdapter {
     kind: "test-memory",
     display_name: "Test memory",
     task_source: task_source_capability(),
+    work_items: None,
     comments: None,
     remote_commands: None,
     state_transitions: None,

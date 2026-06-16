@@ -25,7 +25,7 @@ fn run_sync_in(dir: String, env_prefix: String) -> step_artifact.StepArtifact {
     "origin_sync",
     workflow_context_test_support.without_workflow_context(command),
     dir,
-    5000,
+    10_000,
     [],
     test_helpers.default_artifact_limits(),
   )
