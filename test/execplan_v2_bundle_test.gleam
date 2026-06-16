@@ -324,15 +324,15 @@ fn write_revision_bundle_from_fixture_with_surface(
       each: "test/fixtures/execplan_v2/review-doc.valid.md",
       with: review_path,
     )
+  let head_revision_json = case head_revision {
+    "" -> ""
+    value -> "    \"head_revision\": \"" <> value <> "\",\n"
+  }
   let with_branch =
     string.replace(
       with_path,
       each: "    \"branch\": \"execplan/liv-314\",\n",
-      with: "    \"branch\": \""
-        <> branch
-        <> "\",\n    \"head_revision\": \""
-        <> head_revision
-        <> "\",\n",
+      with: "    \"branch\": \"" <> branch <> "\",\n" <> head_revision_json,
     )
   let bundle_path = bundle_dir <> "/exec_plan_bundle.json"
   let assert Ok(Nil) = simplifile.write(bundle_path, with_branch)
@@ -391,6 +391,108 @@ fn write_revision_legacy_bundle(
     "execplan/liv-314-unmerged",
     "ca667773c9a6d31bb64676c103b3f1f14c3bcced",
   )
+}
+
+fn bundle_without_review_surface_publication(source: String) -> String {
+  source
+  |> string.replace(
+    each: "    \"branch\": \"execplan/liv-314\",\n",
+    with: "    \"branch\": null,\n",
+  )
+  |> string.replace(
+    each: "    \"pr_url\": \"https://github.com/living-systems/scherzo/pull/314\",\n",
+    with: "    \"pr_url\": null,\n",
+  )
+  |> string.replace(
+    each: "    \"status\": \"published\"\n",
+    with: "    \"status\": \"not_applicable\"\n",
+  )
+}
+
+fn write_revision_legacy_bundle_without_surface(
+  dir: String,
+  review_path: String,
+) -> #(String, String) {
+  let bundle_ref = "runs/run-prepare/outputs/exec_plan_bundle.json"
+  let bundle_dir =
+    dir <> "/repo/.scherzo-state/artifacts/runs/run-prepare/outputs"
+  let assert Ok(Nil) = simplifile.create_directory_all(bundle_dir)
+  let assert Ok(source) =
+    simplifile.read(
+      "test/fixtures/execplan_v2/legacy/exec-plan-bundle.legacy.json",
+    )
+  let with_path =
+    string.replace(
+      source,
+      each: "test/fixtures/execplan_v2/review-doc.valid.md",
+      with: review_path,
+    )
+  let without_surface = bundle_without_review_surface_publication(with_path)
+  let bundle_path = bundle_dir <> "/exec_plan_bundle.json"
+  let assert Ok(Nil) = simplifile.write(bundle_path, without_surface)
+  #(bundle_ref, hash.sha256_hex(without_surface))
+}
+
+fn write_execplan_publication_manifest(
+  root: String,
+  run_id: String,
+  status: String,
+  branch: String,
+  pr_url: String,
+  head_revision: String,
+) -> Nil {
+  let manifest_dir =
+    root
+    <> "/.scherzo-state/artifacts/runs/"
+    <> run_id
+    <> "/publications/execplan_review_doc"
+  let assert Ok(Nil) = simplifile.create_directory_all(manifest_dir)
+  let manifest =
+    "{\n"
+    <> "  \"schema_version\": 1,\n"
+    <> "  \"artifact_type\": \"scherzo.artifact_publication_manifest.v1\",\n"
+    <> "  \"run_id\": \""
+    <> run_id
+    <> "\",\n"
+    <> "  \"workflow_id\": \"execplan\",\n"
+    <> "  \"publication_id\": \"execplan_review_doc\",\n"
+    <> "  \"series_id\": \"series-1\",\n"
+    <> "  \"version_id\": \"version-1\",\n"
+    <> "  \"attempt_id\": \"version-1\",\n"
+    <> "  \"status\": \""
+    <> status
+    <> "\",\n"
+    <> "  \"publication_mode\": \"commit_stack\",\n"
+    <> "  \"required\": true,\n"
+    <> "  \"retryable\": false,\n"
+    <> "  \"retry_execution_available\": true,\n"
+    <> "  \"generated_at_ms\": 123,\n"
+    <> "  \"branch\": \""
+    <> branch
+    <> "\",\n"
+    <> "  \"commit_sha\": \""
+    <> head_revision
+    <> "\",\n"
+    <> "  \"pr_url\": \""
+    <> pr_url
+    <> "\",\n"
+    <> "  \"pr_number\": 314,\n"
+    <> "  \"base_ref\": \"main\",\n"
+    <> "  \"base_revision\": null,\n"
+    <> "  \"head_revision\": \""
+    <> head_revision
+    <> "\",\n"
+    <> "  \"change_id\": null,\n"
+    <> "  \"selected_paths\": [],\n"
+    <> "  \"changed_paths\": [],\n"
+    <> "  \"removed_paths\": [],\n"
+    <> "  \"dry_run_manifest\": null,\n"
+    <> "  \"error\": null,\n"
+    <> "  \"cleanup_diagnostics\": null\n"
+    <> "}\n"
+  let assert Ok(Nil) =
+    simplifile.write(manifest_dir <> "/version-1.json", manifest)
+  Nil
 }
 
 fn text_bytes(contents: String) -> String {
@@ -1316,6 +1418,216 @@ pub fn prepare_revision_resolves_review_doc_from_recorded_branch_test() {
   assert !string.contains(
     driver_log,
     "refresh-base --stage prepare_revision --target execplan/liv-314-unmerged@upstream --json",
+  )
+}
+
+pub fn prepare_revision_resolves_review_doc_from_retained_publication_manifest_test() {
+  let dir = "test/tmp/execplan-prepare-revision-publication-manifest"
+  test_helpers.reset_dir(dir)
+  let review_path = dir <> "/docs/plans/unmerged.md"
+  let #(bundle_ref, bundle_sha) =
+    write_revision_legacy_bundle_without_surface(dir, review_path)
+  write_execplan_publication_manifest(
+    dir <> "/repo",
+    "run-legacy",
+    "published",
+    "scherzo/execplan/LIV-314/execplan_review_doc",
+    "https://github.com/example/repo/pull/314",
+    "",
+  )
+  let driver = dir <> "/workspace-driver"
+  let log = dir <> "/workspace-driver.log"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> test_helpers.shell_quote(log)
+        <> "\n"
+        <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = scherzo/execplan/LIV-314/execplan_review_doc@fork ]; then\n"
+        <> "  mkdir -p "
+        <> test_helpers.shell_quote(dir <> "/docs/plans")
+        <> "\n"
+        <> "  cp test/fixtures/execplan_v2/review-doc.valid.md "
+        <> test_helpers.shell_quote(review_path)
+        <> "\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\",\"stage\":\"prepare_revision\",\"base_ref\":\"scherzo/execplan/LIV-314/execplan_review_doc@fork\",\"base_revision\":\"scherzo/execplan/LIV-314/execplan_review_doc@fork\",\"before_revision\":\"main\",\"after_revision\":\"branch\",\"conflict_files\":[]}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"missing revision base\"}'\n"
+        <> "exit 1\n",
+    )
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(driver))
+  assert chmod.status == step_artifact.StepSucceeded
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> test_helpers.shell_quote(dir <> "/repo")
+      <> " SCHERZO_WORKSPACE_DRIVER="
+      <> test_helpers.shell_quote(driver)
+      <> " SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_ISSUE_CONTEXT="
+      <> test_helpers.shell_quote(issue_context)
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> test_helpers.shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(path_contents) = simplifile.read(dir <> "/review.path")
+  assert path_contents == review_path <> "\n"
+  let assert Ok(driver_log) = simplifile.read(log)
+  assert string.contains(
+    driver_log,
+    "refresh-base --stage prepare_revision --target scherzo/execplan/LIV-314/execplan_review_doc@fork --json",
+  )
+}
+
+pub fn prepare_revision_resolves_review_doc_from_retained_publication_manifest_head_test() {
+  let dir = "test/tmp/execplan-prepare-revision-publication-manifest-head"
+  test_helpers.reset_dir(dir)
+  let review_path = dir <> "/docs/plans/unmerged.md"
+  let #(bundle_ref, bundle_sha) =
+    write_revision_legacy_bundle_without_surface(dir, review_path)
+  write_execplan_publication_manifest(
+    dir <> "/repo",
+    "run-legacy",
+    "published",
+    "",
+    "https://github.com/example/repo/pull/314",
+    "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+  )
+  let driver = dir <> "/workspace-driver"
+  let log = dir <> "/workspace-driver.log"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> test_helpers.shell_quote(log)
+        <> "\n"
+        <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = abcdefabcdefabcdefabcdefabcdefabcdefabcd ]; then\n"
+        <> "  mkdir -p "
+        <> test_helpers.shell_quote(dir <> "/docs/plans")
+        <> "\n"
+        <> "  cp test/fixtures/execplan_v2/review-doc.valid.md "
+        <> test_helpers.shell_quote(review_path)
+        <> "\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\",\"stage\":\"prepare_revision\",\"base_ref\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"base_revision\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"before_revision\":\"main\",\"after_revision\":\"head\",\"conflict_files\":[]}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"missing revision base\"}'\n"
+        <> "exit 1\n",
+    )
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(driver))
+  assert chmod.status == step_artifact.StepSucceeded
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> test_helpers.shell_quote(dir <> "/repo")
+      <> " SCHERZO_WORKSPACE_DRIVER="
+      <> test_helpers.shell_quote(driver)
+      <> " SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_ISSUE_CONTEXT="
+      <> test_helpers.shell_quote(issue_context)
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> test_helpers.shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(driver_log) = simplifile.read(log)
+  assert string.contains(
+    driver_log,
+    "refresh-base --stage prepare_revision --target abcdefabcdefabcdefabcdefabcdefabcdefabcd --json",
+  )
+  assert !string.contains(driver_log, "@fork")
+}
+
+pub fn prepare_revision_prefers_review_surface_over_conflicting_retained_manifest_test() {
+  let dir = "test/tmp/execplan-prepare-revision-prefers-surface"
+  test_helpers.reset_dir(dir)
+  let review_path = dir <> "/docs/plans/unmerged.md"
+  let #(bundle_ref, bundle_sha) =
+    write_revision_legacy_bundle_with_surface(
+      dir,
+      review_path,
+      "execplan/liv-314-surface",
+      "",
+    )
+  write_execplan_publication_manifest(
+    dir <> "/repo",
+    "run-legacy",
+    "published",
+    "scherzo/execplan/LIV-314/execplan_review_doc",
+    "https://github.com/example/repo/pull/314",
+    "",
+  )
+  let driver = dir <> "/workspace-driver"
+  let log = dir <> "/workspace-driver.log"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> test_helpers.shell_quote(log)
+        <> "\n"
+        <> "if [ \"$1\" = refresh-base ] && [ \"$5\" = execplan/liv-314-surface@fork ]; then\n"
+        <> "  mkdir -p "
+        <> test_helpers.shell_quote(dir <> "/docs/plans")
+        <> "\n"
+        <> "  cp test/fixtures/execplan_v2/review-doc.valid.md "
+        <> test_helpers.shell_quote(review_path)
+        <> "\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"rebased_clean\",\"stage\":\"prepare_revision\",\"base_ref\":\"execplan/liv-314-surface@fork\",\"base_revision\":\"execplan/liv-314-surface@fork\",\"before_revision\":\"main\",\"after_revision\":\"branch\",\"conflict_files\":[]}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "printf '%s\\n' '{\"version\":1,\"status\":\"base_not_found\",\"failure_code\":\"base_not_found\",\"message\":\"missing revision base\"}'\n"
+        <> "exit 1\n",
+    )
+  let chmod = run_shell("chmod +x " <> test_helpers.shell_quote(driver))
+  assert chmod.status == step_artifact.StepSucceeded
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_REPO_ROOT="
+      <> test_helpers.shell_quote(dir <> "/repo")
+      <> " SCHERZO_WORKSPACE_DRIVER="
+      <> test_helpers.shell_quote(driver)
+      <> " SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=fork SCHERZO_ISSUE_CONTEXT="
+      <> test_helpers.shell_quote(issue_context)
+      <> " .scherzo/workflows/scripts/scherzo-execplan prepare-revision --from-issue-context --write-bundle "
+      <> test_helpers.shell_quote(dir <> "/previous-bundle.json")
+      <> " --write-review-doc-path "
+      <> test_helpers.shell_quote(dir <> "/review.path")
+      <> " --write-pack "
+      <> test_helpers.shell_quote(dir <> "/previous-pack.json"),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(driver_log) = simplifile.read(log)
+  assert string.contains(
+    driver_log,
+    "refresh-base --stage prepare_revision --target execplan/liv-314-surface@fork --json",
+  )
+  assert !string.contains(
+    driver_log,
+    "scherzo/execplan/LIV-314/execplan_review_doc",
   )
 }
 
@@ -2628,6 +2940,148 @@ pub fn materialize_commit_stack_revision_writes_existing_pr_publication_target_t
     target,
     "\"sha\": \"2222222222222222222222222222222222222222\"",
   )
+}
+
+pub fn materialize_commit_stack_revision_prefers_review_surface_over_conflicting_retained_manifest_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-prefers-surface"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+  let previous_bundle =
+    tmp_repo_path("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+  write_execplan_publication_manifest(
+    dir,
+    "run-1",
+    "published",
+    "scherzo/execplan/LIV-314/execplan_review_doc",
+    "https://github.com/example/repo/pull/314",
+    "3333333333333333333333333333333333333333",
+  )
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --previous-bundle "
+        <> test_helpers.shell_quote(previous_bundle)
+        <> " --target-output tmp/execplan-publication-target.json --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(target) =
+    simplifile.read(dir <> "/tmp/execplan-publication-target.json")
+  assert string.contains(target, "\"kind\": \"existing_pr_branch\"")
+  assert string.contains(target, "\"branch\": \"execplan/liv-314\"")
+  assert string.contains(
+    target,
+    "\"url\": \"https://github.com/living-systems/scherzo/pull/314\"",
+  )
+  assert !string.contains(
+    target,
+    "scherzo/execplan/LIV-314/execplan_review_doc",
+  )
+  assert !string.contains(target, "https://github.com/example/repo/pull/314")
+}
+
+pub fn materialize_commit_stack_revision_uses_retained_publication_manifest_when_surface_missing_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-retained-target"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+  let assert Ok(source_bundle) =
+    simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+  let previous_bundle = dir <> "/previous-bundle.json"
+  let without_surface = bundle_without_review_surface_publication(source_bundle)
+  let assert Ok(Nil) = simplifile.write(previous_bundle, without_surface)
+  write_execplan_publication_manifest(
+    dir,
+    "run-1",
+    "published",
+    "scherzo/execplan/LIV-314/execplan_review_doc",
+    "https://github.com/example/repo/pull/314",
+    "3333333333333333333333333333333333333333",
+  )
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --previous-bundle previous-bundle.json --target-output tmp/execplan-publication-target.json --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(target) =
+    simplifile.read(dir <> "/tmp/execplan-publication-target.json")
+  assert string.contains(target, "\"kind\": \"existing_pr_branch\"")
+  assert string.contains(
+    target,
+    "\"branch\": \"scherzo/execplan/LIV-314/execplan_review_doc\"",
+  )
+  assert string.contains(
+    target,
+    "\"url\": \"https://github.com/example/repo/pull/314\"",
+  )
+  assert string.contains(
+    target,
+    "\"sha\": \"2222222222222222222222222222222222222222\"",
+  )
+}
+
+pub fn materialize_commit_stack_revision_ignores_unsafe_retained_publication_manifest_test() {
+  let dir = "test/tmp/execplan-materialize-commit-stack-unsafe-retained-target"
+  let review_path = "docs/plans/LIV-910-plan.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_valid_review_doc(dir <> "/" <> review_path)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/review.path", review_path <> "\n")
+  write_fake_commit_stack_driver(dir <> "/bin/fake-driver", review_path)
+  write_fake_commit_stack_jj(dir <> "/bin/jj")
+  write_fake_commit_stack_git(dir <> "/bin/git")
+  test_helpers.chmod_executable(dir <> "/bin/fake-driver")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/git")
+  let assert Ok(source_bundle) =
+    simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+  let previous_bundle = dir <> "/previous-bundle.json"
+  let without_surface = bundle_without_review_surface_publication(source_bundle)
+  let assert Ok(Nil) = simplifile.write(previous_bundle, without_surface)
+  write_execplan_publication_manifest(
+    dir,
+    "run-1",
+    "published",
+    "../not-safe",
+    "https://github.com/example/repo/pull/314",
+    "3333333333333333333333333333333333333333",
+  )
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_WORKSPACE_DRIVER=./bin/fake-driver SCHERZO_GITHUB_REPO=example/repo SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_RUN_ID=run-1 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-commit-stack --review-doc-path-file review.path --previous-bundle previous-bundle.json --target-output tmp/execplan-publication-target.json --output tmp/execplan-commit-stack.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(target) =
+    simplifile.read(dir <> "/tmp/execplan-publication-target.json")
+  assert string.contains(target, "\"kind\": \"stable_branch\"")
+  assert !string.contains(target, "existing_pr_branch")
 }
 
 pub fn materialize_commit_stack_revision_falls_back_to_stable_branch_target_test() {
