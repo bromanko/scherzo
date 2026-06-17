@@ -1,6 +1,8 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -21,13 +23,59 @@ pub type SessionSnapshot {
   )
 }
 
+pub type AgentSlotState {
+  AgentSlotState(capacity: Int, active: Int, used: Int, known: Bool)
+}
+
+pub type DaemonRuntimeState {
+  DaemonRuntimeState(
+    host: String,
+    version: String,
+    daemon_label: Option(String),
+    agent_slots: AgentSlotState,
+  )
+}
+
+pub type RuntimeMetadata {
+  RuntimeMetadata(
+    host: String,
+    scherzo_version: String,
+    daemon_label: Option(String),
+    agent_slot_capacity: Int,
+  )
+}
+
+pub type DaemonEvent {
+  DaemonEvent(kind: String, type_: String, message: String)
+}
+
+pub type RunningQuery(timer) {
+  RunningQuery(
+    query_id: String,
+    worker: process.Pid,
+    generation: Int,
+    timer: timer,
+  )
+}
+
 pub type ClientMessage {
-  DaemonHello(daemon_id: String, boot_id: String, daemon_label: Option(String))
-  Heartbeat(sent_at_ms: Int, daemon_label: Option(String))
+  DaemonHello(
+    daemon_id: String,
+    boot_id: String,
+    daemon_label: Option(String),
+    state: DaemonRuntimeState,
+  )
+  Heartbeat(
+    sent_at_ms: Int,
+    daemon_label: Option(String),
+    state: DaemonRuntimeState,
+    event: Option(DaemonEvent),
+  )
   DaemonState(
     sent_at_ms: Int,
     dispatch_paused: Bool,
     daemon_label: Option(String),
+    state: DaemonRuntimeState,
     sessions: List(SessionSnapshot),
   )
   CommandResult(server_command_id: String, result: command.CommandResult)
@@ -92,14 +140,101 @@ pub fn session_from_summary(summary: event.SessionSummary) -> SessionSnapshot {
   )
 }
 
+pub fn runtime_daemon_label(metadata: RuntimeMetadata) -> Option(String) {
+  metadata.daemon_label
+}
+
+pub fn pop_running_query(
+  running_queries: List(RunningQuery(timer)),
+  worker: process.Pid,
+) -> Result(#(RunningQuery(timer), List(RunningQuery(timer))), Nil) {
+  pop_running_query_loop(running_queries, worker, [])
+}
+
+fn pop_running_query_loop(
+  remaining: List(RunningQuery(timer)),
+  worker: process.Pid,
+  acc: List(RunningQuery(timer)),
+) -> Result(#(RunningQuery(timer), List(RunningQuery(timer))), Nil) {
+  case remaining {
+    [] -> Error(Nil)
+    [entry, ..rest] ->
+      case entry.worker == worker {
+        True -> Ok(#(entry, list.append(list.reverse(acc), rest)))
+        False -> pop_running_query_loop(rest, worker, [entry, ..acc])
+      }
+  }
+}
+
+pub fn encode_daemon_hello_with_runtime(
+  daemon_id: String,
+  boot_id: String,
+  metadata: RuntimeMetadata,
+  sessions_result: Result(List(event.SessionSummary), a),
+) -> String {
+  encode_daemon_hello(
+    daemon_id,
+    boot_id,
+    metadata.daemon_label,
+    runtime_state_from_session_result(metadata, sessions_result),
+  )
+}
+
+pub fn encode_heartbeat_with_runtime(
+  sent_at_ms: Int,
+  metadata: RuntimeMetadata,
+  sessions_result: Result(List(event.SessionSummary), a),
+) -> String {
+  encode_heartbeat_with_state(
+    sent_at_ms,
+    metadata,
+    runtime_state_from_session_result(metadata, sessions_result),
+  )
+}
+
+pub fn encode_heartbeat_with_state(
+  sent_at_ms: Int,
+  metadata: RuntimeMetadata,
+  state: DaemonRuntimeState,
+) -> String {
+  encode_heartbeat(
+    sent_at_ms,
+    metadata.daemon_label,
+    state,
+    Some(heartbeat_event()),
+  )
+}
+
+pub fn encode_daemon_state_with_runtime(
+  sent_at_ms: Int,
+  dispatch_paused: Bool,
+  metadata: RuntimeMetadata,
+  sessions: List(event.SessionSummary),
+  snapshots: List(SessionSnapshot),
+) -> String {
+  encode_daemon_state(
+    sent_at_ms,
+    dispatch_paused,
+    metadata.daemon_label,
+    runtime_state_from_sessions(metadata, sessions),
+    snapshots,
+  )
+}
+
 pub fn encode_client_message(message: ClientMessage) -> String {
   case message {
-    DaemonHello(daemon_id, boot_id, daemon_label) ->
-      encode_daemon_hello(daemon_id, boot_id, daemon_label)
-    Heartbeat(sent_at_ms, daemon_label) ->
-      encode_heartbeat(sent_at_ms, daemon_label)
-    DaemonState(sent_at_ms, dispatch_paused, daemon_label, sessions) ->
-      encode_daemon_state(sent_at_ms, dispatch_paused, daemon_label, sessions)
+    DaemonHello(daemon_id, boot_id, daemon_label, state) ->
+      encode_daemon_hello(daemon_id, boot_id, daemon_label, state)
+    Heartbeat(sent_at_ms, daemon_label, state, event) ->
+      encode_heartbeat(sent_at_ms, daemon_label, state, event)
+    DaemonState(sent_at_ms, dispatch_paused, daemon_label, state, sessions) ->
+      encode_daemon_state(
+        sent_at_ms,
+        dispatch_paused,
+        daemon_label,
+        state,
+        sessions,
+      )
     CommandResult(server_command_id, result) ->
       encode_command_result(server_command_id, result)
     QueryResponse(query_id, result) -> encode_query_response(query_id, result)
@@ -118,11 +253,13 @@ pub fn encode_daemon_hello(
   daemon_id: String,
   boot_id: String,
   daemon_label: Option(String),
+  state: DaemonRuntimeState,
 ) -> String {
   [
     #("type", json.string("daemon_hello")),
     #("daemonId", json.string(daemon_id)),
     #("bootId", json.string(boot_id)),
+    #("state", daemon_runtime_state_to_json(state)),
   ]
   |> with_optional_daemon_label(daemon_label)
   |> json.object
@@ -132,11 +269,15 @@ pub fn encode_daemon_hello(
 pub fn encode_heartbeat(
   sent_at_ms: Int,
   daemon_label: Option(String),
+  state: DaemonRuntimeState,
+  event: Option(DaemonEvent),
 ) -> String {
   [
     #("type", json.string("heartbeat")),
     #("sentAtMs", json.int(sent_at_ms)),
+    #("state", daemon_runtime_state_to_json(state)),
   ]
+  |> with_optional_daemon_event(event)
   |> with_optional_daemon_label(daemon_label)
   |> json.object
   |> json.to_string
@@ -146,12 +287,14 @@ pub fn encode_daemon_state(
   sent_at_ms: Int,
   dispatch_paused: Bool,
   daemon_label: Option(String),
+  state: DaemonRuntimeState,
   sessions: List(SessionSnapshot),
 ) -> String {
   [
     #("type", json.string("daemon_state")),
     #("sentAtMs", json.int(sent_at_ms)),
     #("dispatchPaused", json.bool(dispatch_paused)),
+    #("state", daemon_runtime_state_to_json(state)),
     #("sessions", json.array(sessions, of: session_to_json)),
   ]
   |> with_optional_daemon_label(daemon_label)
@@ -240,6 +383,16 @@ fn with_optional_daemon_label(
 ) -> List(#(String, json.Json)) {
   case daemon_label {
     Some(label) -> [#("daemonLabel", json.string(label)), ..fields]
+    None -> fields
+  }
+}
+
+fn with_optional_daemon_event(
+  fields: List(#(String, json.Json)),
+  event: Option(DaemonEvent),
+) -> List(#(String, json.Json)) {
+  case event {
+    Some(event) -> [#("event", daemon_event_to_json(event)), ..fields]
     None -> fields
   }
 }
@@ -632,6 +785,108 @@ fn normalize_command_name(command_name: String) -> String {
     True -> "unknown"
     False -> command_name
   }
+}
+
+pub fn runtime_state_from_sessions(
+  metadata: RuntimeMetadata,
+  sessions: List(event.SessionSummary),
+) -> DaemonRuntimeState {
+  let active = active_session_count(sessions)
+  DaemonRuntimeState(
+    metadata.host,
+    metadata.scherzo_version,
+    metadata.daemon_label,
+    AgentSlotState(
+      normalize_agent_slot_capacity(metadata.agent_slot_capacity),
+      active,
+      active,
+      True,
+    ),
+  )
+}
+
+pub fn runtime_state_from_session_result(
+  metadata: RuntimeMetadata,
+  sessions_result: Result(List(event.SessionSummary), a),
+) -> DaemonRuntimeState {
+  case sessions_result {
+    Ok(sessions) -> runtime_state_from_sessions(metadata, sessions)
+    // nolint: thrown_away_error -- snapshot failure is represented explicitly as agentSlots.known=false.
+    Error(_) -> runtime_state_with_unknown_sessions(metadata)
+  }
+}
+
+pub fn runtime_state_with_unknown_sessions(
+  metadata: RuntimeMetadata,
+) -> DaemonRuntimeState {
+  DaemonRuntimeState(
+    metadata.host,
+    metadata.scherzo_version,
+    metadata.daemon_label,
+    AgentSlotState(
+      normalize_agent_slot_capacity(metadata.agent_slot_capacity),
+      0,
+      0,
+      False,
+    ),
+  )
+}
+
+fn heartbeat_event() -> DaemonEvent {
+  DaemonEvent("lifecycle", "heartbeat", "daemon heartbeat")
+}
+
+fn active_session_count(sessions: List(event.SessionSummary)) -> Int {
+  active_session_count_loop(sessions, 0)
+}
+
+fn active_session_count_loop(
+  sessions: List(event.SessionSummary),
+  count: Int,
+) -> Int {
+  case sessions {
+    [] -> count
+    [session, ..rest] ->
+      case session.status {
+        event.Exited(_) -> active_session_count_loop(rest, count)
+        _ -> active_session_count_loop(rest, count + 1)
+      }
+  }
+}
+
+fn normalize_agent_slot_capacity(value: Int) -> Int {
+  case value < 0 {
+    True -> 0
+    False -> value
+  }
+}
+
+fn daemon_runtime_state_to_json(state: DaemonRuntimeState) -> json.Json {
+  [
+    #("schemaVersion", json.int(1)),
+    #("host", json.string(state.host)),
+    #("version", json.string(state.version)),
+    #("agentSlots", agent_slots_to_json(state.agent_slots)),
+  ]
+  |> with_optional_daemon_label(state.daemon_label)
+  |> json.object
+}
+
+fn agent_slots_to_json(slots: AgentSlotState) -> json.Json {
+  json.object([
+    #("capacity", json.int(slots.capacity)),
+    #("active", json.int(slots.active)),
+    #("used", json.int(slots.used)),
+    #("known", json.bool(slots.known)),
+  ])
+}
+
+fn daemon_event_to_json(event: DaemonEvent) -> json.Json {
+  json.object([
+    #("kind", json.string(event.kind)),
+    #("type", json.string(event.type_)),
+    #("message", json.string(event.message)),
+  ])
 }
 
 fn session_to_json(session: SessionSnapshot) -> json.Json {

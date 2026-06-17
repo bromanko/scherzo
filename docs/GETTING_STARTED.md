@@ -200,9 +200,12 @@ ui_server:
   # --activate is explicit so version-controlled configs and loopback development URLs are not mutated accidentally.
   # Then set or review the non-secret credential_ref and optional daemon_label here. The daemon loads the durable
   # credential from the owner-only credential store, sends daemon_hello /
-  # heartbeat / daemon_state metadata over the outbound UI connection, retries temporary
+  # heartbeat / daemon_state metadata with stable state (host, version, agentSlots)
+  # and heartbeat event payloads over the outbound UI connection, retries temporary
   # outages in the background, and keeps local scherzoctl control as the
-  # fallback. Command/result bridge work remains disabled by default.
+  # fallback. Command/result bridge work remains disabled by default; when enabled,
+  # server_command frames receive correlated command_result replies for supported
+  # operator commands such as pause, resume, and reload.
   # endpoint: https://ui.example.test
   # credential_ref: work-laptop
   # daemon_label: Project Foo

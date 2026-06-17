@@ -12,6 +12,7 @@ import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/query/dto
 import scherzo/control/query/types as query_types
+import scherzo/control/remote/ui_protocol
 import scherzo/control/remote/ui_websocket_client
 import scherzo/control/server as control_server
 import scherzo/error
@@ -394,7 +395,12 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
       websocket_url: "wss://ui.example.test/api/daemons/ws",
       daemon_id: "daemon_abc",
       boot_id: "boot_abc",
-      daemon_label: None,
+      runtime_metadata: ui_protocol.RuntimeMetadata(
+        "test-host",
+        "scherzo test-version",
+        None,
+        1,
+      ),
       credential: "dcred_secret_1",
       heartbeat_interval_ms: 1000,
       state_interval_ms: 1000,

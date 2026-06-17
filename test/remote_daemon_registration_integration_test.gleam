@@ -112,6 +112,12 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
       "credential_revoked",
       150,
     )
+  let daemons_status =
+    remote_ui_test_server.wait_for_daemons_status_contains(
+      server,
+      "\"lastEvent\":{",
+      50,
+    )
   let log_entries = test_async.drain_subject(logs)
   let sanitized =
     transcript
@@ -126,6 +132,14 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
   assert string.contains(sanitized, "daemon_hello")
   assert string.contains(sanitized, "heartbeat")
   assert string.contains(sanitized, "daemon_state")
+  assert string.contains(sanitized, "\"state\":{")
+  assert string.contains(sanitized, "\"agentSlots\":{")
+  assert string.contains(sanitized, "\"event\":{")
+  assert string.contains(daemons_status, "\"lastKnownState\":{")
+  assert string.contains(daemons_status, "\"version\":")
+  assert string.contains(daemons_status, "\"agentSlots\":{")
+  assert string.contains(daemons_status, "\"lastEvent\":{")
+  assert string.contains(daemons_status, "\"message\":\"daemon heartbeat\"")
   assert string.contains(sanitized, "outage_attempt=closed_before_handshake")
   assert string.contains(sanitized, "credential_revoked")
   assert string.contains(sanitized, "local_scherzoctl_fallback=ok")
