@@ -204,6 +204,16 @@ pub fn apply(
           #(context.state, result)
         }
       }
+    command.WorkItemAction(_) -> {
+      let result =
+        command.rejected(
+          operator_command,
+          "work_item_action_requires_daemon_shell",
+          Some("work item actions must be handled by the daemon shell path"),
+        )
+      log_context_result(context, context.state, result, [])
+      #(context.state, result)
+    }
   }
 }
 

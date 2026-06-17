@@ -16,6 +16,8 @@ pub fn start(
   get_dispatch_paused get_dispatch_paused: fn(Int) -> Result(Bool, Nil),
   get_read_model_snapshot get_read_model_snapshot: fn(Int) ->
     Result(read_model.Snapshot, Nil),
+  get_projection_snapshot get_projection_snapshot: fn(Int) ->
+    Result(projection.Projection, Nil),
   get_outbox_snapshot get_outbox_snapshot: fn(Int) ->
     Result(List(#(String, projection.OutboxStatus)), Nil),
 ) -> Result(query_service.Handle, query_service.StartError) {
@@ -31,11 +33,12 @@ pub fn start(
         | query_types.TaskShow(_)
         | query_types.WorkItemList(_)
         | query_types.WorkItemShow(_) ->
-          query_backend.run(
+          query_backend.run_with_projection(
             effective,
             identity,
             tracker_adapter,
             get_dispatch_paused,
+            get_projection_snapshot,
             query,
           )
         query_types.OutboxList(outbox_query) ->

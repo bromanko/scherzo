@@ -36,10 +36,13 @@ import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/turn_telemetry
+import scherzo/work_item
+import scherzo/work_item/action_derivation
 import scherzo/work_item_invalidation
 import scherzo/workflow_attempt
 import scherzo/workflow_run
 import simplifile
+import support/fake_tracker_adapter
 import support/test_helpers
 import test_async
 
@@ -293,6 +296,19 @@ fn dependencies_with_tracker(
     make_tracker_adapter: fn(_) {
       adapter_legacy.adapter_from_legacy_client(tracker_client, "linear")
     },
+  )
+}
+
+fn dependencies_with_tracker_adapter(
+  log_subject: process.Subject(String),
+  tracker_adapter: adapter.TrackerAdapter,
+) -> daemon.RuntimeDependencies {
+  daemon.RuntimeDependencies(
+    ..dependencies(log_subject),
+    make_tracker_adapter: fn(_) { tracker_adapter },
+    make_control_token: fn() { Ok("test-token") },
+    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    stop_control_server: fn(_) { Nil },
   )
 }
 
@@ -2133,6 +2149,42 @@ pub fn abort_command_timeout_fallback_does_not_block_daemon_test() {
   hub.stop(hub_subject)
 }
 
+pub fn work_item_action_replays_from_daemon_receipts_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-work-item-action-replay")
+  let log_subject = process.new_subject()
+  let lookup_calls = process.new_subject()
+  let tracker_adapter = counting_work_item_tracker_adapter(lookup_calls)
+  let deps = dependencies_with_tracker_adapter(log_subject, tracker_adapter)
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let detail = fake_work_item_detail_with_actions()
+  let assert [run_workflow] = detail.summary.actions
+  let request =
+    command.WorkItemAction(
+      command.WorkItemActionRequest(
+        action_id: run_workflow.action_id,
+        action_instance_id: run_workflow.instance_id,
+        target_kind: "work_item",
+        target_provider: Some(fake_tracker_adapter.backend_kind),
+        target_id: detail.summary.source.id,
+        observed_fingerprint: run_workflow.fingerprint,
+        idempotency_key: "idem-daemon-replay",
+        params: [],
+      ),
+    )
+
+  let assert Ok(first) =
+    daemon.apply_operator_command(started.data, request, 1000)
+  let assert Ok(second) =
+    daemon.apply_operator_command(started.data, request, 1000)
+  assert first == second
+  let assert Ok("lookup:card-1") = process.receive(lookup_calls, within: 1000)
+  assert process.receive(lookup_calls, within: 20) == Error(Nil)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn prompt_command_reaches_live_worker_command_subject_test() {
   let candidate = issue("prompt-live-issue", "ABC-LIVE", "Todo")
   let tracker_client = tracker_with(candidate)
@@ -2298,6 +2350,42 @@ pub fn daemon_shutdown_closes_control_server_and_removes_control_file_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   let assert Error(client.ConnectionFailed(_)) = client.ping(control)
   assert simplifile.is_file(path) != Ok(True)
+}
+
+fn counting_work_item_tracker_adapter(
+  lookup_calls: process.Subject(String),
+) -> adapter.TrackerAdapter {
+  let base = fake_tracker_adapter.read_only_adapter()
+  let assert Some(work_items) = base.work_items
+  adapter.TrackerAdapter(
+    ..base,
+    work_items: Some(
+      adapter.WorkItemReadCapability(
+        list_work_items: work_items.list_work_items,
+        lookup_work_item: fn(request: work_item.WorkItemShowRequest) {
+          let lookup = case request.ref {
+            work_item.WorkItemLookupByDisplayId(display_id) ->
+              "display:" <> display_id
+            work_item.WorkItemLookupByRemoteId(provider: _, id: id) ->
+              "lookup:" <> id
+          }
+          process.send(lookup_calls, lookup)
+          work_items.lookup_work_item(request)
+        },
+      ),
+    ),
+    routing_metadata: Some(
+      adapter.RoutingMetadataCapability(
+        workflow_labels: fn(value) { task.label_names(value) },
+        blocker_refs: fn(value) { value.blockers },
+      ),
+    ),
+  )
+}
+
+fn fake_work_item_detail_with_actions() -> work_item.WorkItemDetail {
+  let assert [detail] = fake_tracker_adapter.default_work_item_details()
+  action_derivation.detail_with_actions(detail, False)
 }
 
 fn assert_session_stop_command(

@@ -104,7 +104,8 @@ pub fn handle_submitted(
     | command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
     | command.CleanupOrphanSteps(_, _)
-    | command.RunScheduleNow(_) -> shell_command(state, request)
+    | command.RunScheduleNow(_)
+    | command.WorkItemAction(_) -> shell_command(state, request)
   }
 }
 

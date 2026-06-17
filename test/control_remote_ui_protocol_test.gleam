@@ -1,5 +1,6 @@
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_protocol
 
@@ -70,6 +71,20 @@ pub fn ui_protocol_decodes_server_messages_test() {
       "{\"type\":\"daemon_identity_revoked\",\"reason\":\"identity revoked\"}",
     )
   assert identity_reason == "identity revoked"
+}
+
+pub fn ui_protocol_decodes_work_item_action_server_command_test() {
+  let payload =
+    "{\"type\":\"server_command\",\"serverCommandId\":\"cmd-1\",\"daemonId\":\"daemon_abc\",\"bootId\":\"boot_abc\",\"command\":{\"type\":\"work_item_action\",\"action_id\":\"work_subtask.cancel\",\"action_instance_id\":\"wia_1\",\"target_kind\":\"workflow_subtask\",\"target_provider\":\"linear\",\"target_id\":\"issue-1\",\"observed_fingerprint\":\"fp-1\",\"idempotency_key\":\"idem-1\",\"params\":[]}}"
+
+  let assert Ok(ui_protocol.ServerCommand(
+    _,
+    _,
+    _,
+    command.WorkItemAction(request),
+  )) = ui_protocol.decode_server_message(payload)
+  assert request.action_id == "work_subtask.cancel"
+  assert request.target_id == "issue-1"
 }
 
 pub fn ui_protocol_decodes_query_request_test() {

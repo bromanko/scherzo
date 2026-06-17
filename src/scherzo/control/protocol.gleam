@@ -65,6 +65,11 @@ pub type Request {
     response: command.UiResponse,
   )
   RunScheduleNow(id: String, token: String, job_id: String)
+  WorkItemAction(
+    id: String,
+    token: String,
+    request: command.WorkItemActionRequest,
+  )
 }
 
 pub type ErrorBody {
@@ -107,6 +112,14 @@ type RequestFields {
     value: Option(String),
     job_id: Option(String),
     dry_run: Option(Bool),
+    action_id: Option(String),
+    action_instance_id: Option(String),
+    target_kind: Option(String),
+    target_provider: Option(String),
+    target_id: Option(String),
+    observed_fingerprint: Option(String),
+    idempotency_key: Option(String),
+    params: Option(Dynamic),
   )
 }
 
@@ -132,6 +145,7 @@ pub fn request_id(request: Request) -> String {
     PromptSession(id, _, _, _) -> id
     RespondUi(id, _, _, _, _) -> id
     RunScheduleNow(id, _, _) -> id
+    WorkItemAction(id, _, _) -> id
   }
 }
 
@@ -157,6 +171,7 @@ pub fn request_token(request: Request) -> String {
     PromptSession(_, token, _, _) -> token
     RespondUi(_, token, _, _, _) -> token
     RunScheduleNow(_, token, _) -> token
+    WorkItemAction(_, token, _) -> token
   }
 }
 
@@ -273,6 +288,12 @@ pub fn request_to_json(request: Request) -> json.Json {
         ..base_request_entries(id, token, "schedule_run_now")
       ]
       |> json.object
+    WorkItemAction(id, token, request) ->
+      list.append(
+        work_item_action_request_entries(request),
+        base_request_entries(id, token, "work_item_action"),
+      )
+      |> json.object
   }
 }
 
@@ -324,6 +345,29 @@ fn ui_response_entries(
     command.UiCancel -> [#("cancel", json.bool(True))]
     command.UiValue(value) -> [#("value", json.string(value))]
   }
+}
+
+fn work_item_action_request_entries(
+  request: command.WorkItemActionRequest,
+) -> List(#(String, json.Json)) {
+  [
+    #("action_id", json.string(request.action_id)),
+    #("action_instance_id", json.string(request.action_instance_id)),
+    #("target_kind", json.string(request.target_kind)),
+    #(
+      "target_provider",
+      json.nullable(request.target_provider, of: json.string),
+    ),
+    #("target_id", json.string(request.target_id)),
+    #("observed_fingerprint", json.string(request.observed_fingerprint)),
+    #("idempotency_key", json.string(request.idempotency_key)),
+    #("params", json.array(request.params, of: work_item_action_param_to_json)),
+  ]
+}
+
+fn work_item_action_param_to_json(param: #(String, String)) -> json.Json {
+  let #(name, value) = param
+  json.object([#("name", json.string(name)), #("value", json.string(value))])
 }
 
 fn base_request_entries(
@@ -494,6 +538,11 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
     "schedule_run_now" | "run_schedule_now" ->
       case required_job_id(fields) {
         Ok(job_id) -> Ok(RunScheduleNow(fields.id, fields.token, job_id))
+        Error(err) -> Error(err)
+      }
+    "work_item_action" ->
+      case required_work_item_action_request(fields) {
+        Ok(request) -> Ok(WorkItemAction(fields.id, fields.token, request))
         Error(err) -> Error(err)
       }
     other ->
@@ -686,6 +735,97 @@ fn required_run_id(fields: RequestFields) -> Result(String, RequestError) {
   }
 }
 
+fn required_work_item_action_request(
+  fields: RequestFields,
+) -> Result(command.WorkItemActionRequest, RequestError) {
+  case
+    required_non_empty(fields.id, fields.action_id, "action_id"),
+    required_non_empty(
+      fields.id,
+      fields.action_instance_id,
+      "action_instance_id",
+    ),
+    required_non_empty(fields.id, fields.target_kind, "target_kind"),
+    required_non_empty(fields.id, fields.target_id, "target_id"),
+    required_non_empty(
+      fields.id,
+      fields.observed_fingerprint,
+      "observed_fingerprint",
+    ),
+    required_non_empty(fields.id, fields.idempotency_key, "idempotency_key"),
+    optional_work_item_action_params(fields)
+  {
+    Ok(action_id),
+      Ok(action_instance_id),
+      Ok(target_kind),
+      Ok(target_id),
+      Ok(observed_fingerprint),
+      Ok(idempotency_key),
+      Ok(params)
+    ->
+      Ok(command.WorkItemActionRequest(
+        action_id: action_id,
+        action_instance_id: action_instance_id,
+        target_kind: target_kind,
+        target_provider: fields.target_provider,
+        target_id: target_id,
+        observed_fingerprint: observed_fingerprint,
+        idempotency_key: idempotency_key,
+        params: params,
+      ))
+    Error(err), _, _, _, _, _, _
+    | _, Error(err), _, _, _, _, _
+    | _, _, Error(err), _, _, _, _
+    | _, _, _, Error(err), _, _, _
+    | _, _, _, _, Error(err), _, _
+    | _, _, _, _, _, Error(err), _
+    | _, _, _, _, _, _, Error(err)
+    -> Error(err)
+  }
+}
+
+fn optional_work_item_action_params(
+  fields: RequestFields,
+) -> Result(List(#(String, String)), RequestError) {
+  case fields.params {
+    Some(value) -> decode_work_item_action_params(fields.id, value)
+    None -> Ok([])
+  }
+}
+
+fn decode_work_item_action_params(
+  id: String,
+  value: Dynamic,
+) -> Result(List(#(String, String)), RequestError) {
+  case decode.run(value, decode.list(work_item_action_param_decoder())) {
+    Ok(params) -> Ok(params)
+    Error(_) -> invalid(id, "params must be an array of {name, value} objects")
+  }
+}
+
+fn work_item_action_param_decoder() -> decode.Decoder(#(String, String)) {
+  use name <- decode.field("name", decode.string)
+  use value <- decode.field("value", decode.string)
+  decode.success(#(name, value))
+}
+
+fn required_non_empty(
+  id: String,
+  value: Option(String),
+  field_name: String,
+) -> Result(String, RequestError) {
+  case value {
+    Some(value) -> {
+      let value = string.trim(value)
+      case value == "" {
+        True -> invalid(id, field_name <> " must not be empty")
+        False -> Ok(value)
+      }
+    }
+    None -> invalid(id, "missing " <> field_name)
+  }
+}
+
 fn request_dry_run(fields: RequestFields) -> Bool {
   case fields.dry_run {
     Some(value) -> value
@@ -801,6 +941,46 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.bool),
   )
+  use action_id <- decode.optional_field(
+    "action_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use action_instance_id <- decode.optional_field(
+    "action_instance_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use target_kind <- decode.optional_field(
+    "target_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  use target_provider <- decode.optional_field(
+    "target_provider",
+    None,
+    decode.optional(decode.string),
+  )
+  use target_id <- decode.optional_field(
+    "target_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use observed_fingerprint <- decode.optional_field(
+    "observed_fingerprint",
+    None,
+    decode.optional(decode.string),
+  )
+  use idempotency_key <- decode.optional_field(
+    "idempotency_key",
+    None,
+    decode.optional(decode.string),
+  )
+  use params <- decode.optional_field(
+    "params",
+    None,
+    decode.optional(decode.dynamic),
+  )
   decode.success(RequestFields(
     version: version,
     id: id,
@@ -823,6 +1003,14 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     value: value,
     job_id: job_id,
     dry_run: dry_run,
+    action_id: action_id,
+    action_instance_id: action_instance_id,
+    target_kind: target_kind,
+    target_provider: target_provider,
+    target_id: target_id,
+    observed_fingerprint: observed_fingerprint,
+    idempotency_key: idempotency_key,
+    params: params,
   ))
 }
 
@@ -961,6 +1149,7 @@ pub fn command_request(
     command.RespondUi(session_id, request_id, response) ->
       RespondUi(id, token, session_id, request_id, response)
     command.RunScheduleNow(job_id) -> RunScheduleNow(id, token, job_id)
+    command.WorkItemAction(request) -> WorkItemAction(id, token, request)
   }
 }
 
@@ -997,6 +1186,7 @@ pub fn request_operator_command(
     RespondUi(_, _, session_id, request_id, response) ->
       Some(command.RespondUi(session_id, request_id, response))
     RunScheduleNow(_, _, job_id) -> Some(command.RunScheduleNow(job_id))
+    WorkItemAction(_, _, request) -> Some(command.WorkItemAction(request))
     Ping(_, _)
     | ListSessions(_, _)
     | GetSession(_, _, _)

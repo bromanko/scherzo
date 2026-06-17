@@ -130,6 +130,20 @@ pub fn operator_command_codec_roundtrips_all_variants_test() {
     command.UiValue("choice"),
   ))
   assert_command_roundtrip(command.RunScheduleNow("nightly-repair"))
+  assert_command_roundtrip(
+    command.WorkItemAction(
+      command.WorkItemActionRequest(
+        action_id: "work_subtask.cancel",
+        action_instance_id: "wia_123",
+        target_kind: "workflow_subtask",
+        target_provider: Some("linear"),
+        target_id: "issue-123",
+        observed_fingerprint: "fingerprint-123",
+        idempotency_key: "idempotency-123",
+        params: [#("confirm", "true")],
+      ),
+    ),
+  )
 }
 
 pub fn operator_command_codec_preserves_free_form_text_whitespace_test() {
@@ -202,6 +216,14 @@ pub fn invalid_operator_command_payloads_return_stable_errors_test() {
   )
   assert_invalid_command(
     "{\"type\":\"schedule_run_now\",\"job_id\":\"   \"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"work_item_action\",\"action_id\":\"work_subtask.cancel\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"work_item_action\",\"action_id\":\"work_subtask.cancel\",\"action_instance_id\":\"wia_1\",\"target_kind\":\"workflow_subtask\",\"target_id\":\"issue-1\",\"observed_fingerprint\":\"fp\",\"idempotency_key\":\"key\",\"params\":{}}",
     "invalid_command",
   )
 }

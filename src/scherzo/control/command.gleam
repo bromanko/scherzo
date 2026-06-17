@@ -22,6 +22,19 @@ pub type UiResponse {
   UiValue(String)
 }
 
+pub type WorkItemActionRequest {
+  WorkItemActionRequest(
+    action_id: String,
+    action_instance_id: String,
+    target_kind: String,
+    target_provider: Option(String),
+    target_id: String,
+    observed_fingerprint: String,
+    idempotency_key: String,
+    params: List(#(String, String)),
+  )
+}
+
 pub type OperatorCommand {
   PauseDispatch
   ResumeDispatch
@@ -37,6 +50,7 @@ pub type OperatorCommand {
   PromptSession(session_id: String, message: String)
   RespondUi(session_id: String, request_id: String, response: UiResponse)
   RunScheduleNow(job_id: String)
+  WorkItemAction(WorkItemActionRequest)
 }
 
 pub type CommandStatus {
@@ -77,6 +91,14 @@ type CommandFields {
     value: Option(String),
     job_id: Option(String),
     dry_run: Option(Bool),
+    action_id: Option(String),
+    action_instance_id: Option(String),
+    target_kind: Option(String),
+    target_provider: Option(String),
+    target_id: Option(String),
+    observed_fingerprint: Option(String),
+    idempotency_key: Option(String),
+    params: Option(Dynamic),
   )
 }
 
@@ -106,6 +128,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     PromptSession(_, _) -> "prompt"
     RespondUi(_, _, _) -> "respond_ui"
     RunScheduleNow(_) -> "schedule_run_now"
+    WorkItemAction(_) -> "work_item_action"
   }
 }
 
@@ -124,6 +147,8 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
     | RespondUi(session_id, _, _) -> Some(session_id)
     CleanupOrphanSteps(run_id, _) -> Some("run:" <> run_id)
     RunScheduleNow(job_id) -> Some(job_id)
+    WorkItemAction(request) ->
+      Some(request.target_kind <> ":" <> request.target_id)
   }
 }
 
@@ -257,6 +282,12 @@ pub fn operator_command_to_json(
         #("job_id", json.string(job_id)),
         ..base_command_entries("schedule_run_now")
       ]
+      |> json.object
+    WorkItemAction(request) ->
+      list.append(
+        work_item_action_entries(request),
+        base_command_entries("work_item_action"),
+      )
       |> json.object
   }
 }
@@ -405,6 +436,29 @@ fn ui_response_entries(response: UiResponse) -> List(#(String, json.Json)) {
   }
 }
 
+fn work_item_action_entries(
+  request: WorkItemActionRequest,
+) -> List(#(String, json.Json)) {
+  [
+    #("action_id", json.string(request.action_id)),
+    #("action_instance_id", json.string(request.action_instance_id)),
+    #("target_kind", json.string(request.target_kind)),
+    #(
+      "target_provider",
+      json.nullable(request.target_provider, of: json.string),
+    ),
+    #("target_id", json.string(request.target_id)),
+    #("observed_fingerprint", json.string(request.observed_fingerprint)),
+    #("idempotency_key", json.string(request.idempotency_key)),
+    #("params", json.array(request.params, of: param_to_json)),
+  ]
+}
+
+fn param_to_json(param: #(String, String)) -> json.Json {
+  let #(name, value) = param
+  json.object([#("name", json.string(name)), #("value", json.string(value))])
+}
+
 fn command_fields_decoder() -> decode.Decoder(CommandFields) {
   use type_ <- decode.optional_field(
     "type",
@@ -481,6 +535,46 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     None,
     decode.optional(decode.bool),
   )
+  use action_id <- decode.optional_field(
+    "action_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use action_instance_id <- decode.optional_field(
+    "action_instance_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use target_kind <- decode.optional_field(
+    "target_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  use target_provider <- decode.optional_field(
+    "target_provider",
+    None,
+    decode.optional(decode.string),
+  )
+  use target_id <- decode.optional_field(
+    "target_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use observed_fingerprint <- decode.optional_field(
+    "observed_fingerprint",
+    None,
+    decode.optional(decode.string),
+  )
+  use idempotency_key <- decode.optional_field(
+    "idempotency_key",
+    None,
+    decode.optional(decode.string),
+  )
+  use params <- decode.optional_field(
+    "params",
+    None,
+    decode.optional(decode.dynamic),
+  )
   decode.success(CommandFields(
     type_: type_,
     issue_id: issue_id,
@@ -497,6 +591,14 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     value: value,
     job_id: job_id,
     dry_run: dry_run,
+    action_id: action_id,
+    action_instance_id: action_instance_id,
+    target_kind: target_kind,
+    target_provider: target_provider,
+    target_id: target_id,
+    observed_fingerprint: observed_fingerprint,
+    idempotency_key: idempotency_key,
+    params: params,
   ))
 }
 
@@ -547,6 +649,9 @@ fn operator_command_from_fields(
         }
         "schedule_run_now" ->
           required_job_id(fields) |> result.map(RunScheduleNow)
+        "work_item_action" ->
+          required_work_item_action_request(fields)
+          |> result.map(WorkItemAction)
         _ ->
           Error(CodecError("unknown_command", "unknown command type: " <> type_))
       }
@@ -661,6 +766,87 @@ fn required_run_id(fields: CommandFields) -> Result(String, CodecError) {
   }
 }
 
+fn required_work_item_action_request(
+  fields: CommandFields,
+) -> Result(WorkItemActionRequest, CodecError) {
+  use action_id <- result.try(required_action_id(fields))
+  use action_instance_id <- result.try(required_action_instance_id(fields))
+  use target_kind <- result.try(required_target_kind(fields))
+  use target_id <- result.try(required_target_id(fields))
+  use observed_fingerprint <- result.try(required_observed_fingerprint(fields))
+  use idempotency_key <- result.try(required_idempotency_key(fields))
+  use params <- result.try(optional_params(fields))
+  Ok(WorkItemActionRequest(
+    action_id: action_id,
+    action_instance_id: action_instance_id,
+    target_kind: target_kind,
+    target_provider: fields.target_provider,
+    target_id: target_id,
+    observed_fingerprint: observed_fingerprint,
+    idempotency_key: idempotency_key,
+    params: params,
+  ))
+}
+
+fn required_action_id(fields: CommandFields) -> Result(String, CodecError) {
+  case fields.action_id {
+    Some(value) -> trimmed_non_empty(value, "action_id must not be empty")
+    None -> invalid_command("missing action_id")
+  }
+}
+
+fn required_action_instance_id(
+  fields: CommandFields,
+) -> Result(String, CodecError) {
+  case fields.action_instance_id {
+    Some(value) ->
+      trimmed_non_empty(value, "action_instance_id must not be empty")
+    None -> invalid_command("missing action_instance_id")
+  }
+}
+
+fn required_target_kind(fields: CommandFields) -> Result(String, CodecError) {
+  case fields.target_kind {
+    Some(value) -> trimmed_non_empty(value, "target_kind must not be empty")
+    None -> invalid_command("missing target_kind")
+  }
+}
+
+fn required_target_id(fields: CommandFields) -> Result(String, CodecError) {
+  case fields.target_id {
+    Some(value) -> trimmed_non_empty(value, "target_id must not be empty")
+    None -> invalid_command("missing target_id")
+  }
+}
+
+fn required_observed_fingerprint(
+  fields: CommandFields,
+) -> Result(String, CodecError) {
+  case fields.observed_fingerprint {
+    Some(value) ->
+      trimmed_non_empty(value, "observed_fingerprint must not be empty")
+    None -> invalid_command("missing observed_fingerprint")
+  }
+}
+
+fn required_idempotency_key(
+  fields: CommandFields,
+) -> Result(String, CodecError) {
+  case fields.idempotency_key {
+    Some(value) -> trimmed_non_empty(value, "idempotency_key must not be empty")
+    None -> invalid_command("missing idempotency_key")
+  }
+}
+
+fn optional_params(
+  fields: CommandFields,
+) -> Result(List(#(String, String)), CodecError) {
+  case fields.params {
+    Some(params) -> decode_params(params)
+    None -> Ok([])
+  }
+}
+
 fn command_dry_run(fields: CommandFields) -> Bool {
   case fields.dry_run {
     Some(value) -> value
@@ -730,6 +916,22 @@ fn command_result_from_fields_decoder(
         expected: "known command result status",
       )
   }
+}
+
+fn decode_params(
+  value: Dynamic,
+) -> Result(List(#(String, String)), CodecError) {
+  case decode.run(value, decode.list(param_decoder())) {
+    Ok(params) -> Ok(params)
+    Error(_) ->
+      invalid_command("params must be an array of {name, value} objects")
+  }
+}
+
+fn param_decoder() -> decode.Decoder(#(String, String)) {
+  use name <- decode.field("name", decode.string)
+  use value <- decode.field("value", decode.string)
+  decode.success(#(name, value))
 }
 
 fn known_status_from_string(

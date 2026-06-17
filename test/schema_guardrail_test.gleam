@@ -1645,6 +1645,23 @@ fn request_examples() -> List(RequestExample) {
       "RunScheduleNow",
       protocol.RunScheduleNow("req-schedule-now", "secret", "nightly-repair"),
     ),
+    RequestExample(
+      "WorkItemAction",
+      protocol.WorkItemAction(
+        "req-work-item-action",
+        "secret",
+        command.WorkItemActionRequest(
+          action_id: "work_subtask.cancel",
+          action_instance_id: "wia_1",
+          target_kind: "workflow_subtask",
+          target_provider: Some("linear"),
+          target_id: "issue-1",
+          observed_fingerprint: "fp-1",
+          idempotency_key: "idem-1",
+          params: [#("confirm", "true")],
+        ),
+      ),
+    ),
   ]
 }
 

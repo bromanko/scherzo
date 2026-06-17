@@ -123,6 +123,21 @@ pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
     command.RespondUi("session-1", "ui-2", command.UiValue("choice")),
   )
   assert_command_roundtrip("12", command.RunScheduleNow("nightly-repair"))
+  assert_command_roundtrip(
+    "13",
+    command.WorkItemAction(
+      command.WorkItemActionRequest(
+        action_id: "work_subtask.cancel",
+        action_instance_id: "wia_1",
+        target_kind: "workflow_subtask",
+        target_provider: Some("linear"),
+        target_id: "issue-1",
+        observed_fingerprint: "fp-1",
+        idempotency_key: "idem-1",
+        params: [#("confirm", "true")],
+      ),
+    ),
+  )
 }
 
 pub fn mutating_command_aliases_decode_test() {
@@ -239,6 +254,12 @@ pub fn invalid_mutating_commands_return_invalid_request_test() {
   )
   assert_invalid_request(
     "{\"version\":1,\"type\":\"schedule_run_now\",\"id\":\"14\",\"token\":\"secret\",\"job_id\":\"   \"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"work_item_action\",\"id\":\"15\",\"token\":\"secret\",\"action_id\":\"work_subtask.cancel\"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"work_item_action\",\"id\":\"16\",\"token\":\"secret\",\"action_id\":\"work_subtask.cancel\",\"action_instance_id\":\"wia_1\",\"target_kind\":\"workflow_subtask\",\"target_id\":\"issue-1\",\"observed_fingerprint\":\"fp\",\"idempotency_key\":\"idem\",\"params\":{}}",
   )
 }
 

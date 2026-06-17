@@ -6,17 +6,40 @@ import scherzo/control/query/cursor
 import scherzo/control/query/dto
 import scherzo/control/query/types
 import scherzo/daemon_identity
+import scherzo/state/projection
 import scherzo/tracker/adapter
 import scherzo/work_item
+import scherzo/work_item/action_derivation
 
 pub type DispatchPausedReader =
   fn(Int) -> Result(Bool, Nil)
+
+pub type ProjectionReader =
+  fn(Int) -> Result(projection.Projection, Nil)
 
 pub fn run(
   effective: config_types.EffectiveConfig,
   identity: daemon_identity.DaemonIdentity,
   tracker_adapter: adapter.TrackerAdapter,
   read_dispatch_paused: DispatchPausedReader,
+  query: types.QueryRequest,
+) -> Result(types.QueryResponse, types.QueryError) {
+  run_with_projection(
+    effective,
+    identity,
+    tracker_adapter,
+    read_dispatch_paused,
+    fn(_) { Ok(projection.new()) },
+    query,
+  )
+}
+
+pub fn run_with_projection(
+  effective: config_types.EffectiveConfig,
+  identity: daemon_identity.DaemonIdentity,
+  tracker_adapter: adapter.TrackerAdapter,
+  read_dispatch_paused: DispatchPausedReader,
+  read_projection: ProjectionReader,
   query: types.QueryRequest,
 ) -> Result(types.QueryResponse, types.QueryError) {
   case query {
@@ -32,9 +55,19 @@ pub fn run(
     types.TaskShow(task_query) ->
       execute_task_show_query(tracker_adapter, task_query)
     types.WorkItemList(work_item_query) ->
-      execute_work_item_list_query(tracker_adapter, work_item_query)
+      execute_work_item_list_query(
+        tracker_adapter,
+        read_dispatch_paused,
+        read_projection,
+        work_item_query,
+      )
     types.WorkItemShow(work_item_query) ->
-      execute_work_item_show_query(tracker_adapter, work_item_query)
+      execute_work_item_show_query(
+        tracker_adapter,
+        read_dispatch_paused,
+        read_projection,
+        work_item_query,
+      )
     types.OutboxList(_) | types.OutboxShow(_) ->
       Error(types.QueryError(
         types.UnsupportedQuery,
@@ -118,6 +151,8 @@ fn execute_task_show_query(
 
 fn execute_work_item_list_query(
   tracker_adapter: adapter.TrackerAdapter,
+  read_dispatch_paused: DispatchPausedReader,
+  _read_projection: ProjectionReader,
   query: types.WorkItemListQuery,
 ) -> Result(types.QueryResponse, types.QueryError) {
   use capability <- try_query(required_work_item_capability(tracker_adapter))
@@ -134,6 +169,10 @@ fn execute_work_item_list_query(
       )),
     ),
   )
+  use dispatch_paused <- try_query(read_dispatch_paused_query(
+    read_dispatch_paused,
+  ))
+  let page = action_derivation.page_with_actions(page, dispatch_paused)
   let next_cursor = case page.has_more {
     True -> Some(cursor.encode_offset(offset + list.length(page.items)))
     False -> None
@@ -147,23 +186,43 @@ fn execute_work_item_list_query(
   )
 }
 
+pub fn load_work_item_detail(
+  tracker_adapter: adapter.TrackerAdapter,
+  ref ref: types.TaskQueryRef,
+) -> Result(Option(work_item.WorkItemDetail), types.QueryError) {
+  use capability <- try_query(required_work_item_capability(tracker_adapter))
+  use ref <- try_query(work_item_query_ref_to_adapter_ref(ref))
+  map_tracker_query_error(
+    capability.lookup_work_item(work_item.WorkItemShowRequest(
+      ref: ref,
+      subtask_limit: work_item.default_show_subtask_limit,
+      label_limit: work_item.default_label_limit,
+    )),
+  )
+}
+
 fn execute_work_item_show_query(
   tracker_adapter: adapter.TrackerAdapter,
+  read_dispatch_paused: DispatchPausedReader,
+  read_projection: ProjectionReader,
   query: types.WorkItemShowQuery,
 ) -> Result(types.QueryResponse, types.QueryError) {
-  use capability <- try_query(required_work_item_capability(tracker_adapter))
-  use ref <- try_query(work_item_query_ref_to_adapter_ref(query.ref))
-  use found <- try_query(
-    map_tracker_query_error(
-      capability.lookup_work_item(work_item.WorkItemShowRequest(
-        ref: ref,
-        subtask_limit: work_item.default_show_subtask_limit,
-        label_limit: work_item.default_label_limit,
-      )),
-    ),
-  )
+  use found <- try_query(load_work_item_detail(tracker_adapter, ref: query.ref))
+  use dispatch_paused <- try_query(read_dispatch_paused_query(
+    read_dispatch_paused,
+  ))
+  use projection_state <- try_query(read_projection_query(read_projection))
   case found {
-    Some(item) -> Ok(types.WorkItemShowResponse(item))
+    Some(item) ->
+      Ok(
+        types.WorkItemShowResponse(
+          action_derivation.detail_with_actions_in_projection(
+            item,
+            dispatch_paused,
+            projection_state: projection_state,
+          ),
+        ),
+      )
     None -> Error(types.QueryError(types.QueryNotFound, "task not found"))
   }
 }
@@ -218,6 +277,32 @@ fn work_item_query_ref_to_adapter_ref(
     types.TaskDisplayId(value) -> Ok(work_item.WorkItemLookupByDisplayId(value))
     types.TaskRemoteId(provider: provider, id: id) ->
       Ok(work_item.WorkItemLookupByRemoteId(provider: provider, id: id))
+  }
+}
+
+fn read_dispatch_paused_query(
+  read_dispatch_paused: DispatchPausedReader,
+) -> Result(Bool, types.QueryError) {
+  case read_dispatch_paused(100) {
+    Ok(dispatch_paused) -> Ok(dispatch_paused)
+    Error(Nil) ->
+      Error(types.QueryError(
+        types.QueryTimeout,
+        "work item action state query timed out",
+      ))
+  }
+}
+
+fn read_projection_query(
+  read_projection: ProjectionReader,
+) -> Result(projection.Projection, types.QueryError) {
+  case read_projection(100) {
+    Ok(projection_state) -> Ok(projection_state)
+    Error(Nil) ->
+      Error(types.QueryError(
+        types.QueryTimeout,
+        "work item action projection query timed out",
+      ))
   }
 }
 
