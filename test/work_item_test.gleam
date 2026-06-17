@@ -112,6 +112,33 @@ pub fn work_item_action_derivation_adds_stable_parent_and_subtask_actions_test()
   assert review_disabled_reason.code == "artifacts_unavailable"
 }
 
+pub fn work_item_action_derivation_adds_subtask_actions_to_list_child_rows_test() {
+  let detail =
+    work_item.detail_from_task_and_subtasks(
+      base_task(remote_id: "issue-list", display_id: "LIV-LIST"),
+      [base_task(remote_id: "issue-list-child", display_id: "LIV-LIST.1")],
+      work_item.default_label_limit,
+      work_item.default_show_subtask_limit,
+    )
+  let assert [child] = detail.subtasks
+  let page =
+    work_item.WorkItemProviderPage(
+      items: [detail.summary, child],
+      has_more: False,
+    )
+    |> action_derivation.page_with_actions(False)
+
+  let assert [parent_row, child_row] = page.items
+  let assert [run_workflow] = parent_row.actions
+  assert run_workflow.action_id == action.run_workflow_action_id
+  assert list.map(child_row.actions, fn(item) { item.action_id })
+    == [
+      action.cancel_action_id,
+      action.review_artifacts_action_id,
+      action.fix_retry_action_id,
+    ]
+}
+
 pub fn work_item_action_derivation_enables_review_artifacts_from_projection_test() {
   let detail =
     work_item.detail_from_task_and_subtasks(
