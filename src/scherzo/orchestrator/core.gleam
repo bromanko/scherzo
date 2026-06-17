@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/orchestrator/parked_issue
 import scherzo/runtime/reason
 import scherzo/runtime/recovery_policy
 import scherzo/runtime/state as orchestrator_state
@@ -761,26 +762,15 @@ pub fn unpark_if_issue_changed(
   state: orchestrator_state.RuntimeState,
   issue: tracker_issue.Issue,
 ) -> orchestrator_state.RuntimeState {
-  let identity = orchestrator_state.issue_identity(issue)
-  case dict.get(state.parked, identity) {
-    Ok(parked) ->
-      case parked.release_policy {
-        orchestrator_state.ExplicitUnparkOnly -> state
-        orchestrator_state.AutoUnparkOnIssueChange(stored) ->
-          case tracker_issue.fingerprint_matches(stored, issue) {
-            True -> state
-            False ->
-              orchestrator_state.RuntimeState(
-                ..state,
-                claimed: dict.delete(state.claimed, identity),
-                parked: dict.delete(state.parked, identity),
-                retry_attempts: dict.delete(state.retry_attempts, identity),
-                issue_counters: dict.delete(state.issue_counters, identity),
-              )
-          }
-      }
-    Error(Nil) -> state
-  }
+  parked_issue.unpark_if_issue_changed(state, issue)
+}
+
+pub fn unpark_if_issue_changed_or_retry_intent(
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
+) -> orchestrator_state.RuntimeState {
+  parked_issue.unpark_if_issue_changed_or_retry_intent(state, config, issue)
 }
 
 pub fn backoff_delay(attempt: Int, max_ms: Int) -> Int {

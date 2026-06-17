@@ -654,7 +654,11 @@ fn dispatch_candidate(
       let state =
         transition_types.State(
           ..state,
-          runtime: core.unpark_if_issue_changed(state.runtime, issue),
+          runtime: core.unpark_if_issue_changed_or_retry_intent(
+            state.runtime,
+            context.effective,
+            issue,
+          ),
         )
       let decision = core.blocker_decision(context.effective, issue)
       case decision {
@@ -896,7 +900,11 @@ fn handle_successful_dispatch_validation(
       let state =
         transition_types.State(
           ..state,
-          runtime: core.unpark_if_issue_changed(state.runtime, refreshed_issue),
+          runtime: core.unpark_if_issue_changed_or_retry_intent(
+            state.runtime,
+            context.effective,
+            refreshed_issue,
+          ),
         )
       let decision = core.blocker_decision(context.effective, refreshed_issue)
       case decision {

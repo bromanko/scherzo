@@ -62,6 +62,10 @@ Milestone 4 completes validation and scope inventory. Run the targeted tests, th
 - [x] (2026-06-16) Rechecked the current dispatch candidate path, local park release helper, dispatch recovery classifier, and retry-step daemon tests against the repository tree.
 - [x] (2026-06-16) Revised this review document to Plan A only: generic active-state retry intent for automatically releasable parked failed issues.
 - [x] (2026-06-16) Removed workflow-specific failure-code recipes, `plan_completion_verdict_stale` handling, hardcoded dogfood step ids, artifact recipe tests, and durable smart-retry recipe reporting from the planned scope.
+- [x] (2026-06-16 23:35Z) Implemented `unpark_if_issue_changed_or_retry_intent`, routed dispatch candidates through it, and kept content-change-only callers on the legacy helper.
+- [x] (2026-06-16 23:35Z) Added core coverage for same-fingerprint `Todo` retry intent, preserved explicit holds, preserved non-dispatch-state blocking, and blocker enforcement after local unpark.
+- [x] (2026-06-16 23:35Z) Added daemon retry-step coverage for same-fingerprint auto-parked `Todo` recovery and duplicate-poll idempotence.
+- [x] (2026-06-16 23:35Z) Ran focused core validation, formatting, glinter, Scherzo lint, and review-doc validation; recorded existing unrelated unit/contract-suite failures separately.
 
 ## Surprises & Discoveries
 
@@ -69,6 +73,8 @@ Milestone 4 completes validation and scope inventory. Run the targeted tests, th
 - Observation: dispatch candidates are filtered to configured dispatch states before the local unpark helper runs. Evidence: `src/scherzo/orchestrator/transition.gleam` checks `core.is_dispatch_state(context.effective, issue.state)` before calling `core.unpark_if_issue_changed(state.runtime, issue)`.
 - Observation: parked issues fail dispatch preconditions before the daemon can classify retained recovery. Evidence: `src/scherzo/orchestrator/core.gleam` includes `!is_parked_for_issue(state, issue)` in `dispatch_preconditions_satisfied_without_slot_capacity`.
 - Observation: the daemon already has the retained recovery classification hook this plan needs. Evidence: `src/scherzo/orchestrator/daemon.gleam` calls `dispatch_recovery.classify(projected, issue, observation)` inside `dispatch_time_recovery_claim_issue`, and `src/scherzo/orchestrator/dispatch_recovery.gleam` can return `StepRecovery`, `PublicationRecovery`, `FreshDispatch`, or `RejectRecovery`.
+- Observation: `src/scherzo/orchestrator/core.gleam` tripped the checked source-module line baseline when the new helper logic stayed inline. Evidence: `gleam test -- --suite unit` reported `src/scherzo/orchestrator/core.gleam grew beyond its line baseline: 1177 > 1155`, so the unpark implementation was moved into `src/scherzo/orchestrator/parked_issue.gleam` and `core.gleam` now delegates.
+- Observation: full unit and contract suite runs currently have unrelated pre-existing failures in this workspace. Evidence: `gleam test -- --suite unit` still fails `runtime_bundle_test.loads_selected_driver_profile_after_capability_match_test`, and `gleam test -- --suite contract` still fails `orchestrator_daemon_retry_step_test.dispatch_recovery_tracker_transition_failure_parks_and_suppresses_repeat_poll_test`.
 
 ## Decision Log
 
@@ -77,10 +83,13 @@ Milestone 4 completes validation and scope inventory. Run the targeted tests, th
 - Decision: Reuse existing dispatch recovery classification instead of adding a new smart-retry recipe planner. Rationale: `dispatch_recovery.classify` already centralizes retained step recovery, publication retry, fresh dispatch, and fail-closed rejection. Date: 2026-06-16.
 - Decision: Defer stale plan-completion automation to a separate design. Rationale: core should validate generic recovery invariants, not know the failure code or DAG semantics of `workflow:execplan-implementation`. Date: 2026-06-16.
 - Decision: Keep helper scripts, workflow YAML, artifact-store recipe reads, provider-live/cache behavior, browser/UI, and docs migration out of scope. Rationale: none of those surfaces are needed to make a same-fingerprint `Todo` board move reach existing recovery classification. Date: 2026-06-16.
+- Decision: Extract the unpark implementation to `src/scherzo/orchestrator/parked_issue.gleam` while keeping the public helper entry points in `core.gleam`. Rationale: the behavior belongs to orchestrator dispatch policy, but moving the implementation out preserved the checked source-module baseline without widening scope. Date: 2026-06-16.
 
 ## Outcomes & Retrospective
 
-This revision produces a smaller implementation plan that matches the review feedback. The intended implementation outcome is that a same-fingerprint move of an automatically releasable parked failed issue into `Todo` can reach the retained recovery classifier, while explicit holds and non-ready states still block. The broader stale plan-completion repair remains unresolved by this plan and is intentionally deferred.
+Implementation is complete for the narrowed Plan A slice. Same-fingerprint moves of automatically releasable parked issues into configured dispatch states now clear only the local automatic park barrier, then flow through the existing blocker checks, slot checks, workflow-policy checks, and retained recovery classifier. Explicit holds still block, non-dispatch states still block, and blocker checks still suppress dispatch after local unpark.
+
+The final code change touched only the generic dispatch-policy surfaces plus focused tests. To satisfy the repository source-module guardrail, the unpark logic lives in the new helper module `src/scherzo/orchestrator/parked_issue.gleam` while `src/scherzo/orchestrator/core.gleam` keeps the public API expected by the rest of the orchestrator. The broader stale plan-completion repair remains intentionally deferred.
 
 ## Validation and Acceptance
 
