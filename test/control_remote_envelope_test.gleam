@@ -117,6 +117,7 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
             display_id: Some("LIV-1"),
             url: None,
           ),
+          parent: None,
           title: "Work item",
           state: task.TaskState(
             id: Some("todo"),

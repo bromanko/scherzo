@@ -39,6 +39,7 @@ pub type WorkItemSummary {
   WorkItemSummary(
     id: String,
     source: WorkItemSource,
+    parent: Option(WorkItemSource),
     title: String,
     state: task.TaskState,
     labels: List(task.TaskLabel),
@@ -199,6 +200,7 @@ pub fn summary_from_task(item: task.Task, label_limit: Int) -> WorkItemSummary {
   WorkItemSummary(
     id: daemon_id(source),
     source: source,
+    parent: None,
     title: item.title,
     state: item.state,
     labels: labels,
@@ -216,8 +218,12 @@ pub fn detail_from_task_and_subtasks(
   subtask_limit: Int,
 ) -> WorkItemDetail {
   let summary = summary_from_task(item, label_limit)
+  let parent_source = source_from_task_ref(item.ref)
   let subtask_summaries =
-    list.map(subtasks, fn(subtask) { summary_from_task(subtask, label_limit) })
+    list.map(subtasks, fn(subtask) {
+      let summary = summary_from_task(subtask, label_limit)
+      WorkItemSummary(..summary, parent: Some(parent_source))
+    })
   let #(bounded_subtasks, subtasks_truncated) =
     clamp_subtasks(subtask_summaries, subtask_limit)
 

@@ -325,6 +325,8 @@ pub fn fake_adapter_work_item_lookup_supports_display_and_remote_refs_test() {
     ))
   assert by_display.summary.source.id == "card-1"
   assert list.length(by_display.subtasks) == 2
+  let assert [first_child, ..] = by_display.subtasks
+  assert first_child.parent == Some(by_display.summary.source)
 
   let assert Ok(Some(by_remote)) =
     work_items.lookup_work_item(work_item.WorkItemShowRequest(
