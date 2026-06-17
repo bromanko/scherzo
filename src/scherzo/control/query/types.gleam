@@ -40,7 +40,9 @@ pub type TaskShowQuery {
 
 pub type WorkItemListQuery {
   WorkItemListQuery(
-    states: List(task.TaskStateCategory),
+    state_filter: work_item.WorkItemStateFilter,
+    search: Option(String),
+    sort: work_item.WorkItemSort,
     limit: Int,
     cursor: Option(String),
   )
@@ -356,7 +358,13 @@ pub fn default_task_list_query() -> TaskListQuery {
 }
 
 pub fn default_work_item_list_query() -> WorkItemListQuery {
-  WorkItemListQuery(states: [], limit: 50, cursor: None)
+  WorkItemListQuery(
+    state_filter: work_item.default_state_filter(),
+    search: None,
+    sort: work_item.default_sort(),
+    limit: 50,
+    cursor: None,
+  )
 }
 
 pub fn default_outbox_list_query() -> OutboxListQuery {

@@ -110,19 +110,17 @@ pub fn build_list_request(
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
   use scope <- try_tracker(require_task_scope(config))
+  let include_state_filter = !list.is_empty(states)
   let variables =
     linear_task_scope.issue_filter_variables(scope, "taskFilter")
     |> list.append([
-      #(
-        "stateNames",
-        json.array(issue_state.to_strings(states), of: json.string),
-      ),
       #("after", json.nullable(after, of: json.string)),
       #("labelLimit", json.int(label_limit + 1)),
     ])
+    |> append_state_names(include_state_filter, states)
   let body =
     json.object([
-      #("query", json.string(list_query_for_scope(scope))),
+      #("query", json.string(list_query_for_scope(scope, include_state_filter))),
       #("variables", json.object(variables)),
     ])
     |> json.to_string
@@ -179,13 +177,27 @@ pub fn build_detail_by_identifier_request(
 }
 
 pub fn list_query() -> String {
-  list_query_for_scope(config_types.LinearTaskProject("projectSlug"))
+  list_query_for_scope(config_types.LinearTaskProject("projectSlug"), True)
 }
 
-fn list_query_for_scope(_scope: config_types.LinearTaskScope) -> String {
+fn list_query_for_scope(
+  _scope: config_types.LinearTaskScope,
+  include_state_filter: Bool,
+) -> String {
+  let state_declaration = case include_state_filter {
+    True -> ", $stateNames: [String!]"
+    False -> ""
+  }
+  let state_filter = case include_state_filter {
+    True -> ", state: { name: { in: $stateNames } }"
+    False -> ""
+  }
   "query ScherzoWorkItemList("
   <> linear_task_scope.issue_filter_declaration("taskFilter")
-  <> ", $stateNames: [String!], $after: String, $labelLimit: Int!) { issues(first: 50, after: $after, filter: { and: [$taskFilter], state: { name: { in: $stateNames } } }) { nodes { "
+  <> state_declaration
+  <> ", $after: String, $labelLimit: Int!) { issues(first: 50, after: $after, filter: { and: [$taskFilter]"
+  <> state_filter
+  <> " }) { nodes { "
   <> summary_issue_fields()
   <> " } pageInfo { hasNextPage endCursor } } }"
 }
@@ -730,6 +742,23 @@ fn parse_optional_time(value: Option(String)) -> Option(birl.Time) {
         Error(_) -> None
       }
     None -> None
+  }
+}
+
+fn append_state_names(
+  variables: List(#(String, json.Json)),
+  include_state_filter: Bool,
+  states: List(issue_state.IssueState),
+) -> List(#(String, json.Json)) {
+  case include_state_filter {
+    True ->
+      list.append(variables, [
+        #(
+          "stateNames",
+          json.array(issue_state.to_strings(states), of: json.string),
+        ),
+      ])
+    False -> variables
   }
 }
 

@@ -156,12 +156,26 @@ fn execute_work_item_list_query(
   query: types.WorkItemListQuery,
 ) -> Result(types.QueryResponse, types.QueryError) {
   use capability <- try_query(required_work_item_capability(tracker_adapter))
-  use offset <- try_query(decode_task_cursor(query.cursor))
-  let limit = work_item.clamp_page_limit(query.limit)
+  let normalized_query = normalize_work_item_query(query)
+  let fingerprint =
+    work_item.query_fingerprint(
+      normalized_query.state_filter,
+      normalized_query.search,
+      normalized_query.sort,
+    )
+  use offset <- try_query(decode_work_item_cursor(
+    normalized_query.cursor,
+    fingerprint,
+  ))
+  let limit = work_item.clamp_page_limit(normalized_query.limit)
   use page <- try_query(
     map_tracker_query_error(
       capability.list_work_items(work_item.WorkItemListRequest(
-        state_categories: query.states,
+        state_categories: work_item.state_filter_categories(
+          normalized_query.state_filter,
+        ),
+        search: normalized_query.search,
+        sort: normalized_query.sort,
         limit: limit,
         offset: offset,
         subtask_limit: work_item.default_list_subtask_limit,
@@ -174,7 +188,11 @@ fn execute_work_item_list_query(
   ))
   let page = action_derivation.page_with_actions(page, dispatch_paused)
   let next_cursor = case page.has_more {
-    True -> Some(cursor.encode_offset(offset + list.length(page.items)))
+    True ->
+      Some(cursor.encode_work_item_offset(
+        offset + list.length(page.items),
+        fingerprint,
+      ))
     False -> None
   }
   Ok(
@@ -245,6 +263,29 @@ fn decode_task_cursor(
     Some(cursor_value) -> cursor.decode_offset(cursor_value)
     None -> Ok(0)
   }
+}
+
+fn decode_work_item_cursor(
+  cursor_value: Option(String),
+  fingerprint: String,
+) -> Result(Int, types.QueryError) {
+  case cursor_value {
+    Some(cursor_value) ->
+      cursor.decode_work_item_offset(cursor_value, fingerprint)
+    None -> Ok(0)
+  }
+}
+
+fn normalize_work_item_query(
+  query: types.WorkItemListQuery,
+) -> types.WorkItemListQuery {
+  types.WorkItemListQuery(
+    state_filter: query.state_filter,
+    search: work_item.normalize_search(query.search),
+    sort: query.sort,
+    limit: query.limit,
+    cursor: query.cursor,
+  )
 }
 
 fn task_query_ref_to_adapter_ref(

@@ -1,7 +1,8 @@
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/config
@@ -574,6 +575,8 @@ pub fn linear_adapter_work_item_list_and_show_wiring_test() {
   let assert Ok(page) =
     work_items.list_work_items(work_item.WorkItemListRequest(
       state_categories: [task.Ready],
+      search: None,
+      sort: work_item.UpdatedDescWorkItems,
       limit: 10,
       offset: 0,
       subtask_limit: 10,
@@ -589,6 +592,67 @@ pub fn linear_adapter_work_item_list_and_show_wiring_test() {
       label_limit: 50,
     ))
   assert detail.summary.source.id == "issue-parent-1"
+}
+
+pub fn linear_adapter_work_item_unfiltered_scan_searches_and_sorts_test() {
+  let list_body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-ready-1\",\"identifier\":\"LIV-2000\",\"title\":\"Ready work item\",\"url\":\"https://linear.app/living-systems/issue/LIV-2000\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-1\",\"name\":\"workflow:execplan\"}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}},{\"id\":\"issue-active-1\",\"identifier\":\"LIV-2001\",\"title\":\"Active work item\",\"url\":\"https://linear.app/living-systems/issue/LIV-2001\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"id\":\"state-progress\",\"name\":\"In Progress\",\"type\":\"started\"},\"labels\":{\"nodes\":[{\"id\":\"label-1\",\"name\":\"workflow:execplan\"}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}},{\"id\":\"issue-done-1\",\"identifier\":\"LIV-2002\",\"title\":\"Done work item\",\"url\":\"https://linear.app/living-systems/issue/LIV-2002\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T09:00:00Z\",\"state\":{\"id\":\"state-done\",\"name\":\"Done\",\"type\":\"completed\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoWorkItemList")
+      assert !string.contains(request.body, "stateNames")
+      Ok(linear.Response(status: 200, body: list_body))
+    })
+  let assert Some(work_items) = linear_tracker.work_items
+
+  let assert Ok(page) =
+    work_items.list_work_items(work_item.WorkItemListRequest(
+      state_categories: [task.Backlog, task.Ready, task.Active, task.Unknown],
+      search: Some("workflow:execplan"),
+      sort: work_item.UpdatedDescWorkItems,
+      limit: 10,
+      offset: 0,
+      subtask_limit: 10,
+      label_limit: 50,
+    ))
+  let assert [first, second] = page.items
+  assert first.source.display_id == Some("LIV-2001")
+  assert second.source.display_id == Some("LIV-2000")
+  assert page.has_more == False
+}
+
+pub fn linear_adapter_work_item_scan_limit_is_terminal_test() {
+  let calls = process.new_subject()
+  let linear_tracker =
+    linear_adapter.from_tracker_config(tracker_config(), fn(request) {
+      process.send(calls, Nil)
+      assert string.contains(request.body, "ScherzoWorkItemList")
+      Ok(linear.Response(
+        status: 200,
+        body: work_item_list_response(
+          work_item_scan_nodes(251),
+          has_next_page: True,
+          end_cursor: Some("after-cap"),
+        ),
+      ))
+    })
+  let assert Some(work_items) = linear_tracker.work_items
+
+  let assert Ok(page) =
+    work_items.list_work_items(work_item.WorkItemListRequest(
+      state_categories: [task.Backlog, task.Ready, task.Active, task.Unknown],
+      search: Some("only-after-cap"),
+      sort: work_item.UpdatedDescWorkItems,
+      limit: 10,
+      offset: 0,
+      subtask_limit: 10,
+      label_limit: 50,
+    ))
+
+  assert page.items == []
+  assert page.has_more == False
+  let assert Ok(Nil) = process.receive(calls, within: 1000)
+  test_async.assert_no_extra_message_within(calls, 20)
 }
 
 pub fn linear_adapter_work_item_remote_id_lookup_uses_by_id_query_test() {
@@ -638,6 +702,8 @@ pub fn linear_adapter_work_item_uses_configured_state_categories_test() {
   let assert Ok(page) =
     work_items.list_work_items(work_item.WorkItemListRequest(
       state_categories: [task.Ready],
+      search: None,
+      sort: work_item.UpdatedDescWorkItems,
       limit: 10,
       offset: 0,
       subtask_limit: 10,
@@ -1052,6 +1118,103 @@ fn scheduled_failure_backend(
 
 fn empty_issues_response() -> String {
   "{\"data\":{\"issues\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+}
+
+fn work_item_list_response(
+  nodes: List(json.Json),
+  has_next_page has_next_page: Bool,
+  end_cursor end_cursor: Option(String),
+) -> String {
+  json.to_string(
+    json.object([
+      #(
+        "data",
+        json.object([
+          #(
+            "issues",
+            json.object([
+              #("nodes", json.array(nodes, of: fn(node) { node })),
+              #(
+                "pageInfo",
+                json.object([
+                  #("hasNextPage", json.bool(has_next_page)),
+                  #("endCursor", json.nullable(end_cursor, of: json.string)),
+                ]),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  )
+}
+
+fn work_item_scan_nodes(count: Int) -> List(json.Json) {
+  work_item_scan_nodes_loop(1, count, [])
+}
+
+fn work_item_scan_nodes_loop(
+  index: Int,
+  count: Int,
+  acc: List(json.Json),
+) -> List(json.Json) {
+  case index > count {
+    True -> list.reverse(acc)
+    False ->
+      work_item_scan_nodes_loop(index + 1, count, [
+        work_item_scan_node(index),
+        ..acc
+      ])
+  }
+}
+
+fn work_item_scan_node(index: Int) -> json.Json {
+  let index_string = int.to_string(index)
+  let label_name = case index == 251 {
+    True -> "only-after-cap"
+    False -> "other-label"
+  }
+
+  json.object([
+    #("id", json.string("scan-issue-" <> index_string)),
+    #("identifier", json.string("LIV-" <> int.to_string(3000 + index))),
+    #("title", json.string("Scanned work item " <> index_string)),
+    #(
+      "url",
+      json.string(
+        "https://linear.app/living-systems/issue/LIV-" <> index_string,
+      ),
+    ),
+    #("createdAt", json.string("2026-04-28T10:00:00Z")),
+    #("updatedAt", json.string("2026-04-28T11:00:00Z")),
+    #(
+      "state",
+      json.object([
+        #("id", json.string("state-todo")),
+        #("name", json.string("Todo")),
+        #("type", json.string("unstarted")),
+      ]),
+    ),
+    #(
+      "labels",
+      json.object([
+        #(
+          "nodes",
+          json.array([#("scan-label", label_name)], of: fn(label) {
+            let #(id, name) = label
+            json.object([#("id", json.string(id)), #("name", json.string(name))])
+          }),
+        ),
+        #(
+          "pageInfo",
+          json.object([
+            #("hasNextPage", json.bool(False)),
+            #("endCursor", json.null()),
+          ]),
+        ),
+      ]),
+    ),
+  ])
 }
 
 fn candidate_response() -> String {

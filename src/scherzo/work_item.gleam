@@ -1,6 +1,8 @@
 import birl.{type Time}
 import gleam/list
-import gleam/option.{type Option, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/order
+import gleam/string
 import scherzo/task
 import scherzo/work_item/action
 
@@ -13,6 +15,16 @@ pub const default_list_subtask_limit = 10
 pub const default_show_subtask_limit = 50
 
 pub const default_label_limit = 50
+
+pub type WorkItemStateFilter {
+  ActiveWorkItems
+  ArchiveWorkItems
+  CategoryWorkItems(List(task.TaskStateCategory))
+}
+
+pub type WorkItemSort {
+  UpdatedDescWorkItems
+}
 
 pub type WorkItemSource {
   WorkItemSource(
@@ -53,6 +65,8 @@ pub type WorkItemLookupRef {
 pub type WorkItemListRequest {
   WorkItemListRequest(
     state_categories: List(task.TaskStateCategory),
+    search: Option(String),
+    sort: WorkItemSort,
     limit: Int,
     offset: Int,
     subtask_limit: Int,
@@ -77,6 +91,87 @@ pub type WorkItemPage {
     items: List(WorkItemSummary),
     next_cursor: Option(String),
     has_more: Bool,
+  )
+}
+
+pub fn default_state_filter() -> WorkItemStateFilter {
+  ActiveWorkItems
+}
+
+pub fn default_sort() -> WorkItemSort {
+  UpdatedDescWorkItems
+}
+
+pub fn state_filter_to_string(filter: WorkItemStateFilter) -> String {
+  case filter {
+    ActiveWorkItems -> "active"
+    ArchiveWorkItems -> "archive"
+    CategoryWorkItems(_) -> "categories"
+  }
+}
+
+pub fn sort_to_string(sort: WorkItemSort) -> String {
+  case sort {
+    UpdatedDescWorkItems -> "updated_desc"
+  }
+}
+
+pub fn sort_from_string(value: String) -> Result(WorkItemSort, Nil) {
+  case value |> string.trim |> string.lowercase {
+    "updated_desc" -> Ok(UpdatedDescWorkItems)
+    _ -> Error(Nil)
+  }
+}
+
+pub fn state_filter_categories(
+  filter: WorkItemStateFilter,
+) -> List(task.TaskStateCategory) {
+  case filter {
+    ActiveWorkItems -> [task.Backlog, task.Ready, task.Active, task.Unknown]
+    ArchiveWorkItems -> [task.Done, task.Canceled, task.Duplicate]
+    CategoryWorkItems(categories) -> canonical_categories(categories)
+  }
+}
+
+pub fn normalize_search(search: Option(String)) -> Option(String) {
+  case search {
+    Some(search) -> {
+      let search = string.trim(search)
+      case search == "" {
+        True -> None
+        False -> Some(search)
+      }
+    }
+    None -> None
+  }
+}
+
+pub fn query_fingerprint(
+  state_filter: WorkItemStateFilter,
+  search: Option(String),
+  sort: WorkItemSort,
+) -> String {
+  state_filter_fingerprint(state_filter)
+  <> "|"
+  <> search_fingerprint(search)
+  <> "|"
+  <> sort_to_string(sort)
+}
+
+pub fn apply_list_request(
+  items: List(WorkItemSummary),
+  request: WorkItemListRequest,
+) -> WorkItemProviderPage {
+  let matching =
+    items
+    |> filter_state_categories(request.state_categories)
+    |> filter_search(request.search)
+    |> sort_summaries(request.sort)
+
+  let remaining = drop_first(matching, request.offset)
+  WorkItemProviderPage(
+    items: take_first(remaining, request.limit),
+    has_more: list.length(remaining) > request.limit,
   )
 }
 
@@ -185,5 +280,154 @@ fn take_first(values: List(a), count: Int) -> List(a) {
     True, _ -> []
     _, [] -> []
     False, [first, ..rest] -> [first, ..take_first(rest, count - 1)]
+  }
+}
+
+fn drop_first(values: List(a), count: Int) -> List(a) {
+  case count <= 0, values {
+    True, _ -> values
+    _, [] -> []
+    False, [_, ..rest] -> drop_first(rest, count - 1)
+  }
+}
+
+fn canonical_categories(
+  categories: List(task.TaskStateCategory),
+) -> List(task.TaskStateCategory) {
+  categories
+  |> dedupe_categories([])
+  |> list.sort(by: compare_categories)
+}
+
+fn dedupe_categories(
+  categories: List(task.TaskStateCategory),
+  acc: List(task.TaskStateCategory),
+) -> List(task.TaskStateCategory) {
+  case categories {
+    [] -> acc
+    [category, ..rest] ->
+      case list.contains(acc, category) {
+        True -> dedupe_categories(rest, acc)
+        False -> dedupe_categories(rest, [category, ..acc])
+      }
+  }
+}
+
+fn compare_categories(
+  left: task.TaskStateCategory,
+  right: task.TaskStateCategory,
+) -> order.Order {
+  string.compare(
+    task.state_category_to_string(left),
+    task.state_category_to_string(right),
+  )
+}
+
+fn state_filter_fingerprint(filter: WorkItemStateFilter) -> String {
+  case filter {
+    ActiveWorkItems -> "active"
+    ArchiveWorkItems -> "archive"
+    CategoryWorkItems(categories) ->
+      "categories:"
+      <> string.join(
+        list.map(
+          canonical_categories(categories),
+          task.state_category_to_string,
+        ),
+        with: ",",
+      )
+  }
+}
+
+fn search_fingerprint(search: Option(String)) -> String {
+  case normalize_search(search) {
+    Some(search) -> "search:" <> string.lowercase(search)
+    None -> "search:"
+  }
+}
+
+fn filter_state_categories(
+  items: List(WorkItemSummary),
+  categories: List(task.TaskStateCategory),
+) -> List(WorkItemSummary) {
+  case categories {
+    [] -> items
+    categories ->
+      list.filter(items, fn(item) {
+        list.contains(categories, item.state.category)
+      })
+  }
+}
+
+fn filter_search(
+  items: List(WorkItemSummary),
+  search: Option(String),
+) -> List(WorkItemSummary) {
+  case normalize_search(search) {
+    Some(search) -> {
+      let search = string.lowercase(search)
+      list.filter(items, fn(item) { summary_matches_search(item, search) })
+    }
+    None -> items
+  }
+}
+
+fn summary_matches_search(item: WorkItemSummary, search: String) -> Bool {
+  list.any(summary_search_haystacks(item), fn(value) {
+    string.contains(string.lowercase(value), search)
+  })
+}
+
+fn summary_search_haystacks(item: WorkItemSummary) -> List(String) {
+  let label_names = list.map(item.labels, fn(label) { label.name })
+  let source_bits = case item.source.display_id {
+    Some(display_id) -> [display_id, item.source.id]
+    None -> [item.source.id]
+  }
+  [item.id, item.title, ..source_bits]
+  |> list.append(label_names)
+}
+
+fn sort_summaries(
+  items: List(WorkItemSummary),
+  sort: WorkItemSort,
+) -> List(WorkItemSummary) {
+  case sort {
+    UpdatedDescWorkItems -> list.sort(items, by: compare_updated_desc)
+  }
+}
+
+fn compare_updated_desc(
+  left: WorkItemSummary,
+  right: WorkItemSummary,
+) -> order.Order {
+  case compare_optional_times_desc(left.updated_at, right.updated_at) {
+    order.Eq -> string.compare(left.id, right.id)
+    other -> other
+  }
+}
+
+fn compare_optional_times_desc(
+  left: Option(Time),
+  right: Option(Time),
+) -> order.Order {
+  case left, right {
+    Some(left), Some(right) -> compare_millis_desc(left, right)
+    Some(_), None -> order.Lt
+    None, Some(_) -> order.Gt
+    None, None -> order.Eq
+  }
+}
+
+fn compare_millis_desc(left: Time, right: Time) -> order.Order {
+  let left = birl.to_unix_milli(left)
+  let right = birl.to_unix_milli(right)
+  case left > right {
+    True -> order.Lt
+    False ->
+      case left < right {
+        True -> order.Gt
+        False -> order.Eq
+      }
   }
 }
