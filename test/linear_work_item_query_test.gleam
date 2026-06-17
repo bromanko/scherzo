@@ -33,11 +33,20 @@ pub fn work_item_query_builds_allowlisted_requests_test() {
     )
 
   assert string.contains(request.body, "ScherzoWorkItemList")
-  assert !string.contains(request.body, "children(first: $childLimit)")
-  assert !string.contains(request.body, "childLimit")
+  assert string.contains(request.body, "children(first: $childLimit)")
+  assert string.contains(request.body, "\"childLimit\":11")
   assert !string.contains(request.body, "description")
   assert !string.contains(request.body, "comments")
   assert !string.contains(request.body, "bodyData")
+}
+
+pub fn work_item_list_query_fetches_children_in_same_bounded_query_test() {
+  let query = work_item_query.list_query()
+
+  assert string.contains(query, "issues(first: 50")
+  assert string.contains(query, "children(first: $childLimit)")
+  assert string.contains(query, "labels(first: $labelLimit)")
+  assert string.contains(query, "ScherzoWorkItemList")
 }
 
 pub fn work_item_query_builds_unfiltered_scoped_requests_test() {
@@ -60,12 +69,20 @@ pub fn work_item_query_parses_list_fixture_test() {
       50,
     )
 
-  let assert [first] = page.items
+  let assert [first, child] = page.items
   assert first.source.display_id == Some("LIV-1168")
   assert first.state.id == Some("state-todo")
   assert first.state.name == "Todo"
   assert first.state.category == task.Ready
   assert first.labels_truncated == False
+  assert child.parent == Some(first.source)
+  assert child.source.display_id == Some("LIV-1169")
+  assert child.title == "Child one"
+  assert child.state.id == Some("state-progress")
+  assert child.state.name == "In Progress"
+  assert child.state.category == task.Active
+  assert child.labels
+    == [task.TaskLabel(id: Some("label-child"), name: "workflow:child")]
   assert page.has_next_page == False
 }
 
@@ -88,6 +105,12 @@ pub fn work_item_query_parses_detail_fixture_with_truncation_test() {
   let assert [first] = detail.subtasks
   assert first.parent == Some(detail.summary.source)
   assert first.source.display_id == Some("LIV-1169")
+  assert first.title == "Child one"
+  assert first.source.url
+    == Some("https://linear.app/living-systems/issue/LIV-1169")
+  assert first.state.id == Some("state-progress")
+  assert first.state.name == "In Progress"
+  assert first.state.category == task.Active
 }
 
 pub fn work_item_query_parses_detail_by_id_response_test() {
@@ -102,6 +125,75 @@ pub fn work_item_query_parses_detail_by_id_response_test() {
     )
   assert detail.summary.source.id == "issue-parent-1"
   assert detail.summary.source.display_id == Some("LIV-1168")
+  assert detail.subtasks == []
+  assert detail.subtasks_truncated == False
+}
+
+pub fn work_item_query_parses_detail_by_id_children_test() {
+  let body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"issue-parent-1\",\"identifier\":\"LIV-1168\",\"title\":\"Implement work items\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"children\":{\"nodes\":[{\"id\":\"issue-child-1\",\"identifier\":\"LIV-1169\",\"title\":\"Workflow A\",\"state\":{\"id\":\"state-progress\",\"name\":\"In Progress\",\"type\":\"started\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}},{\"id\":\"issue-child-2\",\"identifier\":\"LIV-1170\",\"title\":\"Workflow B\",\"state\":{\"id\":\"state-done\",\"name\":\"Done\",\"type\":\"completed\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+
+  let assert Ok(Some(detail)) =
+    work_item_query.parse_detail_by_id_response(
+      linear.Response(status: 200, body: body),
+      1,
+      50,
+    )
+
+  let assert [first] = detail.subtasks
+  assert first.parent == Some(detail.summary.source)
+  assert first.source.display_id == Some("LIV-1169")
+  assert first.state.id == Some("state-progress")
+  assert first.state.name == "In Progress"
+  assert first.state.category == task.Active
+  assert detail.subtasks_truncated == True
+}
+
+pub fn work_item_query_parses_multiple_children_with_optional_fields_test() {
+  let body =
+    "{\"data\":{\"issue\":{\"project\":{\"slugId\":\"PROJ\"},\"id\":\"issue-parent-1\",\"identifier\":\"LIV-1168\",\"title\":\"Implement work items\",\"url\":null,\"createdAt\":null,\"updatedAt\":null,\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"children\":{\"nodes\":[{\"id\":\"issue-child-1\",\"identifier\":\"LIV-1169\",\"title\":\"Workflow A\",\"state\":{\"id\":null,\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"name\":\"workflow:implementation\"}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}},{\"id\":\"issue-child-2\",\"identifier\":\"LIV-1170\",\"title\":\"Workflow B\",\"url\":null,\"createdAt\":null,\"updatedAt\":null,\"state\":{\"id\":\"state-progress\",\"name\":\"In Progress\",\"type\":\"started\"},\"labels\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}"
+
+  let assert Ok(Some(detail)) =
+    work_item_query.parse_detail_by_identifier_response(
+      linear.Response(status: 200, body: body),
+      config_types.LinearTaskProject("PROJ"),
+      "LIV-1168",
+      10,
+      50,
+    )
+
+  let assert [first, second] = detail.subtasks
+  assert first.parent == Some(detail.summary.source)
+  assert first.source.display_id == Some("LIV-1169")
+  assert first.source.url == None
+  assert first.created_at == None
+  assert first.updated_at == None
+  assert first.title == "Workflow A"
+  assert first.labels
+    == [task.TaskLabel(id: None, name: "workflow:implementation")]
+  assert first.state.id == None
+  assert first.state.name == "Todo"
+  assert first.state.category == task.Ready
+  assert second.source.display_id == Some("LIV-1170")
+  assert second.state.category == task.Active
+  assert detail.subtasks_truncated == False
+}
+
+pub fn work_item_query_preserves_child_label_truncation_test() {
+  let body =
+    "{\"data\":{\"issue\":{\"project\":{\"slugId\":\"PROJ\"},\"id\":\"issue-parent-1\",\"identifier\":\"LIV-1168\",\"title\":\"Implement work items\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"children\":{\"nodes\":[{\"id\":\"issue-child-1\",\"identifier\":\"LIV-1169\",\"title\":\"Workflow A\",\"state\":{\"id\":\"state-todo\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"labels\":{\"nodes\":[{\"id\":\"label-1\",\"name\":\"one\"}],\"pageInfo\":{\"hasNextPage\":true,\"endCursor\":\"label-cursor\"}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}"
+
+  let assert Ok(Some(detail)) =
+    work_item_query.parse_detail_by_identifier_response(
+      linear.Response(status: 200, body: body),
+      config_types.LinearTaskProject("PROJ"),
+      "LIV-1168",
+      50,
+      50,
+    )
+
+  let assert [child] = detail.subtasks
+  assert child.labels_truncated
 }
 
 pub fn work_item_query_identifier_detail_filters_not_found_scope_and_identifier_test() {
@@ -156,6 +248,18 @@ pub fn work_item_query_maps_graphql_errors_without_raw_body_test() {
 
   let assert Error(error.LinearGraphqlErrors(message)) =
     work_item_query.parse_page_response(response, 10, 50)
+  assert message == "denied"
+}
+
+pub fn work_item_query_maps_detail_graphql_errors_test() {
+  let response =
+    linear.Response(
+      status: 200,
+      body: "{\"errors\":[{\"message\":\"denied\"}],\"data\":null}",
+    )
+
+  let assert Error(error.LinearGraphqlErrors(message)) =
+    work_item_query.parse_detail_by_id_response(response, 10, 50)
   assert message == "denied"
 }
 

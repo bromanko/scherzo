@@ -24,7 +24,7 @@ type RawIssue {
   RawIssue(
     task: task.Task,
     labels_has_more: Bool,
-    children: List(task.Task),
+    children: List(RawIssue),
     children_has_more: Bool,
   )
 }
@@ -104,7 +104,7 @@ pub fn build_list_request(
   config: config_types.TrackerConfig,
   states: List(issue_state.IssueState),
   after: Option(String),
-  _subtask_limit: Int,
+  subtask_limit: Int,
   label_limit: Int,
 ) -> Result(linear.Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
@@ -116,6 +116,7 @@ pub fn build_list_request(
     |> list.append([
       #("after", json.nullable(after, of: json.string)),
       #("labelLimit", json.int(label_limit + 1)),
+      #("childLimit", json.int(subtask_limit + 1)),
     ])
     |> append_state_names(include_state_filter, states)
   let body =
@@ -195,10 +196,10 @@ fn list_query_for_scope(
   "query ScherzoWorkItemList("
   <> linear_task_scope.issue_filter_declaration("taskFilter")
   <> state_declaration
-  <> ", $after: String, $labelLimit: Int!) { issues(first: 50, after: $after, filter: { and: [$taskFilter]"
+  <> ", $after: String, $labelLimit: Int!, $childLimit: Int!) { issues(first: 50, after: $after, filter: { and: [$taskFilter]"
   <> state_filter
   <> " }) { nodes { "
-  <> summary_issue_fields()
+  <> list_issue_fields()
   <> " } pageInfo { hasNextPage endCursor } } }"
 }
 
@@ -226,9 +227,16 @@ fn summary_issue_fields() -> String {
   "id identifier title url createdAt updatedAt state { id name type } labels(first: $labelLimit) { nodes { id name } pageInfo { hasNextPage endCursor } }"
 }
 
+fn list_issue_fields() -> String {
+  summary_issue_fields() <> " " <> child_issue_fields()
+}
+
 fn detail_issue_fields() -> String {
-  summary_issue_fields()
-  <> " children(first: $childLimit) { nodes { id identifier title url createdAt updatedAt state { id name type } labels(first: $labelLimit) { nodes { id name } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } }"
+  summary_issue_fields() <> " " <> child_issue_fields()
+}
+
+fn child_issue_fields() -> String {
+  "children(first: $childLimit) { nodes { id identifier title url createdAt updatedAt state { id name type } labels(first: $labelLimit) { nodes { id name } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } }"
 }
 
 pub fn parse_page_response(
@@ -309,7 +317,7 @@ fn page_graphql_decoder() -> decode.Decoder(
     [] ->
       decode.at(
         ["data", "issues"],
-        issue_connection_decoder(include_children: False),
+        issue_connection_decoder(include_children: True),
       )
       |> decode.map(Ok)
     errors -> decode.success(Error(string.join(errors, with: "; ")))
@@ -498,19 +506,13 @@ fn raw_issue_decoder(
   ))
 }
 
-fn child_connection_decoder() -> decode.Decoder(#(List(task.Task), Bool)) {
+fn child_connection_decoder() -> decode.Decoder(#(List(RawIssue), Bool)) {
   use nodes <- decode.field(
     "nodes",
     decode.list(raw_issue_decoder(include_children: False)),
   )
   use page_info <- decode.field("pageInfo", page_info_decoder())
-  decode.success(#(
-    list.map(nodes, fn(item) {
-      let RawIssue(task: task_value, ..) = item
-      task_value
-    }),
-    page_info.has_next_page,
-  ))
+  decode.success(#(nodes, page_info.has_next_page))
 }
 
 fn label_connection_decoder() -> decode.Decoder(#(List(task.TaskLabel), Bool)) {
@@ -565,12 +567,30 @@ fn page_to_work_item_page(
   label_limit: Int,
 ) -> Result(Page, error.TrackerError) {
   let #(items, page_info) = raw_page
-  let _ = subtask_limit
   Ok(Page(
-    items: list.map(items, fn(item) { raw_issue_to_summary(item, label_limit) }),
+    items: list.flat_map(items, fn(item) {
+      raw_issue_to_list_summaries(item, subtask_limit, label_limit)
+    }),
     has_next_page: page_info.has_next_page,
     end_cursor: page_info.end_cursor,
   ))
+}
+
+fn raw_issue_to_list_summaries(
+  raw_issue: RawIssue,
+  subtask_limit: Int,
+  label_limit: Int,
+) -> List(work_item.WorkItemSummary) {
+  let RawIssue(children: children, ..) = raw_issue
+  let summary = raw_issue_to_summary(raw_issue, label_limit)
+  let child_summaries =
+    list.map(children, fn(child) {
+      raw_issue_to_child_summary(child, summary.source, label_limit)
+    })
+  let #(bounded_child_summaries, _) =
+    work_item.clamp_subtasks(child_summaries, subtask_limit)
+
+  [summary, ..bounded_child_summaries]
 }
 
 fn raw_issue_to_summary(
@@ -590,29 +610,30 @@ fn raw_issue_to_detail(
   subtask_limit: Int,
   label_limit: Int,
 ) -> work_item.WorkItemDetail {
-  let RawIssue(
-    task: item,
-    labels_has_more: labels_has_more,
-    children: children,
-    children_has_more: children_has_more,
-  ) = raw_issue
-  let detail =
-    work_item.detail_from_task_and_subtasks(
-      item,
-      children,
-      label_limit,
-      subtask_limit,
-    )
-  let summary =
-    work_item.WorkItemSummary(
-      ..detail.summary,
-      labels_truncated: detail.summary.labels_truncated || labels_has_more,
-    )
+  let RawIssue(children: children, children_has_more: children_has_more, ..) =
+    raw_issue
+  let summary = raw_issue_to_summary(raw_issue, label_limit)
+  let subtasks =
+    list.map(children, fn(child) {
+      raw_issue_to_child_summary(child, summary.source, label_limit)
+    })
+  let #(bounded_subtasks, subtasks_truncated) =
+    work_item.clamp_subtasks(subtasks, subtask_limit)
+
   work_item.WorkItemDetail(
     summary: summary,
-    subtasks: detail.subtasks,
-    subtasks_truncated: detail.subtasks_truncated || children_has_more,
+    subtasks: bounded_subtasks,
+    subtasks_truncated: subtasks_truncated || children_has_more,
   )
+}
+
+fn raw_issue_to_child_summary(
+  raw_issue: RawIssue,
+  parent_source: work_item.WorkItemSource,
+  label_limit: Int,
+) -> work_item.WorkItemSummary {
+  let summary = raw_issue_to_summary(raw_issue, label_limit)
+  work_item.WorkItemSummary(..summary, parent: Some(parent_source))
 }
 
 fn recategorize_page(page: Page, config: config_types.TrackerConfig) -> Page {

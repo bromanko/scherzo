@@ -27,11 +27,15 @@ pub fn page_with_actions_in_projection(
 ) -> work_item.WorkItemProviderPage {
   work_item.WorkItemProviderPage(
     items: list.map(page.items, fn(item) {
-      summary_with_actions_in_projection(
-        item,
-        dispatch_paused,
-        projection_state: projection_state,
-      )
+      case item.parent {
+        Some(_) -> subtask_with_actions_in_projection(item, projection_state)
+        None ->
+          summary_with_actions_in_projection(
+            item,
+            dispatch_paused,
+            projection_state: projection_state,
+          )
+      }
     }),
     has_more: page.has_more,
   )
