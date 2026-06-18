@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -12,7 +13,9 @@ from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = REPO_ROOT / "scripts" / "scherzo-execplan"
+WORKFLOW_SCRIPTS = REPO_ROOT / "workflows" / "dogfood" / "scripts"
+sys.path.insert(0, str(WORKFLOW_SCRIPTS))
+SCRIPT_PATH = WORKFLOW_SCRIPTS / "scherzo-execplan"
 
 
 def load_module():
@@ -61,10 +64,14 @@ def write_retained_execplan_bundle(
     fixture_root = REPO_ROOT / "test" / "fixtures" / "execplan_v2"
     outputs = repo_root / ".scherzo-state" / "artifacts" / "runs" / run_id / "outputs"
     outputs.mkdir(parents=True)
+    plan_path = outputs / "plan.md"
     pack_path = outputs / "implementation_pack.json"
+    shutil.copyfile(fixture_root / "artifacts" / "runs" / "run-1" / "outputs" / "plan.md", plan_path)
     shutil.copyfile(fixture_root / "artifacts" / "runs" / "run-1" / "outputs" / "implementation_pack.json", pack_path)
+    plan_bytes = plan_path.read_bytes()
     pack_bytes = pack_path.read_bytes()
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
+    plan_ref = f"runs/{run_id}/outputs/plan.md"
     pack_ref = f"runs/{run_id}/outputs/implementation_pack.json"
     bundle = json.loads((fixture_root / "artifacts" / "runs" / "run-1" / "outputs" / "exec_plan_bundle.json").read_text(encoding="utf-8"))
     bundle["bundle_id"] = f"fixture-bundle-{source_identifier.lower()}-{run_id}"
@@ -72,9 +79,21 @@ def write_retained_execplan_bundle(
     bundle["implementation_handoff"]["bundle_ref"] = bundle_ref
     bundle["implementation_handoff"]["issue_identifier"] = handoff_identifier
     bundle["implementation_handoff"]["issue_url"] = f"https://linear.app/living-systems/issue/{handoff_identifier}/implement-fixture"
+    bundle["plan"]["ref"] = plan_ref
+    bundle["plan"]["sha256"] = module.sha256_bytes(plan_bytes)
+    bundle["plan"]["bytes"] = len(plan_bytes)
     bundle["implementation_pack"]["ref"] = pack_ref
     bundle["implementation_pack"]["sha256"] = module.sha256_bytes(pack_bytes)
     bundle["implementation_pack"]["bytes"] = len(pack_bytes)
+    for entry in bundle["entries"]:
+        if entry.get("name") == "plan":
+            entry["ref"] = plan_ref
+            entry["sha256"] = module.sha256_bytes(plan_bytes)
+            entry["bytes"] = len(plan_bytes)
+        if entry.get("name") == "implementation_pack":
+            entry["ref"] = pack_ref
+            entry["sha256"] = module.sha256_bytes(pack_bytes)
+            entry["bytes"] = len(pack_bytes)
     bundle["review_surface"]["pr_url"] = pr_url
     bundle["source_issue"]["identifier"] = source_identifier
     bundle["source_issue"]["title"] = f"Fixture source {source_identifier}"
@@ -111,6 +130,69 @@ def write_retained_execplan_bundle(
     if include_manifest:
         (outputs.parent / "outputs.v1.json").write_text(module.canonical_json(manifest), encoding="utf-8")
     return bundle_ref, bundle_sha, bundle
+
+
+def write_retained_review_publication_manifest(
+    module,
+    repo_root: Path,
+    run_id: str,
+    *,
+    branch: str,
+    head_revision: str,
+    pr_url: str,
+    generated_at_ms: int = 1000,
+    attempt_id: str = "attempt-1",
+) -> Path:
+    publication_dir = (
+        repo_root
+        / ".scherzo-state"
+        / "artifacts"
+        / "runs"
+        / run_id
+        / "publications"
+        / module.EXECPLAN_REVIEW_DOC_PUBLICATION_ID
+    )
+    publication_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": 1,
+        "artifact_type": module.ARTIFACT_PUBLICATION_MANIFEST_ARTIFACT_TYPE,
+        "publication_id": module.EXECPLAN_REVIEW_DOC_PUBLICATION_ID,
+        "attempt_id": attempt_id,
+        "status": "published",
+        "branch": branch,
+        "pr_url": pr_url,
+        "head_revision": head_revision,
+        "generated_at_ms": generated_at_ms,
+    }
+    path = publication_dir / f"{attempt_id}.json"
+    path.write_text(module.canonical_json(manifest), encoding="utf-8")
+    return path
+
+
+def write_fake_execplan_driver(repo_root: Path, *, changed_path: str) -> tuple[Path, Path]:
+    driver_path = repo_root / "fake-workspace-driver.py"
+    log_path = repo_root / "fake-workspace-driver.jsonl"
+    script = f"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+log_path = Path({str(log_path)!r})
+argv = sys.argv[1:]
+with log_path.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps({{"argv": argv}}, sort_keys=True) + "\\n")
+if argv == ["changed-files", "--json"]:
+    print(json.dumps({{"version": 1, "files": [{{"path": {changed_path!r}, "status": "modified"}}]}}))
+    sys.exit(0)
+if argv[:1] == ["refresh-base"]:
+    print(json.dumps({{"version": 1, "status": "fresh"}}))
+    sys.exit(0)
+print("unsupported fake driver invocation: " + " ".join(argv), file=sys.stderr)
+sys.exit(2)
+"""
+    driver_path.write_text(script, encoding="utf-8")
+    driver_path.chmod(0o755)
+    return driver_path, log_path
 
 
 class BundleContextParsingTests(unittest.TestCase):
@@ -456,6 +538,179 @@ class PrepareRevisionDiscoveryTests(unittest.TestCase):
             self.assertEqual(validated_refs, [matching_ref])
 
 
+class RevisionPublicationTargetTests(unittest.TestCase):
+    def test_prepare_revision_refreshes_previous_manifest_head(self):
+        module = load_module()
+        previous_head = "f" * 40
+        main_head = "e" * 40
+        manifest_branch = "scherzo/execplan/LIV-314/execplan_review_doc"
+        pr_url = "https://github.com/living-systems/scherzo/pull/314"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            prepare_execplan_repo(repo_root)
+            ref, _sha, bundle = write_retained_execplan_bundle(module, repo_root, "run-1")
+            bundle["review_surface"]["branch"] = "stale/review-surface-branch"
+            bundle["review_surface"]["head_revision"] = main_head
+            bundle_path = repo_root / ".scherzo-state" / "artifacts" / "runs" / "run-1" / "outputs" / "exec_plan_bundle.json"
+            bundle_text = module.canonical_json(bundle)
+            bundle_path.write_text(bundle_text, encoding="utf-8")
+            bundle_sha = module.sha256_bytes(bundle_text.encode("utf-8"))
+            write_retained_review_publication_manifest(
+                module,
+                repo_root,
+                "run-1",
+                branch=manifest_branch,
+                head_revision=previous_head,
+                pr_url=pr_url,
+            )
+            driver_path, driver_log = write_fake_execplan_driver(
+                repo_root,
+                changed_path="test/fixtures/execplan_v2/review-doc.valid.md",
+            )
+            stdout = io.StringIO()
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "SCHERZO_ISSUE_CONTEXT": f"Bundle ref: {ref}\nBundle sha256: {bundle_sha}\n",
+                "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE": "origin",
+                "SCHERZO_WORKSPACE_DRIVER": str(driver_path),
+            }
+
+            with patch.dict(os.environ, env, clear=True), chdir(repo_root), redirect_stdout(stdout):
+                module.command_prepare_revision([
+                    "--from-issue-context",
+                    "--write-bundle",
+                    "tmp/execplan-previous-bundle.json",
+                    "--write-review-doc-path",
+                    "tmp/execplan-review-doc.path",
+                    "--write-pack",
+                    "tmp/execplan-previous-pack.json",
+                ])
+
+            self.assertIn("PREPARE_REVISION_STATUS=ok", stdout.getvalue())
+            driver_records = [
+                json.loads(line)
+                for line in driver_log.read_text(encoding="utf-8").splitlines()
+            ]
+            refresh_calls = [
+                record["argv"]
+                for record in driver_records
+                if record["argv"][:1] == ["refresh-base"]
+            ]
+            self.assertEqual(
+                refresh_calls,
+                [["refresh-base", "--stage", "prepare_revision", "--target", previous_head, "--json"]],
+            )
+
+    def test_materialize_commit_stack_uses_previous_manifest_head_for_existing_pr_target_and_base(self):
+        module = load_module()
+        previous_head = "f" * 40
+        main_head = "e" * 40
+        new_head = "8" * 40
+        head_tree = "7" * 40
+        manifest_branch = "scherzo/execplan/LIV-314/execplan_review_doc"
+        review_path = "test/fixtures/execplan_v2/review-doc.valid.md"
+        pr_url = "https://github.com/living-systems/scherzo/pull/314"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            prepare_execplan_repo(repo_root)
+            _ref, _sha, bundle = write_retained_execplan_bundle(module, repo_root, "run-1")
+            bundle["review_surface"]["branch"] = "stale/review-surface-branch"
+            bundle["review_surface"]["head_revision"] = main_head
+            write_retained_review_publication_manifest(
+                module,
+                repo_root,
+                "run-1",
+                branch=manifest_branch,
+                head_revision=previous_head,
+                pr_url=pr_url,
+            )
+            previous_bundle_path = repo_root / "tmp" / "execplan-previous-bundle.json"
+            review_path_file = repo_root / "tmp" / "execplan-review-doc.path"
+            previous_bundle_path.parent.mkdir(parents=True, exist_ok=True)
+            previous_bundle_path.write_text(module.canonical_json(bundle), encoding="utf-8")
+            review_path_file.write_text(review_path + "\n", encoding="utf-8")
+            driver_path, driver_log = write_fake_execplan_driver(repo_root, changed_path=review_path)
+            captured_kwargs = {}
+
+            def fake_materialize_commit_stack_artifact(**kwargs):
+                captured_kwargs.update(kwargs)
+                refresh_seen = False
+                if driver_log.exists():
+                    for line in driver_log.read_text(encoding="utf-8").splitlines():
+                        record = json.loads(line)
+                        argv = record.get("argv") or []
+                        if argv[:5] == ["refresh-base", "--stage", "materialize_commit_stack", "--target", previous_head]:
+                            refresh_seen = True
+                base_sha = previous_head if refresh_seen else main_head
+                artifact = {
+                    "schema_version": 1,
+                    "artifact_type": module.commit_stack_helper.COMMIT_STACK_ARTIFACT_TYPE,
+                    "repository": {"repo": kwargs["repository"]},
+                    "base": {"ref": kwargs["base_ref"], "sha": base_sha},
+                    "head": {"sha": new_head, "tree": head_tree},
+                    "carrier": {
+                        "ref": "runs/revision-run/outputs/execplan-commit-stack.bundle",
+                        "sha256": "0" * 64,
+                        "bytes": 1,
+                        "media_type": module.commit_stack_helper.BUNDLE_MEDIA_TYPE,
+                    },
+                }
+                module.write_json(kwargs["output_path"], artifact)
+                return artifact
+
+            stdout = io.StringIO()
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "SCHERZO_GITHUB_REPO": "living-systems/scherzo",
+                "SCHERZO_JJ_WORKSPACE_BASE_BRANCH": "main",
+                "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE": "origin",
+                "SCHERZO_WORKSPACE_DRIVER": str(driver_path),
+                "SCHERZO_RUN_ID": "revision-run",
+            }
+            with patch.dict(os.environ, env, clear=True), chdir(repo_root), redirect_stdout(stdout):
+                with patch.object(
+                    module.commit_stack_helper,
+                    "materialize_commit_stack_artifact",
+                    side_effect=fake_materialize_commit_stack_artifact,
+                ):
+                    module.command_materialize_commit_stack([
+                        "--review-doc-path-file",
+                        "tmp/execplan-review-doc.path",
+                        "--previous-bundle",
+                        "tmp/execplan-previous-bundle.json",
+                        "--target-output",
+                        "tmp/execplan-publication-target.json",
+                        "--output",
+                        "tmp/execplan-commit-stack.json",
+                    ])
+
+            target = json.loads((repo_root / "tmp" / "execplan-publication-target.json").read_text(encoding="utf-8"))
+            stack = json.loads((repo_root / "tmp" / "execplan-commit-stack.json").read_text(encoding="utf-8"))
+            existing = target["existing_pr_branch"]
+            self.assertEqual(target["kind"], "existing_pr_branch")
+            self.assertEqual(existing["head"]["branch"], manifest_branch)
+            self.assertEqual(existing["head"]["sha"], previous_head)
+            self.assertNotEqual(existing["head"]["sha"], main_head)
+            self.assertEqual(stack["base"]["sha"], previous_head)
+            self.assertEqual(stack["base"]["sha"], existing["head"]["sha"])
+            self.assertEqual(captured_kwargs["base_revision"], "@-")
+            driver_records = [
+                json.loads(line)
+                for line in driver_log.read_text(encoding="utf-8").splitlines()
+            ]
+            refresh_calls = [
+                record["argv"]
+                for record in driver_records
+                if record["argv"][:1] == ["refresh-base"]
+            ]
+            self.assertEqual(
+                refresh_calls,
+                [["refresh-base", "--stage", "materialize_commit_stack", "--target", previous_head, "--json"]],
+            )
+
+
 class ImplementationPrepareTests(unittest.TestCase):
     def test_writes_canonical_handoff_files_and_stdout_markers(self):
         module = load_module()
@@ -475,7 +730,7 @@ class ImplementationPrepareTests(unittest.TestCase):
             )
             artifact_outputs = repo_root / ".scherzo-state" / "artifacts" / "runs" / "run-1" / "outputs"
             artifact_outputs.mkdir(parents=True)
-            for name in ["exec_plan_bundle.json", "implementation_pack.json"]:
+            for name in ["exec_plan_bundle.json", "implementation_pack.json", "plan.md"]:
                 shutil.copyfile(
                     fixture_root / "artifacts" / "runs" / "run-1" / "outputs" / name,
                     artifact_outputs / name,
@@ -513,7 +768,7 @@ class ImplementationPrepareTests(unittest.TestCase):
             metadata = json.loads((repo_root / "tmp" / "scherzo-implementation.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["source_kind"], "execplan")
             self.assertEqual(metadata["base_change_id"], "unknown-base")
-            self.assertEqual(metadata["plan_path"], "test/fixtures/execplan_v2/review-doc.valid.md")
+            self.assertEqual(metadata["plan_path"], "tmp/execplan-review-doc.md")
             self.assertEqual(metadata["execplan_v2_bundle_path"], "tmp/execplan-bundle.json")
             self.assertEqual(metadata["execplan_v2_implementation_pack_path"], "tmp/execplan-implementation-pack.json")
 

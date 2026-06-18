@@ -209,6 +209,7 @@ RETENTION_MARKER = ".scherzo-keep-workspace"
 CANONICAL_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation"
 LEGACY_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation-v2"
 REVISION_HEAD_RE = re.compile(r"^[a-f0-9]{12,64}$")
+PUBLICATION_GUARD_HEAD_RE = re.compile(r"^[a-f0-9]{40}$")
 REVISION_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 REVISION_REMOTE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 ARTIFACT_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,255}$")
@@ -1089,8 +1090,15 @@ def existing_pr_branch_target_artifact(
 ) -> dict[str, Any] | None:
     branch = str(evidence.get("branch") or "").strip()
     pr_url = str(evidence.get("pr_url") or "").strip()
+    expected_head_sha = str(evidence.get("head_revision") or "").strip().lower()
     pr_number = int(github_pr_number(pr_url) or "0") if pr_url else 0
-    if pr_number <= 0 or not branch or branch == "reused" or not safe_revision_branch(branch):
+    if (
+        pr_number <= 0
+        or not branch
+        or branch == "reused"
+        or not safe_revision_branch(branch)
+        or not safe_publication_guard_head(expected_head_sha)
+    ):
         return None
     return {
         "schema_version": 1,
@@ -1103,7 +1111,7 @@ def existing_pr_branch_target_artifact(
             "head": {
                 "repo": repository,
                 "branch": branch,
-                "sha": base_oid,
+                "sha": expected_head_sha,
             },
             "base": {
                 "branch": base_branch,
@@ -1223,12 +1231,26 @@ def publication_evidence_from_manifest(manifest: Any) -> dict[str, Any] | None:
     }
 
 
+def retained_publication_matches_review_surface(
+    evidence: dict[str, Any], surface: dict[str, Any] | None
+) -> bool:
+    if surface is None:
+        return True
+    surface_pr_url = str(surface.get("pr_url") or "").strip()
+    if not surface_pr_url:
+        return True
+    evidence_pr_url = str(evidence.get("pr_url") or "").strip()
+    return evidence_pr_url == surface_pr_url
+
+
 def revision_publication_evidence(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     surface = review_surface_publication_evidence(bundle)
+    for item in retained_review_publication_evidence(bundle):
+        if retained_publication_matches_review_surface(item, surface):
+            evidence.append(item)
     if surface is not None:
         evidence.append(surface)
-    evidence.extend(retained_review_publication_evidence(bundle))
     return evidence
 
 
@@ -2227,6 +2249,12 @@ def command_materialize_commit_stack(args: list[str]) -> None:
     parser.add_argument("--output", required=True)
     ns = parser.parse_args(args)
     review_path = read_review_doc_path_file(Path(ns.review_doc_path_file))
+    previous_bundle = None
+    if ns.target_output:
+        if not ns.previous_bundle:
+            fail("materialize-commit-stack requires --previous-bundle when --target-output is set")
+        previous_bundle = load_unvalidated_execplan_bundle(Path(ns.previous_bundle))
+        refresh_revision_base_for_publication(previous_bundle, stage="materialize_commit_stack")
     review_meta = validate_review_doc_path(review_path)
     validate_commit_stack_changed_files(review_path)
     repository = configured_repo()
@@ -2246,15 +2274,13 @@ def command_materialize_commit_stack(args: list[str]) -> None:
     base_oid = artifact["base"]["sha"]
     head_oid = artifact["head"]["sha"]
     if ns.target_output:
-        if not ns.previous_bundle:
-            fail("materialize-commit-stack requires --previous-bundle when --target-output is set")
-        previous_bundle = load_unvalidated_execplan_bundle(Path(ns.previous_bundle))
         target = review_surface_target_artifact(
-            previous_bundle=previous_bundle,
+            previous_bundle=previous_bundle or {},
             repository=repository,
             base_branch=base_branch,
             base_oid=base_oid,
         )
+        ensure_commit_stack_base_matches_publication_target(artifact=artifact, target=target)
         write_json(Path(ns.target_output), target)
         print(f"TARGET_OUTPUT={ns.target_output}")
         print(f"TARGET_KIND={target['kind']}")
@@ -2871,6 +2897,10 @@ def safe_revision_head(value: str) -> bool:
     return bool(REVISION_HEAD_RE.fullmatch(value))
 
 
+def safe_publication_guard_head(value: str) -> bool:
+    return bool(PUBLICATION_GUARD_HEAD_RE.fullmatch(value))
+
+
 def safe_revision_branch(value: str) -> bool:
     if not REVISION_BRANCH_RE.fullmatch(value):
         return False
@@ -2935,13 +2965,13 @@ def revision_base_candidates(bundle: dict[str, Any]) -> list[str]:
     return unique
 
 
-def refresh_revision_base(target: str) -> tuple[bool, str]:
+def refresh_revision_base(target: str, *, stage: str = "prepare_revision") -> tuple[bool, str]:
     driver = workspace_driver_command()
     if not driver:
         return False, "SCHERZO_WORKSPACE_DRIVER is not set"
     timeout = revision_refresh_timeout_seconds()
     proc = run_proc(
-        [driver, "refresh-base", "--stage", "prepare_revision", "--target", target, "--json"],
+        [driver, "refresh-base", "--stage", stage, "--target", target, "--json"],
         timeout=timeout,
     )
     payload: dict[str, Any] = {}
@@ -2968,6 +2998,50 @@ def refresh_revision_base(target: str) -> tuple[bool, str]:
     if status in {"fresh", "rebased_clean"}:
         return True, status
     return False, detail or f"refresh-base returned status {status!r}"
+
+
+def refresh_revision_base_for_publication(bundle: dict[str, Any], *, stage: str) -> None:
+    candidates = revision_base_candidates(bundle)
+    if not candidates or workspace_driver_command() is None:
+        return
+    attempts: list[str] = []
+    for target in candidates:
+        refreshed, message = refresh_revision_base(target, stage=stage)
+        if refreshed:
+            return
+        attempts.append(f"{target}: {message}")
+    fail(
+        "could not refresh workspace to previous ExecPlan publication head for revision; tried "
+        + "; ".join(attempts),
+        code="execplan_revision_base_missing",
+    )
+
+
+def ensure_commit_stack_base_matches_publication_target(
+    *,
+    artifact: dict[str, Any],
+    target: dict[str, Any],
+) -> None:
+    if target.get("kind") != "existing_pr_branch":
+        return
+    existing = target.get("existing_pr_branch")
+    if not isinstance(existing, dict):
+        return
+    head = existing.get("head")
+    if not isinstance(head, dict):
+        return
+    expected_head_sha = str(head.get("sha") or "").strip().lower()
+    base = artifact.get("base")
+    actual_base_sha = str(base.get("sha") if isinstance(base, dict) else "").strip().lower()
+    if actual_base_sha == expected_head_sha:
+        return
+    branch = str(head.get("branch") or "existing PR branch")
+    fail(
+        "revision commit_stack base sha "
+        f"{actual_base_sha or '<missing>'} does not match expected head {expected_head_sha or '<missing>'} "
+        f"for {branch}; refresh the revision workspace to the existing PR branch head before publication",
+        code="execplan_revision_base_mismatch",
+    )
 
 
 def seed_revision_review_doc_from_canonical_plan(bundle: dict[str, Any], *, repo_root_arg: str | None = None) -> bool:
@@ -3055,6 +3129,7 @@ def command_prepare_revision(args: list[str]) -> None:
         validate_review_doc=False,
     )
     ensure_revision_review_doc_available(bundle, repo_root_arg=str(Path.cwd()))
+    refresh_revision_base_for_publication(bundle, stage="prepare_revision")
     validate_bundle_review_doc(
         bundle,
         repo_root_arg=str(Path.cwd()),

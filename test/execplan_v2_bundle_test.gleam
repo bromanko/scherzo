@@ -139,6 +139,11 @@ fn write_fake_commit_stack_driver(path: String, review_path: String) -> Nil {
         <> "\",\"status\":\"modified\"}]}'\n"
         <> "  exit 0\n"
         <> "fi\n"
+        <> "if [ \"$1\" = refresh-base ]; then\n"
+        <> "  printf '%s\\n' \"$5\" > .fake-base-target\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"status\":\"fresh\"}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "printf 'unexpected driver command: %s\\n' \"$*\" >&2\n"
         <> "exit 2\n",
     )
@@ -185,7 +190,7 @@ fn write_fake_commit_stack_jj(path: String) -> Nil {
         <> "    prev=$arg\n"
         <> "  done\n"
         <> "  case \"$rev\" in\n"
-        <> "    @-) case \"$template\" in *commit_id*) echo 2222222222222222222222222222222222222222;; *) echo parentdescription;; esac; exit 0;;\n"
+        <> "    @-) case \"$template\" in *commit_id*) if [ -f .fake-base-target ] && grep -Eq '^[0-9a-f]{40}$' .fake-base-target; then cat .fake-base-target; else echo 2222222222222222222222222222222222222222; fi;; *) echo parentdescription;; esac; exit 0;;\n"
         <> "    @) case \"$template\" in *description*) if [ \"${SCHERZO_FAKE_EMPTY_DESCRIPTION:-}\" = 1 ] && [ ! -f .fake-described ]; then printf '\\n'; else echo currentdescription; fi;; *commit_id*) if [ -f .fake-described ]; then echo 5555555555555555555555555555555555555555; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "  esac\n"
         <> "fi\n"
@@ -407,6 +412,25 @@ fn bundle_without_review_surface_publication(source: String) -> String {
     each: "    \"status\": \"published\"\n",
     with: "    \"status\": \"not_applicable\"\n",
   )
+}
+
+fn write_materialize_previous_bundle_with_surface_head(
+  dir: String,
+  head_revision: String,
+) -> String {
+  let assert Ok(source) =
+    simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+  let previous_bundle = dir <> "/previous-bundle.json"
+  let with_head =
+    string.replace(
+      source,
+      each: "    \"branch\": \"execplan/liv-314\",\n",
+      with: "    \"branch\": \"execplan/liv-314\",\n    \"head_revision\": \""
+        <> head_revision
+        <> "\",\n",
+    )
+  let assert Ok(Nil) = simplifile.write(previous_bundle, with_head)
+  "previous-bundle.json"
 }
 
 fn write_revision_legacy_bundle_without_surface(
@@ -2913,7 +2937,10 @@ pub fn materialize_commit_stack_revision_writes_existing_pr_publication_target_t
   test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/git")
   let previous_bundle =
-    tmp_repo_path("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+    write_materialize_previous_bundle_with_surface_head(
+      dir,
+      "2222222222222222222222222222222222222222",
+    )
 
   let artifact =
     run_shell_in(
@@ -2957,7 +2984,10 @@ pub fn materialize_commit_stack_revision_prefers_review_surface_over_conflicting
   test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/git")
   let previous_bundle =
-    tmp_repo_path("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
+    write_materialize_previous_bundle_with_surface_head(
+      dir,
+      "2222222222222222222222222222222222222222",
+    )
   write_execplan_publication_manifest(
     dir,
     "run-1",
@@ -3039,7 +3069,7 @@ pub fn materialize_commit_stack_revision_uses_retained_publication_manifest_when
   )
   assert string.contains(
     target,
-    "\"sha\": \"2222222222222222222222222222222222222222\"",
+    "\"sha\": \"3333333333333333333333333333333333333333\"",
   )
 }
 
