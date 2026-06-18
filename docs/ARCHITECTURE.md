@@ -223,18 +223,46 @@ is eliminated.
   `scherzo connect`, which exchanges a one-time pairing token for a durable
   daemon credential and stores that credential outside project YAML. When
   enabled the daemon loads the durable daemon identity plus stored credential,
-  starts one outbound UI client, sends `daemon_hello`, `heartbeat`, and minimal
+  starts one outbound UI client, sends `daemon_hello`, `heartbeat`, and
   `daemon_state` snapshots, retries temporary outages without blocking local
   control, and stops retrying when the credential or daemon identity is revoked
   until the operator pairs again. Pairing and later heartbeat/state frames may
   include the non-secret `daemonLabel` from `scherzo connect --name` or
   `ui_server.daemon_label`, with the CLI flag taking precedence during pairing.
+  Each `daemon_hello`, `heartbeat`, and `daemon_state` frame includes a stable
+  `state` object:
+
+  ```json
+  {
+    "schemaVersion": 1,
+    "host": "worker-hostname-or-unknown",
+    "version": "scherzo revision=... date=... dirty=...",
+    "daemonLabel": "optional friendly label",
+    "agentSlots": { "capacity": 2, "active": 1, "used": 1, "known": true }
+  }
+  ```
+
+  `agentSlots.capacity` mirrors `agents.concurrency`; `active` and `used` are
+  the latest successful non-exited session count when `known` is true. If the
+  session snapshot is temporarily unavailable while building hello or state
+  frames, `known` is false and the daemon leaves `active`/`used` at `0` rather
+  than presenting those counts as authoritative. Heartbeats reuse the cached
+  slot snapshot from connect/state frames so heartbeat delivery does not block
+  on another session enumeration. Heartbeats also include an `event` object
+  with lifecycle kind, heartbeat type, and `daemon heartbeat` message, which
+  lets the UI sidecar maintain `lastEvent` without inventing daemon activity.
   Project config keeps only the non-secret UI
-  base URL, `credential_ref`, and optional `daemon_label`; it does not read or reuse `control.json` or
-  `SCHERZO_CONTROL_FILE` for remote auth.
-- This lifecycle slice does not add browser UI, server-originated command
-  mutation, workflow-helper/schema changes, provider-live or provider-cache
-  behavior changes, or token-accounting changes.
+  base URL, `credential_ref`, and optional `daemon_label`; it does not read or
+  reuse `control.json` or `SCHERZO_CONTROL_FILE` for remote auth.
+- When `ui_server.command_bridge_enabled` is true, UI `server_command` frames
+  are correlated by `serverCommandId` and answered with `command_result` frames.
+  The bridge rejects malformed commands, daemon/boot mismatches, disabled bridge
+  use, and overloads with explicit command-result statuses. Supported operator
+  commands use the shared `control/command.gleam` codec; pause, resume, and
+  reload produce applied/not-allowed/rejected results and are followed by a fresh
+  `daemon_state` snapshot when applied.
+- This lifecycle slice does not add browser UI, workflow-helper/schema changes,
+  provider-live or provider-cache behavior changes, or token-accounting changes.
 - `scherzoctl` discovers the control file from `--control-file`,
   `SCHERZO_CONTROL_FILE`, or the repository default path.
 - The local control server waits `control.command_timeout` for mutating

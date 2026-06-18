@@ -5,7 +5,7 @@
     websocket_send_text/3,
     websocket_recv_text/2,
     websocket_close/1,
-    start_fake_ui_server/2,
+    start_fake_ui_server/3,
     stop_fake_ui_server/1,
     fake_ui_server_port/1
 ]).
@@ -55,12 +55,12 @@ websocket_close({websocket, Transport, Socket}) ->
     nil;
 websocket_close(_) -> nil.
 
-start_fake_ui_server(Credential, TranscriptPath) ->
+start_fake_ui_server(Credential, TranscriptPath, StatusSubject) ->
     try
         case gen_tcp:listen(0, [binary, {active, false}, {packet, raw}, {ip, {127,0,0,1}}, {reuseaddr, true}]) of
             {ok, Listener} ->
                 {ok, {_Ip, Port}} = inet:sockname(Listener),
-                Pid = spawn(fun() -> fake_server_loop(Listener, Credential, TranscriptPath, 0) end),
+                Pid = spawn(fun() -> fake_server_loop(Listener, Credential, TranscriptPath, StatusSubject, 0) end),
                 {ok, {Pid, Port}};
             {error, Reason} -> {error, atom_to_binary(Reason, utf8)}
         end
@@ -352,16 +352,16 @@ append_transcript(Path, Line) ->
     _ = file:write_file(to_list(Path), [Line, <<"\n">>], [append]),
     ok.
 
-fake_server_loop(Listener, Credential, TranscriptPath, Stage) ->
+fake_server_loop(Listener, Credential, TranscriptPath, StatusSubject, Stage) ->
     case gen_tcp:accept(Listener) of
         {ok, Socket} ->
-            NextStage = handle_fake_connection(Socket, Credential, TranscriptPath, Stage),
-            fake_server_loop(Listener, Credential, TranscriptPath, NextStage);
+            NextStage = handle_fake_connection(Socket, Credential, TranscriptPath, StatusSubject, Stage),
+            fake_server_loop(Listener, Credential, TranscriptPath, StatusSubject, NextStage);
         {error, closed} -> ok;
         {error, _} -> ok
     end.
 
-handle_fake_connection(Socket, Credential, TranscriptPath, Stage) ->
+handle_fake_connection(Socket, Credential, TranscriptPath, StatusSubject, Stage) ->
     case recv_http_message(tcp, Socket, 1000) of
         {ok, Headers, Body} ->
             case parse_request_line(Headers) of
@@ -369,6 +369,11 @@ handle_fake_connection(Socket, Credential, TranscriptPath, Stage) ->
                     append_transcript(TranscriptPath, <<"pairing_exchange_body=", Body/binary>>),
                     ResponseBody = iolist_to_binary([<<"{\"credentialId\":\"cred-1\",\"credential\":\"">>, Credential, <<"\"}">>]),
                     _ = send_transport(tcp, Socket, http_response(201, ResponseBody), 1000),
+                    close_transport(tcp, Socket),
+                    Stage;
+                {<<"GET">>, <<"/api/daemons">>} ->
+                    ResponseBody = fake_daemons_response(TranscriptPath),
+                    _ = send_transport(tcp, Socket, http_response(200, ResponseBody), 1000),
                     close_transport(tcp, Socket),
                     Stage;
                 {<<"GET">>, <<"/api/daemons/ws">>} ->
@@ -379,14 +384,14 @@ handle_fake_connection(Socket, Credential, TranscriptPath, Stage) ->
                     append_transcript(TranscriptPath, <<"authorization=", Authorization/binary>>),
                     case Stage of
                         0 ->
-                            fake_ws_accept(Socket, Headers, TranscriptPath, first),
+                            fake_ws_accept(Socket, Headers, TranscriptPath, StatusSubject, first),
                             1;
                         1 ->
                             append_transcript(TranscriptPath, <<"outage_attempt=closed_before_handshake">>),
                             close_transport(tcp, Socket),
                             2;
                         _ ->
-                            fake_ws_accept(Socket, Headers, TranscriptPath, revoke),
+                            fake_ws_accept(Socket, Headers, TranscriptPath, StatusSubject, revoke),
                             3
                     end;
                 _ ->
@@ -399,7 +404,7 @@ handle_fake_connection(Socket, Credential, TranscriptPath, Stage) ->
             Stage
     end.
 
-fake_ws_accept(Socket, Headers, TranscriptPath, Mode) ->
+fake_ws_accept(Socket, Headers, TranscriptPath, StatusSubject, Mode) ->
     Key = case header_value(binary:split(Headers, <<"\r\n">>, [global]), <<"sec-websocket-key">>) of
         {ok, Value} -> Value;
         error -> <<>>
@@ -415,7 +420,7 @@ fake_ws_accept(Socket, Headers, TranscriptPath, Mode) ->
     case Mode of
         first ->
             _ = send_transport(tcp, Socket, encode_server_text_frame(<<"{\"type\":\"server_hello\",\"heartbeatIntervalMs\":25}">>), 1000),
-            record_client_frames(Socket, TranscriptPath, 3),
+            record_client_frames(Socket, TranscriptPath, StatusSubject, 3),
             close_transport(tcp, Socket);
         revoke ->
             append_transcript(TranscriptPath, <<"server_frame=credential_revoked">>),
@@ -424,13 +429,77 @@ fake_ws_accept(Socket, Headers, TranscriptPath, Mode) ->
             close_transport(tcp, Socket)
     end.
 
-record_client_frames(_Socket, _TranscriptPath, 0) -> ok;
-record_client_frames(Socket, TranscriptPath, Remaining) ->
+record_client_frames(_Socket, _TranscriptPath, _StatusSubject, 0) -> ok;
+record_client_frames(Socket, TranscriptPath, StatusSubject, Remaining) ->
     case recv_text_frame(tcp, Socket, 1000) of
         {ok, Payload} ->
             append_transcript(TranscriptPath, <<"client_frame=", Payload/binary>>),
-            record_client_frames(Socket, TranscriptPath, Remaining - 1);
+            notify_daemons_status(StatusSubject, fake_daemons_response(TranscriptPath)),
+            record_client_frames(Socket, TranscriptPath, StatusSubject, Remaining - 1);
         {error, _} -> ok
+    end.
+
+notify_daemons_status({subject, Pid, Tag}, StatusBody) ->
+    Pid ! {Tag, StatusBody},
+    ok;
+notify_daemons_status(_StatusSubject, _StatusBody) -> ok.
+
+fake_daemons_response(TranscriptPath) ->
+    {LastKnownState, LastEvent} = fake_daemons_status(TranscriptPath),
+    case {LastKnownState, LastEvent} of
+        {undefined, undefined} -> <<"{\"daemons\":[]}">>;
+        _ ->
+            LastKnownStateJson = json_or_null(LastKnownState),
+            LastEventJson = json_or_null(LastEvent),
+            <<"{\"daemons\":[{\"lastKnownState\":", LastKnownStateJson/binary,
+              ",\"lastEvent\":", LastEventJson/binary, "}]}">>
+    end.
+
+fake_daemons_status(TranscriptPath) ->
+    case file:read_file(to_list(TranscriptPath)) of
+        {ok, Contents} -> fake_daemons_status_lines(binary:split(Contents, <<"\n">>, [global]), undefined, undefined);
+        {error, _} -> {undefined, undefined}
+    end.
+
+fake_daemons_status_lines([], LastKnownState, LastEvent) -> {LastKnownState, LastEvent};
+fake_daemons_status_lines([<<"client_frame=", Payload/binary>> | Rest], LastKnownState, LastEvent) ->
+    NextState = case json_object_after_key(Payload, <<"\"state\":">>) of
+        {ok, StateJson} -> StateJson;
+        none -> LastKnownState
+    end,
+    NextEvent = case json_object_after_key(Payload, <<"\"event\":">>) of
+        {ok, EventJson} -> EventJson;
+        none -> LastEvent
+    end,
+    fake_daemons_status_lines(Rest, NextState, NextEvent);
+fake_daemons_status_lines([_Line | Rest], LastKnownState, LastEvent) ->
+    fake_daemons_status_lines(Rest, LastKnownState, LastEvent).
+
+json_or_null(undefined) -> <<"null">>;
+json_or_null(Json) -> Json.
+
+json_object_after_key(Payload, Key) ->
+    case binary:match(Payload, Key) of
+        {Pos, Len} ->
+            Start = Pos + Len,
+            case binary:part(Payload, Start, byte_size(Payload) - Start) of
+                <<"{", Rest/binary>> -> take_json_object(Rest, 1, <<"{">>);
+                _ -> none
+            end;
+        nomatch -> none
+    end.
+
+take_json_object(<<>>, _Depth, _Acc) -> none;
+take_json_object(<<Byte, Rest/binary>>, Depth, Acc) ->
+    NextAcc = <<Acc/binary, Byte>>,
+    NextDepth = case Byte of
+        ${ -> Depth + 1;
+        $} -> Depth - 1;
+        _ -> Depth
+    end,
+    case NextDepth =:= 0 of
+        true -> {ok, NextAcc};
+        false -> take_json_object(Rest, NextDepth, NextAcc)
     end.
 
 parse_request_line(Headers) ->

@@ -1,16 +1,20 @@
 import gleam/erlang/process
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/control/remote/credential_store
+import scherzo/control/remote/ui_protocol
 import scherzo/control/remote/ui_websocket_client
 import scherzo/control/remote/url
 import scherzo/daemon_identity
 import scherzo/log
+import scherzo/path
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/version
 import scherzo/work_item_invalidation
 
 pub type StartError {
@@ -76,7 +80,12 @@ pub fn start_with_control(
       websocket_url: validated.websocket_url,
       daemon_id: identity.daemon_id,
       boot_id: identity.boot_id,
-      daemon_label: effective.ui_server.daemon_label,
+      runtime_metadata: ui_protocol.RuntimeMetadata(
+        local_hostname(),
+        version.string(),
+        effective.ui_server.daemon_label,
+        effective.agent.max_concurrent_agents,
+      ),
       credential: stored.secret,
       heartbeat_interval_ms: effective.ui_server.heartbeat_interval_ms,
       state_interval_ms: effective.ui_server.state_interval_ms,
@@ -222,6 +231,30 @@ pub fn list_sessions_for_remote_snapshot(
     Error(hub.HubUnavailable) -> Error("event_hub_unavailable")
     Error(hub.InvalidLimit(_)) -> Error("event_hub_list_sessions_invalid_limit")
     Error(hub.SessionNotFound(_)) -> Error("event_hub_session_not_found")
+  }
+}
+
+fn local_hostname() -> String {
+  case first_non_empty_env(["HOSTNAME", "COMPUTERNAME"]) {
+    Some(hostname) -> hostname
+    None -> "unknown"
+  }
+}
+
+fn first_non_empty_env(names: List(String)) -> Option(String) {
+  case names {
+    [] -> None
+    [name, ..rest] ->
+      case path.env(name) {
+        Some(value) -> {
+          let value = string.trim(value)
+          case value == "" {
+            True -> first_non_empty_env(rest)
+            False -> Some(value)
+          }
+        }
+        None -> first_non_empty_env(rest)
+      }
   }
 }
 

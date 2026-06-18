@@ -22,7 +22,7 @@ pub type Settings {
     websocket_url: String,
     daemon_id: String,
     boot_id: String,
-    daemon_label: Option(String),
+    runtime_metadata: ui_protocol.RuntimeMetadata,
     credential: String,
     heartbeat_interval_ms: Int,
     state_interval_ms: Int,
@@ -82,15 +82,6 @@ pub opaque type Message {
   Shutdown(process.Subject(Nil))
 }
 
-type RunningQuery(timer) {
-  RunningQuery(
-    query_id: String,
-    worker: process.Pid,
-    generation: Int,
-    timer: timer,
-  )
-}
-
 type State(connection, timer) {
   State(
     subject: process.Subject(Message),
@@ -106,7 +97,8 @@ type State(connection, timer) {
     stopped_for_repair: Bool,
     router: remote_command_router.State,
     last_known_dispatch_paused: Bool,
-    running_queries: List(RunningQuery(timer)),
+    last_runtime_state: ui_protocol.DaemonRuntimeState,
+    running_queries: List(ui_protocol.RunningQuery(timer)),
   )
 }
 
@@ -133,6 +125,9 @@ pub fn start(
           stopped_for_repair: False,
           router: remote_command_router.new(),
           last_known_dispatch_paused: False,
+          last_runtime_state: ui_protocol.runtime_state_with_unknown_sessions(
+            settings.runtime_metadata,
+          ),
           running_queries: [],
         )
         |> schedule_attempt_connect(0)
@@ -255,12 +250,18 @@ fn handle_connected(
   state: State(connection, timer),
   connection: connection,
 ) -> State(connection, timer) {
-  case send_hello(connection, state) {
+  let sessions_result = state.dependencies.list_sessions()
+  let runtime_state =
+    ui_protocol.runtime_state_from_session_result(
+      state.settings.runtime_metadata,
+      sessions_result,
+    )
+  case send_hello(connection, state, runtime_state) {
     Ok(Nil) ->
-      case send_heartbeat(connection, state) {
+      case send_heartbeat(connection, state, runtime_state) {
         Ok(Nil) ->
-          case send_state_snapshot(connection, state) {
-            Ok(Nil) -> {
+          case send_state_snapshot(connection, state, sessions_result) {
+            Ok(runtime_state) -> {
               let generation = state.connection_generation + 1
               spawn_reader(
                 state.subject,
@@ -273,6 +274,7 @@ fn handle_connected(
                 connection: Some(connection),
                 next_retry_ms: state.settings.retry_initial_ms,
                 connection_generation: generation,
+                last_runtime_state: runtime_state,
               )
               |> schedule_heartbeat_timer()
               |> schedule_state_timer()
@@ -310,7 +312,7 @@ fn send_heartbeat_tick(
     None -> State(..state, heartbeat_timer: None)
     Some(connection) -> {
       let state = State(..state, heartbeat_timer: None)
-      case send_heartbeat(connection, state) {
+      case send_heartbeat(connection, state, state.last_runtime_state) {
         Ok(Nil) -> schedule_heartbeat_timer(state)
         Error(message) ->
           retry_after_send_failure(
@@ -331,8 +333,16 @@ fn send_state_tick(
     None -> State(..state, state_timer: None)
     Some(connection) -> {
       let state = State(..state, state_timer: None)
-      case send_state_snapshot(connection, state) {
-        Ok(Nil) -> schedule_state_timer(state)
+      case
+        send_state_snapshot(
+          connection,
+          state,
+          state.dependencies.list_sessions(),
+        )
+      {
+        Ok(runtime_state) ->
+          State(..state, last_runtime_state: runtime_state)
+          |> schedule_state_timer()
         Error(message) ->
           retry_after_send_failure(
             state,
@@ -606,7 +616,7 @@ fn handle_query_request(
               QueryTimedOut(generation, query_id, worker),
             )
           State(..state, running_queries: [
-            RunningQuery(
+            ui_protocol.RunningQuery(
               query_id: query_id,
               worker: worker,
               generation: generation,
@@ -695,7 +705,7 @@ fn handle_query_completed(
   worker: process.Pid,
   result: Result(query_types.QueryResponse, query_types.QueryError),
 ) -> State(connection, timer) {
-  case pop_running_query(state.running_queries, worker) {
+  case ui_protocol.pop_running_query(state.running_queries, worker) {
     Error(Nil) -> state
     Ok(#(running_query, remaining_queries)) -> {
       state.dependencies.cancel_timer(running_query.timer)
@@ -717,7 +727,7 @@ fn handle_query_timed_out(
   query_id: String,
   worker: process.Pid,
 ) -> State(connection, timer) {
-  case pop_running_query(state.running_queries, worker) {
+  case ui_protocol.pop_running_query(state.running_queries, worker) {
     Error(Nil) -> state
     Ok(#(running_query, remaining_queries)) -> {
       process.kill(running_query.worker)
@@ -797,8 +807,14 @@ fn send_command_result_and_state(
 ) -> State(connection, timer) {
   case send_command_result(connection, state, command_id, result) {
     Ok(Nil) ->
-      case send_state_snapshot(connection, state) {
-        Ok(Nil) -> state
+      case
+        send_state_snapshot(
+          connection,
+          state,
+          state.dependencies.list_sessions(),
+        )
+      {
+        Ok(runtime_state) -> State(..state, last_runtime_state: runtime_state)
         Error(message) ->
           retry_after_send_failure(
             state,
@@ -824,11 +840,7 @@ fn send_command_result(
   result: command.CommandResult,
 ) -> Result(Nil, String) {
   ui_protocol.encode_command_result(command_id, result)
-  |> state.dependencies.send_text(
-    connection,
-    _,
-    state.settings.connect_timeout_ms,
-  )
+  |> send_text_frame(connection, state)
 }
 
 fn send_query_result_for_state(
@@ -865,11 +877,7 @@ fn send_query_result(
   result: Result(query_types.QueryResponse, query_types.QueryError),
 ) -> Result(Nil, String) {
   ui_protocol.encode_query_response(query_id, result)
-  |> state.dependencies.send_text(
-    connection,
-    _,
-    state.settings.connect_timeout_ms,
-  )
+  |> send_text_frame(connection, state)
 }
 
 fn send_work_item_invalidation_for_state(
@@ -901,14 +909,10 @@ fn send_work_item_invalidation(
     state.settings.daemon_id,
     state.settings.boot_id,
     state.dependencies.now_ms(),
-    state.settings.daemon_label,
+    ui_protocol.runtime_daemon_label(state.settings.runtime_metadata),
     event,
   )
-  |> state.dependencies.send_text(
-    connection,
-    _,
-    state.settings.connect_timeout_ms,
-  )
+  |> send_text_frame(connection, state)
 }
 
 fn apply_server_hello(
@@ -928,55 +932,72 @@ fn apply_server_hello(
 fn send_hello(
   connection: connection,
   state: State(connection, timer),
+  runtime_state: ui_protocol.DaemonRuntimeState,
 ) -> Result(Nil, String) {
   ui_protocol.encode_daemon_hello(
     state.settings.daemon_id,
     state.settings.boot_id,
-    state.settings.daemon_label,
+    ui_protocol.runtime_daemon_label(state.settings.runtime_metadata),
+    runtime_state,
   )
-  |> state.dependencies.send_text(
-    connection,
-    _,
-    state.settings.connect_timeout_ms,
-  )
+  |> send_text_frame(connection, state)
 }
 
 fn send_heartbeat(
   connection: connection,
   state: State(connection, timer),
+  runtime_state: ui_protocol.DaemonRuntimeState,
 ) -> Result(Nil, String) {
-  ui_protocol.encode_heartbeat(
+  ui_protocol.encode_heartbeat_with_state(
     state.dependencies.now_ms(),
-    state.settings.daemon_label,
+    state.settings.runtime_metadata,
+    runtime_state,
   )
-  |> state.dependencies.send_text(
-    connection,
-    _,
-    state.settings.connect_timeout_ms,
-  )
+  |> send_text_frame(connection, state)
 }
 
 fn send_state_snapshot(
   connection: connection,
   state: State(connection, timer),
-) -> Result(Nil, String) {
+  sessions_result: Result(List(event.SessionSummary), String),
+) -> Result(ui_protocol.DaemonRuntimeState, String) {
+  use sessions <- result.try(sessions_result)
   let dispatch_paused = case
     state.dependencies.dispatch_paused(state.settings.command_timeout_ms)
   {
     Ok(dispatch_paused) -> dispatch_paused
     Error(_) -> state.last_known_dispatch_paused
   }
-  use sessions <- result.try(state.dependencies.list_sessions())
+  let runtime_state =
+    ui_protocol.runtime_state_from_sessions(
+      state.settings.runtime_metadata,
+      sessions,
+    )
   let snapshots = sessions |> list.map(ui_protocol.session_from_summary)
-  ui_protocol.encode_daemon_state(
-    state.dependencies.now_ms(),
-    dispatch_paused,
-    state.settings.daemon_label,
-    snapshots,
-  )
-  |> state.dependencies.send_text(
+  case
+    ui_protocol.encode_daemon_state(
+      state.dependencies.now_ms(),
+      dispatch_paused,
+      ui_protocol.runtime_daemon_label(state.settings.runtime_metadata),
+      runtime_state,
+      snapshots,
+    )
+    |> send_text_frame(connection, state)
+  {
+    Ok(Nil) -> Ok(runtime_state)
+    Error(message) -> Error(message)
+  }
+}
+
+// nolint: stringly_typed_error -- UI websocket transport dependencies report wire errors as strings; preserve retry messages.
+fn send_text_frame(
+  payload: String,
+  connection: connection,
+  state: State(connection, timer),
+) -> Result(Nil, String) {
+  state.dependencies.send_text(
     connection,
-    _,
+    payload,
     state.settings.connect_timeout_ms,
   )
 }
@@ -1094,28 +1115,6 @@ fn cancel_running_queries(
     process.kill(running_query.worker)
   })
   State(..state, running_queries: [])
-}
-
-fn pop_running_query(
-  running_queries: List(RunningQuery(timer)),
-  worker: process.Pid,
-) -> Result(#(RunningQuery(timer), List(RunningQuery(timer))), Nil) {
-  pop_running_query_loop(running_queries, worker, [])
-}
-
-fn pop_running_query_loop(
-  remaining: List(RunningQuery(timer)),
-  worker: process.Pid,
-  acc: List(RunningQuery(timer)),
-) -> Result(#(RunningQuery(timer), List(RunningQuery(timer))), Nil) {
-  case remaining {
-    [] -> Error(Nil)
-    [entry, ..rest] ->
-      case entry.worker == worker {
-        True -> Ok(#(entry, list.append(list.reverse(acc), rest)))
-        False -> pop_running_query_loop(rest, worker, [entry, ..acc])
-      }
-  }
 }
 
 fn shutdown_runtime(state: State(connection, timer)) -> Nil {

@@ -5,9 +5,11 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/command
 import scherzo/control/query/types as query_types
+import scherzo/control/remote/ui_protocol
 import scherzo/control/remote/ui_websocket_client
 import scherzo/log
 import scherzo/session/event
+import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/work_item_invalidation
 import simplifile
@@ -73,7 +75,12 @@ fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
       websocket_url: "wss://ui.example.test/api/daemons/ws",
       daemon_id: "daemon_abc",
       boot_id: "boot_abc",
-      daemon_label: None,
+      runtime_metadata: ui_protocol.RuntimeMetadata(
+        "test-host",
+        "scherzo test-version",
+        None,
+        4,
+      ),
       credential: "dcred_secret_1",
       heartbeat_interval_ms: 1000,
       state_interval_ms: 1000,
@@ -203,13 +210,129 @@ pub fn ui_websocket_client_sends_handshake_hello_heartbeat_and_state_test() {
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
+pub fn ui_websocket_client_sends_runtime_state_and_heartbeat_event_test() {
+  let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+
+  let hello = test_async.expect_message(outbound)
+  assert string.contains(hello, "\"type\":\"daemon_hello\"")
+  assert string.contains(hello, "\"state\":{")
+  assert string.contains(hello, "\"host\":\"test-host\"")
+  assert string.contains(hello, "\"version\":\"scherzo test-version\"")
+  assert string.contains(hello, "\"capacity\":4")
+  assert string.contains(hello, "\"active\":1")
+  assert string.contains(hello, "\"used\":1")
+  assert string.contains(hello, "\"known\":true")
+
+  let heartbeat = test_async.expect_message(outbound)
+  assert string.contains(heartbeat, "\"type\":\"heartbeat\"")
+  assert string.contains(heartbeat, "\"state\":{")
+  assert string.contains(heartbeat, "\"event\":{")
+  assert string.contains(heartbeat, "\"kind\":\"lifecycle\"")
+  assert string.contains(heartbeat, "\"type\":\"heartbeat\"")
+  assert string.contains(heartbeat, "\"message\":\"daemon heartbeat\"")
+
+  let state = test_async.expect_message(outbound)
+  assert string.contains(state, "\"type\":\"daemon_state\"")
+  assert string.contains(state, "\"state\":{")
+  assert string.contains(state, "\"agentSlots\":{")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_counts_non_exited_sessions_in_runtime_state_test() {
+  let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
+  let deps =
+    ui_websocket_client.Dependencies(..deps, list_sessions: fn() {
+      Ok([session_summary(), exited_session_summary()])
+    })
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+
+  let hello = test_async.expect_message(outbound)
+  assert string.contains(hello, "\"type\":\"daemon_hello\"")
+  assert string.contains(hello, "\"active\":1")
+  assert string.contains(hello, "\"used\":1")
+  assert string.contains(hello, "\"known\":true")
+
+  let heartbeat = test_async.expect_message(outbound)
+  assert string.contains(heartbeat, "\"type\":\"heartbeat\"")
+  assert string.contains(heartbeat, "\"active\":1")
+  assert string.contains(heartbeat, "\"used\":1")
+  assert string.contains(heartbeat, "\"known\":true")
+
+  let state = test_async.expect_message(outbound)
+  assert string.contains(state, "\"type\":\"daemon_state\"")
+  assert string.contains(state, "\"active\":1")
+  assert string.contains(state, "\"used\":1")
+  assert string.contains(state, "\"known\":true")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_reuses_connect_snapshot_and_cached_heartbeat_test() {
+  let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
+  let list_calls = process.new_subject()
+  let deps =
+    ui_websocket_client.Dependencies(..deps, list_sessions: fn() {
+      process.send(list_calls, Nil)
+      Ok([session_summary()])
+    })
+  let settings =
+    ui_websocket_client.Settings(
+      ..settings,
+      heartbeat_interval_ms: 100,
+      state_interval_ms: 1000,
+    )
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+
+  expect_initial_outbound(outbound)
+  assert list.length(test_async.drain_subject(list_calls)) == 1
+
+  let heartbeat = test_async.expect_message(outbound)
+  assert string.contains(heartbeat, "\"type\":\"heartbeat\"")
+  test_async.assert_no_extra_message_within(list_calls, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_marks_agent_slots_unknown_when_snapshot_fails_test() {
+  let Fixture(settings:, deps:, outbound:, closes:, logs:, ..) = new_fixture()
+  let deps =
+    ui_websocket_client.Dependencies(..deps, list_sessions: fn() {
+      Error("event_hub_unavailable")
+    })
+  let settings =
+    ui_websocket_client.Settings(
+      ..settings,
+      retry_initial_ms: 1000,
+      retry_max_ms: 1000,
+    )
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+
+  let hello = test_async.expect_message(outbound)
+  assert string.contains(hello, "\"type\":\"daemon_hello\"")
+  assert string.contains(hello, "\"known\":false")
+
+  let heartbeat = test_async.expect_message(outbound)
+  assert string.contains(heartbeat, "\"type\":\"heartbeat\"")
+  assert string.contains(heartbeat, "\"known\":false")
+
+  let _ = test_async.expect_message(closes)
+  let log_entry = expect_log_contains(logs, "ui_websocket_state_send_failed")
+  assert string.contains(log_entry, "event_hub_unavailable")
+  test_async.assert_no_extra_message_within(outbound, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
 pub fn ui_websocket_client_sends_daemon_label_metadata_test() {
   let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
   let assert Ok(handle) =
     ui_websocket_client.start(
       ui_websocket_client.Settings(
         ..settings,
-        daemon_label: Some("Project Foo / MacBook"),
+        runtime_metadata: ui_protocol.RuntimeMetadata(
+          "test-host",
+          "scherzo test-version",
+          Some("Project Foo / MacBook"),
+          4,
+        ),
       ),
       deps,
     )
@@ -1131,15 +1254,26 @@ fn expect_log_contains(
 }
 
 fn session_summary() -> event.SessionSummary {
+  session_summary_with_status("session-1", event.Running)
+}
+
+fn exited_session_summary() -> event.SessionSummary {
+  session_summary_with_status("session-exited", event.Exited(reason.Normal))
+}
+
+fn session_summary_with_status(
+  session_id: String,
+  status: event.SessionStatus,
+) -> event.SessionSummary {
   event.SessionSummary(
-    session_id: "session-1",
+    session_id: session_id,
     display_name: "Demo session",
     issue_id: "issue-1",
     issue_identifier: "LIV-1",
     issue_title: "Remote state",
     workspace_path: "test/tmp/workspace",
     pi_session_id: None,
-    status: event.Running,
+    status: status,
     recovery: None,
     current_turn: 3,
     current_turn_status: None,

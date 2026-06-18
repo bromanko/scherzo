@@ -1,22 +1,43 @@
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_protocol
+import scherzo/session/event
+import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
 
 pub fn ui_protocol_encodes_daemon_messages_test() {
+  let runtime_state = test_runtime_state(None)
   let hello =
     ui_protocol.encode_client_message(ui_protocol.DaemonHello(
       "daemon_abc",
       "boot_abc",
       None,
+      runtime_state,
     ))
   assert string.contains(hello, "daemon_hello")
   assert string.contains(hello, "daemonId")
+  assert string.contains(hello, "\"state\":{")
+  assert string.contains(hello, "\"host\":\"test-host\"")
+  assert string.contains(hello, "\"version\":\"scherzo test-version\"")
+  assert string.contains(hello, "\"agentSlots\":{")
+
+  let heartbeat =
+    ui_protocol.encode_client_message(ui_protocol.Heartbeat(
+      42,
+      None,
+      runtime_state,
+      Some(ui_protocol.DaemonEvent("lifecycle", "heartbeat", "daemon heartbeat")),
+    ))
+  assert string.contains(heartbeat, "heartbeat")
+  assert string.contains(heartbeat, "\"event\":{")
+  assert string.contains(heartbeat, "\"kind\":\"lifecycle\"")
+  assert string.contains(heartbeat, "\"message\":\"daemon heartbeat\"")
 
   let state =
     ui_protocol.encode_client_message(
-      ui_protocol.DaemonState(42, False, None, [
+      ui_protocol.DaemonState(42, False, None, runtime_state, [
         ui_protocol.SessionSnapshot(
           "session-1",
           "Demo",
@@ -32,12 +53,43 @@ pub fn ui_protocol_encodes_daemon_messages_test() {
   assert string.contains(state, "sessionId")
 }
 
+pub fn ui_protocol_runtime_state_counts_non_exited_sessions_test() {
+  let runtime_state =
+    ui_protocol.runtime_state_from_sessions(
+      ui_protocol.RuntimeMetadata("test-host", "scherzo test-version", None, -1),
+      [
+        test_session_summary("running-session", event.Running),
+        test_session_summary("exited-session", event.Exited(reason.Normal)),
+      ],
+    )
+  let heartbeat = ui_protocol.encode_heartbeat(42, None, runtime_state, None)
+  assert string.contains(heartbeat, "\"capacity\":0")
+  assert string.contains(heartbeat, "\"active\":1")
+  assert string.contains(heartbeat, "\"used\":1")
+  assert string.contains(heartbeat, "\"known\":true")
+}
+
+pub fn ui_protocol_marks_runtime_state_unknown_on_session_error_test() {
+  let heartbeat =
+    ui_protocol.encode_heartbeat_with_runtime(
+      42,
+      ui_protocol.RuntimeMetadata("test-host", "scherzo test-version", None, 4),
+      Error("event_hub_unavailable"),
+    )
+  assert string.contains(heartbeat, "\"capacity\":4")
+  assert string.contains(heartbeat, "\"active\":0")
+  assert string.contains(heartbeat, "\"used\":0")
+  assert string.contains(heartbeat, "\"known\":false")
+}
+
 pub fn ui_protocol_encodes_daemon_label_metadata_test() {
+  let runtime_state = test_runtime_state(Some("Project Foo / MacBook"))
   let hello =
     ui_protocol.encode_client_message(ui_protocol.DaemonHello(
       "daemon_abc",
       "boot_abc",
       Some("Project Foo / MacBook"),
+      runtime_state,
     ))
   assert string.contains(hello, "\"daemonLabel\":\"Project Foo / MacBook\"")
 
@@ -45,12 +97,20 @@ pub fn ui_protocol_encodes_daemon_label_metadata_test() {
     ui_protocol.encode_client_message(ui_protocol.Heartbeat(
       42,
       Some("Project Foo / MacBook"),
+      runtime_state,
+      None,
     ))
   assert string.contains(heartbeat, "\"daemonLabel\":\"Project Foo / MacBook\"")
 
   let state =
     ui_protocol.encode_client_message(
-      ui_protocol.DaemonState(42, False, Some("Project Foo / MacBook"), []),
+      ui_protocol.DaemonState(
+        42,
+        False,
+        Some("Project Foo / MacBook"),
+        runtime_state,
+        [],
+      ),
     )
   assert string.contains(state, "\"daemonLabel\":\"Project Foo / MacBook\"")
 }
@@ -156,4 +216,42 @@ pub fn ui_protocol_rejects_bad_json_test() {
     ui_protocol.decode_server_message("{not-json}")
   assert code == "bad_json"
   assert message == "malformed UI websocket JSON"
+}
+
+fn test_runtime_state(
+  daemon_label: Option(String),
+) -> ui_protocol.DaemonRuntimeState {
+  ui_protocol.DaemonRuntimeState(
+    "test-host",
+    "scherzo test-version",
+    daemon_label,
+    ui_protocol.AgentSlotState(4, 1, 1, True),
+  )
+}
+
+fn test_session_summary(
+  session_id: String,
+  status: event.SessionStatus,
+) -> event.SessionSummary {
+  event.SessionSummary(
+    session_id: session_id,
+    display_name: "Demo session",
+    issue_id: "issue-1",
+    issue_identifier: "LIV-1",
+    issue_title: "Remote state",
+    workspace_path: "test/tmp/workspace",
+    pi_session_id: None,
+    status: status,
+    recovery: None,
+    current_turn: 3,
+    current_turn_status: None,
+    current_turn_started_at_ms: None,
+    last_turn_finished_at_ms: None,
+    last_turn_duration_ms: None,
+    last_turn_token_delta: session_tokens.zero_token_totals(),
+    last_turn_reason: None,
+    started_at_ms: 10,
+    last_event_at_ms: 123,
+    token_totals: session_tokens.zero_token_totals(),
+  )
 }
