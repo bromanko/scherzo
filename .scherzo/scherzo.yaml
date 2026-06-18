@@ -162,9 +162,13 @@ artifacts:
     template_field_chars: 8000
     workflow_summary_chars: 20000
 ui_server:
+  endpoint: "http://127.0.0.1:8080"
+  credential_ref: "default"
+  command_bridge_enabled: true
+  daemon_label: "scherzo-core"
   # Disabled-by-default identity/config primitive. This does not open a live
   # browser UI or server transport in the current slice.
-  enabled: false
+  enabled: true
   # endpoint: https://ui.example.test
   # credential_ref: work-laptop
   # daemon_label: Project Foo
