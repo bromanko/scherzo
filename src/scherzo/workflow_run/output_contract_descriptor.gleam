@@ -5,8 +5,10 @@ import gleam/result
 import scherzo/json_value
 import scherzo/state/artifact_store
 import scherzo/workflow_artifact_descriptor
+import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest as contract_manifest
+import simplifile
 
 pub fn extension_and_media(
   spec: workflow_contract.OutputSpec,
@@ -108,15 +110,45 @@ fn put_optional_string(
   }
 }
 
+type RetainedArtifactReader =
+  fn(String) -> Result(BitArray, String)
+
 pub fn validate_retained_output_descriptor(
   spec: workflow_contract.OutputSpec,
   value: contract_manifest.ManifestValue,
   contents: BitArray,
+  checkpoint: workflow_checkpoint.Writer,
 ) -> Result(Nil, String) {
   case spec.type_ {
     workflow_contract.GenericArtifactSet ->
-      validate_artifact_set(spec, value, contents)
+      validate_artifact_set(
+        spec,
+        value,
+        contents,
+        fn(ref) { read_retained_artifact_bytes(checkpoint, ref) },
+      )
     _ -> Ok(Nil)
+  }
+}
+
+fn read_retained_artifact_bytes(
+  checkpoint: workflow_checkpoint.Writer,
+  ref: String,
+) -> Result(BitArray, String) {
+  use location <- result.try(
+    checkpoint.artifact_location(ref)
+    |> result.map_error(workflow_checkpoint.describe_error),
+  )
+  case location.local_path {
+    Some(local_path) ->
+      simplifile.read_bits(local_path)
+      |> result.map_error(fn(error) {
+        "read artifact bytes: " <> simplifile.describe_error(error)
+      })
+    None ->
+      checkpoint.read_artifact(ref)
+      |> result.map(bit_array.from_string)
+      |> result.map_error(workflow_checkpoint.describe_error)
   }
 }
 
@@ -124,9 +156,15 @@ fn validate_artifact_set(
   spec: workflow_contract.OutputSpec,
   value: contract_manifest.ManifestValue,
   contents: BitArray,
+  read_artifact_bytes: RetainedArtifactReader,
 ) -> Result(Nil, String) {
   case contract_manifest.descriptor_for_named_value(spec.name, value) {
-    Some(descriptor) -> validate_artifact_set_descriptor(descriptor, contents)
+    Some(descriptor) ->
+      validate_artifact_set_descriptor(
+        descriptor,
+        contents,
+        read_artifact_bytes,
+      )
     None -> Ok(Nil)
   }
 }
@@ -134,11 +172,13 @@ fn validate_artifact_set(
 fn validate_artifact_set_descriptor(
   descriptor: workflow_artifact_descriptor.ArtifactDescriptor,
   contents: BitArray,
+  read_artifact_bytes: RetainedArtifactReader,
 ) -> Result(Nil, String) {
   case descriptor.kind {
     workflow_artifact_descriptor.ArtifactSetKind ->
       case bit_array.to_string(contents) {
-        Ok(text) -> verify_artifact_set_text(text, descriptor)
+        Ok(text) ->
+          verify_artifact_set_text(text, descriptor, read_artifact_bytes)
         Error(_) -> Error("workflow_output_artifact_set_invalid:invalid_utf8")
       }
     _ -> Ok(Nil)
@@ -148,6 +188,7 @@ fn validate_artifact_set_descriptor(
 fn verify_artifact_set_text(
   text: String,
   descriptor: workflow_artifact_descriptor.ArtifactDescriptor,
+  read_artifact_bytes: RetainedArtifactReader,
 ) -> Result(Nil, String) {
   case
     workflow_artifact_descriptor.parse_retained_artifact_set(text, descriptor)
@@ -155,11 +196,53 @@ fn verify_artifact_set_text(
     Ok(parsed) ->
       workflow_artifact_descriptor.verify_retained_integrity(
         parsed,
-        artifact_store.new("."),
+        retained_artifact_reader_store(read_artifact_bytes),
       )
       |> result.map_error(descriptor_error_diagnostic)
     Error(error) -> Error(descriptor_error_diagnostic(error))
   }
+}
+
+fn retained_artifact_reader_store(
+  read_artifact_bytes: RetainedArtifactReader,
+) -> artifact_store.Store {
+  artifact_store.custom(
+    "workflow-output-retained-artifacts",
+    artifact_store.StoreCallbacks(
+      write: fn(_, _) { Error(artifact_store.ArtifactIo("read-only store")) },
+      read: fn(ref) {
+        case read_artifact_bytes(ref) {
+          Ok(contents) ->
+            case bit_array.to_string(contents) {
+              Ok(text) -> Ok(text)
+              Error(_) ->
+                Error(artifact_store.ArtifactIo(
+                  "artifact is not valid UTF-8: " <> ref,
+                ))
+            }
+          Error(message) -> Error(artifact_store.ArtifactIo(message))
+        }
+      },
+      write_bytes: fn(_, _) {
+        Error(artifact_store.ArtifactIo("read-only store"))
+      },
+      write_immutable_bytes: fn(_, _) {
+        Error(artifact_store.ArtifactIo("read-only store"))
+      },
+      read_bytes: fn(ref) {
+        read_artifact_bytes(ref)
+        |> result.map_error(artifact_store.ArtifactIo)
+      },
+      locate: fn(ref) {
+        Ok(artifact_store.ArtifactLocation(
+          ref: ref,
+          uri: ref,
+          display_path: ref,
+          local_path: None,
+        ))
+      },
+    ),
+  )
 }
 
 fn descriptor_error_diagnostic(

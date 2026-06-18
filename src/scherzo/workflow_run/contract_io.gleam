@@ -849,7 +849,12 @@ fn write_contract_output_blob(
               )),
             )
           case
-            validate_retained_output_descriptor(spec, retained_value, contents)
+            validate_retained_output_descriptor(
+              spec,
+              retained_value,
+              contents,
+              checkpoint,
+            )
           {
             Ok(Nil) -> #(retained_value, [])
             Error(diagnostic) -> output_absent(spec, diagnostic)
@@ -887,11 +892,13 @@ fn validate_retained_output_descriptor(
   spec: workflow_contract.OutputSpec,
   value: contract_manifest.ManifestValue,
   contents: BitArray,
+  checkpoint: workflow_checkpoint.Writer,
 ) -> Result(Nil, String) {
   output_contract_descriptor.validate_retained_output_descriptor(
     spec,
     value,
     contents,
+    checkpoint,
   )
 }
 
