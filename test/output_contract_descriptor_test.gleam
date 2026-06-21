@@ -33,7 +33,8 @@ pub fn retained_artifact_set_validation_uses_checkpoint_local_paths_test() {
     <> int.to_string(child_size)
     <> ",\"media_type\":\"text/plain\"}]}"
   let artifact_set_bytes = bit_array.from_string(artifact_set_contents)
-  let assert Ok(Nil) = simplifile.write(artifact_set_path, artifact_set_contents)
+  let assert Ok(Nil) =
+    simplifile.write(artifact_set_path, artifact_set_contents)
 
   let value =
     manifest.present_run_artifact(
@@ -54,7 +55,13 @@ pub fn retained_artifact_set_validation_uses_checkpoint_local_paths_test() {
           ref: ref,
           uri: "artifact://test/" <> ref,
           display_path: ref,
-          local_path: local_path_for(ref, artifact_set_ref, artifact_set_path, child_ref, child_path),
+          local_path: local_path_for(
+            ref,
+            artifact_set_ref,
+            artifact_set_path,
+            child_ref,
+            child_path,
+          ),
         ))
       },
     )

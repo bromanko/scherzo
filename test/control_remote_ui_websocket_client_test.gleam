@@ -9,7 +9,6 @@ import scherzo/control/remote/ui_protocol
 import scherzo/control/remote/ui_websocket_client
 import scherzo/log
 import scherzo/session/event
-import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/work_item_invalidation
 import simplifile
@@ -30,6 +29,10 @@ type ApplyRequest {
 
 type QueryRequestCall {
   QueryRequestCall(query: query_types.QueryRequest, timeout_ms: Int)
+}
+
+type AgentSlotOccupancyRequest {
+  AgentSlotOccupancyRequest(timeout_ms: Int)
 }
 
 type QueryBehavior {
@@ -119,6 +122,7 @@ fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
         Nil
       },
       list_sessions: fn() { Ok([session_summary()]) },
+      agent_slot_occupancy: fn(_) { Ok(1) },
       dispatch_paused: fn(_) { Ok(False) },
       apply_command: fn(operator_command, timeout_ms) {
         process.send(apply_requests, ApplyRequest(operator_command, timeout_ms))
@@ -239,12 +243,22 @@ pub fn ui_websocket_client_sends_runtime_state_and_heartbeat_event_test() {
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
-pub fn ui_websocket_client_counts_non_exited_sessions_in_runtime_state_test() {
+pub fn ui_websocket_client_reports_agent_slots_from_occupancy_not_sessions_test() {
   let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
   let deps =
-    ui_websocket_client.Dependencies(..deps, list_sessions: fn() {
-      Ok([session_summary(), exited_session_summary()])
-    })
+    ui_websocket_client.Dependencies(
+      ..deps,
+      list_sessions: fn() {
+        Ok([
+          session_summary_with_status("workflow-parent-session", event.Running),
+          session_summary_with_status(
+            "workflow-step-run-abc-implement-a0-abc123def456",
+            event.Running,
+          ),
+        ])
+      },
+      agent_slot_occupancy: fn(_) { Ok(1) },
+    )
   let assert Ok(handle) = ui_websocket_client.start(settings, deps)
 
   let hello = test_async.expect_message(outbound)
@@ -264,60 +278,78 @@ pub fn ui_websocket_client_counts_non_exited_sessions_in_runtime_state_test() {
   assert string.contains(state, "\"active\":1")
   assert string.contains(state, "\"used\":1")
   assert string.contains(state, "\"known\":true")
+  assert string.contains(state, "workflow-parent-session")
+  assert string.contains(
+    state,
+    "workflow-step-run-abc-implement-a0-abc123def456",
+  )
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
 pub fn ui_websocket_client_reuses_connect_snapshot_and_cached_heartbeat_test() {
   let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
   let list_calls = process.new_subject()
+  let slot_calls = process.new_subject()
   let deps =
-    ui_websocket_client.Dependencies(..deps, list_sessions: fn() {
-      process.send(list_calls, Nil)
-      Ok([session_summary()])
-    })
+    ui_websocket_client.Dependencies(
+      ..deps,
+      list_sessions: fn() {
+        process.send(list_calls, Nil)
+        Ok([session_summary()])
+      },
+      agent_slot_occupancy: fn(timeout_ms) {
+        process.send(slot_calls, AgentSlotOccupancyRequest(timeout_ms))
+        Ok(1)
+      },
+    )
   let settings =
     ui_websocket_client.Settings(
       ..settings,
       heartbeat_interval_ms: 100,
       state_interval_ms: 1000,
+      query_timeout_ms: 60_000,
     )
   let assert Ok(handle) = ui_websocket_client.start(settings, deps)
 
+  let AgentSlotOccupancyRequest(timeout_ms) =
+    test_async.expect_message(slot_calls)
+  assert timeout_ms == 1000
   expect_initial_outbound(outbound)
   assert list.length(test_async.drain_subject(list_calls)) == 1
+  test_async.assert_no_extra_message_within(slot_calls, 50)
 
   let heartbeat = test_async.expect_message(outbound)
   assert string.contains(heartbeat, "\"type\":\"heartbeat\"")
   test_async.assert_no_extra_message_within(list_calls, 50)
+  test_async.assert_no_extra_message_within(slot_calls, 50)
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
-pub fn ui_websocket_client_marks_agent_slots_unknown_when_snapshot_fails_test() {
-  let Fixture(settings:, deps:, outbound:, closes:, logs:, ..) = new_fixture()
+pub fn ui_websocket_client_marks_agent_slots_unknown_when_occupancy_fails_test() {
+  let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
   let deps =
-    ui_websocket_client.Dependencies(..deps, list_sessions: fn() {
-      Error("event_hub_unavailable")
+    ui_websocket_client.Dependencies(..deps, agent_slot_occupancy: fn(_) {
+      Error("slot_occupancy_unavailable")
     })
-  let settings =
-    ui_websocket_client.Settings(
-      ..settings,
-      retry_initial_ms: 1000,
-      retry_max_ms: 1000,
-    )
   let assert Ok(handle) = ui_websocket_client.start(settings, deps)
 
   let hello = test_async.expect_message(outbound)
   assert string.contains(hello, "\"type\":\"daemon_hello\"")
+  assert string.contains(hello, "\"active\":0")
+  assert string.contains(hello, "\"used\":0")
   assert string.contains(hello, "\"known\":false")
 
   let heartbeat = test_async.expect_message(outbound)
   assert string.contains(heartbeat, "\"type\":\"heartbeat\"")
+  assert string.contains(heartbeat, "\"active\":0")
+  assert string.contains(heartbeat, "\"used\":0")
   assert string.contains(heartbeat, "\"known\":false")
 
-  let _ = test_async.expect_message(closes)
-  let log_entry = expect_log_contains(logs, "ui_websocket_state_send_failed")
-  assert string.contains(log_entry, "event_hub_unavailable")
-  test_async.assert_no_extra_message_within(outbound, 50)
+  let state = test_async.expect_message(outbound)
+  assert string.contains(state, "\"type\":\"daemon_state\"")
+  assert string.contains(state, "\"active\":0")
+  assert string.contains(state, "\"used\":0")
+  assert string.contains(state, "\"known\":false")
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -1255,10 +1287,6 @@ fn expect_log_contains(
 
 fn session_summary() -> event.SessionSummary {
   session_summary_with_status("session-1", event.Running)
-}
-
-fn exited_session_summary() -> event.SessionSummary {
-  session_summary_with_status("session-exited", event.Exited(reason.Normal))
 }
 
 fn session_summary_with_status(

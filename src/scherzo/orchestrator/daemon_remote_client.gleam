@@ -27,6 +27,11 @@ pub opaque type Handle {
 
 type Socket
 
+pub type AgentSlotOccupancyError {
+  MetricsQueryFailed(query_types.QueryErrorCode)
+  UnexpectedMetricsQueryResponse
+}
+
 pub fn start(
   effective: config_types.EffectiveConfig,
   event_hub: process.Subject(hub.Message),
@@ -110,6 +115,12 @@ pub fn start_with_control(
         Nil
       },
       list_sessions: fn() { list_sessions_for_remote_snapshot(event_hub, 1000) },
+      agent_slot_occupancy: fn(timeout_ms) {
+        case agent_slot_occupancy_from_query(execute_query, timeout_ms) {
+          Ok(occupied_slots) -> Ok(occupied_slots)
+          Error(error) -> Error(agent_slot_occupancy_error_message(error))
+        }
+      },
       dispatch_paused: fn(timeout_ms) {
         case dispatch_paused(timeout_ms) {
           Ok(paused) -> Ok(paused)
@@ -124,6 +135,39 @@ pub fn start_with_control(
     Ok(handle) -> Ok(Handle(handle))
     Error(ui_websocket_client.ClientError(code: code, message: message)) ->
       Error(StartError(code, message))
+  }
+}
+
+fn agent_slot_occupancy_from_query(
+  execute_query: fn(query_types.QueryRequest, Int) ->
+    Result(query_types.QueryResponse, query_types.QueryError),
+  timeout_ms: Int,
+) -> Result(Int, AgentSlotOccupancyError) {
+  agent_slot_occupancy_from_query_response(execute_query(
+    query_types.Metrics,
+    timeout_ms,
+  ))
+}
+
+pub fn agent_slot_occupancy_from_query_response(
+  query_result: Result(query_types.QueryResponse, query_types.QueryError),
+) -> Result(Int, AgentSlotOccupancyError) {
+  case query_result {
+    Ok(query_types.MetricsResponse(metrics)) ->
+      Ok(query_types.operational_metrics_agent_slot_occupancy(metrics))
+    Ok(_) -> Error(UnexpectedMetricsQueryResponse)
+    Error(query_types.QueryError(code: code, ..)) ->
+      Error(MetricsQueryFailed(code))
+  }
+}
+
+fn agent_slot_occupancy_error_message(
+  error: AgentSlotOccupancyError,
+) -> String {
+  case error {
+    UnexpectedMetricsQueryResponse -> "daemon_metrics_query_unexpected_response"
+    MetricsQueryFailed(code) ->
+      "daemon_metrics_query_failed:" <> query_types.error_code_to_string(code)
   }
 }
 
