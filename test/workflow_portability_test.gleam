@@ -257,9 +257,11 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
   let execplan_implementation_workflow =
     read_file(".scherzo/workflows/execplan-implementation.yaml")
   let implementation_prompt =
-    read_file(".scherzo/workflows/prompts/code-review.md")
+    read_file(".scherzo/workflows/prompts/apply-feedback.md")
   let execplan_prompt =
-    read_file(".scherzo/workflows/prompts/execplan-implementation-review.md")
+    read_file(
+      ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+    )
 
   list.each(
     [implementation_workflow, execplan_implementation_workflow],
@@ -278,8 +280,12 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
 
   list.each([implementation_prompt, execplan_prompt], fn(prompt) {
     assert_contains(prompt, "REVIEW_FINAL_ARTIFACT_PATH")
-    assert_contains(prompt, "\"$bundle_dir/scripts/scherzo-review\"")
+    assert_contains(prompt, "submit_review_finding_dispositions")
+    assert_contains(prompt, "targeted remediation")
     assert_contains(prompt, "Do not invoke local pi slash commands")
+    assert_contains(prompt, "not a fresh review of the whole diff")
+    assert_not_contains(prompt, "steps.code_review")
+    assert_not_contains(prompt, "steps.review_changes")
     assert_not_contains(prompt, "`/review")
     assert_not_contains(prompt, "`.scherzo/workflows/scripts/scherzo-review")
     assert_not_contains(prompt, ".pi/skills/gleam")

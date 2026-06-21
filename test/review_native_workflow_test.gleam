@@ -457,11 +457,10 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   assert_contains(validate_run, "lane_failed")
   assert_contains(validate_run, "execution_issues")
 
-  let assert Ok(code_review) = workflow_dag.step_by_id(dag, "code_review")
-  assert_list_contains(
-    code_review.depends_on,
-    "validate_native_review_artifacts",
-  )
+  let assert Error(_) = workflow_dag.step_by_id(dag, "code_review")
+  let assert Ok(apply_feedback_step) =
+    workflow_dag.step_by_id(dag, "apply_feedback")
+  assert apply_feedback_step.depends_on == ["validate_native_review_artifacts"]
 
   assert_disposition_structured_output(dag, "apply_feedback")
   let materialize_run = command_step_run(dag, "materialize_review_dispositions")
@@ -482,6 +481,11 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
 
 pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_test() {
   let dag = execplan_implementation_dag()
+  let assert Error(_) = workflow_dag.step_by_id(dag, "review_changes")
+  let assert Ok(apply_review_feedback_step) =
+    workflow_dag.step_by_id(dag, "apply_review_feedback")
+  assert apply_review_feedback_step.depends_on
+    == ["validate_native_review_artifacts"]
   assert_disposition_structured_output(dag, "apply_review_feedback")
   let materialize_run = command_step_run(dag, "materialize_review_dispositions")
   assert_contains(materialize_run, "materialize-disposition-input")
@@ -513,19 +517,15 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
     let assert Ok(prompt) = simplifile.read(path)
     assert_contains(prompt, "review-finding-dispositions.v1.json")
     assert_contains(prompt, submit_dispositions_tool)
+    assert_contains(prompt, "REVIEW_FINAL_ARTIFACT_PATH")
+    assert_contains(prompt, "targeted remediation")
+    assert_contains(prompt, "not a fresh review of the whole diff")
+    assert_not_contains(prompt, "steps.code_review")
+    assert_not_contains(prompt, "steps.review_changes")
     assert_not_contains(
       prompt,
       "Write `tmp/review-finding-dispositions.v1.json`",
     )
-  })
-
-  let review_prompt_paths = [
-    ".scherzo/workflows/prompts/code-review.md",
-    ".scherzo/workflows/prompts/execplan-implementation-review.md",
-  ]
-  list.each(review_prompt_paths, fn(path) {
-    let assert Ok(prompt) = simplifile.read(path)
-    assert_contains(prompt, "finding ids")
   })
 }
 

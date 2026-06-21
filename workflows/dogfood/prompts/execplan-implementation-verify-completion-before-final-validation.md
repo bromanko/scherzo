@@ -22,10 +22,7 @@ Post-plan-feedback verification response:
 Post-late-repair verification response:
 {{ steps.verify_plan_completion_after_late_repair.final_response }}
 
-Review response:
-{{ steps.review_changes.final_response }}
-
-Review feedback application response:
+Targeted review remediation response:
 {{ steps.apply_review_feedback.final_response }}
 
 Base-drift repair response:
@@ -79,7 +76,7 @@ Use `"verdict": "fail"` when promised behavior is incomplete after review feedba
 Process:
 
 1. Run the restore command above, then read `tmp/scherzo-implementation.json`, the canonical plan at `tmp/execplan-review-doc.md`, `tmp/execplan-implementation-pack.json`, and `tmp/execplan-bundle.json`.
-2. Read the review/feedback/base-drift responses above.
+2. Read the targeted review remediation and base-drift responses above.
 3. Inspect changed files/tests only as needed to verify promised behavior and acceptance criteria.
 4. Run `bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-context` and copy the context values exactly.
 5. Replace `tmp/scherzo-plan-completion-verdict.json` with the final pre-validation verdict.

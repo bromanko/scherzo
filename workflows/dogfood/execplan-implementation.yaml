@@ -500,15 +500,10 @@ steps:
       PY
     run_in: main
 
-  - id: review_changes
-    kind: agent
-    depends_on: [validate_native_review_artifacts]
-    prompt: prompts/execplan-implementation-review.md
-    run_in: main
-
+  # Targeted remediation consumes synthesized native review findings; this is not a second broad review pass.
   - id: apply_review_feedback
     kind: agent
-    depends_on: [review_changes]
+    depends_on: [validate_native_review_artifacts]
     prompt: prompts/execplan-implementation-apply-feedback.md
     model: openai-codex/gpt-5.4
     thinking: medium
