@@ -243,12 +243,16 @@ is eliminated.
   ```
 
   `agentSlots.capacity` mirrors `agents.concurrency`; `active` and `used` are
-  the latest successful non-exited session count when `known` is true. If the
-  session snapshot is temporarily unavailable while building hello or state
-  frames, `known` is false and the daemon leaves `active`/`used` at `0` rather
-  than presenting those counts as authoritative. Heartbeats reuse the cached
-  slot snapshot from connect/state frames so heartbeat delivery does not block
-  on another session enumeration. Heartbeats also include an `event` object
+  the latest successful occupied agent/worker slot count when `known` is true,
+  derived from the daemon operational metrics that also describe concurrency
+  pressure. Session snapshots are published separately in `daemon_state` frames
+  and are not counted as occupied slots, so a workflow parent session plus one
+  active child step still reports one occupied slot. If the occupancy lookup is
+  temporarily unavailable while building hello or state frames, `known` is
+  false and the daemon leaves `active`/`used` at `0` rather than presenting
+  those counts as authoritative. Heartbeats reuse the cached slot snapshot from
+  connect/state frames so heartbeat delivery does not block on another
+  occupancy lookup. Heartbeats also include an `event` object
   with lifecycle kind, heartbeat type, and `daemon heartbeat` message, which
   lets the UI sidecar maintain `lastEvent` without inventing daemon activity.
   Project config keeps only the non-secret UI

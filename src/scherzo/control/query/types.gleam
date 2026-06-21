@@ -302,6 +302,25 @@ pub fn supported_queries() -> List(String) {
   ]
 }
 
+pub fn operational_metrics_agent_slot_occupancy(
+  metrics: OperationalMetricsDto,
+) -> Int {
+  normalize_slot_count(
+    metrics.running_workers
+    + metrics.running_scheduled_workers
+    + metrics.queued_claims
+    + metrics.pending_dispatch_validations
+    + metrics.pending_review_lane_preflights,
+  )
+}
+
+fn normalize_slot_count(value: Int) -> Int {
+  case value < 0 {
+    True -> 0
+    False -> value
+  }
+}
+
 pub fn error_code_to_string(code: QueryErrorCode) -> String {
   case code {
     InvalidCursor -> "invalid_cursor"

@@ -170,25 +170,25 @@ pub fn encode_daemon_hello_with_runtime(
   daemon_id: String,
   boot_id: String,
   metadata: RuntimeMetadata,
-  sessions_result: Result(List(event.SessionSummary), a),
+  agent_slot_occupancy_result: Result(Int, a),
 ) -> String {
   encode_daemon_hello(
     daemon_id,
     boot_id,
     metadata.daemon_label,
-    runtime_state_from_session_result(metadata, sessions_result),
+    runtime_state_from_agent_slot_result(metadata, agent_slot_occupancy_result),
   )
 }
 
 pub fn encode_heartbeat_with_runtime(
   sent_at_ms: Int,
   metadata: RuntimeMetadata,
-  sessions_result: Result(List(event.SessionSummary), a),
+  agent_slot_occupancy_result: Result(Int, a),
 ) -> String {
   encode_heartbeat_with_state(
     sent_at_ms,
     metadata,
-    runtime_state_from_session_result(metadata, sessions_result),
+    runtime_state_from_agent_slot_result(metadata, agent_slot_occupancy_result),
   )
 }
 
@@ -209,14 +209,14 @@ pub fn encode_daemon_state_with_runtime(
   sent_at_ms: Int,
   dispatch_paused: Bool,
   metadata: RuntimeMetadata,
-  sessions: List(event.SessionSummary),
+  agent_slot_occupancy_result: Result(Int, a),
   snapshots: List(SessionSnapshot),
 ) -> String {
   encode_daemon_state(
     sent_at_ms,
     dispatch_paused,
     metadata.daemon_label,
-    runtime_state_from_sessions(metadata, sessions),
+    runtime_state_from_agent_slot_result(metadata, agent_slot_occupancy_result),
     snapshots,
   )
 }
@@ -787,36 +787,37 @@ fn normalize_command_name(command_name: String) -> String {
   }
 }
 
-pub fn runtime_state_from_sessions(
+pub fn runtime_state_from_agent_slot_occupancy(
   metadata: RuntimeMetadata,
-  sessions: List(event.SessionSummary),
+  occupied_slots: Int,
 ) -> DaemonRuntimeState {
-  let active = active_session_count(sessions)
+  let occupied_slots = normalize_occupied_agent_slots(occupied_slots)
   DaemonRuntimeState(
     metadata.host,
     metadata.scherzo_version,
     metadata.daemon_label,
     AgentSlotState(
       normalize_agent_slot_capacity(metadata.agent_slot_capacity),
-      active,
-      active,
+      occupied_slots,
+      occupied_slots,
       True,
     ),
   )
 }
 
-pub fn runtime_state_from_session_result(
+pub fn runtime_state_from_agent_slot_result(
   metadata: RuntimeMetadata,
-  sessions_result: Result(List(event.SessionSummary), a),
+  agent_slot_occupancy_result: Result(Int, a),
 ) -> DaemonRuntimeState {
-  case sessions_result {
-    Ok(sessions) -> runtime_state_from_sessions(metadata, sessions)
-    // nolint: thrown_away_error -- snapshot failure is represented explicitly as agentSlots.known=false.
-    Error(_) -> runtime_state_with_unknown_sessions(metadata)
+  case agent_slot_occupancy_result {
+    Ok(occupied_slots) ->
+      runtime_state_from_agent_slot_occupancy(metadata, occupied_slots)
+    // nolint: thrown_away_error -- occupancy failure is represented explicitly as agentSlots.known=false.
+    Error(_) -> runtime_state_with_unknown_agent_slots(metadata)
   }
 }
 
-pub fn runtime_state_with_unknown_sessions(
+pub fn runtime_state_with_unknown_agent_slots(
   metadata: RuntimeMetadata,
 ) -> DaemonRuntimeState {
   DaemonRuntimeState(
@@ -836,21 +837,10 @@ fn heartbeat_event() -> DaemonEvent {
   DaemonEvent("lifecycle", "heartbeat", "daemon heartbeat")
 }
 
-fn active_session_count(sessions: List(event.SessionSummary)) -> Int {
-  active_session_count_loop(sessions, 0)
-}
-
-fn active_session_count_loop(
-  sessions: List(event.SessionSummary),
-  count: Int,
-) -> Int {
-  case sessions {
-    [] -> count
-    [session, ..rest] ->
-      case session.status {
-        event.Exited(_) -> active_session_count_loop(rest, count)
-        _ -> active_session_count_loop(rest, count + 1)
-      }
+fn normalize_occupied_agent_slots(value: Int) -> Int {
+  case value < 0 {
+    True -> 0
+    False -> value
   }
 }
 
