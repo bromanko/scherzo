@@ -85,18 +85,22 @@ fn classify_by_publication_retry(
   {
     Error(#(reason, message)) -> RejectRecovery(reason, message)
     Ok(workflow_id) ->
-      case
-        artifact_publication_retry.inspect_publication_recovery(
-          projected,
-          run_id,
-        )
-      {
-        Ok(artifact_publication_retry.RetryablePublicationAttempts(_)) ->
-          PublicationRecovery(run_id, workflow_id)
-        Ok(artifact_publication_retry.RequiredPublicationsAlreadyPublished(_)) ->
-          PublicationAlreadyPublished(run_id, workflow_id)
-        Error(#(publication_reason, publication_message)) ->
-          RejectRecovery(publication_reason, publication_message)
+      case projection.publication_ids_for_run(projected, run_id) {
+        [] -> FreshDispatch
+        _ ->
+          case
+            artifact_publication_retry.inspect_publication_recovery(
+              projected,
+              run_id,
+            )
+          {
+            Ok(artifact_publication_retry.RetryablePublicationAttempts(_)) ->
+              PublicationRecovery(run_id, workflow_id)
+            Ok(artifact_publication_retry.RequiredPublicationsAlreadyPublished(_)) ->
+              PublicationAlreadyPublished(run_id, workflow_id)
+            Error(#(publication_reason, publication_message)) ->
+              RejectRecovery(publication_reason, publication_message)
+          }
       }
   }
 }

@@ -1445,6 +1445,20 @@ pub fn dispatch_recovery_classifier_rejects_missing_publication_manifest_test() 
   assert reason == "publication_retry_output_manifest_missing"
 }
 
+pub fn dispatch_recovery_classifier_uses_fresh_dispatch_when_retained_run_has_no_publications_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-none"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_finished_publication_run_without_attempts(root, issue, "run-1", 1000)
+
+  assert dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+    == dispatch_recovery.FreshDispatch
+}
+
 pub fn dispatch_recovery_classifier_rejects_publication_issue_drift_test() {
   let dir = "test/tmp/dispatch-recovery-classifier-publication-drift"
   let issue = issue("issue-1", "LIV-739", "Todo")
@@ -2666,6 +2680,64 @@ fn publication_seed_error_message(status: String) -> Option(String) {
     "failed" -> Some("publication failure cannot be retried")
     _ -> None
   }
+}
+
+fn seed_finished_publication_run_without_attempts(
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+) -> Nil {
+  write_seed_artifact(
+    root,
+    run_output_ref(run_id),
+    commit_stack_payload(run_id),
+  )
+  let config_path = publication_config_path(root)
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "execplan")
+  let assert Ok(fingerprint) =
+    workflow_fingerprint_module.fingerprint_for_execution(
+      workflow,
+      bundle.orchestrator,
+    )
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started-" <> run_id,
+          at_ms,
+          record.WorkflowRunStarted(
+            run_id: run_id,
+            workflow_id: "execplan",
+            workflow_fingerprint: fingerprint,
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            issue_fingerprint: tracker_issue.content_fingerprint(issue),
+            observed_updated_at_ms: at_ms - 1,
+            run_root: root <> "/runs/" <> run_id,
+          ),
+        ),
+        seeded_output_manifest_record(root, run_id),
+        record.with_id(
+          "workflow-finished-" <> run_id,
+          at_ms + 10,
+          record.WorkflowRunFinished(
+            run_id: run_id,
+            workflow_id: "execplan",
+            issue_id: issue.id,
+            outcome: "completed",
+            token_total: 0,
+            turns: 1,
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
 }
 
 fn seed_failed_publication_retry_run(
