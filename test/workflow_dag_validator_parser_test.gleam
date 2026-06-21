@@ -333,7 +333,6 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
       "lane_security_performance",
       "synthesize_review",
       "validate_native_review_artifacts",
-      "review_changes",
       "apply_review_feedback",
     ],
     fn(step_id) {

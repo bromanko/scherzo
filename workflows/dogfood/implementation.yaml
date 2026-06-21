@@ -338,15 +338,10 @@ steps:
       PY
     run_in: main
 
-  - id: code_review
-    kind: agent
-    depends_on: [validate_native_review_artifacts]
-    prompt: prompts/code-review.md
-    run_in: main
-
+  # Targeted remediation consumes synthesized native review findings; this is not a second broad review pass.
   - id: apply_feedback
     kind: agent
-    depends_on: [code_review]
+    depends_on: [validate_native_review_artifacts]
     prompt: prompts/apply-feedback.md
     run_in: main
     structured_output:

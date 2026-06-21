@@ -1798,6 +1798,13 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     final_prompt,
     "{{ steps.repair_base_drift.final_response }}",
   )
+  assert string.contains(
+    final_prompt,
+    "{{ steps.apply_review_feedback.final_response }}",
+  )
+  assert string.contains(final_prompt, "Targeted review remediation response:")
+  assert string.contains(final_prompt, "targeted review remediation")
+  assert !string.contains(final_prompt, "review_changes")
   assert string.contains(final_prompt, "plan-completion-context")
   assert string.contains(
     final_prompt,
@@ -2041,7 +2048,12 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
     workflow,
     "plan-completion-recovery --phase after-final-repair --attempt 3 --max-attempts 3",
   )
-  assert string.contains(workflow, "- id: review_changes")
+  assert !string.contains(workflow, "- id: review_changes")
+  assert string.contains(workflow, "- id: apply_review_feedback")
+  assert string.contains(
+    workflow,
+    "depends_on: [validate_native_review_artifacts]",
+  )
   assert string.contains(
     workflow,
     "depends_on: [finalize_plan_completion_gate_recovery]",
