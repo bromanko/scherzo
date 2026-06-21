@@ -2,6 +2,7 @@ import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/code_snapshot
 import scherzo/connect
 import scherzo/ctl
 import scherzo/doctor
@@ -333,11 +334,24 @@ fn start_mode(
   path: Option(String),
 ) -> Result(Nil, service.StartupError) {
   case mode {
-    Daemon -> service.start_daemon(path)
+    Daemon -> start_daemon_with_code_snapshot(path)
     Once -> service.start_once(path)
     LinearSmoke -> service.start_linear_smoke(path)
     LinearContractCheck -> service.start_linear_contract_check(path)
     PiProbe -> service.start_pi_probe(path)
+  }
+}
+
+fn start_daemon_with_code_snapshot(
+  path: Option(String),
+) -> Result(Nil, service.StartupError) {
+  case code_snapshot.ensure_scherzo_modules_loaded() {
+    Ok(_) -> service.start_daemon(path)
+    Error(error) ->
+      Error(service.StartupError(
+        "code_snapshot_failed",
+        code_snapshot.describe_error(error),
+      ))
   }
 }
 
