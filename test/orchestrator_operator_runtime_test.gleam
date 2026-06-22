@@ -53,32 +53,7 @@ pub fn apply_shell_operator_command_routes_prompt_session_test() {
       operator_command: command.PromptSession("session-1", "hello"),
       timeout_ms: 1000,
     )
-  let handlers =
-    operator_runtime.shell_handlers(
-      reload_workflow_for_operator: fn(state, _) {
-        #(state, command.applied(command.ReloadWorkflow, None), [])
-      },
-      retry_workflow_step_for_operator: fn(state, _, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None), [])
-      },
-      retry_artifact_publication_for_operator: fn(state, _, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None), [])
-      },
-      schedule_run_now_for_operator: fn(state, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None), [])
-      },
-      abort_session_for_operator_sync: fn(state, _, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None), [])
-      },
-      route_worker_command_sync: fn(state, _, _, _, send) {
-        let reply = process.new_subject()
-        send(worker_subject, reply)
-        #(state + 1, command.applied(command.PauseDispatch, Some("routed")), [])
-      },
-      cleanup_orphan_steps_for_operator: fn(state, _, _, _) {
-        #(state, command.applied(command.ReloadWorkflow, None), [])
-      },
-    )
+  let handlers = handlers(worker_subject)
 
   let #(state, result, follow_ups) =
     operator_runtime.apply_shell_operator_command(0, request, handlers)
@@ -89,6 +64,62 @@ pub fn apply_shell_operator_command_routes_prompt_session_test() {
   let assert Ok(worker_command.QueuePrompt(message: message, ..)) =
     process.receive(worker_subject, within: 1000)
   assert message == "hello"
+}
+
+pub fn apply_shell_operator_command_routes_recollect_outputs_test() {
+  let request =
+    transition_effects.OperatorCommandRequest(
+      correlation_id: "test-correlation",
+      source: transition_effects.LocalOperatorCommand,
+      operator_command: command.RecollectWorkflowOutputs("run-1"),
+      timeout_ms: 1000,
+    )
+  let handlers = handlers(process.new_subject())
+
+  let #(state, result, follow_ups) =
+    operator_runtime.apply_shell_operator_command(0, request, handlers)
+
+  assert state == 7
+  assert result == command.applied(command.ReloadWorkflow, Some("recollected"))
+  assert follow_ups == []
+}
+
+fn handlers(
+  worker_subject: process.Subject(worker_command.Command),
+) -> operator_runtime.ShellHandlers(Int) {
+  operator_runtime.shell_handlers(
+    reload_workflow_for_operator: fn(state, _) {
+      #(state, command.applied(command.ReloadWorkflow, None), [])
+    },
+    retry_workflow_step_for_operator: fn(state, _, _, _) {
+      #(state, command.applied(command.ReloadWorkflow, None), [])
+    },
+    recollect_workflow_outputs_for_operator: fn(state, _, run_id) {
+      assert run_id == "run-1"
+      #(
+        state + 7,
+        command.applied(command.ReloadWorkflow, Some("recollected")),
+        [],
+      )
+    },
+    retry_artifact_publication_for_operator: fn(state, _, _, _) {
+      #(state, command.applied(command.ReloadWorkflow, None), [])
+    },
+    schedule_run_now_for_operator: fn(state, _, _) {
+      #(state, command.applied(command.ReloadWorkflow, None), [])
+    },
+    abort_session_for_operator_sync: fn(state, _, _, _) {
+      #(state, command.applied(command.ReloadWorkflow, None), [])
+    },
+    route_worker_command_sync: fn(state, _, _, _, send) {
+      let reply = process.new_subject()
+      send(worker_subject, reply)
+      #(state + 1, command.applied(command.PauseDispatch, Some("routed")), [])
+    },
+    cleanup_orphan_steps_for_operator: fn(state, _, _, _) {
+      #(state, command.applied(command.ReloadWorkflow, None), [])
+    },
+  )
 }
 
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {

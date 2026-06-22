@@ -431,6 +431,17 @@ pub fn output_manifest_ref_for_generation(
   }
 }
 
+pub fn output_manifest_ref_for_recollection(
+  run_id: String,
+  recollection_index: Int,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/recollections/"
+  <> int.to_string(recollection_index)
+  <> "/outputs.v1.json"
+}
+
 pub fn output_blob_ref(
   run_id: String,
   output_name: String,
@@ -471,6 +482,21 @@ pub fn write_input_manifest(
   write_ref(store, input_manifest_ref(run_id), contents)
 }
 
+pub fn output_blob_ref_for_recollection(
+  run_id: String,
+  output_name: String,
+  extension: String,
+  recollection_index: Int,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/recollections/"
+  <> int.to_string(recollection_index)
+  <> "/outputs/"
+  <> workflow_identity.safe_component(output_name, "output")
+  <> extension
+}
+
 pub fn write_output_manifest(
   store: Store,
   run_id: String,
@@ -488,6 +514,19 @@ pub fn write_output_manifest_for_generation(
   write_ref(
     store,
     output_manifest_ref_for_generation(run_id, repair_generation),
+    contents,
+  )
+}
+
+pub fn write_output_manifest_for_recollection(
+  store: Store,
+  run_id: String,
+  recollection_index: Int,
+  contents: String,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref(
+    store,
+    output_manifest_ref_for_recollection(run_id, recollection_index),
     contents,
   )
 }
@@ -542,6 +581,26 @@ pub fn write_output_blob_bytes_for_generation(
       output_name,
       extension,
       repair_generation,
+    ),
+    contents,
+  )
+}
+
+pub fn write_output_blob_bytes_for_recollection(
+  store: Store,
+  run_id: String,
+  output_name: String,
+  extension: String,
+  recollection_index: Int,
+  contents: BitArray,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref_bytes(
+    store,
+    output_blob_ref_for_recollection(
+      run_id,
+      output_name,
+      extension,
+      recollection_index,
     ),
     contents,
   )

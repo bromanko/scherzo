@@ -25,6 +25,10 @@ pub fn command_names_and_targets_are_stable_test() {
       None,
     ))
     == Some("ABC-123")
+  assert command.command_name(command.RecollectWorkflowOutputs("run-1"))
+    == "recollect_outputs"
+  assert command.command_target(command.RecollectWorkflowOutputs("run-1"))
+    == Some("run:run-1")
   assert command.command_name(command.RetryArtifactPublication(
       "run-1",
       Some("review_doc"),
@@ -104,6 +108,7 @@ pub fn operator_command_codec_roundtrips_all_variants_test() {
     command.RetryWorkflowStepRunId("run-1"),
     Some("step-2"),
   ))
+  assert_command_roundtrip(command.RecollectWorkflowOutputs("run-1"))
   assert_command_roundtrip(command.RetryArtifactPublication("run-1", None))
   assert_command_roundtrip(command.RetryArtifactPublication(
     "run-1",
@@ -180,6 +185,10 @@ pub fn invalid_operator_command_payloads_return_stable_errors_test() {
   )
   assert_invalid_command(
     "{\"type\":\"retry_step\",\"step_id\":\"   \",\"target\":\"ABC-1\"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"recollect_outputs\",\"run_id\":\"   \"}",
     "invalid_command",
   )
   assert_invalid_command(

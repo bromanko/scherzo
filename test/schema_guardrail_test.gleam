@@ -1580,6 +1580,14 @@ fn request_examples() -> List(RequestExample) {
       ),
     ),
     RequestExample(
+      "RecollectWorkflowOutputs",
+      protocol.RecollectWorkflowOutputs(
+        "req-recollect-outputs",
+        "secret",
+        "run-1",
+      ),
+    ),
+    RequestExample(
       "RetryArtifactPublication",
       protocol.RetryArtifactPublication(
         "req-retry-publication",

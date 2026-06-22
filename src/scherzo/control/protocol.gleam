@@ -40,6 +40,7 @@ pub type Request {
     target: command.RetryWorkflowStepTarget,
     step_id: Option(String),
   )
+  RecollectWorkflowOutputs(id: String, token: String, run_id: String)
   RetryArtifactPublication(
     id: String,
     token: String,
@@ -136,6 +137,7 @@ pub fn request_id(request: Request) -> String {
     ReloadWorkflow(id, _) -> id
     RetryIssue(id, _, _) -> id
     RetryWorkflowStep(id, _, _, _) -> id
+    RecollectWorkflowOutputs(id, _, _) -> id
     RetryArtifactPublication(id, _, _, _) -> id
     ParkIssue(id, _, _, _) -> id
     UnparkIssue(id, _, _) -> id
@@ -162,6 +164,7 @@ pub fn request_token(request: Request) -> String {
     ReloadWorkflow(_, token) -> token
     RetryIssue(_, token, _) -> token
     RetryWorkflowStep(_, token, _, _) -> token
+    RecollectWorkflowOutputs(_, token, _) -> token
     RetryArtifactPublication(_, token, _, _) -> token
     ParkIssue(_, token, _, _) -> token
     UnparkIssue(_, token, _) -> token
@@ -227,6 +230,12 @@ pub fn request_to_json(request: Request) -> json.Json {
         retry_workflow_step_entries(target, step_id),
         base_request_entries(id, token, "retry_step"),
       )
+      |> json.object
+    RecollectWorkflowOutputs(id, token, run_id) ->
+      [
+        #("run_id", json.string(run_id)),
+        ..base_request_entries(id, token, "recollect_outputs")
+      ]
       |> json.object
     RetryArtifactPublication(id, token, run_id, publication_id) ->
       list.append(
@@ -468,6 +477,12 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
         Ok(target), Ok(step_id) ->
           Ok(RetryWorkflowStep(fields.id, fields.token, target, step_id))
         Error(err), _ | _, Error(err) -> Error(err)
+      }
+    "recollect_outputs" ->
+      case required_run_id(fields) {
+        Ok(run_id) ->
+          Ok(RecollectWorkflowOutputs(fields.id, fields.token, run_id))
+        Error(err) -> Error(err)
       }
     "retry_artifact_publication" ->
       case required_run_id(fields), optional_publication_id(fields) {
@@ -1134,6 +1149,8 @@ pub fn command_request(
     command.RetryIssue(issue_ref) -> RetryIssue(id, token, issue_ref)
     command.RetryWorkflowStep(target, step_id) ->
       RetryWorkflowStep(id, token, target, step_id)
+    command.RecollectWorkflowOutputs(run_id) ->
+      RecollectWorkflowOutputs(id, token, run_id)
     command.RetryArtifactPublication(run_id, publication_id) ->
       RetryArtifactPublication(id, token, run_id, publication_id)
     command.ParkIssue(issue_ref, reason) ->
@@ -1171,6 +1188,8 @@ pub fn request_operator_command(
     RetryIssue(_, _, issue_ref) -> Some(command.RetryIssue(issue_ref))
     RetryWorkflowStep(_, _, target, step_id) ->
       Some(command.RetryWorkflowStep(target, step_id))
+    RecollectWorkflowOutputs(_, _, run_id) ->
+      Some(command.RecollectWorkflowOutputs(run_id))
     RetryArtifactPublication(_, _, run_id, publication_id) ->
       Some(command.RetryArtifactPublication(run_id, publication_id))
     ParkIssue(_, _, issue_ref, reason) ->
