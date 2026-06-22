@@ -425,6 +425,7 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
         Nil
       },
       list_sessions: fn() { Ok([]) },
+      agent_slot_occupancy: fn(_) { Ok(0) },
       dispatch_paused: fn(_) { Ok(False) },
       apply_command: fn(operator_command, _) {
         Ok(command.not_allowed(

@@ -96,8 +96,9 @@ fn classify_by_publication_retry(
           {
             Ok(artifact_publication_retry.RetryablePublicationAttempts(_)) ->
               PublicationRecovery(run_id, workflow_id)
-            Ok(artifact_publication_retry.RequiredPublicationsAlreadyPublished(_)) ->
-              PublicationAlreadyPublished(run_id, workflow_id)
+            Ok(artifact_publication_retry.RequiredPublicationsAlreadyPublished(
+              _,
+            )) -> PublicationAlreadyPublished(run_id, workflow_id)
             Error(#(publication_reason, publication_message)) ->
               RejectRecovery(publication_reason, publication_message)
           }

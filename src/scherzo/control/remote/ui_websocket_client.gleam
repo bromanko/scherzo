@@ -16,6 +16,8 @@ const max_in_flight_commands = 8
 
 const max_in_flight_queries = 8
 
+const runtime_state_query_timeout_ms = 1000
+
 pub type Settings {
   Settings(
     server_url: String,
@@ -46,6 +48,7 @@ pub type Dependencies(connection, timer) {
     send_after: fn(process.Subject(Message), Int, Message) -> timer,
     cancel_timer: fn(timer) -> Nil,
     list_sessions: fn() -> Result(List(event.SessionSummary), String),
+    agent_slot_occupancy: fn(Int) -> Result(Int, String),
     dispatch_paused: fn(Int) -> Result(Bool, String),
     apply_command: fn(command.OperatorCommand, Int) ->
       Result(command.CommandResult, Nil),
@@ -125,7 +128,7 @@ pub fn start(
           stopped_for_repair: False,
           router: remote_command_router.new(),
           last_known_dispatch_paused: False,
-          last_runtime_state: ui_protocol.runtime_state_with_unknown_sessions(
+          last_runtime_state: ui_protocol.runtime_state_with_unknown_agent_slots(
             settings.runtime_metadata,
           ),
           running_queries: [],
@@ -251,16 +254,22 @@ fn handle_connected(
   connection: connection,
 ) -> State(connection, timer) {
   let sessions_result = state.dependencies.list_sessions()
+  let agent_slot_occupancy_result =
+    state.dependencies.agent_slot_occupancy(runtime_state_query_timeout_ms)
   let runtime_state =
-    ui_protocol.runtime_state_from_session_result(
+    ui_protocol.runtime_state_from_agent_slot_result(
       state.settings.runtime_metadata,
-      sessions_result,
+      agent_slot_occupancy_result,
     )
   case send_hello(connection, state, runtime_state) {
     Ok(Nil) ->
       case send_heartbeat(connection, state, runtime_state) {
         Ok(Nil) ->
-          case send_state_snapshot(connection, state, sessions_result) {
+          case
+            send_state_snapshot(connection, state, sessions_result, fn() {
+              agent_slot_occupancy_result
+            })
+          {
             Ok(runtime_state) -> {
               let generation = state.connection_generation + 1
               spawn_reader(
@@ -338,6 +347,11 @@ fn send_state_tick(
           connection,
           state,
           state.dependencies.list_sessions(),
+          fn() {
+            state.dependencies.agent_slot_occupancy(
+              runtime_state_query_timeout_ms,
+            )
+          },
         )
       {
         Ok(runtime_state) ->
@@ -812,6 +826,11 @@ fn send_command_result_and_state(
           connection,
           state,
           state.dependencies.list_sessions(),
+          fn() {
+            state.dependencies.agent_slot_occupancy(
+              runtime_state_query_timeout_ms,
+            )
+          },
         )
       {
         Ok(runtime_state) -> State(..state, last_runtime_state: runtime_state)
@@ -960,6 +979,7 @@ fn send_state_snapshot(
   connection: connection,
   state: State(connection, timer),
   sessions_result: Result(List(event.SessionSummary), String),
+  agent_slot_occupancy: fn() -> Result(Int, String),
 ) -> Result(ui_protocol.DaemonRuntimeState, String) {
   use sessions <- result.try(sessions_result)
   let dispatch_paused = case
@@ -969,9 +989,9 @@ fn send_state_snapshot(
     Error(_) -> state.last_known_dispatch_paused
   }
   let runtime_state =
-    ui_protocol.runtime_state_from_sessions(
+    ui_protocol.runtime_state_from_agent_slot_result(
       state.settings.runtime_metadata,
-      sessions,
+      agent_slot_occupancy(),
     )
   let snapshots = sessions |> list.map(ui_protocol.session_from_summary)
   case

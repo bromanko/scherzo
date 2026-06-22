@@ -121,12 +121,9 @@ pub fn validate_retained_output_descriptor(
 ) -> Result(Nil, String) {
   case spec.type_ {
     workflow_contract.GenericArtifactSet ->
-      validate_artifact_set(
-        spec,
-        value,
-        contents,
-        fn(ref) { read_retained_artifact_bytes(checkpoint, ref) },
-      )
+      validate_artifact_set(spec, value, contents, fn(ref) {
+        read_retained_artifact_bytes(checkpoint, ref)
+      })
     _ -> Ok(Nil)
   }
 }
