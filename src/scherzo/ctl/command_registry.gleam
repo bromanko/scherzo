@@ -22,6 +22,7 @@ pub type HandlerKey {
   ReloadKey
   RetryKey
   RetryStepKey
+  RecollectOutputsKey
   RecoveryCleanupOrphanStepsKey
   ParkKey
   UnparkKey
@@ -273,6 +274,21 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         line(
           "",
           "Retry a failed or interrupted workflow step without redispatching the whole task.",
+        ),
+      ],
+    ),
+    command_spec.CommandSpec(
+      handler: RecollectOutputsKey,
+      path: ["recollect-outputs"],
+      usage: "recollect-outputs run:<run-id>",
+      summary: "Recollect workflow contract outputs without rerunning completed steps.",
+      positionals: [command_spec.Required("run_ref")],
+      options: [control_file_option(), json_option()],
+      help_lines: [
+        line("recollect-outputs run:<run-id>", ""),
+        line(
+          "",
+          "Recollect workflow contract outputs without rerunning completed steps.",
         ),
       ],
     ),

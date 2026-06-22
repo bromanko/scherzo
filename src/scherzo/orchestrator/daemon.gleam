@@ -85,6 +85,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_completion_policy.{type LinearStateRef}
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
+import scherzo/workflow_output_recollection
 import scherzo/workflow_repair
 import scherzo/workflow_run
 import scherzo/workspace
@@ -2394,6 +2395,19 @@ fn apply_shell_operator_command(
           )
         #(state, result, [])
       },
+      recollect_workflow_outputs_for_operator: fn(
+        state,
+        operator_command,
+        run_id,
+      ) {
+        let #(state, result) =
+          recollect_workflow_outputs_for_operator(
+            state,
+            operator_command,
+            run_id,
+          )
+        #(state, result, [])
+      },
       retry_artifact_publication_for_operator: fn(
         state,
         operator_command,
@@ -2476,6 +2490,148 @@ fn retry_workflow_step_for_operator(
                 issue,
               )
           }
+      }
+  }
+}
+
+fn recollect_workflow_outputs_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+) -> #(State, command.CommandResult) {
+  case replay_projection_for_operator(state) {
+    Error(reason) -> #(
+      state,
+      command.rejected(operator_command, "ledger_read_failed", Some(reason)),
+    )
+    Ok(projection_state) ->
+      case projection.workflow_run_provenance(projection_state, run_id) {
+        Error(Nil) -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "run_not_found",
+            Some("run not found"),
+          ),
+        )
+        Ok(provenance) ->
+          case
+            recollect_outputs_issue_preflight_for_run(
+              state,
+              operator_command,
+              run_id,
+              provenance.issue_id,
+            )
+          {
+            Error(result) -> #(state, result)
+            Ok(issue) -> {
+              let observation =
+                startup_recovery.current_workflow_observation(
+                  state.workflow.bundle,
+                  issue,
+                )
+              case
+                workflow_checkpoint.next_output_recollection_index(
+                  state.workflow.effective.workspace.root,
+                  run_id,
+                )
+              {
+                Error(error) -> #(
+                  state,
+                  command.rejected(
+                    operator_command,
+                    "ledger_read_failed",
+                    Some(workflow_checkpoint.describe_error(error)),
+                  ),
+                )
+                Ok(recollection_index) ->
+                  case
+                    workflow_output_recollection.execute(
+                      projection_state,
+                      run_id,
+                      observation,
+                      workflow_checkpoint.ledger_writer(
+                        state.workflow.effective.workspace.root,
+                        state.dependencies.now_ms,
+                      ),
+                      workflow_checkpoint.recollection_ledger_writer(
+                        state.workflow.effective.workspace.root,
+                        state.dependencies.now_ms,
+                        recollection_index,
+                      ),
+                      artifact_store.new(
+                        state.workflow.effective.workspace.root,
+                      ),
+                    )
+                  {
+                    Error(error) -> #(
+                      state,
+                      command.rejected(
+                        operator_command,
+                        workflow_output_recollection.describe_error(error),
+                        workflow_output_recollection.error_message(error),
+                      ),
+                    )
+                    Ok(workflow_output_recollection.AlreadyValid(recorded)) -> #(
+                      state,
+                      command.applied(
+                        operator_command,
+                        Some(
+                          "workflow outputs already valid for "
+                          <> run_id
+                          <> ": "
+                          <> recorded.ref,
+                        ),
+                      ),
+                    )
+                    Ok(workflow_output_recollection.Recollected(recorded, _)) -> #(
+                      state,
+                      command.applied(
+                        operator_command,
+                        Some(
+                          "recollected workflow outputs for "
+                          <> run_id
+                          <> ": "
+                          <> recorded.ref,
+                        ),
+                      ),
+                    )
+                  }
+              }
+            }
+          }
+      }
+  }
+}
+
+fn recollect_outputs_issue_preflight_for_run(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  issue_id: String,
+) -> Result(tracker_issue.Issue, command.CommandResult) {
+  case
+    dict.get(
+      state.runtime.parked,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
+    Ok(parked) ->
+      Error(command.rejected(
+        operator_command,
+        "issue_parked",
+        Some(
+          "issue is parked for "
+          <> orchestrator_reason.park_to_string(parked.reason)
+          <> "; unpark before recollect-outputs for run "
+          <> run_id,
+        ),
+      ))
+    Error(Nil) ->
+      case fetch_issue_by_id(state, issue_id) {
+        Error(status) ->
+          Error(command.result_for(operator_command, status, None))
+        Ok(issue) -> Ok(issue)
       }
   }
 }

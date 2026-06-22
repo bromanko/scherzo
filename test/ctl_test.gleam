@@ -964,6 +964,10 @@ pub fn parse_operator_commands_test() {
       False,
       command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
     ))
+  assert ctl.parse(["recollect-outputs", "run:run-1"])
+    == Ok(ctl.Operator(None, False, command.RecollectWorkflowOutputs("run-1")))
+  assert ctl.parse(["recollect-outputs", "run:run-1", "--json"])
+    == Ok(ctl.Operator(None, True, command.RecollectWorkflowOutputs("run-1")))
   assert ctl.parse(["recovery", "cleanup-orphan-steps", "run:run-1"])
     == Ok(ctl.Operator(None, False, command.CleanupOrphanSteps("run-1", True)))
   assert ctl.parse([
@@ -1076,6 +1080,10 @@ pub fn parse_rejects_usage_errors_test() {
     ctl.parse(["attach", "--since-cursor", "wat", "ABC-1"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["attach", "--color=bad", "ABC-1"])
+  assert ctl.parse(["recollect-outputs", "run:"])
+    == Error(ctl.UsageError("recollect-outputs requires run:<run-id>"))
+  assert ctl.parse(["recollect-outputs", "ABC-123"])
+    == Error(ctl.UsageError("recollect-outputs requires run:<run-id>"))
   let assert Error(ctl.UsageError(_)) = ctl.parse(["ps", "--control-file"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["task", "list", "--state", "linear-todo"])
@@ -1166,6 +1174,11 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(
     usage,
     "Retry a failed or interrupted workflow step without redispatching the whole task.",
+  )
+  assert string.contains(usage, "recollect-outputs run:<run-id>")
+  assert string.contains(
+    usage,
+    "Recollect workflow contract outputs without rerunning completed steps.",
   )
   assert string.contains(usage, "abort <session-ref> --yes")
   assert string.contains(usage, "ui respond")

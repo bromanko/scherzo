@@ -323,6 +323,15 @@ fn build_command(
           command_spec.option_value(parsed, "--step"),
         ),
       ))
+    command_registry.RecollectOutputsKey -> {
+      use run_id <- try_ctl(
+        recollect_outputs_run_id(first_positional(parsed, parsed.usage)),
+      )
+      Ok(operator_command(
+        parsed,
+        control_command.RecollectWorkflowOutputs(run_id),
+      ))
+    }
     command_registry.RecoveryCleanupOrphanStepsKey ->
       build_recovery_cleanup_command(parsed)
     command_registry.ParkKey -> build_park_command(parsed)
@@ -935,6 +944,19 @@ fn recovery_cleanup_run_id(target: String) -> Result(String, String) {
         run_id -> Ok(run_id)
       }
     False -> Error("recovery cleanup-orphan-steps requires run:<run-id>")
+  }
+}
+
+fn recollect_outputs_run_id(target: String) -> Result(String, Error) {
+  case string.starts_with(target, "run:") {
+    True -> {
+      let run_id = string.drop_start(target, 4) |> string.trim
+      case run_id == "" {
+        True -> Error(UsageError("recollect-outputs requires run:<run-id>"))
+        False -> Ok(run_id)
+      }
+    }
+    False -> Error(UsageError("recollect-outputs requires run:<run-id>"))
   }
 }
 

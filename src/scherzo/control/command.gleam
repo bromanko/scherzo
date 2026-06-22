@@ -41,6 +41,7 @@ pub type OperatorCommand {
   ReloadWorkflow
   RetryIssue(IssueRef)
   RetryWorkflowStep(target: RetryWorkflowStepTarget, step_id: Option(String))
+  RecollectWorkflowOutputs(run_id: String)
   RetryArtifactPublication(run_id: String, publication_id: Option(String))
   ParkIssue(IssueRef, reason: String)
   UnparkIssue(IssueRef)
@@ -119,6 +120,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     ReloadWorkflow -> "reload"
     RetryIssue(_) -> "retry"
     RetryWorkflowStep(_, _) -> "retry_step"
+    RecollectWorkflowOutputs(_) -> "recollect_outputs"
     RetryArtifactPublication(_, _) -> "retry_artifact_publication"
     ParkIssue(_, _) -> "park"
     UnparkIssue(_) -> "unpark"
@@ -139,6 +141,7 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
       Some(issue_ref_to_string(issue_ref))
     RetryWorkflowStep(target, _) ->
       Some(retry_workflow_step_target_to_string(target))
+    RecollectWorkflowOutputs(run_id) -> Some("run:" <> run_id)
     RetryArtifactPublication(run_id, publication_id) ->
       Some(retry_artifact_publication_target_to_string(run_id, publication_id))
     AbortSession(session_id)
@@ -225,6 +228,12 @@ pub fn operator_command_to_json(
         retry_workflow_step_entries(target, step_id),
         base_command_entries("retry_step"),
       )
+      |> json.object
+    RecollectWorkflowOutputs(run_id) ->
+      [
+        #("run_id", json.string(run_id)),
+        ..base_command_entries("recollect_outputs")
+      ]
       |> json.object
     RetryArtifactPublication(run_id, publication_id) ->
       list.append(
@@ -618,6 +627,8 @@ fn operator_command_from_fields(
           use step_id <- result.try(optional_step_id(fields))
           Ok(RetryWorkflowStep(target, step_id))
         }
+        "recollect_outputs" ->
+          required_run_id(fields) |> result.map(RecollectWorkflowOutputs)
         "retry_artifact_publication" -> {
           use run_id <- result.try(required_run_id(fields))
           use publication_id <- result.try(optional_publication_id(fields))

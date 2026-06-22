@@ -37,6 +37,11 @@ pub opaque type ShellHandlers(state) {
       command.RetryWorkflowStepTarget,
       Option(String),
     ) -> #(state, command.CommandResult, List(transition_types.Message)),
+    recollect_workflow_outputs_for_operator: fn(
+      state,
+      command.OperatorCommand,
+      String,
+    ) -> #(state, command.CommandResult, List(transition_types.Message)),
     retry_artifact_publication_for_operator: fn(
       state,
       command.OperatorCommand,
@@ -81,6 +86,11 @@ pub fn shell_handlers(
     command.RetryWorkflowStepTarget,
     Option(String),
   ) -> #(state, command.CommandResult, List(transition_types.Message)),
+  recollect_workflow_outputs_for_operator recollect_workflow_outputs_for_operator: fn(
+    state,
+    command.OperatorCommand,
+    String,
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   retry_artifact_publication_for_operator retry_artifact_publication_for_operator: fn(
     state,
     command.OperatorCommand,
@@ -118,6 +128,7 @@ pub fn shell_handlers(
   ShellHandlers(
     reload_workflow_for_operator: reload_workflow_for_operator,
     retry_workflow_step_for_operator: retry_workflow_step_for_operator,
+    recollect_workflow_outputs_for_operator: recollect_workflow_outputs_for_operator,
     retry_artifact_publication_for_operator: retry_artifact_publication_for_operator,
     schedule_run_now_for_operator: schedule_run_now_for_operator,
     abort_session_for_operator_sync: abort_session_for_operator_sync,
@@ -146,6 +157,7 @@ pub fn operator_issue_resolution(
     | command.ResumeDispatch
     | command.ReloadWorkflow
     | command.RetryWorkflowStep(_, _)
+    | command.RecollectWorkflowOutputs(_)
     | command.RetryArtifactPublication(_, _)
     | command.UnparkIssue(_)
     | command.AbortSession(_)
@@ -179,6 +191,7 @@ pub fn parked_issue_resolution(
     | command.ReloadWorkflow
     | command.RetryIssue(_)
     | command.RetryWorkflowStep(_, _)
+    | command.RecollectWorkflowOutputs(_)
     | command.RetryArtifactPublication(_, _)
     | command.ParkIssue(_, _)
     | command.AbortSession(_)
@@ -206,6 +219,12 @@ pub fn apply_shell_operator_command(
         operator_command,
         target,
         step_id,
+      )
+    command.RecollectWorkflowOutputs(run_id) ->
+      handlers.recollect_workflow_outputs_for_operator(
+        state,
+        operator_command,
+        run_id,
       )
     command.RetryArtifactPublication(run_id, publication_id) ->
       handlers.retry_artifact_publication_for_operator(

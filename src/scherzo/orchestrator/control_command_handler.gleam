@@ -88,6 +88,16 @@ pub fn apply(
       log_context_result(context, context.state, result, [])
       #(context.state, result)
     }
+    command.RecollectWorkflowOutputs(_) -> {
+      let result =
+        command.rejected(
+          operator_command,
+          "recollect_outputs_requires_daemon_shell",
+          Some("recollect-outputs must be handled by the daemon shell path"),
+        )
+      log_context_result(context, context.state, result, [])
+      #(context.state, result)
+    }
     command.RetryArtifactPublication(_, _) -> {
       let result =
         command.rejected(

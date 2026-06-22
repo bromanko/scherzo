@@ -86,6 +86,26 @@ Interpret `reason=missing` as an artifact ref that is absent under `.scherzo-sta
 
 If the issue is parked, unpark it first and then rerun `retry-step`. `retry-step` does not silently override operator park policy. `retry-step` now also fails closed when the refreshed issue state is non-active, with a message naming the run and current state; move the issue back to a configured active state before retrying. Terminal states are still rejected.
 
+Use `recollect-outputs` when every workflow step already succeeded but the workflow output manifest is missing or invalid and you need a fresh output record without rerunning steps:
+
+```sh
+scripts/scherzoctl recollect-outputs run:<run-id> --json
+```
+
+This command is output-only. It validates the current workflow and issue identity, reuses retained step artifacts and workspaces, writes fresh output blobs and the output manifest under `runs/<run-id>/recollections/<n>/...`, appends a fresh `workflow_run_outputs_recorded` record, and does not spawn a worker, append a new successful terminal `workflow_run_finished`, retry publication, or change provider-live/cache behavior.
+
+Stable rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, `workspace_recovery_failed`, and `run_not_complete`. A successful no-op returns an applied result whose message points at the already-valid latest manifest, for example:
+
+```json
+{
+  "status": "applied",
+  "command": "recollect_outputs",
+  "message": "workflow outputs already valid for run-1: runs/run-1/outputs.v1.json"
+}
+```
+
+When retained evidence is missing, expect source-specific rejections. For example, missing or mismatched step artifacts reject with `artifact_recovery_failed`, and missing step workspaces for `source.path` outputs reject with `workspace_recovery_failed`. Restore the named artifact or workspace first, then rerun `recollect-outputs`. If publication failed separately, run publication retry only after recollection has produced a valid output manifest. If retained evidence cannot be restored safely, fall back to a full task retry instead of forcing output recollection.
+
 When a retained run already has orphaned YAML child step sessions, inspect `ps --json` or `session --json` for `workflow_run_id`, `workflow_step_id`, `workflow_attempt_index`, `orphan_status`, `issue_state`, and `recommended_action`, then run:
 
 ```sh

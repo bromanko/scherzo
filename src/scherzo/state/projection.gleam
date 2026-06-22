@@ -3094,6 +3094,24 @@ pub fn workflow_run(
   dict.get(projection.workflow_runs, run_id)
 }
 
+pub fn step_attempts_for_run(
+  projection: Projection,
+  run_id: String,
+) -> List(StepAttemptStatus) {
+  projection.step_attempts
+  |> dict.values
+  |> list.filter(fn(status) {
+    case status {
+      StepAttemptPending(run_id: status_run_id, ..)
+      | StepAttemptRunning(run_id: status_run_id, ..)
+      | StepAttemptFinishedStatus(run_id: status_run_id, ..)
+      | StepAttemptInterruptedStatus(run_id: status_run_id, ..)
+      | StepAttemptSupersededStatus(run_id: status_run_id, ..) ->
+        status_run_id == run_id
+    }
+  })
+}
+
 pub fn workflow_input_manifest(
   projection: Projection,
   run_id: String,

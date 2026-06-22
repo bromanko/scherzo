@@ -42,6 +42,7 @@ Milestone 5 completes regression validation. At the end, targeted recollection t
 
 - [x] (2026-06-21) Read the repo-local ExecPlan guidance, inspected the current workflow contract output path, retry-step repair path, ledger projection, control command surface, and recovery runbook, and drafted this concise review document.
 - [x] (2026-06-21) Incorporated review feedback by making acceptance evidence, test obligations, milestone-specific files, deferred manual/dogfood checks, documentation scope, provider-live/cache non-scope, full validation, and linting explicit in the review document and structured implementation pack.
+- [x] (2026-06-21) Completed Milestone 1: added the `recollect-outputs run:<run-id>` operator command surface across control command encoding, protocol transport, CLI parsing/help, shell routing, schema fixtures, and focused tests; daemon execution remains a rejected stub until later milestones implement recollection behavior.
 
 ## Surprises & Discoveries
 

@@ -404,6 +404,88 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
   )
 }
 
+pub fn recollection_ledger_writer(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+  recollection_index: Int,
+) -> Writer {
+  let base = ledger_writer(workspace_root, now_ms)
+  let store = artifact_store.new(workspace_root)
+  Writer(
+    ..base,
+    write_workflow_outputs_manifest: fn(run_id, contents) {
+      artifact_store.write_output_manifest_for_recollection(
+        store,
+        run_id,
+        recollection_index,
+        contents,
+      )
+      |> result.map(artifact_ref_to_written)
+      |> result.map_error(fn(error) {
+        CheckpointArtifactFailed(describe_artifact_error(error))
+      })
+    },
+    workflow_outputs_recorded: fn(recorded: WorkflowContractManifestRecorded) {
+      append_body(
+        workspace_root,
+        now_ms,
+        record.WorkflowRunOutputsRecorded(
+          recorded.run_id,
+          recorded.workflow_id,
+          recorded.workflow_fingerprint,
+          recorded.artifact.ref,
+          recorded.artifact.sha256,
+          recorded.artifact.bytes,
+        ),
+      )
+    },
+    write_workflow_output_blob: fn(write: WorkflowOutputBlobWrite) {
+      artifact_store.write_output_blob_bytes_for_recollection(
+        store,
+        write.run_id,
+        write.output_name,
+        write.extension,
+        recollection_index,
+        write.contents,
+      )
+      |> result.map(artifact_ref_to_written)
+      |> result.map_error(fn(error) {
+        CheckpointArtifactFailed(describe_artifact_error(error))
+      })
+    },
+  )
+}
+
+pub fn next_output_recollection_index(
+  workspace_root: String,
+  run_id: String,
+) -> Result(Int, CheckpointError) {
+  use ledger_path <- result.try(
+    ledger.path_for_workspace_root(workspace_root)
+    |> result.map_error(fn(error) {
+      CheckpointAppendFailed(describe_ledger_error(error))
+    }),
+  )
+  use read <- result.try(
+    ledger.read_records(ledger_path)
+    |> result.map_error(fn(error) {
+      CheckpointAppendFailed(describe_ledger_error(error))
+    }),
+  )
+  Ok(
+    read.records
+    |> list.fold(0, fn(count, ledger_record) {
+      case ledger_record.body {
+        record.WorkflowRunOutputsRecorded(run_id: recorded_run_id, ..)
+          if recorded_run_id == run_id
+        -> count + 1
+        _ -> count
+      }
+    })
+    |> fn(count) { count + 1 },
+  )
+}
+
 pub fn corrupt_tolerant_ledger_writer(
   workspace_root: String,
   now_ms: fn() -> Int,
